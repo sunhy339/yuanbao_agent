@@ -5,6 +5,7 @@ import type {
   AgentEventEnvelope,
   AppConfig,
   AssistantTokenPayload,
+  CommandLifecyclePayload,
   CommandOutputPayload,
   PatchRecord,
   PatchProposedPayload,
@@ -12,6 +13,7 @@ import type {
   SessionRecord,
   TaskRecord,
   TaskUpdatedPayload,
+  ToolLifecyclePayload,
   WorkspaceRef,
 } from "@shared";
 import { RuntimeClient, type HostStatus, type RuntimeConfig } from "./lib/runtimeClient";
@@ -32,6 +34,18 @@ function formatTimestamp(timestamp?: number): string {
   return new Date(timestamp).toLocaleString("en-US", {
     hour12: false,
   });
+}
+
+function formatDuration(durationMs?: number): string {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs)) {
+    return "in progress";
+  }
+
+  if (durationMs < 1000) {
+    return `${Math.max(0, Math.round(durationMs))} ms`;
+  }
+
+  return `${(durationMs / 1000).toFixed(1)} s`;
 }
 
 function normalizeRuntimeConfig(config: AppConfig | RuntimeConfig): RuntimeConfig {
@@ -97,6 +111,60 @@ function readEventText(payload: unknown, key: string): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function readEventNumber(payload: unknown, key: string): number | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+
+  const value = (payload as Record<string, unknown>)[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function summarizeValue(value: unknown, fallback = "not recorded", maxLength = 180): string {
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+
+  const raw =
+    typeof value === "string"
+      ? value
+      : typeof value === "number" || typeof value === "boolean"
+        ? String(value)
+        : (() => {
+            try {
+              return JSON.stringify(value);
+            } catch {
+              return fallback;
+            }
+          })();
+  const compact = raw.replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return fallback;
+  }
+  return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}...` : compact;
+}
+
+function getPayloadValue(payload: unknown, keys: string[]): unknown {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+
+  const record = payload as Record<string, unknown>;
+  for (const key of keys) {
+    if (record[key] !== undefined) {
+      return record[key];
+    }
+  }
+  return undefined;
+}
+
 function sortByUpdatedAtDesc<T extends { updatedAt: number }>(items: T[]): T[] {
   return [...items].sort((left, right) => right.updatedAt - left.updatedAt);
 }
@@ -130,6 +198,45 @@ interface PatchCardView {
   approvalResolvedAt?: number;
 }
 
+interface ChatMessageView {
+  id: string;
+  taskId: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+  streaming?: boolean;
+}
+
+interface ToolTimelineItem {
+  id: string;
+  taskId: string;
+  toolCallId: string;
+  toolName: string;
+  status: "started" | "completed" | "failed";
+  argsSummary: string;
+  resultSummary: string;
+  errorSummary?: string;
+  startedAt: number;
+  updatedAt: number;
+  finishedAt?: number;
+  durationMs?: number;
+  eventCount: number;
+}
+
+interface ActivityTimelineItem {
+  id: string;
+  type: string;
+  category: "task" | "tool" | "approval" | "patch" | "command" | "assistant" | "event";
+  taskId: string;
+  time: string;
+  status?: string;
+  title: string;
+  summary: string;
+  relatedId?: string;
+  raw: string;
+}
+
 function upsertRecord<T extends { id: string; updatedAt: number }>(items: T[], record: T): T[] {
   const next = new Map(items.map((item) => [item.id, item]));
   next.set(record.id, record);
@@ -151,6 +258,9 @@ function coerceTaskStatus(
   }
   if (event.type === "task.failed") {
     return "failed";
+  }
+  if (event.type === "task.cancelled") {
+    return "cancelled";
   }
   return fallback;
 }
@@ -176,14 +286,202 @@ function applyEventToTask(current: TaskRecord | null, event: AgentEventEnvelope)
   };
 }
 
+function getTaskBadgeClass(status?: TaskRecord["status"]): string {
+  if (status === "completed") {
+    return "ok";
+  }
+  if (status === "failed" || status === "cancelled") {
+    return "error";
+  }
+  if (status === "running") {
+    return "info";
+  }
+  if (status === "waiting_approval") {
+    return "warn";
+  }
+  return "neutral";
+}
+
+function appendAssistantToken(current: ChatMessageView[], event: AgentEventEnvelope): ChatMessageView[] {
+  const payload = event.payload as AssistantTokenPayload;
+  const delta = payload.delta ?? "";
+  if (!delta) {
+    return current;
+  }
+
+  const next = [...current];
+  const lastAssistantIndex = (() => {
+    for (let index = next.length - 1; index >= 0; index -= 1) {
+      const item = next[index];
+      if (item.taskId === event.taskId && item.role === "assistant" && item.streaming) {
+        return index;
+      }
+    }
+    return -1;
+  })();
+
+  if (lastAssistantIndex >= 0) {
+    const currentMessage = next[lastAssistantIndex];
+    next[lastAssistantIndex] = {
+      ...currentMessage,
+      content: `${currentMessage.content}${delta}`,
+      updatedAt: event.ts,
+    };
+    return next;
+  }
+
+  return [
+    ...next,
+    {
+      id: `assistant_${event.eventId}`,
+      taskId: event.taskId,
+      role: "assistant",
+      content: delta,
+      createdAt: event.ts,
+      updatedAt: event.ts,
+      streaming: true,
+    },
+  ];
+}
+
+function completeAssistantMessage(current: ChatMessageView[], event: AgentEventEnvelope): ChatMessageView[] {
+  const completedContent = summarizeValue(
+    getPayloadValue(event.payload, ["content", "message", "text"]),
+    "",
+    10_000,
+  );
+  const next = [...current];
+  const lastAssistantIndex = (() => {
+    for (let index = next.length - 1; index >= 0; index -= 1) {
+      const item = next[index];
+      if (item.taskId === event.taskId && item.role === "assistant") {
+        return index;
+      }
+    }
+    return -1;
+  })();
+
+  if (lastAssistantIndex >= 0) {
+    const currentMessage = next[lastAssistantIndex];
+    next[lastAssistantIndex] = {
+      ...currentMessage,
+      content: completedContent || currentMessage.content,
+      updatedAt: event.ts,
+      streaming: false,
+    };
+    return next;
+  }
+
+  if (!completedContent) {
+    return current;
+  }
+
+  return [
+    ...next,
+    {
+      id: `assistant_${event.eventId}`,
+      taskId: event.taskId,
+      role: "assistant",
+      content: completedContent,
+      createdAt: event.ts,
+      updatedAt: event.ts,
+      streaming: false,
+    },
+  ];
+}
+
+function buildActivityTitle(event: AgentEventEnvelope): string {
+  if (event.type.startsWith("task.")) {
+    return event.type.replace("task.", "task ");
+  }
+  if (event.type.startsWith("tool.")) {
+    const payload = event.payload as Partial<ToolLifecyclePayload>;
+    return payload.toolName ? `${payload.toolName} ${event.type.replace("tool.", "")}` : event.type;
+  }
+  if (event.type.startsWith("command.")) {
+    const command = readEventText(event.payload, "command");
+    return command ? `${command} ${event.type.replace("command.", "")}` : event.type;
+  }
+  if (event.type.startsWith("approval.")) {
+    return event.type.replace("approval.", "approval ");
+  }
+  if (event.type.startsWith("patch.")) {
+    return event.type.replace("patch.", "patch ");
+  }
+  if (event.type.startsWith("assistant.")) {
+    return event.type.replace("assistant.", "assistant ");
+  }
+  return event.type;
+}
+
+function buildActivityItem(event: AgentEventEnvelope): ActivityTimelineItem {
+  const category = event.type.startsWith("task.")
+    ? "task"
+    : event.type.startsWith("tool.")
+      ? "tool"
+      : event.type.startsWith("approval.")
+        ? "approval"
+        : event.type.startsWith("patch.")
+          ? "patch"
+          : event.type.startsWith("command.")
+            ? "command"
+            : event.type.startsWith("assistant.")
+              ? "assistant"
+              : "event";
+  const status =
+    readEventText(event.payload, "status") ??
+    readEventText(event.payload, "decision") ??
+    event.type.split(".")[1];
+  const relatedId = summarizeValue(
+    getPayloadValue(event.payload, [
+      "toolCallId",
+      "commandId",
+      "approvalId",
+      "patchId",
+      "messageId",
+    ]),
+    "",
+    80,
+  );
+
+  return {
+    id: event.eventId,
+    type: event.type,
+    category,
+    taskId: event.taskId,
+    time: formatTimestamp(event.ts),
+    status,
+    title: buildActivityTitle(event),
+    summary: summarizeEvent(event),
+    relatedId: relatedId || undefined,
+    raw: JSON.stringify(event.payload, null, 2),
+  };
+}
+
 function summarizeEvent(event: AgentEventEnvelope): string {
   if (event.type === "assistant.token") {
     return ((event.payload as AssistantTokenPayload).delta ?? "").trim() || "Model is streaming output.";
   }
 
+  if (event.type === "assistant.message.completed") {
+    return "Assistant message completed.";
+  }
+
   if (event.type === "command.output") {
     const payload = event.payload as CommandOutputPayload;
     return `${payload.stream}: ${payload.chunk.trim()}`.trim();
+  }
+
+  if (
+    event.type === "command.started" ||
+    event.type === "command.completed" ||
+    event.type === "command.failed"
+  ) {
+    const payload = event.payload as Partial<CommandLifecyclePayload>;
+    const command = payload.command ?? "command";
+    const status = payload.status ?? event.type.replace("command.", "");
+    const exit = typeof payload.exitCode === "number" ? ` | exit ${payload.exitCode}` : "";
+    return `${command} ${status}${exit}`;
   }
 
   if (event.type === "approval.requested") {
@@ -216,8 +514,17 @@ function summarizeEvent(event: AgentEventEnvelope): string {
     event.type === "tool.completed" ||
     event.type === "tool.failed"
   ) {
-    const payload = event.payload as { toolName?: string };
-    return payload.toolName ? `Tool event: ${payload.toolName}` : "Tool lifecycle event";
+    const payload = event.payload as Partial<ToolLifecyclePayload>;
+    const result = summarizeValue(
+      getPayloadValue(event.payload, ["result", "output", "content", "summary"]),
+      "",
+      120,
+    );
+    const error = summarizeValue(getPayloadValue(event.payload, ["error", "errorJson"]), "", 120);
+    const detail = error || result;
+    return payload.toolName
+      ? `${payload.toolName} ${event.type.replace("tool.", "")}${detail ? ` | ${detail}` : ""}`
+      : "Tool lifecycle event";
   }
 
   try {
@@ -251,6 +558,7 @@ export function App() {
   const [patchCacheById, setPatchCacheById] = useState<Record<string, PatchRecord>>({});
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [assistantOutput, setAssistantOutput] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessageView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
@@ -334,7 +642,7 @@ export function App() {
           return updated ? upsertRecord(current, updated) : current;
         });
 
-        if (event.type.startsWith("task.") && session?.id === event.sessionId) {
+        if (event.type.startsWith("task.")) {
           setSession((current) =>
             current && current.id === event.sessionId
               ? { ...current, updatedAt: event.ts }
@@ -348,6 +656,11 @@ export function App() {
         if (event.type === "assistant.token") {
           const payload = event.payload as AssistantTokenPayload;
           setAssistantOutput((current) => `${current}${payload.delta}`);
+          setChatMessages((current) => appendAssistantToken(current, event));
+        }
+
+        if (event.type === "assistant.message.completed") {
+          setChatMessages((current) => completeAssistantMessage(current, event));
         }
       })
       .then((unlisten) => {
@@ -366,19 +679,60 @@ export function App() {
   }, []);
 
   const eventItems = useMemo(
-    () =>
-      [...events]
-        .reverse()
-        .map((event) => ({
-          id: event.eventId,
-          type: event.type,
-          taskId: event.taskId,
-          time: formatTimestamp(event.ts),
-          summary: summarizeEvent(event),
-          raw: JSON.stringify(event.payload, null, 2),
-        })),
+    () => [...events].reverse().map((event) => buildActivityItem(event)),
     [events],
   );
+
+  const toolTimelineItems = useMemo<ToolTimelineItem[]>(() => {
+    const items = new Map<string, ToolTimelineItem>();
+
+    for (const event of events) {
+      if (
+        event.type !== "tool.started" &&
+        event.type !== "tool.completed" &&
+        event.type !== "tool.failed"
+      ) {
+        continue;
+      }
+
+      const payload = event.payload as Partial<ToolLifecyclePayload>;
+      const toolCallId = payload.toolCallId ?? event.eventId;
+      const current = items.get(toolCallId);
+      const status = event.type.replace("tool.", "") as ToolTimelineItem["status"];
+      const durationMs =
+        readEventNumber(event.payload, "durationMs") ??
+        (current ? event.ts - current.startedAt : undefined);
+      const resultSummary = summarizeValue(
+        getPayloadValue(event.payload, ["result", "output", "content", "summary"]),
+        current?.resultSummary ?? "waiting for result",
+      );
+      const errorSummary = summarizeValue(
+        getPayloadValue(event.payload, ["error", "errorJson", "message"]),
+        "",
+      );
+
+      items.set(toolCallId, {
+        id: toolCallId,
+        taskId: event.taskId,
+        toolCallId,
+        toolName: payload.toolName ?? current?.toolName ?? "unknown_tool",
+        status,
+        argsSummary: summarizeValue(
+          payload.arguments ?? getPayloadValue(event.payload, ["args", "input", "parameters"]),
+          current?.argsSummary ?? "not recorded",
+        ),
+        resultSummary,
+        errorSummary: errorSummary || current?.errorSummary,
+        startedAt: current?.startedAt ?? event.ts,
+        updatedAt: event.ts,
+        finishedAt: status === "started" ? current?.finishedAt : event.ts,
+        durationMs: status === "started" ? current?.durationMs : durationMs,
+        eventCount: (current?.eventCount ?? 0) + 1,
+      });
+    }
+
+    return Array.from(items.values()).sort((left, right) => right.updatedAt - left.updatedAt);
+  }, [events]);
 
   const approvalCards = useMemo<ApprovalCardView[]>(() => {
     const cards = new Map<string, ApprovalCardView>();
@@ -391,7 +745,7 @@ export function App() {
           approvalId: payload.approvalId,
           taskId: payload.taskId,
           kind: payload.kind,
-          patchId: payload.kind === "apply_patch" ? readRequestPatchId(request) : undefined,
+          patchId: payload.kind === "apply_patch" ? payload.patchId ?? readRequestPatchId(request) : undefined,
           command: readRequestText(request, "command", "command"),
           cwd: readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", ".")),
           shell: readRequestText(request, "shell", "system default"),
@@ -526,6 +880,14 @@ export function App() {
     return sortByUpdatedAtDesc(scopedTasks);
   }, [taskHistory, session]);
 
+  const visibleChatMessages = useMemo(
+    () =>
+      chatMessages.filter(
+        (message) => message.taskId === activeTaskId || message.taskId === "pending",
+      ),
+    [activeTaskId, chatMessages],
+  );
+
   async function ensureWorkspace(): Promise<WorkspaceRef> {
     if (workspace) {
       return workspace;
@@ -556,6 +918,7 @@ export function App() {
     setPatchCacheById({});
     setPatchBusyId(null);
     setAssistantOutput("");
+    setChatMessages([]);
     setApprovalBusyId(null);
 
     if (!nextSession) {
@@ -661,6 +1024,7 @@ export function App() {
       setPatchBusyId(null);
       setEvents([]);
       setAssistantOutput("");
+      setChatMessages([]);
       await refreshSessionHistory();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -714,18 +1078,35 @@ export function App() {
     try {
       await persistSearchConfig();
       const activeSession = session ?? (await ensureSessionForSend());
+      const messageContent = prompt.trim();
+      const pendingUserMessageId = `user_${Date.now()}`;
       setEvents([]);
       setPatchCacheById({});
       setPatchBusyId(null);
       setAssistantOutput("");
+      setChatMessages([
+        {
+          id: pendingUserMessageId,
+          taskId: "pending",
+          role: "user",
+          content: messageContent,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ]);
       setApprovalBusyId(null);
 
       const result = await runtimeClient.sendMessage({
         sessionId: activeSession.id,
-        content: prompt.trim(),
+        content: messageContent,
         attachments: [],
       });
 
+      setChatMessages((current) =>
+        current.map((message) =>
+          message.id === pendingUserMessageId ? { ...message, taskId: result.task.id } : message,
+        ),
+      );
       setTaskHistory((current) => upsertRecord(current, result.task));
       setTask(result.task);
       setActiveTaskId(result.task.id);
@@ -968,7 +1349,11 @@ export function App() {
             </div>
             <div>
               <dt>Status</dt>
-              <dd>{task?.status ?? "idle"}</dd>
+              <dd>
+                <span className={`badge ${getTaskBadgeClass(task?.status)}`}>
+                  {task?.status ?? "idle"}
+                </span>
+              </dd>
             </div>
             <div>
               <dt>Error</dt>
@@ -996,7 +1381,11 @@ export function App() {
                     onClick={() => selectTask(item.id)}
                   >
                     <strong>{item.goal}</strong>
-                    <span>{item.status}</span>
+                    <span>
+                      <span className={`badge mini ${getTaskBadgeClass(item.status)}`}>
+                        {item.status}
+                      </span>
+                    </span>
                     <span>{formatTimestamp(item.updatedAt)}</span>
                   </button>
                 </li>
@@ -1048,10 +1437,32 @@ export function App() {
 
           <section className="panel">
             <div className="section-header">
-              <h2>Assistant Output</h2>
-              <span className="muted">{assistantOutput ? "streaming history" : "waiting"}</span>
+              <h2>Chat</h2>
+              <span className="muted">
+                {visibleChatMessages.length > 0
+                  ? `${visibleChatMessages.length} message(s)`
+                  : "waiting"}
+              </span>
             </div>
-            <pre className="stream">{assistantOutput || "Waiting for assistant.token events..."}</pre>
+            <div className="chat-list">
+              {visibleChatMessages.length > 0 ? (
+                visibleChatMessages.map((message) => (
+                  <article key={message.id} className="chat-message" data-role={message.role}>
+                    <div className="chat-meta">
+                      <strong>{message.role}</strong>
+                      <span>{formatTimestamp(message.updatedAt)}</span>
+                      {message.streaming ? <span className="streaming-pill">streaming</span> : null}
+                    </div>
+                    <p>{message.content}</p>
+                  </article>
+                ))
+              ) : (
+                <p className="empty-state compact">
+                  <strong>No chat messages yet</strong>
+                  <span>User messages appear after send; assistant.token events stream into one assistant bubble.</span>
+                </p>
+              )}
+            </div>
           </section>
         </section>
 
@@ -1075,9 +1486,67 @@ export function App() {
 
         <section className="panel">
           <div className="section-header">
-            <h2>Event Stream</h2>
+            <h2>Runtime Timeline</h2>
             <span className="muted">{eventItems.length} event(s)</span>
           </div>
+          <section className="tool-stack">
+            <div className="section-header approval-header">
+              <h3>Tool Timeline</h3>
+              <span className="muted">{toolTimelineItems.length} call(s)</span>
+            </div>
+            {toolTimelineItems.length > 0 ? (
+              <ul className="tool-list">
+                {toolTimelineItems.map((item) => {
+                  const badgeClass =
+                    item.status === "completed" ? "ok" : item.status === "failed" ? "error" : "info";
+                  return (
+                    <li key={item.id} className="tool-card" data-status={item.status}>
+                      <div className="section-header approval-topline">
+                        <div>
+                          <strong>{item.toolName}</strong>
+                          <span className="muted">toolCallId: {item.toolCallId}</span>
+                        </div>
+                        <span className={`badge ${badgeClass}`}>{item.status}</span>
+                      </div>
+                      <dl className="meta compact tool-meta">
+                        <div>
+                          <dt>duration</dt>
+                          <dd>{formatDuration(item.durationMs)}</dd>
+                        </div>
+                        <div>
+                          <dt>task</dt>
+                          <dd className="break">{item.taskId}</dd>
+                        </div>
+                        <div>
+                          <dt>started</dt>
+                          <dd>{formatTimestamp(item.startedAt)}</dd>
+                        </div>
+                        <div>
+                          <dt>updated</dt>
+                          <dd>{formatTimestamp(item.updatedAt)}</dd>
+                        </div>
+                      </dl>
+                      <div className="tool-summary-grid">
+                        <div>
+                          <span className="label">Args</span>
+                          <code>{item.argsSummary}</code>
+                        </div>
+                        <div>
+                          <span className="label">{item.status === "failed" ? "Error" : "Result"}</span>
+                          <code>{item.errorSummary ?? item.resultSummary}</code>
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="empty-state compact">
+                <strong>No tool calls yet</strong>
+                <span>tool.started, tool.completed and tool.failed events will aggregate here by toolCallId.</span>
+              </p>
+            )}
+          </section>
           <section className="patch-stack">
             <div className="section-header approval-header">
               <h3>Patches</h3>
@@ -1255,12 +1724,19 @@ export function App() {
           <ul className="timeline rich">
             {eventItems.length > 0 ? (
               eventItems.map((item) => (
-                <li key={item.id}>
+                <li key={item.id} data-category={item.category}>
                   <div className="timeline-row">
-                    <strong>{item.type}</strong>
-                    <span>{item.time}</span>
+                    <div className="timeline-title">
+                      <strong>{item.title}</strong>
+                      <span className="muted">{item.type}</span>
+                    </div>
+                    <div className="timeline-badges">
+                      {item.status ? <span className="badge mini neutral">{item.status}</span> : null}
+                      <span>{item.time}</span>
+                    </div>
                   </div>
                   <span>{item.summary}</span>
+                  {item.relatedId ? <span className="muted">Related: {item.relatedId}</span> : null}
                   {config?.ui.showRawEvents ? <pre className="raw">{item.raw}</pre> : null}
                 </li>
               ))

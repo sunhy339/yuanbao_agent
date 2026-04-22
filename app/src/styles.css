@@ -120,6 +120,21 @@ input {
   color: #9a2323;
 }
 
+.badge.info {
+  background: rgba(11, 99, 182, 0.12);
+  color: #0b63b6;
+}
+
+.badge.neutral {
+  background: rgba(90, 102, 112, 0.12);
+  color: #4a5660;
+}
+
+.badge.mini {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
 .meta,
 .timeline,
 .steps {
@@ -329,7 +344,70 @@ button:disabled {
   gap: 8px;
 }
 
+.chat-list {
+  display: grid;
+  gap: 12px;
+  min-height: 220px;
+  align-content: start;
+}
+
+.chat-message {
+  display: grid;
+  gap: 8px;
+  max-width: 88%;
+  padding: 14px;
+  border: 1px solid rgba(24, 32, 38, 0.1);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 253, 249, 0.98), rgba(246, 242, 236, 0.96));
+  box-shadow: 0 10px 20px rgba(24, 32, 38, 0.04);
+}
+
+.chat-message[data-role="user"] {
+  justify-self: end;
+  background: linear-gradient(180deg, rgba(237, 246, 255, 1), rgba(221, 236, 250, 0.92));
+  border-color: rgba(11, 99, 182, 0.18);
+}
+
+.chat-message[data-role="assistant"] {
+  justify-self: start;
+}
+
+.chat-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #5a6670;
+}
+
+.chat-meta strong {
+  color: #182026;
+  text-transform: capitalize;
+}
+
+.streaming-pill {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(11, 99, 182, 0.1);
+  color: #0b63b6;
+  font-weight: 600;
+}
+
 .approval-stack {
+  display: grid;
+  gap: 14px;
+  margin: 14px 0 18px;
+}
+
+.tool-stack {
   display: grid;
   gap: 14px;
   margin: 14px 0 18px;
@@ -350,6 +428,14 @@ button:disabled {
 }
 
 .approval-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tool-list {
   display: grid;
   gap: 12px;
   margin: 0;
@@ -383,6 +469,28 @@ button:disabled {
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(255, 253, 249, 0.98), rgba(246, 242, 236, 0.96));
   box-shadow: 0 12px 24px rgba(24, 32, 38, 0.05);
+}
+
+.tool-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(24, 32, 38, 0.1);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 253, 249, 0.98), rgba(246, 242, 236, 0.96));
+  box-shadow: 0 12px 24px rgba(24, 32, 38, 0.05);
+}
+
+.tool-card[data-status="completed"] {
+  border-color: rgba(29, 122, 66, 0.24);
+}
+
+.tool-card[data-status="failed"] {
+  border-color: rgba(154, 35, 35, 0.24);
+}
+
+.tool-card[data-status="started"] {
+  border-color: rgba(11, 99, 182, 0.24);
 }
 
 .patch-card[data-status="approved"],
@@ -438,6 +546,51 @@ button:disabled {
   font-size: 11px;
 }
 
+.tool-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+
+.tool-meta div {
+  border-bottom: 0;
+  padding: 0;
+}
+
+.tool-meta dt {
+  font-size: 11px;
+}
+
+.tool-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.tool-summary-grid div {
+  display: grid;
+  gap: 6px;
+}
+
+.tool-summary-grid .label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5a6670;
+}
+
+.tool-summary-grid code {
+  display: block;
+  min-height: 42px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(24, 32, 38, 0.06);
+  color: #182026;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .approval-output {
   margin: 0;
   padding: 12px 14px;
@@ -487,6 +640,43 @@ button:disabled {
   gap: 12px;
 }
 
+.timeline-title {
+  display: grid;
+  gap: 2px;
+}
+
+.timeline-title .muted {
+  font-size: 12px;
+}
+
+.timeline-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.timeline li[data-category="tool"] {
+  border-left: 3px solid rgba(11, 99, 182, 0.32);
+  padding-left: 10px;
+}
+
+.timeline li[data-category="approval"] {
+  border-left: 3px solid rgba(156, 79, 42, 0.32);
+  padding-left: 10px;
+}
+
+.timeline li[data-category="command"] {
+  border-left: 3px solid rgba(24, 32, 38, 0.28);
+  padding-left: 10px;
+}
+
+.timeline li[data-category="patch"] {
+  border-left: 3px solid rgba(29, 122, 66, 0.28);
+  padding-left: 10px;
+}
+
 .break {
   word-break: break-all;
 }
@@ -511,6 +701,14 @@ button:disabled {
 @media (max-width: 1120px) {
   .shell,
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-message {
+    max-width: 100%;
+  }
+
+  .tool-summary-grid {
     grid-template-columns: 1fr;
   }
 }

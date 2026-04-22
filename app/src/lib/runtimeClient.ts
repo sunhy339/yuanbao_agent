@@ -200,6 +200,8 @@ function updateMockTask(taskId: string, updater: (task: TaskRecord) => TaskRecor
 }
 
 function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
+  const searchToolCallId = `tool_search_${Date.now()}`;
+
   window.setTimeout(() => {
     const patch = buildMockPatch(task);
     rememberPatch(patch);
@@ -237,15 +239,31 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
   window.setTimeout(() => {
     emitBrowserEvent(
       buildMockEvent(sessionId, task.id, "assistant.token", {
-        delta: "Browser mock mode is active. Launch the desktop app through Tauri to talk to the Python runtime.",
+        delta: "Browser mock mode is active. ",
       }),
     );
   }, 140);
 
   window.setTimeout(() => {
     emitBrowserEvent(
+      buildMockEvent(sessionId, task.id, "assistant.token", {
+        delta: "Launch the desktop app through Tauri to talk to the Python runtime.",
+      }),
+    );
+  }, 180);
+
+  window.setTimeout(() => {
+    emitBrowserEvent(
+      buildMockEvent(sessionId, task.id, "assistant.message.completed", {
+        summary: "Browser mock assistant response completed.",
+      }),
+    );
+  }, 205);
+
+  window.setTimeout(() => {
+    emitBrowserEvent(
       buildMockEvent(sessionId, task.id, "tool.started", {
-        toolCallId: `tool_${Date.now()}`,
+        toolCallId: searchToolCallId,
         toolName: "search_files",
         arguments: {
           query: "pytest",
@@ -254,6 +272,20 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
       }),
     );
   }, 220);
+
+  window.setTimeout(() => {
+    emitBrowserEvent(
+      buildMockEvent(sessionId, task.id, "tool.completed", {
+        toolCallId: searchToolCallId,
+        toolName: "search_files",
+        result: {
+          matches: 2,
+          files: ["app/src/App.tsx", "runtime/src/local_agent_runtime/tools.py"],
+        },
+        durationMs: 64,
+      }),
+    );
+  }, 285);
 
   window.setTimeout(() => {
     const approvalRequest = getMockApprovalRequest(
@@ -444,6 +476,7 @@ export class RuntimeClient {
       );
 
       if (payload.decision === "approved") {
+        const commandId = `cmd_${approval.id}`;
         const runningTask = updateMockTask(task.id, (current) => ({
           ...current,
           status: "running",
@@ -467,10 +500,33 @@ export class RuntimeClient {
         }
 
         emitBrowserEvent(
+          buildMockEvent(task.sessionId, task.id, "command.started", {
+            commandId,
+            command: request.command ?? "pytest",
+            cwd: request.cwd ?? ".",
+            shell: request.shell ?? "powershell",
+            status: "running",
+          }),
+        );
+
+        emitBrowserEvent(
           buildMockEvent(task.sessionId, task.id, "command.output", {
-            commandId: `cmd_${approval.id}`,
+            commandId,
             stream: "stdout",
             chunk: `Approved command finished successfully: ${request.command ?? "pytest"}\n`,
+          }),
+        );
+
+        emitBrowserEvent(
+          buildMockEvent(task.sessionId, task.id, "command.completed", {
+            commandId,
+            command: request.command ?? "pytest",
+            cwd: request.cwd ?? ".",
+            shell: request.shell ?? "powershell",
+            status: "completed",
+            exitCode: 0,
+            durationMs: 240,
+            summary: "Mock command completed successfully.",
           }),
         );
 
@@ -512,6 +568,13 @@ export class RuntimeClient {
         if (cancelledTask) {
           emitBrowserEvent(
             buildMockEvent(task.sessionId, task.id, "task.updated", {
+              status: "cancelled",
+              plan: cancelledTask.plan,
+              detail: "Approval rejected by user.",
+            }),
+          );
+          emitBrowserEvent(
+            buildMockEvent(task.sessionId, task.id, "task.cancelled", {
               status: "cancelled",
               plan: cancelledTask.plan,
               detail: "Approval rejected by user.",

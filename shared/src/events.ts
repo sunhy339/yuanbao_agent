@@ -12,12 +12,16 @@ export type AgentEventType =
   | "task.waiting_approval"
   | "task.completed"
   | "task.failed"
+  | "task.cancelled"
   | "assistant.token"
   | "assistant.message.completed"
   | "tool.started"
   | "tool.completed"
   | "tool.failed"
+  | "command.started"
   | "command.output"
+  | "command.completed"
+  | "command.failed"
   | "patch.proposed"
   | "approval.requested"
   | "approval.resolved";
@@ -51,6 +55,18 @@ export interface CommandOutputPayload {
   commandId: Identifier;
   stream: "stdout" | "stderr";
   chunk: string;
+}
+
+export interface CommandLifecyclePayload {
+  commandId: Identifier;
+  command?: string;
+  cwd?: string;
+  shell?: string;
+  status?: "running" | "completed" | "failed" | "timeout" | "killed";
+  exitCode?: number;
+  durationMs?: number;
+  summary?: string;
+  error?: unknown;
 }
 
 export interface PatchProposedPayload {

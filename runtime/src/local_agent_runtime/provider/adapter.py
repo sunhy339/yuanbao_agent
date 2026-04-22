@@ -1,12 +1,64 @@
 from __future__ import annotations
 
+import os
 from typing import Any
+
+from .openai_compatible import (
+    HttpPost,
+    OpenAICompatibleChatClient,
+    OpenAICompatibleSettings,
+    ProviderAdapterError,
+)
+
+
+OPENAI_COMPATIBLE_MODES = {
+    "openai",
+    "openai-compatible",
+    "openai_compatible",
+    "openai-compatible-chat",
+}
 
 
 class ProviderAdapter:
-    """Deterministic provider used to drive the Sprint 1 tool loop."""
+    """Provider facade with deterministic fallback for local/test flows."""
+
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        *,
+        http_post: HttpPost | None = None,
+        environ: dict[str, str] | None = None,
+    ) -> None:
+        self._config = config or {}
+        self._environ = environ if environ is not None else os.environ
+        self._openai_client = OpenAICompatibleChatClient(http_post=http_post)
 
     def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        if self._real_provider_enabled(context):
+            messages = context.get("messages")
+            if not isinstance(messages, list) or not messages:
+                messages = [{"role": "user", "content": prompt}]
+            tools = self._normalize_tools(context.get("tools"))
+            provider_response = self.chat(
+                messages=messages,
+                tools=tools,
+                context=context,
+            )
+            assistant_message = provider_response["message"]
+            response = {
+                "message": provider_response["message"]["content"],
+                "assistant_message": provider_response["message"],
+                "tool_calls": assistant_message["tool_calls"],
+                "finish_reason": provider_response["finish_reason"],
+                "raw": provider_response["raw"],
+                "prompt": prompt,
+                "context": context,
+            }
+            if not assistant_message["tool_calls"]:
+                response["final"] = assistant_message["content"]
+                response["final_answer"] = assistant_message["content"]
+            return response
+
         return {
             "message": self.summarize_findings(
                 goal=prompt,
@@ -16,6 +68,63 @@ class ProviderAdapter:
             "prompt": prompt,
             "context": context,
         }
+
+    def chat(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        settings = self._resolve_settings(context)
+        if settings is None:
+            goal = self._last_user_message(messages)
+            fallback_context = context or self._fallback_context()
+            return {
+                "message": {
+                    "role": "assistant",
+                    "content": self.summarize_findings(
+                        goal=goal,
+                        context=fallback_context,
+                        tool_results=[],
+                    ),
+                    "tool_calls": [],
+                },
+                "finish_reason": "fallback",
+                "raw": {"id": None, "model": None, "usage": None},
+            }
+
+        return self._openai_client.chat(
+            settings=settings,
+            messages=messages,
+            tools=tools,
+        )
+
+    def _normalize_tools(self, tools: Any) -> list[dict[str, Any]] | None:
+        if not isinstance(tools, list):
+            return None
+
+        normalized: list[dict[str, Any]] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+                normalized.append(tool)
+                continue
+            name = tool.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            normalized.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": tool.get("description") or "",
+                        "parameters": tool.get("input_schema") or tool.get("parameters") or {"type": "object"},
+                    },
+                }
+            )
+        return normalized or None
 
     def choose_tool_sequence(self, goal: str, context: dict[str, Any]) -> list[dict[str, Any]]:
         search_config = context.get("search_config", {})
@@ -190,6 +299,150 @@ class ProviderAdapter:
             if item["name"] == name:
                 return item
         return None
+
+    def _real_provider_enabled(self, context: dict[str, Any] | None) -> bool:
+        return self._resolve_settings(context) is not None
+
+    def _resolve_settings(self, context: dict[str, Any] | None) -> OpenAICompatibleSettings | None:
+        provider_config = self._merged_provider_config(context)
+        mode = self._string_value(provider_config, "mode", "providerMode") or self._env(
+            "LOCAL_AGENT_PROVIDER_MODE",
+            "YUANBAO_PROVIDER_MODE",
+        )
+        if self._normalize_mode(mode) not in OPENAI_COMPATIBLE_MODES:
+            return None
+
+        api_key = self._string_value(provider_config, "apiKey", "api_key") or self._env(
+            "LOCAL_AGENT_PROVIDER_API_KEY",
+            "LOCAL_AGENT_OPENAI_API_KEY",
+            "OPENAI_API_KEY",
+        )
+        if not api_key:
+            return None
+
+        base_url = (
+            self._string_value(provider_config, "baseUrl", "base_url")
+            or self._env("LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL")
+            or "https://api.openai.com/v1"
+        )
+        model = (
+            self._string_value(provider_config, "model", "defaultModel")
+            or self._env("LOCAL_AGENT_PROVIDER_MODEL", "OPENAI_MODEL")
+            or "gpt-5-codex"
+        )
+        temperature = self._float_value(provider_config, "temperature")
+        if temperature is None:
+            temperature = self._float_env("LOCAL_AGENT_PROVIDER_TEMPERATURE", "OPENAI_TEMPERATURE")
+        max_tokens = self._int_value(provider_config, "maxTokens", "max_tokens", "maxOutputTokens")
+        if max_tokens is None:
+            max_tokens = self._int_env("LOCAL_AGENT_PROVIDER_MAX_TOKENS", "OPENAI_MAX_TOKENS")
+        return OpenAICompatibleSettings(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=self._timeout_value(provider_config),
+        )
+
+    def _merged_provider_config(self, context: dict[str, Any] | None) -> dict[str, Any]:
+        merged: dict[str, Any] = {}
+        adapter_provider = self._config.get("provider", self._config)
+        if isinstance(adapter_provider, dict):
+            merged.update(adapter_provider)
+        context_config = context.get("config") if context else None
+        if isinstance(context_config, dict):
+            context_provider = context_config.get("provider", {})
+            if isinstance(context_provider, dict):
+                merged.update(context_provider)
+        return merged
+
+    def _env(self, *names: str) -> str | None:
+        for name in names:
+            value = self._environ.get(name)
+            if value:
+                return value
+        return None
+
+    def _string_value(self, source: dict[str, Any], *names: str) -> str | None:
+        for name in names:
+            value = source.get(name)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    def _float_value(self, source: dict[str, Any], *names: str) -> float | None:
+        for name in names:
+            value = source.get(name)
+            if value is None:
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError) as exc:
+                raise ProviderAdapterError(f"Invalid provider setting {name}: expected number") from exc
+        return None
+
+    def _float_env(self, *names: str) -> float | None:
+        value = self._env(*names)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise ProviderAdapterError(f"Invalid provider env {names[0]}: expected number") from exc
+
+    def _int_value(self, source: dict[str, Any], *names: str) -> int | None:
+        for name in names:
+            value = source.get(name)
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError) as exc:
+                raise ProviderAdapterError(f"Invalid provider setting {name}: expected integer") from exc
+        return None
+
+    def _int_env(self, *names: str) -> int | None:
+        value = self._env(*names)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise ProviderAdapterError(f"Invalid provider env {names[0]}: expected integer") from exc
+
+    def _timeout_value(self, source: dict[str, Any]) -> float:
+        seconds = self._float_value(source, "timeout", "timeoutSeconds")
+        if seconds is not None:
+            return seconds
+        timeout_ms = self._float_value(source, "timeoutMs")
+        if timeout_ms is not None:
+            return timeout_ms / 1000
+        env_timeout = self._env("LOCAL_AGENT_PROVIDER_TIMEOUT", "OPENAI_TIMEOUT")
+        if env_timeout:
+            try:
+                return float(env_timeout)
+            except ValueError as exc:
+                raise ProviderAdapterError("Invalid provider timeout env: expected number") from exc
+        return 30.0
+
+    def _normalize_mode(self, mode: str | None) -> str:
+        return (mode or "").strip().lower()
+
+    def _last_user_message(self, messages: list[dict[str, Any]]) -> str:
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                content = message.get("content")
+                if isinstance(content, str):
+                    return content
+        return ""
+
+    def _fallback_context(self) -> dict[str, Any]:
+        return {
+            "workspace_name": "workspace",
+            "workspace_root": ".",
+            "search_config": {"ignore": []},
+        }
 
     def _route_goal(self, goal: str) -> dict[str, str]:
         lowered = goal.lower().strip()

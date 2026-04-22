@@ -6,6 +6,7 @@ import type {
   AppConfig,
   AssistantTokenPayload,
   CommandOutputPayload,
+  PatchRecord,
   PatchProposedPayload,
   PlanStep,
   SessionRecord,
@@ -79,6 +80,23 @@ function readRequestNumber(request: Record<string, unknown>, key: string, fallba
   return fallback;
 }
 
+function readRequestPatchId(request: Record<string, unknown>): string | undefined {
+  const value = request.patch_id ?? request.patchId;
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  return undefined;
+}
+
+function readEventText(payload: unknown, key: string): string | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+
+  const value = (payload as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function sortByUpdatedAtDesc<T extends { updatedAt: number }>(items: T[]): T[] {
   return [...items].sort((left, right) => right.updatedAt - left.updatedAt);
 }
@@ -87,6 +105,7 @@ interface ApprovalCardView {
   approvalId: string;
   taskId: string;
   kind: string;
+  patchId?: string;
   command: string;
   cwd: string;
   shell: string;
@@ -95,6 +114,20 @@ interface ApprovalCardView {
   requestedAt: number;
   updatedAt: number;
   resolvedAt?: number;
+}
+
+interface PatchCardView {
+  patchId: string;
+  taskId: string;
+  summary: string;
+  filesChanged: number;
+  status: PatchRecord["status"];
+  requestedAt: number;
+  updatedAt: number;
+  diffText?: string;
+  approvalId?: string;
+  approvalStatus?: ApprovalCardView["status"];
+  approvalResolvedAt?: number;
 }
 
 function upsertRecord<T extends { id: string; updatedAt: number }>(items: T[], record: T): T[] {
@@ -156,6 +189,10 @@ function summarizeEvent(event: AgentEventEnvelope): string {
   if (event.type === "approval.requested") {
     const payload = event.payload as ApprovalRequestedPayload;
     const request = payload.request as Record<string, unknown>;
+    if (payload.kind === "apply_patch") {
+      const patchId = readRequestPatchId(request);
+      return patchId ? `Patch approval requested for ${patchId}` : "Patch approval requested";
+    }
     return `Approval requested for ${readRequestText(request, "command", "command")} in ${readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", "."))}`;
   }
 
@@ -211,6 +248,7 @@ export function App() {
   const [taskHistory, setTaskHistory] = useState<Array<TaskRecord>>([]);
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [events, setEvents] = useState<Array<AgentEventEnvelope>>([]);
+  const [patchCacheById, setPatchCacheById] = useState<Record<string, PatchRecord>>({});
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [assistantOutput, setAssistantOutput] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -222,13 +260,19 @@ export function App() {
   const [sessionListBusy, setSessionListBusy] = useState(false);
   const [searchConfigBusy, setSearchConfigBusy] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
+  const [patchBusyId, setPatchBusyId] = useState<string | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
 
   useEffect(() => {
     let disposed = false;
 
-    Promise.all([runtimeClient.getHostStatus(), runtimeClient.getConfig(), runtimeClient.listSessions()])
-      .then(([nextHostStatus, nextConfig, nextSessions]) => {
+    Promise.all([
+      runtimeClient.getHostStatus(),
+      runtimeClient.getConfig(),
+      runtimeClient.listSessions(),
+      runtimeClient.listTasks(),
+    ])
+      .then(([nextHostStatus, nextConfig, nextSessions, nextTasks]) => {
         if (disposed) {
           return;
         }
@@ -239,8 +283,14 @@ export function App() {
         setSearchGlob(serializePatternList(normalizedConfig.search.glob));
         setSearchIgnoreText(serializePatternList(normalizedConfig.search.ignore));
         setSessions(nextSessions.sessions);
-        setSession(nextSessions.sessions[0] ?? null);
-        setActiveTaskId(null);
+        setTaskHistory(nextTasks.tasks);
+        const initialSession = nextSessions.sessions[0] ?? null;
+        const initialTask = initialSession
+          ? sortByUpdatedAtDesc(nextTasks.tasks.filter((item) => item.sessionId === initialSession.id))[0] ?? null
+          : sortByUpdatedAtDesc(nextTasks.tasks)[0] ?? null;
+        setSession(initialSession);
+        setTask(initialTask);
+        setActiveTaskId(initialTask?.id ?? null);
 
         if (nextConfig.config.workspace.rootPath) {
           setWorkspacePath(nextConfig.config.workspace.rootPath);
@@ -341,6 +391,7 @@ export function App() {
           approvalId: payload.approvalId,
           taskId: payload.taskId,
           kind: payload.kind,
+          patchId: payload.kind === "apply_patch" ? readRequestPatchId(request) : undefined,
           command: readRequestText(request, "command", "command"),
           cwd: readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", ".")),
           shell: readRequestText(request, "shell", "system default"),
@@ -368,6 +419,7 @@ export function App() {
           approvalId: payload.approvalId,
           taskId: payload.taskId,
           kind: "run_command",
+          patchId: undefined,
           command: "unknown",
           cwd: ".",
           shell: "system default",
@@ -382,6 +434,72 @@ export function App() {
 
     return sortByUpdatedAtDesc(Array.from(cards.values()));
   }, [events]);
+
+  const approvalByPatchId = useMemo(() => {
+    const cards = new Map<string, ApprovalCardView>();
+    for (const approval of approvalCards) {
+      if (approval.patchId && !cards.has(approval.patchId)) {
+        cards.set(approval.patchId, approval);
+      }
+    }
+    return cards;
+  }, [approvalCards]);
+
+  const patchCards = useMemo<PatchCardView[]>(() => {
+    const cards = new Map<string, PatchCardView>();
+
+    for (const event of events) {
+      if (event.type === "patch.proposed") {
+        const payload = event.payload as PatchProposedPayload;
+        const patchId = readEventText(payload, "patchId");
+        if (!patchId) {
+          continue;
+        }
+        const diffText = readEventText(payload, "diffText");
+        cards.set(patchId, {
+          patchId,
+          taskId: event.taskId,
+          summary: payload.summary,
+          filesChanged: payload.filesChanged,
+          status: "proposed",
+          requestedAt: event.ts,
+          updatedAt: event.ts,
+          diffText,
+        });
+      }
+    }
+
+    for (const [patchId, patch] of Object.entries(patchCacheById)) {
+      const current = cards.get(patchId);
+      cards.set(patchId, {
+        patchId,
+        taskId: patch.taskId,
+        summary: patch.summary,
+        filesChanged: patch.filesChanged,
+        status: patch.status,
+        requestedAt: current?.requestedAt ?? patch.createdAt,
+        updatedAt: Math.max(current?.updatedAt ?? patch.updatedAt, patch.updatedAt),
+        diffText: patch.diffText,
+      });
+    }
+
+    for (const card of cards.values()) {
+      const approval = approvalByPatchId.get(card.patchId);
+      if (approval) {
+        card.approvalId = approval.approvalId;
+        card.approvalStatus = approval.status;
+        card.approvalResolvedAt = approval.resolvedAt;
+        card.updatedAt = Math.max(card.updatedAt, approval.updatedAt);
+        if (approval.status === "approved") {
+          card.status = "approved";
+        } else if (approval.status === "rejected") {
+          card.status = "rejected";
+        }
+      }
+    }
+
+    return sortByUpdatedAtDesc(Array.from(cards.values()));
+  }, [approvalByPatchId, events, patchCacheById]);
 
   const commandOutputByTaskId = useMemo(() => {
     const outputs = new Map<string, string[]>();
@@ -435,6 +553,8 @@ export function App() {
     setActiveTaskId(null);
     setTask(null);
     setEvents([]);
+    setPatchCacheById({});
+    setPatchBusyId(null);
     setAssistantOutput("");
     setApprovalBusyId(null);
 
@@ -465,8 +585,11 @@ export function App() {
 
     try {
       const result = await runtimeClient.listSessions();
+      const taskResult = await runtimeClient.listTasks();
       const nextSessions = result.sessions;
+      const nextTasks = taskResult.tasks;
       setSessions(nextSessions);
+      setTaskHistory(nextTasks);
 
       const preferredSession =
         nextSessions.find((item) => item.id === preferredSessionId) ??
@@ -483,7 +606,7 @@ export function App() {
       }
 
       const nextTask = sortByUpdatedAtDesc(
-        taskHistory.filter((item) => item.sessionId === preferredSession.id),
+        nextTasks.filter((item) => item.sessionId === preferredSession.id),
       )[0];
       setTask(nextTask ?? null);
       setActiveTaskId(nextTask?.id ?? null);
@@ -534,6 +657,8 @@ export function App() {
       setSessions([]);
       setActiveTaskId(null);
       setApprovalBusyId(null);
+      setPatchCacheById({});
+      setPatchBusyId(null);
       setEvents([]);
       setAssistantOutput("");
       await refreshSessionHistory();
@@ -590,6 +715,8 @@ export function App() {
       await persistSearchConfig();
       const activeSession = session ?? (await ensureSessionForSend());
       setEvents([]);
+      setPatchCacheById({});
+      setPatchBusyId(null);
       setAssistantOutput("");
       setApprovalBusyId(null);
 
@@ -640,6 +767,26 @@ export function App() {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setRefreshBusy(false);
+    }
+  }
+
+  async function handleLoadPatchDiff(patchId: string) {
+    setPatchBusyId(patchId);
+    setError(null);
+
+    try {
+      const result = await runtimeClient.diffGet({ patchId });
+      setPatchCacheById((current) => ({
+        ...current,
+        [patchId]: {
+          ...result.patch,
+          diffText: result.diffText || result.patch.diffText,
+        },
+      }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setPatchBusyId((current) => (current === patchId ? null : current));
     }
   }
 
@@ -931,6 +1078,103 @@ export function App() {
             <h2>Event Stream</h2>
             <span className="muted">{eventItems.length} event(s)</span>
           </div>
+          <section className="patch-stack">
+            <div className="section-header approval-header">
+              <h3>Patches</h3>
+              <span className="muted">{patchCards.length} item(s)</span>
+            </div>
+            {patchCards.length > 0 ? (
+              <ul className="patch-list">
+                {patchCards.map((item) => {
+                  const approvalPending = item.approvalStatus === "pending" && item.approvalId;
+                  const hasLoadedDiff = Boolean(patchCacheById[item.patchId]?.diffText || item.diffText);
+                  const diffText = patchCacheById[item.patchId]?.diffText ?? item.diffText;
+                  const badgeClass =
+                    item.status === "approved" || item.status === "applied"
+                      ? "ok"
+                      : item.status === "rejected" || item.status === "failed"
+                        ? "error"
+                        : "warn";
+
+                  return (
+                    <li key={item.patchId} className="patch-card" data-status={item.status}>
+                      <div className="section-header approval-topline">
+                        <div>
+                          <strong>{item.summary}</strong>
+                          <span className="muted">patchId: {item.patchId}</span>
+                        </div>
+                        <span className={`badge ${badgeClass}`}>{item.status}</span>
+                      </div>
+                      <dl className="meta compact patch-meta">
+                        <div>
+                          <dt>files changed</dt>
+                          <dd>{item.filesChanged}</dd>
+                        </div>
+                        <div>
+                          <dt>task</dt>
+                          <dd className="break">{item.taskId}</dd>
+                        </div>
+                        <div>
+                          <dt>requested</dt>
+                          <dd>{formatTimestamp(item.requestedAt)}</dd>
+                        </div>
+                        <div>
+                          <dt>updated</dt>
+                          <dd>{formatTimestamp(item.updatedAt)}</dd>
+                        </div>
+                      </dl>
+                      <div className="patch-actions">
+                        <button
+                          type="button"
+                          onClick={() => handleLoadPatchDiff(item.patchId)}
+                          disabled={patchBusyId === item.patchId || loading}
+                        >
+                          {patchBusyId === item.patchId
+                            ? "Loading..."
+                            : hasLoadedDiff
+                              ? "Reload diff"
+                              : "Load diff"}
+                        </button>
+                        {approvalPending ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleApprovalSubmit(item.approvalId as string, "approved")}
+                              disabled={approvalBusyId === item.approvalId || loading}
+                            >
+                              Approve patch
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() => handleApprovalSubmit(item.approvalId as string, "rejected")}
+                              disabled={approvalBusyId === item.approvalId || loading}
+                            >
+                              Reject patch
+                            </button>
+                          </>
+                        ) : null}
+                      </div>
+                      {item.approvalStatus ? (
+                        <p className="muted approval-decision">
+                          Approval: {item.approvalStatus}
+                          {item.approvalResolvedAt ? ` | ${formatTimestamp(item.approvalResolvedAt)}` : ""}
+                        </p>
+                      ) : null}
+                      <pre className="patch-diff">
+                        {diffText ?? "Diff not loaded yet. Click Load diff to fetch diff.get."}
+                      </pre>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="empty-state compact">
+                <strong>No patches yet</strong>
+                <span>When the runtime emits patch.proposed, the patch summary and diff will show up here.</span>
+              </p>
+            )}
+          </section>
           <section className="approval-stack">
             <div className="section-header approval-header">
               <h3>Approvals</h3>

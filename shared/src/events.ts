@@ -64,6 +64,7 @@ export interface ApprovalRequestedPayload {
   taskId: Identifier;
   kind: ApprovalKind;
   request: Record<string, unknown>;
+  patchId?: Identifier;
 }
 
 export interface ApprovalResolvedPayload {

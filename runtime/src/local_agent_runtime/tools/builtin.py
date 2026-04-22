@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -118,6 +119,23 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
         relative_path = candidate_path or "."
         policy_guard.ensure_within_workspace(str(workspace_root), relative_path)
         return (workspace_root / relative_path).resolve()
+
+    def resolve_git_cwd(workspace_root: Path, params: dict[str, Any]) -> Path:
+        cwd_value = params.get("cwd") or "."
+        cwd_path = resolve_workspace_path(workspace_root, cwd_value)
+        if not cwd_path.is_dir():
+            raise ValueError(f"cwd does not exist: {cwd_value}")
+        return cwd_path
+
+    def resolve_git_pathspec(workspace_root: Path, cwd: Path, candidate_path: str | None) -> str | None:
+        if candidate_path is None or str(candidate_path).strip() == "":
+            return None
+
+        path = resolve_workspace_path(workspace_root, candidate_path)
+        relative = os.path.relpath(path, start=cwd)
+        if relative == ".":
+            return "."
+        return Path(relative).as_posix()
 
     def to_relative_path(workspace_root: Path, path: Path) -> str:
         relative = path.relative_to(workspace_root)
@@ -507,6 +525,315 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
             return ["zsh", "-lc", command]
         return ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", command]
 
+    def _normalize_patch_path(workspace_root: Path, candidate_path: str) -> tuple[str, Path]:
+        raw_path = str(candidate_path).strip()
+        if not raw_path:
+            raise ValueError("Patch path is required")
+
+        normalized = raw_path.replace("\\", "/")
+        if normalized.startswith("/"):
+            raise ValueError(f"Path escapes workspace: {candidate_path}")
+        if re.match(r"^[a-zA-Z]:/", normalized):
+            raise ValueError(f"Path escapes workspace: {candidate_path}")
+
+        relative = Path(normalized)
+        policy_guard.ensure_within_workspace(str(workspace_root), relative.as_posix())
+        absolute = (workspace_root / relative).resolve()
+        return relative.as_posix(), absolute
+
+    def _strip_git_prefix(path_text: str) -> str:
+        text = path_text.strip()
+        if text in {"/dev/null", "dev/null"}:
+            return "/dev/null"
+        if text.startswith("a/") or text.startswith("b/"):
+            return text[2:]
+        return text
+
+    def _parse_hunk_header(header: str) -> tuple[int, int, int, int]:
+        match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", header)
+        if match is None:
+            raise ValueError(f"Invalid hunk header: {header}")
+        old_start = int(match.group(1))
+        old_count = int(match.group(2) or "1")
+        new_start = int(match.group(3))
+        new_count = int(match.group(4) or "1")
+        return old_start, old_count, new_start, new_count
+
+    def _parse_unified_diff(diff_text: str) -> list[dict[str, Any]]:
+        lines = diff_text.splitlines()
+        file_patches: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        index = 0
+
+        while index < len(lines):
+            line = lines[index]
+            if line.startswith("diff --git "):
+                if current is not None:
+                    file_patches.append(current)
+                parts = line.split()
+                old_path = _strip_git_prefix(parts[2]) if len(parts) > 2 else ""
+                new_path = _strip_git_prefix(parts[3]) if len(parts) > 3 else ""
+                current = {
+                    "old_path": old_path,
+                    "new_path": new_path,
+                    "hunks": [],
+                }
+                index += 1
+                continue
+            if current is None:
+                if line.startswith("--- "):
+                    current = {"old_path": "", "new_path": "", "hunks": []}
+                else:
+                    index += 1
+                    continue
+
+            if line.startswith("--- "):
+                if (
+                    current is not None
+                    and current.get("old_path")
+                    and current.get("new_path")
+                    and current.get("hunks")
+                ):
+                    file_patches.append(current)
+                    current = {"old_path": "", "new_path": "", "hunks": []}
+                current["old_path"] = _strip_git_prefix(line[4:].strip().split("\t", 1)[0])
+                index += 1
+                if index >= len(lines) or not lines[index].startswith("+++ "):
+                    raise ValueError("Invalid unified diff: missing +++ header")
+                current["new_path"] = _strip_git_prefix(lines[index][4:].strip().split("\t", 1)[0])
+                index += 1
+                continue
+
+            if line.startswith("@@ "):
+                old_start, old_count, new_start, new_count = _parse_hunk_header(line)
+                hunk_lines: list[str] = []
+                index += 1
+                while index < len(lines):
+                    next_line = lines[index]
+                    if next_line.startswith("@@ ") or next_line.startswith("--- ") or next_line.startswith("diff --git "):
+                        break
+                    if next_line.startswith("\\ No newline at end of file"):
+                        index += 1
+                        continue
+                    hunk_lines.append(next_line)
+                    index += 1
+                current["hunks"].append(
+                    {
+                        "old_start": old_start,
+                        "old_count": old_count,
+                        "new_start": new_start,
+                        "new_count": new_count,
+                        "lines": hunk_lines,
+                    }
+                )
+                continue
+
+            index += 1
+
+        if current is not None:
+            file_patches.append(current)
+
+        normalized: list[dict[str, Any]] = []
+        for item in file_patches:
+            old_path = str(item.get("old_path") or "").strip()
+            new_path = str(item.get("new_path") or "").strip()
+            hunks = item.get("hunks") or []
+            if not old_path and not new_path:
+                raise ValueError("Invalid unified diff: missing file headers")
+            normalized.append(
+                {
+                    "old_path": old_path,
+                    "new_path": new_path,
+                    "hunks": hunks,
+                }
+            )
+        return normalized
+
+    def _apply_unified_diff_to_file(workspace_root: Path, file_patch: dict[str, Any]) -> tuple[str | None, bool]:
+        old_path = str(file_patch.get("old_path") or "")
+        new_path = str(file_patch.get("new_path") or "")
+        hunks = list(file_patch.get("hunks") or [])
+
+        if old_path == "/dev/null":
+            relative_path, absolute_path = _normalize_patch_path(workspace_root, new_path)
+            original_lines: list[str] = []
+            is_new_file = True
+        elif new_path == "/dev/null":
+            relative_path, absolute_path = _normalize_patch_path(workspace_root, old_path)
+            if not absolute_path.exists():
+                raise ValueError(f"File does not exist: {relative_path}")
+            original_lines = absolute_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+            is_new_file = False
+        else:
+            relative_path, absolute_path = _normalize_patch_path(workspace_root, new_path or old_path)
+            if not absolute_path.exists():
+                raise ValueError(f"File does not exist: {relative_path}")
+            original_lines = absolute_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+            is_new_file = False
+
+        output_lines: list[str] = []
+        source_index = 0
+
+        for hunk in hunks:
+            old_start = int(hunk["old_start"])
+            hunk_lines = [str(line) for line in hunk.get("lines") or []]
+            target_index = max(0, old_start - 1)
+            if target_index > len(original_lines):
+                raise ValueError(f"Patch hunk starts past end of file: {relative_path}")
+            output_lines.extend(original_lines[source_index:target_index])
+            source_index = target_index
+
+            for raw_line in hunk_lines:
+                if not raw_line:
+                    raise ValueError("Invalid unified diff: empty hunk line")
+                marker = raw_line[0]
+                payload = raw_line[1:]
+                if marker == " ":
+                    if source_index >= len(original_lines):
+                        raise ValueError(f"Patch context mismatch in {relative_path}")
+                    current_line = original_lines[source_index].rstrip("\r\n")
+                    if current_line != payload:
+                        raise ValueError(f"Patch context mismatch in {relative_path}")
+                    output_lines.append(original_lines[source_index])
+                    source_index += 1
+                elif marker == "-":
+                    if source_index >= len(original_lines):
+                        raise ValueError(f"Patch removal mismatch in {relative_path}")
+                    current_line = original_lines[source_index].rstrip("\r\n")
+                    if current_line != payload:
+                        raise ValueError(f"Patch removal mismatch in {relative_path}")
+                    source_index += 1
+                elif marker == "+":
+                    output_lines.append(payload + "\n")
+                else:
+                    raise ValueError(f"Invalid unified diff marker: {marker}")
+
+        output_lines.extend(original_lines[source_index:])
+        new_content = "".join(output_lines)
+        if new_path == "/dev/null":
+            if absolute_path.exists():
+                absolute_path.unlink()
+            return relative_path, True
+
+        if not is_new_file and new_content == "".join(original_lines):
+            return relative_path, False
+
+        absolute_path.parent.mkdir(parents=True, exist_ok=True)
+        absolute_path.write_text(new_content, encoding="utf-8", errors="replace")
+        return relative_path, True
+
+    def _build_patch_summary(paths: list[str]) -> str:
+        if not paths:
+            return "No file changes detected."
+        if len(paths) == 1:
+            return f"Update {paths[0]}"
+        if len(paths) == 2:
+            return f"Update {paths[0]} and {paths[1]}"
+        return f"Update {paths[0]}, {paths[1]} and {len(paths) - 2} more file(s)"
+
+    def _build_patch_from_files(
+        workspace_root: Path,
+        files: Any,
+    ) -> tuple[str, list[str], int]:
+        if not isinstance(files, list) or not files:
+            raise ValueError("files must be a non-empty array")
+
+        diff_chunks: list[str] = []
+        changed_paths: list[str] = []
+        for item in files:
+            if not isinstance(item, dict):
+                raise ValueError("files must contain objects")
+            relative_path, absolute_path = _normalize_patch_path(workspace_root, str(item.get("path") or ""))
+            delete_file = bool(item.get("delete", False))
+            if delete_file:
+                original_text = absolute_path.read_text(encoding="utf-8", errors="replace") if absolute_path.exists() else ""
+                new_text = ""
+            else:
+                if "content" not in item:
+                    raise ValueError("files items require content unless delete is true")
+                original_text = absolute_path.read_text(encoding="utf-8", errors="replace") if absolute_path.exists() else ""
+                new_text = str(item.get("content") or "")
+
+            if original_text == new_text and not delete_file:
+                continue
+
+            original_lines = original_text.splitlines(keepends=True)
+            new_lines = new_text.splitlines(keepends=True)
+            diff_chunks.extend(
+                difflib.unified_diff(
+                    original_lines,
+                    new_lines,
+                    fromfile=f"a/{relative_path}",
+                    tofile="/dev/null" if delete_file else f"b/{relative_path}",
+                    lineterm="",
+                    n=3,
+                )
+            )
+            changed_paths.append(relative_path)
+
+        if not diff_chunks:
+            raise ValueError("No file changes detected")
+
+        return "\n".join(diff_chunks), changed_paths, len(changed_paths)
+
+    def _build_patch_request(params: dict[str, Any], workspace_root: Path) -> dict[str, Any]:
+        patch_text = params.get("patchText") or params.get("patch_text")
+        files = params.get("files")
+        if patch_text and files:
+            raise ValueError("Provide either patchText or files, not both")
+        if not patch_text and not files:
+            raise ValueError("patchText or files is required")
+
+        if patch_text:
+            diff_text = str(patch_text)
+            parsed = _parse_unified_diff(diff_text)
+            changed_paths: list[str] = []
+            for file_patch in parsed:
+                candidate = file_patch["new_path"] if file_patch["new_path"] != "/dev/null" else file_patch["old_path"]
+                if candidate and candidate not in changed_paths:
+                    changed_paths.append(candidate)
+            if not changed_paths:
+                raise ValueError("No file changes detected")
+            return {
+                "diffText": diff_text,
+                "filesChanged": len(changed_paths),
+                "changedPaths": changed_paths,
+                "patchMode": "patchText",
+            }
+
+        diff_text, changed_paths, files_changed = _build_patch_from_files(workspace_root, files)
+        return {
+            "diffText": diff_text,
+            "filesChanged": files_changed,
+            "changedPaths": changed_paths,
+            "patchMode": "files",
+        }
+
+    def _build_patch_request_payload(
+        *,
+        task_id: str,
+        workspace_root: Path,
+        diff_text: str,
+        files_changed: int,
+        dry_run: bool,
+        patch_mode: str,
+        patch_text: str | None = None,
+        files: Any = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "taskId": task_id,
+            "workspaceRoot": str(workspace_root),
+            "dryRun": dry_run,
+            "patchMode": patch_mode,
+            "filesChanged": files_changed,
+        }
+        if patch_text is not None:
+            payload["patchText"] = patch_text
+        if files is not None:
+            payload["files"] = files
+        payload["diffText"] = diff_text
+        return payload
+
     def _approval_request(
         *,
         task_id: str,
@@ -681,19 +1008,283 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
         }
 
     def apply_patch(params: dict[str, Any]) -> dict[str, Any]:
+        workspace_root = require_workspace_root(params)
+        task_id = str(params.get("taskId") or params.get("task_id") or "").strip()
+        if not task_id:
+            raise ValueError("taskId is required")
+
+        approval_id = str(params.get("approvalId") or params.get("approval_id") or "").strip() or None
+        dry_run = bool(params.get("dry_run", params.get("dryRun", False)))
+
+        patch_request = _build_patch_request(params, workspace_root)
+        patch_text = str(params.get("patchText") or params.get("patch_text") or patch_request["diffText"])
+        files = params.get("files")
+        request_payload = _build_patch_request_payload(
+            task_id=task_id,
+            workspace_root=workspace_root,
+            diff_text=patch_request["diffText"],
+            files_changed=patch_request["filesChanged"],
+            dry_run=dry_run,
+            patch_mode=patch_request["patchMode"],
+            patch_text=patch_text if patch_request["patchMode"] == "patchText" else None,
+            files=files if patch_request["patchMode"] == "files" else None,
+        )
+        summary = _build_patch_summary(patch_request["changedPaths"])
+
+        approval: dict[str, Any] | None = None
+        patch: dict[str, Any] | None = None
+
+        if approval_id is not None:
+            approval = store.get_approval({"approvalId": approval_id})["approval"]
+            if approval["taskId"] != task_id:
+                raise ValueError("Approval does not belong to the active task")
+            if approval["kind"] != "apply_patch":
+                raise ValueError("Approval kind mismatch")
+            stored_request = json.loads(approval["requestJson"])
+            if stored_request != request_payload:
+                raise ValueError("Approval request does not match the patch")
+
+            patch = store.find_patch(
+                task_id=task_id,
+                workspace_id=str(workspace_root),
+                diff_text=patch_request["diffText"],
+            )
+            if patch is None:
+                patch = store.create_patch(
+                    task_id=task_id,
+                    workspace_id=str(workspace_root),
+                    summary=summary,
+                    diff_text=patch_request["diffText"],
+                    files_changed=patch_request["filesChanged"],
+                    status="approved" if approval.get("decision") == "approved" else "proposed",
+                )
+            elif approval.get("decision") == "approved" and patch["status"] == "proposed":
+                patch = store.update_patch(patch["id"], status="approved")
+
+            if approval.get("decision") != "approved":
+                return {
+                    "status": "approval_required",
+                    "approval": approval,
+                    "patch": patch,
+                    "patchId": patch["id"],
+                    "summary": patch["summary"],
+                    "filesChanged": patch["filesChanged"],
+                    "diffText": patch["diffText"],
+                    "dryRun": dry_run,
+                }
+        else:
+            if not policy_guard.requires_approval("apply_patch", approval_mode=command_policy["approvalMode"]):
+                patch = store.create_patch(
+                    task_id=task_id,
+                    workspace_id=str(workspace_root),
+                    summary=summary,
+                    diff_text=patch_request["diffText"],
+                    files_changed=patch_request["filesChanged"],
+                    status="approved",
+                )
+            else:
+                patch = store.create_patch(
+                    task_id=task_id,
+                    workspace_id=str(workspace_root),
+                    summary=summary,
+                    diff_text=patch_request["diffText"],
+                    files_changed=patch_request["filesChanged"],
+                    status="proposed",
+                )
+                approval = store.create_approval(
+                    task_id=task_id,
+                    kind="apply_patch",
+                    request=request_payload,
+                )
+                return {
+                    "status": "approval_required",
+                    "approval": approval,
+                    "patch": patch,
+                    "patchId": patch["id"],
+                    "summary": patch["summary"],
+                    "filesChanged": patch["filesChanged"],
+                    "diffText": patch["diffText"],
+                    "dryRun": dry_run,
+                }
+
+        if patch is None:
+            raise ValueError("Failed to resolve patch state")
+        if dry_run:
+            return {
+                "status": "dry_run",
+                "patch": patch,
+                "patchId": patch["id"],
+                "summary": patch["summary"],
+                "filesChanged": patch["filesChanged"],
+                "diffText": patch["diffText"],
+                "dryRun": True,
+            }
+
+        applied_paths: list[str] = []
+        parsed_patch = _parse_unified_diff(patch["diffText"])
+        for file_patch in parsed_patch:
+            relative_path, changed = _apply_unified_diff_to_file(workspace_root, file_patch)
+            if changed and relative_path not in applied_paths:
+                applied_paths.append(relative_path)
+
+        patch = store.update_patch(
+            patch["id"],
+            status="applied",
+            summary=_build_patch_summary(applied_paths or patch_request["changedPaths"]),
+            diff_text=patch["diffText"],
+            files_changed=len(applied_paths) or patch["filesChanged"],
+        )
         return {
-            "ok": True,
-            "patch_id": "patch_placeholder",
-            "files_changed": 0,
-            "summary": "Patch execution is not implemented in the scaffold.",
-            "dry_run": params.get("dry_run", False),
+            "status": "applied",
+            "patch": patch,
+            "patchId": patch["id"],
+            "summary": patch["summary"],
+            "filesChanged": patch["filesChanged"],
+            "diffText": patch["diffText"],
+            "dryRun": False,
         }
 
-    def git_status(_params: dict[str, Any]) -> dict[str, Any]:
-        return {"branch": None, "changes": []}
+    def _run_git_command(cwd: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+        completed = subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            stderr = (completed.stderr or completed.stdout or "").strip()
+            raise ValueError(stderr or "git command failed")
+        return completed
 
-    def git_diff(_params: dict[str, Any]) -> dict[str, Any]:
-        return {"diff": ""}
+    def _parse_git_status_header(line: str) -> tuple[str | None, str | None, int, int]:
+        branch: str | None = None
+        upstream: str | None = None
+        ahead = 0
+        behind = 0
+
+        if not line.startswith("## "):
+            return branch, upstream, ahead, behind
+
+        summary = line[3:].strip()
+        if summary.startswith("HEAD "):
+            return None, None, ahead, behind
+        if summary.startswith("No commits yet on "):
+            return summary.removeprefix("No commits yet on ").strip() or None, None, ahead, behind
+        if summary.startswith("Initial commit on "):
+            return summary.removeprefix("Initial commit on ").strip() or None, None, ahead, behind
+
+        tracking_part = ""
+        if "..." in summary:
+            branch_part, remainder = summary.split("...", 1)
+            branch = branch_part.strip() or None
+            if " [" in remainder:
+                upstream_part, tracking_part = remainder.split(" [", 1)
+                tracking_part = "[" + tracking_part
+            else:
+                upstream_part = remainder
+            upstream = upstream_part.strip() or None
+        elif " [" in summary:
+            branch_part, tracking_part = summary.split(" [", 1)
+            branch = branch_part.strip() or None
+            tracking_part = "[" + tracking_part
+        else:
+            branch = summary or None
+
+        for direction, value in re.findall(r"\b(ahead|behind) (\d+)\b", tracking_part):
+            if direction == "ahead":
+                ahead = int(value)
+            else:
+                behind = int(value)
+
+        return branch, upstream, ahead, behind
+
+    def _parse_name_status_line(line: str) -> dict[str, Any]:
+        parts = line.split("\t")
+        status = parts[0].strip()
+        entry: dict[str, Any] = {"status": status}
+        if len(parts) > 1:
+            entry["path"] = parts[-1].strip()
+        if len(parts) > 2:
+            entry["originalPath"] = parts[1].strip()
+        return entry
+
+    def git_status(_params: dict[str, Any]) -> dict[str, Any]:
+        params = _params
+        workspace_root = require_workspace_root(params)
+        cwd = resolve_git_cwd(workspace_root, params)
+        completed = _run_git_command(cwd, ["status", "--short", "--branch"])
+
+        stdout_lines = [line for line in (completed.stdout or "").splitlines() if line.strip()]
+        branch = None
+        upstream = None
+        ahead = 0
+        behind = 0
+        changes: list[dict[str, Any]] = []
+
+        if stdout_lines:
+            branch, upstream, ahead, behind = _parse_git_status_header(stdout_lines[0])
+            for line in stdout_lines[1:]:
+                if line.startswith("## "):
+                    continue
+                status_code = line[:2].strip() or line[:2]
+                path_text = line[3:].strip() if len(line) > 3 else ""
+                entry: dict[str, Any] = {
+                    "status": status_code,
+                    "path": path_text,
+                    "raw": line,
+                }
+                if " -> " in path_text and status_code[:1] in {"R", "C"}:
+                    original_path, new_path = path_text.split(" -> ", 1)
+                    entry["originalPath"] = original_path.strip()
+                    entry["path"] = new_path.strip()
+                changes.append(entry)
+
+        return {
+            "workspaceRoot": to_relative_path(workspace_root, workspace_root),
+            "cwd": to_relative_path(workspace_root, cwd),
+            "branch": branch,
+            "upstream": upstream,
+            "ahead": ahead,
+            "behind": behind,
+            "changes": changes,
+        }
+
+    def git_diff(params: dict[str, Any]) -> dict[str, Any]:
+        workspace_root = require_workspace_root(params)
+        cwd = resolve_git_cwd(workspace_root, params)
+        staged = bool(params.get("staged", False))
+        pathspec = resolve_git_pathspec(workspace_root, cwd, params.get("path"))
+
+        git_args = ["diff"]
+        if staged:
+            git_args.append("--staged")
+        if pathspec is not None:
+            git_args.extend(["--", pathspec])
+
+        diff_completed = _run_git_command(cwd, git_args)
+
+        name_status_args = ["diff"]
+        if staged:
+            name_status_args.append("--staged")
+        name_status_args.append("--name-status")
+        if pathspec is not None:
+            name_status_args.extend(["--", pathspec])
+        files_completed = _run_git_command(cwd, name_status_args)
+
+        files = [
+            _parse_name_status_line(line)
+            for line in (files_completed.stdout or "").splitlines()
+            if line.strip()
+        ]
+
+        return {
+            "workspaceRoot": str(workspace_root),
+            "cwd": to_relative_path(workspace_root, cwd),
+            "staged": staged,
+            "path": pathspec,
+            "files": files,
+            "diff": diff_completed.stdout or "",
+        }
 
     return {
         "list_dir": list_dir,

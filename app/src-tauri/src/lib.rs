@@ -52,6 +52,12 @@ struct TaskGetPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct TaskListPayload {
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ApprovalSubmitPayload {
     approval_id: String,
     decision: String,
@@ -61,6 +67,12 @@ struct ApprovalSubmitPayload {
 #[serde(rename_all = "camelCase")]
 struct CommandLogGetPayload {
     command_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DiffGetPayload {
+    patch_id: String,
 }
 
 #[derive(Default)]
@@ -349,6 +361,19 @@ fn task_get(
 }
 
 #[tauri::command]
+fn task_list(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Option<TaskListPayload>,
+) -> Result<Value, String> {
+    let params = match payload.and_then(|payload| payload.session_id) {
+        Some(session_id) => json!({ "sessionId": session_id }),
+        None => json!({}),
+    };
+    state.call(&app_handle, "task.list", params)
+}
+
+#[tauri::command]
 fn approval_submit(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -391,6 +416,15 @@ fn command_log_get(
     )
 }
 
+#[tauri::command]
+fn diff_get(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: DiffGetPayload,
+) -> Result<Value, String> {
+    state.call(&app_handle, "diff.get", json!({ "patchId": payload.patch_id }))
+}
+
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .manage(RuntimeManager::default())
@@ -401,9 +435,11 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             session_list,
             message_send,
             task_get,
+            task_list,
             approval_submit,
             config_get,
             config_update,
-            command_log_get
+            command_log_get,
+            diff_get
         ])
 }

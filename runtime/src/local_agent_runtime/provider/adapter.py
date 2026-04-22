@@ -19,7 +19,7 @@ class ProviderAdapter:
 
     def choose_tool_sequence(self, goal: str, context: dict[str, Any]) -> list[dict[str, Any]]:
         search_config = context.get("search_config", {})
-        explicit_command = self._extract_explicit_command(goal)
+        route = self._route_goal(goal)
         sequence: list[dict[str, Any]] = [
             {
                 "name": "list_dir",
@@ -35,17 +35,58 @@ class ProviderAdapter:
             }
         ]
 
-        if explicit_command:
+        if route["kind"] == "run_command":
             sequence.append(
                 {
                     "name": "run_command",
                     "arguments": {
                         "workspaceRoot": context["workspace_root"],
                         "cwd": ".",
-                        "command": explicit_command,
+                        "command": route["value"],
                     },
                     "plan_step_id": "run-command",
-                    "start_token": f"Preparing to run command: {explicit_command}",
+                    "start_token": f"Preparing to run command: {route['value']}",
+                }
+            )
+            return sequence
+
+        if route["kind"] == "apply_patch":
+            sequence.append(
+                {
+                    "name": "apply_patch",
+                    "arguments": {
+                        "workspaceRoot": context["workspace_root"],
+                        "patchText": route["value"],
+                        "dry_run": False,
+                    },
+                    "plan_step_id": "apply-patch",
+                    "start_token": "Preparing to apply the explicit patch...",
+                }
+            )
+            return sequence
+
+        if route["kind"] == "git_status":
+            sequence.append(
+                {
+                    "name": "git_status",
+                    "arguments": {
+                        "workspaceRoot": context["workspace_root"],
+                    },
+                    "plan_step_id": "git-status",
+                    "start_token": "Checking git status...",
+                }
+            )
+            return sequence
+
+        if route["kind"] == "git_diff":
+            sequence.append(
+                {
+                    "name": "git_diff",
+                    "arguments": {
+                        "workspaceRoot": context["workspace_root"],
+                    },
+                    "plan_step_id": "git-diff",
+                    "start_token": "Inspecting git diff...",
                 }
             )
             return sequence
@@ -79,11 +120,17 @@ class ProviderAdapter:
         search_result = self._find_tool_result(tool_results, "search_files")
         read_result = self._find_tool_result(tool_results, "read_file")
         command_result = self._find_tool_result(tool_results, "run_command")
+        patch_result = self._find_tool_result(tool_results, "apply_patch")
+        git_status_result = self._find_tool_result(tool_results, "git_status")
+        git_diff_result = self._find_tool_result(tool_results, "git_diff")
 
         directory_hint = self._describe_directory(list_dir_result)
         search_hint = self._describe_search(search_result)
         read_hint = self._describe_file(read_result)
         command_hint = self._describe_command(command_result)
+        patch_hint = self._describe_patch(patch_result)
+        git_status_hint = self._describe_git_status(git_status_result)
+        git_diff_hint = self._describe_git_diff(git_diff_result)
 
         parts = [
             f"Completed an initial pass over workspace {context['workspace_name']}.",
@@ -96,6 +143,15 @@ class ProviderAdapter:
         if command_hint:
             parts.append(command_hint)
             parts.append("Next step: review command output and decide whether a follow-up code change is needed.")
+        elif patch_hint:
+            parts.append(patch_hint)
+            parts.append("Next step: confirm the patch outcome and check whether another edit is needed.")
+        elif git_status_hint:
+            parts.append(git_status_hint)
+            parts.append("Next step: inspect the modified files if the status needs follow-up.")
+        elif git_diff_hint:
+            parts.append(git_diff_hint)
+            parts.append("Next step: inspect the diff for correctness or missing edits.")
         else:
             parts.append(f"Next step: inspect the most relevant implementation file for goal '{goal}'.")
         return " ".join(part for part in parts if part)
@@ -135,13 +191,19 @@ class ProviderAdapter:
                 return item
         return None
 
-    def _extract_explicit_command(self, goal: str) -> str | None:
-        lowered = goal.lower()
-        for prefix in ("run command:", "execute command:", "cmd:"):
-            if lowered.startswith(prefix):
-                command = goal[len(prefix) :].strip()
-                return command or None
-        return None
+    def _route_goal(self, goal: str) -> dict[str, str]:
+        lowered = goal.lower().strip()
+        for kind, prefixes in (
+            ("run_command", ("run command:", "execute command:", "cmd:")),
+            ("apply_patch", ("apply patch:",)),
+            ("git_status", ("show git status", "git status:")),
+            ("git_diff", ("show git diff", "git diff:")),
+        ):
+            for prefix in prefixes:
+                if lowered.startswith(prefix):
+                    value = goal[len(prefix) :].strip()
+                    return {"kind": kind, "value": value}
+        return {"kind": "search", "value": ""}
 
     def _describe_directory(self, result: dict[str, Any] | None) -> str:
         if not result:
@@ -190,3 +252,32 @@ class ProviderAdapter:
         exit_code = command_result.get("exitCode")
         output_preview = stdout.splitlines()[0] if stdout else stderr.splitlines()[0] if stderr else "no output"
         return f"Command finished with status {status} and exit code {exit_code}; first output: {output_preview[:120]}."
+
+    def _describe_patch(self, result: dict[str, Any] | None) -> str:
+        if not result:
+            return ""
+        patch_result = result.get("result", {})
+        summary = (patch_result.get("summary") or "").strip()
+        files_changed = patch_result.get("files_changed")
+        patch_id = patch_result.get("patch_id", "unknown patch")
+        if summary:
+            return f"Patch tool reported {patch_id} with {files_changed} file(s) changed: {summary}"
+        return f"Patch tool reported {patch_id} with {files_changed} file(s) changed."
+
+    def _describe_git_status(self, result: dict[str, Any] | None) -> str:
+        if not result:
+            return ""
+        git_result = result.get("result", {})
+        branch = git_result.get("branch") or "unknown branch"
+        changes = git_result.get("changes") or []
+        return f"Git status on {branch} reported {len(changes)} change(s)."
+
+    def _describe_git_diff(self, result: dict[str, Any] | None) -> str:
+        if not result:
+            return ""
+        git_result = result.get("result", {})
+        diff_text = (git_result.get("diff") or "").strip()
+        if not diff_text:
+            return "Git diff returned no patch content."
+        line_count = len(diff_text.splitlines())
+        return f"Git diff returned {line_count} line(s) of patch content."

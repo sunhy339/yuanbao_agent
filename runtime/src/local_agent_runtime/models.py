@@ -13,6 +13,7 @@ TaskStatus = Literal[
     "cancelled",
 ]
 CommandStatus = Literal["running", "completed", "failed", "timeout", "killed"]
+PatchStatus = Literal["proposed", "approved", "applied", "rejected", "failed"]
 ApprovalDecision = Literal["approved", "rejected"]
 ApprovalKind = Literal["apply_patch", "run_command", "delete_file", "network_access"]
 
@@ -79,6 +80,19 @@ class ApprovalRecord:
     decision: ApprovalDecision | None = None
     decided_by: str | None = None
     decided_at: int | None = None
+
+
+@dataclass(slots=True)
+class PatchRecord:
+    id: str
+    task_id: str
+    workspace_id: str
+    summary: str
+    diff_text: str
+    status: PatchStatus
+    files_changed: int
+    created_at: int
+    updated_at: int
 
 
 @dataclass(slots=True)

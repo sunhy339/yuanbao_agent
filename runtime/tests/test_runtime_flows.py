@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import subprocess
+import pytest
 
 
 def _event_types(events: list[dict[str, Any]]) -> list[str]:
@@ -169,3 +170,153 @@ def test_search_config_is_applied(runtime_harness: Any, monkeypatch: Any, tmp_pa
     search_completed = next(event for event in runtime_harness.events if event["type"] == "tool.completed" and event["payload"]["toolName"] == "search_files")
     matches = search_completed["payload"]["result"]["matches"]
     assert [match["path"] for match in matches] == ["keep.py"]
+
+def test_explicit_apply_patch_routes_to_patch_tool(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Patch route"},
+        ),
+        "session",
+    )
+    (workspace_root / "README.md").write_text("old line\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "diff --git a/README.md b/README.md",
+            "--- a/README.md",
+            "+++ b/README.md",
+            "@@ -1 +1 @@",
+            "-old line",
+            "+new line",
+        ]
+    )
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": f"apply patch: {patch_text}"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "waiting_approval"
+    approval_requested = next(event for event in runtime_harness.events if event["type"] == "approval.requested")
+    approval_id = approval_requested["payload"]["approvalId"]
+    runtime_harness.call(
+        "approval.submit",
+        {"approvalId": approval_id, "decision": "approved"},
+    )
+
+    final_task = _call_result(
+        runtime_harness.call("task.get", {"taskId": task["id"]}),
+        "task",
+    )
+    assert final_task["status"] == "completed"
+    started_tools = [event["payload"]["toolName"] for event in runtime_harness.events if event["type"] == "tool.started"]
+    assert started_tools[0] == "list_dir"
+    assert started_tools.count("apply_patch") == 2
+    assert final_task["plan"][1]["id"] == "apply-patch"
+    assert final_task["plan"][1]["status"] == "completed"
+
+
+@pytest.mark.parametrize(
+    ("content", "tool_name", "plan_step_id"),
+    [
+        ("show git status", "git_status", "git-status"),
+        ("show git diff", "git_diff", "git-diff"),
+    ],
+)
+def test_explicit_git_routes_use_read_only_tools(
+    runtime_harness: Any,
+    tmp_path: Path,
+    content: str,
+    tool_name: str,
+    plan_step_id: str,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subprocess.run(["git", "init"], cwd=workspace_root, check=True, capture_output=True, text=True)
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Git route"},
+        ),
+        "session",
+    )
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": content},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert [event["payload"]["toolName"] for event in runtime_harness.events if event["type"] == "tool.started"] == [
+        "list_dir",
+        tool_name,
+    ]
+    assert task["plan"][1]["id"] == plan_step_id
+    assert task["plan"][1]["status"] == "completed"
+
+
+def test_failed_tool_surfaces_clear_task_summary(runtime_harness: Any, monkeypatch: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Failure summary"},
+        ),
+        "session",
+    )
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert command[0] == "powershell.exe"
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=1,
+            stdout="",
+            stderr="boom\n",
+        )
+
+    monkeypatch.setattr("local_agent_runtime.tools.builtin.subprocess.run", fake_run)
+
+    send_response = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "run command: Write-Output failure-case"},
+    )
+    task = _call_result(send_response, "task")
+    assert task["status"] == "waiting_approval"
+
+    approval_requested = next(event for event in runtime_harness.events if event["type"] == "approval.requested")
+    approval = approval_requested["payload"]["approvalId"]
+    runtime_harness.call(
+        "approval.submit",
+        {"approvalId": approval, "decision": "approved"},
+    )
+
+    failed_event = next(event for event in runtime_harness.events if event["type"] == "task.failed")
+    assert "Command failed with status failed" in failed_event["payload"]["detail"]
+
+    final_task = _call_result(
+        runtime_harness.call("task.get", {"taskId": task["id"]}),
+        "task",
+    )
+    assert final_task["status"] == "failed"
+    assert "Command failed with status failed" in final_task["resultSummary"]

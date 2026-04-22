@@ -115,6 +115,11 @@ input {
   color: #9c4f2a;
 }
 
+.badge.error {
+  background: rgba(154, 35, 35, 0.12);
+  color: #9a2323;
+}
+
 .meta,
 .timeline,
 .steps {
@@ -330,6 +335,20 @@ button:disabled {
   margin: 14px 0 18px;
 }
 
+.patch-stack {
+  display: grid;
+  gap: 14px;
+  margin: 0 0 18px;
+}
+
+.patch-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
 .approval-list {
   display: grid;
   gap: 12px;
@@ -353,6 +372,26 @@ button:disabled {
 }
 
 .approval-card[data-status="rejected"] {
+  border-color: rgba(154, 35, 35, 0.24);
+}
+
+.patch-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(24, 32, 38, 0.1);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 253, 249, 0.98), rgba(246, 242, 236, 0.96));
+  box-shadow: 0 12px 24px rgba(24, 32, 38, 0.05);
+}
+
+.patch-card[data-status="approved"],
+.patch-card[data-status="applied"] {
+  border-color: rgba(29, 122, 66, 0.24);
+}
+
+.patch-card[data-status="rejected"],
+.patch-card[data-status="failed"] {
   border-color: rgba(154, 35, 35, 0.24);
 }
 
@@ -384,6 +423,21 @@ button:disabled {
   font-size: 11px;
 }
 
+.patch-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+
+.patch-meta div {
+  border-bottom: 0;
+  padding: 0;
+}
+
+.patch-meta dt {
+  font-size: 11px;
+}
+
 .approval-output {
   margin: 0;
   padding: 12px 14px;
@@ -400,8 +454,26 @@ button:disabled {
   flex-wrap: wrap;
 }
 
+.patch-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .approval-decision {
   margin: 0;
+}
+
+.patch-diff {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #17212a;
+  color: #e8f0f7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
 }
 
 .empty-state.compact {

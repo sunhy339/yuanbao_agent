@@ -8,13 +8,18 @@ import type {
   AppConfig,
   ConfigGetResult,
   ConfigUpdateResult,
+  DiffGetParams,
+  DiffGetResult,
   MessageSendParams,
   MessageSendResult,
+  PatchRecord,
   SessionCreateParams,
   SessionCreateResult,
   SessionListResult,
   SessionRecord,
   TaskGetResult,
+  TaskListParams,
+  TaskListResult,
   TaskRecord,
   WorkspaceOpenResult,
 } from "@shared";
@@ -36,6 +41,7 @@ interface MockState {
   workspace: WorkspaceOpenResult["workspace"] | null;
   sessions: SessionRecord[];
   tasks: Record<string, TaskRecord>;
+  patches: Record<string, PatchRecord>;
   approvals: Record<string, ApprovalRecord>;
 }
 
@@ -44,6 +50,7 @@ const mockState: MockState = {
   workspace: null,
   sessions: [],
   tasks: {},
+  patches: {},
   approvals: {},
 };
 
@@ -135,6 +142,13 @@ function rememberApproval(approval: ApprovalRecord): void {
   };
 }
 
+function rememberPatch(patch: PatchRecord): void {
+  mockState.patches = {
+    ...mockState.patches,
+    [patch.id]: patch,
+  };
+}
+
 function getMockApprovalRequest(command: string, cwd: string, shell: string, timeoutMs: number): Record<string, unknown> {
   return {
     command,
@@ -142,6 +156,35 @@ function getMockApprovalRequest(command: string, cwd: string, shell: string, tim
     shell,
     timeoutMs,
     workspaceRoot: mockState.workspace?.rootPath ?? mockState.config.workspace.rootPath,
+  };
+}
+
+function buildMockPatch(task: TaskRecord): PatchRecord {
+  const patchId = `patch_${Date.now()}`;
+  const filesChanged = 2;
+  const summary = `Mock patch for: ${task.goal.slice(0, 72)}`;
+  const diffText = [
+    `diff --git a/app/src/App.tsx b/app/src/App.tsx`,
+    `--- a/app/src/App.tsx`,
+    `+++ b/app/src/App.tsx`,
+    `@@ -1,3 +1,6 @@`,
+    ` import { useEffect, useMemo, useState } from "react";`,
+    `+// Mock patch content generated in browser fallback mode.`,
+    `+const patchId = "${patchId}";`,
+    ` export function App() {`,
+    `   return <div data-patch-id={patchId} />;`,
+  ].join("\n");
+
+  return {
+    id: patchId,
+    taskId: task.id,
+    workspaceId: mockState.workspace?.id ?? "workspace_mock",
+    summary,
+    diffText,
+    status: "proposed",
+    filesChanged,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
   };
 }
 
@@ -157,6 +200,18 @@ function updateMockTask(taskId: string, updater: (task: TaskRecord) => TaskRecor
 }
 
 function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
+  window.setTimeout(() => {
+    const patch = buildMockPatch(task);
+    rememberPatch(patch);
+    emitBrowserEvent(
+      buildMockEvent(sessionId, task.id, "patch.proposed", {
+        patchId: patch.id,
+        summary: patch.summary,
+        filesChanged: patch.filesChanged,
+      }),
+    );
+  }, 30);
+
   window.setTimeout(() => {
     const next = updateMockTask(task.id, (current) => ({
       ...current,
@@ -280,6 +335,7 @@ export class RuntimeClient {
       mockState.workspace = result.workspace;
       mockState.sessions = [];
       mockState.tasks = {};
+      mockState.patches = {};
       mockState.approvals = {};
       mockState.config = mergeRuntimeConfig(mockState.config, {
         workspace: {
@@ -294,6 +350,7 @@ export class RuntimeClient {
     mockState.workspace = result.workspace;
     mockState.sessions = [];
     mockState.tasks = {};
+    mockState.patches = {};
     mockState.approvals = {};
     mockState.config = mergeRuntimeConfig(mockState.config, {
       workspace: {
@@ -469,6 +526,26 @@ export class RuntimeClient {
     return invokeOrReject<ApprovalSubmitResult>("approval_submit", payload);
   }
 
+  async diffGet(payload: DiffGetParams): Promise<DiffGetResult> {
+    if (!isTauriBridgeAvailable()) {
+      const patch = mockState.patches[payload.patchId];
+      if (!patch) {
+        throw new Error(`Patch not found: ${payload.patchId}`);
+      }
+      return { patch, diffText: patch.diffText };
+    }
+
+    try {
+      return await invokeOrReject<DiffGetResult>("diff_get", payload);
+    } catch {
+      const patch = mockState.patches[payload.patchId];
+      if (!patch) {
+        throw new Error(`Patch not found: ${payload.patchId}`);
+      }
+      return { patch, diffText: patch.diffText };
+    }
+  }
+
   async getTask(taskId: string): Promise<TaskGetResult> {
     if (!isTauriBridgeAvailable()) {
       const task = mockState.tasks[taskId];
@@ -478,6 +555,17 @@ export class RuntimeClient {
       return { task };
     }
     return invokeOrReject<TaskGetResult>("task_get", { taskId });
+  }
+
+  async listTasks(payload: TaskListParams = {}): Promise<TaskListResult> {
+    if (!isTauriBridgeAvailable()) {
+      const tasks = Object.values(mockState.tasks)
+        .filter((task) => !payload.sessionId || task.sessionId === payload.sessionId)
+        .sort((left, right) => right.updatedAt - left.updatedAt);
+      return { tasks };
+    }
+
+    return invokeOrReject<TaskListResult>("task_list", payload);
   }
 
   async getConfig(): Promise<ConfigGetResult> {

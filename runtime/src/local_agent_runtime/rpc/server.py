@@ -28,6 +28,7 @@ class JsonRpcServer:
             "session.list": self._store.list_sessions,
             "message.send": self._orchestrator.send_message,
             "task.get": self._store.get_task,
+            "task.list": self._store.list_tasks,
             "task.cancel": self._orchestrator.cancel_task,
             "approval.submit": self._orchestrator.submit_approval,
             "config.get": self._store.get_config,

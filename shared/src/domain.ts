@@ -31,6 +31,38 @@ export type CommandStatus =
   | "killed";
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 
+export interface GitStatusChange {
+  status: string;
+  path: string;
+  originalPath?: string;
+  raw: string;
+}
+
+export interface GitStatusRecord {
+  workspaceRoot: string;
+  cwd: string;
+  branch?: string | null;
+  upstream?: string | null;
+  ahead: number;
+  behind: number;
+  changes: GitStatusChange[];
+}
+
+export interface GitDiffFile {
+  status: string;
+  path?: string;
+  originalPath?: string;
+}
+
+export interface GitDiffRecord {
+  workspaceRoot: string;
+  cwd: string;
+  staged: boolean;
+  path?: string | null;
+  files: GitDiffFile[];
+  diff: string;
+}
+
 export interface WorkspaceRef {
   id: Identifier;
   name: string;

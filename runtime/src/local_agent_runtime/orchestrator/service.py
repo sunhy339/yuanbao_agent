@@ -117,10 +117,12 @@ class Orchestrator:
             )
             return {"task": runtime_task}
         except Exception as exc:  # noqa: BLE001
+            failure_summary = str(exc)
             failed_task = self._store.update_task(
                 task_id=task["id"],
                 status="failed",
                 plan=runtime_task["plan"],
+                result_summary=failure_summary,
                 error_code="LOOP_EXECUTION_FAILED",
             )
             runtime_task = {
@@ -135,7 +137,7 @@ class Orchestrator:
                 payload={
                     "status": runtime_task["status"],
                     "plan": runtime_task["plan"],
-                    "detail": str(exc),
+                    "detail": failure_summary,
                     "errorCode": "LOOP_EXECUTION_FAILED",
                 },
             )
@@ -177,6 +179,8 @@ class Orchestrator:
         )
         if approval["decision"] == "approved" and approval["kind"] == "run_command":
             task = self._resume_approved_command(task=task, approval=approval)
+        if approval["decision"] == "approved" and approval["kind"] == "apply_patch":
+            task = self._resume_approved_patch(task=task, approval=approval)
         return {"approval": approval}
 
     def _resume_approved_command(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
@@ -237,10 +241,12 @@ class Orchestrator:
             )
             return runtime_task
         except Exception as exc:  # noqa: BLE001
+            failure_summary = str(exc)
             failed_task = self._store.update_task(
                 task_id=task["id"],
                 status="failed",
                 plan=runtime_task["plan"],
+                result_summary=failure_summary,
                 error_code="COMMAND_EXECUTION_FAILED",
             )
             self._publish(
@@ -250,8 +256,87 @@ class Orchestrator:
                 payload={
                     "status": "failed",
                     "plan": runtime_task["plan"],
-                    "detail": str(exc),
+                    "detail": failure_summary,
                     "errorCode": "COMMAND_EXECUTION_FAILED",
+                },
+            )
+            return failed_task
+
+    def _resume_approved_patch(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
+        request = json.loads(approval.get("requestJson") or "{}")
+        tool_spec = {
+            "name": "apply_patch",
+            "arguments": {
+                **request,
+                "approvalId": approval["id"],
+            },
+            "plan_step_id": "apply-patch",
+            "start_token": "Approval accepted. Applying the patch now...",
+        }
+        runtime_task = {**task, "plan": task.get("plan") or []}
+        try:
+            tool_result = self._execute_tool(
+                session_id=task["sessionId"],
+                task=runtime_task,
+                tool_spec=tool_spec,
+            )
+            runtime_task["plan"] = self._planner.advance(
+                runtime_task["plan"],
+                "apply-patch",
+                next_step_id="summarize-findings",
+            )
+            runtime_task["plan"] = self._planner.advance(
+                runtime_task["plan"],
+                "summarize-findings",
+                final_status="completed",
+            )
+            patch_result = tool_result.get("result", {})
+            patch_record = patch_result.get("patch", {})
+            summary = (
+                f"Approved patch finished with status {patch_result.get('status')} "
+                f"and {patch_result.get('filesChanged')} file(s) changed."
+            )
+            completed_task = self._store.update_task(
+                task_id=task["id"],
+                status="completed",
+                plan=runtime_task["plan"],
+                result_summary=summary,
+            )
+            runtime_task = {
+                **completed_task,
+                "plan": runtime_task["plan"],
+                "resultSummary": summary,
+            }
+            self._publish(
+                session_id=task["sessionId"],
+                task=runtime_task,
+                event_type="task.completed",
+                payload={
+                    "status": "completed",
+                    "plan": runtime_task["plan"],
+                    "detail": summary,
+                    "patchId": patch_record.get("id"),
+                },
+            )
+            return runtime_task
+        except Exception as exc:  # noqa: BLE001
+            failure_summary = str(exc)
+            failed_task = self._store.update_task(
+                task_id=task["id"],
+                status="failed",
+                plan=runtime_task["plan"],
+                result_summary=failure_summary,
+                error_code="PATCH_APPLY_FAILED",
+            )
+            self._publish(
+                session_id=task["sessionId"],
+                task=failed_task,
+                event_type="task.failed",
+                payload={
+                    "status": "failed",
+                    "plan": runtime_task["plan"],
+                    "detail": failure_summary,
+                    "errorCode": "PATCH_APPLY_FAILED",
                 },
             )
             return failed_task
@@ -266,6 +351,37 @@ class Orchestrator:
             payload=payload,
         )
         self._event_bus.publish(event)
+
+    def _tool_failed(self, tool_name: str, result: dict[str, Any]) -> bool:
+        status = result.get("status")
+        return status in {"failed", "timeout", "killed"} or result.get("ok") is False
+
+    def _tool_failure_summary(self, tool_spec: dict[str, Any], result: dict[str, Any]) -> str:
+        tool_name = tool_spec["name"]
+        if tool_name == "run_command":
+            status = result.get("status", "failed")
+            exit_code = result.get("exitCode")
+            stdout = (result.get("stdout") or "").strip()
+            stderr = (result.get("stderr") or "").strip()
+            preview = stdout.splitlines()[0] if stdout else stderr.splitlines()[0] if stderr else "no output"
+            return f"Command failed with status {status} and exit code {exit_code}; first output: {preview[:120]}."
+        if tool_name == "apply_patch":
+            summary = (result.get("summary") or "Patch tool failed.").strip()
+            patch_id = result.get("patch_id", "unknown patch")
+            return f"Apply patch failed for {patch_id}: {summary}"
+        if tool_name == "git_status":
+            summary = (result.get("summary") or "Git status failed.").strip()
+            return f"Git status failed: {summary}"
+        if tool_name == "git_diff":
+            summary = (result.get("summary") or "Git diff failed.").strip()
+            return f"Git diff failed: {summary}"
+        if tool_name == "search_files":
+            query = result.get("query", "unknown query")
+            return f"Search failed for query '{query}'."
+        if tool_name == "read_file":
+            path = result.get("path", "unknown file")
+            return f"Read file failed for {path}."
+        return f"Tool {tool_name} failed."
 
     def _run_minimal_loop(
         self,
@@ -398,51 +514,51 @@ class Orchestrator:
                     },
                 )
 
-            if result.get("status") == "approval_required":
-                approval = result.get("approval", {})
-                task["status"] = "waiting_approval"
-                self._store.update_task(task_id=task["id"], status="waiting_approval", plan=task["plan"])
+        if result.get("status") == "approval_required":
+            approval = result.get("approval", {})
+            task["status"] = "waiting_approval"
+            self._store.update_task(task_id=task["id"], status="waiting_approval", plan=task["plan"])
+            if tool_spec["name"] == "apply_patch":
+                patch = result.get("patch", {})
                 self._publish(
                     session_id=session_id,
                     task=task,
-                    event_type="approval.requested",
+                    event_type="patch.proposed",
                     payload={
-                        "approvalId": approval.get("id"),
-                        "taskId": task["id"],
-                        "kind": approval.get("kind", "run_command"),
-                        "request": json.loads(approval.get("requestJson", "{}")),
+                        "patchId": patch.get("id"),
+                        "summary": patch.get("summary", ""),
+                        "filesChanged": patch.get("filesChanged", 0),
                     },
                 )
-                self._publish(
-                    session_id=session_id,
-                    task=task,
-                    event_type="task.waiting_approval",
-                    payload={
-                        "status": "waiting_approval",
-                        "detail": "Command requires approval before execution.",
-                    },
-                )
-            elif result.get("status") in {"failed", "timeout", "killed"}:
-                self._publish(
-                    session_id=session_id,
-                    task=task,
-                    event_type="tool.failed",
-                    payload={
-                        "toolCallId": tool_call_id,
-                        "toolName": tool_spec["name"],
-                        "arguments": tool_spec["arguments"],
-                        "result": result,
-                    },
-                )
-                raise RuntimeError(f"Command execution {result.get('status')}")
-
-        tool_result = {
-            "id": tool_call_id,
-            "name": tool_spec["name"],
-            "arguments": tool_arguments,
-            "result": result,
-        }
-        if tool_spec["name"] == "run_command" and result.get("status") == "approval_required":
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="approval.requested",
+                payload={
+                    "approvalId": approval.get("id"),
+                    "taskId": task["id"],
+                    "kind": approval.get("kind", tool_spec["name"]),
+                    "request": json.loads(approval.get("requestJson", "{}")),
+                    "patchId": result.get("patch", {}).get("id"),
+                },
+            )
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="task.waiting_approval",
+                payload={
+                    "status": "waiting_approval",
+                    "detail": "Patch requires approval before execution."
+                    if tool_spec["name"] == "apply_patch"
+                    else "Command requires approval before execution.",
+                },
+            )
+            tool_result = {
+                "id": tool_call_id,
+                "name": tool_spec["name"],
+                "arguments": tool_arguments,
+                "result": result,
+            }
             self._publish(
                 session_id=session_id,
                 task=task,
@@ -455,10 +571,71 @@ class Orchestrator:
                 },
             )
             return tool_result
+
+        if self._tool_failed(tool_spec["name"], result):
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="tool.failed",
+                payload={
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_spec["name"],
+                    "arguments": tool_arguments,
+                    "result": result,
+                },
+            )
+            raise RuntimeError(self._tool_failure_summary(tool_spec, result))
+
+        if tool_spec["name"] == "run_command":
+            tool_result = {
+                "id": tool_call_id,
+                "name": tool_spec["name"],
+                "arguments": tool_arguments,
+                "result": result,
+            }
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="tool.completed",
+                payload={
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_spec["name"],
+                    "arguments": tool_arguments,
+                    "result": result,
+                },
+            )
+            return tool_result
+
+        if tool_spec["name"] == "apply_patch":
+            tool_result = {
+                "id": tool_call_id,
+                "name": tool_spec["name"],
+                "arguments": tool_arguments,
+                "result": result,
+            }
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="tool.completed",
+                payload={
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_spec["name"],
+                    "arguments": tool_arguments,
+                    "result": result,
+                },
+            )
+            return tool_result
+
+        tool_result = {
+            "id": tool_call_id,
+            "name": tool_spec["name"],
+            "arguments": tool_arguments,
+            "result": result,
+        }
         self._publish(
             session_id=session_id,
             task=task,
-            event_type="tool.completed" if result.get("status") not in {"failed", "timeout", "killed"} else "tool.failed",
+            event_type="tool.completed",
             payload={
                 "toolCallId": tool_call_id,
                 "toolName": tool_spec["name"],

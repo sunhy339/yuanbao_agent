@@ -192,6 +192,19 @@ class SQLiteStore:
             raise ValueError(f"Task not found: {params['taskId']}")
         return {"task": self._serialize_task(dict(row))}
 
+    def list_tasks(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = params.get("sessionId") or params.get("session_id")
+        if session_id:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks WHERE session_id = ? ORDER BY updated_at DESC, created_at DESC",
+                (session_id,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks ORDER BY updated_at DESC, created_at DESC",
+            ).fetchall()
+        return {"tasks": [self._serialize_task(dict(row)) for row in rows]}
+
     def resolve_approval(self, approval_id: str, decision: str) -> dict[str, Any]:
         now = self.now()
         self._conn.execute(
@@ -210,6 +223,79 @@ class SQLiteStore:
         if row is None:
             raise ValueError(f"Approval not found: {approval_id}")
         return self._serialize_approval(dict(row))
+
+    def create_patch(
+        self,
+        *,
+        task_id: str,
+        workspace_id: str,
+        summary: str,
+        diff_text: str,
+        files_changed: int,
+        status: str = "proposed",
+    ) -> dict[str, Any]:
+        patch_id = self.new_id("patch")
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO patches (
+                id, task_id, workspace_id, summary, diff_text, status, files_changed, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                patch_id,
+                task_id,
+                workspace_id,
+                summary,
+                diff_text,
+                status,
+                files_changed,
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM patches WHERE id = ?", (patch_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Patch not found: {patch_id}")
+        return self._serialize_patch(dict(row))
+
+    def update_patch(
+        self,
+        patch_id: str,
+        *,
+        status: str | None = None,
+        summary: str | None = None,
+        diff_text: str | None = None,
+        files_changed: int | None = None,
+    ) -> dict[str, Any]:
+        assignments: list[str] = ["updated_at = ?"]
+        values: list[Any] = [self.now()]
+
+        if status is not None:
+            assignments.append("status = ?")
+            values.append(status)
+        if summary is not None:
+            assignments.append("summary = ?")
+            values.append(summary)
+        if diff_text is not None:
+            assignments.append("diff_text = ?")
+            values.append(diff_text)
+        if files_changed is not None:
+            assignments.append("files_changed = ?")
+            values.append(files_changed)
+
+        values.append(patch_id)
+        self._conn.execute(
+            f"UPDATE patches SET {', '.join(assignments)} WHERE id = ?",
+            values,
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM patches WHERE id = ?", (patch_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Patch not found: {patch_id}")
+        return self._serialize_patch(dict(row))
 
     def get_approval(self, params: dict[str, Any]) -> dict[str, Any]:
         row = self._conn.execute(
@@ -264,7 +350,28 @@ class SQLiteStore:
         ).fetchone()
         if row is None:
             raise ValueError(f"Patch not found: {params['patchId']}")
-        return {"patch": dict(row)}
+        patch = self._serialize_patch(dict(row))
+        return {"patch": patch, "diffText": patch["diffText"]}
+
+    def find_patch(
+        self,
+        *,
+        task_id: str,
+        workspace_id: str,
+        diff_text: str,
+    ) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM patches
+            WHERE task_id = ? AND workspace_id = ? AND diff_text = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (task_id, workspace_id, diff_text),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._serialize_patch(dict(row))
 
     def get_command_log(self, params: dict[str, Any]) -> dict[str, Any]:
         row = self._conn.execute(
@@ -388,6 +495,19 @@ class SQLiteStore:
             "decidedBy": row["decided_by"],
             "createdAt": row["created_at"],
             "decidedAt": row["decided_at"],
+        }
+
+    def _serialize_patch(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "taskId": row["task_id"],
+            "workspaceId": row["workspace_id"],
+            "summary": row["summary"] or "",
+            "diffText": row["diff_text"],
+            "status": row["status"],
+            "filesChanged": row["files_changed"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
         }
 
     def _serialize_command_log(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -530,4 +650,24 @@ class SQLiteStore:
             );
             """
         )
+        self._conn.commit()
+        self._ensure_patch_columns()
+
+    def _ensure_patch_columns(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(patches)").fetchall()
+        }
+        if "summary" not in columns:
+            self._conn.execute("ALTER TABLE patches ADD COLUMN summary TEXT")
+        if "diff_text" not in columns:
+            self._conn.execute("ALTER TABLE patches ADD COLUMN diff_text TEXT DEFAULT ''")
+        if "status" not in columns:
+            self._conn.execute("ALTER TABLE patches ADD COLUMN status TEXT DEFAULT 'proposed'")
+        if "files_changed" not in columns:
+            self._conn.execute("ALTER TABLE patches ADD COLUMN files_changed INTEGER DEFAULT 0")
+        if "created_at" not in columns:
+            self._conn.execute("ALTER TABLE patches ADD COLUMN created_at INTEGER DEFAULT 0")
+        if "updated_at" not in columns:
+            self._conn.execute("ALTER TABLE patches ADD COLUMN updated_at INTEGER DEFAULT 0")
         self._conn.commit()

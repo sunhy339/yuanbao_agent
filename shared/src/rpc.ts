@@ -2,6 +2,8 @@ import type { AppConfig, ConfigPatch } from "./config";
 import type {
   ApprovalRecord,
   CommandLogRecord,
+  GitDiffRecord,
+  GitStatusRecord,
   Identifier,
   PatchRecord,
   SessionRecord,
@@ -55,7 +57,8 @@ export type RpcMethod =
   | "config.get"
   | "config.update"
   | "diff.get"
-  | "command_log.get";
+  | "command_log.get"
+  | "task.list";
 
 export interface WorkspaceOpenParams {
   path: string;
@@ -78,6 +81,10 @@ export interface TaskGetParams {
 
 export interface TaskCancelParams {
   taskId: Identifier;
+}
+
+export interface TaskListParams {
+  sessionId?: Identifier;
 }
 
 export interface ApprovalSubmitParams {
@@ -117,6 +124,10 @@ export interface TaskGetResult {
   task: TaskRecord;
 }
 
+export interface TaskListResult {
+  tasks: TaskRecord[];
+}
+
 export interface ApprovalSubmitResult {
   approval: ApprovalRecord;
 }
@@ -135,8 +146,12 @@ export type ConfigUpdateParams = ConfigPatch & {
 
 export interface DiffGetResult {
   patch: PatchRecord;
+  diffText: string;
 }
 
 export interface CommandLogGetResult {
   commandLog: CommandLogRecord;
 }
+
+export type GitStatusResult = GitStatusRecord;
+export type GitDiffResult = GitDiffRecord;

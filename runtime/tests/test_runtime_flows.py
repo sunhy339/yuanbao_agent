@@ -84,6 +84,61 @@ def test_provider_test_reports_mock_and_missing_env(runtime_harness: Any) -> Non
     assert missing_env["checkedEnvVarName"] == "YUANBAO_TEST_MISSING_KEY"
 
 
+def test_config_get_normalizes_legacy_provider_into_active_profile(runtime_harness: Any) -> None:
+    config = runtime_harness.call("config.get", {})["result"]["config"]
+    provider = config["provider"]
+
+    assert provider["activeProfileId"]
+    assert provider["profiles"]
+    active_profile = next(item for item in provider["profiles"] if item["id"] == provider["activeProfileId"])
+    assert active_profile["name"]
+    assert active_profile["mode"] == provider["mode"]
+    assert active_profile["baseUrl"] == provider["baseUrl"]
+    assert active_profile["model"] == provider["model"]
+    assert active_profile["apiKeyEnvVarName"] == provider["apiKeyEnvVarName"]
+    assert "apiKey" not in active_profile
+
+
+def test_provider_test_uses_profile_id_and_redacts_direct_api_key(runtime_harness: Any) -> None:
+    runtime_harness.call(
+        "config.update",
+        {
+            "config": {
+                "provider": {
+                    "activeProfileId": "primary",
+                    "profiles": [
+                        {
+                            "id": "primary",
+                            "name": "Primary mock",
+                            "mode": "mock",
+                            "baseUrl": "https://primary.example.test/v1",
+                            "model": "primary-chat",
+                            "apiKeyEnvVarName": "PRIMARY_KEY",
+                        },
+                        {
+                            "id": "remote",
+                            "name": "Remote",
+                            "mode": "not-supported",
+                            "baseUrl": "https://remote.example.test/v1",
+                            "model": "remote-chat",
+                            "apiKey": "sk-secret-profile",
+                        },
+                    ],
+                }
+            }
+        },
+    )
+
+    result = runtime_harness.call("provider.test", {"profileId": "remote"})["result"]
+
+    assert result["profileId"] == "remote"
+    assert result["profileName"] == "Remote"
+    assert result["status"] == "unsupported"
+    assert result["baseUrl"] == "https://remote.example.test/v1"
+    assert result["model"] == "remote-chat"
+    assert "sk-secret-profile" not in str(result)
+
+
 def test_run_command_approval_closure(runtime_harness: Any, monkeypatch: Any, tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

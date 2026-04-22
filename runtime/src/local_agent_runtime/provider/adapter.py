@@ -390,16 +390,44 @@ class ProviderAdapter:
         )
 
     def _merged_provider_config(self, context: dict[str, Any] | None) -> dict[str, Any]:
-        merged: dict[str, Any] = {}
+        merged = self._resolve_active_provider_config(self._config.get("provider", self._config))
         adapter_provider = self._config.get("provider", self._config)
         if isinstance(adapter_provider, dict):
-            merged.update(adapter_provider)
+            merged.update(self._resolve_active_provider_config(adapter_provider))
         context_config = context.get("config") if context else None
         if isinstance(context_config, dict):
             context_provider = context_config.get("provider", {})
             if isinstance(context_provider, dict):
-                merged.update(context_provider)
+                merged.update(self._resolve_active_provider_config(context_provider))
         return merged
+
+    def _resolve_active_provider_config(self, provider_config: Any) -> dict[str, Any]:
+        if not isinstance(provider_config, dict):
+            return {}
+
+        resolved = {
+            key: value
+            for key, value in provider_config.items()
+            if key not in {"profiles", "activeProfileId"}
+        }
+        profiles = provider_config.get("profiles")
+        active_profile_id = provider_config.get("activeProfileId")
+        if isinstance(profiles, list) and profiles:
+            active_profile = None
+            if isinstance(active_profile_id, str) and active_profile_id:
+                active_profile = next(
+                    (
+                        profile
+                        for profile in profiles
+                        if isinstance(profile, dict) and profile.get("id") == active_profile_id
+                    ),
+                    None,
+                )
+            if active_profile is None:
+                active_profile = next((profile for profile in profiles if isinstance(profile, dict)), None)
+            if isinstance(active_profile, dict):
+                resolved.update(active_profile)
+        return resolved
 
     def _env(self, *names: str) -> str | None:
         for name in names:

@@ -31,8 +31,12 @@ def _call_result(response: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def _make_runtime(tmp_path: Any, provider: Any, tools: dict[str, Any] | None = None) -> SimpleNamespace:
+    return _make_runtime_at_path(tmp_path / "runtime.sqlite3", provider, tools)
+
+
+def _make_runtime_at_path(database_path: Any, provider: Any, tools: dict[str, Any] | None = None) -> SimpleNamespace:
     event_bus = EventBus()
-    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    store = SQLiteStore(str(database_path))
     tool_registry = ToolRegistry(tools or {})
     orchestrator = Orchestrator(
         store=store,
@@ -444,6 +448,164 @@ def test_react_loop_completion_cleans_pending_state(tmp_path: Any) -> None:
     assert final_task["status"] == "completed"
     assert runtime.store.get_pending_react_state(task["id"]) is None
     assert task["id"] not in runtime.server._orchestrator._pending_react_tasks  # noqa: SLF001
+
+
+def test_cancelled_pending_approval_does_not_resume_react_tool(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_command",
+                        "name": "run_command",
+                        "arguments": {"command": "Write-Output cancelled"},
+                    }
+                ]
+            },
+            {"final": "This should not be reached after cancellation."},
+        ]
+    )
+    executed_after_approval: list[str] = []
+    runtime = _make_runtime(tmp_path, provider)
+
+    def run_command(params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("approvalId"):
+            executed_after_approval.append(params["approvalId"])
+            return {"status": "completed", "stdout": "cancelled\n", "stderr": "", "exitCode": 0}
+        approval = runtime.store.create_approval(
+            task_id=params["taskId"],
+            kind="run_command",
+            request={"command": params["command"]},
+        )
+        return {"status": "approval_required", "approval": approval, "command": params["command"]}
+
+    runtime.server._orchestrator._tool_registry.register("run_command", run_command)  # noqa: SLF001
+    session = _open_session(runtime, tmp_path)
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "cancel a pending command"}),
+        "task",
+    )
+    approval_id = next(event for event in runtime.events if event["type"] == "approval.requested")["payload"][
+        "approvalId"
+    ]
+
+    cancelled = _call_result(_rpc(runtime, "task.cancel", {"taskId": task["id"]}), "task")
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    assert cancelled["status"] == "cancelled"
+    assert final_task["status"] == "cancelled"
+    assert executed_after_approval == []
+    assert len(provider.calls) == 1
+    assert "task.cancelled" in [event["type"] for event in runtime.events]
+
+
+def test_pause_pending_approval_blocks_submit_until_resume(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_command",
+                        "name": "run_command",
+                        "arguments": {"command": "Write-Output paused"},
+                    }
+                ]
+            },
+            {"final": "Command completed after pause and resume."},
+        ]
+    )
+    executed_after_approval: list[str] = []
+    runtime = _make_runtime(tmp_path, provider)
+
+    def run_command(params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("approvalId"):
+            executed_after_approval.append(params["approvalId"])
+            return {"status": "completed", "stdout": "paused\n", "stderr": "", "exitCode": 0}
+        approval = runtime.store.create_approval(
+            task_id=params["taskId"],
+            kind="run_command",
+            request={"command": params["command"]},
+        )
+        return {"status": "approval_required", "approval": approval, "command": params["command"]}
+
+    runtime.server._orchestrator._tool_registry.register("run_command", run_command)  # noqa: SLF001
+    session = _open_session(runtime, tmp_path)
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "pause a pending command"}),
+        "task",
+    )
+    approval_id = next(event for event in runtime.events if event["type"] == "approval.requested")["payload"][
+        "approvalId"
+    ]
+
+    paused = _call_result(_rpc(runtime, "task.pause", {"taskId": task["id"]}), "task")
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+    still_paused = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    resumed = _call_result(_rpc(runtime, "task.resume", {"taskId": task["id"]}), "task")
+
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    assert paused["status"] == "paused"
+    assert still_paused["status"] == "paused"
+    assert resumed["status"] == "completed"
+    assert final_task["status"] == "completed"
+    assert final_task["resultSummary"] == "Command completed after pause and resume."
+    assert len(executed_after_approval) == 1
+    assert "task.paused" in [event["type"] for event in runtime.events]
+    assert "task.resumed" in [event["type"] for event in runtime.events]
+
+
+def test_pending_react_approval_recovers_with_new_orchestrator_and_store(tmp_path: Any) -> None:
+    database_path = tmp_path / "runtime.sqlite3"
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_command",
+                        "name": "run_command",
+                        "arguments": {"command": "Write-Output recovered"},
+                    }
+                ]
+            },
+            {"final": "Command completed after new orchestrator recovery."},
+        ]
+    )
+    first_runtime = _make_runtime_at_path(database_path, provider)
+
+    def first_run_command(params: dict[str, Any]) -> dict[str, Any]:
+        approval = first_runtime.store.create_approval(
+            task_id=params["taskId"],
+            kind="run_command",
+            request={"command": params["command"]},
+        )
+        return {"status": "approval_required", "approval": approval, "command": params["command"]}
+
+    first_runtime.server._orchestrator._tool_registry.register("run_command", first_run_command)  # noqa: SLF001
+    session = _open_session(first_runtime, tmp_path)
+    task = _call_result(
+        _rpc(first_runtime, "message.send", {"sessionId": session["id"], "content": "recover after restart"}),
+        "task",
+    )
+    approval_id = next(event for event in first_runtime.events if event["type"] == "approval.requested")["payload"][
+        "approvalId"
+    ]
+    first_runtime.store.close()
+
+    second_runtime = _make_runtime_at_path(database_path, provider)
+
+    def second_run_command(params: dict[str, Any]) -> dict[str, Any]:
+        assert params.get("approvalId") == approval_id
+        return {"status": "completed", "stdout": "recovered\n", "stderr": "", "exitCode": 0}
+
+    second_runtime.server._orchestrator._tool_registry.register("run_command", second_run_command)  # noqa: SLF001
+    _rpc(second_runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+
+    final_task = _call_result(_rpc(second_runtime, "task.get", {"taskId": task["id"]}), "task")
+    assert final_task["status"] == "completed"
+    assert final_task["resultSummary"] == "Command completed after new orchestrator recovery."
+    assert second_runtime.store.get_pending_react_state(task["id"]) is None
+    assert len(provider.calls) == 2
 
 
 def test_react_loop_fails_when_max_steps_are_exceeded(tmp_path: Any) -> None:

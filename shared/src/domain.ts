@@ -7,6 +7,7 @@ export type TaskStatus =
   | "queued"
   | "running"
   | "waiting_approval"
+  | "paused"
   | "completed"
   | "failed"
   | "cancelled";

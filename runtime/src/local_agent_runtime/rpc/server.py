@@ -30,6 +30,8 @@ class JsonRpcServer:
             "task.get": self._store.get_task,
             "task.list": self._store.list_tasks,
             "task.cancel": self._orchestrator.cancel_task,
+            "task.pause": self._orchestrator.pause_task,
+            "task.resume": self._orchestrator.resume_task,
             "approval.submit": self._orchestrator.submit_approval,
             "config.get": self._store.get_config,
             "config.update": self._store.update_config,

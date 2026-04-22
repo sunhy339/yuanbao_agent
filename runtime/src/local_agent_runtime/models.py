@@ -8,6 +8,7 @@ TaskStatus = Literal[
     "queued",
     "running",
     "waiting_approval",
+    "paused",
     "completed",
     "failed",
     "cancelled",

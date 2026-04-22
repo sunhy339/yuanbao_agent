@@ -20,10 +20,14 @@ import type {
   SessionCreateResult,
   SessionListResult,
   SessionRecord,
+  TaskCancelParams,
+  TaskControlResult,
   TaskGetResult,
+  TaskPauseParams,
   TaskListParams,
   TaskListResult,
   TaskRecord,
+  TaskResumeParams,
   TraceEventRecord,
   TraceListParams,
   TraceListResult,
@@ -144,17 +148,29 @@ function buildMockHostStatus(): HostStatus {
 
 function buildMockRuntimeConfig(): RuntimeConfig {
   const config = buildMockConfig();
+  const model = config.provider.defaultModel;
+  const activeProfile = {
+    id: "default",
+    name: "Default",
+    mode: "mock" as const,
+    baseUrl: "https://api.openai.com/v1",
+    model,
+    defaultModel: model,
+    fallbackModel: config.provider.fallbackModel,
+    apiKeyEnvVarName: "LOCAL_AGENT_PROVIDER_API_KEY",
+    temperature: config.provider.temperature,
+    maxTokens: config.provider.maxOutputTokens,
+    maxOutputTokens: config.provider.maxOutputTokens,
+    maxContextTokens: 120000,
+    timeout: 30,
+  };
   return {
     ...config,
     provider: {
-      mode: "mock",
-      baseUrl: "https://api.openai.com/v1",
-      model: config.provider.defaultModel,
-      apiKeyEnvVarName: "LOCAL_AGENT_PROVIDER_API_KEY",
-      maxTokens: config.provider.maxOutputTokens,
-      maxContextTokens: 120000,
-      timeout: 30,
+      ...activeProfile,
       ...config.provider,
+      activeProfileId: "default",
+      profiles: [activeProfile],
     },
     search: config.search ?? {
       glob: [],
@@ -207,23 +223,38 @@ function buildProviderTestFallback(
   params: ProviderTestParams | undefined,
   reason?: unknown,
 ): ProviderTestResult {
-  const provider = {
+  const providerRoot = {
     ...mockState.config.provider,
     ...params?.provider,
+  };
+  const profiles = providerRoot.profiles ?? [];
+  const profileId = params?.profileId ?? providerRoot.activeProfileId;
+  const selectedProfile =
+    profiles.find((profile) => profile.id === profileId) ??
+    profiles[0] ??
+    {};
+  const provider = {
+    ...providerRoot,
+    ...selectedProfile,
   };
   const mode = provider.mode ?? "mock";
   const model = provider.model ?? provider.defaultModel;
   const envVarName = provider.apiKeyEnvVarName ?? "LOCAL_AGENT_PROVIDER_API_KEY";
+  const providerProfileId = typeof provider.id === "string" ? provider.id : profileId;
+  const providerProfileName = typeof provider.name === "string" ? provider.name : undefined;
 
   if (mode === "mock") {
     return {
       ok: true,
       status: "mocked",
       message: "Mock provider path is ready. No API key value is stored in app config.",
+      profileId: providerProfileId,
+      profileName: providerProfileName,
       providerMode: mode,
       model,
       baseUrl: provider.baseUrl,
       checkedEnvVarName: envVarName,
+      envVarName,
       source: "mock-fallback",
     };
   }
@@ -234,10 +265,13 @@ function buildProviderTestFallback(
       ok: false,
       status: "missing_env",
       message: `Runtime provider test cannot read ${envVarName} in browser/mock fallback.`,
+      profileId: providerProfileId,
+      profileName: providerProfileName,
       providerMode: mode,
       model,
       baseUrl: provider.baseUrl,
       checkedEnvVarName: envVarName,
+      envVarName,
       source: "mock-fallback",
       details: {
         errorSummary: `Set ${envVarName} in the desktop runtime environment, then run Test Connection from the Tauri app.`,
@@ -253,10 +287,13 @@ function buildProviderTestFallback(
       reason instanceof Error
         ? `Provider test backend is not available yet: ${reason.message}`
         : "Provider test backend is not available yet.",
+    profileId: providerProfileId,
+    profileName: providerProfileName,
     providerMode: mode,
     model,
     baseUrl: provider.baseUrl,
     checkedEnvVarName: envVarName,
+    envVarName,
     source: "mock-fallback",
     details: {
       errorSummary,
@@ -289,6 +326,17 @@ function getMockApprovalRequest(command: string, cwd: string, shell: string, tim
     cwd,
     shell,
     timeoutMs,
+    workspaceRoot: mockState.workspace?.rootPath ?? mockState.config.workspace.rootPath,
+  };
+}
+
+function getMockPatchApprovalRequest(patch: PatchRecord): Record<string, unknown> {
+  return {
+    patchId: patch.id,
+    summary: patch.summary,
+    filesChanged: patch.filesChanged,
+    files: ["app/src/App.tsx", "app/src/lib/runtimeClient.ts"],
+    risk: "writes workspace files through apply_patch",
     workspaceRoot: mockState.workspace?.rootPath ?? mockState.config.workspace.rootPath,
   };
 }
@@ -344,6 +392,24 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
         patchId: patch.id,
         summary: patch.summary,
         filesChanged: patch.filesChanged,
+      }),
+    );
+    const approvalRequest = getMockPatchApprovalRequest(patch);
+    const approval: ApprovalRecord = {
+      id: `appr_patch_${Date.now()}`,
+      taskId: task.id,
+      kind: "apply_patch",
+      requestJson: JSON.stringify(approvalRequest),
+      createdAt: Date.now(),
+    };
+    rememberApproval(approval);
+    emitBrowserEvent(
+      buildMockEvent(sessionId, task.id, "approval.requested", {
+        approvalId: approval.id,
+        taskId: task.id,
+        kind: "apply_patch",
+        patchId: patch.id,
+        request: approvalRequest,
       }),
     );
   }, 30);
@@ -601,6 +667,7 @@ export class RuntimeClient {
         cwd?: string;
         shell?: string;
         timeoutMs?: number;
+        patchId?: string;
       };
 
       emitBrowserEvent(
@@ -610,6 +677,18 @@ export class RuntimeClient {
           decision: payload.decision,
         }),
       );
+
+      if (approval.kind === "apply_patch") {
+        const patchId = request.patchId;
+        if (patchId && mockState.patches[patchId]) {
+          rememberPatch({
+            ...mockState.patches[patchId],
+            status: payload.decision === "approved" ? "approved" : "rejected",
+            updatedAt: now,
+          });
+        }
+        return { approval };
+      }
 
       if (payload.decision === "approved") {
         const commandId = `cmd_${approval.id}`;
@@ -754,6 +833,54 @@ export class RuntimeClient {
       return { task };
     }
     return invokeOrReject<TaskGetResult>("task_get", { taskId });
+  }
+
+  async cancelTask(payload: TaskCancelParams): Promise<TaskControlResult> {
+    if (!isTauriBridgeAvailable()) {
+      const task = updateMockTask(payload.taskId, (current) => ({
+        ...current,
+        status: "cancelled",
+        updatedAt: Date.now(),
+      }));
+      if (!task) {
+        throw new Error(`Task not found: ${payload.taskId}`);
+      }
+      emitBrowserEvent(buildMockEvent(task.sessionId, task.id, "task.cancelled", { status: "cancelled" }));
+      return { task };
+    }
+    return invokeOrReject<TaskControlResult>("task_cancel", payload);
+  }
+
+  async pauseTask(payload: TaskPauseParams): Promise<TaskControlResult> {
+    if (!isTauriBridgeAvailable()) {
+      const task = updateMockTask(payload.taskId, (current) => ({
+        ...current,
+        status: "paused",
+        updatedAt: Date.now(),
+      }));
+      if (!task) {
+        throw new Error(`Task not found: ${payload.taskId}`);
+      }
+      emitBrowserEvent(buildMockEvent(task.sessionId, task.id, "task.paused", { status: "paused" }));
+      return { task };
+    }
+    return invokeOrReject<TaskControlResult>("task_pause", payload);
+  }
+
+  async resumeTask(payload: TaskResumeParams): Promise<TaskControlResult> {
+    if (!isTauriBridgeAvailable()) {
+      const task = updateMockTask(payload.taskId, (current) => ({
+        ...current,
+        status: current.status === "paused" ? "waiting_approval" : current.status,
+        updatedAt: Date.now(),
+      }));
+      if (!task) {
+        throw new Error(`Task not found: ${payload.taskId}`);
+      }
+      emitBrowserEvent(buildMockEvent(task.sessionId, task.id, "task.resumed", { status: task.status }));
+      return { task };
+    }
+    return invokeOrReject<TaskControlResult>("task_resume", payload);
   }
 
   async listTasks(payload: TaskListParams = {}): Promise<TaskListResult> {

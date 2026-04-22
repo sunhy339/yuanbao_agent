@@ -13,6 +13,8 @@ export type AgentEventType =
   | "task.completed"
   | "task.failed"
   | "task.cancelled"
+  | "task.paused"
+  | "task.resumed"
   | "provider.request"
   | "provider.response"
   | "assistant.token"

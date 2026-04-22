@@ -4,6 +4,23 @@ export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends (infer U)[] ? U[] : T[K] extends object ? DeepPartial<T[K]> : T[K];
 };
 
+export interface ProviderProfile {
+  id: string;
+  name: string;
+  mode?: ProviderMode;
+  baseUrl?: string;
+  model?: string;
+  defaultModel?: string;
+  fallbackModel?: string;
+  apiKeyEnvVarName?: string;
+  apiKey?: string;
+  temperature?: number;
+  maxTokens?: number;
+  maxOutputTokens?: number;
+  maxContextTokens?: number;
+  timeout?: number;
+}
+
 export interface ProviderConfig {
   mode?: ProviderMode;
   baseUrl?: string;
@@ -16,6 +33,8 @@ export interface ProviderConfig {
   maxOutputTokens: number;
   maxContextTokens?: number;
   timeout?: number;
+  activeProfileId?: string;
+  profiles?: ProviderProfile[];
 }
 
 export interface WorkspaceConfig {
@@ -39,7 +58,12 @@ export interface PolicyConfig {
 
 export interface ToolRuntimeConfig {
   allowedShell: "powershell" | "bash" | "zsh";
+  allowedCommands?: string[];
+  allowlist?: string[];
+  deniedCommands?: string[];
+  denylist?: string[];
   blockedPatterns: string[];
+  allowedCwdRoots?: string[];
 }
 
 export interface UiConfig {
@@ -71,6 +95,24 @@ export const defaultAppConfig: AppConfig = {
     maxOutputTokens: 4000,
     maxContextTokens: 120000,
     timeout: 30,
+    activeProfileId: "default",
+    profiles: [
+      {
+        id: "default",
+        name: "Default",
+        mode: "mock",
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-5-codex",
+        defaultModel: "gpt-5-codex",
+        fallbackModel: "claude-sonnet",
+        apiKeyEnvVarName: "LOCAL_AGENT_PROVIDER_API_KEY",
+        temperature: 0.2,
+        maxTokens: 4000,
+        maxOutputTokens: 4000,
+        maxContextTokens: 120000,
+        timeout: 30,
+      },
+    ],
   },
   workspace: {
     rootPath: "",
@@ -91,7 +133,12 @@ export const defaultAppConfig: AppConfig = {
   tools: {
     runCommand: {
       allowedShell: "powershell",
+      allowedCommands: [],
+      allowlist: [],
+      deniedCommands: [],
+      denylist: [],
       blockedPatterns: ["rm -rf", "shutdown", "format"],
+      allowedCwdRoots: [],
     },
   },
   ui: {

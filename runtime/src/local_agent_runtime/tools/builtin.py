@@ -24,9 +24,14 @@ DEFAULT_IGNORED_DIR_NAMES = {
 def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
     """Return the initial tool map described in the MVP tech spec."""
 
-    runtime_config = store.get_config({})["config"]
-    command_policy = runtime_config["policy"]
-    run_command_config = runtime_config["tools"]["runCommand"]
+    def current_runtime_config() -> dict[str, Any]:
+        return store.get_config({})["config"]
+
+    def current_command_policy() -> dict[str, Any]:
+        return current_runtime_config()["policy"]
+
+    def current_run_command_config() -> dict[str, Any]:
+        return current_runtime_config()["tools"]["runCommand"]
 
     def split_search_terms(query: str) -> list[str]:
         return [term for term in re.findall(r"[\w.\-]+", query.lower()) if len(term) > 1]
@@ -499,25 +504,41 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
             "totalBytes": file_path.stat().st_size,
         }
 
-    def _normalize_cwd(workspace_root: Path, params: dict[str, Any]) -> str:
+    def _run_command_allowed_roots(workspace_root: Path, config: dict[str, Any]) -> list[Path]:
+        configured_roots = config.get("allowedCwdRoots") or []
+        if isinstance(configured_roots, str):
+            configured_roots = [configured_roots]
+        roots: list[Path] = []
+        for root_value in configured_roots:
+            root_text = str(root_value).strip()
+            if not root_text:
+                continue
+            root_path = Path(root_text)
+            if not root_path.is_absolute():
+                root_path = workspace_root / root_path
+            roots.append(root_path.resolve())
+        return roots or [workspace_root.resolve()]
+
+    def _format_cwd(workspace_root: Path, cwd_path: Path) -> str:
+        try:
+            return to_relative_path(workspace_root, cwd_path)
+        except ValueError:
+            return str(cwd_path)
+
+    def _normalize_cwd(workspace_root: Path, params: dict[str, Any], config: dict[str, Any]) -> str:
         cwd_value = params.get("cwd") or "."
-        cwd_path = resolve_workspace_path(workspace_root, cwd_value)
+        cwd_candidate = Path(str(cwd_value))
+        cwd_path = cwd_candidate.resolve() if cwd_candidate.is_absolute() else (workspace_root / cwd_candidate).resolve()
+        policy_guard.ensure_within_roots(cwd_path, _run_command_allowed_roots(workspace_root, config))
         if not cwd_path.is_dir():
             raise ValueError(f"cwd does not exist: {cwd_value}")
-        return to_relative_path(workspace_root, cwd_path)
+        return _format_cwd(workspace_root, cwd_path)
 
     def _normalize_shell(raw_shell: str | None) -> str:
-        shell_name = (raw_shell or run_command_config["allowedShell"]).strip().lower()
+        shell_name = (raw_shell or current_run_command_config()["allowedShell"]).strip().lower()
         if shell_name not in {"powershell", "bash", "zsh"}:
             raise ValueError(f"Unsupported shell: {raw_shell}")
         return shell_name
-
-    def _blocked(command: str) -> str | None:
-        lowered = command.lower()
-        for pattern in run_command_config["blockedPatterns"]:
-            if pattern.lower() in lowered:
-                return pattern
-        return None
 
     def _build_shell_command(shell_name: str, command: str) -> list[str]:
         if shell_name == "bash":
@@ -926,18 +947,19 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
         if not command:
             raise ValueError("command is required")
 
+        active_command_policy = current_command_policy()
+        active_run_command_config = current_run_command_config()
         task_id = str(params.get("taskId") or params.get("task_id") or "").strip()
         approval_id = str(params.get("approvalId") or params.get("approval_id") or "").strip() or None
-        cwd_rel = _normalize_cwd(workspace_root, params)
+        cwd_rel = _normalize_cwd(workspace_root, params, active_run_command_config)
         shell_name = _normalize_shell(params.get("shell"))
-        timeout_ms = int(params.get("timeoutMs") or params.get("timeout_ms") or command_policy["commandTimeoutMs"])
+        timeout_ms = int(params.get("timeoutMs") or params.get("timeout_ms") or active_command_policy["commandTimeoutMs"])
         timeout_ms = max(1000, min(timeout_ms, 1_800_000))
 
-        blocked = _blocked(command)
-        if blocked:
-            raise ValueError(f"Command contains a blocked pattern: {blocked}")
+        policy_guard.validate_command(command, active_run_command_config)
 
-        cwd_abs = (workspace_root / cwd_rel).resolve()
+        cwd_path = Path(cwd_rel)
+        cwd_abs = cwd_path.resolve() if cwd_path.is_absolute() else (workspace_root / cwd_path).resolve()
         request_task_id = task_id or None
         if approval_id and not request_task_id:
             request_task_id = store.get_approval({"approvalId": approval_id})["approval"]["taskId"]
@@ -963,7 +985,7 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
                     "shell": shell_name,
                     "timeoutMs": timeout_ms,
                 }
-        elif policy_guard.requires_approval("run_command", approval_mode=command_policy["approvalMode"]):
+        elif policy_guard.requires_approval("run_command", approval_mode=active_command_policy["approvalMode"]):
             if not request_task_id:
                 raise ValueError("taskId is required when command approval is needed")
             approval = store.create_approval(
@@ -1030,6 +1052,7 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
 
     def apply_patch(params: dict[str, Any]) -> dict[str, Any]:
         workspace_root = require_workspace_root(params)
+        active_command_policy = current_command_policy()
         task_id = str(params.get("taskId") or params.get("task_id") or "").strip()
         if not task_id:
             raise ValueError("taskId is required")
@@ -1120,7 +1143,7 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
                     "dryRun": dry_run,
                 }
         else:
-            if not policy_guard.requires_approval("apply_patch", approval_mode=command_policy["approvalMode"]):
+            if not policy_guard.requires_approval("apply_patch", approval_mode=active_command_policy["approvalMode"]):
                 patch = store.create_patch(
                     task_id=task_id,
                     workspace_id=str(workspace_root),

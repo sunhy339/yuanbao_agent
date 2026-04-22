@@ -11,6 +11,7 @@ import type {
   PatchProposedPayload,
   PlanStep,
   ProviderMode,
+  ProviderProfile,
   ProviderTestResult,
   SessionRecord,
   TaskRecord,
@@ -44,6 +45,7 @@ const TRACE_AUTO_REFRESH_STATUSES = new Set<TaskRecord["status"]>([
 ]);
 
 interface ProviderSettingsForm {
+  name: string;
   mode: ProviderMode;
   baseUrl: string;
   model: string;
@@ -95,14 +97,78 @@ function normalizeRuntimeConfig(config: AppConfig | RuntimeConfig): RuntimeConfi
 }
 
 function normalizeProviderConfig(provider: AppConfig["provider"]): AppConfig["provider"] {
+  const profiles = normalizeProviderProfiles(provider);
+  const activeProfileId = provider.activeProfileId && profiles.some((item) => item.id === provider.activeProfileId)
+    ? provider.activeProfileId
+    : profiles[0]?.id;
+  const activeProfile = profiles.find((item) => item.id === activeProfileId) ?? profiles[0];
+  const model = activeProfile?.model || provider.model || provider.defaultModel || DEFAULT_PROVIDER_MODEL;
+  const maxTokens =
+    activeProfile?.maxTokens ?? provider.maxTokens ?? provider.maxOutputTokens ?? DEFAULT_PROVIDER_MAX_TOKENS;
+  return {
+    ...provider,
+    ...activeProfile,
+    mode: activeProfile?.mode ?? provider.mode ?? DEFAULT_PROVIDER_MODE,
+    baseUrl: activeProfile?.baseUrl ?? provider.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
+    model,
+    defaultModel: activeProfile?.defaultModel || provider.defaultModel || model,
+    apiKeyEnvVarName:
+      activeProfile?.apiKeyEnvVarName ?? provider.apiKeyEnvVarName ?? DEFAULT_PROVIDER_API_KEY_ENV_VAR,
+    temperature: activeProfile?.temperature ?? provider.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
+    maxTokens,
+    maxOutputTokens: activeProfile?.maxOutputTokens ?? provider.maxOutputTokens ?? maxTokens,
+    maxContextTokens:
+      activeProfile?.maxContextTokens ?? provider.maxContextTokens ?? DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS,
+    timeout: activeProfile?.timeout ?? provider.timeout ?? DEFAULT_PROVIDER_TIMEOUT,
+    activeProfileId,
+    profiles,
+  };
+}
+
+function normalizeProviderProfiles(provider: AppConfig["provider"]): ProviderProfile[] {
+  const legacyProfile = providerToProfile(provider, provider.activeProfileId || "default", "Default");
+  const rawProfiles = provider.profiles?.length ? provider.profiles : [legacyProfile];
+  return rawProfiles.map((profile, index) =>
+    normalizeProviderProfile(profile, legacyProfile, index),
+  );
+}
+
+function normalizeProviderProfile(
+  profile: Partial<ProviderProfile>,
+  fallback: ProviderProfile,
+  index: number,
+): ProviderProfile {
+  const merged = { ...fallback, ...profile };
+  const model = merged.model || merged.defaultModel || DEFAULT_PROVIDER_MODEL;
+  const maxTokens = merged.maxTokens ?? merged.maxOutputTokens ?? DEFAULT_PROVIDER_MAX_TOKENS;
+  return {
+    ...merged,
+    id: merged.id?.trim() || `profile_${index + 1}`,
+    name: merged.name?.trim() || `Profile ${index + 1}`,
+    mode: merged.mode ?? DEFAULT_PROVIDER_MODE,
+    baseUrl: merged.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
+    model,
+    defaultModel: merged.defaultModel || model,
+    apiKeyEnvVarName: merged.apiKeyEnvVarName ?? DEFAULT_PROVIDER_API_KEY_ENV_VAR,
+    temperature: merged.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
+    maxTokens,
+    maxOutputTokens: merged.maxOutputTokens ?? maxTokens,
+    maxContextTokens: merged.maxContextTokens ?? DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS,
+    timeout: merged.timeout ?? DEFAULT_PROVIDER_TIMEOUT,
+  };
+}
+
+function providerToProfile(provider: AppConfig["provider"], id: string, name: string): ProviderProfile {
   const model = provider.model || provider.defaultModel || DEFAULT_PROVIDER_MODEL;
   const maxTokens = provider.maxTokens ?? provider.maxOutputTokens ?? DEFAULT_PROVIDER_MAX_TOKENS;
   return {
-    ...provider,
+    id,
+    name,
     mode: provider.mode ?? DEFAULT_PROVIDER_MODE,
     baseUrl: provider.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
     model,
     defaultModel: provider.defaultModel || model,
+    fallbackModel: provider.fallbackModel,
     apiKeyEnvVarName: provider.apiKeyEnvVarName ?? DEFAULT_PROVIDER_API_KEY_ENV_VAR,
     temperature: provider.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
     maxTokens,
@@ -123,6 +189,9 @@ function buildProviderSettingsForm(config: RuntimeConfig | null): ProviderSettin
   const normalized = normalizeProviderConfig(provider);
 
   return {
+    name:
+      normalized.profiles?.find((item) => item.id === normalized.activeProfileId)?.name ??
+      "Default",
     mode: normalized.mode ?? DEFAULT_PROVIDER_MODE,
     baseUrl: normalized.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
     model: normalized.model ?? normalized.defaultModel,
@@ -316,14 +385,21 @@ interface ApprovalCardView {
   taskId: string;
   kind: string;
   patchId?: string;
+  patchSummary?: string;
+  filesChanged?: number;
   command: string;
   cwd: string;
   shell: string;
   timeoutMs: number;
+  risk: string;
+  requestJson: string;
+  requestSummary: string;
   status: "pending" | "approved" | "rejected";
   requestedAt: number;
   updatedAt: number;
   resolvedAt?: number;
+  requestedEventId?: string;
+  resolvedEventId?: string;
 }
 
 interface PatchCardView {
@@ -387,6 +463,52 @@ interface TracePanelItem {
   time: string;
   payloadSummary: string;
   sequence: number;
+}
+
+function stringifyRequestJson(request: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(request, null, 2);
+  } catch {
+    return "{}";
+  }
+}
+
+function readRequestStringList(request: Record<string, unknown>, keys: string[]): string[] {
+  for (const key of keys) {
+    const value = request[key];
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .filter(Boolean);
+    }
+  }
+  return [];
+}
+
+function readRequestOptionalNumber(request: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = request[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
+}
+
+function getApprovalBadgeClass(status: ApprovalCardView["status"]): "ok" | "warn" | "error" {
+  if (status === "approved") {
+    return "ok";
+  }
+  if (status === "rejected") {
+    return "error";
+  }
+  return "warn";
 }
 
 function upsertRecord<T extends { id: string; updatedAt: number }>(items: T[], record: T): T[] {
@@ -712,6 +834,7 @@ export function App() {
   const [providerSettings, setProviderSettings] = useState<ProviderSettingsForm>(() =>
     buildProviderSettingsForm(null),
   );
+  const [activeProviderProfileId, setActiveProviderProfileId] = useState("default");
   const [providerTestResult, setProviderTestResult] = useState<ProviderTestResult | null>(null);
   const [searchGlob, setSearchGlob] = useState(DEFAULT_SEARCH_GLOB_TEXT);
   const [searchIgnoreText, setSearchIgnoreText] = useState("");
@@ -762,6 +885,7 @@ export function App() {
         setHostStatus(nextHostStatus);
         setConfig(normalizedConfig);
         setProviderSettings(buildProviderSettingsForm(normalizedConfig));
+        setActiveProviderProfileId(normalizedConfig.provider.activeProfileId ?? "default");
         setSearchGlob(serializePatternList(normalizedConfig.search.glob));
         setSearchIgnoreText(serializePatternList(normalizedConfig.search.ignore));
         setSessions(nextSessions.sessions);
@@ -968,18 +1092,34 @@ export function App() {
       if (event.type === "approval.requested") {
         const payload = event.payload as ApprovalRequestedPayload;
         const request = payload.request as Record<string, unknown>;
+        const filesChanged = readRequestOptionalNumber(request, ["filesChanged", "files_changed"]);
+        const changedFiles = readRequestStringList(request, ["files", "filesChangedList", "paths"]);
+        const patchId = payload.kind === "apply_patch" ? payload.patchId ?? readRequestPatchId(request) : undefined;
+        const patchSummary = readRequestText(request, "summary", readRequestText(request, "patchSummary", "patch approval request"));
+        const command = readRequestText(request, "command", payload.kind === "apply_patch" ? "apply_patch" : "command");
         cards.set(payload.approvalId, {
           approvalId: payload.approvalId,
           taskId: payload.taskId,
           kind: payload.kind,
-          patchId: payload.kind === "apply_patch" ? payload.patchId ?? readRequestPatchId(request) : undefined,
-          command: readRequestText(request, "command", "command"),
+          patchId,
+          patchSummary,
+          filesChanged,
+          command,
           cwd: readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", ".")),
           shell: readRequestText(request, "shell", "system default"),
           timeoutMs: readRequestNumber(request, "timeoutMs", 0),
+          risk: readRequestText(request, "risk", payload.kind === "apply_patch" ? "writes files" : "executes command"),
+          requestJson: stringifyRequestJson(request),
+          requestSummary:
+            payload.kind === "apply_patch"
+              ? `${patchSummary}${filesChanged !== undefined ? ` | ${filesChanged} file(s)` : ""}${
+                  changedFiles.length > 0 ? ` | ${changedFiles.slice(0, 3).join(", ")}` : ""
+                }`
+              : `${command} | cwd ${readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", "."))}`,
           status: "pending",
           requestedAt: event.ts,
           updatedAt: event.ts,
+          requestedEventId: event.eventId,
         });
       }
 
@@ -992,6 +1132,7 @@ export function App() {
             status: payload.decision,
             resolvedAt: event.ts,
             updatedAt: event.ts,
+            resolvedEventId: event.eventId,
           });
           continue;
         }
@@ -1005,10 +1146,14 @@ export function App() {
           cwd: ".",
           shell: "system default",
           timeoutMs: 0,
+          risk: "not recorded",
+          requestJson: "{}",
+          requestSummary: "Resolved approval was received before the request event.",
           status: payload.decision,
           requestedAt: event.ts,
           updatedAt: event.ts,
           resolvedAt: event.ts,
+          resolvedEventId: event.eventId,
         });
       }
     }
@@ -1081,6 +1226,10 @@ export function App() {
 
     return sortByUpdatedAtDesc(Array.from(cards.values()));
   }, [approvalByPatchId, events, patchCacheById]);
+
+  const patchCardById = useMemo(() => {
+    return new Map(patchCards.map((patch) => [patch.patchId, patch]));
+  }, [patchCards]);
 
   const commandOutputByTaskId = useMemo(() => {
     const outputs = new Map<string, string[]>();
@@ -1182,10 +1331,11 @@ export function App() {
     setProviderTestResult(null);
   }
 
-  function buildProviderPatchFromForm(): AppConfig["provider"] {
+  function buildProviderProfileFromForm(profileId = activeProviderProfileId): ProviderProfile {
     const model = providerSettings.model.trim();
     const baseUrl = providerSettings.baseUrl.trim();
     const apiKeyEnvVarName = providerSettings.apiKeyEnvVarName.trim() || DEFAULT_PROVIDER_API_KEY_ENV_VAR;
+    const profileName = providerSettings.name.trim() || "Provider profile";
 
     if (!model) {
       throw new Error("Provider model is required.");
@@ -1211,6 +1361,8 @@ export function App() {
     });
 
     return {
+      id: profileId,
+      name: profileName,
       mode: providerSettings.mode,
       baseUrl: baseUrl || DEFAULT_PROVIDER_BASE_URL,
       model,
@@ -1223,6 +1375,39 @@ export function App() {
       maxContextTokens,
       timeout,
     };
+  }
+
+  function buildProviderPatchFromForm(profileId = activeProviderProfileId): AppConfig["provider"] {
+    const profile = buildProviderProfileFromForm(profileId);
+    const model = profile.model ?? DEFAULT_PROVIDER_MODEL;
+    const currentProfiles = config?.provider.profiles ?? [];
+    const profiles = currentProfiles.some((item) => item.id === profile.id)
+      ? currentProfiles.map((item) => (item.id === profile.id ? profile : item))
+      : [...currentProfiles, profile];
+
+    return {
+      ...profile,
+      model,
+      defaultModel: profile.defaultModel ?? model,
+      fallbackModel: config?.provider.fallbackModel,
+      temperature: profile.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
+      maxOutputTokens: profile.maxOutputTokens ?? profile.maxTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
+      activeProfileId: profile.id,
+      profiles,
+    };
+  }
+
+  function selectProviderProfile(profileId: string) {
+    if (!config) {
+      return;
+    }
+    const normalized = normalizeProviderConfig({
+      ...config.provider,
+      activeProfileId: profileId,
+    });
+    setActiveProviderProfileId(normalized.activeProfileId ?? profileId);
+    setProviderSettings(buildProviderSettingsForm({ ...config, provider: normalized }));
+    setProviderTestResult(null);
   }
 
   async function refreshSessionHistory(preferredSessionId?: string) {
@@ -1277,15 +1462,16 @@ export function App() {
     const normalized = normalizeRuntimeConfig(result.config);
     setConfig(normalized);
     setProviderSettings(buildProviderSettingsForm(normalized));
+    setActiveProviderProfileId(normalized.provider.activeProfileId ?? activeProviderProfileId);
     return normalized;
   }
 
-  async function runProviderTest(provider: AppConfig["provider"]) {
+  async function runProviderTest(provider: AppConfig["provider"], profileId = activeProviderProfileId) {
     setProviderTestBusy(true);
     setProviderTestResult(null);
 
     try {
-      const result = await runtimeClient.testProvider({ provider });
+      const result = await runtimeClient.testProvider({ profileId, provider });
       setProviderTestResult(result);
     } finally {
       setProviderTestBusy(false);
@@ -1390,7 +1576,7 @@ export function App() {
     try {
       const normalized = await persistProviderConfig();
       if (normalized) {
-        await runProviderTest(normalized.provider);
+        await runProviderTest(normalized.provider, normalized.provider.activeProfileId);
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -1404,9 +1590,48 @@ export function App() {
 
     try {
       const providerPatch = buildProviderPatchFromForm();
-      await runProviderTest(providerPatch);
+      await runProviderTest(providerPatch, activeProviderProfileId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function handleCreateProviderProfile() {
+    if (!config) {
+      return;
+    }
+
+    setProviderConfigBusy(true);
+    setError(null);
+    setProviderTestResult(null);
+
+    try {
+      const profileId = `profile_${Date.now()}`;
+      const profile = {
+        ...buildProviderProfileFromForm(profileId),
+        name: `Profile ${(config.provider.profiles?.length ?? 0) + 1}`,
+      };
+      const result = await runtimeClient.updateConfig({
+        config: {
+          provider: {
+            ...profile,
+            defaultModel: profile.defaultModel ?? profile.model,
+            temperature: profile.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
+            maxOutputTokens: profile.maxOutputTokens ?? profile.maxTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
+            fallbackModel: config.provider.fallbackModel,
+            activeProfileId: profile.id,
+            profiles: [...(config.provider.profiles ?? []), profile],
+          },
+        },
+      });
+      const normalized = normalizeRuntimeConfig(result.config);
+      setConfig(normalized);
+      setActiveProviderProfileId(normalized.provider.activeProfileId ?? profile.id);
+      setProviderSettings(buildProviderSettingsForm(normalized));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setProviderConfigBusy(false);
     }
   }
 
@@ -1591,6 +1816,27 @@ export function App() {
           </div>
           <div className="provider-form">
             <label className="field">
+              <span>Profile</span>
+              <select
+                value={activeProviderProfileId}
+                onChange={(event) => selectProviderProfile(event.target.value)}
+              >
+                {(config?.provider.profiles ?? []).map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Profile name</span>
+              <input
+                value={providerSettings.name}
+                onChange={(event) => updateProviderSetting("name", event.target.value)}
+                placeholder="Default"
+              />
+            </label>
+            <label className="field">
               <span>Mode</span>
               <select
                 value={providerSettings.mode}
@@ -1678,6 +1924,10 @@ export function App() {
               <strong>{providerTestResult.message}</strong>
               <dl className="provider-detail-grid">
                 <div>
+                  <dt>Profile</dt>
+                  <dd>{providerTestResult.profileName ?? providerSettings.name}</dd>
+                </div>
+                <div>
                   <dt>Base URL</dt>
                   <dd className="break">{providerTestResult.baseUrl ?? providerSettings.baseUrl}</dd>
                 </div>
@@ -1698,7 +1948,15 @@ export function App() {
           ) : null}
           <div className="actions split-actions">
             <button type="button" onClick={handleSaveProviderConfig} disabled={providerConfigBusy || loading || !config}>
-              {providerConfigBusy ? "Saving..." : "Save Provider"}
+              {providerConfigBusy ? "Saving..." : "Save Current Profile"}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={handleCreateProviderProfile}
+              disabled={providerConfigBusy || loading || !config}
+            >
+              New Profile
             </button>
             <button
               type="button"
@@ -2188,38 +2446,138 @@ export function App() {
                 {approvalCards.map((item) => {
                   const outputLines = commandOutputByTaskId.get(item.taskId) ?? [];
                   const isPending = item.status === "pending";
+                  const patch = item.patchId ? patchCardById.get(item.patchId) : undefined;
+                  const diffText = item.patchId
+                    ? patchCacheById[item.patchId]?.diffText ?? patch?.diffText
+                    : undefined;
+                  const hasLoadedDiff = Boolean(diffText);
+                  const isPatchApproval = item.kind === "apply_patch";
+                  const cardTitle = isPatchApproval
+                    ? item.patchSummary ?? patch?.summary ?? "Apply patch"
+                    : item.command;
                   return (
                     <li key={item.approvalId} className="approval-card" data-status={item.status}>
                       <div className="section-header approval-topline">
                         <div>
-                          <strong>{item.command}</strong>
-                          <span className="muted">approvalId: {item.approvalId}</span>
+                          <strong>{cardTitle}</strong>
+                          <span className="muted">
+                            {item.kind} | approvalId: {item.approvalId}
+                          </span>
                         </div>
-                        <span className={`badge ${item.status === "approved" ? "ok" : "warn"}`}>
-                          {item.status}
-                        </span>
+                        <span className={`badge ${getApprovalBadgeClass(item.status)}`}>{item.status}</span>
                       </div>
-                      <dl className="meta compact approval-meta">
+
+                      {isPatchApproval ? (
+                        <>
+                          <dl className="meta compact approval-meta">
+                            <div>
+                              <dt>files changed</dt>
+                              <dd>{item.filesChanged ?? patch?.filesChanged ?? "not recorded"}</dd>
+                            </div>
+                            <div>
+                              <dt>patch id</dt>
+                              <dd className="break">{item.patchId ?? "not recorded"}</dd>
+                            </div>
+                            <div>
+                              <dt>summary</dt>
+                              <dd>{item.patchSummary ?? patch?.summary ?? item.requestSummary}</dd>
+                            </div>
+                            <div>
+                              <dt>risk</dt>
+                              <dd>{item.risk}</dd>
+                            </div>
+                          </dl>
+                          <div className="approval-request-summary">
+                            <span className="label">Diff preview</span>
+                            <code>{diffText ? diffText.slice(0, 900) : "Diff not loaded yet."}</code>
+                          </div>
+                          <div className="patch-actions">
+                            {item.patchId ? (
+                              <button
+                                type="button"
+                                onClick={() => handleLoadPatchDiff(item.patchId as string)}
+                                disabled={patchBusyId === item.patchId || loading}
+                              >
+                                {patchBusyId === item.patchId
+                                  ? "Loading..."
+                                  : hasLoadedDiff
+                                    ? "Reload diff"
+                                    : "Load diff"}
+                              </button>
+                            ) : null}
+                          </div>
+                          {diffText ? <pre className="patch-diff">{diffText}</pre> : null}
+                        </>
+                      ) : (
+                        <>
+                          <dl className="meta compact approval-meta">
+                            <div>
+                              <dt>command</dt>
+                              <dd className="break">{item.command}</dd>
+                            </div>
+                            <div>
+                              <dt>cwd</dt>
+                              <dd className="break">{item.cwd}</dd>
+                            </div>
+                            <div>
+                              <dt>shell</dt>
+                              <dd>{item.shell}</dd>
+                            </div>
+                            <div>
+                              <dt>timeout</dt>
+                              <dd>{item.timeoutMs > 0 ? `${item.timeoutMs} ms` : "not recorded"}</dd>
+                            </div>
+                            <div>
+                              <dt>risk</dt>
+                              <dd>{item.risk}</dd>
+                            </div>
+                          </dl>
+                          <div className="approval-request-summary">
+                            <span className="label">Request summary</span>
+                            <code>{item.requestSummary}</code>
+                          </div>
+                          <div className="approval-request-summary">
+                            <span className="label">Approval request JSON</span>
+                            <code>{item.requestJson}</code>
+                          </div>
+                          {outputLines.length > 0 ? (
+                            <pre className="approval-output">{outputLines.join("\n")}</pre>
+                          ) : null}
+                        </>
+                      )}
+
+                      <dl className="meta compact approval-meta approval-trace-meta">
                         <div>
-                          <dt>cwd</dt>
-                          <dd className="break">{item.cwd}</dd>
-                        </div>
-                        <div>
-                          <dt>shell</dt>
-                          <dd>{item.shell}</dd>
-                        </div>
-                        <div>
-                          <dt>timeout</dt>
-                          <dd>{item.timeoutMs > 0 ? `${item.timeoutMs} ms` : "not recorded"}</dd>
+                          <dt>decision</dt>
+                          <dd>{item.status === "pending" ? "pending user decision" : item.status}</dd>
                         </div>
                         <div>
                           <dt>task</dt>
                           <dd className="break">{item.taskId}</dd>
                         </div>
+                        <div>
+                          <dt>requested</dt>
+                          <dd>{formatTimestamp(item.requestedAt)}</dd>
+                        </div>
+                        <div>
+                          <dt>resolved</dt>
+                          <dd>{item.resolvedAt ? formatTimestamp(item.resolvedAt) : "not resolved"}</dd>
+                        </div>
+                        <div>
+                          <dt>trace hint</dt>
+                          <dd className="break">
+                            Refresh Persistent Trace and filter by approvalId/taskId if event history is incomplete.
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>event ids</dt>
+                          <dd className="break">
+                            requested {item.requestedEventId ?? "unknown"}
+                            {item.resolvedEventId ? ` | resolved ${item.resolvedEventId}` : ""}
+                          </dd>
+                        </div>
                       </dl>
-                      {outputLines.length > 0 ? (
-                        <pre className="approval-output">{outputLines.join("\n")}</pre>
-                      ) : null}
+
                       {isPending ? (
                         <div className="approval-actions">
                           <button

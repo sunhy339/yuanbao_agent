@@ -640,6 +640,11 @@ button:disabled {
   font-size: 11px;
 }
 
+.approval-trace-meta {
+  padding-top: 2px;
+  border-top: 1px solid rgba(24, 32, 38, 0.08);
+}
+
 .patch-meta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -712,6 +717,31 @@ button:disabled {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #5a6670;
+}
+
+.approval-request-summary {
+  display: grid;
+  gap: 6px;
+}
+
+.approval-request-summary .label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #5a6670;
+}
+
+.approval-request-summary code {
+  display: block;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(24, 32, 38, 0.06);
+  color: #182026;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .tool-summary-grid code {
@@ -851,6 +881,10 @@ button:disabled {
   }
 
   .trace-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .approval-meta {
     grid-template-columns: 1fr;
   }
 

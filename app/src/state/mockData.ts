@@ -74,10 +74,35 @@ export function buildMockTask(sessionId: string, content: string): TaskRecord {
 export function buildMockConfig(): AppConfig {
   return {
     provider: {
+      mode: "mock",
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-5-codex",
       defaultModel: "gpt-5-codex",
       fallbackModel: "claude-sonnet",
+      apiKeyEnvVarName: "LOCAL_AGENT_PROVIDER_API_KEY",
       temperature: 0.2,
+      maxTokens: 4000,
       maxOutputTokens: 4000,
+      maxContextTokens: 120000,
+      timeout: 30,
+      activeProfileId: "default",
+      profiles: [
+        {
+          id: "default",
+          name: "Default",
+          mode: "mock",
+          baseUrl: "https://api.openai.com/v1",
+          model: "gpt-5-codex",
+          defaultModel: "gpt-5-codex",
+          fallbackModel: "claude-sonnet",
+          apiKeyEnvVarName: "LOCAL_AGENT_PROVIDER_API_KEY",
+          temperature: 0.2,
+          maxTokens: 4000,
+          maxOutputTokens: 4000,
+          maxContextTokens: 120000,
+          timeout: 30,
+        },
+      ],
     },
     workspace: {
       rootPath: DEFAULT_WORKSPACE_PATH,

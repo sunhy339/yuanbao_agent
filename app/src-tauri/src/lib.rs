@@ -52,6 +52,12 @@ struct TaskGetPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct TaskControlPayload {
+    task_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct TaskListPayload {
     session_id: Option<String>,
 }
@@ -368,6 +374,33 @@ fn task_get(
 }
 
 #[tauri::command]
+fn task_cancel(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: TaskControlPayload,
+) -> Result<Value, String> {
+    state.call(&app_handle, "task.cancel", json!({ "taskId": payload.task_id }))
+}
+
+#[tauri::command]
+fn task_pause(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: TaskControlPayload,
+) -> Result<Value, String> {
+    state.call(&app_handle, "task.pause", json!({ "taskId": payload.task_id }))
+}
+
+#[tauri::command]
+fn task_resume(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: TaskControlPayload,
+) -> Result<Value, String> {
+    state.call(&app_handle, "task.resume", json!({ "taskId": payload.task_id }))
+}
+
+#[tauri::command]
 fn task_list(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -467,6 +500,9 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             session_list,
             message_send,
             task_get,
+            task_cancel,
+            task_pause,
+            task_resume,
             task_list,
             approval_submit,
             config_get,

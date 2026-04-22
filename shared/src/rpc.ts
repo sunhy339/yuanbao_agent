@@ -55,6 +55,8 @@ export type RpcMethod =
   | "message.send"
   | "task.get"
   | "task.cancel"
+  | "task.pause"
+  | "task.resume"
   | "approval.submit"
   | "config.get"
   | "config.update"
@@ -87,6 +89,9 @@ export interface TaskCancelParams {
   taskId: Identifier;
 }
 
+export type TaskPauseParams = TaskCancelParams;
+export type TaskResumeParams = TaskCancelParams;
+
 export interface TaskListParams {
   sessionId?: Identifier;
 }
@@ -102,6 +107,7 @@ export interface DiffGetParams {
 
 export interface ProviderTestParams {
   provider?: ConfigPatch["provider"] | ProviderConfig;
+  profileId?: string;
 }
 
 export interface CommandLogGetParams {
@@ -141,6 +147,10 @@ export interface TaskListResult {
   tasks: TaskRecord[];
 }
 
+export interface TaskControlResult {
+  task: TaskRecord;
+}
+
 export interface ApprovalSubmitResult {
   approval: ApprovalRecord;
 }
@@ -161,10 +171,13 @@ export interface ProviderTestResult {
   ok: boolean;
   status: "ok" | "mocked" | "not_configured" | "missing_env" | "unsupported" | "failed";
   message: string;
+  profileId?: string;
+  profileName?: string;
   providerMode?: ProviderMode | string;
   model?: string;
   baseUrl?: string;
   checkedEnvVarName?: string;
+  envVarName?: string;
   source: "runtime" | "mock-fallback";
   details?: Record<string, unknown>;
 }

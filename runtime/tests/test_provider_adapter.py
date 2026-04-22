@@ -158,6 +158,55 @@ def test_configured_api_key_env_var_name_is_used() -> None:
     assert calls[0]["headers"]["Authorization"] == "Bearer sk-custom"
 
 
+def test_active_provider_profile_is_used_for_real_requests() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"choices":[{"message":{"role":"assistant","content":"profile answer"}}]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "mock",
+                "baseUrl": "https://legacy.example.test/v1",
+                "model": "legacy-chat",
+                "activeProfileId": "secondary",
+                "profiles": [
+                    {
+                        "id": "default",
+                        "name": "Default",
+                        "mode": "mock",
+                        "baseUrl": "https://default.example.test/v1",
+                        "model": "default-chat",
+                    },
+                    {
+                        "id": "secondary",
+                        "name": "Secondary",
+                        "mode": "openai-compatible",
+                        "apiKeyEnvVarName": "SECONDARY_PROVIDER_KEY",
+                        "baseUrl": "https://secondary.example.test/v1",
+                        "model": "secondary-chat",
+                        "temperature": 0.3,
+                    },
+                ],
+            }
+        },
+        http_post=fake_post,
+        environ={"SECONDARY_PROVIDER_KEY": "sk-secondary"},
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "profile answer"
+    call = calls[0]
+    assert call["url"] == "https://secondary.example.test/v1/chat/completions"
+    assert call["headers"]["Authorization"] == "Bearer sk-secondary"
+    payload = json.loads(call["body"].decode("utf-8"))
+    assert payload["model"] == "secondary-chat"
+    assert payload["temperature"] == 0.3
+
+
 def test_tool_calls_response_is_normalized() -> None:
     def fake_post(**_kwargs: Any) -> tuple[int, bytes]:
         return 200, json.dumps(

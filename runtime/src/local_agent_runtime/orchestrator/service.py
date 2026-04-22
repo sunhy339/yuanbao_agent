@@ -53,12 +53,19 @@ class Orchestrator:
         return redacted
 
     def test_provider(self, params: dict[str, Any]) -> dict[str, Any]:
+        params = params if isinstance(params, dict) else {}
         provider_patch = params.get("provider") if isinstance(params, dict) else None
         config = deepcopy(self._store.get_config({}).get("config", {}))
-        provider_config = deepcopy(config.get("provider") or {})
+        provider_root = deepcopy(config.get("provider") or {})
+        provider_config, profile_id, profile_name = self._provider_config_for_test(
+            provider_root=provider_root,
+            profile_id=params.get("profileId"),
+            provider_patch=provider_patch if isinstance(provider_patch, dict) else None,
+        )
         if isinstance(provider_patch, dict):
-            provider_config.update(provider_patch)
-        config["provider"] = provider_config
+            config["provider"] = self._provider_root_for_test(provider_root, provider_config)
+        else:
+            config["provider"] = provider_config
 
         mode = str(provider_config.get("mode") or provider_config.get("providerMode") or "").strip()
         normalized_mode = mode.lower()
@@ -76,10 +83,13 @@ class Orchestrator:
                 "ok": True,
                 "status": "mocked",
                 "message": "Provider is in mock mode; no network request was made.",
+                "profileId": profile_id,
+                "profileName": profile_name,
                 "providerMode": mode or "mock",
                 "model": model,
                 "baseUrl": base_url,
                 "checkedEnvVarName": env_var_name,
+                "envVarName": env_var_name,
                 "source": "runtime",
                 "details": {
                     "errorSummary": "Mock mode does not contact a remote model.",
@@ -90,10 +100,13 @@ class Orchestrator:
                 "ok": False,
                 "status": "unsupported",
                 "message": f"Unsupported provider mode: {mode}",
+                "profileId": profile_id,
+                "profileName": profile_name,
                 "providerMode": mode,
                 "model": model,
                 "baseUrl": base_url,
                 "checkedEnvVarName": env_var_name,
+                "envVarName": env_var_name,
                 "source": "runtime",
                 "details": {
                     "errorSummary": f"Unsupported provider mode: {mode}",
@@ -105,10 +118,13 @@ class Orchestrator:
                 "ok": False,
                 "status": "missing_env",
                 "message": f"Environment variable {env_var_name} is not set.",
+                "profileId": profile_id,
+                "profileName": profile_name,
                 "providerMode": mode,
                 "model": model,
                 "baseUrl": base_url,
                 "checkedEnvVarName": env_var_name,
+                "envVarName": env_var_name,
                 "source": "runtime",
                 "details": {
                     "errorSummary": f"Set {env_var_name} in the runtime environment.",
@@ -132,10 +148,13 @@ class Orchestrator:
                 "ok": False,
                 "status": "failed",
                 "message": error_summary,
+                "profileId": profile_id,
+                "profileName": profile_name,
                 "providerMode": mode,
                 "model": model,
                 "baseUrl": base_url,
                 "checkedEnvVarName": env_var_name,
+                "envVarName": env_var_name,
                 "source": "runtime",
                 "details": {
                     "errorSummary": error_summary,
@@ -147,16 +166,83 @@ class Orchestrator:
             "ok": True,
             "status": "ok",
             "message": "Provider connection succeeded.",
+            "profileId": profile_id,
+            "profileName": profile_name,
             "providerMode": mode,
             "model": response.get("raw", {}).get("model") or model,
             "baseUrl": base_url,
             "checkedEnvVarName": env_var_name,
+            "envVarName": env_var_name,
             "source": "runtime",
             "details": {
                 "finishReason": response.get("finish_reason"),
                 "usage": response.get("raw", {}).get("usage"),
             },
         }
+
+    def _provider_config_for_test(
+        self,
+        *,
+        provider_root: dict[str, Any],
+        profile_id: Any,
+        provider_patch: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any], str | None, str | None]:
+        selected = self._select_provider_profile(provider_root, profile_id)
+        provider_config = {
+            key: deepcopy(value)
+            for key, value in provider_root.items()
+            if key not in {"profiles", "activeProfileId"}
+        }
+        selected_profile_id: str | None = None
+        selected_profile_name: str | None = None
+
+        if selected is not None:
+            provider_config.update(deepcopy(selected))
+            selected_profile_id = selected.get("id") if isinstance(selected.get("id"), str) else None
+            selected_profile_name = selected.get("name") if isinstance(selected.get("name"), str) else None
+
+        if provider_patch:
+            patch_selected = self._select_provider_profile(
+                provider_patch,
+                provider_patch.get("activeProfileId") or provider_patch.get("profileId"),
+            )
+            if patch_selected is not None:
+                provider_config.update(deepcopy(patch_selected))
+                selected_profile_id = patch_selected.get("id") if isinstance(patch_selected.get("id"), str) else selected_profile_id
+                selected_profile_name = patch_selected.get("name") if isinstance(patch_selected.get("name"), str) else selected_profile_name
+            else:
+                for key, value in provider_patch.items():
+                    if key not in {"profiles", "activeProfileId", "profileId"}:
+                        provider_config[key] = deepcopy(value)
+                if isinstance(provider_patch.get("id"), str):
+                    selected_profile_id = provider_patch["id"]
+                if isinstance(provider_patch.get("name"), str):
+                    selected_profile_name = provider_patch["name"]
+
+        return provider_config, selected_profile_id, selected_profile_name
+
+    def _select_provider_profile(self, provider_root: dict[str, Any], profile_id: Any) -> dict[str, Any] | None:
+        profiles = provider_root.get("profiles")
+        if not isinstance(profiles, list) or not profiles:
+            return None
+
+        requested_id = profile_id if isinstance(profile_id, str) and profile_id.strip() else provider_root.get("activeProfileId")
+        if isinstance(requested_id, str) and requested_id.strip():
+            for profile in profiles:
+                if isinstance(profile, dict) and profile.get("id") == requested_id:
+                    return profile
+        return next((profile for profile in profiles if isinstance(profile, dict)), None)
+
+    def _provider_root_for_test(
+        self,
+        provider_root: dict[str, Any],
+        provider_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        provider = deepcopy(provider_root)
+        for key, value in provider_config.items():
+            if key not in {"profiles", "activeProfileId"}:
+                provider[key] = deepcopy(value)
+        return provider
 
     def send_message(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._store.require_session(params["sessionId"])
@@ -318,10 +404,74 @@ class Orchestrator:
         self._publish(
             session_id=task["sessionId"],
             task=task,
-            event_type="task.updated",
+            event_type="task.cancelled",
             payload={"status": task["status"]},
         )
         return {"task": task}
+
+    def pause_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        task = self._store.get_task({"taskId": params["taskId"]})["task"]
+        if task["status"] not in {"running", "waiting_approval"}:
+            return {"task": task}
+        paused_task = self._store.update_task(task_id=task["id"], status="paused")
+        self._publish(
+            session_id=paused_task["sessionId"],
+            task=paused_task,
+            event_type="task.paused",
+            payload={"status": paused_task["status"], "previousStatus": task["status"]},
+        )
+        return {"task": paused_task}
+
+    def resume_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        task = self._store.get_task({"taskId": params["taskId"]})["task"]
+        if task["status"] != "paused":
+            return {"task": task}
+
+        pending_state = self._load_pending_react_state(task["id"])
+        if pending_state is not None:
+            approval = self._latest_approval_for_task(task["id"])
+            if approval is not None and approval.get("decision") == "approved":
+                running_task = self._store.update_task_status(task_id=task["id"], status="running")
+                self._publish(
+                    session_id=running_task["sessionId"],
+                    task=running_task,
+                    event_type="task.resumed",
+                    payload={"status": "running", "detail": "Resuming approved pending ReAct task."},
+                )
+                resumed_task = self._resume_react_after_approval(task=running_task, approval=approval)
+                return {"task": resumed_task}
+            if approval is not None and approval.get("decision") == "rejected":
+                self._publish(
+                    session_id=task["sessionId"],
+                    task=task,
+                    event_type="task.resumed",
+                    payload={"status": "running", "detail": "Resuming rejected pending ReAct task."},
+                )
+                failed_task = self._fail_task(
+                    session_id=task["sessionId"],
+                    task=task,
+                    summary="Approval was rejected by the user.",
+                    error_code="APPROVAL_REJECTED",
+                )
+                return {"task": failed_task}
+
+            waiting_task = self._store.update_task_status(task_id=task["id"], status="waiting_approval")
+            self._publish(
+                session_id=waiting_task["sessionId"],
+                task=waiting_task,
+                event_type="task.resumed",
+                payload={"status": "waiting_approval", "detail": "Pending ReAct task is waiting for approval."},
+            )
+            return {"task": waiting_task}
+
+        running_task = self._store.update_task_status(task_id=task["id"], status="running")
+        self._publish(
+            session_id=running_task["sessionId"],
+            task=running_task,
+            event_type="task.resumed",
+            payload={"status": running_task["status"]},
+        )
+        return {"task": running_task}
 
     def submit_approval(self, params: dict[str, Any]) -> dict[str, Any]:
         approval = self._store.resolve_approval(
@@ -329,6 +479,34 @@ class Orchestrator:
             decision=params["decision"],
         )
         task = self._store.get_task({"taskId": approval["taskId"]})["task"]
+        if task["status"] in {"cancelled", "completed", "failed"}:
+            self._publish(
+                session_id=task["sessionId"],
+                task=task,
+                event_type="approval.resolved",
+                payload={
+                    "approvalId": approval["id"],
+                    "taskId": task["id"],
+                    "decision": approval["decision"],
+                    "ignored": True,
+                    "taskStatus": task["status"],
+                },
+            )
+            return {"approval": approval}
+        if task["status"] == "paused":
+            self._publish(
+                session_id=task["sessionId"],
+                task=task,
+                event_type="approval.resolved",
+                payload={
+                    "approvalId": approval["id"],
+                    "taskId": task["id"],
+                    "decision": approval["decision"],
+                    "deferred": True,
+                    "taskStatus": task["status"],
+                },
+            )
+            return {"approval": approval}
         if approval["decision"] == "approved":
             task = self._store.update_task_status(task_id=approval["taskId"], status="running")
             self._publish(
@@ -587,6 +765,11 @@ class Orchestrator:
         self._pending_react_tasks.pop(task_id, None)
         if hasattr(self._store, "delete_pending_react_state"):
             self._store.delete_pending_react_state(task_id)
+
+    def _latest_approval_for_task(self, task_id: str) -> dict[str, Any] | None:
+        if hasattr(self._store, "find_latest_approval"):
+            return self._store.find_latest_approval(task_id=task_id)
+        return None
 
     def _tool_failed(self, tool_name: str, result: dict[str, Any]) -> bool:
         status = result.get("status")

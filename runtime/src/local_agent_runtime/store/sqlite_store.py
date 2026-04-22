@@ -25,6 +25,24 @@ DEFAULT_CONFIG = {
         "maxOutputTokens": 4000,
         "maxContextTokens": 120000,
         "timeout": 30,
+        "activeProfileId": "default",
+        "profiles": [
+            {
+                "id": "default",
+                "name": "Default",
+                "mode": "mock",
+                "baseUrl": "https://api.openai.com/v1",
+                "model": "gpt-5-codex",
+                "defaultModel": "gpt-5-codex",
+                "fallbackModel": "claude-sonnet",
+                "apiKeyEnvVarName": "LOCAL_AGENT_PROVIDER_API_KEY",
+                "temperature": 0.2,
+                "maxTokens": 4000,
+                "maxOutputTokens": 4000,
+                "maxContextTokens": 120000,
+                "timeout": 30,
+            }
+        ],
     },
     "workspace": {
         "rootPath": "",
@@ -46,7 +64,12 @@ DEFAULT_CONFIG = {
     "tools": {
         "runCommand": {
             "allowedShell": "powershell",
+            "allowedCommands": [],
+            "allowlist": [],
+            "deniedCommands": [],
+            "denylist": [],
             "blockedPatterns": ["rm -rf", "shutdown", "format"],
+            "allowedCwdRoots": [],
         }
     },
     "ui": {
@@ -498,6 +521,18 @@ class SQLiteStore:
             return None
         return self._serialize_approval(dict(row))
 
+    def find_latest_approval(self, *, task_id: str, decision: str | None = None) -> dict[str, Any] | None:
+        query = ["SELECT * FROM approvals WHERE task_id = ?"]
+        values: list[Any] = [task_id]
+        if decision is not None:
+            query.append("AND decision = ?")
+            values.append(decision)
+        query.append("ORDER BY created_at DESC LIMIT 1")
+        row = self._conn.execute(" ".join(query), values).fetchone()
+        if row is None:
+            return None
+        return self._serialize_approval(dict(row))
+
     def upsert_pending_react_state(
         self,
         *,
@@ -707,7 +742,11 @@ class SQLiteStore:
         if not isinstance(patch, dict):
             raise ValueError("config.update expects an object payload")
 
-        self._config = self._merge_config(self._config, patch)
+        merged = self._merge_config(self._config, patch)
+        provider_patch = patch.get("provider") if isinstance(patch.get("provider"), dict) else None
+        if isinstance(provider_patch, dict) and "profiles" not in provider_patch:
+            self._apply_provider_patch_to_active_profile(merged, provider_patch)
+        self._config = self._normalize_config(merged)
         self._persist_config(self._config)
         return {"config": deepcopy(self._config)}
 
@@ -858,10 +897,147 @@ class SQLiteStore:
         if not isinstance(loaded, dict):
             loaded = {}
 
-        config = self._merge_config(DEFAULT_CONFIG, loaded)
+        config = self._normalize_config(self._merge_config(DEFAULT_CONFIG, loaded))
         if config != loaded:
             self._persist_config(config)
         return config
+
+    def _normalize_config(self, config: dict[str, Any]) -> dict[str, Any]:
+        normalized = deepcopy(config)
+        provider = normalized.get("provider")
+        if not isinstance(provider, dict):
+            normalized["provider"] = deepcopy(DEFAULT_CONFIG["provider"])
+            return normalized
+
+        normalized["provider"] = self._normalize_provider_config(provider)
+        return normalized
+
+    def _normalize_provider_config(self, provider: dict[str, Any]) -> dict[str, Any]:
+        normalized = deepcopy(provider)
+        legacy_profile = self._profile_from_provider(normalized)
+        raw_profiles = normalized.get("profiles")
+        profiles = [self._normalize_provider_profile(item, legacy_profile) for item in raw_profiles or [] if isinstance(item, dict)]
+        if not profiles:
+            profiles = [self._normalize_provider_profile(legacy_profile, legacy_profile)]
+
+        seen: set[str] = set()
+        unique_profiles: list[dict[str, Any]] = []
+        for profile in profiles:
+            profile_id = profile["id"]
+            if profile_id in seen:
+                continue
+            seen.add(profile_id)
+            unique_profiles.append(profile)
+
+        active_profile_id = normalized.get("activeProfileId")
+        if not isinstance(active_profile_id, str) or not active_profile_id.strip():
+            active_profile_id = unique_profiles[0]["id"]
+        elif active_profile_id not in {profile["id"] for profile in unique_profiles}:
+            active_profile_id = unique_profiles[0]["id"]
+
+        active_profile = next(profile for profile in unique_profiles if profile["id"] == active_profile_id)
+        for key, value in active_profile.items():
+            if key in {"id", "name"}:
+                continue
+            normalized[key] = deepcopy(value)
+        normalized["activeProfileId"] = active_profile_id
+        normalized["profiles"] = unique_profiles
+        return normalized
+
+    def _profile_from_provider(self, provider: dict[str, Any]) -> dict[str, Any]:
+        profile: dict[str, Any] = {
+            "id": provider.get("activeProfileId") if isinstance(provider.get("activeProfileId"), str) else "default",
+            "name": provider.get("profileName") if isinstance(provider.get("profileName"), str) else "Default",
+        }
+        for key in (
+            "mode",
+            "baseUrl",
+            "base_url",
+            "model",
+            "defaultModel",
+            "fallbackModel",
+            "apiKeyEnvVarName",
+            "api_key_env_var_name",
+            "envKey",
+            "apiKey",
+            "api_key",
+            "temperature",
+            "maxTokens",
+            "max_tokens",
+            "maxOutputTokens",
+            "maxContextTokens",
+            "timeout",
+            "timeoutSeconds",
+            "timeoutMs",
+        ):
+            if key in provider and provider[key] is not None:
+                profile[key] = deepcopy(provider[key])
+        return profile
+
+    def _normalize_provider_profile(self, profile: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
+        merged = deepcopy(defaults)
+        merged.update(deepcopy(profile))
+
+        profile_id = merged.get("id")
+        if not isinstance(profile_id, str) or not profile_id.strip():
+            profile_id = f"profile_{uuid.uuid4().hex[:8]}"
+        profile_name = merged.get("name")
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            profile_name = profile_id
+
+        model = merged.get("model") or merged.get("defaultModel") or DEFAULT_CONFIG["provider"]["model"]
+        max_tokens = merged.get("maxTokens") or merged.get("maxOutputTokens") or DEFAULT_CONFIG["provider"]["maxTokens"]
+        normalized = {
+            **merged,
+            "id": profile_id.strip(),
+            "name": profile_name.strip(),
+            "mode": merged.get("mode") or DEFAULT_CONFIG["provider"]["mode"],
+            "baseUrl": merged.get("baseUrl") or merged.get("base_url") or DEFAULT_CONFIG["provider"]["baseUrl"],
+            "model": model,
+            "defaultModel": merged.get("defaultModel") or model,
+            "apiKeyEnvVarName": merged.get("apiKeyEnvVarName")
+            or merged.get("api_key_env_var_name")
+            or merged.get("envKey")
+            or DEFAULT_CONFIG["provider"]["apiKeyEnvVarName"],
+            "temperature": merged.get("temperature", DEFAULT_CONFIG["provider"]["temperature"]),
+            "maxTokens": max_tokens,
+            "maxOutputTokens": merged.get("maxOutputTokens") or max_tokens,
+            "maxContextTokens": merged.get("maxContextTokens", DEFAULT_CONFIG["provider"]["maxContextTokens"]),
+            "timeout": merged.get("timeout", DEFAULT_CONFIG["provider"]["timeout"]),
+        }
+        return normalized
+
+    def _apply_provider_patch_to_active_profile(
+        self,
+        config: dict[str, Any],
+        provider_patch: dict[str, Any],
+    ) -> None:
+        provider = config.get("provider")
+        if not isinstance(provider, dict):
+            return
+        profiles = provider.get("profiles")
+        if not isinstance(profiles, list) or not profiles:
+            return
+
+        active_profile_id = provider.get("activeProfileId")
+        active_profile = None
+        if isinstance(active_profile_id, str):
+            active_profile = next(
+                (
+                    profile
+                    for profile in profiles
+                    if isinstance(profile, dict) and profile.get("id") == active_profile_id
+                ),
+                None,
+            )
+        if active_profile is None:
+            active_profile = next((profile for profile in profiles if isinstance(profile, dict)), None)
+        if active_profile is None:
+            return
+
+        for key, value in provider_patch.items():
+            if key not in {"profiles", "activeProfileId"} and value is not None:
+                active_profile[key] = deepcopy(value)
 
     def _persist_config(self, config: dict[str, Any]) -> None:
         self._conn.execute(

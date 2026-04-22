@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import json
 import os
@@ -649,7 +650,12 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
             )
         return normalized
 
-    def _apply_unified_diff_to_file(workspace_root: Path, file_patch: dict[str, Any]) -> tuple[str | None, bool]:
+    def _apply_unified_diff_to_file(
+        workspace_root: Path,
+        file_patch: dict[str, Any],
+        *,
+        dry_run: bool = False,
+    ) -> tuple[str | None, bool]:
         old_path = str(file_patch.get("old_path") or "")
         new_path = str(file_patch.get("new_path") or "")
         hunks = list(file_patch.get("hunks") or [])
@@ -711,16 +717,31 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
         output_lines.extend(original_lines[source_index:])
         new_content = "".join(output_lines)
         if new_path == "/dev/null":
-            if absolute_path.exists():
+            if absolute_path.exists() and not dry_run:
                 absolute_path.unlink()
             return relative_path, True
 
         if not is_new_file and new_content == "".join(original_lines):
             return relative_path, False
 
-        absolute_path.parent.mkdir(parents=True, exist_ok=True)
-        absolute_path.write_text(new_content, encoding="utf-8", errors="replace")
+        if not dry_run:
+            absolute_path.parent.mkdir(parents=True, exist_ok=True)
+            absolute_path.write_text(new_content, encoding="utf-8", errors="replace")
         return relative_path, True
+
+    def _validate_patch_request(workspace_root: Path, diff_text: str) -> list[str]:
+        applied_paths: list[str] = []
+        parsed_patch = _parse_unified_diff(diff_text)
+        for file_patch in parsed_patch:
+            if not file_patch.get("hunks"):
+                candidate = file_patch.get("new_path") or file_patch.get("old_path") or "unknown file"
+                raise ValueError(f"Invalid unified diff: no hunks for {candidate}")
+            relative_path, changed = _apply_unified_diff_to_file(workspace_root, file_patch, dry_run=True)
+            if changed and relative_path and relative_path not in applied_paths:
+                applied_paths.append(relative_path)
+        if not applied_paths:
+            raise ValueError("No file changes detected")
+        return applied_paths
 
     def _build_patch_summary(paths: list[str]) -> str:
         if not paths:
@@ -757,8 +778,8 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
             if original_text == new_text and not delete_file:
                 continue
 
-            original_lines = original_text.splitlines(keepends=True)
-            new_lines = new_text.splitlines(keepends=True)
+            original_lines = original_text.splitlines()
+            new_lines = new_text.splitlines()
             diff_chunks.extend(
                 difflib.unified_diff(
                     original_lines,
@@ -1016,7 +1037,19 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
         approval_id = str(params.get("approvalId") or params.get("approval_id") or "").strip() or None
         dry_run = bool(params.get("dry_run", params.get("dryRun", False)))
 
-        patch_request = _build_patch_request(params, workspace_root)
+        try:
+            patch_request = _build_patch_request(params, workspace_root)
+        except Exception as exc:  # noqa: BLE001
+            patch_text = str(params.get("patchText") or params.get("patch_text") or "")
+            return {
+                "status": "validation_failed",
+                "ok": False,
+                "error": str(exc),
+                "summary": "Patch validation failed.",
+                "filesChanged": 0,
+                "diffText": patch_text,
+                "dryRun": True,
+            }
         patch_text = str(params.get("patchText") or params.get("patch_text") or patch_request["diffText"])
         files = params.get("files")
         request_payload = _build_patch_request_payload(
@@ -1030,6 +1063,20 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
             files=files if patch_request["patchMode"] == "files" else None,
         )
         summary = _build_patch_summary(patch_request["changedPaths"])
+
+        try:
+            validated_paths = _validate_patch_request(workspace_root, patch_request["diffText"])
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "validation_failed",
+                "ok": False,
+                "error": str(exc),
+                "summary": summary,
+                "filesChanged": patch_request["filesChanged"],
+                "changedPaths": patch_request["changedPaths"],
+                "diffText": patch_request["diffText"],
+                "dryRun": True,
+            }
 
         approval: dict[str, Any] | None = None
         patch: dict[str, Any] | None = None
@@ -1130,7 +1177,7 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
         patch = store.update_patch(
             patch["id"],
             status="applied",
-            summary=_build_patch_summary(applied_paths or patch_request["changedPaths"]),
+            summary=_build_patch_summary(applied_paths or validated_paths),
             diff_text=patch["diffText"],
             files_changed=len(applied_paths) or patch["filesChanged"],
         )

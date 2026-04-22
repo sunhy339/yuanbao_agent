@@ -75,6 +75,13 @@ struct DiffGetPayload {
     patch_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TraceListPayload {
+    task_id: String,
+    limit: Option<u64>,
+}
+
 #[derive(Default)]
 struct RuntimeManager {
     bridge: Mutex<RuntimeBridge>,
@@ -434,6 +441,22 @@ fn diff_get(
     state.call(&app_handle, "diff.get", json!({ "patchId": payload.patch_id }))
 }
 
+#[tauri::command]
+fn trace_list(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: TraceListPayload,
+) -> Result<Value, String> {
+    state.call(
+        &app_handle,
+        "trace.list",
+        json!({
+            "taskId": payload.task_id,
+            "limit": payload.limit,
+        }),
+    )
+}
+
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .manage(RuntimeManager::default())
@@ -450,6 +473,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             config_update,
             provider_test,
             command_log_get,
-            diff_get
+            diff_get,
+            trace_list
         ])
 }

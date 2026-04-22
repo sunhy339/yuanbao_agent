@@ -42,6 +42,16 @@ class Orchestrator:
         )
         return {"session": session}
 
+    def _redact_provider_secret(self, text: str, env_var_name: Any, direct_key: Any = None) -> str:
+        redacted = text
+        if direct_key:
+            redacted = redacted.replace(str(direct_key), "[redacted]")
+        if env_var_name:
+            env_value = os.environ.get(str(env_var_name))
+            if env_value:
+                redacted = redacted.replace(env_value, "[redacted]")
+        return redacted
+
     def test_provider(self, params: dict[str, Any]) -> dict[str, Any]:
         provider_patch = params.get("provider") if isinstance(params, dict) else None
         config = deepcopy(self._store.get_config({}).get("config", {}))
@@ -71,6 +81,9 @@ class Orchestrator:
                 "baseUrl": base_url,
                 "checkedEnvVarName": env_var_name,
                 "source": "runtime",
+                "details": {
+                    "errorSummary": "Mock mode does not contact a remote model.",
+                },
             }
         if normalized_mode not in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}:
             return {
@@ -82,6 +95,9 @@ class Orchestrator:
                 "baseUrl": base_url,
                 "checkedEnvVarName": env_var_name,
                 "source": "runtime",
+                "details": {
+                    "errorSummary": f"Unsupported provider mode: {mode}",
+                },
             }
         direct_key = provider_config.get("apiKey") or provider_config.get("api_key")
         if not direct_key and env_var_name and not os.environ.get(str(env_var_name)):
@@ -94,6 +110,9 @@ class Orchestrator:
                 "baseUrl": base_url,
                 "checkedEnvVarName": env_var_name,
                 "source": "runtime",
+                "details": {
+                    "errorSummary": f"Set {env_var_name} in the runtime environment.",
+                },
             }
 
         try:
@@ -108,15 +127,20 @@ class Orchestrator:
                 context={"config": config},
             )
         except Exception as exc:  # noqa: BLE001
+            error_summary = self._redact_provider_secret(str(exc), env_var_name, direct_key)
             return {
                 "ok": False,
                 "status": "failed",
-                "message": str(exc),
+                "message": error_summary,
                 "providerMode": mode,
                 "model": model,
                 "baseUrl": base_url,
                 "checkedEnvVarName": env_var_name,
                 "source": "runtime",
+                "details": {
+                    "errorSummary": error_summary,
+                    "errorType": type(exc).__name__,
+                },
             }
 
         return {
@@ -568,6 +592,9 @@ class Orchestrator:
         status = result.get("status")
         return status in {"failed", "timeout", "killed"} or result.get("ok") is False
 
+    def _is_patch_validation_failure(self, tool_name: str, result: dict[str, Any]) -> bool:
+        return tool_name == "apply_patch" and result.get("status") == "validation_failed"
+
     def _tool_failure_summary(self, tool_spec: dict[str, Any], result: dict[str, Any]) -> str:
         tool_name = tool_spec["name"]
         if tool_name == "run_command":
@@ -578,6 +605,10 @@ class Orchestrator:
             preview = stdout.splitlines()[0] if stdout else stderr.splitlines()[0] if stderr else "no output"
             return f"Command failed with status {status} and exit code {exit_code}; first output: {preview[:120]}."
         if tool_name == "apply_patch":
+            if result.get("status") == "validation_failed":
+                summary = (result.get("summary") or "Patch validation failed.").strip()
+                error = (result.get("error") or "Unknown validation error.").strip()
+                return f"Patch validation failed for {summary}: {error}"
             summary = (result.get("summary") or "Patch tool failed.").strip()
             patch_id = result.get("patch_id", "unknown patch")
             return f"Apply patch failed for {patch_id}: {summary}"
@@ -594,6 +625,15 @@ class Orchestrator:
             path = result.get("path", "unknown file")
             return f"Read file failed for {path}."
         return f"Tool {tool_name} failed."
+
+    def _max_patch_repair_attempts(self, context: dict[str, Any]) -> int:
+        config = context.get("config") or {}
+        policy = config.get("policy") if isinstance(config, dict) else {}
+        raw_value = policy.get("maxPatchRepairAttempts", 2) if isinstance(policy, dict) else 2
+        try:
+            return max(0, min(int(raw_value), 10))
+        except (TypeError, ValueError):
+            return 2
 
     def _run_react_loop(
         self,
@@ -613,6 +653,7 @@ class Orchestrator:
         tool_results = deepcopy(state["tool_results"]) if state else []
         steps = int(state.get("steps", 0)) if state else 0
         react_started = bool(state.get("react_started", False)) if state else False
+        patch_repair_attempts = int(state.get("patch_repair_attempts", 0)) if state else 0
 
         while True:
             if steps >= max_steps:
@@ -681,6 +722,7 @@ class Orchestrator:
                         "tool_results": tool_results,
                         "steps": steps,
                         "react_started": True,
+                        "patch_repair_attempts": patch_repair_attempts,
                         "pending_tool_call": tool_call,
                         "pending_tool_spec": tool_spec,
                         "remaining_tool_calls": tool_calls[index + 1 :],
@@ -690,6 +732,16 @@ class Orchestrator:
 
                 tool_results.append(tool_result)
                 messages.append(self._tool_result_message(tool_call, tool_result))
+                if self._is_patch_validation_failure(tool_spec["name"], tool_result["result"]):
+                    patch_repair_attempts += 1
+                    max_attempts = self._max_patch_repair_attempts(context)
+                    if patch_repair_attempts > max_attempts:
+                        raise RuntimeError(
+                            "Patch repair attempts exhausted "
+                            f"({patch_repair_attempts}/{max_attempts}): "
+                            f"{self._tool_failure_summary(tool_spec, tool_result['result'])}"
+                        )
+                    continue
                 self._advance_after_tool(session_id=session_id, task=task, tool_spec=tool_spec)
 
     def _request_provider_response(
@@ -1074,6 +1126,8 @@ class Orchestrator:
                 tool_spec=tool_spec,
             )
             tool_results.append(tool_result)
+            if self._is_patch_validation_failure(tool_spec["name"], tool_result["result"]):
+                raise RuntimeError(self._tool_failure_summary(tool_spec, tool_result["result"]))
             if task["status"] == "waiting_approval":
                 self._publish(
                     session_id=session_id,
@@ -1237,6 +1291,26 @@ class Orchestrator:
                 session_id=session_id,
                 task=task,
                 event_type="tool.completed",
+                payload={
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_spec["name"],
+                    "arguments": tool_arguments,
+                    "result": result,
+                },
+            )
+            return tool_result
+
+        if self._is_patch_validation_failure(tool_spec["name"], result):
+            tool_result = {
+                "id": tool_call_id,
+                "name": tool_spec["name"],
+                "arguments": tool_arguments,
+                "result": result,
+            }
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="tool.failed",
                 payload={
                     "toolCallId": tool_call_id,
                     "toolName": tool_spec["name"],

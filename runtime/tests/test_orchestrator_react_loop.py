@@ -6,8 +6,10 @@ from typing import Any
 
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestrator.service import Orchestrator
+from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.store.sqlite_store import SQLiteStore
+from local_agent_runtime.tools.builtin import build_builtin_tools
 from local_agent_runtime.tools.registry import ToolRegistry
 
 
@@ -32,6 +34,24 @@ def _make_runtime(tmp_path: Any, provider: Any, tools: dict[str, Any] | None = N
     event_bus = EventBus()
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     tool_registry = ToolRegistry(tools or {})
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=tool_registry,
+        provider=provider,
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    events: list[dict[str, Any]] = []
+    event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
+    return SimpleNamespace(server=server, store=store, events=events)
+
+
+def _make_builtin_runtime(tmp_path: Any, provider: Any) -> SimpleNamespace:
+    event_bus = EventBus()
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    config = store.get_config({})["config"]
+    policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
+    tool_registry = ToolRegistry(build_builtin_tools(policy_guard=policy_guard, store=store))
     orchestrator = Orchestrator(
         store=store,
         event_bus=event_bus,
@@ -72,6 +92,19 @@ def _open_session(runtime: SimpleNamespace, tmp_path: Any) -> dict[str, Any]:
             {"workspaceId": workspace["id"], "title": "ReAct loop"},
         ),
         "session",
+    )
+
+
+def _patch_text(path: str, old: str, new: str) -> str:
+    return "\n".join(
+        [
+            f"diff --git a/{path} b/{path}",
+            f"--- a/{path}",
+            f"+++ b/{path}",
+            "@@ -1 +1 @@",
+            f"-{old}",
+            f"+{new}",
+        ]
     )
 
 
@@ -494,3 +527,111 @@ def test_react_loop_fails_on_invalid_provider_output(tmp_path: Any) -> None:
 
     assert task["status"] == "failed"
     assert "Provider returned no final answer or tool calls" in task["resultSummary"]
+
+
+def test_react_loop_returns_invalid_patch_to_provider_and_accepts_repair(tmp_path: Any) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "README.md").write_text("old line\n", encoding="utf-8")
+    invalid_patch = _patch_text("README.md", "missing line", "new line")
+    repaired_patch = _patch_text("README.md", "old line", "new line")
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_bad_patch",
+                        "name": "apply_patch",
+                        "arguments": {"patchText": invalid_patch},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_repaired_patch",
+                        "name": "apply_patch",
+                        "arguments": {"patchText": repaired_patch},
+                    }
+                ]
+            },
+            {"final": "Patch repaired and applied."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    workspace = _call_result(_rpc(runtime, "workspace.open", {"path": str(workspace_root)}), "workspace")
+    session = _call_result(
+        _rpc(runtime, "session.create", {"workspaceId": workspace["id"], "title": "Patch repair"}),
+        "session",
+    )
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "fix the readme"}),
+        "task",
+    )
+
+    assert task["status"] == "waiting_approval"
+    assert (workspace_root / "README.md").read_text(encoding="utf-8") == "old line\n"
+    assert [event for event in runtime.events if event["type"] == "approval.requested"]
+    repair_context = provider.calls[1]["context"]
+    failed_result = repair_context["tool_results"][0]["result"]
+    assert failed_result["status"] == "validation_failed"
+    assert "Patch removal mismatch in README.md" in failed_result["error"]
+    assert failed_result["summary"] == "Update README.md"
+
+    approval_id = next(event for event in runtime.events if event["type"] == "approval.requested")["payload"][
+        "approvalId"
+    ]
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    assert final_task["status"] == "completed"
+    assert final_task["resultSummary"] == "Patch repaired and applied."
+    assert (workspace_root / "README.md").read_text(encoding="utf-8") == "new line\n"
+
+
+def test_react_loop_fails_when_patch_repair_attempts_are_exhausted(tmp_path: Any) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "README.md").write_text("old line\n", encoding="utf-8")
+    invalid_patch = _patch_text("README.md", "missing line", "new line")
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_bad_patch_1",
+                        "name": "apply_patch",
+                        "arguments": {"patchText": invalid_patch},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_bad_patch_2",
+                        "name": "apply_patch",
+                        "arguments": {"patchText": invalid_patch},
+                    }
+                ]
+            },
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    runtime.store.update_config({"config": {"policy": {"maxPatchRepairAttempts": 1}}})
+    workspace = _call_result(_rpc(runtime, "workspace.open", {"path": str(workspace_root)}), "workspace")
+    session = _call_result(
+        _rpc(runtime, "session.create", {"workspaceId": workspace["id"], "title": "Patch repair exhausted"}),
+        "session",
+    )
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "fix the readme"}),
+        "task",
+    )
+
+    assert task["status"] == "failed"
+    assert task["errorCode"] == "LOOP_EXECUTION_FAILED"
+    assert "Patch repair attempts exhausted" in task["resultSummary"]
+    assert "Patch removal mismatch in README.md" in task["resultSummary"]
+    assert not [event for event in runtime.events if event["type"] == "approval.requested"]

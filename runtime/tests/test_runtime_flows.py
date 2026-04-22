@@ -245,6 +245,47 @@ def test_explicit_apply_patch_routes_to_patch_tool(runtime_harness: Any, tmp_pat
     assert final_task["plan"][1]["status"] == "completed"
 
 
+def test_explicit_apply_patch_rejects_invalid_patch_before_approval(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Invalid patch route"},
+        ),
+        "session",
+    )
+    (workspace_root / "README.md").write_text("old line\n", encoding="utf-8")
+    patch_text = "\n".join(
+        [
+            "diff --git a/README.md b/README.md",
+            "--- a/README.md",
+            "+++ b/README.md",
+            "@@ -1 +1 @@",
+            "-missing line",
+            "+new line",
+        ]
+    )
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": f"apply patch: {patch_text}"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "failed"
+    assert task["errorCode"] == "LOOP_EXECUTION_FAILED"
+    assert "Patch removal mismatch in README.md" in task["resultSummary"]
+    assert not [event for event in runtime_harness.events if event["type"] == "approval.requested"]
+    assert (workspace_root / "README.md").read_text(encoding="utf-8") == "old line\n"
+
+
 @pytest.mark.parametrize(
     ("content", "tool_name", "plan_step_id"),
     [

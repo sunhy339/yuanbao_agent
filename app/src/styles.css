@@ -368,6 +368,8 @@ button:disabled {
 }
 
 .provider-status {
+  display: grid;
+  gap: 10px;
   margin: 12px 0;
   padding: 12px 14px;
   border-radius: 14px;
@@ -382,6 +384,44 @@ button:disabled {
 .provider-status.warn {
   background: rgba(156, 79, 42, 0.1);
   color: #9c4f2a;
+}
+
+.provider-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  margin: 0;
+}
+
+.provider-detail-grid div {
+  display: grid;
+  gap: 2px;
+}
+
+.provider-detail-grid dt {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.78;
+}
+
+.provider-detail-grid dd {
+  margin: 0;
+}
+
+.provider-runtime-notice {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(156, 79, 42, 0.18);
+  border-radius: 14px;
+  background: rgba(255, 244, 225, 0.78);
+  color: #7a3f1f;
+  font-size: 13px;
+}
+
+.provider-runtime-notice.composer {
+  margin-bottom: 12px;
 }
 
 .timeline.rich li {
@@ -457,6 +497,12 @@ button:disabled {
   margin: 14px 0 18px;
 }
 
+.trace-stack {
+  display: grid;
+  gap: 14px;
+  margin: 14px 0 18px;
+}
+
 .patch-stack {
   display: grid;
   gap: 14px;
@@ -480,6 +526,14 @@ button:disabled {
 }
 
 .tool-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trace-list {
   display: grid;
   gap: 12px;
   margin: 0;
@@ -520,6 +574,17 @@ button:disabled {
   gap: 12px;
   padding: 16px;
   border: 1px solid rgba(24, 32, 38, 0.1);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 253, 249, 0.98), rgba(246, 242, 236, 0.96));
+  box-shadow: 0 12px 24px rgba(24, 32, 38, 0.05);
+}
+
+.trace-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(24, 32, 38, 0.1);
+  border-left: 3px solid rgba(90, 102, 112, 0.32);
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(255, 253, 249, 0.98), rgba(246, 242, 236, 0.96));
   box-shadow: 0 12px 24px rgba(24, 32, 38, 0.05);
@@ -603,6 +668,31 @@ button:disabled {
 
 .tool-meta dt {
   font-size: 11px;
+}
+
+.trace-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+
+.trace-meta div {
+  border-bottom: 0;
+  padding: 0;
+}
+
+.trace-meta dt {
+  font-size: 11px;
+}
+
+.trace-payload {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(24, 32, 38, 0.06);
+  color: #182026;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .tool-summary-grid {
@@ -737,6 +827,10 @@ button:disabled {
   color: #9a2323;
 }
 
+.error-banner.compact {
+  margin: 0;
+}
+
 .success-banner {
   background: rgba(29, 122, 66, 0.1);
   color: #1d7a42;
@@ -753,6 +847,10 @@ button:disabled {
   }
 
   .tool-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .trace-meta {
     grid-template-columns: 1fr;
   }
 

@@ -39,6 +39,7 @@ DEFAULT_CONFIG = {
         "approvalMode": "on_write_or_command",
         "commandTimeoutMs": 600000,
         "maxTaskSteps": 20,
+        "maxPatchRepairAttempts": 2,
         "maxFilesPerPatch": 20,
         "allowNetwork": False,
     },

@@ -16,6 +16,7 @@ import type {
   TaskRecord,
   TaskUpdatedPayload,
   ToolLifecyclePayload,
+  TraceEventRecord,
   WorkspaceRef,
 } from "@shared";
 import { RuntimeClient, type HostStatus, type RuntimeConfig } from "./lib/runtimeClient";
@@ -35,6 +36,12 @@ const DEFAULT_PROVIDER_TEMPERATURE = 0.2;
 const DEFAULT_PROVIDER_MAX_TOKENS = 4000;
 const DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS = 120000;
 const DEFAULT_PROVIDER_TIMEOUT = 30;
+const TRACE_LIMIT = 50;
+const TRACE_AUTO_REFRESH_STATUSES = new Set<TaskRecord["status"]>([
+  "completed",
+  "failed",
+  "waiting_approval",
+]);
 
 interface ProviderSettingsForm {
   mode: ProviderMode;
@@ -45,6 +52,13 @@ interface ProviderSettingsForm {
   maxTokens: string;
   maxContextTokens: string;
   timeout: string;
+}
+
+type ProviderStatusBadge = "mock" | "configured" | "missing env" | "failed" | "ok";
+
+interface ProviderStatusView {
+  label: ProviderStatusBadge;
+  badgeClass: "ok" | "warn" | "error" | "info" | "neutral";
 }
 
 function formatTimestamp(timestamp?: number): string {
@@ -150,6 +164,51 @@ function parsePatternText(value: string): string[] {
 
 function serializePatternList(values: string[]): string {
   return values.join("\n");
+}
+
+function getProviderStatusView(
+  settings: ProviderSettingsForm,
+  result: ProviderTestResult | null,
+): ProviderStatusView {
+  if (!result) {
+    return settings.mode === "mock"
+      ? { label: "mock", badgeClass: "info" }
+      : { label: "configured", badgeClass: "neutral" };
+  }
+
+  if (result.status === "ok") {
+    return { label: "ok", badgeClass: "ok" };
+  }
+  if (result.status === "mocked") {
+    return { label: "mock", badgeClass: "info" };
+  }
+  if (result.status === "missing_env" || result.status === "not_configured") {
+    return { label: "missing env", badgeClass: "warn" };
+  }
+
+  return { label: "failed", badgeClass: "error" };
+}
+
+function getProviderRuntimeNotice(
+  settings: ProviderSettingsForm,
+  result: ProviderTestResult | null,
+): string | null {
+  const envVarName =
+    result?.checkedEnvVarName ?? (settings.apiKeyEnvVarName || DEFAULT_PROVIDER_API_KEY_ENV_VAR);
+
+  if (settings.mode === "mock" || result?.status === "mocked") {
+    return "Current provider is mock mode. Tasks sent now use deterministic local behavior, not a real model.";
+  }
+  if (result?.status === "missing_env" || result?.status === "not_configured") {
+    return `Current provider cannot reach a real model because ${envVarName} is missing. Set the env var and test again before sending real-model tasks.`;
+  }
+
+  return null;
+}
+
+function getProviderErrorSummary(result: ProviderTestResult): string {
+  const detail = result.details?.errorSummary ?? result.details?.error ?? result.details?.summary;
+  return typeof detail === "string" && detail.trim() ? detail.trim() : result.message;
 }
 
 function readRequestText(request: Record<string, unknown>, key: string, fallback: string): string {
@@ -318,6 +377,16 @@ interface ActivityTimelineItem {
   summary: string;
   relatedId?: string;
   raw: string;
+}
+
+interface TracePanelItem {
+  id: string;
+  type: string;
+  source: string;
+  relatedId: string;
+  time: string;
+  payloadSummary: string;
+  sequence: number;
 }
 
 function upsertRecord<T extends { id: string; updatedAt: number }>(items: T[], record: T): T[] {
@@ -541,6 +610,18 @@ function buildActivityItem(event: AgentEventEnvelope): ActivityTimelineItem {
   };
 }
 
+function buildTracePanelItem(trace: TraceEventRecord): TracePanelItem {
+  return {
+    id: trace.id,
+    type: trace.type,
+    source: trace.source,
+    relatedId: trace.relatedId ?? "none",
+    time: formatTimestamp(trace.createdAt),
+    payloadSummary: summarizeValue(trace.payload, "empty payload", 240),
+    sequence: trace.sequence,
+  };
+}
+
 function summarizeEvent(event: AgentEventEnvelope): string {
   if (event.type === "assistant.token") {
     return ((event.payload as AssistantTokenPayload).delta ?? "").trim() || "Model is streaming output.";
@@ -642,6 +723,7 @@ export function App() {
   const [taskHistory, setTaskHistory] = useState<Array<TaskRecord>>([]);
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [events, setEvents] = useState<Array<AgentEventEnvelope>>([]);
+  const [traceEvents, setTraceEvents] = useState<Array<TraceEventRecord>>([]);
   const [patchCacheById, setPatchCacheById] = useState<Record<string, PatchRecord>>({});
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [assistantOutput, setAssistantOutput] = useState("");
@@ -658,6 +740,8 @@ export function App() {
   const [searchConfigBusy, setSearchConfigBusy] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [patchBusyId, setPatchBusyId] = useState<string | null>(null);
+  const [traceBusy, setTraceBusy] = useState(false);
+  const [traceError, setTraceError] = useState<string | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -768,10 +852,63 @@ export function App() {
     };
   }, []);
 
+  async function loadTraceForTask(taskId: string, isCancelled: () => boolean = () => false) {
+    setTraceBusy(true);
+    setTraceError(null);
+
+    try {
+      const result = await runtimeClient.listTrace({
+        taskId,
+        limit: TRACE_LIMIT,
+      });
+      if (!isCancelled()) {
+        setTraceEvents(result.traceEvents);
+      }
+    } catch (reason) {
+      if (!isCancelled()) {
+        setTraceEvents([]);
+        setTraceError(reason instanceof Error ? reason.message : String(reason));
+      }
+    } finally {
+      if (!isCancelled()) {
+        setTraceBusy(false);
+      }
+    }
+  }
+
+  const traceAutoRefreshStatus =
+    task && task.id === activeTaskId && TRACE_AUTO_REFRESH_STATUSES.has(task.status)
+      ? task.status
+      : undefined;
+
+  useEffect(() => {
+    if (!activeTaskId) {
+      setTraceEvents([]);
+      setTraceError(null);
+      setTraceBusy(false);
+      return;
+    }
+
+    let cancelled = false;
+    void loadTraceForTask(activeTaskId, () => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTaskId, traceAutoRefreshStatus]);
+
   const eventItems = useMemo(
     () => [...events].reverse().map((event) => buildActivityItem(event)),
     [events],
   );
+  const traceItems = useMemo(
+    () =>
+      [...traceEvents]
+        .sort((left, right) => right.sequence - left.sequence)
+        .map((trace) => buildTracePanelItem(trace)),
+    [traceEvents],
+  );
+  const providerStatusView = getProviderStatusView(providerSettings, providerTestResult);
+  const providerRuntimeNotice = getProviderRuntimeNotice(providerSettings, providerTestResult);
 
   const toolTimelineItems = useMemo<ToolTimelineItem[]>(() => {
     const items = new Map<string, ToolTimelineItem>();
@@ -1005,6 +1142,8 @@ export function App() {
     setActiveTaskId(null);
     setTask(null);
     setEvents([]);
+    setTraceEvents([]);
+    setTraceError(null);
     setPatchCacheById({});
     setPatchBusyId(null);
     setAssistantOutput("");
@@ -1141,6 +1280,18 @@ export function App() {
     return normalized;
   }
 
+  async function runProviderTest(provider: AppConfig["provider"]) {
+    setProviderTestBusy(true);
+    setProviderTestResult(null);
+
+    try {
+      const result = await runtimeClient.testProvider({ provider });
+      setProviderTestResult(result);
+    } finally {
+      setProviderTestBusy(false);
+    }
+  }
+
   async function persistSearchConfig(): Promise<RuntimeConfig | null> {
     if (!config) {
       return null;
@@ -1182,6 +1333,8 @@ export function App() {
       setTaskHistory([]);
       setSessions([]);
       setActiveTaskId(null);
+      setTraceEvents([]);
+      setTraceError(null);
       setApprovalBusyId(null);
       setPatchCacheById({});
       setPatchBusyId(null);
@@ -1235,7 +1388,10 @@ export function App() {
     setProviderTestResult(null);
 
     try {
-      await persistProviderConfig();
+      const normalized = await persistProviderConfig();
+      if (normalized) {
+        await runProviderTest(normalized.provider);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -1244,20 +1400,13 @@ export function App() {
   }
 
   async function handleTestProvider() {
-    setProviderTestBusy(true);
     setError(null);
-    setProviderTestResult(null);
 
     try {
       const providerPatch = buildProviderPatchFromForm();
-      const result = await runtimeClient.testProvider({
-        provider: providerPatch,
-      });
-      setProviderTestResult(result);
+      await runProviderTest(providerPatch);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setProviderTestBusy(false);
     }
   }
 
@@ -1276,6 +1425,8 @@ export function App() {
       const messageContent = prompt.trim();
       const pendingUserMessageId = `user_${Date.now()}`;
       setEvents([]);
+      setTraceEvents([]);
+      setTraceError(null);
       setPatchCacheById({});
       setPatchBusyId(null);
       setAssistantOutput("");
@@ -1344,6 +1495,16 @@ export function App() {
     } finally {
       setRefreshBusy(false);
     }
+  }
+
+  async function handleRefreshTrace() {
+    if (!activeTaskId) {
+      setTraceEvents([]);
+      setTraceError(null);
+      return;
+    }
+
+    await loadTraceForTask(activeTaskId);
   }
 
   async function handleLoadPatchDiff(patchId: string) {
@@ -1424,8 +1585,8 @@ export function App() {
         <section className="panel">
           <div className="section-header">
             <h2>Provider</h2>
-            <span className={`badge ${providerTestResult?.ok ? "ok" : providerTestResult ? "warn" : "neutral"}`}>
-              {providerTestResult?.status ?? "not tested"}
+            <span className={`badge ${providerStatusView.badgeClass}`}>
+              {providerStatusView.label}
             </span>
           </div>
           <div className="provider-form">
@@ -1511,10 +1672,29 @@ export function App() {
             API key values are not stored here. Set {providerSettings.apiKeyEnvVarName || DEFAULT_PROVIDER_API_KEY_ENV_VAR}
             in the runtime environment before using a real provider.
           </p>
+          {providerRuntimeNotice ? <p className="provider-runtime-notice">{providerRuntimeNotice}</p> : null}
           {providerTestResult ? (
-            <p className={`provider-status ${providerTestResult.ok ? "ok" : "warn"}`}>
-              {providerTestResult.message}
-            </p>
+            <div className={`provider-status ${providerTestResult.ok ? "ok" : "warn"}`}>
+              <strong>{providerTestResult.message}</strong>
+              <dl className="provider-detail-grid">
+                <div>
+                  <dt>Base URL</dt>
+                  <dd className="break">{providerTestResult.baseUrl ?? providerSettings.baseUrl}</dd>
+                </div>
+                <div>
+                  <dt>Model</dt>
+                  <dd>{providerTestResult.model ?? providerSettings.model}</dd>
+                </div>
+                <div>
+                  <dt>Env var</dt>
+                  <dd>{providerTestResult.checkedEnvVarName ?? providerSettings.apiKeyEnvVarName}</dd>
+                </div>
+                <div>
+                  <dt>Summary</dt>
+                  <dd>{getProviderErrorSummary(providerTestResult)}</dd>
+                </div>
+              </dl>
+            </div>
           ) : null}
           <div className="actions split-actions">
             <button type="button" onClick={handleSaveProviderConfig} disabled={providerConfigBusy || loading || !config}>
@@ -1779,6 +1959,7 @@ export function App() {
             </span>
           </div>
           <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={DEFAULT_PROMPT} />
+          {providerRuntimeNotice ? <p className="provider-runtime-notice composer">{providerRuntimeNotice}</p> : null}
           <div className="actions">
             <button type="button" onClick={handleSendMessage} disabled={messageBusy || loading}>
               {messageBusy ? "Sending..." : "Send Message"}
@@ -1794,6 +1975,54 @@ export function App() {
             <h2>Runtime Timeline</h2>
             <span className="muted">{eventItems.length} event(s)</span>
           </div>
+          <section className="trace-stack">
+            <div className="section-header approval-header">
+              <h3>Persistent Trace</h3>
+              <div className="timeline-badges">
+                <span className="muted">{traceItems.length} trace item(s)</span>
+                <button type="button" onClick={handleRefreshTrace} disabled={!activeTaskId || traceBusy}>
+                  {traceBusy ? "Loading..." : "Refresh"}
+                </button>
+              </div>
+            </div>
+            {traceError ? <p className="error-banner compact">{traceError}</p> : null}
+            {traceItems.length > 0 ? (
+              <ul className="trace-list">
+                {traceItems.map((item) => (
+                  <li key={item.id} className="trace-card">
+                    <div className="timeline-row">
+                      <div className="timeline-title">
+                        <strong>{item.type}</strong>
+                        <span className="muted">source: {item.source}</span>
+                      </div>
+                      <div className="timeline-badges">
+                        <span className="badge mini neutral">#{item.sequence}</span>
+                        <span>{item.time}</span>
+                      </div>
+                    </div>
+                    <dl className="meta compact trace-meta">
+                      <div>
+                        <dt>related</dt>
+                        <dd className="break">{item.relatedId}</dd>
+                      </div>
+                      <div>
+                        <dt>task</dt>
+                        <dd className="break">{activeTaskId ?? "none"}</dd>
+                      </div>
+                    </dl>
+                    <code className="trace-payload">{item.payloadSummary}</code>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="empty-state compact">
+                <strong>No persistent trace loaded</strong>
+                <span>
+                  Select a task or click Refresh to load trace.list. Runtime events and tool timeline remain separate.
+                </span>
+              </p>
+            )}
+          </section>
           <section className="tool-stack">
             <div className="section-header approval-header">
               <h3>Tool Timeline</h3>

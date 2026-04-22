@@ -24,6 +24,9 @@ import type {
   TaskListParams,
   TaskListResult,
   TaskRecord,
+  TraceEventRecord,
+  TraceListParams,
+  TraceListResult,
   WorkspaceOpenResult,
 } from "@shared";
 import {
@@ -46,6 +49,7 @@ interface MockState {
   tasks: Record<string, TaskRecord>;
   patches: Record<string, PatchRecord>;
   approvals: Record<string, ApprovalRecord>;
+  traces: TraceEventRecord[];
 }
 
 const mockState: MockState = {
@@ -55,6 +59,7 @@ const mockState: MockState = {
   tasks: {},
   patches: {},
   approvals: {},
+  traces: [],
 };
 
 export interface HostStatus {
@@ -70,7 +75,61 @@ function isTauriBridgeAvailable(): boolean {
 }
 
 function emitBrowserEvent(event: AgentEventEnvelope): void {
+  rememberMockTrace(event);
   browserEventTarget.dispatchEvent(new CustomEvent(EVENT_CHANNEL, { detail: event }));
+}
+
+function readPayloadId(payload: unknown, keys: string[]): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const record = payload as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function getTraceSource(type: string): TraceEventRecord["source"] {
+  const source = type.split(".")[0];
+  if (
+    source === "provider" ||
+    source === "tool" ||
+    source === "approval" ||
+    source === "patch" ||
+    source === "command" ||
+    source === "task" ||
+    source === "assistant"
+  ) {
+    return source;
+  }
+  return "runtime";
+}
+
+function rememberMockTrace(event: AgentEventEnvelope): void {
+  const trace: TraceEventRecord = {
+    id: event.eventId,
+    taskId: event.taskId,
+    sessionId: event.sessionId,
+    type: event.type,
+    source: getTraceSource(event.type),
+    relatedId: readPayloadId(event.payload, [
+      "toolCallId",
+      "commandId",
+      "approvalId",
+      "patchId",
+      "messageId",
+    ]),
+    payload: event.payload,
+    createdAt: event.ts,
+    sequence: mockState.traces.length + 1,
+  };
+
+  mockState.traces = [...mockState.traces, trace].slice(-400);
 }
 
 function buildMockHostStatus(): HostStatus {
@@ -169,9 +228,27 @@ function buildProviderTestFallback(
     };
   }
 
+  const compatibleModes = new Set(["openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"]);
+  if (compatibleModes.has(String(mode).toLowerCase()) && !reason) {
+    return {
+      ok: false,
+      status: "missing_env",
+      message: `Runtime provider test cannot read ${envVarName} in browser/mock fallback.`,
+      providerMode: mode,
+      model,
+      baseUrl: provider.baseUrl,
+      checkedEnvVarName: envVarName,
+      source: "mock-fallback",
+      details: {
+        errorSummary: `Set ${envVarName} in the desktop runtime environment, then run Test Connection from the Tauri app.`,
+      },
+    };
+  }
+
+  const errorSummary = reason instanceof Error ? reason.message : "Provider test backend is not available yet.";
   return {
     ok: false,
-    status: "unsupported",
+    status: compatibleModes.has(String(mode).toLowerCase()) ? "failed" : "unsupported",
     message:
       reason instanceof Error
         ? `Provider test backend is not available yet: ${reason.message}`
@@ -181,6 +258,9 @@ function buildProviderTestFallback(
     baseUrl: provider.baseUrl,
     checkedEnvVarName: envVarName,
     source: "mock-fallback",
+    details: {
+      errorSummary,
+    },
   };
 }
 
@@ -423,6 +503,7 @@ export class RuntimeClient {
       mockState.tasks = {};
       mockState.patches = {};
       mockState.approvals = {};
+      mockState.traces = [];
       mockState.config = mergeRuntimeConfig(mockState.config, {
         workspace: {
           ignore: mockState.config.workspace.ignore,
@@ -438,6 +519,7 @@ export class RuntimeClient {
     mockState.tasks = {};
     mockState.patches = {};
     mockState.approvals = {};
+    mockState.traces = [];
     mockState.config = mergeRuntimeConfig(mockState.config, {
       workspace: {
         ignore: mockState.config.workspace.ignore,
@@ -683,6 +765,30 @@ export class RuntimeClient {
     }
 
     return invokeOrReject<TaskListResult>("task_list", payload);
+  }
+
+  async listTrace(payload: TraceListParams): Promise<TraceListResult> {
+    if (!isTauriBridgeAvailable()) {
+      const limit = payload.limit ?? 50;
+      return {
+        traceEvents: mockState.traces
+          .filter((trace) => trace.taskId === payload.taskId)
+          .sort((left, right) => right.sequence - left.sequence)
+          .slice(0, limit),
+      };
+    }
+
+    try {
+      return await invokeOrReject<TraceListResult>("trace_list", payload);
+    } catch {
+      const limit = payload.limit ?? 50;
+      return {
+        traceEvents: mockState.traces
+          .filter((trace) => trace.taskId === payload.taskId)
+          .sort((left, right) => right.sequence - left.sequence)
+          .slice(0, limit),
+      };
+    }
   }
 
   async getConfig(): Promise<ConfigGetResult> {

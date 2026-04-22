@@ -1,12 +1,4 @@
-import type {
-  AppConfig,
-  PolicyConfig,
-  ProviderConfig,
-  SearchConfig,
-  ToolRuntimeConfig,
-  UiConfig,
-  WorkspaceConfig,
-} from "./config";
+import type { AppConfig, ConfigPatch } from "./config";
 import type {
   ApprovalRecord,
   CommandLogRecord,
@@ -137,16 +129,9 @@ export interface ConfigUpdateResult {
   config: AppConfig;
 }
 
-export interface ConfigUpdateParams {
-  provider?: Partial<ProviderConfig>;
-  workspace?: Partial<WorkspaceConfig>;
-  search?: Partial<SearchConfig>;
-  policy?: Partial<PolicyConfig>;
-  tools?: {
-    runCommand?: Partial<ToolRuntimeConfig>;
-  };
-  ui?: Partial<UiConfig>;
-}
+export type ConfigUpdateParams = ConfigPatch & {
+  config?: ConfigPatch;
+};
 
 export interface DiffGetResult {
   patch: PatchRecord;

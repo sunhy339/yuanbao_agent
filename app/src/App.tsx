@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
+  ApprovalRequestedPayload,
+  ApprovalResolvedPayload,
   AgentEventEnvelope,
   AppConfig,
   AssistantTokenPayload,
@@ -52,8 +54,47 @@ function serializePatternList(values: string[]): string {
   return values.join("\n");
 }
 
+function readRequestText(request: Record<string, unknown>, key: string, fallback: string): string {
+  const value = request[key];
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return fallback;
+}
+
+function readRequestNumber(request: Record<string, unknown>, key: string, fallback: number): number {
+  const value = request[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return fallback;
+}
+
 function sortByUpdatedAtDesc<T extends { updatedAt: number }>(items: T[]): T[] {
   return [...items].sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+interface ApprovalCardView {
+  approvalId: string;
+  taskId: string;
+  kind: string;
+  command: string;
+  cwd: string;
+  shell: string;
+  timeoutMs: number;
+  status: "pending" | "approved" | "rejected";
+  requestedAt: number;
+  updatedAt: number;
+  resolvedAt?: number;
 }
 
 function upsertRecord<T extends { id: string; updatedAt: number }>(items: T[], record: T): T[] {
@@ -110,6 +151,17 @@ function summarizeEvent(event: AgentEventEnvelope): string {
   if (event.type === "command.output") {
     const payload = event.payload as CommandOutputPayload;
     return `${payload.stream}: ${payload.chunk.trim()}`.trim();
+  }
+
+  if (event.type === "approval.requested") {
+    const payload = event.payload as ApprovalRequestedPayload;
+    const request = payload.request as Record<string, unknown>;
+    return `Approval requested for ${readRequestText(request, "command", "command")} in ${readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", "."))}`;
+  }
+
+  if (event.type === "approval.resolved") {
+    const payload = event.payload as ApprovalResolvedPayload;
+    return `Approval ${payload.decision}`;
   }
 
   if (event.type === "patch.proposed") {
@@ -169,6 +221,7 @@ export function App() {
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [sessionListBusy, setSessionListBusy] = useState(false);
   const [searchConfigBusy, setSearchConfigBusy] = useState(false);
+  const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -277,6 +330,77 @@ export function App() {
     [events],
   );
 
+  const approvalCards = useMemo<ApprovalCardView[]>(() => {
+    const cards = new Map<string, ApprovalCardView>();
+
+    for (const event of events) {
+      if (event.type === "approval.requested") {
+        const payload = event.payload as ApprovalRequestedPayload;
+        const request = payload.request as Record<string, unknown>;
+        cards.set(payload.approvalId, {
+          approvalId: payload.approvalId,
+          taskId: payload.taskId,
+          kind: payload.kind,
+          command: readRequestText(request, "command", "command"),
+          cwd: readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", ".")),
+          shell: readRequestText(request, "shell", "system default"),
+          timeoutMs: readRequestNumber(request, "timeoutMs", 0),
+          status: "pending",
+          requestedAt: event.ts,
+          updatedAt: event.ts,
+        });
+      }
+
+      if (event.type === "approval.resolved") {
+        const payload = event.payload as ApprovalResolvedPayload;
+        const current = cards.get(payload.approvalId);
+        if (current) {
+          cards.set(payload.approvalId, {
+            ...current,
+            status: payload.decision,
+            resolvedAt: event.ts,
+            updatedAt: event.ts,
+          });
+          continue;
+        }
+
+        cards.set(payload.approvalId, {
+          approvalId: payload.approvalId,
+          taskId: payload.taskId,
+          kind: "run_command",
+          command: "unknown",
+          cwd: ".",
+          shell: "system default",
+          timeoutMs: 0,
+          status: payload.decision,
+          requestedAt: event.ts,
+          updatedAt: event.ts,
+          resolvedAt: event.ts,
+        });
+      }
+    }
+
+    return sortByUpdatedAtDesc(Array.from(cards.values()));
+  }, [events]);
+
+  const commandOutputByTaskId = useMemo(() => {
+    const outputs = new Map<string, string[]>();
+
+    for (const event of events) {
+      if (event.type !== "command.output") {
+        continue;
+      }
+
+      const payload = event.payload as CommandOutputPayload;
+      const chunk = payload.chunk.trim();
+      const summary = chunk ? `${payload.stream}: ${chunk}` : `${payload.stream}: output event`;
+      const next = outputs.get(event.taskId) ?? [];
+      outputs.set(event.taskId, [...next, summary].slice(-3));
+    }
+
+    return outputs;
+  }, [events]);
+
   const planSteps = useMemo<Array<PlanStep>>(() => task?.plan ?? [], [task]);
 
   const visibleTaskHistory = useMemo(() => {
@@ -312,6 +436,7 @@ export function App() {
     setTask(null);
     setEvents([]);
     setAssistantOutput("");
+    setApprovalBusyId(null);
 
     if (!nextSession) {
       return;
@@ -408,6 +533,7 @@ export function App() {
       setTaskHistory([]);
       setSessions([]);
       setActiveTaskId(null);
+      setApprovalBusyId(null);
       setEvents([]);
       setAssistantOutput("");
       await refreshSessionHistory();
@@ -465,6 +591,7 @@ export function App() {
       const activeSession = session ?? (await ensureSessionForSend());
       setEvents([]);
       setAssistantOutput("");
+      setApprovalBusyId(null);
 
       const result = await runtimeClient.sendMessage({
         sessionId: activeSession.id,
@@ -513,6 +640,22 @@ export function App() {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setRefreshBusy(false);
+    }
+  }
+
+  async function handleApprovalSubmit(approvalId: string, decision: "approved" | "rejected") {
+    setApprovalBusyId(approvalId);
+    setError(null);
+
+    try {
+      await runtimeClient.approvalSubmit({
+        approvalId,
+        decision,
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setApprovalBusyId((current) => (current === approvalId ? null : current));
     }
   }
 
@@ -788,6 +931,83 @@ export function App() {
             <h2>Event Stream</h2>
             <span className="muted">{eventItems.length} event(s)</span>
           </div>
+          <section className="approval-stack">
+            <div className="section-header approval-header">
+              <h3>Approvals</h3>
+              <span className="muted">{approvalCards.length} item(s)</span>
+            </div>
+            {approvalCards.length > 0 ? (
+              <ul className="approval-list">
+                {approvalCards.map((item) => {
+                  const outputLines = commandOutputByTaskId.get(item.taskId) ?? [];
+                  const isPending = item.status === "pending";
+                  return (
+                    <li key={item.approvalId} className="approval-card" data-status={item.status}>
+                      <div className="section-header approval-topline">
+                        <div>
+                          <strong>{item.command}</strong>
+                          <span className="muted">approvalId: {item.approvalId}</span>
+                        </div>
+                        <span className={`badge ${item.status === "approved" ? "ok" : "warn"}`}>
+                          {item.status}
+                        </span>
+                      </div>
+                      <dl className="meta compact approval-meta">
+                        <div>
+                          <dt>cwd</dt>
+                          <dd className="break">{item.cwd}</dd>
+                        </div>
+                        <div>
+                          <dt>shell</dt>
+                          <dd>{item.shell}</dd>
+                        </div>
+                        <div>
+                          <dt>timeout</dt>
+                          <dd>{item.timeoutMs > 0 ? `${item.timeoutMs} ms` : "not recorded"}</dd>
+                        </div>
+                        <div>
+                          <dt>task</dt>
+                          <dd className="break">{item.taskId}</dd>
+                        </div>
+                      </dl>
+                      {outputLines.length > 0 ? (
+                        <pre className="approval-output">{outputLines.join("\n")}</pre>
+                      ) : null}
+                      {isPending ? (
+                        <div className="approval-actions">
+                          <button
+                            type="button"
+                            onClick={() => handleApprovalSubmit(item.approvalId, "approved")}
+                            disabled={approvalBusyId === item.approvalId || loading}
+                          >
+                            {approvalBusyId === item.approvalId ? "Submitting..." : "Approve"}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => handleApprovalSubmit(item.approvalId, "rejected")}
+                            disabled={approvalBusyId === item.approvalId || loading}
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="muted approval-decision">
+                          Decision: {item.status}
+                          {item.resolvedAt ? ` | ${formatTimestamp(item.resolvedAt)}` : ""}
+                        </p>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="empty-state compact">
+                <strong>No approval requests yet</strong>
+                <span>When the runtime pauses on a command, the pending approval card appears here.</span>
+              </p>
+            )}
+          </section>
           <ul className="timeline rich">
             {eventItems.length > 0 ? (
               eventItems.map((item) => (

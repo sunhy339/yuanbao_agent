@@ -1,5 +1,9 @@
 import type { ApprovalMode } from "./domain";
 
+export type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends (infer U)[] ? U[] : T[K] extends object ? DeepPartial<T[K]> : T[K];
+};
+
 export interface ProviderConfig {
   defaultModel: string;
   fallbackModel?: string;
@@ -39,7 +43,7 @@ export interface UiConfig {
 export interface AppConfig {
   provider: ProviderConfig;
   workspace: WorkspaceConfig;
-  search?: SearchConfig;
+  search: SearchConfig;
   policy: PolicyConfig;
   tools: {
     runCommand: ToolRuntimeConfig;
@@ -81,3 +85,5 @@ export const defaultAppConfig: AppConfig = {
     showRawEvents: false,
   },
 };
+
+export type ConfigPatch = DeepPartial<AppConfig>;

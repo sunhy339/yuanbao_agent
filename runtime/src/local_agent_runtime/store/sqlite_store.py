@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any
 
 
+CONFIG_KEY = "app_config"
+
+
 DEFAULT_CONFIG = {
     "provider": {
         "defaultModel": "gpt-5-codex",
@@ -50,12 +53,19 @@ class SQLiteStore:
 
     def __init__(self, database_path: str) -> None:
         self._database_path = database_path
+        database_file = Path(database_path)
+        if database_path != ":memory:":
+            database_file.expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(database_path)
         self._conn.row_factory = sqlite3.Row
-        self._config = deepcopy(DEFAULT_CONFIG)
-        self._artifact_dir = Path(database_path).resolve().parent / "runtime_artifacts"
+        self._artifact_dir = (
+            Path.cwd() / "runtime_artifacts"
+            if database_path == ":memory:"
+            else database_file.expanduser().resolve().parent / "runtime_artifacts"
+        )
         self._artifact_dir.mkdir(parents=True, exist_ok=True)
         self._bootstrap()
+        self._config = self._load_or_initialize_config()
 
     def close(self) -> None:
         self._conn.close()
@@ -327,7 +337,11 @@ class SQLiteStore:
 
     def update_config(self, params: dict[str, Any]) -> dict[str, Any]:
         patch = params.get("config", params)
+        if not isinstance(patch, dict):
+            raise ValueError("config.update expects an object payload")
+
         self._config = self._merge_config(self._config, patch)
+        self._persist_config(self._config)
         return {"config": deepcopy(self._config)}
 
     def _serialize_workspace(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -403,9 +417,51 @@ class SQLiteStore:
                 merged[key] = deepcopy(value)
         return merged
 
+    def _load_or_initialize_config(self) -> dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT value FROM config WHERE key = ?",
+            (CONFIG_KEY,),
+        ).fetchone()
+        if row is None:
+            config = deepcopy(DEFAULT_CONFIG)
+            self._persist_config(config)
+            return config
+
+        try:
+            loaded = json.loads(row["value"])
+        except json.JSONDecodeError:
+            loaded = {}
+
+        if not isinstance(loaded, dict):
+            loaded = {}
+
+        config = self._merge_config(DEFAULT_CONFIG, loaded)
+        if config != loaded:
+            self._persist_config(config)
+        return config
+
+    def _persist_config(self, config: dict[str, Any]) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO config (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (CONFIG_KEY, json.dumps(config, ensure_ascii=False), self.now()),
+        )
+        self._conn.commit()
+
     def _bootstrap(self) -> None:
         self._conn.executescript(
             """
+            CREATE TABLE IF NOT EXISTS config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS workspaces (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,

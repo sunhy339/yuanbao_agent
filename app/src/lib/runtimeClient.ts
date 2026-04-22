@@ -1,6 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  ApprovalRecord,
+  ApprovalSubmitParams,
+  ApprovalSubmitResult,
   AgentEventEnvelope,
   AppConfig,
   ConfigGetResult,
@@ -33,6 +36,7 @@ interface MockState {
   workspace: WorkspaceOpenResult["workspace"] | null;
   sessions: SessionRecord[];
   tasks: Record<string, TaskRecord>;
+  approvals: Record<string, ApprovalRecord>;
 }
 
 const mockState: MockState = {
@@ -40,6 +44,7 @@ const mockState: MockState = {
   workspace: null,
   sessions: [],
   tasks: {},
+  approvals: {},
 };
 
 export interface HostStatus {
@@ -123,6 +128,23 @@ function rememberSession(session: SessionRecord): void {
   mockState.sessions = sortSessions([...withoutCurrent, session]);
 }
 
+function rememberApproval(approval: ApprovalRecord): void {
+  mockState.approvals = {
+    ...mockState.approvals,
+    [approval.id]: approval,
+  };
+}
+
+function getMockApprovalRequest(command: string, cwd: string, shell: string, timeoutMs: number): Record<string, unknown> {
+  return {
+    command,
+    cwd,
+    shell,
+    timeoutMs,
+    workspaceRoot: mockState.workspace?.rootPath ?? mockState.config.workspace.rootPath,
+  };
+}
+
 function updateMockTask(taskId: string, updater: (task: TaskRecord) => TaskRecord): TaskRecord | null {
   const current = mockState.tasks[taskId];
   if (!current) {
@@ -179,8 +201,24 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
   }, 220);
 
   window.setTimeout(() => {
-    const next = updateMockTask(task.id, (current) => ({
+    const approvalRequest = getMockApprovalRequest(
+      "pytest",
+      ".",
+      "powershell",
+      mockState.config.policy.commandTimeoutMs,
+    );
+    const approval: ApprovalRecord = {
+      id: `appr_${Date.now()}`,
+      taskId: task.id,
+      kind: "run_command",
+      requestJson: JSON.stringify(approvalRequest),
+      createdAt: Date.now(),
+    };
+
+    rememberApproval(approval);
+    updateMockTask(task.id, (current) => ({
       ...current,
+      status: "waiting_approval",
       updatedAt: Date.now(),
       plan:
         current.plan?.map((step) => {
@@ -188,47 +226,34 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
             return { ...step, status: "completed", detail: "Mock request analysis completed." };
           }
           if (step.id === "prepare-next-step") {
-            return { ...step, status: "active", detail: "Waiting for the real runtime tool chain." };
+            return { ...step, status: "active", detail: "Waiting for approval to run the command." };
           }
           return step;
         }) ?? current.plan,
     }));
 
-    if (next) {
-      emitBrowserEvent(
-        buildMockEvent(sessionId, task.id, "task.updated", {
-          status: next.status,
-          plan: next.plan,
-          detail: "Mock tool stage completed.",
-        }),
-      );
-    }
+    emitBrowserEvent(
+      buildMockEvent(sessionId, task.id, "task.updated", {
+        status: "waiting_approval",
+        plan: mockState.tasks[task.id]?.plan,
+        detail: "Waiting for approval to run the command.",
+      }),
+    );
+    emitBrowserEvent(
+      buildMockEvent(sessionId, task.id, "approval.requested", {
+        approvalId: approval.id,
+        taskId: task.id,
+        kind: "run_command",
+        request: approvalRequest,
+      }),
+    );
+    emitBrowserEvent(
+      buildMockEvent(sessionId, task.id, "task.waiting_approval", {
+        status: "waiting_approval",
+        detail: "Command requires approval before execution.",
+      }),
+    );
   }, 320);
-
-  window.setTimeout(() => {
-    const next = updateMockTask(task.id, (current) => ({
-      ...current,
-      status: "completed",
-      resultSummary: "Mock mode completed a simulated analysis without touching the real filesystem or tools.",
-      updatedAt: Date.now(),
-      plan:
-        current.plan?.map((step) =>
-          step.id === "prepare-next-step"
-            ? { ...step, status: "completed", detail: "Mock task finished. Switch to Tauri for the real runtime." }
-            : step,
-        ) ?? current.plan,
-    }));
-
-    if (next) {
-      emitBrowserEvent(
-        buildMockEvent(sessionId, task.id, "task.completed", {
-          status: next.status,
-          plan: next.plan,
-          detail: next.resultSummary,
-        }),
-      );
-    }
-  }, 420);
 }
 
 async function invokeOrReject<T>(command: string, payload?: unknown): Promise<T> {
@@ -255,6 +280,7 @@ export class RuntimeClient {
       mockState.workspace = result.workspace;
       mockState.sessions = [];
       mockState.tasks = {};
+      mockState.approvals = {};
       mockState.config = mergeRuntimeConfig(mockState.config, {
         workspace: {
           ignore: mockState.config.workspace.ignore,
@@ -268,6 +294,7 @@ export class RuntimeClient {
     mockState.workspace = result.workspace;
     mockState.sessions = [];
     mockState.tasks = {};
+    mockState.approvals = {};
     mockState.config = mergeRuntimeConfig(mockState.config, {
       workspace: {
         ignore: mockState.config.workspace.ignore,
@@ -317,6 +344,129 @@ export class RuntimeClient {
       return { task };
     }
     return invokeOrReject<MessageSendResult>("message_send", payload);
+  }
+
+  async approvalSubmit(payload: ApprovalSubmitParams): Promise<ApprovalSubmitResult> {
+    if (!isTauriBridgeAvailable()) {
+      const currentApproval = mockState.approvals[payload.approvalId];
+      if (!currentApproval) {
+        throw new Error(`Approval not found: ${payload.approvalId}`);
+      }
+
+      if (currentApproval.decision && currentApproval.decision !== payload.decision) {
+        throw new Error(`Approval already resolved as ${currentApproval.decision}`);
+      }
+
+      const now = Date.now();
+      const approval: ApprovalRecord = {
+        ...currentApproval,
+        decision: payload.decision,
+        decidedBy: "user",
+        decidedAt: now,
+      };
+      rememberApproval(approval);
+
+      const task = mockState.tasks[approval.taskId];
+      if (!task) {
+        throw new Error(`Task not found: ${approval.taskId}`);
+      }
+
+      const request = JSON.parse(approval.requestJson) as {
+        command?: string;
+        cwd?: string;
+        shell?: string;
+        timeoutMs?: number;
+      };
+
+      emitBrowserEvent(
+        buildMockEvent(task.sessionId, task.id, "approval.resolved", {
+          approvalId: approval.id,
+          taskId: task.id,
+          decision: payload.decision,
+        }),
+      );
+
+      if (payload.decision === "approved") {
+        const runningTask = updateMockTask(task.id, (current) => ({
+          ...current,
+          status: "running",
+          updatedAt: now,
+          plan:
+            current.plan?.map((step) =>
+              step.id === "prepare-next-step"
+                ? { ...step, status: "completed", detail: "Approval granted; command is running." }
+                : step,
+            ) ?? current.plan,
+        }));
+
+        if (runningTask) {
+          emitBrowserEvent(
+            buildMockEvent(task.sessionId, task.id, "task.updated", {
+              status: "running",
+              plan: runningTask.plan,
+              detail: "Approval accepted",
+            }),
+          );
+        }
+
+        emitBrowserEvent(
+          buildMockEvent(task.sessionId, task.id, "command.output", {
+            commandId: `cmd_${approval.id}`,
+            stream: "stdout",
+            chunk: `Approved command finished successfully: ${request.command ?? "pytest"}\n`,
+          }),
+        );
+
+        const completedTask = updateMockTask(task.id, (current) => ({
+          ...current,
+          status: "completed",
+          resultSummary: "Mock mode completed the approved command and published output.",
+          updatedAt: Date.now(),
+          plan:
+            current.plan?.map((step) =>
+              step.id === "prepare-next-step"
+                ? { ...step, status: "completed", detail: "Approved command finished in mock mode." }
+                : step,
+            ) ?? current.plan,
+        }));
+
+        if (completedTask) {
+          emitBrowserEvent(
+            buildMockEvent(task.sessionId, task.id, "task.completed", {
+              status: "completed",
+              plan: completedTask.plan,
+              detail: completedTask.resultSummary,
+            }),
+          );
+        }
+      } else {
+        const cancelledTask = updateMockTask(task.id, (current) => ({
+          ...current,
+          status: "cancelled",
+          updatedAt: now,
+          plan:
+            current.plan?.map((step) =>
+              step.id === "prepare-next-step"
+                ? { ...step, status: "failed", detail: "Approval was rejected by the user." }
+                : step,
+            ) ?? current.plan,
+        }));
+
+        if (cancelledTask) {
+          emitBrowserEvent(
+            buildMockEvent(task.sessionId, task.id, "task.updated", {
+              status: "cancelled",
+              plan: cancelledTask.plan,
+              detail: "Approval rejected by user.",
+            }),
+          );
+        }
+      }
+
+      return { approval };
+    }
+
+    return invokeOrReject<ApprovalSubmitResult>("approval_submit", payload);
   }
 
   async getTask(taskId: string): Promise<TaskGetResult> {

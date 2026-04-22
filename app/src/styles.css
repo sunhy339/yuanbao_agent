@@ -92,6 +92,10 @@ input {
   gap: 12px;
 }
 
+.approval-header h3 {
+  margin: 0;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -228,6 +232,11 @@ button {
   cursor: pointer;
 }
 
+button.secondary {
+  background: rgba(24, 32, 38, 0.08);
+  color: #182026;
+}
+
 button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -313,6 +322,90 @@ button:disabled {
 
 .timeline.rich li {
   gap: 8px;
+}
+
+.approval-stack {
+  display: grid;
+  gap: 14px;
+  margin: 14px 0 18px;
+}
+
+.approval-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.approval-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(24, 32, 38, 0.1);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 253, 249, 0.98), rgba(246, 242, 236, 0.96));
+  box-shadow: 0 12px 24px rgba(24, 32, 38, 0.05);
+}
+
+.approval-card[data-status="approved"] {
+  border-color: rgba(29, 122, 66, 0.24);
+}
+
+.approval-card[data-status="rejected"] {
+  border-color: rgba(154, 35, 35, 0.24);
+}
+
+.approval-topline {
+  align-items: flex-start;
+}
+
+.approval-topline strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.approval-topline .muted {
+  font-size: 12px;
+}
+
+.approval-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 16px;
+}
+
+.approval-meta div {
+  border-bottom: 0;
+  padding: 0;
+}
+
+.approval-meta dt {
+  font-size: 11px;
+}
+
+.approval-output {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #17212a;
+  color: #e8f0f7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.approval-decision {
+  margin: 0;
+}
+
+.empty-state.compact {
+  padding: 12px 14px;
 }
 
 .timeline-row {

@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from local_agent_runtime.tools.registry import BUILTIN_TOOL_SCHEMAS, to_openai_function_tools
+
 from .token_budget import BudgetSection, TokenBudget, estimate_tokens
 
 
@@ -30,108 +32,7 @@ COMMON_GOAL_TERMS = {
 
 DEFAULT_MAX_CONTEXT_TOKENS = 8000
 
-DEFAULT_TOOL_SCHEMAS: list[dict[str, Any]] = [
-    {
-        "name": "list_dir",
-        "description": "List files and directories inside the active workspace.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "workspaceRoot": {"type": "string"},
-                "path": {"type": "string"},
-                "recursive": {"type": "boolean"},
-                "max_depth": {"type": "integer"},
-                "ignore": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["workspaceRoot"],
-        },
-    },
-    {
-        "name": "search_files",
-        "description": "Search workspace files by content or filename.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "workspaceRoot": {"type": "string"},
-                "query": {"type": "string"},
-                "mode": {"type": "string", "enum": ["content", "filename"]},
-                "glob": {"type": "array", "items": {"type": "string"}},
-                "ignore": {"type": "array", "items": {"type": "string"}},
-                "max_results": {"type": "integer"},
-            },
-            "required": ["workspaceRoot", "query"],
-        },
-    },
-    {
-        "name": "read_file",
-        "description": "Read a file inside the active workspace.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "workspaceRoot": {"type": "string"},
-                "path": {"type": "string"},
-                "encoding": {"type": "string"},
-                "max_bytes": {"type": "integer"},
-            },
-            "required": ["workspaceRoot", "path"],
-        },
-    },
-    {
-        "name": "run_command",
-        "description": "Request approval, then run a shell command inside the workspace.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "workspaceRoot": {"type": "string"},
-                "cwd": {"type": "string"},
-                "command": {"type": "string"},
-                "shell": {"type": "string"},
-                "timeoutMs": {"type": "integer"},
-            },
-            "required": ["workspaceRoot", "command"],
-        },
-    },
-    {
-        "name": "apply_patch",
-        "description": "Request approval, then apply a unified diff or file patch inside the workspace.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "workspaceRoot": {"type": "string"},
-                "patchText": {"type": "string"},
-                "files": {"type": "array"},
-                "dry_run": {"type": "boolean"},
-            },
-            "required": ["workspaceRoot"],
-        },
-    },
-    {
-        "name": "git_status",
-        "description": "Read git branch and working tree status for the workspace.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "workspaceRoot": {"type": "string"},
-                "cwd": {"type": "string"},
-            },
-            "required": ["workspaceRoot"],
-        },
-    },
-    {
-        "name": "git_diff",
-        "description": "Read git diff for the workspace or a path inside it.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "workspaceRoot": {"type": "string"},
-                "cwd": {"type": "string"},
-                "path": {"type": "string"},
-                "staged": {"type": "boolean"},
-            },
-            "required": ["workspaceRoot"],
-        },
-    },
-]
+DEFAULT_TOOL_SCHEMAS = BUILTIN_TOOL_SCHEMAS
 
 
 class ContextBuilder:
@@ -154,6 +55,7 @@ class ContextBuilder:
             "ignore": list(dict.fromkeys([*workspace_ignore, *search_ignore])),
         }
         tools = self._tool_schemas or DEFAULT_TOOL_SCHEMAS
+        openai_tools = to_openai_function_tools(tools)
         messages, budget_stats = self._build_messages(
             session=session,
             workspace=workspace,
@@ -176,6 +78,7 @@ class ContextBuilder:
             "recent_commands": [],
             "messages": messages,
             "tools": tools,
+            "openai_tools": openai_tools,
             "budgetStats": budget_stats,
         }
 

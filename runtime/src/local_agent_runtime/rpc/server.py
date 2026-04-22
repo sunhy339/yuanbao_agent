@@ -33,9 +33,13 @@ class JsonRpcServer:
             "approval.submit": self._orchestrator.submit_approval,
             "config.get": self._store.get_config,
             "config.update": self._store.update_config,
+            "provider.test": self._orchestrator.test_provider,
             "diff.get": self._store.get_patch,
             "command_log.get": self._store.get_command_log,
+            "trace.list": self._store.list_trace_events,
         }
+        if hasattr(self._store, "append_runtime_event"):
+            self._event_bus.subscribe(self._store.append_runtime_event)
 
     def serve(self, stdin: TextIO, stdout: TextIO) -> None:
         self._writer = stdout

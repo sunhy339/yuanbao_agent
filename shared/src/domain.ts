@@ -1,6 +1,7 @@
 export type Identifier = string;
 
 export type ApprovalMode = "strict" | "on_write_or_command" | "relaxed";
+export type ProviderMode = "mock" | "openai-compatible";
 export type SessionStatus = "active" | "archived" | "failed";
 export type TaskStatus =
   | "queued"
@@ -30,6 +31,32 @@ export type CommandStatus =
   | "timeout"
   | "killed";
 export type MessageRole = "user" | "assistant" | "system" | "tool";
+export type TraceEventSource =
+  | "provider"
+  | "tool"
+  | "approval"
+  | "patch"
+  | "command"
+  | "task"
+  | "assistant"
+  | "runtime";
+export type TraceEventType =
+  | "provider.request"
+  | "provider.response"
+  | "tool.started"
+  | "tool.completed"
+  | "tool.failed"
+  | "approval.requested"
+  | "approval.resolved"
+  | "patch.proposed"
+  | "patch.approved"
+  | "patch.applied"
+  | "patch.failed"
+  | "command.started"
+  | "command.output"
+  | "command.completed"
+  | "command.failed"
+  | string;
 
 export interface GitStatusChange {
   status: string;
@@ -159,4 +186,16 @@ export interface ApprovalRecord {
   decidedBy?: string;
   createdAt: number;
   decidedAt?: number;
+}
+
+export interface TraceEventRecord<TPayload = unknown> {
+  id: Identifier;
+  taskId: Identifier;
+  sessionId: Identifier;
+  type: TraceEventType;
+  source: TraceEventSource | string;
+  relatedId?: Identifier | null;
+  payload: TPayload;
+  createdAt: number;
+  sequence: number;
 }

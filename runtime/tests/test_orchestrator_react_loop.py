@@ -199,6 +199,220 @@ def test_react_loop_pauses_for_approval_and_resumes_after_submit(tmp_path: Any) 
     assert provider.calls[1]["context"]["tool_results"][0]["result"]["stdout"] == "approved\n"
 
 
+def test_react_loop_persists_pending_state_when_approval_is_required(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "message": "Need approval before running.",
+                "tool_calls": [
+                    {
+                        "id": "call_command",
+                        "name": "run_command",
+                        "arguments": {"command": "Write-Output persisted"},
+                    }
+                ],
+            },
+            {"final": "This response is not reached before approval."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+
+    def run_command(params: dict[str, Any]) -> dict[str, Any]:
+        approval = runtime.store.create_approval(
+            task_id=params["taskId"],
+            kind="run_command",
+            request={"command": params["command"]},
+        )
+        return {"status": "approval_required", "approval": approval, "command": params["command"]}
+
+    runtime.server._orchestrator._tool_registry.register("run_command", run_command)  # noqa: SLF001
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "run a persisted command"},
+        ),
+        "task",
+    )
+
+    state = runtime.store.get_pending_react_state(task["id"])
+    assert state is not None
+    assert state["task_id"] == task["id"]
+    assert state["session_id"] == session["id"]
+    assert state["goal"] == "run a persisted command"
+    assert state["messages"][-1]["tool_calls"][0]["id"] == "call_command"
+    assert state["tool_results"] == []
+    assert state["pending_tool_call"]["id"] == "call_command"
+    assert state["pending_tool_spec"]["name"] == "run_command"
+    assert state["remaining_tool_calls"] == []
+    assert state["steps"] == 1
+    assert state["react_started"] is True
+
+
+def test_react_loop_restores_pending_state_from_sqlite_after_memory_is_cleared(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_command",
+                        "name": "run_command",
+                        "arguments": {"command": "Write-Output restored"},
+                    }
+                ]
+            },
+            {"final": "Command completed after SQLite restore."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+
+    def run_command(params: dict[str, Any]) -> dict[str, Any]:
+        if not params.get("approvalId"):
+            approval = runtime.store.create_approval(
+                task_id=params["taskId"],
+                kind="run_command",
+                request={"command": params["command"]},
+            )
+            return {"status": "approval_required", "approval": approval, "command": params["command"]}
+        return {
+            "status": "completed",
+            "stdout": "restored\n",
+            "stderr": "",
+            "exitCode": 0,
+        }
+
+    runtime.server._orchestrator._tool_registry.register("run_command", run_command)  # noqa: SLF001
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "run after process restart"},
+        ),
+        "task",
+    )
+    approval_id = next(event for event in runtime.events if event["type"] == "approval.requested")["payload"][
+        "approvalId"
+    ]
+    runtime.server._orchestrator._pending_react_tasks.clear()  # noqa: SLF001
+
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    assert final_task["status"] == "completed"
+    assert final_task["resultSummary"] == "Command completed after SQLite restore."
+    assert len(provider.calls) == 2
+    assert provider.calls[1]["context"]["tool_results"][0]["result"]["stdout"] == "restored\n"
+
+
+def test_react_loop_rejection_cleans_pending_state(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_command",
+                        "name": "run_command",
+                        "arguments": {"command": "Write-Output rejected"},
+                    }
+                ]
+            }
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+
+    def run_command(params: dict[str, Any]) -> dict[str, Any]:
+        approval = runtime.store.create_approval(
+            task_id=params["taskId"],
+            kind="run_command",
+            request={"command": params["command"]},
+        )
+        return {"status": "approval_required", "approval": approval, "command": params["command"]}
+
+    runtime.server._orchestrator._tool_registry.register("run_command", run_command)  # noqa: SLF001
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "reject the command"},
+        ),
+        "task",
+    )
+    approval_id = next(event for event in runtime.events if event["type"] == "approval.requested")["payload"][
+        "approvalId"
+    ]
+    assert runtime.store.get_pending_react_state(task["id"]) is not None
+
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "rejected"})
+
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    assert final_task["status"] == "failed"
+    assert final_task["errorCode"] == "APPROVAL_REJECTED"
+    assert runtime.store.get_pending_react_state(task["id"]) is None
+    assert task["id"] not in runtime.server._orchestrator._pending_react_tasks  # noqa: SLF001
+
+
+def test_react_loop_completion_cleans_pending_state(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_command",
+                        "name": "run_command",
+                        "arguments": {"command": "Write-Output cleanup"},
+                    }
+                ]
+            },
+            {"final": "Cleaned up after completion."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+
+    def run_command(params: dict[str, Any]) -> dict[str, Any]:
+        if not params.get("approvalId"):
+            approval = runtime.store.create_approval(
+                task_id=params["taskId"],
+                kind="run_command",
+                request={"command": params["command"]},
+            )
+            return {"status": "approval_required", "approval": approval, "command": params["command"]}
+        return {
+            "status": "completed",
+            "stdout": "cleanup\n",
+            "stderr": "",
+            "exitCode": 0,
+        }
+
+    runtime.server._orchestrator._tool_registry.register("run_command", run_command)  # noqa: SLF001
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "cleanup pending state"},
+        ),
+        "task",
+    )
+    approval_id = next(event for event in runtime.events if event["type"] == "approval.requested")["payload"][
+        "approvalId"
+    ]
+    assert runtime.store.get_pending_react_state(task["id"]) is not None
+
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    assert final_task["status"] == "completed"
+    assert runtime.store.get_pending_react_state(task["id"]) is None
+    assert task["id"] not in runtime.server._orchestrator._pending_react_tasks  # noqa: SLF001
+
+
 def test_react_loop_fails_when_max_steps_are_exceeded(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [

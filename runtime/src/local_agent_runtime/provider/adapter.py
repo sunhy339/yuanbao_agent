@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from typing import Any
 
 from .openai_compatible import (
     HttpPost,
+    HttpStream,
     OpenAICompatibleChatClient,
     OpenAICompatibleSettings,
     ProviderAdapterError,
@@ -27,18 +29,19 @@ class ProviderAdapter:
         config: dict[str, Any] | None = None,
         *,
         http_post: HttpPost | None = None,
+        http_stream: HttpStream | None = None,
         environ: dict[str, str] | None = None,
     ) -> None:
         self._config = config or {}
         self._environ = environ if environ is not None else os.environ
-        self._openai_client = OpenAICompatibleChatClient(http_post=http_post)
+        self._openai_client = OpenAICompatibleChatClient(http_post=http_post, http_stream=http_stream)
 
     def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
         if self._real_provider_enabled(context):
             messages = context.get("messages")
             if not isinstance(messages, list) or not messages:
                 messages = [{"role": "user", "content": prompt}]
-            tools = self._normalize_tools(context.get("tools"))
+            tools = self._normalize_tools(context.get("openai_tools") or context.get("tools"))
             provider_response = self.chat(
                 messages=messages,
                 tools=tools,
@@ -99,6 +102,36 @@ class ProviderAdapter:
             messages=messages,
             tools=tools,
         )
+
+    def chat_stream(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        settings = self._resolve_settings(context)
+        if settings is None:
+            response = self.chat(messages=messages, tools=tools, context=context)
+            content = response["message"]["content"]
+            if content:
+                yield {"type": "content_delta", "delta": content}
+            yield {"type": "finish_reason", "finish_reason": response["finish_reason"]}
+            yield {"type": "final", "response": response}
+            return
+
+        yield from self._openai_client.stream(
+            settings=settings,
+            messages=messages,
+            tools=tools,
+        )
+
+    def stream(self, prompt: str, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        messages = context.get("messages")
+        if not isinstance(messages, list) or not messages:
+            messages = [{"role": "user", "content": prompt}]
+        tools = self._normalize_tools(context.get("openai_tools") or context.get("tools"))
+        yield from self.chat_stream(messages=messages, tools=tools, context=context)
 
     def _normalize_tools(self, tools: Any) -> list[dict[str, Any]] | None:
         if not isinstance(tools, list):
@@ -312,7 +345,18 @@ class ProviderAdapter:
         if self._normalize_mode(mode) not in OPENAI_COMPATIBLE_MODES:
             return None
 
-        api_key = self._string_value(provider_config, "apiKey", "api_key") or self._env(
+        configured_env_var_name = self._string_value(
+            provider_config,
+            "apiKeyEnvVarName",
+            "api_key_env_var_name",
+            "envKey",
+            "env_key",
+        )
+        api_key = self._string_value(provider_config, "apiKey", "api_key")
+        if not api_key and configured_env_var_name:
+            api_key = self._env(configured_env_var_name)
+        if not api_key:
+            api_key = self._env(
             "LOCAL_AGENT_PROVIDER_API_KEY",
             "LOCAL_AGENT_OPENAI_API_KEY",
             "OPENAI_API_KEY",

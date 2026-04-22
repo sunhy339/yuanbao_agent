@@ -1,4 +1,4 @@
-import type { AppConfig, ConfigPatch } from "./config";
+import type { AppConfig, ConfigPatch, ProviderConfig } from "./config";
 import type {
   ApprovalRecord,
   CommandLogRecord,
@@ -6,8 +6,10 @@ import type {
   GitStatusRecord,
   Identifier,
   PatchRecord,
+  ProviderMode,
   SessionRecord,
   TaskRecord,
+  TraceEventRecord,
   WorkspaceRef,
 } from "./domain";
 
@@ -56,8 +58,10 @@ export type RpcMethod =
   | "approval.submit"
   | "config.get"
   | "config.update"
+  | "provider.test"
   | "diff.get"
   | "command_log.get"
+  | "trace.list"
   | "task.list";
 
 export interface WorkspaceOpenParams {
@@ -96,8 +100,17 @@ export interface DiffGetParams {
   patchId: Identifier;
 }
 
+export interface ProviderTestParams {
+  provider?: ConfigPatch["provider"] | ProviderConfig;
+}
+
 export interface CommandLogGetParams {
   commandId: Identifier;
+}
+
+export interface TraceListParams {
+  taskId: Identifier;
+  limit?: number;
 }
 
 export interface WorkspaceOpenResult {
@@ -144,6 +157,18 @@ export type ConfigUpdateParams = ConfigPatch & {
   config?: ConfigPatch;
 };
 
+export interface ProviderTestResult {
+  ok: boolean;
+  status: "ok" | "mocked" | "not_configured" | "missing_env" | "unsupported" | "failed";
+  message: string;
+  providerMode?: ProviderMode | string;
+  model?: string;
+  baseUrl?: string;
+  checkedEnvVarName?: string;
+  source: "runtime" | "mock-fallback";
+  details?: Record<string, unknown>;
+}
+
 export interface DiffGetResult {
   patch: PatchRecord;
   diffText: string;
@@ -151,6 +176,10 @@ export interface DiffGetResult {
 
 export interface CommandLogGetResult {
   commandLog: CommandLogRecord;
+}
+
+export interface TraceListResult {
+  traceEvents: TraceEventRecord[];
 }
 
 export type GitStatusResult = GitStatusRecord;

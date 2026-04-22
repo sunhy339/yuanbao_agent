@@ -21,7 +21,8 @@ body {
 
 button,
 textarea,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -235,12 +236,17 @@ textarea.short {
   min-height: 120px;
 }
 
-input {
+input,
+select {
   width: 100%;
   padding: 12px 14px;
   border: 1px solid rgba(24, 32, 38, 0.12);
   border-radius: 14px;
   background: #fffdf9;
+}
+
+select {
+  color: #182026;
 }
 
 button {
@@ -338,6 +344,44 @@ button:disabled {
   gap: 16px;
   justify-content: space-between;
   flex-wrap: wrap;
+}
+
+.split-actions {
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.provider-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field-grid .field {
+  margin-bottom: 0;
+}
+
+.provider-status {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  font-size: 13px;
+}
+
+.provider-status.ok {
+  background: rgba(29, 122, 66, 0.1);
+  color: #166437;
+}
+
+.provider-status.warn {
+  background: rgba(156, 79, 42, 0.1);
+  color: #9c4f2a;
 }
 
 .timeline.rich li {
@@ -709,6 +753,10 @@ button:disabled {
   }
 
   .tool-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .field-grid {
     grid-template-columns: 1fr;
   }
 }

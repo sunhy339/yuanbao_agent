@@ -1,14 +1,21 @@
-import type { ApprovalMode } from "./domain";
+import type { ApprovalMode, ProviderMode } from "./domain";
 
 export type DeepPartial<T> = {
   [K in keyof T]?: T[K] extends (infer U)[] ? U[] : T[K] extends object ? DeepPartial<T[K]> : T[K];
 };
 
 export interface ProviderConfig {
+  mode?: ProviderMode;
+  baseUrl?: string;
+  model?: string;
   defaultModel: string;
   fallbackModel?: string;
+  apiKeyEnvVarName?: string;
   temperature: number;
+  maxTokens?: number;
   maxOutputTokens: number;
+  maxContextTokens?: number;
+  timeout?: number;
 }
 
 export interface WorkspaceConfig {
@@ -53,10 +60,17 @@ export interface AppConfig {
 
 export const defaultAppConfig: AppConfig = {
   provider: {
+    mode: "mock",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-5-codex",
     defaultModel: "gpt-5-codex",
     fallbackModel: "claude-sonnet",
+    apiKeyEnvVarName: "LOCAL_AGENT_PROVIDER_API_KEY",
     temperature: 0.2,
+    maxTokens: 4000,
     maxOutputTokens: 4000,
+    maxContextTokens: 120000,
+    timeout: 30,
   },
   workspace: {
     rootPath: "",

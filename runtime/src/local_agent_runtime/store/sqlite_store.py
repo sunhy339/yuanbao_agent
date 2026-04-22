@@ -14,10 +14,17 @@ CONFIG_KEY = "app_config"
 
 DEFAULT_CONFIG = {
     "provider": {
+        "mode": "mock",
+        "baseUrl": "https://api.openai.com/v1",
+        "model": "gpt-5-codex",
         "defaultModel": "gpt-5-codex",
         "fallbackModel": "claude-sonnet",
+        "apiKeyEnvVarName": "LOCAL_AGENT_PROVIDER_API_KEY",
         "temperature": 0.2,
+        "maxTokens": 4000,
         "maxOutputTokens": 4000,
+        "maxContextTokens": 120000,
+        "timeout": 30,
     },
     "workspace": {
         "rootPath": "",
@@ -205,6 +212,96 @@ class SQLiteStore:
             ).fetchall()
         return {"tasks": [self._serialize_task(dict(row)) for row in rows]}
 
+    def append_trace_event(
+        self,
+        *,
+        task_id: str,
+        event_type: str,
+        source: str,
+        payload: Any,
+        related_id: str | None = None,
+        session_id: str | None = None,
+        created_at: int | None = None,
+    ) -> dict[str, Any]:
+        task_row = self._conn.execute(
+            "SELECT session_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if task_row is None:
+            raise ValueError(f"Task not found: {task_id}")
+
+        trace_session_id = session_id or task_row["session_id"]
+        trace_id = self.new_id("trace")
+        timestamp = self.now() if created_at is None else int(created_at)
+        sequence_row = self._conn.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM trace_events").fetchone()
+        sequence = int(sequence_row[0])
+        payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        self._conn.execute(
+            """
+            INSERT INTO trace_events (
+                id, task_id, session_id, type, source, related_id, payload_json, created_at, sequence
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trace_id,
+                task_id,
+                trace_session_id,
+                event_type,
+                source,
+                related_id,
+                payload_json,
+                timestamp,
+                sequence,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM trace_events WHERE id = ?", (trace_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Trace event not found: {trace_id}")
+        return self._serialize_trace_event(dict(row))
+
+    def append_runtime_event(self, event: Any) -> dict[str, Any] | None:
+        event_type = getattr(event, "type", None)
+        task_id = getattr(event, "task_id", None)
+        if not event_type or not task_id:
+            return None
+
+        normalized_type = str(event_type)
+        if normalized_type.startswith(("approval.", "patch.")):
+            return None
+        if normalized_type in {"command.started", "command.completed", "command.failed"}:
+            return None
+
+        payload = getattr(event, "payload", {})
+        return self.append_trace_event(
+            task_id=task_id,
+            session_id=getattr(event, "session_id", None),
+            event_type=normalized_type,
+            source=self._trace_source(normalized_type),
+            related_id=self._trace_related_id(payload),
+            payload=payload,
+            created_at=getattr(event, "ts", None),
+        )
+
+    def list_trace_events(self, params: dict[str, Any]) -> dict[str, Any]:
+        task_id = params.get("taskId") or params.get("task_id")
+        if not task_id:
+            raise ValueError("taskId is required")
+        limit = int(params.get("limit", 500))
+        limit = max(1, min(limit, 5000))
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM trace_events
+            WHERE task_id = ?
+            ORDER BY created_at ASC, sequence ASC
+            LIMIT ?
+            """,
+            (task_id, limit),
+        ).fetchall()
+        return {"traceEvents": [self._serialize_trace_event(dict(row)) for row in rows]}
+
     def resolve_approval(self, approval_id: str, decision: str) -> dict[str, Any]:
         now = self.now()
         self._conn.execute(
@@ -222,7 +319,21 @@ class SQLiteStore:
         ).fetchone()
         if row is None:
             raise ValueError(f"Approval not found: {approval_id}")
-        return self._serialize_approval(dict(row))
+        approval = self._serialize_approval(dict(row))
+        self.append_trace_event(
+            task_id=approval["taskId"],
+            event_type="approval.resolved",
+            source="approval",
+            related_id=approval["id"],
+            payload={
+                "approvalId": approval["id"],
+                "kind": approval["kind"],
+                "decision": approval["decision"],
+                "decidedBy": approval["decidedBy"],
+            },
+            created_at=approval["decidedAt"],
+        )
+        return approval
 
     def create_patch(
         self,
@@ -259,7 +370,22 @@ class SQLiteStore:
         row = self._conn.execute("SELECT * FROM patches WHERE id = ?", (patch_id,)).fetchone()
         if row is None:
             raise ValueError(f"Patch not found: {patch_id}")
-        return self._serialize_patch(dict(row))
+        patch = self._serialize_patch(dict(row))
+        self.append_trace_event(
+            task_id=patch["taskId"],
+            event_type="patch.proposed" if patch["status"] == "proposed" else f"patch.{patch['status']}",
+            source="patch",
+            related_id=patch["id"],
+            payload={
+                "patchId": patch["id"],
+                "workspaceId": patch["workspaceId"],
+                "summary": patch["summary"],
+                "status": patch["status"],
+                "filesChanged": patch["filesChanged"],
+            },
+            created_at=patch["createdAt"],
+        )
+        return patch
 
     def update_patch(
         self,
@@ -295,7 +421,22 @@ class SQLiteStore:
         row = self._conn.execute("SELECT * FROM patches WHERE id = ?", (patch_id,)).fetchone()
         if row is None:
             raise ValueError(f"Patch not found: {patch_id}")
-        return self._serialize_patch(dict(row))
+        patch = self._serialize_patch(dict(row))
+        self.append_trace_event(
+            task_id=patch["taskId"],
+            event_type=f"patch.{patch['status']}",
+            source="patch",
+            related_id=patch["id"],
+            payload={
+                "patchId": patch["id"],
+                "workspaceId": patch["workspaceId"],
+                "summary": patch["summary"],
+                "status": patch["status"],
+                "filesChanged": patch["filesChanged"],
+            },
+            created_at=patch["updatedAt"],
+        )
+        return patch
 
     def get_approval(self, params: dict[str, Any]) -> dict[str, Any]:
         row = self._conn.execute(
@@ -321,7 +462,20 @@ class SQLiteStore:
         row = self._conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
         if row is None:
             raise ValueError(f"Approval not found: {approval_id}")
-        return self._serialize_approval(dict(row))
+        approval = self._serialize_approval(dict(row))
+        self.append_trace_event(
+            task_id=approval["taskId"],
+            event_type="approval.requested",
+            source="approval",
+            related_id=approval["id"],
+            payload={
+                "approvalId": approval["id"],
+                "kind": approval["kind"],
+                "request": request,
+            },
+            created_at=approval["createdAt"],
+        )
+        return approval
 
     def find_approval(
         self,
@@ -342,6 +496,78 @@ class SQLiteStore:
         if row is None:
             return None
         return self._serialize_approval(dict(row))
+
+    def upsert_pending_react_state(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        goal: str,
+        context: dict[str, Any],
+        messages: list[dict[str, Any]],
+        tool_results: list[dict[str, Any]],
+        pending_tool_call: dict[str, Any],
+        pending_tool_spec: dict[str, Any],
+        remaining_tool_calls: list[dict[str, Any]],
+        steps: int,
+        react_started: bool,
+    ) -> dict[str, Any]:
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO pending_react_tasks (
+                task_id, session_id, goal, context_json, messages_json, tool_results_json,
+                pending_tool_call_json, pending_tool_spec_json, remaining_tool_calls_json,
+                steps, react_started, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                goal = excluded.goal,
+                context_json = excluded.context_json,
+                messages_json = excluded.messages_json,
+                tool_results_json = excluded.tool_results_json,
+                pending_tool_call_json = excluded.pending_tool_call_json,
+                pending_tool_spec_json = excluded.pending_tool_spec_json,
+                remaining_tool_calls_json = excluded.remaining_tool_calls_json,
+                steps = excluded.steps,
+                react_started = excluded.react_started,
+                updated_at = excluded.updated_at
+            """,
+            (
+                task_id,
+                session_id,
+                goal,
+                json.dumps(context, ensure_ascii=False),
+                json.dumps(messages, ensure_ascii=False),
+                json.dumps(tool_results, ensure_ascii=False),
+                json.dumps(pending_tool_call, ensure_ascii=False),
+                json.dumps(pending_tool_spec, ensure_ascii=False),
+                json.dumps(remaining_tool_calls, ensure_ascii=False),
+                int(steps),
+                1 if react_started else 0,
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        state = self.get_pending_react_state(task_id)
+        if state is None:
+            raise ValueError(f"Pending ReAct state not found after upsert: {task_id}")
+        return state
+
+    def get_pending_react_state(self, task_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM pending_react_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._serialize_pending_react_state(dict(row))
+
+    def delete_pending_react_state(self, task_id: str) -> None:
+        self._conn.execute("DELETE FROM pending_react_tasks WHERE task_id = ?", (task_id,))
+        self._conn.commit()
 
     def get_patch(self, params: dict[str, Any]) -> dict[str, Any]:
         row = self._conn.execute(
@@ -407,6 +633,20 @@ class SQLiteStore:
             raise ValueError(f"Command log not found: {command_id}")
         record = self._serialize_command_log(dict(row))
         record["shell"] = shell
+        self.append_trace_event(
+            task_id=record["taskId"],
+            event_type="command.started",
+            source="command",
+            related_id=record["id"],
+            payload={
+                "commandId": record["id"],
+                "command": record["command"],
+                "cwd": record["cwd"],
+                "shell": shell,
+                "status": record["status"],
+            },
+            created_at=record["startedAt"],
+        )
         return record
 
     def update_command_log(
@@ -432,7 +672,26 @@ class SQLiteStore:
         row = self._conn.execute("SELECT * FROM command_logs WHERE id = ?", (command_id,)).fetchone()
         if row is None:
             raise ValueError(f"Command log not found: {command_id}")
-        return self._serialize_command_log(dict(row))
+        command_log = self._serialize_command_log(dict(row))
+        event_type = "command.completed" if command_log["status"] == "completed" else "command.failed"
+        self.append_trace_event(
+            task_id=command_log["taskId"],
+            event_type=event_type,
+            source="command",
+            related_id=command_log["id"],
+            payload={
+                "commandId": command_log["id"],
+                "command": command_log["command"],
+                "cwd": command_log["cwd"],
+                "status": command_log["status"],
+                "exitCode": command_log["exitCode"],
+                "durationMs": command_log["durationMs"],
+                "stdoutPath": command_log["stdoutPath"],
+                "stderrPath": command_log["stderrPath"],
+            },
+            created_at=command_log["finishedAt"],
+        )
+        return command_log
 
     def write_command_artifact(self, command_id: str, stream_name: str, content: str) -> str:
         artifact_path = self._artifact_dir / f"{command_id}_{stream_name}.log"
@@ -526,6 +785,49 @@ class SQLiteStore:
             "durationMs": duration_ms,
             "stdoutPath": row["stdout_path"],
             "stderrPath": row["stderr_path"],
+        }
+
+    def _serialize_trace_event(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "taskId": row["task_id"],
+            "sessionId": row["session_id"],
+            "type": row["type"],
+            "source": row["source"],
+            "relatedId": row["related_id"],
+            "payload": json.loads(row["payload_json"]),
+            "createdAt": row["created_at"],
+            "sequence": row["sequence"],
+        }
+
+    def _trace_related_id(self, payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        for key in ("toolCallId", "approvalId", "patchId", "commandId", "providerRequestId"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    def _trace_source(self, event_type: str) -> str:
+        source, _separator, _name = event_type.partition(".")
+        return source or "runtime"
+
+    def _serialize_pending_react_state(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "task_id": row["task_id"],
+            "session_id": row["session_id"],
+            "goal": row["goal"],
+            "context": json.loads(row["context_json"] or "{}"),
+            "messages": json.loads(row["messages_json"] or "[]"),
+            "tool_results": json.loads(row["tool_results_json"] or "[]"),
+            "pending_tool_call": json.loads(row["pending_tool_call_json"] or "{}"),
+            "pending_tool_spec": json.loads(row["pending_tool_spec_json"] or "{}"),
+            "remaining_tool_calls": json.loads(row["remaining_tool_calls_json"] or "[]"),
+            "steps": int(row["steps"]),
+            "react_started": bool(row["react_started"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
         }
 
     def _merge_config(self, base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
@@ -648,6 +950,37 @@ class SQLiteStore:
                 created_at INTEGER NOT NULL,
                 decided_at INTEGER
             );
+
+            CREATE TABLE IF NOT EXISTS pending_react_tasks (
+                task_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                goal TEXT NOT NULL,
+                context_json TEXT NOT NULL,
+                messages_json TEXT NOT NULL,
+                tool_results_json TEXT NOT NULL,
+                pending_tool_call_json TEXT NOT NULL,
+                pending_tool_spec_json TEXT NOT NULL,
+                remaining_tool_calls_json TEXT NOT NULL,
+                steps INTEGER NOT NULL,
+                react_started INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS trace_events (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                source TEXT NOT NULL,
+                related_id TEXT,
+                payload_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                sequence INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_trace_events_task_order
+                ON trace_events (task_id, created_at, sequence);
             """
         )
         self._conn.commit()

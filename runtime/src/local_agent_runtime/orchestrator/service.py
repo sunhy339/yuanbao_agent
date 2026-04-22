@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from typing import Any
 
@@ -40,6 +41,98 @@ class Orchestrator:
             title=params["title"],
         )
         return {"session": session}
+
+    def test_provider(self, params: dict[str, Any]) -> dict[str, Any]:
+        provider_patch = params.get("provider") if isinstance(params, dict) else None
+        config = deepcopy(self._store.get_config({}).get("config", {}))
+        provider_config = deepcopy(config.get("provider") or {})
+        if isinstance(provider_patch, dict):
+            provider_config.update(provider_patch)
+        config["provider"] = provider_config
+
+        mode = str(provider_config.get("mode") or provider_config.get("providerMode") or "").strip()
+        normalized_mode = mode.lower()
+        model = provider_config.get("model") or provider_config.get("defaultModel")
+        base_url = provider_config.get("baseUrl") or provider_config.get("base_url") or "https://api.openai.com/v1"
+        env_var_name = (
+            provider_config.get("apiKeyEnvVarName")
+            or provider_config.get("api_key_env_var_name")
+            or provider_config.get("envKey")
+            or "LOCAL_AGENT_PROVIDER_API_KEY"
+        )
+
+        if normalized_mode in {"", "mock"}:
+            return {
+                "ok": True,
+                "status": "mocked",
+                "message": "Provider is in mock mode; no network request was made.",
+                "providerMode": mode or "mock",
+                "model": model,
+                "baseUrl": base_url,
+                "checkedEnvVarName": env_var_name,
+                "source": "runtime",
+            }
+        if normalized_mode not in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}:
+            return {
+                "ok": False,
+                "status": "unsupported",
+                "message": f"Unsupported provider mode: {mode}",
+                "providerMode": mode,
+                "model": model,
+                "baseUrl": base_url,
+                "checkedEnvVarName": env_var_name,
+                "source": "runtime",
+            }
+        direct_key = provider_config.get("apiKey") or provider_config.get("api_key")
+        if not direct_key and env_var_name and not os.environ.get(str(env_var_name)):
+            return {
+                "ok": False,
+                "status": "missing_env",
+                "message": f"Environment variable {env_var_name} is not set.",
+                "providerMode": mode,
+                "model": model,
+                "baseUrl": base_url,
+                "checkedEnvVarName": env_var_name,
+                "source": "runtime",
+            }
+
+        try:
+            response = self._provider.chat(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "Reply with a short provider connectivity confirmation.",
+                    }
+                ],
+                tools=None,
+                context={"config": config},
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "status": "failed",
+                "message": str(exc),
+                "providerMode": mode,
+                "model": model,
+                "baseUrl": base_url,
+                "checkedEnvVarName": env_var_name,
+                "source": "runtime",
+            }
+
+        return {
+            "ok": True,
+            "status": "ok",
+            "message": "Provider connection succeeded.",
+            "providerMode": mode,
+            "model": response.get("raw", {}).get("model") or model,
+            "baseUrl": base_url,
+            "checkedEnvVarName": env_var_name,
+            "source": "runtime",
+            "details": {
+                "finishReason": response.get("finish_reason"),
+                "usage": response.get("raw", {}).get("usage"),
+            },
+        }
 
     def send_message(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._store.require_session(params["sessionId"])
@@ -142,7 +235,7 @@ class Orchestrator:
             "plan": task["plan"],
             "resultSummary": summary,
         }
-        self._pending_react_tasks.pop(task["id"], None)
+        self._clear_pending_react_state(task["id"])
         self._publish(
             session_id=session_id,
             task=runtime_task,
@@ -181,7 +274,7 @@ class Orchestrator:
             "plan": task_plan,
             "errorCode": error_code,
         }
-        self._pending_react_tasks.pop(task["id"], None)
+        self._clear_pending_react_state(task["id"])
         self._publish(
             session_id=session_id,
             task=runtime_task,
@@ -197,6 +290,7 @@ class Orchestrator:
 
     def cancel_task(self, params: dict[str, Any]) -> dict[str, Any]:
         task = self._store.update_task(task_id=params["taskId"], status="cancelled")
+        self._clear_pending_react_state(task["id"])
         self._publish(
             session_id=task["sessionId"],
             task=task,
@@ -229,7 +323,8 @@ class Orchestrator:
                 "decision": approval["decision"],
             },
         )
-        if approval["taskId"] in self._pending_react_tasks:
+        pending_state = self._load_pending_react_state(approval["taskId"])
+        if pending_state is not None:
             if approval["decision"] == "approved":
                 self._resume_react_after_approval(task=task, approval=approval)
             else:
@@ -415,6 +510,60 @@ class Orchestrator:
         )
         self._event_bus.publish(event)
 
+    def _save_pending_react_state(self, task_id: str, state: dict[str, Any]) -> None:
+        normalized_state = {
+            "session_id": state["session_id"],
+            "goal": state["goal"],
+            "context": deepcopy(state["context"]),
+            "messages": deepcopy(state["messages"]),
+            "tool_results": deepcopy(state["tool_results"]),
+            "steps": int(state["steps"]),
+            "react_started": bool(state["react_started"]),
+            "pending_tool_call": deepcopy(state["pending_tool_call"]),
+            "pending_tool_spec": deepcopy(state["pending_tool_spec"]),
+            "remaining_tool_calls": deepcopy(state.get("remaining_tool_calls", [])),
+        }
+        self._pending_react_tasks[task_id] = normalized_state
+        if hasattr(self._store, "upsert_pending_react_state"):
+            self._store.upsert_pending_react_state(
+                task_id=task_id,
+                session_id=normalized_state["session_id"],
+                goal=normalized_state["goal"],
+                context=normalized_state["context"],
+                messages=normalized_state["messages"],
+                tool_results=normalized_state["tool_results"],
+                pending_tool_call=normalized_state["pending_tool_call"],
+                pending_tool_spec=normalized_state["pending_tool_spec"],
+                remaining_tool_calls=normalized_state["remaining_tool_calls"],
+                steps=normalized_state["steps"],
+                react_started=normalized_state["react_started"],
+            )
+
+    def _load_pending_react_state(self, task_id: str) -> dict[str, Any] | None:
+        if hasattr(self._store, "get_pending_react_state"):
+            state = self._store.get_pending_react_state(task_id)
+            if state is not None:
+                normalized_state = {
+                    "session_id": state["session_id"],
+                    "goal": state["goal"],
+                    "context": deepcopy(state["context"]),
+                    "messages": deepcopy(state["messages"]),
+                    "tool_results": deepcopy(state["tool_results"]),
+                    "steps": int(state["steps"]),
+                    "react_started": bool(state["react_started"]),
+                    "pending_tool_call": deepcopy(state["pending_tool_call"]),
+                    "pending_tool_spec": deepcopy(state["pending_tool_spec"]),
+                    "remaining_tool_calls": deepcopy(state.get("remaining_tool_calls", [])),
+                }
+                self._pending_react_tasks[task_id] = normalized_state
+                return normalized_state
+        return self._pending_react_tasks.get(task_id)
+
+    def _clear_pending_react_state(self, task_id: str) -> None:
+        self._pending_react_tasks.pop(task_id, None)
+        if hasattr(self._store, "delete_pending_react_state"):
+            self._store.delete_pending_react_state(task_id)
+
     def _tool_failed(self, tool_name: str, result: dict[str, Any]) -> bool:
         status = result.get("status")
         return status in {"failed", "timeout", "killed"} or result.get("ok") is False
@@ -473,11 +622,17 @@ class Orchestrator:
                 **context,
                 "messages": messages,
                 "tools": self._provider_tools(context),
+                "openai_tools": context.get("openai_tools") or self._provider_tools(context),
                 "tool_results": tool_results,
                 "step": steps + 1,
                 "max_steps": max_steps,
             }
-            response = self._provider.generate(goal, provider_context)
+            response = self._request_provider_response(
+                session_id=session_id,
+                task=task,
+                goal=goal,
+                provider_context=provider_context,
+            )
             parsed = self._parse_provider_response(
                 response,
                 allow_fallback=not react_started and steps == 0,
@@ -491,7 +646,7 @@ class Orchestrator:
             assistant_text = parsed.get("message") or ""
             if parsed["status"] == "completed" and not assistant_text:
                 assistant_text = parsed["summary"]
-            if assistant_text:
+            if assistant_text and not response.get("_streamed_content"):
                 self._publish(
                     session_id=session_id,
                     task=task,
@@ -530,14 +685,132 @@ class Orchestrator:
                         "pending_tool_spec": tool_spec,
                         "remaining_tool_calls": tool_calls[index + 1 :],
                     }
+                    self._save_pending_react_state(task["id"], self._pending_react_tasks[task["id"]])
                     return {"status": "waiting_approval"}
 
                 tool_results.append(tool_result)
                 messages.append(self._tool_result_message(tool_call, tool_result))
                 self._advance_after_tool(session_id=session_id, task=task, tool_spec=tool_spec)
 
+    def _request_provider_response(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        provider_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._should_stream_provider(provider_context):
+            self._append_provider_trace(task=task, event_type="provider.request", payload=self._provider_trace_payload(provider_context))
+            response = self._provider.generate(goal, provider_context)
+            self._append_provider_trace(task=task, event_type="provider.response", payload=self._provider_response_trace(response))
+            return response
+
+        self._append_provider_trace(
+            task=task,
+            event_type="provider.request",
+            payload={**self._provider_trace_payload(provider_context), "stream": True},
+        )
+        final_response: dict[str, Any] | None = None
+        streamed_content = False
+        for event in self._provider.stream(goal, provider_context):
+            event_type = event.get("type")
+            if event_type == "content_delta":
+                delta = event.get("delta")
+                if isinstance(delta, str) and delta:
+                    streamed_content = True
+                    self._publish(
+                        session_id=session_id,
+                        task=task,
+                        event_type="assistant.token",
+                        payload={"delta": delta, "step": provider_context.get("step")},
+                    )
+            elif event_type == "final":
+                response = event.get("response")
+                if isinstance(response, dict):
+                    final_response = response
+            elif event_type == "finish_reason":
+                self._append_provider_trace(task=task, event_type="provider.stream.finish", payload=event)
+            elif event_type == "tool_call_delta":
+                self._append_provider_trace(task=task, event_type="provider.stream.tool_call_delta", payload=event)
+
+        if final_response is None:
+            raise RuntimeError("Provider stream ended without a final response.")
+
+        assistant_message = final_response.get("message", {})
+        if not isinstance(assistant_message, dict):
+            raise RuntimeError("Provider stream returned invalid final response.")
+        response = {
+            "message": assistant_message.get("content", ""),
+            "assistant_message": assistant_message,
+            "tool_calls": assistant_message.get("tool_calls") or [],
+            "finish_reason": final_response.get("finish_reason"),
+            "raw": final_response.get("raw", {}),
+            "prompt": goal,
+            "context": provider_context,
+            "_streamed_content": streamed_content,
+        }
+        if not response["tool_calls"]:
+            response["final"] = response["message"]
+            response["final_answer"] = response["message"]
+        self._append_provider_trace(
+            task=task,
+            event_type="provider.response",
+            payload={**self._provider_response_trace(response), "stream": True},
+        )
+        return response
+
+    def _should_stream_provider(self, provider_context: dict[str, Any]) -> bool:
+        if not hasattr(self._provider, "stream"):
+            return False
+        config = provider_context.get("config") or {}
+        provider_config = config.get("provider") if isinstance(config, dict) else {}
+        if not isinstance(provider_config, dict):
+            return False
+        mode = str(provider_config.get("mode") or provider_config.get("providerMode") or "").strip().lower()
+        return mode in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}
+
+    def _append_provider_trace(self, *, task: dict[str, Any], event_type: str, payload: dict[str, Any]) -> None:
+        if not hasattr(self._store, "append_trace_event"):
+            return
+        self._store.append_trace_event(
+            task_id=task["id"],
+            session_id=task["sessionId"],
+            event_type=event_type,
+            source="provider",
+            related_id=payload.get("model"),
+            payload=payload,
+        )
+
+    def _provider_trace_payload(self, provider_context: dict[str, Any]) -> dict[str, Any]:
+        config = provider_context.get("config") or {}
+        provider_config = config.get("provider") if isinstance(config, dict) else {}
+        if not isinstance(provider_config, dict):
+            provider_config = {}
+        return {
+            "mode": provider_config.get("mode") or provider_config.get("providerMode"),
+            "model": provider_config.get("model") or provider_config.get("defaultModel"),
+            "baseUrl": provider_config.get("baseUrl") or provider_config.get("base_url"),
+            "messageCount": len(provider_context.get("messages") or []),
+            "toolCount": len(provider_context.get("openai_tools") or provider_context.get("tools") or []),
+            "step": provider_context.get("step"),
+        }
+
+    def _provider_response_trace(self, response: Any) -> dict[str, Any]:
+        if not isinstance(response, dict):
+            return {"valid": False, "type": type(response).__name__}
+        raw = response.get("raw") if isinstance(response.get("raw"), dict) else {}
+        return {
+            "valid": True,
+            "finishReason": response.get("finish_reason"),
+            "model": raw.get("model"),
+            "usage": raw.get("usage"),
+            "toolCallCount": len(response.get("tool_calls") or []),
+            "hasFinal": any(isinstance(response.get(key), str) and bool(response.get(key)) for key in ("final", "final_answer", "answer")),
+        }
+
     def _resume_react_after_approval(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
-        state = self._pending_react_tasks.get(task["id"])
+        state = self._load_pending_react_state(task["id"])
         if state is None:
             return task
 
@@ -555,6 +828,7 @@ class Orchestrator:
             )
             if runtime_task["status"] == "waiting_approval":
                 state["pending_tool_spec"] = pending_spec
+                self._save_pending_react_state(task["id"], state)
                 return runtime_task
 
             state["tool_results"].append(tool_result)
@@ -572,6 +846,7 @@ class Orchestrator:
                     state["pending_tool_call"] = tool_call
                     state["pending_tool_spec"] = tool_spec
                     state["remaining_tool_calls"] = state.get("remaining_tool_calls", [])[index + 1 :]
+                    self._save_pending_react_state(task["id"], state)
                     return runtime_task
 
                 state["tool_results"].append(tool_result)
@@ -663,6 +938,9 @@ class Orchestrator:
         return [{"role": "user", "content": goal}]
 
     def _provider_tools(self, context: dict[str, Any]) -> list[dict[str, Any]]:
+        openai_tools = context.get("openai_tools")
+        if isinstance(openai_tools, list) and openai_tools:
+            return deepcopy(openai_tools)
         tools_by_name: dict[str, dict[str, Any]] = {}
         for schema in context.get("tools") or []:
             if isinstance(schema, dict) and isinstance(schema.get("name"), str):

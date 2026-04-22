@@ -64,6 +64,26 @@ def test_workspace_session_message_tool_flow(runtime_harness: Any, tmp_path: Pat
     assert task_from_store["plan"][-1]["status"] == "completed"
 
 
+def test_provider_test_reports_mock_and_missing_env(runtime_harness: Any) -> None:
+    mocked = runtime_harness.call("provider.test", {"provider": {"mode": "mock"}})["result"]
+    assert mocked["ok"] is True
+    assert mocked["status"] == "mocked"
+
+    missing_env = runtime_harness.call(
+        "provider.test",
+        {
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKeyEnvVarName": "YUANBAO_TEST_MISSING_KEY",
+                "model": "test-chat",
+            }
+        },
+    )["result"]
+    assert missing_env["ok"] is False
+    assert missing_env["status"] == "missing_env"
+    assert missing_env["checkedEnvVarName"] == "YUANBAO_TEST_MISSING_KEY"
+
+
 def test_run_command_approval_closure(runtime_harness: Any, monkeypatch: Any, tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

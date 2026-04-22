@@ -13,6 +13,8 @@ export type AgentEventType =
   | "task.completed"
   | "task.failed"
   | "task.cancelled"
+  | "provider.request"
+  | "provider.response"
   | "assistant.token"
   | "assistant.message.completed"
   | "tool.started"
@@ -43,6 +45,15 @@ export interface TaskUpdatedPayload {
 
 export interface AssistantTokenPayload {
   delta: string;
+}
+
+export interface ProviderTracePayload {
+  providerRequestId?: Identifier;
+  model?: string;
+  request?: Record<string, unknown>;
+  response?: Record<string, unknown>;
+  status?: number;
+  error?: unknown;
 }
 
 export interface ToolLifecyclePayload {

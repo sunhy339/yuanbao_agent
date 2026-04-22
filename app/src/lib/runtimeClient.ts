@@ -7,12 +7,15 @@ import type {
   AgentEventEnvelope,
   AppConfig,
   ConfigGetResult,
+  ConfigUpdateParams,
   ConfigUpdateResult,
   DiffGetParams,
   DiffGetResult,
   MessageSendParams,
   MessageSendResult,
   PatchRecord,
+  ProviderTestParams,
+  ProviderTestResult,
   SessionCreateParams,
   SessionCreateResult,
   SessionListResult,
@@ -84,6 +87,16 @@ function buildMockRuntimeConfig(): RuntimeConfig {
   const config = buildMockConfig();
   return {
     ...config,
+    provider: {
+      mode: "mock",
+      baseUrl: "https://api.openai.com/v1",
+      model: config.provider.defaultModel,
+      apiKeyEnvVarName: "LOCAL_AGENT_PROVIDER_API_KEY",
+      maxTokens: config.provider.maxOutputTokens,
+      maxContextTokens: 120000,
+      timeout: 30,
+      ...config.provider,
+    },
     search: config.search ?? {
       glob: [],
       ignore: config.workspace.ignore,
@@ -95,38 +108,79 @@ function sortSessions(sessions: SessionRecord[]): SessionRecord[] {
   return [...sessions].sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
-function mergeRuntimeConfig(current: RuntimeConfig, next: Partial<RuntimeConfig>): RuntimeConfig {
+function mergeRuntimeConfig(current: RuntimeConfig, next: ConfigUpdateParams): RuntimeConfig {
+  const patch = "config" in next && next.config ? next.config : next;
   return {
     ...current,
-    ...next,
+    ...patch,
     provider: {
       ...current.provider,
-      ...next.provider,
+      ...patch.provider,
     },
     workspace: {
       ...current.workspace,
-      ...next.workspace,
+      ...patch.workspace,
     },
     search: {
       ...current.search,
-      ...next.search,
+      ...patch.search,
     },
     policy: {
       ...current.policy,
-      ...next.policy,
+      ...patch.policy,
     },
     tools: {
       ...current.tools,
-      ...next.tools,
+      ...patch.tools,
       runCommand: {
         ...current.tools.runCommand,
-        ...next.tools?.runCommand,
+        ...patch.tools?.runCommand,
       },
     },
     ui: {
       ...current.ui,
-      ...next.ui,
+      ...patch.ui,
     },
+  };
+}
+
+function buildProviderTestFallback(
+  params: ProviderTestParams | undefined,
+  reason?: unknown,
+): ProviderTestResult {
+  const provider = {
+    ...mockState.config.provider,
+    ...params?.provider,
+  };
+  const mode = provider.mode ?? "mock";
+  const model = provider.model ?? provider.defaultModel;
+  const envVarName = provider.apiKeyEnvVarName ?? "LOCAL_AGENT_PROVIDER_API_KEY";
+
+  if (mode === "mock") {
+    return {
+      ok: true,
+      status: "mocked",
+      message: "Mock provider path is ready. No API key value is stored in app config.",
+      providerMode: mode,
+      model,
+      baseUrl: provider.baseUrl,
+      checkedEnvVarName: envVarName,
+      source: "mock-fallback",
+    };
+  }
+
+  return {
+    ok: false,
+    status: "unsupported",
+    message:
+      reason instanceof Error
+        ? `Provider test backend is not available yet: ${reason.message}`
+        : "Provider test backend is not available yet.",
+    providerMode: mode,
+    model,
+    baseUrl: provider.baseUrl,
+    checkedEnvVarName: envVarName,
+    source: "mock-fallback",
   };
 }
 
@@ -642,7 +696,7 @@ export class RuntimeClient {
     return result;
   }
 
-  async updateConfig(payload: RuntimeConfig): Promise<ConfigUpdateResult> {
+  async updateConfig(payload: ConfigUpdateParams): Promise<ConfigUpdateResult> {
     if (!isTauriBridgeAvailable()) {
       mockState.config = mergeRuntimeConfig(mockState.config, payload);
       return {
@@ -659,6 +713,18 @@ export class RuntimeClient {
       return {
         config: mockState.config,
       };
+    }
+  }
+
+  async testProvider(payload: ProviderTestParams = {}): Promise<ProviderTestResult> {
+    if (!isTauriBridgeAvailable()) {
+      return buildProviderTestFallback(payload);
+    }
+
+    try {
+      return await invokeOrReject<ProviderTestResult>("provider_test", payload);
+    } catch (reason) {
+      return buildProviderTestFallback(payload, reason);
     }
   }
 

@@ -10,6 +10,8 @@ import type {
   PatchRecord,
   PatchProposedPayload,
   PlanStep,
+  ProviderMode,
+  ProviderTestResult,
   SessionRecord,
   TaskRecord,
   TaskUpdatedPayload,
@@ -25,6 +27,25 @@ import {
 
 const runtimeClient = new RuntimeClient();
 const DEFAULT_SEARCH_GLOB_TEXT = "";
+const DEFAULT_PROVIDER_MODE: ProviderMode = "mock";
+const DEFAULT_PROVIDER_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_PROVIDER_MODEL = "gpt-5-codex";
+const DEFAULT_PROVIDER_API_KEY_ENV_VAR = "LOCAL_AGENT_PROVIDER_API_KEY";
+const DEFAULT_PROVIDER_TEMPERATURE = 0.2;
+const DEFAULT_PROVIDER_MAX_TOKENS = 4000;
+const DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS = 120000;
+const DEFAULT_PROVIDER_TIMEOUT = 30;
+
+interface ProviderSettingsForm {
+  mode: ProviderMode;
+  baseUrl: string;
+  model: string;
+  apiKeyEnvVarName: string;
+  temperature: string;
+  maxTokens: string;
+  maxContextTokens: string;
+  timeout: string;
+}
 
 function formatTimestamp(timestamp?: number): string {
   if (!timestamp) {
@@ -51,11 +72,73 @@ function formatDuration(durationMs?: number): string {
 function normalizeRuntimeConfig(config: AppConfig | RuntimeConfig): RuntimeConfig {
   return {
     ...config,
+    provider: normalizeProviderConfig(config.provider),
     search: config.search ?? {
       glob: [],
       ignore: config.workspace.ignore,
     },
   };
+}
+
+function normalizeProviderConfig(provider: AppConfig["provider"]): AppConfig["provider"] {
+  const model = provider.model || provider.defaultModel || DEFAULT_PROVIDER_MODEL;
+  const maxTokens = provider.maxTokens ?? provider.maxOutputTokens ?? DEFAULT_PROVIDER_MAX_TOKENS;
+  return {
+    ...provider,
+    mode: provider.mode ?? DEFAULT_PROVIDER_MODE,
+    baseUrl: provider.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
+    model,
+    defaultModel: provider.defaultModel || model,
+    apiKeyEnvVarName: provider.apiKeyEnvVarName ?? DEFAULT_PROVIDER_API_KEY_ENV_VAR,
+    temperature: provider.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
+    maxTokens,
+    maxOutputTokens: provider.maxOutputTokens ?? maxTokens,
+    maxContextTokens: provider.maxContextTokens ?? DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS,
+    timeout: provider.timeout ?? DEFAULT_PROVIDER_TIMEOUT,
+  };
+}
+
+function buildProviderSettingsForm(config: RuntimeConfig | null): ProviderSettingsForm {
+  const provider = config?.provider
+    ? normalizeProviderConfig(config.provider)
+    : {
+        defaultModel: DEFAULT_PROVIDER_MODEL,
+        temperature: DEFAULT_PROVIDER_TEMPERATURE,
+        maxOutputTokens: DEFAULT_PROVIDER_MAX_TOKENS,
+      };
+  const normalized = normalizeProviderConfig(provider);
+
+  return {
+    mode: normalized.mode ?? DEFAULT_PROVIDER_MODE,
+    baseUrl: normalized.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
+    model: normalized.model ?? normalized.defaultModel,
+    apiKeyEnvVarName: normalized.apiKeyEnvVarName ?? DEFAULT_PROVIDER_API_KEY_ENV_VAR,
+    temperature: String(normalized.temperature),
+    maxTokens: String(normalized.maxTokens ?? normalized.maxOutputTokens),
+    maxContextTokens: String(normalized.maxContextTokens ?? DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS),
+    timeout: String(normalized.timeout ?? DEFAULT_PROVIDER_TIMEOUT),
+  };
+}
+
+function parseProviderNumber(
+  value: string,
+  label: string,
+  options: { integer?: boolean; min?: number; max?: number } = {},
+): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${label} must be a number.`);
+  }
+  if (options.integer && !Number.isInteger(parsed)) {
+    throw new Error(`${label} must be an integer.`);
+  }
+  if (typeof options.min === "number" && parsed < options.min) {
+    throw new Error(`${label} must be at least ${options.min}.`);
+  }
+  if (typeof options.max === "number" && parsed > options.max) {
+    throw new Error(`${label} must be at most ${options.max}.`);
+  }
+  return parsed;
 }
 
 function parsePatternText(value: string): string[] {
@@ -545,6 +628,10 @@ function describeMode(hostStatus: HostStatus | null): string {
 export function App() {
   const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
+  const [providerSettings, setProviderSettings] = useState<ProviderSettingsForm>(() =>
+    buildProviderSettingsForm(null),
+  );
+  const [providerTestResult, setProviderTestResult] = useState<ProviderTestResult | null>(null);
   const [searchGlob, setSearchGlob] = useState(DEFAULT_SEARCH_GLOB_TEXT);
   const [searchIgnoreText, setSearchIgnoreText] = useState("");
   const [workspacePath, setWorkspacePath] = useState(DEFAULT_WORKSPACE_PATH);
@@ -566,6 +653,8 @@ export function App() {
   const [messageBusy, setMessageBusy] = useState(false);
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [sessionListBusy, setSessionListBusy] = useState(false);
+  const [providerConfigBusy, setProviderConfigBusy] = useState(false);
+  const [providerTestBusy, setProviderTestBusy] = useState(false);
   const [searchConfigBusy, setSearchConfigBusy] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [patchBusyId, setPatchBusyId] = useState<string | null>(null);
@@ -588,6 +677,7 @@ export function App() {
         const normalizedConfig = normalizeRuntimeConfig(nextConfig.config);
         setHostStatus(nextHostStatus);
         setConfig(normalizedConfig);
+        setProviderSettings(buildProviderSettingsForm(normalizedConfig));
         setSearchGlob(serializePatternList(normalizedConfig.search.glob));
         setSearchIgnoreText(serializePatternList(normalizedConfig.search.ignore));
         setSessions(nextSessions.sessions);
@@ -942,6 +1032,60 @@ export function App() {
     setActiveTaskId(nextTask.id);
   }
 
+  function updateProviderSetting<K extends keyof ProviderSettingsForm>(
+    key: K,
+    value: ProviderSettingsForm[K],
+  ) {
+    setProviderSettings((current) => ({
+      ...current,
+      [key]: value,
+    }));
+    setProviderTestResult(null);
+  }
+
+  function buildProviderPatchFromForm(): AppConfig["provider"] {
+    const model = providerSettings.model.trim();
+    const baseUrl = providerSettings.baseUrl.trim();
+    const apiKeyEnvVarName = providerSettings.apiKeyEnvVarName.trim() || DEFAULT_PROVIDER_API_KEY_ENV_VAR;
+
+    if (!model) {
+      throw new Error("Provider model is required.");
+    }
+    if (providerSettings.mode === "openai-compatible" && !baseUrl) {
+      throw new Error("Base URL is required for OpenAI-compatible mode.");
+    }
+
+    const temperature = parseProviderNumber(providerSettings.temperature, "Temperature", {
+      min: 0,
+      max: 2,
+    });
+    const maxTokens = parseProviderNumber(providerSettings.maxTokens, "Max tokens", {
+      integer: true,
+      min: 1,
+    });
+    const maxContextTokens = parseProviderNumber(providerSettings.maxContextTokens, "Max context tokens", {
+      integer: true,
+      min: 1,
+    });
+    const timeout = parseProviderNumber(providerSettings.timeout, "Timeout", {
+      min: 1,
+    });
+
+    return {
+      mode: providerSettings.mode,
+      baseUrl: baseUrl || DEFAULT_PROVIDER_BASE_URL,
+      model,
+      defaultModel: model,
+      fallbackModel: config?.provider.fallbackModel,
+      apiKeyEnvVarName,
+      temperature,
+      maxTokens,
+      maxOutputTokens: maxTokens,
+      maxContextTokens,
+      timeout,
+    };
+  }
+
   async function refreshSessionHistory(preferredSessionId?: string) {
     setSessionListBusy(true);
     setError(null);
@@ -980,21 +1124,40 @@ export function App() {
     }
   }
 
+  async function persistProviderConfig(): Promise<RuntimeConfig | null> {
+    if (!config) {
+      return null;
+    }
+
+    const providerPatch = buildProviderPatchFromForm();
+    const result = await runtimeClient.updateConfig({
+      config: {
+        provider: providerPatch,
+      },
+    });
+    const normalized = normalizeRuntimeConfig(result.config);
+    setConfig(normalized);
+    setProviderSettings(buildProviderSettingsForm(normalized));
+    return normalized;
+  }
+
   async function persistSearchConfig(): Promise<RuntimeConfig | null> {
     if (!config) {
       return null;
     }
 
-    const nextConfig = normalizeRuntimeConfig({
-      ...config,
-      search: {
-        ...config.search,
-        glob: parsePatternText(searchGlob),
-        ignore: parsePatternText(searchIgnoreText),
+    const nextSearch = {
+      ...config.search,
+      glob: parsePatternText(searchGlob),
+      ignore: parsePatternText(searchIgnoreText),
+    };
+    const result = await runtimeClient.updateConfig({
+      config: {
+        search: {
+          ...nextSearch,
+        },
       },
     });
-
-    const result = await runtimeClient.updateConfig(nextConfig);
     const normalized = normalizeRuntimeConfig(result.config);
     setConfig(normalized);
     setSearchGlob(serializePatternList(normalized.search.glob));
@@ -1063,6 +1226,38 @@ export function App() {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setSearchConfigBusy(false);
+    }
+  }
+
+  async function handleSaveProviderConfig() {
+    setProviderConfigBusy(true);
+    setError(null);
+    setProviderTestResult(null);
+
+    try {
+      await persistProviderConfig();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setProviderConfigBusy(false);
+    }
+  }
+
+  async function handleTestProvider() {
+    setProviderTestBusy(true);
+    setError(null);
+    setProviderTestResult(null);
+
+    try {
+      const providerPatch = buildProviderPatchFromForm();
+      const result = await runtimeClient.testProvider({
+        provider: providerPatch,
+      });
+      setProviderTestResult(result);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setProviderTestBusy(false);
     }
   }
 
@@ -1224,6 +1419,116 @@ export function App() {
               <dd>{config?.policy.approvalMode ?? "loading..."}</dd>
             </div>
           </dl>
+        </section>
+
+        <section className="panel">
+          <div className="section-header">
+            <h2>Provider</h2>
+            <span className={`badge ${providerTestResult?.ok ? "ok" : providerTestResult ? "warn" : "neutral"}`}>
+              {providerTestResult?.status ?? "not tested"}
+            </span>
+          </div>
+          <div className="provider-form">
+            <label className="field">
+              <span>Mode</span>
+              <select
+                value={providerSettings.mode}
+                onChange={(event) => updateProviderSetting("mode", event.target.value as ProviderMode)}
+              >
+                <option value="mock">Mock / deterministic</option>
+                <option value="openai-compatible">OpenAI compatible</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Base URL</span>
+              <input
+                value={providerSettings.baseUrl}
+                onChange={(event) => updateProviderSetting("baseUrl", event.target.value)}
+                placeholder={DEFAULT_PROVIDER_BASE_URL}
+              />
+            </label>
+            <label className="field">
+              <span>Model</span>
+              <input
+                value={providerSettings.model}
+                onChange={(event) => updateProviderSetting("model", event.target.value)}
+                placeholder={DEFAULT_PROVIDER_MODEL}
+              />
+            </label>
+            <label className="field">
+              <span>API key env var</span>
+              <input
+                value={providerSettings.apiKeyEnvVarName}
+                onChange={(event) => updateProviderSetting("apiKeyEnvVarName", event.target.value)}
+                placeholder={DEFAULT_PROVIDER_API_KEY_ENV_VAR}
+              />
+            </label>
+            <div className="field-grid">
+              <label className="field">
+                <span>Temperature</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="2"
+                  step="0.1"
+                  value={providerSettings.temperature}
+                  onChange={(event) => updateProviderSetting("temperature", event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Max tokens</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={providerSettings.maxTokens}
+                  onChange={(event) => updateProviderSetting("maxTokens", event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Max context</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={providerSettings.maxContextTokens}
+                  onChange={(event) => updateProviderSetting("maxContextTokens", event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Timeout sec</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={providerSettings.timeout}
+                  onChange={(event) => updateProviderSetting("timeout", event.target.value)}
+                />
+              </label>
+            </div>
+          </div>
+          <p className="help-text">
+            API key values are not stored here. Set {providerSettings.apiKeyEnvVarName || DEFAULT_PROVIDER_API_KEY_ENV_VAR}
+            in the runtime environment before using a real provider.
+          </p>
+          {providerTestResult ? (
+            <p className={`provider-status ${providerTestResult.ok ? "ok" : "warn"}`}>
+              {providerTestResult.message}
+            </p>
+          ) : null}
+          <div className="actions split-actions">
+            <button type="button" onClick={handleSaveProviderConfig} disabled={providerConfigBusy || loading || !config}>
+              {providerConfigBusy ? "Saving..." : "Save Provider"}
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={handleTestProvider}
+              disabled={providerTestBusy || loading || !config}
+            >
+              {providerTestBusy ? "Testing..." : "Test Connection"}
+            </button>
+          </div>
         </section>
 
         <section className="panel">

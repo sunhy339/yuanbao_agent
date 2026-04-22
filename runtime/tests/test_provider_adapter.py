@@ -133,6 +133,31 @@ def test_openai_compatible_request_can_be_configured_from_env() -> None:
     assert payload["max_tokens"] == 321
 
 
+def test_configured_api_key_env_var_name_is_used() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"choices":[{"message":{"role":"assistant","content":"env name answer"}}]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKeyEnvVarName": "CUSTOM_PROVIDER_KEY",
+                "model": "env-name-chat",
+            }
+        },
+        http_post=fake_post,
+        environ={"CUSTOM_PROVIDER_KEY": "sk-custom"},
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "env name answer"
+    assert calls[0]["headers"]["Authorization"] == "Bearer sk-custom"
+
+
 def test_tool_calls_response_is_normalized() -> None:
     def fake_post(**_kwargs: Any) -> tuple[int, bytes]:
         return 200, json.dumps(

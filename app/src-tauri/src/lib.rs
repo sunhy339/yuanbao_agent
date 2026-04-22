@@ -404,6 +404,15 @@ fn config_update(
 }
 
 #[tauri::command]
+fn provider_test(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call(&app_handle, "provider.test", payload)
+}
+
+#[tauri::command]
 fn command_log_get(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -439,6 +448,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             approval_submit,
             config_get,
             config_update,
+            provider_test,
             command_log_get,
             diff_get
         ])

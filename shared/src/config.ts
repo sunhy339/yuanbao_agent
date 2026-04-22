@@ -19,6 +19,9 @@ export interface ProviderProfile {
   maxOutputTokens?: number;
   maxContextTokens?: number;
   timeout?: number;
+  lastCheckedAt?: number;
+  lastStatus?: string;
+  lastErrorSummary?: string;
 }
 
 export interface ProviderConfig {
@@ -52,6 +55,7 @@ export interface PolicyConfig {
   approvalMode: ApprovalMode;
   commandTimeoutMs: number;
   maxTaskSteps: number;
+  maxPatchRepairAttempts: number;
   maxFilesPerPatch: number;
   allowNetwork: boolean;
 }
@@ -127,6 +131,7 @@ export const defaultAppConfig: AppConfig = {
     approvalMode: "on_write_or_command",
     commandTimeoutMs: 600_000,
     maxTaskSteps: 20,
+    maxPatchRepairAttempts: 2,
     maxFilesPerPatch: 20,
     allowNetwork: false,
   },

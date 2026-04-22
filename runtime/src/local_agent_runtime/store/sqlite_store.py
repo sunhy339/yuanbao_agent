@@ -60,6 +60,9 @@ DEFAULT_CONFIG = {
         "maxPatchRepairAttempts": 2,
         "maxFilesPerPatch": 20,
         "allowNetwork": False,
+        "postTaskValidation": {
+            "command": None,
+        },
     },
     "tools": {
         "runCommand": {
@@ -750,6 +753,46 @@ class SQLiteStore:
         self._persist_config(self._config)
         return {"config": deepcopy(self._config)}
 
+    def update_provider_profile_health(
+        self,
+        profile_id: str,
+        *,
+        last_checked_at: int,
+        last_status: str,
+        last_error_summary: str | None,
+    ) -> dict[str, Any]:
+        provider = deepcopy(self._config.get("provider"))
+        if not isinstance(provider, dict):
+            return {"config": deepcopy(self._config)}
+
+        profiles = provider.get("profiles")
+        if not isinstance(profiles, list):
+            return {"config": deepcopy(self._config)}
+
+        updated = False
+        for profile in profiles:
+            if not isinstance(profile, dict) or profile.get("id") != profile_id:
+                continue
+            profile["lastCheckedAt"] = int(last_checked_at)
+            profile["lastStatus"] = str(last_status)
+            if isinstance(last_error_summary, str) and last_error_summary.strip():
+                profile["lastErrorSummary"] = last_error_summary.strip()
+            else:
+                profile.pop("lastErrorSummary", None)
+            updated = True
+            break
+
+        if not updated:
+            return {"config": deepcopy(self._config)}
+
+        provider["profiles"] = profiles
+        self._config = self._normalize_config({
+            **deepcopy(self._config),
+            "provider": provider,
+        })
+        self._persist_config(self._config)
+        return {"config": deepcopy(self._config)}
+
     def _serialize_workspace(self, row: dict[str, Any]) -> dict[str, Any]:
         return {
             "id": row["id"],
@@ -917,6 +960,12 @@ class SQLiteStore:
         legacy_profile = self._profile_from_provider(normalized)
         raw_profiles = normalized.get("profiles")
         profiles = [self._normalize_provider_profile(item, legacy_profile) for item in raw_profiles or [] if isinstance(item, dict)]
+        if isinstance(raw_profiles, list) and not raw_profiles:
+            default_profile = self._normalize_provider_profile(
+                deepcopy(DEFAULT_CONFIG["provider"]["profiles"][0]),
+                deepcopy(DEFAULT_CONFIG["provider"]["profiles"][0]),
+            )
+            profiles = [default_profile]
         if not profiles:
             profiles = [self._normalize_provider_profile(legacy_profile, legacy_profile)]
 
@@ -1005,6 +1054,15 @@ class SQLiteStore:
             "maxContextTokens": merged.get("maxContextTokens", DEFAULT_CONFIG["provider"]["maxContextTokens"]),
             "timeout": merged.get("timeout", DEFAULT_CONFIG["provider"]["timeout"]),
         }
+        last_checked_at = merged.get("lastCheckedAt")
+        if isinstance(last_checked_at, (int, float)):
+            normalized["lastCheckedAt"] = int(last_checked_at)
+        last_status = merged.get("lastStatus")
+        if isinstance(last_status, str) and last_status.strip():
+            normalized["lastStatus"] = last_status.strip()
+        last_error_summary = merged.get("lastErrorSummary")
+        if isinstance(last_error_summary, str) and last_error_summary.strip():
+            normalized["lastErrorSummary"] = last_error_summary.strip()
         return normalized
 
     def _apply_provider_patch_to_active_profile(

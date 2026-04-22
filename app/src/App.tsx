@@ -16,6 +16,7 @@ import type {
   SessionRecord,
   TaskRecord,
   TaskUpdatedPayload,
+  ToolRuntimeConfig,
   ToolLifecyclePayload,
   TraceEventRecord,
   WorkspaceRef,
@@ -37,12 +38,42 @@ const DEFAULT_PROVIDER_TEMPERATURE = 0.2;
 const DEFAULT_PROVIDER_MAX_TOKENS = 4000;
 const DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS = 120000;
 const DEFAULT_PROVIDER_TIMEOUT = 30;
+const DEFAULT_ALLOWED_SHELL: ToolRuntimeConfig["allowedShell"] = "powershell";
 const TRACE_LIMIT = 50;
 const TRACE_AUTO_REFRESH_STATUSES = new Set<TaskRecord["status"]>([
   "completed",
   "failed",
   "waiting_approval",
 ]);
+type TaskControlAction = "cancel" | "pause" | "resume";
+
+interface TaskControlButtonView {
+  action: TaskControlAction;
+  label: string;
+  busyLabel: string;
+  tone: "neutral" | "warn";
+}
+
+const TASK_CONTROL_BUTTONS: Record<TaskControlAction, TaskControlButtonView> = {
+  cancel: {
+    action: "cancel",
+    label: "Cancel",
+    busyLabel: "Cancelling...",
+    tone: "warn",
+  },
+  pause: {
+    action: "pause",
+    label: "Pause",
+    busyLabel: "Pausing...",
+    tone: "neutral",
+  },
+  resume: {
+    action: "resume",
+    label: "Resume",
+    busyLabel: "Resuming...",
+    tone: "neutral",
+  },
+};
 
 interface ProviderSettingsForm {
   name: string;
@@ -56,10 +87,25 @@ interface ProviderSettingsForm {
   timeout: string;
 }
 
+interface CommandPolicyForm {
+  allowedShell: ToolRuntimeConfig["allowedShell"];
+  allowedCommands: string;
+  deniedCommands: string;
+  blockedPatterns: string;
+  allowedCwdRoots: string;
+}
+
 type ProviderStatusBadge = "mock" | "configured" | "missing env" | "failed" | "ok";
 
 interface ProviderStatusView {
   label: ProviderStatusBadge;
+  badgeClass: "ok" | "warn" | "error" | "info" | "neutral";
+}
+
+interface ProviderHealthView {
+  checkedAtText: string;
+  statusText: string;
+  summaryText: string;
   badgeClass: "ok" | "warn" | "error" | "info" | "neutral";
 }
 
@@ -85,6 +131,18 @@ function formatDuration(durationMs?: number): string {
   return `${(durationMs / 1000).toFixed(1)} s`;
 }
 
+function getTaskControlActions(status?: TaskRecord["status"]): TaskControlButtonView[] {
+  if (status === "running" || status === "waiting_approval") {
+    return [TASK_CONTROL_BUTTONS.cancel, TASK_CONTROL_BUTTONS.pause];
+  }
+
+  if (status === "paused") {
+    return [TASK_CONTROL_BUTTONS.resume, TASK_CONTROL_BUTTONS.cancel];
+  }
+
+  return [];
+}
+
 function normalizeRuntimeConfig(config: AppConfig | RuntimeConfig): RuntimeConfig {
   return {
     ...config,
@@ -92,6 +150,10 @@ function normalizeRuntimeConfig(config: AppConfig | RuntimeConfig): RuntimeConfi
     search: config.search ?? {
       glob: [],
       ignore: config.workspace.ignore,
+    },
+    tools: {
+      ...config.tools,
+      runCommand: normalizeRunCommandConfig(config.tools.runCommand),
     },
   };
 }
@@ -203,6 +265,31 @@ function buildProviderSettingsForm(config: RuntimeConfig | null): ProviderSettin
   };
 }
 
+function normalizeRunCommandConfig(runCommand?: Partial<ToolRuntimeConfig>): ToolRuntimeConfig {
+  const allowedCommands = runCommand?.allowedCommands ?? runCommand?.allowlist ?? [];
+  const deniedCommands = runCommand?.deniedCommands ?? runCommand?.denylist ?? [];
+  return {
+    allowedShell: runCommand?.allowedShell ?? DEFAULT_ALLOWED_SHELL,
+    allowedCommands,
+    allowlist: runCommand?.allowlist ?? allowedCommands,
+    deniedCommands,
+    denylist: runCommand?.denylist ?? deniedCommands,
+    blockedPatterns: runCommand?.blockedPatterns ?? [],
+    allowedCwdRoots: runCommand?.allowedCwdRoots ?? [],
+  };
+}
+
+function buildCommandPolicyForm(config: RuntimeConfig | null): CommandPolicyForm {
+  const runCommand = normalizeRunCommandConfig(config?.tools.runCommand);
+  return {
+    allowedShell: runCommand.allowedShell,
+    allowedCommands: serializePatternList(runCommand.allowedCommands ?? []),
+    deniedCommands: serializePatternList(runCommand.deniedCommands ?? []),
+    blockedPatterns: serializePatternList(runCommand.blockedPatterns),
+    allowedCwdRoots: serializePatternList(runCommand.allowedCwdRoots ?? []),
+  };
+}
+
 function parseProviderNumber(
   value: string,
   label: string,
@@ -276,8 +363,60 @@ function getProviderRuntimeNotice(
 }
 
 function getProviderErrorSummary(result: ProviderTestResult): string {
-  const detail = result.details?.errorSummary ?? result.details?.error ?? result.details?.summary;
+  const detail =
+    result.lastErrorSummary ?? result.details?.errorSummary ?? result.details?.error ?? result.details?.summary;
   return typeof detail === "string" && detail.trim() ? detail.trim() : result.message;
+}
+
+function getProviderHealthBadge(status?: string): ProviderHealthView["badgeClass"] {
+  if (status === "ok") {
+    return "ok";
+  }
+  if (status === "mocked") {
+    return "info";
+  }
+  if (status === "missing_env" || status === "not_configured") {
+    return "warn";
+  }
+  if (status === "failed" || status === "unsupported") {
+    return "error";
+  }
+  return "neutral";
+}
+
+function getProviderHealthView(
+  profile: ProviderProfile | undefined,
+  result: ProviderTestResult | null,
+): ProviderHealthView {
+  const status = result?.lastStatus ?? profile?.lastStatus;
+  const summary =
+    (result ? getProviderErrorSummary(result) : undefined) ??
+    profile?.lastErrorSummary ??
+    "No health check has been recorded for this profile yet.";
+
+  return {
+    checkedAtText: formatTimestamp(result?.lastCheckedAt ?? profile?.lastCheckedAt),
+    statusText: status ?? "not recorded",
+    summaryText: summary,
+    badgeClass: getProviderHealthBadge(status),
+  };
+}
+
+function buildDefaultProviderProfile(): ProviderProfile {
+  return {
+    id: "default",
+    name: "Default",
+    mode: DEFAULT_PROVIDER_MODE,
+    baseUrl: DEFAULT_PROVIDER_BASE_URL,
+    model: DEFAULT_PROVIDER_MODEL,
+    defaultModel: DEFAULT_PROVIDER_MODEL,
+    apiKeyEnvVarName: DEFAULT_PROVIDER_API_KEY_ENV_VAR,
+    temperature: DEFAULT_PROVIDER_TEMPERATURE,
+    maxTokens: DEFAULT_PROVIDER_MAX_TOKENS,
+    maxOutputTokens: DEFAULT_PROVIDER_MAX_TOKENS,
+    maxContextTokens: DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS,
+    timeout: DEFAULT_PROVIDER_TIMEOUT,
+  };
 }
 
 function readRequestText(request: Record<string, unknown>, key: string, fallback: string): string {
@@ -834,6 +973,9 @@ export function App() {
   const [providerSettings, setProviderSettings] = useState<ProviderSettingsForm>(() =>
     buildProviderSettingsForm(null),
   );
+  const [commandPolicySettings, setCommandPolicySettings] = useState<CommandPolicyForm>(() =>
+    buildCommandPolicyForm(null),
+  );
   const [activeProviderProfileId, setActiveProviderProfileId] = useState("default");
   const [providerTestResult, setProviderTestResult] = useState<ProviderTestResult | null>(null);
   const [searchGlob, setSearchGlob] = useState(DEFAULT_SEARCH_GLOB_TEXT);
@@ -860,11 +1002,14 @@ export function App() {
   const [sessionListBusy, setSessionListBusy] = useState(false);
   const [providerConfigBusy, setProviderConfigBusy] = useState(false);
   const [providerTestBusy, setProviderTestBusy] = useState(false);
+  const [commandPolicyBusy, setCommandPolicyBusy] = useState(false);
   const [searchConfigBusy, setSearchConfigBusy] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [patchBusyId, setPatchBusyId] = useState<string | null>(null);
   const [traceBusy, setTraceBusy] = useState(false);
   const [traceError, setTraceError] = useState<string | null>(null);
+  const [taskControlBusyAction, setTaskControlBusyAction] = useState<TaskControlAction | null>(null);
+  const [taskControlError, setTaskControlError] = useState<string | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -885,6 +1030,7 @@ export function App() {
         setHostStatus(nextHostStatus);
         setConfig(normalizedConfig);
         setProviderSettings(buildProviderSettingsForm(normalizedConfig));
+        setCommandPolicySettings(buildCommandPolicyForm(normalizedConfig));
         setActiveProviderProfileId(normalizedConfig.provider.activeProfileId ?? "default");
         setSearchGlob(serializePatternList(normalizedConfig.search.glob));
         setSearchIgnoreText(serializePatternList(normalizedConfig.search.ignore));
@@ -1020,6 +1166,10 @@ export function App() {
     };
   }, [activeTaskId, traceAutoRefreshStatus]);
 
+  useEffect(() => {
+    setTaskControlError(null);
+  }, [task?.id, task?.status]);
+
   const eventItems = useMemo(
     () => [...events].reverse().map((event) => buildActivityItem(event)),
     [events],
@@ -1031,8 +1181,13 @@ export function App() {
         .map((trace) => buildTracePanelItem(trace)),
     [traceEvents],
   );
+  const activeProviderProfile = useMemo(
+    () => config?.provider.profiles?.find((profile) => profile.id === activeProviderProfileId),
+    [activeProviderProfileId, config],
+  );
   const providerStatusView = getProviderStatusView(providerSettings, providerTestResult);
   const providerRuntimeNotice = getProviderRuntimeNotice(providerSettings, providerTestResult);
+  const providerHealthView = getProviderHealthView(activeProviderProfile, providerTestResult);
 
   const toolTimelineItems = useMemo<ToolTimelineItem[]>(() => {
     const items = new Map<string, ToolTimelineItem>();
@@ -1263,6 +1418,7 @@ export function App() {
       ),
     [activeTaskId, chatMessages],
   );
+  const taskControlActions = useMemo(() => getTaskControlActions(task?.status), [task?.status]);
 
   async function ensureWorkspace(): Promise<WorkspaceRef> {
     if (workspace) {
@@ -1331,7 +1487,18 @@ export function App() {
     setProviderTestResult(null);
   }
 
+  function updateCommandPolicySetting<K extends keyof CommandPolicyForm>(
+    key: K,
+    value: CommandPolicyForm[K],
+  ) {
+    setCommandPolicySettings((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  }
+
   function buildProviderProfileFromForm(profileId = activeProviderProfileId): ProviderProfile {
+    const existingProfile = config?.provider.profiles?.find((item) => item.id === profileId);
     const model = providerSettings.model.trim();
     const baseUrl = providerSettings.baseUrl.trim();
     const apiKeyEnvVarName = providerSettings.apiKeyEnvVarName.trim() || DEFAULT_PROVIDER_API_KEY_ENV_VAR;
@@ -1374,6 +1541,9 @@ export function App() {
       maxOutputTokens: maxTokens,
       maxContextTokens,
       timeout,
+      lastCheckedAt: existingProfile?.lastCheckedAt,
+      lastStatus: existingProfile?.lastStatus,
+      lastErrorSummary: existingProfile?.lastErrorSummary,
     };
   }
 
@@ -1466,13 +1636,20 @@ export function App() {
     return normalized;
   }
 
-  async function runProviderTest(provider: AppConfig["provider"], profileId = activeProviderProfileId) {
+  async function runProviderTest(provider?: AppConfig["provider"], profileId = activeProviderProfileId) {
     setProviderTestBusy(true);
     setProviderTestResult(null);
 
     try {
-      const result = await runtimeClient.testProvider({ profileId, provider });
+      const result = await runtimeClient.testProvider(provider ? { profileId, provider } : { profileId });
       setProviderTestResult(result);
+      if (!provider) {
+        const nextConfig = await runtimeClient.getConfig();
+        const normalized = normalizeRuntimeConfig(nextConfig.config);
+        setConfig(normalized);
+        setProviderSettings(buildProviderSettingsForm(normalized));
+        setActiveProviderProfileId(normalized.provider.activeProfileId ?? profileId);
+      }
     } finally {
       setProviderTestBusy(false);
     }
@@ -1499,6 +1676,40 @@ export function App() {
     setConfig(normalized);
     setSearchGlob(serializePatternList(normalized.search.glob));
     setSearchIgnoreText(serializePatternList(normalized.search.ignore));
+    return normalized;
+  }
+
+  function buildRunCommandPatchFromForm(): ToolRuntimeConfig {
+    const allowedCommands = parsePatternText(commandPolicySettings.allowedCommands);
+    const deniedCommands = parsePatternText(commandPolicySettings.deniedCommands);
+    return {
+      allowedShell: commandPolicySettings.allowedShell,
+      allowedCommands,
+      allowlist: [...allowedCommands],
+      deniedCommands,
+      denylist: [...deniedCommands],
+      blockedPatterns: parsePatternText(commandPolicySettings.blockedPatterns),
+      allowedCwdRoots: parsePatternText(commandPolicySettings.allowedCwdRoots),
+    };
+  }
+
+  async function persistCommandPolicyConfig(): Promise<RuntimeConfig | null> {
+    if (!config) {
+      return null;
+    }
+
+    await runtimeClient.updateConfig({
+      config: {
+        tools: {
+          runCommand: buildRunCommandPatchFromForm(),
+        },
+      },
+    });
+
+    const refreshed = await runtimeClient.getConfig();
+    const normalized = normalizeRuntimeConfig(refreshed.config);
+    setConfig(normalized);
+    setCommandPolicySettings(buildCommandPolicyForm(normalized));
     return normalized;
   }
 
@@ -1576,12 +1787,25 @@ export function App() {
     try {
       const normalized = await persistProviderConfig();
       if (normalized) {
-        await runProviderTest(normalized.provider, normalized.provider.activeProfileId);
+        await runProviderTest(undefined, normalized.provider.activeProfileId);
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setProviderConfigBusy(false);
+    }
+  }
+
+  async function handleSaveCommandPolicyConfig() {
+    setCommandPolicyBusy(true);
+    setError(null);
+
+    try {
+      await persistCommandPolicyConfig();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setCommandPolicyBusy(false);
     }
   }
 
@@ -1627,6 +1851,83 @@ export function App() {
       const normalized = normalizeRuntimeConfig(result.config);
       setConfig(normalized);
       setActiveProviderProfileId(normalized.provider.activeProfileId ?? profile.id);
+      setProviderSettings(buildProviderSettingsForm(normalized));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setProviderConfigBusy(false);
+    }
+  }
+
+  async function handleCopyProviderProfile() {
+    if (!config) {
+      return;
+    }
+
+    setProviderConfigBusy(true);
+    setError(null);
+    setProviderTestResult(null);
+
+    try {
+      const source = activeProviderProfile ?? buildProviderProfileFromForm(activeProviderProfileId);
+      const profileId = `profile_${Date.now()}`;
+      const profile: ProviderProfile = {
+        ...source,
+        id: profileId,
+        name: `${source.name || "Provider profile"} Copy`,
+      };
+      delete profile.lastCheckedAt;
+      delete profile.lastStatus;
+      delete profile.lastErrorSummary;
+
+      const provider = normalizeProviderConfig({
+        ...config.provider,
+        activeProfileId: profileId,
+        profiles: [...(config.provider.profiles ?? []), profile],
+      });
+      const result = await runtimeClient.updateConfig({
+        config: {
+          provider,
+        },
+      });
+      const normalized = normalizeRuntimeConfig(result.config);
+      setConfig(normalized);
+      setActiveProviderProfileId(normalized.provider.activeProfileId ?? profileId);
+      setProviderSettings(buildProviderSettingsForm(normalized));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setProviderConfigBusy(false);
+    }
+  }
+
+  async function handleDeleteProviderProfile() {
+    if (!config) {
+      return;
+    }
+
+    setProviderConfigBusy(true);
+    setError(null);
+    setProviderTestResult(null);
+
+    try {
+      const currentProfiles = config.provider.profiles ?? [];
+      const remainingProfiles = currentProfiles.filter((profile) => profile.id !== activeProviderProfileId);
+      const nextProfiles = remainingProfiles.length ? remainingProfiles : [buildDefaultProviderProfile()];
+      const nextActiveProfileId = nextProfiles[0]?.id ?? "default";
+      const provider = normalizeProviderConfig({
+        ...config.provider,
+        activeProfileId: nextActiveProfileId,
+        profiles: nextProfiles,
+      });
+      const result = await runtimeClient.updateConfig({
+        config: {
+          provider,
+        },
+      });
+      const normalized = normalizeRuntimeConfig(result.config);
+      setConfig(normalized);
+      setActiveProviderProfileId(normalized.provider.activeProfileId ?? nextActiveProfileId);
       setProviderSettings(buildProviderSettingsForm(normalized));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -1719,6 +2020,46 @@ export function App() {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setRefreshBusy(false);
+    }
+  }
+
+  async function refreshTaskControlState(taskId: string) {
+    const [taskResult, taskListResult] = await Promise.all([
+      runtimeClient.getTask(taskId),
+      runtimeClient.listTasks(),
+    ]);
+    setTask(taskResult.task);
+    setTaskHistory(taskListResult.tasks);
+    setActiveTaskId(taskId);
+    await loadTraceForTask(taskId);
+  }
+
+  async function handleTaskControl(action: TaskControlAction) {
+    if (!task) {
+      return;
+    }
+
+    const taskId = task.id;
+    setTaskControlBusyAction(action);
+    setTaskControlError(null);
+    setError(null);
+
+    try {
+      if (action === "cancel") {
+        await runtimeClient.cancelTask({ taskId });
+      } else if (action === "pause") {
+        await runtimeClient.pauseTask({ taskId });
+      } else {
+        await runtimeClient.resumeTask({ taskId });
+      }
+
+      await refreshTaskControlState(taskId);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setTaskControlError(message);
+      setError(message);
+    } finally {
+      setTaskControlBusyAction(null);
     }
   }
 
@@ -1817,10 +2158,7 @@ export function App() {
           <div className="provider-form">
             <label className="field">
               <span>Profile</span>
-              <select
-                value={activeProviderProfileId}
-                onChange={(event) => selectProviderProfile(event.target.value)}
-              >
+              <select value={activeProviderProfileId} onChange={(event) => selectProviderProfile(event.target.value)}>
                 {(config?.provider.profiles ?? []).map((profile) => (
                   <option key={profile.id} value={profile.id}>
                     {profile.name}
@@ -1828,6 +2166,32 @@ export function App() {
                 ))}
               </select>
             </label>
+            <div className="provider-profile-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={handleCreateProviderProfile}
+                disabled={providerConfigBusy || loading || !config}
+              >
+                New Profile
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={handleCopyProviderProfile}
+                disabled={providerConfigBusy || loading || !config}
+              >
+                Copy Profile
+              </button>
+              <button
+                type="button"
+                className="secondary danger"
+                onClick={handleDeleteProviderProfile}
+                disabled={providerConfigBusy || loading || !config}
+              >
+                Delete Profile
+              </button>
+            </div>
             <label className="field">
               <span>Profile name</span>
               <input
@@ -1919,44 +2283,42 @@ export function App() {
             in the runtime environment before using a real provider.
           </p>
           {providerRuntimeNotice ? <p className="provider-runtime-notice">{providerRuntimeNotice}</p> : null}
-          {providerTestResult ? (
-            <div className={`provider-status ${providerTestResult.ok ? "ok" : "warn"}`}>
-              <strong>{providerTestResult.message}</strong>
-              <dl className="provider-detail-grid">
-                <div>
-                  <dt>Profile</dt>
-                  <dd>{providerTestResult.profileName ?? providerSettings.name}</dd>
-                </div>
-                <div>
-                  <dt>Base URL</dt>
-                  <dd className="break">{providerTestResult.baseUrl ?? providerSettings.baseUrl}</dd>
-                </div>
-                <div>
-                  <dt>Model</dt>
-                  <dd>{providerTestResult.model ?? providerSettings.model}</dd>
-                </div>
-                <div>
-                  <dt>Env var</dt>
-                  <dd>{providerTestResult.checkedEnvVarName ?? providerSettings.apiKeyEnvVarName}</dd>
-                </div>
-                <div>
-                  <dt>Summary</dt>
-                  <dd>{getProviderErrorSummary(providerTestResult)}</dd>
-                </div>
-              </dl>
-            </div>
-          ) : null}
+          <div className={`provider-status ${providerHealthView.badgeClass}`}>
+            <strong>{providerTestResult?.message ?? "Most recent health check for this profile."}</strong>
+            <dl className="provider-detail-grid">
+              <div>
+                <dt>Profile</dt>
+                <dd>{providerTestResult?.profileName ?? providerSettings.name}</dd>
+              </div>
+              <div>
+                <dt>Base URL</dt>
+                <dd className="break">{providerTestResult?.baseUrl ?? providerSettings.baseUrl}</dd>
+              </div>
+              <div>
+                <dt>Model</dt>
+                <dd>{providerTestResult?.model ?? providerSettings.model}</dd>
+              </div>
+              <div>
+                <dt>Env var</dt>
+                <dd>{providerTestResult?.checkedEnvVarName ?? providerSettings.apiKeyEnvVarName}</dd>
+              </div>
+              <div>
+                <dt>Last checked</dt>
+                <dd>{providerHealthView.checkedAtText}</dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd>{providerHealthView.statusText}</dd>
+              </div>
+              <div className="provider-detail-full">
+                <dt>Error summary</dt>
+                <dd>{providerHealthView.summaryText}</dd>
+              </div>
+            </dl>
+          </div>
           <div className="actions split-actions">
             <button type="button" onClick={handleSaveProviderConfig} disabled={providerConfigBusy || loading || !config}>
               {providerConfigBusy ? "Saving..." : "Save Current Profile"}
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={handleCreateProviderProfile}
-              disabled={providerConfigBusy || loading || !config}
-            >
-              New Profile
             </button>
             <button
               type="button"
@@ -2015,6 +2377,76 @@ export function App() {
             />
           </label>
           <p className="help-text">One glob or ignore pattern per line. Blank glob means search every non-ignored file.</p>
+        </section>
+
+        <section className="panel">
+          <div className="section-header">
+            <h2>Command Policy</h2>
+            <button
+              type="button"
+              onClick={handleSaveCommandPolicyConfig}
+              disabled={commandPolicyBusy || loading || !config}
+            >
+              {commandPolicyBusy ? "Saving..." : "Save"}
+            </button>
+          </div>
+          <div className="config-form">
+            <label className="field">
+              <span>Allowed shell</span>
+              <select
+                value={commandPolicySettings.allowedShell}
+                onChange={(event) =>
+                  updateCommandPolicySetting(
+                    "allowedShell",
+                    event.target.value as CommandPolicyForm["allowedShell"],
+                  )}
+              >
+                <option value="powershell">PowerShell</option>
+                <option value="bash">Bash</option>
+                <option value="zsh">Zsh</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Allowed commands / allowlist</span>
+              <textarea
+                className="short config-textarea"
+                value={commandPolicySettings.allowedCommands}
+                onChange={(event) => updateCommandPolicySetting("allowedCommands", event.target.value)}
+                placeholder={"git\nnpm\npytest"}
+              />
+            </label>
+            <label className="field">
+              <span>Denied commands / denylist</span>
+              <textarea
+                className="short config-textarea"
+                value={commandPolicySettings.deniedCommands}
+                onChange={(event) => updateCommandPolicySetting("deniedCommands", event.target.value)}
+                placeholder={"del\nRemove-Item\ncurl"}
+              />
+            </label>
+            <label className="field">
+              <span>Blocked patterns</span>
+              <textarea
+                className="short config-textarea"
+                value={commandPolicySettings.blockedPatterns}
+                onChange={(event) => updateCommandPolicySetting("blockedPatterns", event.target.value)}
+                placeholder={"rm -rf\nshutdown\nformat"}
+              />
+            </label>
+            <label className="field">
+              <span>Allowed cwd roots</span>
+              <textarea
+                className="short config-textarea"
+                value={commandPolicySettings.allowedCwdRoots}
+                onChange={(event) => updateCommandPolicySetting("allowedCwdRoots", event.target.value)}
+                placeholder={workspacePath || DEFAULT_WORKSPACE_PATH}
+              />
+            </label>
+          </div>
+          <p className="help-text">
+            One entry per line. Saving keeps `allowedCommands` and `allowlist` mirrored, and also mirrors
+            `deniedCommands` with `denylist`.
+          </p>
         </section>
 
         <section className="panel">
@@ -2107,6 +2539,31 @@ export function App() {
               <dd>{formatTimestamp(task?.updatedAt)}</dd>
             </div>
           </dl>
+          {task && taskControlActions.length > 0 ? (
+            <div className="task-controls">
+              <div className="section-header task-controls-header">
+                <h3>Task Controls</h3>
+                <span className="muted">Active task: {task.id}</span>
+              </div>
+              <div className="task-control-actions">
+                {taskControlActions.map((control) => {
+                  const isBusy = taskControlBusyAction === control.action;
+                  return (
+                    <button
+                      key={control.action}
+                      type="button"
+                      className={`secondary ${control.tone === "warn" ? "warn" : ""}`}
+                      onClick={() => handleTaskControl(control.action)}
+                      disabled={Boolean(taskControlBusyAction)}
+                    >
+                      {isBusy ? control.busyLabel : control.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {taskControlError ? <p className="error-banner compact">{taskControlError}</p> : null}
+            </div>
+          ) : null}
         </section>
 
         <section className="panel">

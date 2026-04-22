@@ -178,6 +178,9 @@ export interface ProviderTestResult {
   baseUrl?: string;
   checkedEnvVarName?: string;
   envVarName?: string;
+  lastCheckedAt?: number;
+  lastStatus?: string;
+  lastErrorSummary?: string | null;
   source: "runtime" | "mock-fallback";
   details?: Record<string, unknown>;
 }

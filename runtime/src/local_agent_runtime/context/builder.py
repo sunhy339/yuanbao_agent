@@ -69,6 +69,7 @@ class ContextBuilder:
             "workspace_name": workspace["name"],
             "workspace_root": workspace["rootPath"],
             "config": config,
+            "post_task_validation": self._post_task_validation_config(config),
             "search_config": search_config_bundle,
             "goal": goal,
             "search_query": self._derive_search_query(goal),
@@ -80,6 +81,16 @@ class ContextBuilder:
             "tools": tools,
             "openai_tools": openai_tools,
             "budgetStats": budget_stats,
+        }
+
+    def _post_task_validation_config(self, config: dict[str, Any]) -> dict[str, Any]:
+        policy = config.get("policy") if isinstance(config, dict) else {}
+        validation = policy.get("postTaskValidation") if isinstance(policy, dict) else {}
+        if not isinstance(validation, dict):
+            validation = {}
+        command = validation.get("command")
+        return {
+            "command": command.strip() if isinstance(command, str) and command.strip() else None,
         }
 
     def _build_messages(

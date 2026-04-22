@@ -405,10 +405,17 @@ class ProviderAdapter:
         if not isinstance(provider_config, dict):
             return {}
 
+        ignored_keys = {
+            "profiles",
+            "activeProfileId",
+            "lastCheckedAt",
+            "lastStatus",
+            "lastErrorSummary",
+        }
         resolved = {
             key: value
             for key, value in provider_config.items()
-            if key not in {"profiles", "activeProfileId"}
+            if key not in ignored_keys
         }
         profiles = provider_config.get("profiles")
         active_profile_id = provider_config.get("activeProfileId")
@@ -426,7 +433,11 @@ class ProviderAdapter:
             if active_profile is None:
                 active_profile = next((profile for profile in profiles if isinstance(profile, dict)), None)
             if isinstance(active_profile, dict):
-                resolved.update(active_profile)
+                resolved.update({
+                    key: value
+                    for key, value in active_profile.items()
+                    if key not in ignored_keys
+                })
         return resolved
 
     def _env(self, *names: str) -> str | None:

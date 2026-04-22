@@ -797,3 +797,205 @@ def test_react_loop_fails_when_patch_repair_attempts_are_exhausted(tmp_path: Any
     assert "Patch repair attempts exhausted" in task["resultSummary"]
     assert "Patch removal mismatch in README.md" in task["resultSummary"]
     assert not [event for event in runtime.events if event["type"] == "approval.requested"]
+
+
+def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_patch",
+                        "name": "apply_patch",
+                        "arguments": {
+                            "files": [{"path": "todo.txt", "content": "status: new\n"}],
+                        },
+                    }
+                ]
+            },
+            {"final": "Patch applied cleanly."},
+        ]
+    )
+
+    tool_invocations: list[str] = []
+
+    def apply_patch(params: dict[str, Any]) -> dict[str, Any]:
+        tool_invocations.append("apply_patch")
+        return {
+            "status": "completed",
+            "ok": True,
+            "summary": "Updated todo.txt",
+            "filesChanged": 1,
+            "changedPaths": ["todo.txt"],
+            "patch": {
+                "id": "patch_validation",
+                "summary": "Updated todo.txt",
+                "status": "applied",
+                "filesChanged": 1,
+            },
+        }
+
+    def git_status(params: dict[str, Any]) -> dict[str, Any]:
+        tool_invocations.append("git_status")
+        return {
+            "branch": "main",
+            "ahead": 0,
+            "behind": 0,
+            "changes": [{"status": "M", "path": "todo.txt"}],
+        }
+
+    def git_diff(params: dict[str, Any]) -> dict[str, Any]:
+        tool_invocations.append("git_diff")
+        return {
+            "files": [{"status": "M", "path": "todo.txt"}],
+            "diff": "diff --git a/todo.txt b/todo.txt\n",
+        }
+
+    def run_command(params: dict[str, Any]) -> dict[str, Any]:
+        tool_invocations.append("run_command")
+        return {
+            "status": "completed",
+            "commandLog": {
+                "id": "cmd_validation",
+                "taskId": params["taskId"],
+                "command": params["command"],
+                "cwd": ".",
+                "status": "completed",
+                "exitCode": 0,
+                "stdoutPath": None,
+                "stderrPath": None,
+                "startedAt": 1,
+                "finishedAt": 2,
+                "durationMs": 1,
+            },
+            "stdout": "3 passed\n",
+            "stderr": "",
+            "exitCode": 0,
+            "durationMs": 1,
+            "shell": "powershell",
+            "cwd": ".",
+        }
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "apply_patch": apply_patch,
+            "git_status": git_status,
+            "git_diff": git_diff,
+            "run_command": run_command,
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+    runtime.store.update_config(
+        {
+            "config": {
+                "policy": {
+                    "postTaskValidation": {
+                        "command": "pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation"
+                    }
+                }
+            }
+        }
+    )
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "patch todo.txt"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert tool_invocations == ["apply_patch", "git_status", "git_diff", "run_command"]
+    assert "Updated todo.txt" in task["resultSummary"]
+    assert "Validated with git status, git diff, and pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation." in task["resultSummary"]
+
+    trace = _rpc(runtime, "trace.list", {"taskId": task["id"]})["result"]["traceEvents"]
+    trace_types = [event["type"] for event in trace]
+    assert "task.validation.completed" in trace_types
+    validation_event = next(event for event in trace if event["type"] == "task.validation.completed")
+    assert validation_event["payload"]["ran"] == ["git_status", "git_diff", "run_command"]
+    assert validation_event["payload"]["command"]["command"] == "pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation"
+    assert validation_event["payload"]["patches"][0]["summary"] == "Updated todo.txt"
+
+
+def test_patch_completion_skips_run_command_without_validate_command(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_patch",
+                        "name": "apply_patch",
+                        "arguments": {
+                            "files": [{"path": "todo.txt", "content": "status: newer\n"}],
+                        },
+                    }
+                ]
+            },
+            {"final": "Patch applied without command validation."},
+        ]
+    )
+
+    tool_invocations: list[str] = []
+
+    def apply_patch(params: dict[str, Any]) -> dict[str, Any]:
+        tool_invocations.append("apply_patch")
+        return {
+            "status": "completed",
+            "ok": True,
+            "summary": "Updated todo.txt again",
+            "filesChanged": 1,
+            "changedPaths": ["todo.txt"],
+            "patch": {
+                "id": "patch_validation_skip",
+                "summary": "Updated todo.txt again",
+                "status": "applied",
+                "filesChanged": 1,
+            },
+        }
+
+    def git_status(params: dict[str, Any]) -> dict[str, Any]:
+        tool_invocations.append("git_status")
+        return {
+            "branch": "main",
+            "ahead": 0,
+            "behind": 0,
+            "changes": [{"status": "M", "path": "todo.txt"}],
+        }
+
+    def git_diff(params: dict[str, Any]) -> dict[str, Any]:
+        tool_invocations.append("git_diff")
+        return {
+            "files": [{"status": "M", "path": "todo.txt"}],
+            "diff": "diff --git a/todo.txt b/todo.txt\n",
+        }
+
+    def run_command(params: dict[str, Any]) -> dict[str, Any]:
+        tool_invocations.append("run_command")
+        return {"status": "completed", "stdout": "", "stderr": "", "exitCode": 0}
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "apply_patch": apply_patch,
+            "git_status": git_status,
+            "git_diff": git_diff,
+            "run_command": run_command,
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "patch todo.txt again"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert tool_invocations == ["apply_patch", "git_status", "git_diff"]
+
+    trace = _rpc(runtime, "trace.list", {"taskId": task["id"]})["result"]["traceEvents"]
+    validation_event = next(event for event in trace if event["type"] == "task.validation.completed")
+    assert validation_event["payload"]["ran"] == ["git_status", "git_diff"]
+    assert validation_event["payload"]["command"]["status"] == "skipped"
+    assert validation_event["payload"]["command"]["reason"] == "No validation command was configured."

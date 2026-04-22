@@ -139,6 +139,126 @@ def test_provider_test_uses_profile_id_and_redacts_direct_api_key(runtime_harnes
     assert "sk-secret-profile" not in str(result)
 
 
+def test_provider_test_persists_profile_health_metadata(runtime_harness: Any) -> None:
+    runtime_harness.call(
+        "config.update",
+        {
+            "config": {
+                "provider": {
+                    "activeProfileId": "remote",
+                    "profiles": [
+                        {
+                            "id": "default",
+                            "name": "Default",
+                            "mode": "mock",
+                            "baseUrl": "https://default.example.test/v1",
+                            "model": "default-chat",
+                        },
+                        {
+                            "id": "remote",
+                            "name": "Remote",
+                            "mode": "openai-compatible",
+                            "baseUrl": "https://remote.example.test/v1",
+                            "model": "remote-chat",
+                            "apiKeyEnvVarName": "YUANBAO_TEST_REMOTE_KEY",
+                        },
+                    ],
+                }
+            }
+        },
+    )
+
+    before = runtime_harness.call("config.get", {})["result"]["config"]["provider"]
+    remote_before = next(item for item in before["profiles"] if item["id"] == "remote")
+    assert "lastCheckedAt" not in remote_before
+
+    result = runtime_harness.call("provider.test", {"profileId": "remote"})["result"]
+
+    assert result["ok"] is False
+    assert result["status"] == "missing_env"
+
+    provider = runtime_harness.call("config.get", {})["result"]["config"]["provider"]
+    remote = next(item for item in provider["profiles"] if item["id"] == "remote")
+    assert isinstance(remote["lastCheckedAt"], int)
+    assert remote["lastCheckedAt"] > 0
+    assert remote["lastStatus"] == "missing_env"
+    assert remote["lastErrorSummary"] == "Set YUANBAO_TEST_REMOTE_KEY in the runtime environment."
+
+
+def test_deleting_active_or_last_profile_has_reasonable_fallback(runtime_harness: Any) -> None:
+    runtime_harness.call(
+        "config.update",
+        {
+            "config": {
+                "provider": {
+                    "activeProfileId": "primary",
+                    "profiles": [
+                        {
+                            "id": "primary",
+                            "name": "Primary",
+                            "mode": "mock",
+                            "baseUrl": "https://primary.example.test/v1",
+                            "model": "primary-chat",
+                        },
+                        {
+                            "id": "secondary",
+                            "name": "Secondary",
+                            "mode": "openai-compatible",
+                            "baseUrl": "https://secondary.example.test/v1",
+                            "model": "secondary-chat",
+                            "apiKeyEnvVarName": "SECONDARY_KEY",
+                        },
+                    ],
+                }
+            }
+        },
+    )
+
+    updated = runtime_harness.call(
+        "config.update",
+        {
+            "config": {
+                "provider": {
+                    "activeProfileId": "primary",
+                    "profiles": [
+                        {
+                            "id": "secondary",
+                            "name": "Secondary",
+                            "mode": "openai-compatible",
+                            "baseUrl": "https://secondary.example.test/v1",
+                            "model": "secondary-chat",
+                            "apiKeyEnvVarName": "SECONDARY_KEY",
+                        }
+                    ],
+                }
+            }
+        },
+    )["result"]["config"]["provider"]
+
+    assert updated["activeProfileId"] == "secondary"
+    assert [profile["id"] for profile in updated["profiles"]] == ["secondary"]
+    assert updated["mode"] == "openai-compatible"
+    assert updated["baseUrl"] == "https://secondary.example.test/v1"
+    assert updated["model"] == "secondary-chat"
+
+    fallback = runtime_harness.call(
+        "config.update",
+        {
+            "config": {
+                "provider": {
+                    "profiles": [],
+                }
+            }
+        },
+    )["result"]["config"]["provider"]
+
+    assert fallback["activeProfileId"] == "default"
+    assert len(fallback["profiles"]) == 1
+    assert fallback["profiles"][0]["id"] == "default"
+    assert fallback["profiles"][0]["name"] == "Default"
+    assert fallback["profiles"][0]["mode"] == "mock"
+
+
 def test_run_command_approval_closure(runtime_harness: Any, monkeypatch: Any, tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

@@ -55,6 +55,7 @@ class Orchestrator:
     def test_provider(self, params: dict[str, Any]) -> dict[str, Any]:
         params = params if isinstance(params, dict) else {}
         provider_patch = params.get("provider") if isinstance(params, dict) else None
+        checked_at = self._store.now() if hasattr(self._store, "now") else 0
         config = deepcopy(self._store.get_config({}).get("config", {}))
         provider_root = deepcopy(config.get("provider") or {})
         provider_config, profile_id, profile_name = self._provider_config_for_test(
@@ -79,7 +80,7 @@ class Orchestrator:
         )
 
         if normalized_mode in {"", "mock"}:
-            return {
+            result = {
                 "ok": True,
                 "status": "mocked",
                 "message": "Provider is in mock mode; no network request was made.",
@@ -90,13 +91,18 @@ class Orchestrator:
                 "baseUrl": base_url,
                 "checkedEnvVarName": env_var_name,
                 "envVarName": env_var_name,
+                "lastCheckedAt": checked_at,
+                "lastStatus": "mocked",
+                "lastErrorSummary": "Mock mode does not contact a remote model.",
                 "source": "runtime",
                 "details": {
                     "errorSummary": "Mock mode does not contact a remote model.",
                 },
             }
+            self._persist_provider_test_result(profile_id, result, persist=provider_patch is None)
+            return result
         if normalized_mode not in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}:
-            return {
+            result = {
                 "ok": False,
                 "status": "unsupported",
                 "message": f"Unsupported provider mode: {mode}",
@@ -107,14 +113,19 @@ class Orchestrator:
                 "baseUrl": base_url,
                 "checkedEnvVarName": env_var_name,
                 "envVarName": env_var_name,
+                "lastCheckedAt": checked_at,
+                "lastStatus": "unsupported",
+                "lastErrorSummary": f"Unsupported provider mode: {mode}",
                 "source": "runtime",
                 "details": {
                     "errorSummary": f"Unsupported provider mode: {mode}",
                 },
             }
+            self._persist_provider_test_result(profile_id, result, persist=provider_patch is None)
+            return result
         direct_key = provider_config.get("apiKey") or provider_config.get("api_key")
         if not direct_key and env_var_name and not os.environ.get(str(env_var_name)):
-            return {
+            result = {
                 "ok": False,
                 "status": "missing_env",
                 "message": f"Environment variable {env_var_name} is not set.",
@@ -125,11 +136,16 @@ class Orchestrator:
                 "baseUrl": base_url,
                 "checkedEnvVarName": env_var_name,
                 "envVarName": env_var_name,
+                "lastCheckedAt": checked_at,
+                "lastStatus": "missing_env",
+                "lastErrorSummary": f"Set {env_var_name} in the runtime environment.",
                 "source": "runtime",
                 "details": {
                     "errorSummary": f"Set {env_var_name} in the runtime environment.",
                 },
             }
+            self._persist_provider_test_result(profile_id, result, persist=provider_patch is None)
+            return result
 
         try:
             response = self._provider.chat(
@@ -144,7 +160,7 @@ class Orchestrator:
             )
         except Exception as exc:  # noqa: BLE001
             error_summary = self._redact_provider_secret(str(exc), env_var_name, direct_key)
-            return {
+            result = {
                 "ok": False,
                 "status": "failed",
                 "message": error_summary,
@@ -155,14 +171,19 @@ class Orchestrator:
                 "baseUrl": base_url,
                 "checkedEnvVarName": env_var_name,
                 "envVarName": env_var_name,
+                "lastCheckedAt": checked_at,
+                "lastStatus": "failed",
+                "lastErrorSummary": error_summary,
                 "source": "runtime",
                 "details": {
                     "errorSummary": error_summary,
                     "errorType": type(exc).__name__,
                 },
             }
+            self._persist_provider_test_result(profile_id, result, persist=provider_patch is None)
+            return result
 
-        return {
+        result = {
             "ok": True,
             "status": "ok",
             "message": "Provider connection succeeded.",
@@ -173,12 +194,33 @@ class Orchestrator:
             "baseUrl": base_url,
             "checkedEnvVarName": env_var_name,
             "envVarName": env_var_name,
+            "lastCheckedAt": checked_at,
+            "lastStatus": "ok",
+            "lastErrorSummary": None,
             "source": "runtime",
             "details": {
                 "finishReason": response.get("finish_reason"),
                 "usage": response.get("raw", {}).get("usage"),
             },
         }
+        self._persist_provider_test_result(profile_id, result, persist=provider_patch is None)
+        return result
+
+    def _persist_provider_test_result(
+        self,
+        profile_id: str | None,
+        result: dict[str, Any],
+        *,
+        persist: bool,
+    ) -> None:
+        if not persist or not profile_id or not hasattr(self._store, "update_provider_profile_health"):
+            return
+        self._store.update_provider_profile_health(
+            profile_id,
+            last_checked_at=int(result.get("lastCheckedAt") or 0),
+            last_status=str(result.get("lastStatus") or result.get("status") or "failed"),
+            last_error_summary=result.get("lastErrorSummary"),
+        )
 
     def _provider_config_for_test(
         self,
@@ -288,6 +330,8 @@ class Orchestrator:
                         session_id=session["id"],
                         task=runtime_task,
                         summary=react_result["summary"],
+                        context=context,
+                        tool_results=react_result.get("tool_results", []),
                     )
                 }
 
@@ -316,6 +360,8 @@ class Orchestrator:
                     session_id=session["id"],
                     task=runtime_task,
                     summary=summary,
+                    context=context,
+                    tool_results=tool_results,
                 )
             }
         except Exception as exc:  # noqa: BLE001
@@ -328,7 +374,22 @@ class Orchestrator:
                 )
             }
 
-    def _complete_task(self, session_id: str, task: dict[str, Any], summary: str) -> dict[str, Any]:
+    def _complete_task(
+        self,
+        session_id: str,
+        task: dict[str, Any],
+        summary: str,
+        *,
+        context: dict[str, Any] | None = None,
+        tool_results: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        validation = self._run_post_task_validation(
+            session_id=session_id,
+            task=task,
+            context=context or {},
+            tool_results=tool_results or [],
+        )
+        final_summary = self._merge_completion_summary(summary=summary, validation=validation)
         task["plan"] = self._planner.advance(
             task.get("plan") or [],
             "summarize-findings",
@@ -338,19 +399,19 @@ class Orchestrator:
             task_id=task["id"],
             status="completed",
             plan=task["plan"],
-            result_summary=summary,
+            result_summary=final_summary,
         )
         runtime_task = {
             **completed_task,
             "plan": task["plan"],
-            "resultSummary": summary,
+            "resultSummary": final_summary,
         }
         self._clear_pending_react_state(task["id"])
         self._publish(
             session_id=session_id,
             task=runtime_task,
             event_type="assistant.message.completed",
-            payload={"content": summary},
+            payload={"content": final_summary},
         )
         self._publish(
             session_id=session_id,
@@ -359,7 +420,7 @@ class Orchestrator:
             payload={
                 "status": runtime_task["status"],
                 "plan": runtime_task["plan"],
-                "detail": summary,
+                "detail": final_summary,
             },
         )
         return runtime_task
@@ -397,6 +458,212 @@ class Orchestrator:
             },
         )
         return runtime_task
+
+    def _merge_completion_summary(self, *, summary: str, validation: dict[str, Any] | None) -> str:
+        base = (summary or "").strip()
+        if not validation:
+            return base
+        validation_summary = (validation.get("summary") or "").strip()
+        if not validation_summary:
+            return base
+        if not base:
+            return validation_summary
+        return f"{base} {validation_summary}"
+
+    def _run_post_task_validation(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        patches = self._completed_patch_results(tool_results)
+        if not patches:
+            return None
+
+        checks: list[dict[str, Any]] = []
+        ran: list[str] = []
+
+        for tool_name, start_token in (
+            ("git_status", "Running post-task git status validation..."),
+            ("git_diff", "Running post-task git diff validation..."),
+        ):
+            check = self._run_validation_tool(
+                session_id=session_id,
+                task=task,
+                tool_name=tool_name,
+                arguments={"workspaceRoot": context.get("workspace_root")},
+                start_token=start_token,
+            )
+            checks.append(check)
+            if check["status"] == "completed":
+                ran.append(tool_name)
+
+        validation_command = self._resolve_validation_command(context=context, patches=patches)
+        if validation_command:
+            command_check = self._run_validation_tool(
+                session_id=session_id,
+                task=task,
+                tool_name="run_command",
+                arguments={
+                    "workspaceRoot": context.get("workspace_root"),
+                    "cwd": ".",
+                    "command": validation_command,
+                    "internalValidation": True,
+                },
+                start_token=f"Running post-task validation command: {validation_command}",
+            )
+            if command_check["status"] == "completed":
+                ran.append("run_command")
+        else:
+            command_check = {
+                "name": "run_command",
+                "status": "skipped",
+                "reason": "No validation command was configured.",
+            }
+        checks.append(command_check)
+
+        summary = self._format_validation_summary(patches=patches, checks=checks, validation_command=validation_command)
+        payload = {
+            "patches": patches,
+            "checks": checks,
+            "ran": ran,
+            "command": command_check if command_check["name"] == "run_command" else None,
+            "summary": summary,
+        }
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="task.validation.completed",
+            payload=payload,
+        )
+        return payload
+
+    def _completed_patch_results(self, tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        patches: list[dict[str, Any]] = []
+        for tool_result in tool_results:
+            if tool_result.get("name") != "apply_patch":
+                continue
+            result = tool_result.get("result", {})
+            if not isinstance(result, dict) or result.get("status") != "completed":
+                continue
+            patch_record = result.get("patch", {}) if isinstance(result.get("patch"), dict) else {}
+            patches.append(
+                {
+                    "summary": result.get("summary") or patch_record.get("summary") or "Updated files",
+                    "filesChanged": result.get("filesChanged") or patch_record.get("filesChanged") or 0,
+                    "changedPaths": self._changed_paths_from_patch_result(result),
+                    "patchId": patch_record.get("id"),
+                }
+            )
+        return patches
+
+    def _changed_paths_from_patch_result(self, result: dict[str, Any]) -> list[str]:
+        changed_paths = result.get("changedPaths")
+        if isinstance(changed_paths, list):
+            return [str(path) for path in changed_paths if str(path).strip()]
+        patch_record = result.get("patch")
+        if isinstance(patch_record, dict):
+            patch_paths = patch_record.get("changedPaths")
+            if isinstance(patch_paths, list):
+                return [str(path) for path in patch_paths if str(path).strip()]
+        return []
+
+    def _run_validation_tool(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        tool_name: str,
+        arguments: dict[str, Any],
+        start_token: str,
+    ) -> dict[str, Any]:
+        try:
+            tool_result = self._execute_tool(
+                session_id=session_id,
+                task=task,
+                tool_spec={
+                    "name": tool_name,
+                    "arguments": arguments,
+                    "plan_step_id": f"validation-{tool_name.replace('_', '-')}",
+                    "start_token": start_token,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "name": tool_name,
+                "status": "failed",
+                "error": str(exc),
+            }
+
+        result = tool_result.get("result", {})
+        status = result.get("status")
+        if not isinstance(status, str) or not status:
+            status = "completed"
+        check = {
+            "name": tool_name,
+            "status": status,
+            "result": result,
+        }
+        if tool_name == "run_command" and isinstance(arguments.get("command"), str):
+            check["command"] = arguments["command"]
+        return check
+
+    def _resolve_validation_command(self, *, context: dict[str, Any], patches: list[dict[str, Any]]) -> str | None:
+        validation = context.get("post_task_validation")
+        if isinstance(validation, dict):
+            command = validation.get("command")
+            if isinstance(command, str) and command.strip():
+                return command.strip()
+
+        changed_test_paths: list[str] = []
+        for patch in patches:
+            for path in patch.get("changedPaths", []):
+                normalized = str(path).replace("\\", "/")
+                if normalized.endswith(".py") and ("/tests/" in normalized or normalized.startswith("tests/")):
+                    changed_test_paths.append(normalized)
+        if changed_test_paths:
+            ordered_paths = list(dict.fromkeys(changed_test_paths))
+            return "pytest " + " ".join(ordered_paths)
+        return None
+
+    def _format_validation_summary(
+        self,
+        *,
+        patches: list[dict[str, Any]],
+        checks: list[dict[str, Any]],
+        validation_command: str | None,
+    ) -> str:
+        changed_summaries = list(dict.fromkeys(str(patch["summary"]).strip() for patch in patches if str(patch["summary"]).strip()))
+        changed_text = f"Changed: {'; '.join(changed_summaries)}." if changed_summaries else ""
+
+        completed_names: list[str] = []
+        for check in checks:
+            if check.get("status") != "completed":
+                continue
+            if check["name"] == "git_status":
+                completed_names.append("git status")
+            elif check["name"] == "git_diff":
+                completed_names.append("git diff")
+            elif check["name"] == "run_command" and validation_command:
+                completed_names.append(validation_command)
+
+        validation_text = ""
+        if completed_names:
+            if len(completed_names) == 1:
+                validation_text = f"Validated with {completed_names[0]}."
+            else:
+                validation_text = f"Validated with {', '.join(completed_names[:-1])}, and {completed_names[-1]}."
+
+        failed_checks = [check for check in checks if check.get("status") == "failed"]
+        failure_text = ""
+        if failed_checks:
+            failure_text = " Validation issues: " + " ".join(
+                f"{check['name']} failed: {check.get('error', 'unknown error')}." for check in failed_checks
+            )
+
+        return " ".join(part for part in (changed_text, validation_text) if part).strip() + failure_text
 
     def cancel_task(self, params: dict[str, Any]) -> dict[str, Any]:
         task = self._store.update_task(task_id=params["taskId"], status="cancelled")
@@ -651,32 +918,19 @@ class Orchestrator:
                 final_status="completed",
             )
             patch_result = tool_result.get("result", {})
-            patch_record = patch_result.get("patch", {})
             summary = (
                 f"Approved patch finished with status {patch_result.get('status')} "
                 f"and {patch_result.get('filesChanged')} file(s) changed."
             )
-            completed_task = self._store.update_task(
-                task_id=task["id"],
-                status="completed",
-                plan=runtime_task["plan"],
-                result_summary=summary,
-            )
-            runtime_task = {
-                **completed_task,
-                "plan": runtime_task["plan"],
-                "resultSummary": summary,
-            }
-            self._publish(
+            runtime_task = self._complete_task(
                 session_id=task["sessionId"],
                 task=runtime_task,
-                event_type="task.completed",
-                payload={
-                    "status": "completed",
-                    "plan": runtime_task["plan"],
-                    "detail": summary,
-                    "patchId": patch_record.get("id"),
-                },
+                summary=summary,
+                context=self._context_builder.build(
+                    session_id=task["sessionId"],
+                    goal=task.get("goal") or summary,
+                ),
+                tool_results=[tool_result],
             )
             return runtime_task
         except Exception as exc:  # noqa: BLE001
@@ -879,7 +1133,11 @@ class Orchestrator:
                 )
 
             if parsed["status"] == "completed":
-                return {"status": "completed", "summary": parsed["summary"]}
+                return {
+                    "status": "completed",
+                    "summary": parsed["summary"],
+                    "tool_results": deepcopy(tool_results),
+                }
 
             tool_calls = parsed["tool_calls"]
             messages.append(
@@ -1101,6 +1359,8 @@ class Orchestrator:
                     session_id=task["sessionId"],
                     task=runtime_task,
                     summary=result["summary"],
+                    context=state["context"],
+                    tool_results=result.get("tool_results", []),
                 )
             return runtime_task
         except Exception as exc:  # noqa: BLE001

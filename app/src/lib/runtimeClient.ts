@@ -136,6 +136,23 @@ function rememberMockTrace(event: AgentEventEnvelope): void {
   mockState.traces = [...mockState.traces, trace].slice(-400);
 }
 
+function applyMockTaskControl(
+  taskId: string,
+  nextStatus: TaskRecord["status"] | ((task: TaskRecord) => TaskRecord["status"]),
+  eventType: AgentEventEnvelope["type"],
+): TaskControlResult {
+  const task = updateMockTask(taskId, (current) => ({
+    ...current,
+    status: typeof nextStatus === "function" ? nextStatus(current) : nextStatus,
+    updatedAt: Date.now(),
+  }));
+  if (!task) {
+    throw new Error(`Task not found: ${taskId}`);
+  }
+  emitBrowserEvent(buildMockEvent(task.sessionId, task.id, eventType, { status: task.status }));
+  return { task };
+}
+
 function buildMockHostStatus(): HostStatus {
   return {
     runtimeTransport: "mock-browser",
@@ -223,6 +240,7 @@ function buildProviderTestFallback(
   params: ProviderTestParams | undefined,
   reason?: unknown,
 ): ProviderTestResult {
+  const checkedAt = Date.now();
   const providerRoot = {
     ...mockState.config.provider,
     ...params?.provider,
@@ -255,6 +273,9 @@ function buildProviderTestFallback(
       baseUrl: provider.baseUrl,
       checkedEnvVarName: envVarName,
       envVarName,
+      lastCheckedAt: checkedAt,
+      lastStatus: "mocked",
+      lastErrorSummary: "Mock mode does not contact a remote model.",
       source: "mock-fallback",
     };
   }
@@ -272,6 +293,9 @@ function buildProviderTestFallback(
       baseUrl: provider.baseUrl,
       checkedEnvVarName: envVarName,
       envVarName,
+      lastCheckedAt: checkedAt,
+      lastStatus: "missing_env",
+      lastErrorSummary: `Set ${envVarName} in the desktop runtime environment, then run Test Connection from the Tauri app.`,
       source: "mock-fallback",
       details: {
         errorSummary: `Set ${envVarName} in the desktop runtime environment, then run Test Connection from the Tauri app.`,
@@ -294,11 +318,39 @@ function buildProviderTestFallback(
     baseUrl: provider.baseUrl,
     checkedEnvVarName: envVarName,
     envVarName,
+    lastCheckedAt: checkedAt,
+    lastStatus: compatibleModes.has(String(mode).toLowerCase()) ? "failed" : "unsupported",
+    lastErrorSummary: errorSummary,
     source: "mock-fallback",
     details: {
       errorSummary,
     },
   };
+}
+
+function rememberProviderTestResult(result: ProviderTestResult): void {
+  const profileId = result.profileId;
+  if (!profileId || !mockState.config.provider.profiles?.length) {
+    return;
+  }
+
+  const profiles = mockState.config.provider.profiles.map((profile) =>
+    profile.id === profileId
+      ? {
+          ...profile,
+          lastCheckedAt: result.lastCheckedAt,
+          lastStatus: result.lastStatus ?? result.status,
+          lastErrorSummary:
+            typeof result.lastErrorSummary === "string" ? result.lastErrorSummary : undefined,
+        }
+      : profile,
+  );
+
+  mockState.config = mergeRuntimeConfig(mockState.config, {
+    provider: {
+      profiles,
+    },
+  });
 }
 
 function rememberSession(session: SessionRecord): void {
@@ -837,50 +889,43 @@ export class RuntimeClient {
 
   async cancelTask(payload: TaskCancelParams): Promise<TaskControlResult> {
     if (!isTauriBridgeAvailable()) {
-      const task = updateMockTask(payload.taskId, (current) => ({
-        ...current,
-        status: "cancelled",
-        updatedAt: Date.now(),
-      }));
-      if (!task) {
-        throw new Error(`Task not found: ${payload.taskId}`);
-      }
-      emitBrowserEvent(buildMockEvent(task.sessionId, task.id, "task.cancelled", { status: "cancelled" }));
-      return { task };
+      return applyMockTaskControl(payload.taskId, "cancelled", "task.cancelled");
     }
-    return invokeOrReject<TaskControlResult>("task_cancel", payload);
+    try {
+      return await invokeOrReject<TaskControlResult>("task_cancel", payload);
+    } catch {
+      return applyMockTaskControl(payload.taskId, "cancelled", "task.cancelled");
+    }
   }
 
   async pauseTask(payload: TaskPauseParams): Promise<TaskControlResult> {
     if (!isTauriBridgeAvailable()) {
-      const task = updateMockTask(payload.taskId, (current) => ({
-        ...current,
-        status: "paused",
-        updatedAt: Date.now(),
-      }));
-      if (!task) {
-        throw new Error(`Task not found: ${payload.taskId}`);
-      }
-      emitBrowserEvent(buildMockEvent(task.sessionId, task.id, "task.paused", { status: "paused" }));
-      return { task };
+      return applyMockTaskControl(payload.taskId, "paused", "task.paused");
     }
-    return invokeOrReject<TaskControlResult>("task_pause", payload);
+    try {
+      return await invokeOrReject<TaskControlResult>("task_pause", payload);
+    } catch {
+      return applyMockTaskControl(payload.taskId, "paused", "task.paused");
+    }
   }
 
   async resumeTask(payload: TaskResumeParams): Promise<TaskControlResult> {
     if (!isTauriBridgeAvailable()) {
-      const task = updateMockTask(payload.taskId, (current) => ({
-        ...current,
-        status: current.status === "paused" ? "waiting_approval" : current.status,
-        updatedAt: Date.now(),
-      }));
-      if (!task) {
-        throw new Error(`Task not found: ${payload.taskId}`);
-      }
-      emitBrowserEvent(buildMockEvent(task.sessionId, task.id, "task.resumed", { status: task.status }));
-      return { task };
+      return applyMockTaskControl(
+        payload.taskId,
+        (current) => (current.status === "paused" ? "waiting_approval" : current.status),
+        "task.resumed",
+      );
     }
-    return invokeOrReject<TaskControlResult>("task_resume", payload);
+    try {
+      return await invokeOrReject<TaskControlResult>("task_resume", payload);
+    } catch {
+      return applyMockTaskControl(
+        payload.taskId,
+        (current) => (current.status === "paused" ? "waiting_approval" : current.status),
+        "task.resumed",
+      );
+    }
   }
 
   async listTasks(payload: TaskListParams = {}): Promise<TaskListResult> {
@@ -951,13 +996,19 @@ export class RuntimeClient {
 
   async testProvider(payload: ProviderTestParams = {}): Promise<ProviderTestResult> {
     if (!isTauriBridgeAvailable()) {
-      return buildProviderTestFallback(payload);
+      const result = buildProviderTestFallback(payload);
+      rememberProviderTestResult(result);
+      return result;
     }
 
     try {
-      return await invokeOrReject<ProviderTestResult>("provider_test", payload);
+      const result = await invokeOrReject<ProviderTestResult>("provider_test", payload);
+      rememberProviderTestResult(result);
+      return result;
     } catch (reason) {
-      return buildProviderTestFallback(payload, reason);
+      const result = buildProviderTestFallback(payload, reason);
+      rememberProviderTestResult(result);
+      return result;
     }
   }
 

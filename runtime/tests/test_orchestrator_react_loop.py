@@ -6,8 +6,10 @@ from typing import Any
 
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestrator.service import Orchestrator
+from local_agent_runtime.provider.adapter import ProviderAdapter
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.rpc.server import JsonRpcServer
+from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.builtin import build_builtin_tools
 from local_agent_runtime.tools.registry import ToolRegistry
@@ -55,7 +57,11 @@ def _make_builtin_runtime(tmp_path: Any, provider: Any) -> SimpleNamespace:
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     config = store.get_config({})["config"]
     policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
-    tool_registry = ToolRegistry(build_builtin_tools(policy_guard=policy_guard, store=store))
+    collaboration = CollaborationService(store, event_bus)
+    subagent_service = SubagentService(store, collaboration)
+    tool_registry = ToolRegistry(
+        build_builtin_tools(policy_guard=policy_guard, store=store, subagent_service=subagent_service)
+    )
     orchestrator = Orchestrator(
         store=store,
         event_bus=event_bus,
@@ -174,6 +180,108 @@ def test_react_loop_executes_tool_call_and_returns_result_to_provider(tmp_path: 
     assert second_context["messages"][-1]["role"] == "tool"
     assert second_context["messages"][-1]["tool_call_id"] == "call_search"
     assert second_context["tool_results"][0]["result"]["matches"][0]["path"] == "alpha.txt"
+
+
+def test_react_loop_can_delegate_task_tool(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_task",
+                        "name": "task",
+                        "arguments": {"prompt": "Inspect collaboration runtime gaps."},
+                    }
+                ]
+            },
+            {"final": "Delegated task completed."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "delegate this"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    delegated = provider.calls[1]["context"]["tool_results"][0]["result"]
+    assert delegated["childTaskId"].startswith("ctask_")
+    assert delegated["workerId"].startswith("agent_")
+    assert delegated["result"]["summary"]
+    assert delegated["task"]["status"] == "completed"
+    assert [event["type"] for event in runtime.events if event["type"].startswith("collab.task.")]
+    assert any(event["type"] == "collab.task.completed" for event in runtime.events)
+
+    parent_trace = _rpc(runtime, "trace.list", {"taskId": task["id"]})["result"]["traceEvents"]
+    assert [event["type"] for event in parent_trace if event["type"] in {"tool.started", "tool.completed"}] == [
+        "tool.started",
+        "tool.completed",
+    ]
+    assert [event["payload"]["toolName"] for event in parent_trace if event["type"] == "tool.started"] == ["task"]
+
+    child_trace = _rpc(runtime, "trace.list", {"taskId": delegated["childTaskId"]})["result"]["traceEvents"]
+    child_trace_types = [event["type"] for event in child_trace]
+    assert child_trace_types[:3] == [
+        "collab.task.created",
+        "collab.task.claimed",
+        "collab.task.updated",
+    ]
+    assert child_trace_types[-2:] == ["collab.task.completed", "collab.message.sent"]
+    assert any(
+        event["type"] == "collab.task.updated"
+        and isinstance(event["payload"], dict)
+        and isinstance(event["payload"].get("_bridge"), dict)
+        for event in child_trace
+    )
+    assert child_trace[0]["sessionId"] == task["sessionId"]
+
+
+def test_worker_run_child_task_enforces_token_budget_from_provider_usage(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "final": "done",
+                "raw": {"usage": {"total_tokens": 11}},
+            }
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    response = _rpc(
+        runtime,
+        "worker.run_child_task",
+        {
+            "sessionId": session["id"],
+            "prompt": "answer directly",
+            "budget": {"maxTokens": 10},
+        },
+    )
+
+    assert response["error"]["code"] == "WORKER_BUDGET_TOKENS_EXCEEDED"
+
+
+def test_worker_run_child_task_enforces_tool_call_budget(tmp_path: Any) -> None:
+    runtime = _make_builtin_runtime(tmp_path, provider=ProviderAdapter())
+    session = _open_session(runtime, tmp_path)
+
+    response = _rpc(
+        runtime,
+        "worker.run_child_task",
+        {
+            "sessionId": session["id"],
+            "prompt": "inspect workspace",
+            "budget": {"maxToolCalls": 0},
+        },
+    )
+
+    assert response["error"]["code"] == "WORKER_BUDGET_TOOL_CALLS_EXCEEDED"
 
 
 def test_react_loop_pauses_for_approval_and_resumes_after_submit(tmp_path: Any) -> None:

@@ -17,6 +17,11 @@ CommandStatus = Literal["running", "completed", "failed", "timeout", "killed"]
 PatchStatus = Literal["proposed", "approved", "applied", "rejected", "failed"]
 ApprovalDecision = Literal["approved", "rejected"]
 ApprovalKind = Literal["apply_patch", "run_command", "delete_file", "network_access"]
+ScheduledTaskStatus = Literal["active", "disabled"]
+ScheduledRunStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+CollaborationTaskStatus = Literal["queued", "claimed", "running", "blocked", "completed", "failed", "cancelled"]
+AgentWorkerStatus = Literal["idle", "busy", "offline", "stopped", "failed"]
+AgentMessageKind = Literal["note", "handoff", "broadcast", "result", "system"]
 
 
 @dataclass(slots=True)
@@ -108,3 +113,74 @@ class CommandLogRecord:
     finished_at: int | None = None
     stdout_path: str | None = None
     stderr_path: str | None = None
+
+
+@dataclass(slots=True)
+class ScheduledTask:
+    id: str
+    name: str
+    prompt: str
+    schedule: str
+    status: ScheduledTaskStatus
+    enabled: bool
+    created_at: int
+    updated_at: int
+    last_run_at: int | None = None
+    next_run_at: int | None = None
+
+
+@dataclass(slots=True)
+class ScheduledTaskRun:
+    id: str
+    task_id: str
+    status: ScheduledRunStatus
+    started_at: int
+    finished_at: int | None = None
+    summary: str | None = None
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class CollaborationTask:
+    id: str
+    title: str
+    description: str | None
+    status: CollaborationTaskStatus
+    priority: int
+    created_at: int
+    updated_at: int
+    session_id: str | None = None
+    parent_task_id: str | None = None
+    assigned_worker_id: str | None = None
+    claimed_at: int | None = None
+    completed_at: int | None = None
+    dependencies: list[str] = field(default_factory=list)
+    result: dict[str, Any] | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class AgentWorker:
+    id: str
+    name: str
+    role: str
+    status: AgentWorkerStatus
+    created_at: int
+    updated_at: int
+    last_heartbeat_at: int
+    current_task_id: str | None = None
+    capabilities: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class AgentMessage:
+    id: str
+    sender_worker_id: str
+    kind: AgentMessageKind
+    body: str
+    created_at: int
+    recipient_worker_id: str | None = None
+    task_id: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+    read_at: int | None = None

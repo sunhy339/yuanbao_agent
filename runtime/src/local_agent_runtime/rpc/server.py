@@ -4,6 +4,8 @@ import json
 from typing import Any, Callable, TextIO
 
 from ..models import RpcEnvelope
+from ..services.collaboration_service import CollaborationService
+from ..services.schedule_service import ScheduleService
 
 RpcHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -20,6 +22,8 @@ class JsonRpcServer:
         self._orchestrator = orchestrator
         self._store = store
         self._event_bus = event_bus
+        self._schedule = ScheduleService(store)
+        self._collaboration = CollaborationService(store, event_bus)
         self._writer: TextIO | None = None
         self._handlers: dict[str, RpcHandler] = {
             "workspace.open": self._orchestrator.open_workspace,
@@ -27,6 +31,7 @@ class JsonRpcServer:
             "session.get": self._store.get_session,
             "session.list": self._store.list_sessions,
             "message.send": self._orchestrator.send_message,
+            "worker.run_child_task": self._orchestrator.run_child_task,
             "task.get": self._store.get_task,
             "task.list": self._store.list_tasks,
             "task.cancel": self._orchestrator.cancel_task,
@@ -39,6 +44,26 @@ class JsonRpcServer:
             "diff.get": self._store.get_patch,
             "command_log.get": self._store.get_command_log,
             "trace.list": self._store.list_trace_events,
+            "schedule.create": self._schedule.create,
+            "schedule.list": self._schedule.list,
+            "schedule.update": self._schedule.update,
+            "schedule.toggle": self._schedule.toggle,
+            "schedule.run_now": self._schedule.run_now,
+            "schedule.logs": self._schedule.logs,
+            "collab.task.create": self._collaboration.create_collaboration_task,
+            "collab.task.get": self._collaboration.get_collaboration_task,
+            "collab.task.list": self._collaboration.list_collaboration_tasks,
+            "collab.task.update": self._collaboration.update_collaboration_task,
+            "collab.task.claim": self._collaboration.claim_collaboration_task,
+            "collab.task.complete": self._collaboration.complete_collaboration_task,
+            "collab.task.fail": self._collaboration.fail_collaboration_task,
+            "collab.task.release": self._collaboration.release_collaboration_task,
+            "collab.worker.upsert": self._collaboration.upsert_agent_worker,
+            "collab.worker.get": self._collaboration.get_agent_worker,
+            "collab.worker.list": self._collaboration.list_agent_workers,
+            "collab.worker.heartbeat": self._collaboration.heartbeat_agent_worker,
+            "collab.message.send": self._collaboration.send_agent_message,
+            "collab.message.list": self._collaboration.list_agent_messages,
         }
         if hasattr(self._store, "append_runtime_event"):
             self._event_bus.subscribe(self._store.append_runtime_event)
@@ -69,8 +94,9 @@ class JsonRpcServer:
         except Exception as exc:  # noqa: BLE001
             return self._error_response(
                 envelope.id,
-                code="INTERNAL_ERROR",
+                code=str(getattr(exc, "code", "INTERNAL_ERROR")),
                 message=str(exc),
+                retryable=bool(getattr(exc, "retryable", False)),
             )
 
         return {
@@ -79,14 +105,14 @@ class JsonRpcServer:
             "result": result,
         }
 
-    def _error_response(self, request_id: str, code: str, message: str) -> dict[str, Any]:
+    def _error_response(self, request_id: str, code: str, message: str, retryable: bool = False) -> dict[str, Any]:
         return {
             "jsonrpc": "2.0",
             "id": request_id,
             "error": {
                 "code": code,
                 "message": message,
-                "retryable": False,
+                "retryable": retryable,
             },
         }
 

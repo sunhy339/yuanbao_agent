@@ -21,6 +21,7 @@ EXPECTED_TOOL_NAMES = {
     "apply_patch",
     "git_status",
     "git_diff",
+    "task",
 }
 
 
@@ -29,6 +30,10 @@ def _make_store(tmp_path: Path) -> SQLiteStore:
 
 
 def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
+    tool_names = [schema["name"] for schema in BUILTIN_TOOL_SCHEMAS]
+
+    assert len(tool_names) == len(set(tool_names))
+
     schemas_by_name = {schema["name"]: schema for schema in BUILTIN_TOOL_SCHEMAS}
 
     assert set(schemas_by_name) == EXPECTED_TOOL_NAMES
@@ -43,7 +48,34 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
         assert input_schema["additionalProperties"] is False
         assert isinstance(input_schema["properties"], dict)
         assert input_schema["properties"]
-        assert "workspaceRoot" in input_schema["required"]
+        if name == "task":
+            assert input_schema["required"] == ["prompt"]
+            task_properties = input_schema["properties"]
+            assert set(task_properties) >= {
+                "prompt",
+                "title",
+                "agentType",
+                "priority",
+                "sessionId",
+                "taskId",
+                "timeoutMs",
+                "retry",
+                "budget",
+                "cancellation",
+                "childToolAllowlist",
+                "child_tool_allowlist",
+            }
+            assert task_properties["timeoutMs"]["type"] == "integer"
+            assert task_properties["retry"]["type"] == "object"
+            assert task_properties["budget"]["type"] == "object"
+            assert task_properties["cancellation"]["type"] == "object"
+            assert set(task_properties["childToolAllowlist"]["items"]["enum"]) >= {
+                "run_command",
+                "apply_patch",
+            }
+            assert task_properties["child_tool_allowlist"] == task_properties["childToolAllowlist"]
+        else:
+            assert "workspaceRoot" in input_schema["required"]
         assert json.loads(json.dumps(input_schema)) == input_schema
 
         if name in {"run_command", "apply_patch"}:
@@ -80,6 +112,24 @@ def test_context_builder_outputs_openai_function_tools(tmp_path: Path) -> None:
         first = context["openai_tools"][0]
         assert first["type"] == "function"
         assert first["function"]["parameters"]["type"] == "object"
+    finally:
+        store.close()
+
+
+def test_task_schema_is_exposed_through_registry_and_context(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    try:
+        workspace_root = tmp_path / "workspace"
+        workspace_root.mkdir()
+        workspace = store.upsert_workspace(str(workspace_root))
+        session = store.create_session(workspace_id=workspace["id"], title="Task schema")
+
+        context = ContextBuilder(store).build(session_id=session["id"], goal="delegate work")
+        registry = ToolRegistry({schema["name"]: lambda _params: {} for schema in context["tools"]})
+
+        assert "task" in {schema["name"] for schema in context["tools"]}
+        assert "task" in {tool["function"]["name"] for tool in context["openai_tools"]}
+        assert "task" in {schema["name"] for schema in registry.schemas}
     finally:
         store.close()
 

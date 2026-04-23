@@ -9,7 +9,12 @@ from ..context.builder import ContextBuilder
 from ..event_bus import EventBus
 from ..models import RuntimeEvent
 from ..planner.service import Planner
+from ..services.collaboration_service import CollaborationService
 from ..services.session_service import SessionService
+from ..services.subagent_service import SubagentService
+from ..services.worker_budget import WorkerBudget
+from ..services.worker_environment import normalize_child_tool_allowlist
+from ..tools.registry import BUILTIN_TOOL_SCHEMAS
 
 
 class Orchestrator:
@@ -27,8 +32,10 @@ class Orchestrator:
         self._tool_registry = tool_registry
         self._provider = provider
         self._planner = Planner()
-        self._context_builder = ContextBuilder(store)
+        self._context_builder = ContextBuilder(store, tool_schemas=self._context_tool_schemas())
         self._session_service = SessionService(store)
+        self._collaboration_service = CollaborationService(store, event_bus)
+        self._subagent_service = SubagentService(store, self._collaboration_service)
         self._pending_react_tasks: dict[str, dict[str, Any]] = {}
 
     def open_workspace(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -373,6 +380,155 @@ class Orchestrator:
                     error_code="LOOP_EXECUTION_FAILED",
                 )
             }
+
+    def run_child_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = params.get("sessionId")
+        prompt = params.get("prompt")
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("sessionId is required")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("prompt is required")
+
+        session = self._store.require_session(session_id)
+        budget = WorkerBudget.from_metadata(params.get("budget"), params)
+        context = self._context_builder.build(session_id=session["id"], goal=prompt.strip())
+        context = self._context_with_worker_budget(context, budget)
+        plan = self._planner.plan(prompt.strip(), context=context)
+        task = self._store.create_task(
+            session_id=session["id"],
+            task_type="subagent",
+            goal=prompt.strip(),
+            plan=plan,
+        )
+        runtime_task = {**task, "plan": plan}
+
+        self._publish(
+            session_id=session["id"],
+            task=runtime_task,
+            event_type="task.started",
+            payload={
+                "status": runtime_task["status"],
+                "plan": runtime_task["plan"],
+                "context": context,
+                "childWorker": True,
+            },
+        )
+
+        try:
+            react_result = self._run_react_loop(
+                session_id=session["id"],
+                task=runtime_task,
+                goal=prompt.strip(),
+                context=context,
+                budget=budget,
+            )
+            if react_result["status"] == "waiting_approval":
+                return self._waiting_child_task_response(
+                    task=runtime_task,
+                    summary="Child worker is waiting for parent approval.",
+                    budget=budget,
+                )
+            if react_result["status"] == "completed":
+                completed_task = self._complete_task(
+                    session_id=session["id"],
+                    task=runtime_task,
+                    summary=react_result["summary"],
+                    context=context,
+                    tool_results=react_result.get("tool_results", []),
+                )
+                return {
+                    "status": "completed",
+                    "task": completed_task,
+                    "summary": completed_task.get("resultSummary") or react_result["summary"],
+                    "budget": budget.to_metadata(),
+                }
+
+            tool_results = self._run_minimal_loop(
+                session_id=session["id"],
+                task=runtime_task,
+                goal=prompt.strip(),
+                context=context,
+                budget=budget,
+            )
+            if runtime_task["status"] == "waiting_approval":
+                return self._waiting_child_task_response(
+                    task=runtime_task,
+                    summary="Child worker is waiting for parent approval.",
+                    budget=budget,
+                )
+            summary = self._provider.summarize_findings(
+                goal=prompt.strip(),
+                context=context,
+                tool_results=tool_results,
+            )
+            completed_task = self._complete_task(
+                session_id=session["id"],
+                task=runtime_task,
+                summary=summary,
+                context=context,
+                tool_results=tool_results,
+            )
+            return {
+                "status": "completed",
+                "task": completed_task,
+                "summary": completed_task.get("resultSummary") or summary,
+                "budget": budget.to_metadata(),
+            }
+        except Exception as exc:  # noqa: BLE001
+            self._fail_task(
+                session_id=session["id"],
+                task=runtime_task,
+                summary=str(exc),
+                error_code=str(getattr(exc, "code", "LOOP_EXECUTION_FAILED")),
+            )
+            raise
+
+    def _waiting_child_task_response(
+        self,
+        *,
+        task: dict[str, Any],
+        summary: str,
+        budget: WorkerBudget,
+    ) -> dict[str, Any]:
+        persisted_task = self._store.get_task({"taskId": task["id"]})["task"]
+        approval = self._latest_pending_approval(task["id"])
+        return {
+            "status": "waiting_approval",
+            "task": persisted_task,
+            "summary": summary,
+            "approval": approval,
+            "budget": budget.to_metadata(),
+        }
+
+    def _latest_pending_approval(self, task_id: str) -> dict[str, Any] | None:
+        if not hasattr(self._store, "_conn"):
+            return None
+        row = self._store._conn.execute(  # noqa: SLF001
+            """
+            SELECT *
+            FROM approvals
+            WHERE task_id = ? AND decision IS NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._store._serialize_approval(dict(row))  # noqa: SLF001
+
+    def _context_tool_schemas(self) -> list[dict[str, Any]] | None:
+        allowed = self._child_tool_allowlist()
+        if allowed is None:
+            return None
+        allowed_set = set(allowed)
+        return [schema for schema in BUILTIN_TOOL_SCHEMAS if schema.get("name") in allowed_set]
+
+    def _child_tool_allowlist(self) -> list[str] | None:
+        raw = os.environ.get("LOCAL_AGENT_CHILD_TOOL_ALLOWLIST")
+        if raw is None:
+            return None
+        return normalize_child_tool_allowlist(raw)
 
     def _complete_task(
         self,
@@ -795,14 +951,16 @@ class Orchestrator:
         pending_state = self._load_pending_react_state(approval["taskId"])
         if pending_state is not None:
             if approval["decision"] == "approved":
-                self._resume_react_after_approval(task=task, approval=approval)
+                resumed_task = self._resume_react_after_approval(task=task, approval=approval)
+                self._finalize_child_collaboration_after_approval(approval=approval, runtime_task=resumed_task)
             else:
-                self._fail_task(
+                failed_task = self._fail_task(
                     session_id=task["sessionId"],
                     task=task,
                     summary="Approval was rejected by the user.",
                     error_code="APPROVAL_REJECTED",
                 )
+                self._finalize_child_collaboration_after_approval(approval=approval, runtime_task=failed_task)
             return {"approval": approval}
         if approval["decision"] == "approved" and approval["kind"] == "run_command":
             task = self._resume_approved_command(task=task, approval=approval)
@@ -1041,6 +1199,10 @@ class Orchestrator:
             stderr = (result.get("stderr") or "").strip()
             preview = stdout.splitlines()[0] if stdout else stderr.splitlines()[0] if stderr else "no output"
             return f"Command failed with status {status} and exit code {exit_code}; first output: {preview[:120]}."
+        if tool_name == "task":
+            child_task_id = result.get("childTaskId") or result.get("task", {}).get("id") or "unknown child task"
+            summary = (result.get("summary") or result.get("result", {}).get("summary") or "Child task failed.").strip()
+            return f"Child task {child_task_id} failed: {summary}"
         if tool_name == "apply_patch":
             if result.get("status") == "validation_failed":
                 summary = (result.get("summary") or "Patch validation failed.").strip()
@@ -1079,6 +1241,7 @@ class Orchestrator:
         goal: str,
         context: dict[str, Any],
         state: dict[str, Any] | None = None,
+        budget: WorkerBudget | None = None,
     ) -> dict[str, Any]:
         if not hasattr(self._provider, "generate"):
             if self._has_deterministic_fallback():
@@ -1110,6 +1273,7 @@ class Orchestrator:
                 task=task,
                 goal=goal,
                 provider_context=provider_context,
+                budget=budget,
             )
             parsed = self._parse_provider_response(
                 response,
@@ -1153,6 +1317,7 @@ class Orchestrator:
                     session_id=session_id,
                     task=task,
                     tool_spec=tool_spec,
+                    budget=budget,
                 )
                 if task["status"] == "waiting_approval":
                     self._pending_react_tasks[task["id"]] = {
@@ -1192,10 +1357,17 @@ class Orchestrator:
         task: dict[str, Any],
         goal: str,
         provider_context: dict[str, Any],
+        budget: WorkerBudget | None = None,
     ) -> dict[str, Any]:
         if not self._should_stream_provider(provider_context):
             self._append_provider_trace(task=task, event_type="provider.request", payload=self._provider_trace_payload(provider_context))
             response = self._provider.generate(goal, provider_context)
+            self._consume_budget_from_provider_response(
+                session_id=session_id,
+                task=task,
+                budget=budget,
+                response=response,
+            )
             self._append_provider_trace(task=task, event_type="provider.response", payload=self._provider_response_trace(response))
             return response
 
@@ -1246,6 +1418,12 @@ class Orchestrator:
         if not response["tool_calls"]:
             response["final"] = response["message"]
             response["final_answer"] = response["message"]
+        self._consume_budget_from_provider_response(
+            session_id=session_id,
+            task=task,
+            budget=budget,
+            response=response,
+        )
         self._append_provider_trace(
             task=task,
             event_type="provider.response",
@@ -1318,6 +1496,7 @@ class Orchestrator:
                 session_id=task["sessionId"],
                 task=runtime_task,
                 tool_spec=pending_spec,
+                budget=None,
             )
             if runtime_task["status"] == "waiting_approval":
                 state["pending_tool_spec"] = pending_spec
@@ -1334,6 +1513,7 @@ class Orchestrator:
                     session_id=task["sessionId"],
                     task=runtime_task,
                     tool_spec=tool_spec,
+                    budget=None,
                 )
                 if runtime_task["status"] == "waiting_approval":
                     state["pending_tool_call"] = tool_call
@@ -1353,6 +1533,7 @@ class Orchestrator:
                 goal=state["goal"],
                 context=state["context"],
                 state=state,
+                budget=None,
             )
             if result["status"] == "completed":
                 return self._complete_task(
@@ -1370,6 +1551,134 @@ class Orchestrator:
                 summary=str(exc),
                 error_code="LOOP_EXECUTION_FAILED",
             )
+
+    def _finalize_child_collaboration_after_approval(
+        self,
+        *,
+        approval: dict[str, Any],
+        runtime_task: dict[str, Any],
+    ) -> None:
+        child_task = self._blocked_child_collaboration_for_runtime_task(approval=approval, runtime_task=runtime_task)
+        if child_task is None:
+            return
+        worker = self._prepare_child_collaboration_worker(child_task)
+        if worker is None:
+            return
+
+        status = runtime_task.get("status")
+        summary = (
+            runtime_task.get("resultSummary")
+            or (runtime_task.get("result") or {}).get("summary")
+            or ("Child worker completed after approval." if status == "completed" else "Child worker stopped after approval.")
+        )
+        result_payload = {
+            "summary": summary,
+            "runtimeTaskId": runtime_task.get("id"),
+            "runtimeTaskStatus": status,
+            "approval": deepcopy(approval),
+        }
+        if isinstance(runtime_task.get("result"), dict):
+            result_payload["runtimeTaskResult"] = deepcopy(runtime_task["result"])
+
+        if status == "completed":
+            completion = self._collaboration_service.complete_collaboration_task(
+                {
+                    "taskId": child_task["id"],
+                    "workerId": worker["id"],
+                    "result": result_payload,
+                }
+            )
+            self._collaboration_service.send_agent_message(
+                {
+                    "senderWorkerId": completion["worker"]["id"],
+                    "taskId": completion["task"]["id"],
+                    "kind": "result",
+                    "body": str(summary),
+                    "payload": {
+                        "executionMode": "process-rpc",
+                        "approval": deepcopy(approval),
+                        "runtimeTask": deepcopy(runtime_task),
+                    },
+                }
+            )
+            return
+
+        if status in {"failed", "cancelled"}:
+            error = {
+                "code": runtime_task.get("errorCode") or "CHILD_WORKER_APPROVAL_RESUME_FAILED",
+                "message": str(summary),
+                "type": "ChildApprovalResumeError",
+                "approval": deepcopy(approval),
+                "runtimeTaskId": runtime_task.get("id"),
+            }
+            failure = self._collaboration_service.fail_collaboration_task(
+                {
+                    "taskId": child_task["id"],
+                    "workerId": worker["id"],
+                    "error": error,
+                }
+            )
+            self._collaboration_service.send_agent_message(
+                {
+                    "senderWorkerId": failure["worker"]["id"],
+                    "taskId": failure["task"]["id"],
+                    "kind": "result",
+                    "body": str(summary),
+                    "payload": {"error": error, "runtimeTask": deepcopy(runtime_task)},
+                }
+            )
+            return
+
+        self._collaboration_service.update_collaboration_task(
+            {
+                "taskId": child_task["id"],
+                "status": "blocked",
+                "result": result_payload,
+            }
+        )
+
+    def _blocked_child_collaboration_for_runtime_task(
+        self,
+        *,
+        approval: dict[str, Any],
+        runtime_task: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        session_id = runtime_task.get("sessionId")
+        if not isinstance(session_id, str) or not session_id:
+            return None
+        tasks = self._collaboration_service.list_collaboration_tasks({"sessionId": session_id}).get("tasks", [])
+        for task in tasks:
+            if task.get("status") != "blocked":
+                continue
+            result = task.get("result") if isinstance(task.get("result"), dict) else {}
+            approval_payload = result.get("approval") if isinstance(result.get("approval"), dict) else {}
+            if result.get("runtimeTaskId") == approval.get("taskId"):
+                return task
+            if approval_payload.get("id") == approval.get("id"):
+                return task
+            if approval_payload.get("approvalId") == approval.get("id"):
+                return task
+        return None
+
+    def _prepare_child_collaboration_worker(self, child_task: dict[str, Any]) -> dict[str, Any] | None:
+        worker_id = child_task.get("assignedWorkerId")
+        if not isinstance(worker_id, str) or not worker_id:
+            return None
+        try:
+            worker = self._collaboration_service.get_agent_worker({"workerId": worker_id})["worker"]
+        except ValueError:
+            return None
+        return self._collaboration_service.upsert_agent_worker(
+            {
+                "workerId": worker["id"],
+                "name": worker["name"],
+                "role": worker["role"],
+                "status": "busy",
+                "currentTaskId": child_task["id"],
+                "capabilities": worker.get("capabilities", []),
+                "metadata": worker.get("metadata", {}),
+            }
+        )["worker"]
 
     def _parse_provider_response(
         self,
@@ -1454,6 +1763,26 @@ class Orchestrator:
         except (TypeError, ValueError):
             return 20
 
+    def _context_with_worker_budget(self, context: dict[str, Any], budget: WorkerBudget) -> dict[str, Any]:
+        if budget.tokens.limit is None:
+            return context
+        updated_context = deepcopy(context)
+        config = deepcopy(updated_context.get("config") or {})
+        provider = deepcopy(config.get("provider") or {})
+        existing = provider.get("maxTokens") or provider.get("maxOutputTokens")
+        try:
+            existing_limit = int(existing) if existing is not None else None
+        except (TypeError, ValueError):
+            existing_limit = None
+        remaining = budget.tokens.remaining
+        capped_limit = remaining if existing_limit is None or remaining is None else min(existing_limit, remaining)
+        if capped_limit is not None:
+            provider["maxTokens"] = capped_limit
+            provider["maxOutputTokens"] = capped_limit
+            config["provider"] = provider
+            updated_context["config"] = config
+        return updated_context
+
     def _provider_tool_call_to_spec(self, tool_call: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(tool_call, dict):
             raise RuntimeError("Provider returned invalid tool call: expected an object.")
@@ -1514,17 +1843,26 @@ class Orchestrator:
             arguments.setdefault("cwd", ".")
         elif tool_name == "apply_patch":
             arguments.setdefault("dry_run", False)
+        elif tool_name == "task":
+            arguments.setdefault("priority", 3)
 
     def _plan_step_for_tool(self, tool_name: str) -> str:
         return {
             "list_dir": "inspect-workspace",
             "search_files": "search-relevant-files",
             "read_file": "search-relevant-files",
+            "task": "task",
             "run_command": "run-command",
             "apply_patch": "apply-patch",
             "git_status": "git-status",
             "git_diff": "git-diff",
         }.get(tool_name, tool_name.replace("_", "-"))
+
+    def _ensure_tool_allowed_for_child_worker(self, tool_name: str) -> None:
+        allowed = self._child_tool_allowlist()
+        if allowed is None or tool_name in set(allowed):
+            return
+        raise ValueError(f"Tool is not allowed in child worker process: {tool_name}")
 
     def _tool_result_message(self, tool_call: dict[str, Any], tool_result: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1558,6 +1896,7 @@ class Orchestrator:
         task: dict[str, Any],
         goal: str,
         context: dict[str, Any],
+        budget: WorkerBudget | None = None,
     ) -> list[dict[str, Any]]:
         tool_results: list[dict[str, Any]] = []
         tool_sequence = self._provider.choose_tool_sequence(goal=goal, context=context)
@@ -1567,6 +1906,7 @@ class Orchestrator:
                 session_id=session_id,
                 task=task,
                 tool_spec=tool_spec,
+                budget=budget,
             )
             tool_results.append(tool_result)
             if self._is_patch_validation_failure(tool_spec["name"], tool_result["result"]):
@@ -1603,6 +1943,7 @@ class Orchestrator:
                     session_id=session_id,
                     task=task,
                     tool_spec=follow_up_tool,
+                    budget=budget,
                 )
             )
 
@@ -1635,13 +1976,21 @@ class Orchestrator:
         session_id: str,
         task: dict[str, Any],
         tool_spec: dict[str, Any],
+        budget: WorkerBudget | None = None,
     ) -> dict[str, Any]:
+        self._ensure_tool_allowed_for_child_worker(tool_spec["name"])
         tool_call_id = tool_spec.get("id") or self._store.new_id("tc")
         tool_arguments = {
             **tool_spec["arguments"],
             "taskId": task["id"],
             "sessionId": session_id,
         }
+        self._consume_budget_for_tool_call(
+            session_id=session_id,
+            task=task,
+            budget=budget,
+            tool_name=tool_spec["name"],
+        )
         self._publish(
             session_id=session_id,
             task=task,
@@ -1658,7 +2007,10 @@ class Orchestrator:
                 "arguments": tool_arguments,
             },
         )
-        result = self._tool_registry.execute(tool_spec["name"], tool_arguments)
+        if tool_spec["name"] == "task":
+            result = self._subagent_service.dispatch(tool_arguments)
+        else:
+            result = self._tool_registry.execute(tool_spec["name"], tool_arguments)
         if tool_spec["name"] == "run_command":
             command_log = result.get("commandLog") or {}
             command_id = command_log.get("id")
@@ -1684,6 +2036,26 @@ class Orchestrator:
                         "chunk": result["stderr"],
                     },
                 )
+
+        if tool_spec["name"] == "task":
+            tool_result = {
+                "id": tool_call_id,
+                "name": tool_spec["name"],
+                "arguments": tool_arguments,
+                "result": result,
+            }
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="tool.completed",
+                payload={
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_spec["name"],
+                    "arguments": tool_arguments,
+                    "result": result,
+                },
+            )
+            return tool_result
 
         if result.get("status") == "approval_required":
             approval = result.get("approval", {})
@@ -1835,6 +2207,55 @@ class Orchestrator:
             },
         )
         return tool_result
+
+    def _consume_budget_from_provider_response(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        budget: WorkerBudget | None,
+        response: dict[str, Any],
+    ) -> None:
+        if budget is None:
+            return
+        raw = response.get("raw")
+        usage = raw.get("usage") if isinstance(raw, dict) else None
+        consumed = budget.consume_provider_usage(usage)
+        if consumed <= 0:
+            return
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="collab.worker.budget.updated",
+            payload={
+                "dimension": "tokens",
+                "consumed": consumed,
+                "budget": budget.to_metadata(),
+            },
+        )
+
+    def _consume_budget_for_tool_call(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        budget: WorkerBudget | None,
+        tool_name: str,
+    ) -> None:
+        if budget is None:
+            return
+        consumed = budget.consume_tool_call()
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="collab.worker.budget.updated",
+            payload={
+                "dimension": "toolCalls",
+                "consumed": consumed,
+                "toolName": tool_name,
+                "budget": budget.to_metadata(),
+            },
+        )
 
     def _next_step_id(self, tool_sequence: list[dict[str, Any]], current_index: int) -> str | None:
         if current_index + 1 >= len(tool_sequence):

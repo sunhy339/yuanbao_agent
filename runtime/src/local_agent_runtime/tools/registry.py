@@ -4,6 +4,8 @@ from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
+from ..services.worker_environment import DEFAULT_CHILD_TOOL_ALLOWLIST
+
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
 
@@ -24,6 +26,25 @@ WORKSPACE_ROOT_PROPERTY = _string_property(
     "Absolute path to the active workspace root. Tools must stay within this directory.",
     examples=["D:/projects/example", "/Users/me/project"],
 )
+
+CHILD_TOOL_ALLOWLIST_TOOL_NAMES = [*DEFAULT_CHILD_TOOL_ALLOWLIST, "run_command", "apply_patch"]
+
+
+def _child_tool_allowlist_property() -> dict[str, Any]:
+    return {
+        "type": "array",
+        "description": (
+            "Optional child-worker tool allowlist. Defaults to read-only tools; include run_command or apply_patch "
+            "only when the child task explicitly needs command execution or file edits."
+        ),
+        "items": {
+            "type": "string",
+            "enum": CHILD_TOOL_ALLOWLIST_TOOL_NAMES,
+        },
+        "uniqueItems": True,
+        "default": list(DEFAULT_CHILD_TOOL_ALLOWLIST),
+        "examples": [["list_dir", "search_files", "read_file"], ["read_file", "run_command", "apply_patch"]],
+    }
 
 
 BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -172,6 +193,135 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "hints": [
             "Read the smallest relevant file first.",
             "Set max_bytes for large generated files or logs.",
+        ],
+    },
+    {
+        "name": "task",
+        "description": (
+            "Create and execute a child collaboration task inline. The runtime records a child task, claims an "
+            "agent worker, marks the task completed, and returns the child task result."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "prompt": _string_property(
+                    "Instruction for the child collaboration task.",
+                    examples=["Investigate the failing formatter command and summarize the cause."],
+                ),
+                "title": _string_property(
+                    "Optional short title for the child task.",
+                    examples=["Investigate formatter failure"],
+                ),
+                "agentType": _string_property(
+                    "Optional worker role used to name the child collaboration worker.",
+                    default="explorer",
+                    examples=["explorer", "analyst", "coder"],
+                ),
+                "priority": {
+                    "type": "integer",
+                    "description": "Child task priority; the runtime clamps this into a safe 0-9 range.",
+                    "minimum": 0,
+                    "maximum": 9,
+                    "default": 3,
+                },
+                "timeoutMs": {
+                    "type": "integer",
+                    "description": (
+                        "Optional per-attempt child task timeout in milliseconds. Runner implementations enforce "
+                        "this at the child task boundary."
+                    ),
+                    "minimum": 1000,
+                    "maximum": 86400000,
+                    "examples": [120000, 600000],
+                },
+                "retry": {
+                    "type": "object",
+                    "description": (
+                        "Optional retry policy for child task execution. Runner implementations enforce retryable "
+                        "failures at the child task boundary."
+                    ),
+                    "additionalProperties": False,
+                    "properties": {
+                        "maxAttempts": {
+                            "type": "integer",
+                            "description": "Maximum total attempts including the initial attempt.",
+                            "minimum": 1,
+                            "maximum": 10,
+                            "default": 1,
+                        },
+                        "backoff": {
+                            "type": "string",
+                            "description": "Delay strategy between attempts.",
+                            "enum": ["fixed", "exponential"],
+                            "default": "fixed",
+                        },
+                        "delayMs": {
+                            "type": "integer",
+                            "description": "Initial delay before a retry attempt in milliseconds.",
+                            "minimum": 0,
+                            "maximum": 600000,
+                            "default": 0,
+                        },
+                    },
+                },
+                "budget": {
+                    "type": "object",
+                    "description": "Optional advisory resource budget for the child task.",
+                    "additionalProperties": True,
+                    "properties": {
+                        "maxTokens": {
+                            "type": "integer",
+                            "description": "Maximum model tokens allocated to the child task.",
+                            "minimum": 1,
+                        },
+                        "remainingTokens": {
+                            "type": "integer",
+                            "description": "Remaining model tokens available to the child task.",
+                            "minimum": 0,
+                        },
+                        "maxToolCalls": {
+                            "type": "integer",
+                            "description": "Maximum tool calls allocated to the child task.",
+                            "minimum": 1,
+                        },
+                    },
+                },
+                "cancellation": {
+                    "type": "object",
+                    "description": "Optional cancellation metadata for coordinating child task cancellation.",
+                    "additionalProperties": True,
+                    "properties": {
+                        "signalId": {
+                            "type": "string",
+                            "description": "Cancellation signal identifier supplied by the orchestrator.",
+                            "minLength": 1,
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Human-readable cancellation reason.",
+                            "minLength": 1,
+                        },
+                    },
+                },
+                "childToolAllowlist": _child_tool_allowlist_property(),
+                "child_tool_allowlist": _child_tool_allowlist_property(),
+                "sessionId": _string_property(
+                    "Runtime session id injected by the orchestrator; models usually omit this.",
+                ),
+                "taskId": _string_property(
+                    "Parent runtime task id injected by the orchestrator; models usually omit this.",
+                ),
+            },
+            "required": ["prompt"],
+        },
+        "safety": [
+            "Creates collaboration records and agent messages, but does not spawn a separate process in this slice.",
+            "The child task is executed through an in-process runner boundary with retry and timeout policy.",
+        ],
+        "hints": [
+            "Use this when you want a structured child collaboration task instead of a shell command.",
+            "Keep prompts short and action-oriented so the child task result stays focused.",
         ],
     },
     {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -78,6 +79,9 @@ DEFAULT_CONFIG = {
     "ui": {
         "language": "zh-CN",
         "showRawEvents": False,
+        "theme": "light",
+        "reasoningEffort": "max",
+        "webFetchPreflight": True,
     },
 }
 
@@ -103,6 +107,10 @@ class SQLiteStore:
 
     def close(self) -> None:
         self._conn.close()
+
+    @property
+    def database_path(self) -> str:
+        return self._database_path
 
     def now(self) -> int:
         return int(time.time() * 1000)
@@ -157,6 +165,150 @@ class SQLiteStore:
     def list_sessions(self, _params: dict[str, Any]) -> dict[str, Any]:
         rows = self._conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC").fetchall()
         return {"sessions": [self._serialize_session(dict(row)) for row in rows]}
+
+    def create_scheduled_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        name = self._require_non_empty(params, "name")
+        prompt = self._require_non_empty(params, "prompt")
+        schedule = self._require_non_empty(params, "schedule")
+        enabled = bool(params.get("enabled", True))
+        status = self._normalize_scheduled_status(params.get("status"), enabled)
+        enabled = status == "active"
+        now = self.now()
+        task_id = self.new_id("sched")
+        next_run_at = self._next_scheduled_run_at(schedule, now) if enabled else None
+
+        self._conn.execute(
+            """
+            INSERT INTO scheduled_tasks (
+                id, name, prompt, schedule, status, enabled, created_at, updated_at, last_run_at, next_run_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+            """,
+            (task_id, name, prompt, schedule, status, int(enabled), now, now, next_run_at),
+        )
+        self._conn.commit()
+        return {"task": self.require_scheduled_task(task_id)}
+
+    def list_scheduled_tasks(self, _params: dict[str, Any] | None = None) -> dict[str, Any]:
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM scheduled_tasks
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+        return {"tasks": [self._serialize_scheduled_task(dict(row)) for row in rows]}
+
+    def require_scheduled_task(self, task_id: str) -> dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT * FROM scheduled_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Scheduled task not found: {task_id}")
+        return self._serialize_scheduled_task(dict(row))
+
+    def update_scheduled_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        task_id = self._require_non_empty(params, "taskId")
+        current = self.require_scheduled_task(task_id)
+        name = self._optional_non_empty(params, "name", current["name"])
+        prompt = self._optional_non_empty(params, "prompt", current["prompt"])
+        schedule = self._optional_non_empty(params, "schedule", current["schedule"])
+        enabled = bool(params.get("enabled", current["enabled"]))
+        status = self._normalize_scheduled_status(params.get("status"), enabled)
+        enabled = status == "active"
+        now = self.now()
+        next_run_at = self._next_scheduled_run_at(schedule, now) if enabled else None
+
+        self._conn.execute(
+            """
+            UPDATE scheduled_tasks
+            SET name = ?, prompt = ?, schedule = ?, status = ?, enabled = ?, updated_at = ?, next_run_at = ?
+            WHERE id = ?
+            """,
+            (name, prompt, schedule, status, int(enabled), now, next_run_at, task_id),
+        )
+        self._conn.commit()
+        return {"task": self.require_scheduled_task(task_id)}
+
+    def toggle_scheduled_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        task_id = self._require_non_empty(params, "taskId")
+        enabled = bool(params.get("enabled", True))
+        current = self.require_scheduled_task(task_id)
+        return self.update_scheduled_task(
+            {
+                "taskId": task_id,
+                "name": current["name"],
+                "prompt": current["prompt"],
+                "schedule": current["schedule"],
+                "enabled": enabled,
+            }
+        )
+
+    def create_scheduled_task_run(
+        self,
+        *,
+        task_id: str,
+        status: str,
+        started_at: int,
+        finished_at: int | None,
+        summary: str | None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        task = self.require_scheduled_task(task_id)
+        run_id = self.new_id("schedrun")
+        self._conn.execute(
+            """
+            INSERT INTO scheduled_task_runs (
+                id, task_id, status, started_at, finished_at, summary, error
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (run_id, task_id, status, started_at, finished_at, summary, error),
+        )
+
+        next_run_at = self._next_scheduled_run_at(task["schedule"], finished_at or started_at) if task["enabled"] else None
+        self._conn.execute(
+            """
+            UPDATE scheduled_tasks
+            SET last_run_at = ?, next_run_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (started_at, next_run_at, finished_at or started_at, task_id),
+        )
+        self._conn.commit()
+
+        row = self._conn.execute("SELECT * FROM scheduled_task_runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Scheduled run not found: {run_id}")
+        return self._serialize_scheduled_task_run(dict(row))
+
+    def list_scheduled_task_runs(self, params: dict[str, Any]) -> dict[str, Any]:
+        task_id = params.get("taskId")
+        limit = int(params.get("limit", 100))
+        limit = max(1, min(limit, 1000))
+        if task_id:
+            rows = self._conn.execute(
+                """
+                SELECT *
+                FROM scheduled_task_runs
+                WHERE task_id = ?
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (task_id, limit),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT *
+                FROM scheduled_task_runs
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return {"logs": [self._serialize_scheduled_task_run(dict(row)) for row in rows]}
 
     def create_task(self, session_id: str, task_type: str, goal: str, plan: list[dict[str, Any]]) -> dict[str, Any]:
         task_id = self.new_id("task")
@@ -239,6 +391,431 @@ class SQLiteStore:
             ).fetchall()
         return {"tasks": [self._serialize_task(dict(row)) for row in rows]}
 
+    def create_collaboration_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        title = self._require_non_empty(params, "title")
+        description = params.get("description")
+        if description is not None and not isinstance(description, str):
+            raise ValueError("description must be a string")
+        session_id = self._optional_string(params, "sessionId")
+        parent_task_id = self._optional_string(params, "parentTaskId")
+        assigned_worker_id = self._optional_string(params, "assignedWorkerId")
+        dependencies = self._string_list(params.get("dependencies", []), "dependencies")
+        priority = self._normalize_priority(params.get("priority", 3))
+        metadata = self._dict_value(params.get("metadata", {}), "metadata")
+        task_id = self.new_id("ctask")
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO collaboration_tasks (
+                id, session_id, parent_task_id, title, description, status, priority,
+                assigned_worker_id, dependencies_json, result_json, error_json, metadata_json,
+                claimed_at, completed_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, NULL, NULL, ?, NULL, NULL, ?, ?)
+            """,
+            (
+                task_id,
+                session_id,
+                parent_task_id,
+                title,
+                description.strip() if isinstance(description, str) else None,
+                priority,
+                assigned_worker_id,
+                json.dumps(dependencies, ensure_ascii=False),
+                json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        return {"task": self.require_collaboration_task(task_id)}
+
+    def complete_collaboration_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        task_id = self._require_non_empty(params, "taskId")
+        worker_id = self._require_non_empty(params, "workerId")
+        result = self._dict_value(params.get("result"), "result")
+        return self._finalize_collaboration_task(
+            task_id=task_id,
+            worker_id=worker_id,
+            task_status="completed",
+            worker_status="idle",
+            result=result,
+            error=None,
+        )
+
+    def fail_collaboration_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        task_id = self._require_non_empty(params, "taskId")
+        worker_id = self._require_non_empty(params, "workerId")
+        if "error" not in params:
+            raise ValueError("error is required")
+        error = self._json_value(params.get("error"), "error")
+        return self._finalize_collaboration_task(
+            task_id=task_id,
+            worker_id=worker_id,
+            task_status="failed",
+            worker_status="failed",
+            result=None,
+            error=error,
+        )
+
+    def require_collaboration_task(self, task_id: str) -> dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT * FROM collaboration_tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Collaboration task not found: {task_id}")
+        return self._serialize_collaboration_task(dict(row))
+
+    def get_collaboration_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"task": self.require_collaboration_task(self._require_non_empty(params, "taskId"))}
+
+    def list_collaboration_tasks(self, params: dict[str, Any]) -> dict[str, Any]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        for param_name, column_name in (
+            ("sessionId", "session_id"),
+            ("parentTaskId", "parent_task_id"),
+            ("assignedWorkerId", "assigned_worker_id"),
+            ("status", "status"),
+        ):
+            value = self._optional_string(params, param_name)
+            if value is not None:
+                clauses.append(f"{column_name} = ?")
+                values.append(value)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"""
+            SELECT *
+            FROM collaboration_tasks
+            {where_sql}
+            ORDER BY priority ASC, updated_at DESC, created_at DESC
+            """,
+            values,
+        ).fetchall()
+        return {"tasks": [self._serialize_collaboration_task(dict(row)) for row in rows]}
+
+    def update_collaboration_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        task_id = self._require_non_empty(params, "taskId")
+        current = self.require_collaboration_task(task_id)
+        assignments: list[str] = ["updated_at = ?"]
+        values: list[Any] = [self.now()]
+
+        if "title" in params:
+            assignments.append("title = ?")
+            values.append(self._require_non_empty(params, "title"))
+        if "description" in params:
+            description = params.get("description")
+            if description is not None and not isinstance(description, str):
+                raise ValueError("description must be a string")
+            assignments.append("description = ?")
+            values.append(description.strip() if isinstance(description, str) else None)
+        if "status" in params:
+            status = self._normalize_collaboration_task_status(params.get("status"))
+            assignments.append("status = ?")
+            values.append(status)
+            if status in {"completed", "failed", "cancelled"} and current["completedAt"] is None:
+                assignments.append("completed_at = ?")
+                values.append(self.now())
+        if "priority" in params:
+            assignments.append("priority = ?")
+            values.append(self._normalize_priority(params.get("priority")))
+        if "assignedWorkerId" in params:
+            assignments.append("assigned_worker_id = ?")
+            values.append(self._optional_string(params, "assignedWorkerId"))
+        if "dependencies" in params:
+            assignments.append("dependencies_json = ?")
+            values.append(json.dumps(self._string_list(params.get("dependencies"), "dependencies"), ensure_ascii=False))
+        if "result" in params:
+            assignments.append("result_json = ?")
+            values.append(json.dumps(self._dict_value(params.get("result"), "result"), ensure_ascii=False, sort_keys=True))
+        if "metadata" in params:
+            assignments.append("metadata_json = ?")
+            values.append(json.dumps(self._dict_value(params.get("metadata"), "metadata"), ensure_ascii=False, sort_keys=True))
+
+        values.append(task_id)
+        self._conn.execute(f"UPDATE collaboration_tasks SET {', '.join(assignments)} WHERE id = ?", values)
+        self._conn.commit()
+        return {"task": self.require_collaboration_task(task_id)}
+
+    def claim_collaboration_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        task_id = self._require_non_empty(params, "taskId")
+        worker_id = self._require_non_empty(params, "workerId")
+        task = self.require_collaboration_task(task_id)
+        if task["status"] not in {"queued", "blocked"}:
+            raise ValueError(f"Task cannot be claimed from status: {task['status']}")
+        if task["assignedWorkerId"] and task["assignedWorkerId"] != worker_id:
+            raise ValueError(f"Task is already assigned to {task['assignedWorkerId']}")
+        self.require_agent_worker(worker_id)
+        now = self.now()
+        self._conn.execute(
+            """
+            UPDATE collaboration_tasks
+            SET status = 'claimed', assigned_worker_id = ?, claimed_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (worker_id, now, now, task_id),
+        )
+        self._conn.execute(
+            """
+            UPDATE agent_workers
+            SET status = 'busy', current_task_id = ?, last_heartbeat_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (task_id, now, now, worker_id),
+        )
+        self._conn.commit()
+        return {"task": self.require_collaboration_task(task_id), "worker": self.require_agent_worker(worker_id)}
+
+    def release_collaboration_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        task_id = self._require_non_empty(params, "taskId")
+        worker_id = self._optional_string(params, "workerId")
+        task = self.require_collaboration_task(task_id)
+        if worker_id is not None and task["assignedWorkerId"] != worker_id:
+            raise ValueError(f"Task is assigned to {task['assignedWorkerId']}, not {worker_id}")
+        previous_worker_id = task["assignedWorkerId"]
+        now = self.now()
+        self._conn.execute(
+            """
+            UPDATE collaboration_tasks
+            SET status = 'queued', assigned_worker_id = NULL, claimed_at = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (now, task_id),
+        )
+        if previous_worker_id is not None:
+            self._conn.execute(
+                """
+                UPDATE agent_workers
+                SET status = 'idle', current_task_id = NULL, last_heartbeat_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, previous_worker_id),
+            )
+        self._conn.commit()
+        return {"task": self.require_collaboration_task(task_id)}
+
+    def _finalize_collaboration_task(
+        self,
+        *,
+        task_id: str,
+        worker_id: str,
+        task_status: str,
+        worker_status: str,
+        result: dict[str, Any] | None,
+        error: Any,
+    ) -> dict[str, Any]:
+        if task_status not in {"completed", "failed"}:
+            raise ValueError(f"Unsupported final collaboration task status: {task_status}")
+        if worker_status not in {"idle", "failed"}:
+            raise ValueError(f"Unsupported final worker status: {worker_status}")
+
+        now = self.now()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            task_row = self._conn.execute(
+                "SELECT * FROM collaboration_tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+            if task_row is None:
+                raise ValueError(f"Collaboration task not found: {task_id}")
+            worker_row = self._conn.execute(
+                "SELECT * FROM agent_workers WHERE id = ?",
+                (worker_id,),
+            ).fetchone()
+            if worker_row is None:
+                raise ValueError(f"Agent worker not found: {worker_id}")
+
+            task = self._serialize_collaboration_task(dict(task_row))
+            worker = self._serialize_agent_worker(dict(worker_row))
+            if task["assignedWorkerId"] != worker_id:
+                raise ValueError(f"Task is assigned to {task['assignedWorkerId']}, not {worker_id}")
+            if worker["currentTaskId"] != task_id:
+                raise ValueError(f"Worker is not assigned to task {task_id}")
+            if task["status"] not in {"claimed", "running", "blocked"}:
+                raise ValueError(f"Task cannot be finalized from status: {task['status']}")
+
+            self._conn.execute(
+                """
+                UPDATE collaboration_tasks
+                SET status = ?, result_json = ?, error_json = ?, completed_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    task_status,
+                    json.dumps(result, ensure_ascii=False, sort_keys=True) if result is not None else None,
+                    json.dumps(error, ensure_ascii=False, sort_keys=True) if error is not None else None,
+                    now,
+                    now,
+                    task_id,
+                ),
+            )
+            self._conn.execute(
+                """
+                UPDATE agent_workers
+                SET status = ?, current_task_id = NULL, last_heartbeat_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (worker_status, now, now, worker_id),
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+        return {
+            "task": self.require_collaboration_task(task_id),
+            "worker": self.require_agent_worker(worker_id),
+        }
+
+    def upsert_agent_worker(self, params: dict[str, Any]) -> dict[str, Any]:
+        worker_id = self._optional_string(params, "workerId") or self._optional_string(params, "id") or self.new_id("agent")
+        name = self._require_non_empty(params, "name")
+        role = self._require_non_empty(params, "role")
+        status = self._normalize_agent_worker_status(params.get("status", "idle"))
+        current_task_id = self._optional_string(params, "currentTaskId")
+        capabilities = self._string_list(params.get("capabilities", []), "capabilities")
+        metadata = self._dict_value(params.get("metadata", {}), "metadata")
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO agent_workers (
+                id, name, role, status, current_task_id, capabilities_json, metadata_json,
+                created_at, updated_at, last_heartbeat_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                role = excluded.role,
+                status = excluded.status,
+                current_task_id = excluded.current_task_id,
+                capabilities_json = excluded.capabilities_json,
+                metadata_json = excluded.metadata_json,
+                updated_at = excluded.updated_at,
+                last_heartbeat_at = excluded.last_heartbeat_at
+            """,
+            (
+                worker_id,
+                name,
+                role,
+                status,
+                current_task_id,
+                json.dumps(capabilities, ensure_ascii=False),
+                json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                now,
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        return {"worker": self.require_agent_worker(worker_id)}
+
+    def require_agent_worker(self, worker_id: str) -> dict[str, Any]:
+        row = self._conn.execute("SELECT * FROM agent_workers WHERE id = ?", (worker_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Agent worker not found: {worker_id}")
+        return self._serialize_agent_worker(dict(row))
+
+    def get_agent_worker(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {"worker": self.require_agent_worker(self._require_non_empty(params, "workerId"))}
+
+    def list_agent_workers(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        status = self._optional_string(params or {}, "status")
+        if status:
+            rows = self._conn.execute(
+                "SELECT * FROM agent_workers WHERE status = ? ORDER BY updated_at DESC",
+                (status,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute("SELECT * FROM agent_workers ORDER BY updated_at DESC").fetchall()
+        return {"workers": [self._serialize_agent_worker(dict(row)) for row in rows]}
+
+    def heartbeat_agent_worker(self, params: dict[str, Any]) -> dict[str, Any]:
+        worker_id = self._require_non_empty(params, "workerId")
+        current_task_id = self._optional_string(params, "currentTaskId")
+        status = self._normalize_agent_worker_status(params.get("status", "idle" if current_task_id is None else "busy"))
+        now = self.now()
+        cursor = self._conn.execute(
+            """
+            UPDATE agent_workers
+            SET status = ?, current_task_id = ?, last_heartbeat_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, current_task_id, now, now, worker_id),
+        )
+        if cursor.rowcount == 0:
+            raise ValueError(f"Agent worker not found: {worker_id}")
+        self._conn.commit()
+        return {"worker": self.require_agent_worker(worker_id)}
+
+    def send_agent_message(self, params: dict[str, Any]) -> dict[str, Any]:
+        sender_worker_id = self._require_non_empty(params, "senderWorkerId")
+        self.require_agent_worker(sender_worker_id)
+        recipient_worker_id = self._optional_string(params, "recipientWorkerId")
+        if recipient_worker_id is not None:
+            self.require_agent_worker(recipient_worker_id)
+        task_id = self._optional_string(params, "taskId")
+        if task_id is not None:
+            self.require_collaboration_task(task_id)
+        kind = self._normalize_agent_message_kind(params.get("kind", "note"))
+        body = self._require_non_empty(params, "body")
+        payload = self._dict_value(params.get("payload", {}), "payload")
+        message_id = self.new_id("msg")
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO agent_messages (
+                id, sender_worker_id, recipient_worker_id, task_id, kind, body, payload_json, created_at, read_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                message_id,
+                sender_worker_id,
+                recipient_worker_id,
+                task_id,
+                kind,
+                body,
+                json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                now,
+            ),
+        )
+        self._conn.commit()
+        return {"message": self.require_agent_message(message_id)}
+
+    def require_agent_message(self, message_id: str) -> dict[str, Any]:
+        row = self._conn.execute("SELECT * FROM agent_messages WHERE id = ?", (message_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Agent message not found: {message_id}")
+        return self._serialize_agent_message(dict(row))
+
+    def list_agent_messages(self, params: dict[str, Any]) -> dict[str, Any]:
+        clauses: list[str] = []
+        values: list[Any] = []
+        for param_name, column_name in (
+            ("taskId", "task_id"),
+            ("senderWorkerId", "sender_worker_id"),
+            ("recipientWorkerId", "recipient_worker_id"),
+            ("kind", "kind"),
+        ):
+            value = self._optional_string(params, param_name)
+            if value is not None:
+                clauses.append(f"{column_name} = ?")
+                values.append(value)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        limit = int(params.get("limit", 100))
+        rows = self._conn.execute(
+            f"""
+            SELECT *
+            FROM agent_messages
+            {where_sql}
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            [*values, max(1, min(limit, 500))],
+        ).fetchall()
+        return {"messages": [self._serialize_agent_message(dict(row)) for row in rows]}
+
     def append_trace_event(
         self,
         *,
@@ -258,6 +835,49 @@ class SQLiteStore:
             raise ValueError(f"Task not found: {task_id}")
 
         trace_session_id = session_id or task_row["session_id"]
+        return self._append_trace_event_row(
+            task_id=task_id,
+            session_id=trace_session_id,
+            event_type=event_type,
+            source=source,
+            payload=payload,
+            related_id=related_id,
+            created_at=created_at,
+        )
+
+    def append_collaboration_trace_event(
+        self,
+        *,
+        task_id: str,
+        event_type: str,
+        source: str,
+        payload: Any,
+        related_id: str | None = None,
+        session_id: str | None = None,
+        created_at: int | None = None,
+    ) -> dict[str, Any]:
+        self.require_collaboration_task(task_id)
+        return self._append_trace_event_row(
+            task_id=task_id,
+            session_id=session_id or "",
+            event_type=event_type,
+            source=source,
+            payload=payload,
+            related_id=related_id,
+            created_at=created_at,
+        )
+
+    def _append_trace_event_row(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        event_type: str,
+        source: str,
+        payload: Any,
+        related_id: str | None = None,
+        created_at: int | None = None,
+    ) -> dict[str, Any]:
         trace_id = self.new_id("trace")
         timestamp = self.now() if created_at is None else int(created_at)
         sequence_row = self._conn.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM trace_events").fetchone()
@@ -273,7 +893,7 @@ class SQLiteStore:
             (
                 trace_id,
                 task_id,
-                trace_session_id,
+                session_id,
                 event_type,
                 source,
                 related_id,
@@ -301,6 +921,22 @@ class SQLiteStore:
             return None
 
         payload = getattr(event, "payload", {})
+        if isinstance(payload, dict):
+            bridge = payload.get("_bridge")
+            if isinstance(bridge, dict) and bool(bridge.get("skipTraceMirror")):
+                return None
+        if normalized_type.startswith("collab."):
+            if not str(task_id).startswith("ctask_"):
+                return None
+            return self.append_collaboration_trace_event(
+                task_id=task_id,
+                session_id=getattr(event, "session_id", None),
+                event_type=normalized_type,
+                source=self._trace_source(normalized_type),
+                related_id=self._trace_related_id(payload),
+                payload=payload,
+                created_at=getattr(event, "ts", None),
+            )
         return self.append_trace_event(
             task_id=task_id,
             session_id=getattr(event, "session_id", None),
@@ -813,6 +1449,35 @@ class SQLiteStore:
             "updatedAt": row["updated_at"],
         }
 
+    def _serialize_scheduled_task(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "prompt": row["prompt"],
+            "schedule": row["schedule"],
+            "status": row["status"],
+            "enabled": bool(row["enabled"]),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "lastRunAt": row["last_run_at"],
+            "nextRunAt": row["next_run_at"],
+        }
+
+    def _serialize_scheduled_task_run(self, row: dict[str, Any]) -> dict[str, Any]:
+        started_at = row["started_at"]
+        finished_at = row["finished_at"]
+        duration_ms = None if finished_at is None else max(0, int(finished_at) - int(started_at))
+        return {
+            "id": row["id"],
+            "taskId": row["task_id"],
+            "status": row["status"],
+            "startedAt": started_at,
+            "finishedAt": finished_at,
+            "durationMs": duration_ms,
+            "summary": row["summary"],
+            "error": row["error"],
+        }
+
     def _serialize_task(self, row: dict[str, Any]) -> dict[str, Any]:
         return {
             "id": row["id"],
@@ -825,6 +1490,53 @@ class SQLiteStore:
             "errorCode": row["error_code"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
+        }
+
+    def _serialize_collaboration_task(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "sessionId": row["session_id"],
+            "parentTaskId": row["parent_task_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "status": row["status"],
+            "priority": row["priority"],
+            "assignedWorkerId": row["assigned_worker_id"],
+            "dependencies": json.loads(row["dependencies_json"] or "[]"),
+            "result": json.loads(row["result_json"] or "{}"),
+            "error": json.loads(row["error_json"] or "null"),
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+            "claimedAt": row["claimed_at"],
+            "completedAt": row["completed_at"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    def _serialize_agent_worker(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "role": row["role"],
+            "status": row["status"],
+            "currentTaskId": row["current_task_id"],
+            "capabilities": json.loads(row["capabilities_json"] or "[]"),
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "lastHeartbeatAt": row["last_heartbeat_at"],
+        }
+
+    def _serialize_agent_message(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "senderWorkerId": row["sender_worker_id"],
+            "recipientWorkerId": row["recipient_worker_id"],
+            "taskId": row["task_id"],
+            "kind": row["kind"],
+            "body": row["body"],
+            "payload": json.loads(row["payload_json"] or "{}"),
+            "createdAt": row["created_at"],
+            "readAt": row["read_at"],
         }
 
     def _serialize_approval(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -882,6 +1594,94 @@ class SQLiteStore:
             "createdAt": row["created_at"],
             "sequence": row["sequence"],
         }
+
+    def _require_non_empty(self, params: dict[str, Any], key: str) -> str:
+        value = params.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{key} is required")
+        return value.strip()
+
+    def _optional_non_empty(self, params: dict[str, Any], key: str, fallback: str) -> str:
+        if key not in params:
+            return fallback
+        return self._require_non_empty(params, key)
+
+    def _optional_string(self, params: dict[str, Any], key: str) -> str | None:
+        value = params.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"{key} must be a string")
+        stripped = value.strip()
+        return stripped or None
+
+    def _dict_value(self, value: Any, key: str) -> dict[str, Any]:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError(f"{key} must be an object")
+        return deepcopy(value)
+
+    def _json_value(self, value: Any, key: str) -> Any:
+        try:
+            json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be JSON serializable") from exc
+        return deepcopy(value)
+
+    def _string_list(self, value: Any, key: str) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError(f"{key} must be a list")
+        result: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(f"{key} must contain non-empty strings")
+            result.append(item.strip())
+        return result
+
+    def _normalize_priority(self, value: Any) -> int:
+        try:
+            priority = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("priority must be an integer") from exc
+        return max(0, min(priority, 9))
+
+    def _normalize_collaboration_task_status(self, value: Any) -> str:
+        allowed = {"queued", "claimed", "running", "blocked", "completed", "failed", "cancelled"}
+        if value not in allowed:
+            raise ValueError(f"Unsupported collaboration task status: {value}")
+        return str(value)
+
+    def _normalize_agent_worker_status(self, value: Any) -> str:
+        allowed = {"idle", "busy", "offline", "stopped", "failed"}
+        if value not in allowed:
+            raise ValueError(f"Unsupported agent worker status: {value}")
+        return str(value)
+
+    def _normalize_agent_message_kind(self, value: Any) -> str:
+        allowed = {"note", "handoff", "broadcast", "result", "system"}
+        if value not in allowed:
+            raise ValueError(f"Unsupported agent message kind: {value}")
+        return str(value)
+
+    def _normalize_scheduled_status(self, status: Any, enabled: bool) -> str:
+        if not enabled:
+            return "disabled"
+        if status == "disabled":
+            return "disabled"
+        return "active"
+
+    def _next_scheduled_run_at(self, schedule: str, base_ms: int) -> int:
+        normalized = schedule.strip().lower()
+        minutes = 30
+        match = re.search(r"every\s+(\d+)\s*(minute|minutes|min|hour|hours|hr|hrs)", normalized)
+        if match:
+            amount = max(1, int(match.group(1)))
+            unit = match.group(2)
+            minutes = amount * 60 if unit.startswith(("hour", "hr")) else amount
+        return int(base_ms) + minutes * 60_000
 
     def _trace_related_id(self, payload: Any) -> str | None:
         if not isinstance(payload, dict):
@@ -1150,6 +1950,29 @@ class SQLiteStore:
                 updated_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                schedule TEXT NOT NULL,
+                status TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_run_at INTEGER,
+                next_run_at INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                summary TEXT,
+                error TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS patches (
                 id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,
@@ -1214,12 +2037,76 @@ class SQLiteStore:
                 sequence INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS collaboration_tasks (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                parent_task_id TEXT,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT NOT NULL,
+                priority INTEGER NOT NULL,
+                assigned_worker_id TEXT,
+                dependencies_json TEXT NOT NULL,
+                result_json TEXT,
+                error_json TEXT,
+                metadata_json TEXT NOT NULL,
+                claimed_at INTEGER,
+                completed_at INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_workers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                status TEXT NOT NULL,
+                current_task_id TEXT,
+                capabilities_json TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_heartbeat_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                id TEXT PRIMARY KEY,
+                sender_worker_id TEXT NOT NULL,
+                recipient_worker_id TEXT,
+                task_id TEXT,
+                kind TEXT NOT NULL,
+                body TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                read_at INTEGER
+            );
+
             CREATE INDEX IF NOT EXISTS idx_trace_events_task_order
                 ON trace_events (task_id, created_at, sequence);
+
+            CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task_started
+                ON scheduled_task_runs (task_id, started_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_collaboration_tasks_queue
+                ON collaboration_tasks (status, priority, updated_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_collaboration_tasks_parent
+                ON collaboration_tasks (parent_task_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_agent_workers_status
+                ON agent_workers (status, updated_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_task_created
+                ON agent_messages (task_id, created_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_recipient_created
+                ON agent_messages (recipient_worker_id, created_at DESC);
             """
         )
         self._conn.commit()
         self._ensure_patch_columns()
+        self._ensure_collaboration_task_columns()
+        self._ensure_schedule_columns()
 
     def _ensure_patch_columns(self) -> None:
         columns = {
@@ -1238,4 +2125,48 @@ class SQLiteStore:
             self._conn.execute("ALTER TABLE patches ADD COLUMN created_at INTEGER DEFAULT 0")
         if "updated_at" not in columns:
             self._conn.execute("ALTER TABLE patches ADD COLUMN updated_at INTEGER DEFAULT 0")
+        self._conn.commit()
+
+    def _ensure_schedule_columns(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(scheduled_tasks)").fetchall()
+        }
+        expected = {
+            "prompt": "TEXT DEFAULT ''",
+            "schedule": "TEXT DEFAULT 'every 30 minutes'",
+            "status": "TEXT DEFAULT 'active'",
+            "enabled": "INTEGER DEFAULT 1",
+            "created_at": "INTEGER DEFAULT 0",
+            "updated_at": "INTEGER DEFAULT 0",
+            "last_run_at": "INTEGER",
+            "next_run_at": "INTEGER",
+        }
+        for column, definition in expected.items():
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE scheduled_tasks ADD COLUMN {column} {definition}")
+
+        run_columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(scheduled_task_runs)").fetchall()
+        }
+        run_expected = {
+            "status": "TEXT DEFAULT 'completed'",
+            "started_at": "INTEGER DEFAULT 0",
+            "finished_at": "INTEGER",
+            "summary": "TEXT",
+            "error": "TEXT",
+        }
+        for column, definition in run_expected.items():
+            if column not in run_columns:
+                self._conn.execute(f"ALTER TABLE scheduled_task_runs ADD COLUMN {column} {definition}")
+        self._conn.commit()
+
+    def _ensure_collaboration_task_columns(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(collaboration_tasks)").fetchall()
+        }
+        if "error_json" not in columns:
+            self._conn.execute("ALTER TABLE collaboration_tasks ADD COLUMN error_json TEXT")
         self._conn.commit()

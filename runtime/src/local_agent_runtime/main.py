@@ -8,6 +8,7 @@ from .orchestrator.service import Orchestrator
 from .policy.guard import PolicyGuard
 from .provider.adapter import ProviderAdapter
 from .rpc.server import JsonRpcServer
+from .services import CollaborationService, SubagentService
 from .store.sqlite_store import SQLiteStore
 from .tools.builtin import build_builtin_tools
 from .tools.registry import ToolRegistry
@@ -18,7 +19,11 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
     store = SQLiteStore(database_path)
     config = store.get_config({})["config"]
     policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
-    tool_registry = ToolRegistry(build_builtin_tools(policy_guard=policy_guard, store=store))
+    collaboration = CollaborationService(store, event_bus)
+    subagent_service = SubagentService(store, collaboration)
+    tool_registry = ToolRegistry(
+        build_builtin_tools(policy_guard=policy_guard, store=store, subagent_service=subagent_service)
+    )
     provider = ProviderAdapter()
     orchestrator = Orchestrator(
         store=store,

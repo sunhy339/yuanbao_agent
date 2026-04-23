@@ -21,7 +21,7 @@ DEFAULT_IGNORED_DIR_NAMES = {
 }
 
 
-def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
+def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | None = None) -> dict[str, Any]:
     """Return the initial tool map described in the MVP tech spec."""
 
     def current_runtime_config() -> dict[str, Any]:
@@ -1360,10 +1360,16 @@ def build_builtin_tools(policy_guard: Any, store: Any) -> dict[str, Any]:
             "diff": diff_completed.stdout or "",
         }
 
+    def task(params: dict[str, Any]) -> dict[str, Any]:
+        if subagent_service is None:
+            raise ValueError("task tool is not configured")
+        return subagent_service.dispatch(params)
+
     return {
         "list_dir": list_dir,
         "search_files": search_files,
         "read_file": read_file,
+        "task": task,
         "run_command": run_command,
         "apply_patch": apply_patch,
         "git_status": git_status,

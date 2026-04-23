@@ -11,6 +11,7 @@ from local_agent_runtime.orchestrator.service import Orchestrator
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.provider.adapter import ProviderAdapter
 from local_agent_runtime.rpc.server import JsonRpcServer
+from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.builtin import build_builtin_tools
 from local_agent_runtime.tools.registry import ToolRegistry
@@ -85,7 +86,11 @@ def _make_runtime(tmp_path: Path, provider: Any) -> SimpleNamespace:
     store.update_config({"config": {"provider": FAKE_PROVIDER_CONFIG}})
     config = store.get_config({})["config"]
     policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
-    tool_registry = ToolRegistry(build_builtin_tools(policy_guard=policy_guard, store=store))
+    collaboration = CollaborationService(store, event_bus)
+    subagent_service = SubagentService(store, collaboration)
+    tool_registry = ToolRegistry(
+        build_builtin_tools(policy_guard=policy_guard, store=store, subagent_service=subagent_service)
+    )
     orchestrator = Orchestrator(
         store=store,
         event_bus=event_bus,

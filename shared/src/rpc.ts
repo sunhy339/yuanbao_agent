@@ -7,6 +7,8 @@ import type {
   Identifier,
   PatchRecord,
   ProviderMode,
+  ScheduledTaskRecord,
+  ScheduledTaskRunRecord,
   SessionRecord,
   TaskRecord,
   TraceEventRecord,
@@ -64,6 +66,12 @@ export type RpcMethod =
   | "diff.get"
   | "command_log.get"
   | "trace.list"
+  | "schedule.create"
+  | "schedule.list"
+  | "schedule.update"
+  | "schedule.toggle"
+  | "schedule.run_now"
+  | "schedule.logs"
   | "task.list";
 
 export interface WorkspaceOpenParams {
@@ -94,6 +102,37 @@ export type TaskResumeParams = TaskCancelParams;
 
 export interface TaskListParams {
   sessionId?: Identifier;
+}
+
+export interface ScheduledTaskCreateParams {
+  name: string;
+  prompt: string;
+  schedule: string;
+  enabled?: boolean;
+  status?: ScheduledTaskRecord["status"];
+}
+
+export interface ScheduledTaskUpdateParams {
+  taskId: Identifier;
+  name?: string;
+  prompt?: string;
+  schedule?: string;
+  enabled?: boolean;
+  status?: ScheduledTaskRecord["status"];
+}
+
+export interface ScheduledTaskToggleParams {
+  taskId: Identifier;
+  enabled: boolean;
+}
+
+export interface ScheduledTaskRunNowParams {
+  taskId: Identifier;
+}
+
+export interface ScheduledTaskLogsParams {
+  taskId?: Identifier;
+  limit?: number;
 }
 
 export interface ApprovalSubmitParams {
@@ -149,6 +188,23 @@ export interface TaskListResult {
 
 export interface TaskControlResult {
   task: TaskRecord;
+}
+
+export interface ScheduledTaskResult {
+  task: ScheduledTaskRecord;
+}
+
+export interface ScheduledTaskListResult {
+  tasks: ScheduledTaskRecord[];
+}
+
+export interface ScheduledTaskRunNowResult {
+  run: ScheduledTaskRunRecord;
+  task?: ScheduledTaskRecord;
+}
+
+export interface ScheduledTaskLogsResult {
+  logs: ScheduledTaskRunRecord[];
 }
 
 export interface ApprovalSubmitResult {

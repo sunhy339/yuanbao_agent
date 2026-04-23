@@ -16,6 +16,7 @@ export function WorkspaceTabs({ tabs, activeTabId, onActivateTab, onCloseTab }: 
             type="button"
             role="tab"
             aria-selected={tab.id === activeTabId}
+            aria-controls="workspace-frame"
             className="workspace-tab"
             onClick={() => onActivateTab(tab.id)}
           >
@@ -28,7 +29,7 @@ export function WorkspaceTabs({ tabs, activeTabId, onActivateTab, onCloseTab }: 
               aria-label={`Close ${tab.title}`}
               onClick={() => onCloseTab(tab.id)}
             >
-              x
+              {"\u00d7"}
             </button>
           ) : null}
         </div>
@@ -36,4 +37,3 @@ export function WorkspaceTabs({ tabs, activeTabId, onActivateTab, onCloseTab }: 
     </div>
   );
 }
-

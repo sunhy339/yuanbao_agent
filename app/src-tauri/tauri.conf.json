@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.local.agent",
   "build": {
-    "beforeDevCommand": "npm --prefix .. run dev -- --host 0.0.0.0 --port 1420",
-    "beforeBuildCommand": "npm --prefix .. run build",
+    "beforeDevCommand": "npm run dev -- --host 0.0.0.0 --port 1420",
+    "beforeBuildCommand": "npm run build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
@@ -16,6 +16,7 @@
         "title": "Local AI Coding Agent",
         "width": 1440,
         "height": 920,
+        "decorations": false,
         "resizable": true
       }
     ]

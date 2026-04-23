@@ -30,7 +30,7 @@ export function GlobalSidebar({
       <nav className="sidebar-primary" aria-label="Workbench">
         <button type="button" aria-label="New Session" onClick={() => onOpenSystemTab("new-session")}>
           <span>新会话</span>
-          <small>New desk</small>
+          <small>New session</small>
         </button>
       </nav>
 

@@ -13,6 +13,8 @@ import type {
   ProviderMode,
   ProviderProfile,
   ProviderTestResult,
+  ScheduledTaskRecord,
+  ScheduledTaskRunRecord,
   SessionRecord,
   TaskRecord,
   TaskUpdatedPayload,
@@ -41,9 +43,15 @@ import {
   type ExecutionLog,
   type ScheduledTask,
 } from "./ui/workbench/workspaces/scheduled/ScheduledWorkspace";
-import { SessionWorkspace } from "./ui/workbench/workspaces/session/SessionWorkspace";
+import {
+  SessionWorkspace,
+  type SessionWorkspaceCollaboration,
+} from "./ui/workbench/workspaces/session/SessionWorkspace";
 import {
   SettingsWorkspace,
+  type SettingsComputerUseConfig,
+  type SettingsGeneralConfig,
+  type SettingsIMConfig,
   type SettingsProvider,
   type SettingsProviderPayload,
 } from "./ui/workbench/workspaces/settings/SettingsWorkspace";
@@ -440,6 +448,10 @@ function buildDefaultProviderProfile(): ProviderProfile {
 }
 
 function getModelFromProviderPayload(payload: SettingsProviderPayload): string {
+  if (payload.mainModel.trim()) {
+    return payload.mainModel.trim();
+  }
+
   const firstMappingLine = payload.modelMapping
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -464,6 +476,62 @@ function getProviderEnvVarName(payload: SettingsProviderPayload): string {
     .replace(/^_+|_+$/g, "")
     .toUpperCase();
   return `${normalizedName || "PROVIDER"}_API_KEY`;
+}
+
+function buildProviderProfileFromPayload(
+  payload: SettingsProviderPayload,
+  profileId: string,
+  config: RuntimeConfig,
+  existingProfile?: ProviderProfile,
+): ProviderProfile {
+  const model = getModelFromProviderPayload(payload);
+  return {
+    ...existingProfile,
+    id: profileId,
+    name: payload.name.trim() || existingProfile?.name || "Provider profile",
+    mode: "openai-compatible",
+    baseUrl: payload.endpoint.trim() || existingProfile?.baseUrl || DEFAULT_PROVIDER_BASE_URL,
+    model,
+    defaultModel: model,
+    fallbackModel: payload.opusModel.trim() || existingProfile?.fallbackModel || config.provider.fallbackModel,
+    apiKey: payload.apiKey.trim() || existingProfile?.apiKey,
+    apiKeyEnvVarName: payload.apiKey.trim()
+      ? getProviderEnvVarName(payload)
+      : existingProfile?.apiKeyEnvVarName ?? getProviderEnvVarName(payload),
+    temperature: existingProfile?.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
+    maxTokens: existingProfile?.maxTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
+    maxOutputTokens: existingProfile?.maxOutputTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
+    maxContextTokens: existingProfile?.maxContextTokens ?? DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS,
+    timeout: existingProfile?.timeout ?? DEFAULT_PROVIDER_TIMEOUT,
+    lastCheckedAt: existingProfile?.lastCheckedAt,
+    lastStatus: existingProfile?.lastStatus,
+    lastErrorSummary: existingProfile?.lastErrorSummary,
+  };
+}
+
+function buildSettingsGeneralConfig(config: RuntimeConfig): SettingsGeneralConfig {
+  const ui = config.ui;
+  const language = ui.language.toLowerCase().startsWith("zh")
+    ? "zh"
+    : ui.language.toLowerCase().startsWith("en")
+      ? "en"
+      : "auto";
+  return {
+    theme: ui.theme ?? "light",
+    language,
+    reasoningEffort: ui.reasoningEffort ?? "max",
+    webFetchPreflight: ui.webFetchPreflight ?? true,
+  };
+}
+
+function settingsLanguageToConfig(language: SettingsGeneralConfig["language"]): string {
+  if (language === "zh") {
+    return "zh-CN";
+  }
+  if (language === "en") {
+    return "en-US";
+  }
+  return "auto";
 }
 
 function settingsModeToApprovalMode(mode: string): AppConfig["policy"]["approvalMode"] {
@@ -494,6 +562,27 @@ function taskStatusToScheduledStatus(status: TaskRecord["status"]): ScheduledTas
     return "failed";
   }
   return "active";
+}
+
+function scheduledRecordToWorkspaceTask(record: ScheduledTaskRecord): ScheduledTask {
+  return {
+    id: record.id,
+    title: record.name,
+    description: record.prompt,
+    status: record.enabled ? record.status : "disabled",
+    scheduleText: record.schedule || "未设置计划",
+    lastRunText: record.lastRunAt ? `上次运行：${formatTimestamp(record.lastRunAt)}` : "尚未运行",
+  };
+}
+
+function scheduledRunToExecutionLog(run: ScheduledTaskRunRecord): ExecutionLog {
+  return {
+    id: run.id,
+    taskId: run.taskId,
+    time: formatTimestamp(run.startedAt),
+    result: run.status === "completed" ? "completed" : "failed",
+    message: run.summary ?? run.error ?? `运行状态：${run.status}`,
+  };
 }
 
 function readRequestText(request: Record<string, unknown>, key: string, fallback: string): string {
@@ -576,6 +665,49 @@ function summarizeValue(value: unknown, fallback = "not recorded", maxLength = 1
     return fallback;
   }
   return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}...` : compact;
+}
+
+function riskToLevel(value: string): "low" | "medium" | "high" {
+  const normalized = value.toLowerCase();
+  if (normalized.includes("delete") || normalized.includes("danger") || normalized.includes("network")) {
+    return "high";
+  }
+  if (normalized.includes("write") || normalized.includes("command") || normalized.includes("patch")) {
+    return "medium";
+  }
+  return "low";
+}
+
+function countAddedLines(diffText: string): number {
+  return diffText
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
+}
+
+function countDeletedLines(diffText: string): number {
+  return diffText
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
+}
+
+function parsePatchFiles(diffText = "") {
+  if (!diffText.trim()) {
+    return [];
+  }
+
+  const sections = diffText.split(/^diff --git /m).filter(Boolean);
+  return sections.map((section) => {
+    const header = section.split(/\r?\n/, 1)[0] ?? "";
+    const match = header.match(/^a\/(.+?) b\/(.+)$/);
+    const path = match?.[2] ?? header.trim() ?? "unknown file";
+    return {
+      path,
+      status: "modified",
+      additions: countAddedLines(section),
+      deletions: countDeletedLines(section),
+      diff: `diff --git ${section}`.trim(),
+    };
+  });
 }
 
 function getPayloadValue(payload: unknown, keys: string[]): unknown {
@@ -960,6 +1092,181 @@ function buildTracePanelItem(trace: TraceEventRecord): TracePanelItem {
   };
 }
 
+interface CollaborationSourceEvent {
+  id: string;
+  type: string;
+  payload: unknown;
+  time: number;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readRecordString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readRecordNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readChildRecord(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
+  return asRecord(record[key]);
+}
+
+function readResultSummary(record: Record<string, unknown>): string | undefined {
+  const result = readChildRecord(record, "result");
+  return (
+    readRecordString(record, "summary") ??
+    (result ? readRecordString(result, "summary") : undefined) ??
+    readRecordString(record, "description")
+  );
+}
+
+function buildSessionCollaboration(
+  events: AgentEventEnvelope[],
+  traceEvents: TraceEventRecord[],
+): SessionWorkspaceCollaboration {
+  const workers = new Map<string, NonNullable<SessionWorkspaceCollaboration["workers"]>[number]>();
+  const childTasks = new Map<string, NonNullable<SessionWorkspaceCollaboration["childTasks"]>[number]>();
+  const results = new Map<string, NonNullable<SessionWorkspaceCollaboration["results"]>[number]>();
+  const sources: CollaborationSourceEvent[] = [
+    ...events.map((event) => ({
+      id: event.eventId,
+      type: event.type,
+      payload: event.payload,
+      time: event.ts,
+    })),
+    ...traceEvents.map((trace) => ({
+      id: trace.id,
+      type: trace.type,
+      payload: trace.payload,
+      time: trace.createdAt,
+    })),
+  ];
+
+  const rememberWorker = (worker: Record<string, unknown> | null, time: number) => {
+    if (!worker) {
+      return;
+    }
+    const id = readRecordString(worker, "id");
+    if (!id) {
+      return;
+    }
+    const metadata = readChildRecord(worker, "metadata");
+    workers.set(id, {
+      id,
+      name: readRecordString(worker, "name") ?? id,
+      status: readRecordString(worker, "status"),
+      mode: readRecordString(worker, "role") ?? (metadata ? readRecordString(metadata, "mode") : undefined),
+      claimedTaskId: readRecordString(worker, "currentTaskId") ?? undefined,
+      summary: Array.isArray(worker.capabilities)
+        ? worker.capabilities.filter((item): item is string => typeof item === "string").join(", ")
+        : undefined,
+      updatedAt: readRecordNumber(worker, "updatedAt") ?? time,
+    });
+  };
+
+  const rememberTask = (task: Record<string, unknown> | null, time: number) => {
+    if (!task) {
+      return;
+    }
+    const id = readRecordString(task, "id");
+    if (!id) {
+      return;
+    }
+    childTasks.set(id, {
+      id,
+      title: readRecordString(task, "title") ?? id,
+      status: readRecordString(task, "status"),
+      workerId: readRecordString(task, "assignedWorkerId"),
+      summary: readResultSummary(task),
+      updatedAt: readRecordNumber(task, "updatedAt") ?? time,
+    });
+
+    const status = readRecordString(task, "status");
+    const summary = readResultSummary(task);
+    if (summary && (status === "completed" || status === "failed")) {
+      results.set(`${id}:result`, {
+        id: `${id}:result`,
+        taskId: id,
+        title: readRecordString(task, "title") ?? id,
+        status,
+        summary,
+        updatedAt: readRecordNumber(task, "completedAt") ?? readRecordNumber(task, "updatedAt") ?? time,
+      });
+    }
+  };
+
+  for (const event of sources) {
+    const payload = asRecord(event.payload);
+    if (!payload) {
+      continue;
+    }
+
+    if (event.type.startsWith("collab.task.")) {
+      rememberTask(readChildRecord(payload, "task"), event.time);
+      rememberWorker(readChildRecord(payload, "worker"), event.time);
+    }
+
+    if (event.type.startsWith("collab.worker.")) {
+      rememberWorker(readChildRecord(payload, "worker"), event.time);
+    }
+
+    if (event.type === "collab.message.sent") {
+      const message = readChildRecord(payload, "message");
+      const taskId = message ? readRecordString(message, "taskId") : undefined;
+      const kind = message ? readRecordString(message, "kind") : undefined;
+      if (message && taskId && kind === "result") {
+        results.set(message.id ? String(message.id) : `${taskId}:message`, {
+          id: readRecordString(message, "id") ?? `${taskId}:message`,
+          taskId,
+          status: kind,
+          summary: readRecordString(message, "body"),
+          updatedAt: readRecordNumber(message, "createdAt") ?? event.time,
+        });
+      }
+    }
+
+    if (event.type === "tool.completed" && readRecordString(payload, "toolName") === "task") {
+      const result = readChildRecord(payload, "result");
+      if (result) {
+        rememberTask(readChildRecord(result, "task"), event.time);
+        rememberWorker(readChildRecord(result, "worker"), event.time);
+        const childTaskId = readRecordString(result, "childTaskId");
+        const summary = readRecordString(result, "summary") ?? readResultSummary(result);
+        if (childTaskId && summary) {
+          results.set(`${childTaskId}:tool`, {
+            id: `${childTaskId}:tool`,
+            taskId: childTaskId,
+            status: readRecordString(result, "status"),
+            summary,
+            updatedAt: event.time,
+          });
+        }
+      }
+    }
+  }
+
+  const workerList = [...workers.values()];
+  const taskList = [...childTasks.values()].map((task) => ({
+    ...task,
+    workerName: task.workerId ? workers.get(task.workerId)?.name ?? task.workerName : task.workerName,
+  }));
+  const resultList = [...results.values()];
+
+  return {
+    workers: workerList.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
+    childTasks: taskList.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
+    results: resultList.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
+  };
+}
+
 function summarizeEvent(event: AgentEventEnvelope): string {
   if (event.type === "assistant.token") {
     return ((event.payload as AssistantTokenPayload).delta ?? "").trim() || "Model is streaming output.";
@@ -1088,6 +1395,31 @@ export function App() {
   const [taskControlBusyAction, setTaskControlBusyAction] = useState<TaskControlAction | null>(null);
   const [taskControlError, setTaskControlError] = useState<string | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [scheduledRecords, setScheduledRecords] = useState<ScheduledTaskRecord[]>([]);
+  const [scheduledLogs, setScheduledLogs] = useState<ScheduledTaskRunRecord[]>([]);
+  const [selectedScheduledTaskId, setSelectedScheduledTaskId] = useState<string | null>(null);
+  const [scheduledBusyTaskId, setScheduledBusyTaskId] = useState<string | null>(null);
+  const [generalSettings, setGeneralSettings] = useState<SettingsGeneralConfig>({
+    theme: "light",
+    language: "zh",
+    reasoningEffort: "max",
+    webFetchPreflight: true,
+  });
+  const [imSettings, setIMSettings] = useState<SettingsIMConfig>({
+    enabled: false,
+    provider: "feishu",
+    webhookUrl: "",
+    signingSecretSet: false,
+    defaultReplyMode: "manual",
+  });
+  const [computerUseSettings, setComputerUseSettings] = useState<SettingsComputerUseConfig>({
+    screenshot: false,
+    browserAutomation: false,
+    clipboardAccess: true,
+    systemKeyCombos: false,
+    sensitiveActionConfirm: true,
+    status: "未检查",
+  });
   const [openTabs, setOpenTabs] = useState<WorkbenchTab[]>(() => getInitialTabs());
   const [activeTabId, setActiveTabId] = useState<WorkbenchTab["id"]>("system:new-session");
 
@@ -1099,8 +1431,9 @@ export function App() {
       runtimeClient.getConfig(),
       runtimeClient.listSessions(),
       runtimeClient.listTasks(),
+      runtimeClient.listScheduledTasks(),
     ])
-      .then(([nextHostStatus, nextConfig, nextSessions, nextTasks]) => {
+      .then(([nextHostStatus, nextConfig, nextSessions, nextTasks, nextScheduledTasks]) => {
         if (disposed) {
           return;
         }
@@ -1110,6 +1443,7 @@ export function App() {
         setConfig(normalizedConfig);
         setProviderSettings(buildProviderSettingsForm(normalizedConfig));
         setCommandPolicySettings(buildCommandPolicyForm(normalizedConfig));
+        setGeneralSettings(buildSettingsGeneralConfig(normalizedConfig));
         setActiveProviderProfileId(normalizedConfig.provider.activeProfileId ?? "default");
         setSearchGlob(serializePatternList(normalizedConfig.search.glob));
         setSearchIgnoreText(serializePatternList(normalizedConfig.search.ignore));
@@ -1122,6 +1456,8 @@ export function App() {
         setSession(initialSession);
         setTask(initialTask);
         setActiveTaskId(initialTask?.id ?? null);
+        setScheduledRecords(nextScheduledTasks.tasks);
+        setSelectedScheduledTaskId(nextScheduledTasks.tasks[0]?.id ?? null);
 
         if (nextConfig.config.workspace.rootPath) {
           setWorkspacePath(nextConfig.config.workspace.rootPath);
@@ -1142,6 +1478,34 @@ export function App() {
       disposed = true;
     };
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+
+    if (!selectedScheduledTaskId) {
+      setScheduledLogs([]);
+      return () => {
+        disposed = true;
+      };
+    }
+
+    runtimeClient
+      .listScheduledTaskLogs({ taskId: selectedScheduledTaskId, limit: 50 })
+      .then((result) => {
+        if (!disposed) {
+          setScheduledLogs(result.logs);
+        }
+      })
+      .catch((reason) => {
+        if (!disposed) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [selectedScheduledTaskId]);
 
   useEffect(() => {
     let active = true;
@@ -1950,6 +2314,36 @@ export function App() {
     }
   }
 
+  async function handleTestProviderConfigFromSettings(payload: SettingsProviderPayload) {
+    if (!config) {
+      return;
+    }
+
+    setProviderTestBusy(true);
+    setError(null);
+
+    try {
+      const profile = buildProviderProfileFromPayload(
+        payload,
+        activeProviderProfileId,
+        config,
+        activeProviderProfile,
+      );
+      await runProviderTest(
+        {
+          ...config.provider,
+          ...profile,
+          profiles: config.provider.profiles,
+        },
+        profile.id,
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setProviderTestBusy(false);
+    }
+  }
+
   async function handleAddProviderFromSettings(payload: SettingsProviderPayload) {
     if (!config) {
       return;
@@ -1961,28 +2355,49 @@ export function App() {
 
     try {
       const profileId = `profile_${Date.now()}`;
-      const model = getModelFromProviderPayload(payload);
-      const profile: ProviderProfile = {
-        id: profileId,
-        name: payload.name.trim() || `Provider ${(config.provider.profiles?.length ?? 0) + 1}`,
-        mode: "openai-compatible",
-        baseUrl: payload.endpoint.trim() || DEFAULT_PROVIDER_BASE_URL,
-        model,
-        defaultModel: model,
-        fallbackModel: config.provider.fallbackModel,
-        apiKey: payload.apiKey.trim() || undefined,
-        apiKeyEnvVarName: getProviderEnvVarName(payload),
-        temperature: DEFAULT_PROVIDER_TEMPERATURE,
-        maxTokens: DEFAULT_PROVIDER_MAX_TOKENS,
-        maxOutputTokens: DEFAULT_PROVIDER_MAX_TOKENS,
-        maxContextTokens: DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS,
-        timeout: DEFAULT_PROVIDER_TIMEOUT,
-      };
+      const profile = buildProviderProfileFromPayload(payload, profileId, config);
       const provider = normalizeProviderConfig({
         ...config.provider,
         ...profile,
         activeProfileId: profile.id,
         profiles: [...(config.provider.profiles ?? []), profile],
+      });
+      const result = await runtimeClient.updateConfig({
+        config: {
+          provider,
+        },
+      });
+      const normalized = normalizeRuntimeConfig(result.config);
+      setConfig(normalized);
+      setActiveProviderProfileId(normalized.provider.activeProfileId ?? profile.id);
+      setProviderSettings(buildProviderSettingsForm(normalized));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setProviderConfigBusy(false);
+    }
+  }
+
+  async function handleEditProviderFromSettings(providerId: string, payload: SettingsProviderPayload) {
+    if (!config) {
+      return;
+    }
+
+    setProviderConfigBusy(true);
+    setError(null);
+    setProviderTestResult(null);
+
+    try {
+      const existingProfile = config.provider.profiles?.find((profile) => profile.id === providerId);
+      const profile = buildProviderProfileFromPayload(payload, providerId, config, existingProfile);
+      const nextProfiles = (config.provider.profiles ?? []).some((item) => item.id === providerId)
+        ? (config.provider.profiles ?? []).map((item) => (item.id === providerId ? profile : item))
+        : [...(config.provider.profiles ?? []), profile];
+      const provider = normalizeProviderConfig({
+        ...config.provider,
+        ...profile,
+        activeProfileId: profile.id,
+        profiles: nextProfiles,
       });
       const result = await runtimeClient.updateConfig({
         config: {
@@ -2019,6 +2434,91 @@ export function App() {
       setConfig(normalized);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function handleGeneralSettingsChange(next: SettingsGeneralConfig) {
+    setGeneralSettings(next);
+
+    if (!config) {
+      return;
+    }
+
+    setError(null);
+
+    try {
+      const result = await runtimeClient.updateConfig({
+        config: {
+          ui: {
+            ...config.ui,
+            language: settingsLanguageToConfig(next.language),
+            theme: next.theme,
+            reasoningEffort: next.reasoningEffort,
+            webFetchPreflight: next.webFetchPreflight,
+          },
+        },
+      });
+      const normalized = normalizeRuntimeConfig(result.config);
+      setConfig(normalized);
+      setGeneralSettings(buildSettingsGeneralConfig(normalized));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function refreshScheduledRecords(preferredTaskId?: string) {
+    const result = await runtimeClient.listScheduledTasks();
+    setScheduledRecords(result.tasks);
+    const nextSelectedTaskId =
+      preferredTaskId && result.tasks.some((item) => item.id === preferredTaskId)
+        ? preferredTaskId
+        : selectedScheduledTaskId && result.tasks.some((item) => item.id === selectedScheduledTaskId)
+          ? selectedScheduledTaskId
+          : result.tasks[0]?.id ?? null;
+    setSelectedScheduledTaskId(nextSelectedTaskId);
+    return result.tasks;
+  }
+
+  async function handleRunScheduledTask(taskId: string) {
+    setScheduledBusyTaskId(taskId);
+    setError(null);
+
+    try {
+      const result = await runtimeClient.runScheduledTaskNow({ taskId });
+      await refreshScheduledRecords(taskId);
+      const logs = await runtimeClient.listScheduledTaskLogs({ taskId, limit: 50 });
+      setScheduledLogs(logs.logs);
+      setSelectedScheduledTaskId(taskId);
+      if (result.run.summary) {
+        setError(result.run.summary);
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setScheduledBusyTaskId(null);
+    }
+  }
+
+  async function handleToggleScheduledTask(taskId: string) {
+    const current = scheduledRecords.find((item) => item.id === taskId);
+    if (!current) {
+      return;
+    }
+
+    setScheduledBusyTaskId(taskId);
+    setError(null);
+
+    try {
+      await runtimeClient.toggleScheduledTask({
+        taskId,
+        enabled: !current.enabled,
+      });
+      await refreshScheduledRecords(taskId);
+      setSelectedScheduledTaskId(taskId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setScheduledBusyTaskId(null);
     }
   }
 
@@ -2349,6 +2849,13 @@ export function App() {
               ? `环境变量：${profile.apiKeyEnvVarName}`
               : "需要配置 API 密钥",
         models: models.length ? models : undefined,
+        modelMapping: {
+          main: profile.model ?? "",
+          haiku: profile.defaultModel ?? profile.model ?? "",
+          sonnet: profile.model ?? profile.defaultModel ?? "",
+          opus: profile.fallbackModel ?? "",
+        },
+        apiKeyMasked: profile.apiKey ? "已输入密钥" : profile.apiKeyEnvVarName,
         status:
           profile.id === providerConfig.activeProfileId
             ? "已激活"
@@ -2364,44 +2871,17 @@ export function App() {
     return taskHistory.filter((item) => item.sessionId === session.id).length;
   }, [session, taskHistory]);
   const scheduledTasks = useMemo<ScheduledTask[]>(
-    () =>
-      sortByUpdatedAtDesc(taskHistory).map((historyTask) => {
-        const owningSession = sessions.find((item) => item.id === historyTask.sessionId);
-        return {
-          id: historyTask.id,
-          title: historyTask.goal || `${historyTask.type} task`,
-          description: owningSession
-            ? `来自会话：${owningSession.title || "Untitled Session"}`
-            : `任务类型：${historyTask.type}`,
-          status: taskStatusToScheduledStatus(historyTask.status),
-          scheduleText: "来自运行时任务记录",
-          lastRunText: `更新：${formatTimestamp(historyTask.updatedAt)}`,
-        };
-      }),
-    [sessions, taskHistory],
+    () => scheduledRecords.map(scheduledRecordToWorkspaceTask),
+    [scheduledRecords],
   );
   const scheduledLogsByTaskId = useMemo<Record<string, ExecutionLog[]>>(() => {
     return Object.fromEntries(
-      taskHistory.map((historyTask) => [
-        historyTask.id,
-        [
-          {
-            id: `${historyTask.id}-status`,
-            taskId: historyTask.id,
-            time: formatTimestamp(historyTask.updatedAt),
-            result:
-              historyTask.status === "failed" || historyTask.status === "cancelled"
-                ? "failed"
-                : "completed",
-            message:
-              historyTask.resultSummary ??
-              historyTask.errorCode ??
-              `运行时状态：${historyTask.status}`,
-          } satisfies ExecutionLog,
-        ],
+      scheduledRecords.map((record) => [
+        record.id,
+        scheduledLogs.filter((log) => log.taskId === record.id).map(scheduledRunToExecutionLog),
       ]),
     );
-  }, [taskHistory]);
+  }, [scheduledLogs, scheduledRecords]);
   const sessionApprovals = useMemo(
     () =>
       approvalCards.map((approval) => ({
@@ -2411,6 +2891,11 @@ export function App() {
         status: approval.status,
         summary: approval.requestSummary,
         requestedAt: approval.requestedAt,
+        risk: riskToLevel(approval.risk),
+        parametersPreview: approval.requestSummary,
+        fullInput: approval.requestJson,
+        command: approval.command,
+        cwd: approval.cwd,
       })),
     [approvalCards],
   );
@@ -2421,7 +2906,11 @@ export function App() {
         summary: patch.summary,
         status: patch.status,
         filesChanged: patch.filesChanged,
+        additions: countAddedLines(patch.diffText ?? ""),
+        deletions: countDeletedLines(patch.diffText ?? ""),
         updatedAt: patch.updatedAt,
+        files: parsePatchFiles(patch.diffText),
+        diff: patch.diffText,
       })),
     [patchCards],
   );
@@ -2434,7 +2923,14 @@ export function App() {
           type: trace.type,
           source: trace.source,
           time: trace.createdAt,
+          title: trace.type,
           summary: summarizeValue(trace.payload, trace.type, 120),
+          detail: summarizeValue(trace.payload, trace.type, 800),
+          status: readEventText(trace.payload, "status"),
+          durationMs: readEventNumber(trace.payload, "durationMs"),
+          tokenCount: readEventNumber(trace.payload, "tokenCount"),
+          stdout: readEventText(trace.payload, "stdout"),
+          stderr: readEventText(trace.payload, "stderr"),
         })),
     [traceEvents],
   );
@@ -2446,34 +2942,24 @@ export function App() {
         status: toolCall.status,
         resultSummary: toolCall.errorSummary ?? toolCall.resultSummary,
         durationMs: toolCall.durationMs,
+        argsPreview: toolCall.argsSummary,
+        input: toolCall.argsSummary,
+        output: toolCall.resultSummary,
+        stderr: toolCall.errorSummary,
       })),
     [toolTimelineItems],
   );
+  const sessionCollaboration = useMemo(
+    () => buildSessionCollaboration(events, traceEvents),
+    [events, traceEvents],
+  );
 
   function handleSelectScheduledTask(taskId: string) {
-    const selectedTask = taskHistory.find((item) => item.id === taskId);
-    const selectedSession = selectedTask
-      ? sessions.find((item) => item.id === selectedTask.sessionId)
-      : undefined;
-
-    if (selectedSession) {
-      handleOpenSessionTab(selectedSession);
-    }
-    selectTask(taskId);
+    setSelectedScheduledTaskId(taskId);
   }
 
   function handleCreateScheduledTask() {
     handleOpenSystemTab("new-session");
-  }
-
-  function handleRunScheduledTask(taskId: string) {
-    handleSelectScheduledTask(taskId);
-    setError("调度运行接口尚未接入；已打开关联会话任务记录。");
-  }
-
-  function handleToggleScheduledTask(taskId: string) {
-    handleSelectScheduledTask(taskId);
-    setError("调度启停接口尚未接入；已打开关联会话任务记录。");
   }
 
   const workspaceContent = (() => {
@@ -2492,18 +2978,35 @@ export function App() {
                   status: task.status,
                   goal: task.goal,
                   resultSummary: task.resultSummary,
+                  planSteps: task.plan?.map((step) => ({
+                    id: step.id,
+                    title: step.title,
+                    status: step.status,
+                    detail: step.detail,
+                  })),
                 }
               : null
           }
           messages={visibleChatMessages}
           taskCount={sessionTaskCount}
+          collaboration={sessionCollaboration}
           approvals={sessionApprovals}
           patches={sessionPatches}
           traces={sessionTraceItems}
           toolCalls={sessionToolCalls}
+          composerContext={{
+            cwd: cwdLabel,
+            repo: workspaceName,
+            model: providerLabel,
+            permissionMode: approvalModeToSettingsMode(config?.policy.approvalMode),
+          }}
           onApprove={(approvalId) => handleApprovalSubmit(approvalId, "approved")}
+          onApproveForSession={(approvalId) => handleApprovalSubmit(approvalId, "approved")}
           onReject={(approvalId) => handleApprovalSubmit(approvalId, "rejected")}
           onLoadPatch={handleLoadPatchDiff}
+          onCopyPatchPath={(_patchId, path) => {
+            void navigator.clipboard?.writeText(path);
+          }}
           onRefreshTrace={handleRefreshTrace}
           busyId={approvalBusyId ?? patchBusyId}
         />
@@ -2515,12 +3018,12 @@ export function App() {
         <ScheduledWorkspace
           tasks={scheduledTasks}
           logsByTaskId={scheduledLogsByTaskId}
-          selectedTaskId={activeTaskId ?? undefined}
+          selectedTaskId={selectedScheduledTaskId ?? undefined}
           onSelectTask={handleSelectScheduledTask}
           onCreateTask={handleCreateScheduledTask}
           onRunTask={handleRunScheduledTask}
           onToggleTask={handleToggleScheduledTask}
-          busyTaskId={null}
+          busyTaskId={scheduledBusyTaskId}
         />
       );
     }
@@ -2531,12 +3034,32 @@ export function App() {
         activeProviderId={config?.provider.activeProfileId}
         onSelectProvider={selectProviderProfile}
         onAddProvider={handleAddProviderFromSettings}
+        onEditProvider={handleEditProviderFromSettings}
         onTestProvider={handleTestSelectedProvider}
+        onTestProviderConfig={handleTestProviderConfigFromSettings}
         onSaveProvider={handleSaveProviderConfig}
         providerBusy={providerConfigBusy}
         providerTestBusy={providerTestBusy}
         permissionMode={approvalModeToSettingsMode(config?.policy.approvalMode)}
         onPermissionModeChange={handlePermissionModeChange}
+        general={generalSettings}
+        onGeneralChange={handleGeneralSettingsChange}
+        im={imSettings}
+        onIMChange={setIMSettings}
+        onTestIM={() => setError("IM 接入后端尚未接入；当前仅保存界面草稿。")}
+        computerUse={computerUseSettings}
+        onComputerUseChange={setComputerUseSettings}
+        onRecheckComputerUse={() =>
+          setComputerUseSettings((current) => ({ ...current, status: "桌面权限检查待接入" }))
+        }
+        about={{
+          version: "0.1.0",
+          runtime: hostStatus?.runtimeTransport ?? "mock-browser",
+          dataPath: workspacePath,
+          build: hostStatus?.runtimeRunning ? "runtime running" : "runtime idle",
+        }}
+        onOpenLogs={() => setError("日志目录打开能力待接入 Tauri shell。")}
+        onOpenDataDirectory={() => setError("数据目录打开能力待接入 Tauri shell。")}
       />
     );
   })();

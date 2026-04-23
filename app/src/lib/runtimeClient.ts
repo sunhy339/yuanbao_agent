@@ -16,6 +16,17 @@ import type {
   PatchRecord,
   ProviderTestParams,
   ProviderTestResult,
+  ScheduledTaskCreateParams,
+  ScheduledTaskListResult,
+  ScheduledTaskLogsParams,
+  ScheduledTaskLogsResult,
+  ScheduledTaskRecord,
+  ScheduledTaskResult,
+  ScheduledTaskRunNowParams,
+  ScheduledTaskRunNowResult,
+  ScheduledTaskRunRecord,
+  ScheduledTaskToggleParams,
+  ScheduledTaskUpdateParams,
   SessionCreateParams,
   SessionCreateResult,
   SessionListResult,
@@ -54,6 +65,8 @@ interface MockState {
   patches: Record<string, PatchRecord>;
   approvals: Record<string, ApprovalRecord>;
   traces: TraceEventRecord[];
+  scheduledTasks: Record<string, ScheduledTaskRecord>;
+  scheduledRuns: ScheduledTaskRunRecord[];
 }
 
 const mockState: MockState = {
@@ -64,6 +77,8 @@ const mockState: MockState = {
   patches: {},
   approvals: {},
   traces: [],
+  scheduledTasks: {},
+  scheduledRuns: [],
 };
 
 export interface HostStatus {
@@ -198,6 +213,55 @@ function buildMockRuntimeConfig(): RuntimeConfig {
 
 function sortSessions(sessions: SessionRecord[]): SessionRecord[] {
   return [...sessions].sort((left, right) => right.updatedAt - left.updatedAt);
+}
+
+function sortScheduledTasks(tasks: ScheduledTaskRecord[]): ScheduledTaskRecord[] {
+  return [...tasks].sort((left, right) => right.createdAt - left.createdAt);
+}
+
+function sortScheduledRuns(runs: ScheduledTaskRunRecord[]): ScheduledTaskRunRecord[] {
+  return [...runs].sort((left, right) => right.startedAt - left.startedAt);
+}
+
+function parseScheduleOffsetMs(schedule: string): number {
+  const match = schedule.toLowerCase().match(/every\s+(\d+)\s*(minute|minutes|min|hour|hours|hr|hrs)/);
+  if (!match) {
+    return 30 * 60_000;
+  }
+
+  const amount = Math.max(1, Number.parseInt(match[1] ?? "30", 10));
+  const unit = match[2] ?? "minutes";
+  return amount * (unit.startsWith("hour") || unit.startsWith("hr") ? 60 : 1) * 60_000;
+}
+
+function buildMockScheduledTask(payload: ScheduledTaskCreateParams): ScheduledTaskRecord {
+  const now = Date.now();
+  const enabled = payload.enabled ?? true;
+  return {
+    id: `sched_${now}_${Math.random().toString(16).slice(2, 8)}`,
+    name: payload.name.trim(),
+    prompt: payload.prompt.trim(),
+    schedule: payload.schedule.trim(),
+    status: enabled ? "active" : "disabled",
+    enabled,
+    createdAt: now,
+    updatedAt: now,
+    lastRunAt: null,
+    nextRunAt: enabled ? now + parseScheduleOffsetMs(payload.schedule) : null,
+  };
+}
+
+function updateMockScheduledTask(
+  taskId: string,
+  updater: (task: ScheduledTaskRecord) => ScheduledTaskRecord,
+): ScheduledTaskRecord {
+  const current = mockState.scheduledTasks[taskId];
+  if (!current) {
+    throw new Error(`Scheduled task not found: ${taskId}`);
+  }
+  const next = updater(current);
+  mockState.scheduledTasks[taskId] = next;
+  return next;
 }
 
 function mergeRuntimeConfig(current: RuntimeConfig, next: ConfigUpdateParams): RuntimeConfig {
@@ -622,6 +686,8 @@ export class RuntimeClient {
       mockState.patches = {};
       mockState.approvals = {};
       mockState.traces = [];
+      mockState.scheduledTasks = {};
+      mockState.scheduledRuns = [];
       mockState.config = mergeRuntimeConfig(mockState.config, {
         workspace: {
           ignore: mockState.config.workspace.ignore,
@@ -638,6 +704,8 @@ export class RuntimeClient {
     mockState.patches = {};
     mockState.approvals = {};
     mockState.traces = [];
+    mockState.scheduledTasks = {};
+    mockState.scheduledRuns = [];
     mockState.config = mergeRuntimeConfig(mockState.config, {
       workspace: {
         ignore: mockState.config.workspace.ignore,
@@ -937,6 +1005,115 @@ export class RuntimeClient {
     }
 
     return invokeOrReject<TaskListResult>("task_list", payload);
+  }
+
+  async createScheduledTask(payload: ScheduledTaskCreateParams): Promise<ScheduledTaskResult> {
+    if (!isTauriBridgeAvailable()) {
+      const task = buildMockScheduledTask(payload);
+      mockState.scheduledTasks[task.id] = task;
+      return { task };
+    }
+
+    const result = await invokeOrReject<ScheduledTaskResult>("schedule_create", payload);
+    mockState.scheduledTasks[result.task.id] = result.task;
+    return result;
+  }
+
+  async listScheduledTasks(): Promise<ScheduledTaskListResult> {
+    if (!isTauriBridgeAvailable()) {
+      return {
+        tasks: sortScheduledTasks(Object.values(mockState.scheduledTasks)),
+      };
+    }
+
+    const result = await invokeOrReject<ScheduledTaskListResult>("schedule_list");
+    mockState.scheduledTasks = Object.fromEntries(result.tasks.map((task) => [task.id, task]));
+    return result;
+  }
+
+  async updateScheduledTask(payload: ScheduledTaskUpdateParams): Promise<ScheduledTaskResult> {
+    if (!isTauriBridgeAvailable()) {
+      const task = updateMockScheduledTask(payload.taskId, (current) => {
+        const enabled = payload.enabled ?? current.enabled;
+        const schedule = payload.schedule?.trim() || current.schedule;
+        return {
+          ...current,
+          name: payload.name?.trim() || current.name,
+          prompt: payload.prompt?.trim() || current.prompt,
+          schedule,
+          enabled,
+          status: enabled ? "active" : "disabled",
+          updatedAt: Date.now(),
+          nextRunAt: enabled ? Date.now() + parseScheduleOffsetMs(schedule) : null,
+        };
+      });
+      return { task };
+    }
+
+    const result = await invokeOrReject<ScheduledTaskResult>("schedule_update", payload);
+    mockState.scheduledTasks[result.task.id] = result.task;
+    return result;
+  }
+
+  async toggleScheduledTask(payload: ScheduledTaskToggleParams): Promise<ScheduledTaskResult> {
+    if (!isTauriBridgeAvailable()) {
+      const task = updateMockScheduledTask(payload.taskId, (current) => ({
+        ...current,
+        enabled: payload.enabled,
+        status: payload.enabled ? "active" : "disabled",
+        updatedAt: Date.now(),
+        nextRunAt: payload.enabled ? Date.now() + parseScheduleOffsetMs(current.schedule) : null,
+      }));
+      return { task };
+    }
+
+    const result = await invokeOrReject<ScheduledTaskResult>("schedule_toggle", payload);
+    mockState.scheduledTasks[result.task.id] = result.task;
+    return result;
+  }
+
+  async runScheduledTaskNow(payload: ScheduledTaskRunNowParams): Promise<ScheduledTaskRunNowResult> {
+    if (!isTauriBridgeAvailable()) {
+      const startedAt = Date.now();
+      const task = updateMockScheduledTask(payload.taskId, (current) => ({
+        ...current,
+        lastRunAt: startedAt,
+        nextRunAt: current.enabled ? startedAt + parseScheduleOffsetMs(current.schedule) : null,
+        updatedAt: startedAt,
+      }));
+      const run: ScheduledTaskRunRecord = {
+        id: `schedrun_${startedAt}_${Math.random().toString(16).slice(2, 8)}`,
+        taskId: task.id,
+        status: "completed",
+        startedAt,
+        finishedAt: startedAt,
+        durationMs: 0,
+        summary: "Run now recorded in browser fallback; desktop runtime executes real scheduled jobs.",
+        error: null,
+      };
+      mockState.scheduledRuns = sortScheduledRuns([run, ...mockState.scheduledRuns]).slice(0, 500);
+      return { run, task };
+    }
+
+    const result = await invokeOrReject<ScheduledTaskRunNowResult>("schedule_run_now", payload);
+    if (result.task) {
+      mockState.scheduledTasks[result.task.id] = result.task;
+    }
+    mockState.scheduledRuns = sortScheduledRuns([result.run, ...mockState.scheduledRuns]).slice(0, 500);
+    return result;
+  }
+
+  async listScheduledTaskLogs(payload: ScheduledTaskLogsParams = {}): Promise<ScheduledTaskLogsResult> {
+    if (!isTauriBridgeAvailable()) {
+      const logs = sortScheduledRuns(mockState.scheduledRuns)
+        .filter((run) => !payload.taskId || run.taskId === payload.taskId)
+        .slice(0, payload.limit ?? 100);
+      return { logs };
+    }
+
+    const result = await invokeOrReject<ScheduledTaskLogsResult>("schedule_logs", payload);
+    mockState.scheduledRuns = sortScheduledRuns(result.logs);
+    return result;
   }
 
   async listTrace(payload: TraceListParams): Promise<TraceListResult> {

@@ -64,6 +64,47 @@ struct TaskListPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ScheduledTaskCreatePayload {
+    name: String,
+    prompt: String,
+    schedule: String,
+    enabled: Option<bool>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledTaskUpdatePayload {
+    task_id: String,
+    name: Option<String>,
+    prompt: Option<String>,
+    schedule: Option<String>,
+    enabled: Option<bool>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledTaskTogglePayload {
+    task_id: String,
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledTaskIdPayload {
+    task_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduledTaskLogsPayload {
+    task_id: Option<String>,
+    limit: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ApprovalSubmitPayload {
     approval_id: String,
     decision: String,
@@ -414,6 +455,91 @@ fn task_list(
 }
 
 #[tauri::command]
+fn schedule_create(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: ScheduledTaskCreatePayload,
+) -> Result<Value, String> {
+    state.call(
+        &app_handle,
+        "schedule.create",
+        json!({
+            "name": payload.name,
+            "prompt": payload.prompt,
+            "schedule": payload.schedule,
+            "enabled": payload.enabled,
+            "status": payload.status,
+        }),
+    )
+}
+
+#[tauri::command]
+fn schedule_list(app_handle: AppHandle, state: State<'_, RuntimeManager>) -> Result<Value, String> {
+    state.call(&app_handle, "schedule.list", json!({}))
+}
+
+#[tauri::command]
+fn schedule_update(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: ScheduledTaskUpdatePayload,
+) -> Result<Value, String> {
+    state.call(
+        &app_handle,
+        "schedule.update",
+        json!({
+            "taskId": payload.task_id,
+            "name": payload.name,
+            "prompt": payload.prompt,
+            "schedule": payload.schedule,
+            "enabled": payload.enabled,
+            "status": payload.status,
+        }),
+    )
+}
+
+#[tauri::command]
+fn schedule_toggle(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: ScheduledTaskTogglePayload,
+) -> Result<Value, String> {
+    state.call(
+        &app_handle,
+        "schedule.toggle",
+        json!({
+            "taskId": payload.task_id,
+            "enabled": payload.enabled,
+        }),
+    )
+}
+
+#[tauri::command]
+fn schedule_run_now(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: ScheduledTaskIdPayload,
+) -> Result<Value, String> {
+    state.call(&app_handle, "schedule.run_now", json!({ "taskId": payload.task_id }))
+}
+
+#[tauri::command]
+fn schedule_logs(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Option<ScheduledTaskLogsPayload>,
+) -> Result<Value, String> {
+    let params = match payload {
+        Some(payload) => json!({
+            "taskId": payload.task_id,
+            "limit": payload.limit,
+        }),
+        None => json!({}),
+    };
+    state.call(&app_handle, "schedule.logs", params)
+}
+
+#[tauri::command]
 fn approval_submit(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -504,6 +630,12 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             task_pause,
             task_resume,
             task_list,
+            schedule_create,
+            schedule_list,
+            schedule_update,
+            schedule_toggle,
+            schedule_run_now,
+            schedule_logs,
             approval_submit,
             config_get,
             config_update,

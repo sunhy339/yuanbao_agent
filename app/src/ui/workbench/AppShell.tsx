@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ComposerDock } from "./ComposerDock";
+import { DesktopTitlebar } from "./DesktopTitlebar";
 import { GlobalSidebar } from "./GlobalSidebar";
 import { WorkspaceFrame } from "./WorkspaceFrame";
 import { WorkspaceTabs } from "./WorkspaceTabs";
@@ -46,28 +47,30 @@ export function AppShell({
 }: AppShellProps) {
   return (
     <div className="workbench-shell">
-      <GlobalSidebar
-        sessions={sessions}
-        activeSessionId={activeSessionId}
-        workspaceName={workspaceName}
-        onOpenSystemTab={onOpenSystemTab}
-        onOpenSessionTab={onOpenSessionTab}
-      />
-      <section className="workbench-main" aria-label="Workbench">
-        <WorkspaceTabs tabs={tabs} activeTabId={activeTabId} onActivateTab={onActivateTab} onCloseTab={onCloseTab} />
-        <WorkspaceFrame composerVisible={composerVisible}>{children}</WorkspaceFrame>
-        {composerVisible ? (
-          <ComposerDock
-            promptValue={promptValue}
-            onPromptChange={onPromptChange}
-            onSubmitPrompt={onSubmitPrompt}
-            disabled={disabled}
-            providerLabel={providerLabel}
-            cwdLabel={cwdLabel}
-          />
-        ) : null}
-      </section>
+      <DesktopTitlebar />
+      <div className="workbench-body">
+        <GlobalSidebar
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          workspaceName={workspaceName}
+          onOpenSystemTab={onOpenSystemTab}
+          onOpenSessionTab={onOpenSessionTab}
+        />
+        <section className="workbench-main" aria-label="Workbench desk">
+          <WorkspaceTabs tabs={tabs} activeTabId={activeTabId} onActivateTab={onActivateTab} onCloseTab={onCloseTab} />
+          <WorkspaceFrame composerVisible={composerVisible}>{children}</WorkspaceFrame>
+          {composerVisible ? (
+            <ComposerDock
+              promptValue={promptValue}
+              onPromptChange={onPromptChange}
+              onSubmitPrompt={onSubmitPrompt}
+              disabled={disabled}
+              providerLabel={providerLabel}
+              cwdLabel={cwdLabel}
+            />
+          ) : null}
+        </section>
+      </div>
     </div>
   );
 }
-

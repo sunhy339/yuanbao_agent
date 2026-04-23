@@ -7,7 +7,7 @@ export type WorkbenchTab =
       id: `system:${SystemWorkspaceKind}`;
       kind: SystemWorkspaceKind;
       title: string;
-      closable?: false;
+      closable?: boolean;
     }
   | {
       id: `session:${string}`;
@@ -23,4 +23,3 @@ export interface WorkbenchTabResult {
 }
 
 export type WorkbenchSession = SessionRecord;
-

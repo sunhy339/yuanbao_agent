@@ -59,10 +59,20 @@ describe("ScheduledWorkspace", () => {
   it("renders task metrics from provided tasks", () => {
     const html = renderToStaticMarkup(<ScheduledWorkspace tasks={tasks} />);
 
-    expect(html).toMatch(/Scheduled desk/);
+    expect(html).toMatch(/调度/);
     expect(html).toMatch(/总计[\s\S]*3/);
     expect(html).toMatch(/运行中[\s\S]*1/);
     expect(html).toMatch(/已停用[\s\S]*1/);
+  });
+
+  it("renders the ledger sections used by the scheduled task workbench", () => {
+    render(<ScheduledWorkspace tasks={tasks} logsByTaskId={logsByTaskId} />);
+
+    expect(screen.getByRole("region", { name: "调度总览" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "任务列表" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "执行日志" })).toBeInTheDocument();
+    expect(screen.getAllByText("下次/周期")).toHaveLength(tasks.length);
+    expect(screen.getAllByText("最近执行")).toHaveLength(tasks.length);
   });
 
   it("renders a calm empty state when tasks is an empty array", () => {
@@ -76,14 +86,16 @@ describe("ScheduledWorkspace", () => {
   it("keeps demo fallback tasks only when tasks is undefined", () => {
     const html = renderToStaticMarkup(<ScheduledWorkspace />);
 
-    expect(html).toMatch(/Scheduled desk/);
+    expect(html).toMatch(/调度/);
     expect(html).toMatch(/执行日志/);
     expect(html).toMatch(/完成/);
     expect(html).toMatch(/失败/);
   });
 
   it("renders scheduled task list item details", () => {
-    const html = renderToStaticMarkup(<ScheduledWorkspace tasks={[tasks[0]]} />);
+    const html = renderToStaticMarkup(
+      <ScheduledWorkspace tasks={[tasks[0]]} />,
+    );
 
     expect(html).toMatch(/Morning sync/);
     expect(html).toMatch(/Collect yesterday&#x27;s notes\./);
@@ -103,13 +115,14 @@ describe("ScheduledWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /Select task Archive records/ }));
+    await user.click(
+      screen.getByRole("button", { name: /Select task Archive records/ }),
+    );
 
     expect(onSelectTask).toHaveBeenCalledWith("archive");
-    expect(screen.getByRole("button", { name: /Select task Archive records/ })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    expect(
+      screen.getByRole("button", { name: /Select task Archive records/ }),
+    ).toHaveAttribute("aria-pressed", "true");
   });
 
   it("renders logs for the selected task from logsByTaskId", () => {
@@ -121,8 +134,12 @@ describe("ScheduledWorkspace", () => {
       />,
     );
 
-    expect(screen.getByText("Cleanup failed on locked files.")).toBeInTheDocument();
-    expect(screen.queryByText("Morning sync completed.")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Cleanup failed on locked files."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Morning sync completed."),
+    ).not.toBeInTheDocument();
   });
 
   it("renders flat logs for the selected task when logs is provided", () => {
@@ -150,7 +167,9 @@ describe("ScheduledWorkspace", () => {
     );
 
     expect(screen.getByText("Flat log source rendered.")).toBeInTheDocument();
-    expect(screen.queryByText("Other task log is hidden.")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Other task log is hidden."),
+    ).not.toBeInTheDocument();
   });
 
   it("calls create, run, and toggle callbacks", async () => {
@@ -167,10 +186,18 @@ describe("ScheduledWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Create scheduled task" }));
-    await user.click(screen.getByRole("button", { name: "Run task Morning sync" }));
-    await user.click(screen.getByRole("button", { name: "Disable task Morning sync" }));
-    await user.click(screen.getByRole("button", { name: "Enable task Archive records" }));
+    await user.click(
+      screen.getByRole("button", { name: "Create scheduled task" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Run task Morning sync" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Disable task Morning sync" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Enable task Archive records" }),
+    );
 
     expect(onCreateTask).toHaveBeenCalledTimes(1);
     expect(onRunTask).toHaveBeenCalledWith("morning");
@@ -189,8 +216,12 @@ describe("ScheduledWorkspace", () => {
     );
 
     const row = screen.getByRole("listitem", { name: /Morning sync/ });
-    expect(within(row).getByRole("button", { name: "Run task Morning sync" })).toBeDisabled();
-    expect(within(row).getByRole("button", { name: "Disable task Morning sync" })).toBeDisabled();
+    expect(
+      within(row).getByRole("button", { name: "Run task Morning sync" }),
+    ).toBeDisabled();
+    expect(
+      within(row).getByRole("button", { name: "Disable task Morning sync" }),
+    ).toBeDisabled();
     expect(within(row).getByText("Working")).toBeInTheDocument();
   });
 });

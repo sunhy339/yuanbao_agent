@@ -13,6 +13,8 @@ describe("NewSessionWorkspace", () => {
     );
 
     assert.match(html, /New Session/);
+    assert.match(html, /Command readiness/);
+    assert.match(html, /Recent sessions live in the session ledger/);
     assert.match(html, /D:\\py\\yuanbao_agent/);
     assert.match(html, /Runtime host online/);
     assert.doesNotMatch(html, /Settings/i);

@@ -5,8 +5,8 @@ import react from "@vitejs/plugin-react";
 const appRoot = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
-export default defineConfig({
-  plugins: [react()],
+export default defineConfig(({ mode }) => ({
+  plugins: mode === "test" || process.env.VITEST ? [] : [react()],
   resolve: {
     alias: {
       "@shared": fileURLToPath(new URL("../shared/src", import.meta.url)),
@@ -20,4 +20,4 @@ export default defineConfig({
       allow: [appRoot, repoRoot],
     },
   },
-});
+}));

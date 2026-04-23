@@ -73,6 +73,9 @@ export interface ToolRuntimeConfig {
 export interface UiConfig {
   language: string;
   showRawEvents: boolean;
+  theme?: "light" | "dark" | "system";
+  reasoningEffort?: "low" | "medium" | "high" | "max";
+  webFetchPreflight?: boolean;
 }
 
 export interface AppConfig {
@@ -149,6 +152,9 @@ export const defaultAppConfig: AppConfig = {
   ui: {
     language: "zh-CN",
     showRawEvents: false,
+    theme: "light",
+    reasoningEffort: "max",
+    webFetchPreflight: true,
   },
 };
 

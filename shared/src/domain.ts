@@ -31,6 +31,13 @@ export type CommandStatus =
   | "failed"
   | "timeout"
   | "killed";
+export type ScheduledTaskStatus = "active" | "disabled";
+export type ScheduledRunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 export type TraceEventSource =
   | "provider"
@@ -135,6 +142,30 @@ export interface TaskRecord {
   errorCode?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface ScheduledTaskRecord {
+  id: Identifier;
+  name: string;
+  prompt: string;
+  schedule: string;
+  status: ScheduledTaskStatus;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+  lastRunAt?: number | null;
+  nextRunAt?: number | null;
+}
+
+export interface ScheduledTaskRunRecord {
+  id: Identifier;
+  taskId: Identifier;
+  status: ScheduledRunStatus;
+  startedAt: number;
+  finishedAt?: number | null;
+  durationMs?: number | null;
+  summary?: string | null;
+  error?: string | null;
 }
 
 export interface ToolCallRecord {

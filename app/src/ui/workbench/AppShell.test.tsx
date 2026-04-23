@@ -62,6 +62,7 @@ describe("AppShell", () => {
     expect(screen.getByRole("button", { name: "New Session" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Scheduled" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Desktop titlebar")).toHaveTextContent("Yuanbao Agent");
     expect(screen.getByRole("tab", { name: "New Session" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByLabelText("workspace content")).toBeInTheDocument();
     expect(screen.getByLabelText("Task prompt")).toBeInTheDocument();
@@ -107,5 +108,14 @@ describe("AppShell", () => {
     expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("scheduled");
     expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("settings");
     expect(handlers.onOpenSessionTab).toHaveBeenCalledWith(sessions[0]);
+  });
+
+  it("shows close controls for opened tabs", async () => {
+    const handlers = renderShell();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Close New Session" }));
+
+    expect(handlers.onCloseTab).toHaveBeenCalledWith("system:new-session");
   });
 });

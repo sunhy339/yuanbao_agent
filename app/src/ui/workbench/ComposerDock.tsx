@@ -7,6 +7,10 @@ interface ComposerDockProps {
   cwdLabel: string;
 }
 
+const COMMAND_LABEL = "\u65b0\u6307\u4ee4";
+const COMMAND_PLACEHOLDER = "\u5199\u4e0b\u8981\u4ea4\u7ed9\u672c\u5730\u4ee3\u7406\u7684\u4e0b\u4e00\u6b65...";
+const SUBMIT_LABEL = "\u9001\u51fa";
+
 export function ComposerDock({
   promptValue,
   onPromptChange,
@@ -28,17 +32,17 @@ export function ComposerDock({
         <span>{cwdLabel}</span>
       </div>
       <label className="composer-input">
-        <span>新指令</span>
+        <span>{COMMAND_LABEL}</span>
         <textarea
           aria-label="Task prompt"
           value={promptValue}
           onChange={(event) => onPromptChange(event.target.value)}
-          placeholder="写下要交给本地代理的下一步..."
+          placeholder={COMMAND_PLACEHOLDER}
           disabled={disabled}
         />
       </label>
       <button type="submit" className="composer-run" disabled={disabled || !promptValue.trim()}>
-        送出
+        {SUBMIT_LABEL}
       </button>
     </form>
   );

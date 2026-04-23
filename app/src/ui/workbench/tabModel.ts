@@ -7,7 +7,7 @@ const SYSTEM_TITLES: Record<SystemWorkspaceKind, string> = {
 };
 
 export function getInitialTabs(): WorkbenchTab[] {
-  return [{ id: "system:new-session", kind: "new-session", title: SYSTEM_TITLES["new-session"] }];
+  return [{ id: "system:new-session", kind: "new-session", title: SYSTEM_TITLES["new-session"], closable: true }];
 }
 
 export function openSystemTab(tabs: WorkbenchTab[], kind: SystemWorkspaceKind): WorkbenchTabResult {
@@ -17,7 +17,7 @@ export function openSystemTab(tabs: WorkbenchTab[], kind: SystemWorkspaceKind): 
   }
 
   return {
-    tabs: [...tabs, { id, kind, title: SYSTEM_TITLES[kind] }],
+    tabs: [...tabs, { id, kind, title: SYSTEM_TITLES[kind], closable: true }],
     activeTabId: id,
   };
 }
@@ -67,4 +67,3 @@ export function closeTab(
   const neighbor = nextTabs[index] ?? nextTabs[index - 1] ?? ensuredTabs[0];
   return { tabs: ensuredTabs, activeTabId: neighbor.id };
 }
-

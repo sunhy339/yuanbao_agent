@@ -1,3 +1,5 @@
+@import "./ui/workbench/workbench.css";
+
 :root {
   color-scheme: light;
   font-family: "Segoe UI", "PingFang SC", sans-serif;
@@ -16,7 +18,9 @@
 
 body {
   margin: 0;
+  height: 100vh;
   min-height: 100vh;
+  overflow: hidden;
 }
 
 button,
@@ -27,6 +31,7 @@ select {
 }
 
 #root {
+  height: 100vh;
   min-height: 100vh;
 }
 

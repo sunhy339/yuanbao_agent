@@ -27,6 +27,26 @@ import {
   DEFAULT_SESSION_TITLE,
   DEFAULT_WORKSPACE_PATH,
 } from "./state/mockData";
+import { AppShell } from "./ui/workbench/AppShell";
+import {
+  closeTab,
+  getInitialTabs,
+  openSessionTab,
+  openSystemTab,
+} from "./ui/workbench/tabModel";
+import type { SystemWorkspaceKind, WorkbenchTab, WorkbenchSession } from "./ui/workbench/types";
+import { NewSessionWorkspace } from "./ui/workbench/workspaces/NewSessionWorkspace";
+import {
+  ScheduledWorkspace,
+  type ExecutionLog,
+  type ScheduledTask,
+} from "./ui/workbench/workspaces/scheduled/ScheduledWorkspace";
+import { SessionWorkspace } from "./ui/workbench/workspaces/session/SessionWorkspace";
+import {
+  SettingsWorkspace,
+  type SettingsProvider,
+  type SettingsProviderPayload,
+} from "./ui/workbench/workspaces/settings/SettingsWorkspace";
 
 const runtimeClient = new RuntimeClient();
 const DEFAULT_SEARCH_GLOB_TEXT = "";
@@ -417,6 +437,63 @@ function buildDefaultProviderProfile(): ProviderProfile {
     maxContextTokens: DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS,
     timeout: DEFAULT_PROVIDER_TIMEOUT,
   };
+}
+
+function getModelFromProviderPayload(payload: SettingsProviderPayload): string {
+  const firstMappingLine = payload.modelMapping
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+
+  if (!firstMappingLine) {
+    return DEFAULT_PROVIDER_MODEL;
+  }
+
+  const [, mappedValue] = firstMappingLine.split(/[=:]/, 2);
+  return (mappedValue ?? firstMappingLine).trim() || DEFAULT_PROVIDER_MODEL;
+}
+
+function getProviderEnvVarName(payload: SettingsProviderPayload): string {
+  const raw = payload.apiKey.trim();
+  if (raw && !raw.startsWith("sk-")) {
+    return raw;
+  }
+
+  const normalizedName = (payload.name || "provider")
+    .replace(/[^a-z0-9]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+  return `${normalizedName || "PROVIDER"}_API_KEY`;
+}
+
+function settingsModeToApprovalMode(mode: string): AppConfig["policy"]["approvalMode"] {
+  if (mode === "skip") {
+    return "relaxed";
+  }
+  if (mode === "edits") {
+    return "on_write_or_command";
+  }
+  return "strict";
+}
+
+function approvalModeToSettingsMode(mode?: AppConfig["policy"]["approvalMode"]): string {
+  if (mode === "relaxed") {
+    return "skip";
+  }
+  if (mode === "on_write_or_command") {
+    return "edits";
+  }
+  return "ask";
+}
+
+function taskStatusToScheduledStatus(status: TaskRecord["status"]): ScheduledTask["status"] {
+  if (status === "completed") {
+    return "completed";
+  }
+  if (status === "failed" || status === "cancelled") {
+    return "failed";
+  }
+  return "active";
 }
 
 function readRequestText(request: Record<string, unknown>, key: string, fallback: string): string {
@@ -1011,6 +1088,8 @@ export function App() {
   const [taskControlBusyAction, setTaskControlBusyAction] = useState<TaskControlAction | null>(null);
   const [taskControlError, setTaskControlError] = useState<string | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [openTabs, setOpenTabs] = useState<WorkbenchTab[]>(() => getInitialTabs());
+  const [activeTabId, setActiveTabId] = useState<WorkbenchTab["id"]>("system:new-session");
 
   useEffect(() => {
     let disposed = false;
@@ -1466,6 +1545,46 @@ export function App() {
     setActiveTaskId(nextTask?.id ?? null);
   }
 
+  function handleOpenSystemTab(kind: SystemWorkspaceKind) {
+    setOpenTabs((current) => {
+      const result = openSystemTab(current, kind);
+      setActiveTabId(result.activeTabId);
+      return result.tabs;
+    });
+  }
+
+  function handleOpenSessionTab(nextSession: WorkbenchSession) {
+    setOpenTabs((current) => {
+      const result = openSessionTab(current, nextSession);
+      setActiveTabId(result.activeTabId);
+      return result.tabs;
+    });
+    selectSession(nextSession);
+  }
+
+  function handleActivateTab(tabId: WorkbenchTab["id"]) {
+    setActiveTabId(tabId);
+    if (!tabId.startsWith("session:")) {
+      return;
+    }
+
+    const sessionId = tabId.slice("session:".length);
+    const nextSession = sessions.find((item) => item.id === sessionId) ?? null;
+    selectSession(nextSession);
+  }
+
+  function handleCloseTab(tabId: WorkbenchTab["id"]) {
+    setOpenTabs((current) => {
+      const result = closeTab(current, tabId, activeTabId);
+      setActiveTabId(result.activeTabId);
+      if (result.activeTabId.startsWith("session:")) {
+        const sessionId = result.activeTabId.slice("session:".length);
+        selectSession(sessions.find((item) => item.id === sessionId) ?? null);
+      }
+      return result.tabs;
+    });
+  }
+
   function selectTask(taskId: string) {
     const nextTask = taskHistory.find((item) => item.id === taskId);
     if (!nextTask) {
@@ -1759,6 +1878,7 @@ export function App() {
 
       setSessions((current) => upsertRecord(current, result.session));
       selectSession(result.session);
+      handleOpenSessionTab(result.session);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -1815,6 +1935,88 @@ export function App() {
     try {
       const providerPatch = buildProviderPatchFromForm();
       await runProviderTest(providerPatch, activeProviderProfileId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function handleTestSelectedProvider(profileId?: string) {
+    setError(null);
+
+    try {
+      await runProviderTest(undefined, profileId ?? activeProviderProfileId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function handleAddProviderFromSettings(payload: SettingsProviderPayload) {
+    if (!config) {
+      return;
+    }
+
+    setProviderConfigBusy(true);
+    setError(null);
+    setProviderTestResult(null);
+
+    try {
+      const profileId = `profile_${Date.now()}`;
+      const model = getModelFromProviderPayload(payload);
+      const profile: ProviderProfile = {
+        id: profileId,
+        name: payload.name.trim() || `Provider ${(config.provider.profiles?.length ?? 0) + 1}`,
+        mode: "openai-compatible",
+        baseUrl: payload.endpoint.trim() || DEFAULT_PROVIDER_BASE_URL,
+        model,
+        defaultModel: model,
+        fallbackModel: config.provider.fallbackModel,
+        apiKey: payload.apiKey.trim() || undefined,
+        apiKeyEnvVarName: getProviderEnvVarName(payload),
+        temperature: DEFAULT_PROVIDER_TEMPERATURE,
+        maxTokens: DEFAULT_PROVIDER_MAX_TOKENS,
+        maxOutputTokens: DEFAULT_PROVIDER_MAX_TOKENS,
+        maxContextTokens: DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS,
+        timeout: DEFAULT_PROVIDER_TIMEOUT,
+      };
+      const provider = normalizeProviderConfig({
+        ...config.provider,
+        ...profile,
+        activeProfileId: profile.id,
+        profiles: [...(config.provider.profiles ?? []), profile],
+      });
+      const result = await runtimeClient.updateConfig({
+        config: {
+          provider,
+        },
+      });
+      const normalized = normalizeRuntimeConfig(result.config);
+      setConfig(normalized);
+      setActiveProviderProfileId(normalized.provider.activeProfileId ?? profile.id);
+      setProviderSettings(buildProviderSettingsForm(normalized));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setProviderConfigBusy(false);
+    }
+  }
+
+  async function handlePermissionModeChange(mode: string) {
+    if (!config) {
+      return;
+    }
+
+    setError(null);
+
+    try {
+      const result = await runtimeClient.updateConfig({
+        config: {
+          policy: {
+            approvalMode: settingsModeToApprovalMode(mode),
+          },
+        },
+      });
+      const normalized = normalizeRuntimeConfig(result.config);
+      setConfig(normalized);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -1985,6 +2187,11 @@ export function App() {
       const touchedSession = { ...activeSession, updatedAt: result.task.updatedAt };
       setSessions((current) => upsertRecord(current, touchedSession));
       setSession(touchedSession);
+      setOpenTabs((current) => {
+        const resultTabs = openSessionTab(current, touchedSession);
+        setActiveTabId(resultTabs.activeTabId);
+        return resultTabs.tabs;
+      });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -2000,6 +2207,11 @@ export function App() {
     });
     setSessions((current) => upsertRecord(current, result.session));
     setSession(result.session);
+    setOpenTabs((current) => {
+      const resultTabs = openSessionTab(current, result.session);
+      setActiveTabId(resultTabs.activeTabId);
+      return resultTabs.tabs;
+    });
     return result.session;
   }
 
@@ -2109,995 +2321,247 @@ export function App() {
     }
   }
 
+  const activeTab = openTabs.find((tabItem) => tabItem.id === activeTabId) ?? openTabs[0] ?? getInitialTabs()[0];
+  const composerVisible = activeTab.kind === "new-session" || activeTab.kind === "session";
+  const workspaceName = workspace?.name ?? workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? "yuanbao_agent";
+  const providerLabel = providerSettings.model || providerSettings.name || DEFAULT_PROVIDER_MODEL;
+  const cwdLabel = workspace?.rootPath ?? workspacePath ?? DEFAULT_WORKSPACE_PATH;
+  const hostStatusText = describeMode(hostStatus);
+  const settingsProviders = useMemo<SettingsProvider[] | undefined>(() => {
+    if (!config) {
+      return undefined;
+    }
+
+    const providerConfig = normalizeProviderConfig(config.provider);
+    return (providerConfig.profiles ?? []).map((profile) => {
+      const models = [profile.model, profile.fallbackModel].filter(
+        (value): value is string => Boolean(value),
+      );
+
+      return {
+        id: profile.id,
+        name: profile.name,
+        endpoint: profile.baseUrl ?? "未配置接口",
+        note:
+          profile.mode === "mock"
+            ? "本地模拟，无需 API 密钥"
+            : profile.apiKeyEnvVarName
+              ? `环境变量：${profile.apiKeyEnvVarName}`
+              : "需要配置 API 密钥",
+        models: models.length ? models : undefined,
+        status:
+          profile.id === providerConfig.activeProfileId
+            ? "已激活"
+            : profile.lastStatus ?? "已配置",
+      };
+    });
+  }, [config]);
+  const sessionTaskCount = useMemo(() => {
+    if (!session) {
+      return undefined;
+    }
+
+    return taskHistory.filter((item) => item.sessionId === session.id).length;
+  }, [session, taskHistory]);
+  const scheduledTasks = useMemo<ScheduledTask[]>(
+    () =>
+      sortByUpdatedAtDesc(taskHistory).map((historyTask) => {
+        const owningSession = sessions.find((item) => item.id === historyTask.sessionId);
+        return {
+          id: historyTask.id,
+          title: historyTask.goal || `${historyTask.type} task`,
+          description: owningSession
+            ? `来自会话：${owningSession.title || "Untitled Session"}`
+            : `任务类型：${historyTask.type}`,
+          status: taskStatusToScheduledStatus(historyTask.status),
+          scheduleText: "来自运行时任务记录",
+          lastRunText: `更新：${formatTimestamp(historyTask.updatedAt)}`,
+        };
+      }),
+    [sessions, taskHistory],
+  );
+  const scheduledLogsByTaskId = useMemo<Record<string, ExecutionLog[]>>(() => {
+    return Object.fromEntries(
+      taskHistory.map((historyTask) => [
+        historyTask.id,
+        [
+          {
+            id: `${historyTask.id}-status`,
+            taskId: historyTask.id,
+            time: formatTimestamp(historyTask.updatedAt),
+            result:
+              historyTask.status === "failed" || historyTask.status === "cancelled"
+                ? "failed"
+                : "completed",
+            message:
+              historyTask.resultSummary ??
+              historyTask.errorCode ??
+              `运行时状态：${historyTask.status}`,
+          } satisfies ExecutionLog,
+        ],
+      ]),
+    );
+  }, [taskHistory]);
+  const sessionApprovals = useMemo(
+    () =>
+      approvalCards.map((approval) => ({
+        id: approval.approvalId,
+        title: approval.patchSummary ?? approval.command,
+        kind: approval.kind,
+        status: approval.status,
+        summary: approval.requestSummary,
+        requestedAt: approval.requestedAt,
+      })),
+    [approvalCards],
+  );
+  const sessionPatches = useMemo(
+    () =>
+      patchCards.map((patch) => ({
+        id: patch.patchId,
+        summary: patch.summary,
+        status: patch.status,
+        filesChanged: patch.filesChanged,
+        updatedAt: patch.updatedAt,
+      })),
+    [patchCards],
+  );
+  const sessionTraceItems = useMemo(
+    () =>
+      [...traceEvents]
+        .sort((left, right) => right.sequence - left.sequence)
+        .map((trace) => ({
+          id: trace.id,
+          type: trace.type,
+          source: trace.source,
+          time: trace.createdAt,
+          summary: summarizeValue(trace.payload, trace.type, 120),
+        })),
+    [traceEvents],
+  );
+  const sessionToolCalls = useMemo(
+    () =>
+      toolTimelineItems.map((toolCall) => ({
+        id: toolCall.id,
+        toolName: toolCall.toolName,
+        status: toolCall.status,
+        resultSummary: toolCall.errorSummary ?? toolCall.resultSummary,
+        durationMs: toolCall.durationMs,
+      })),
+    [toolTimelineItems],
+  );
+
+  function handleSelectScheduledTask(taskId: string) {
+    const selectedTask = taskHistory.find((item) => item.id === taskId);
+    const selectedSession = selectedTask
+      ? sessions.find((item) => item.id === selectedTask.sessionId)
+      : undefined;
+
+    if (selectedSession) {
+      handleOpenSessionTab(selectedSession);
+    }
+    selectTask(taskId);
+  }
+
+  function handleCreateScheduledTask() {
+    handleOpenSystemTab("new-session");
+  }
+
+  function handleRunScheduledTask(taskId: string) {
+    handleSelectScheduledTask(taskId);
+    setError("调度运行接口尚未接入；已打开关联会话任务记录。");
+  }
+
+  function handleToggleScheduledTask(taskId: string) {
+    handleSelectScheduledTask(taskId);
+    setError("调度启停接口尚未接入；已打开关联会话任务记录。");
+  }
+
+  const workspaceContent = (() => {
+    if (activeTab.kind === "new-session") {
+      return <NewSessionWorkspace workspacePath={cwdLabel} hostStatusText={hostStatusText} />;
+    }
+
+    if (activeTab.kind === "session") {
+      return (
+        <SessionWorkspace
+          session={session}
+          activeTask={
+            task
+              ? {
+                  id: task.id,
+                  status: task.status,
+                  goal: task.goal,
+                  resultSummary: task.resultSummary,
+                }
+              : null
+          }
+          messages={visibleChatMessages}
+          taskCount={sessionTaskCount}
+          approvals={sessionApprovals}
+          patches={sessionPatches}
+          traces={sessionTraceItems}
+          toolCalls={sessionToolCalls}
+          onApprove={(approvalId) => handleApprovalSubmit(approvalId, "approved")}
+          onReject={(approvalId) => handleApprovalSubmit(approvalId, "rejected")}
+          onLoadPatch={handleLoadPatchDiff}
+          onRefreshTrace={handleRefreshTrace}
+          busyId={approvalBusyId ?? patchBusyId}
+        />
+      );
+    }
+
+    if (activeTab.kind === "scheduled") {
+      return (
+        <ScheduledWorkspace
+          tasks={scheduledTasks}
+          logsByTaskId={scheduledLogsByTaskId}
+          selectedTaskId={activeTaskId ?? undefined}
+          onSelectTask={handleSelectScheduledTask}
+          onCreateTask={handleCreateScheduledTask}
+          onRunTask={handleRunScheduledTask}
+          onToggleTask={handleToggleScheduledTask}
+          busyTaskId={null}
+        />
+      );
+    }
+
+    return (
+      <SettingsWorkspace
+        providers={settingsProviders}
+        activeProviderId={config?.provider.activeProfileId}
+        onSelectProvider={selectProviderProfile}
+        onAddProvider={handleAddProviderFromSettings}
+        onTestProvider={handleTestSelectedProvider}
+        onSaveProvider={handleSaveProviderConfig}
+        providerBusy={providerConfigBusy}
+        providerTestBusy={providerTestBusy}
+        permissionMode={approvalModeToSettingsMode(config?.policy.approvalMode)}
+        onPermissionModeChange={handlePermissionModeChange}
+      />
+    );
+  })();
+
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <p className="eyebrow">Local AI Coding Agent</p>
-          <h1>Sprint 1 Workspace</h1>
-          <p className="muted">
-            The UI uses bridge-driven data first and falls back to a controlled browser mock path when Tauri is
-            unavailable.
-          </p>
-        </div>
-
-        <section className="panel">
-          <div className="section-header">
-            <h2>Bridge</h2>
-            <span className={`badge ${hostStatus?.runtimeRunning ? "ok" : "warn"}`}>
-              {describeMode(hostStatus)}
-            </span>
-          </div>
-          <dl className="meta">
-            <div>
-              <dt>Transport</dt>
-              <dd>{hostStatus?.runtimeTransport ?? (loading ? "loading..." : "unavailable")}</dd>
-            </div>
-            <div>
-              <dt>Event Channel</dt>
-              <dd>{hostStatus?.eventChannel ?? "agent://event"}</dd>
-            </div>
-            <div>
-              <dt>Model</dt>
-              <dd>{config?.provider.defaultModel ?? "loading..."}</dd>
-            </div>
-            <div>
-              <dt>Approval</dt>
-              <dd>{config?.policy.approvalMode ?? "loading..."}</dd>
-            </div>
-          </dl>
-        </section>
-
-        <section className="panel">
-          <div className="section-header">
-            <h2>Provider</h2>
-            <span className={`badge ${providerStatusView.badgeClass}`}>
-              {providerStatusView.label}
-            </span>
-          </div>
-          <div className="provider-form">
-            <label className="field">
-              <span>Profile</span>
-              <select value={activeProviderProfileId} onChange={(event) => selectProviderProfile(event.target.value)}>
-                {(config?.provider.profiles ?? []).map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="provider-profile-actions">
-              <button
-                type="button"
-                className="secondary"
-                onClick={handleCreateProviderProfile}
-                disabled={providerConfigBusy || loading || !config}
-              >
-                New Profile
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={handleCopyProviderProfile}
-                disabled={providerConfigBusy || loading || !config}
-              >
-                Copy Profile
-              </button>
-              <button
-                type="button"
-                className="secondary danger"
-                onClick={handleDeleteProviderProfile}
-                disabled={providerConfigBusy || loading || !config}
-              >
-                Delete Profile
-              </button>
-            </div>
-            <label className="field">
-              <span>Profile name</span>
-              <input
-                value={providerSettings.name}
-                onChange={(event) => updateProviderSetting("name", event.target.value)}
-                placeholder="Default"
-              />
-            </label>
-            <label className="field">
-              <span>Mode</span>
-              <select
-                value={providerSettings.mode}
-                onChange={(event) => updateProviderSetting("mode", event.target.value as ProviderMode)}
-              >
-                <option value="mock">Mock / deterministic</option>
-                <option value="openai-compatible">OpenAI compatible</option>
-              </select>
-            </label>
-            <label className="field">
-              <span>Base URL</span>
-              <input
-                value={providerSettings.baseUrl}
-                onChange={(event) => updateProviderSetting("baseUrl", event.target.value)}
-                placeholder={DEFAULT_PROVIDER_BASE_URL}
-              />
-            </label>
-            <label className="field">
-              <span>Model</span>
-              <input
-                value={providerSettings.model}
-                onChange={(event) => updateProviderSetting("model", event.target.value)}
-                placeholder={DEFAULT_PROVIDER_MODEL}
-              />
-            </label>
-            <label className="field">
-              <span>API key env var</span>
-              <input
-                value={providerSettings.apiKeyEnvVarName}
-                onChange={(event) => updateProviderSetting("apiKeyEnvVarName", event.target.value)}
-                placeholder={DEFAULT_PROVIDER_API_KEY_ENV_VAR}
-              />
-            </label>
-            <div className="field-grid">
-              <label className="field">
-                <span>Temperature</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="2"
-                  step="0.1"
-                  value={providerSettings.temperature}
-                  onChange={(event) => updateProviderSetting("temperature", event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>Max tokens</span>
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={providerSettings.maxTokens}
-                  onChange={(event) => updateProviderSetting("maxTokens", event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>Max context</span>
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={providerSettings.maxContextTokens}
-                  onChange={(event) => updateProviderSetting("maxContextTokens", event.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>Timeout sec</span>
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={providerSettings.timeout}
-                  onChange={(event) => updateProviderSetting("timeout", event.target.value)}
-                />
-              </label>
-            </div>
-          </div>
-          <p className="help-text">
-            API key values are not stored here. Set {providerSettings.apiKeyEnvVarName || DEFAULT_PROVIDER_API_KEY_ENV_VAR}
-            in the runtime environment before using a real provider.
-          </p>
-          {providerRuntimeNotice ? <p className="provider-runtime-notice">{providerRuntimeNotice}</p> : null}
-          <div className={`provider-status ${providerHealthView.badgeClass}`}>
-            <strong>{providerTestResult?.message ?? "Most recent health check for this profile."}</strong>
-            <dl className="provider-detail-grid">
-              <div>
-                <dt>Profile</dt>
-                <dd>{providerTestResult?.profileName ?? providerSettings.name}</dd>
-              </div>
-              <div>
-                <dt>Base URL</dt>
-                <dd className="break">{providerTestResult?.baseUrl ?? providerSettings.baseUrl}</dd>
-              </div>
-              <div>
-                <dt>Model</dt>
-                <dd>{providerTestResult?.model ?? providerSettings.model}</dd>
-              </div>
-              <div>
-                <dt>Env var</dt>
-                <dd>{providerTestResult?.checkedEnvVarName ?? providerSettings.apiKeyEnvVarName}</dd>
-              </div>
-              <div>
-                <dt>Last checked</dt>
-                <dd>{providerHealthView.checkedAtText}</dd>
-              </div>
-              <div>
-                <dt>Status</dt>
-                <dd>{providerHealthView.statusText}</dd>
-              </div>
-              <div className="provider-detail-full">
-                <dt>Error summary</dt>
-                <dd>{providerHealthView.summaryText}</dd>
-              </div>
-            </dl>
-          </div>
-          <div className="actions split-actions">
-            <button type="button" onClick={handleSaveProviderConfig} disabled={providerConfigBusy || loading || !config}>
-              {providerConfigBusy ? "Saving..." : "Save Current Profile"}
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={handleTestProvider}
-              disabled={providerTestBusy || loading || !config}
-            >
-              {providerTestBusy ? "Testing..." : "Test Connection"}
-            </button>
-          </div>
-        </section>
-
-        <section className="panel">
-          <h2>Workspace</h2>
-          <label className="field">
-            <span>Root Path</span>
-            <input
-              value={workspacePath}
-              onChange={(event) => setWorkspacePath(event.target.value)}
-              placeholder={DEFAULT_WORKSPACE_PATH}
-            />
-          </label>
-          <button type="button" onClick={handleOpenWorkspace} disabled={workspaceBusy || loading}>
-            {workspaceBusy ? "Connecting..." : "Connect Workspace"}
-          </button>
-          <dl className="meta compact">
-            <div>
-              <dt>Name</dt>
-              <dd>{workspace?.name ?? "not connected"}</dd>
-            </div>
-            <div>
-              <dt>Root</dt>
-              <dd className="break">{workspace?.rootPath ?? "waiting for initialization"}</dd>
-            </div>
-          </dl>
-        </section>
-
-        <section className="panel">
-          <div className="section-header">
-            <h2>Search Config</h2>
-            <button type="button" onClick={handleSaveSearchConfig} disabled={searchConfigBusy || loading || !config}>
-              {searchConfigBusy ? "Saving..." : "Save"}
-            </button>
-          </div>
-          <label className="field">
-            <span>Glob</span>
-            <input value={searchGlob} onChange={(event) => setSearchGlob(event.target.value)} placeholder="app/src/**/*.tsx" />
-          </label>
-          <label className="field">
-            <span>Ignore</span>
-            <textarea
-              className="short"
-              value={searchIgnoreText}
-              onChange={(event) => setSearchIgnoreText(event.target.value)}
-              placeholder={".git\nnode_modules\ndist"}
-            />
-          </label>
-          <p className="help-text">One glob or ignore pattern per line. Blank glob means search every non-ignored file.</p>
-        </section>
-
-        <section className="panel">
-          <div className="section-header">
-            <h2>Command Policy</h2>
-            <button
-              type="button"
-              onClick={handleSaveCommandPolicyConfig}
-              disabled={commandPolicyBusy || loading || !config}
-            >
-              {commandPolicyBusy ? "Saving..." : "Save"}
-            </button>
-          </div>
-          <div className="config-form">
-            <label className="field">
-              <span>Allowed shell</span>
-              <select
-                value={commandPolicySettings.allowedShell}
-                onChange={(event) =>
-                  updateCommandPolicySetting(
-                    "allowedShell",
-                    event.target.value as CommandPolicyForm["allowedShell"],
-                  )}
-              >
-                <option value="powershell">PowerShell</option>
-                <option value="bash">Bash</option>
-                <option value="zsh">Zsh</option>
-              </select>
-            </label>
-            <label className="field">
-              <span>Allowed commands / allowlist</span>
-              <textarea
-                className="short config-textarea"
-                value={commandPolicySettings.allowedCommands}
-                onChange={(event) => updateCommandPolicySetting("allowedCommands", event.target.value)}
-                placeholder={"git\nnpm\npytest"}
-              />
-            </label>
-            <label className="field">
-              <span>Denied commands / denylist</span>
-              <textarea
-                className="short config-textarea"
-                value={commandPolicySettings.deniedCommands}
-                onChange={(event) => updateCommandPolicySetting("deniedCommands", event.target.value)}
-                placeholder={"del\nRemove-Item\ncurl"}
-              />
-            </label>
-            <label className="field">
-              <span>Blocked patterns</span>
-              <textarea
-                className="short config-textarea"
-                value={commandPolicySettings.blockedPatterns}
-                onChange={(event) => updateCommandPolicySetting("blockedPatterns", event.target.value)}
-                placeholder={"rm -rf\nshutdown\nformat"}
-              />
-            </label>
-            <label className="field">
-              <span>Allowed cwd roots</span>
-              <textarea
-                className="short config-textarea"
-                value={commandPolicySettings.allowedCwdRoots}
-                onChange={(event) => updateCommandPolicySetting("allowedCwdRoots", event.target.value)}
-                placeholder={workspacePath || DEFAULT_WORKSPACE_PATH}
-              />
-            </label>
-          </div>
-          <p className="help-text">
-            One entry per line. Saving keeps `allowedCommands` and `allowlist` mirrored, and also mirrors
-            `deniedCommands` with `denylist`.
-          </p>
-        </section>
-
-        <section className="panel">
-          <div className="section-header">
-            <h2>Session History</h2>
-            <button type="button" onClick={() => refreshSessionHistory()} disabled={sessionListBusy || loading}>
-              {sessionListBusy ? "Refreshing..." : "Refresh"}
-            </button>
-          </div>
-          <ul className="history-list">
-            {sessions.length > 0 ? (
-              sessions.map((item) => (
-                <li key={item.id}>
-                  <button
-                    type="button"
-                    className={`history-card ${session?.id === item.id ? "active" : ""}`}
-                    onClick={() => selectSession(item)}
-                  >
-                    <strong>{item.title}</strong>
-                    <span>{item.status}</span>
-                    <span>{formatTimestamp(item.updatedAt)}</span>
-                    {item.summary ? <span className="muted">{item.summary}</span> : null}
-                  </button>
-                </li>
-              ))
-            ) : (
-              <li className="empty-state">
-                <strong>No sessions yet</strong>
-                <span>Create one or send a message to populate history.</span>
-              </li>
-            )}
-          </ul>
-        </section>
-
-        <section className="panel">
-          <h2>Session</h2>
-          <label className="field">
-            <span>Title</span>
-            <input
-              value={sessionTitle}
-              onChange={(event) => setSessionTitle(event.target.value)}
-              placeholder={DEFAULT_SESSION_TITLE}
-            />
-          </label>
-          <button type="button" onClick={handleCreateSession} disabled={sessionBusy || loading}>
-            {sessionBusy ? "Creating..." : "Create Session"}
-          </button>
-          <dl className="meta compact">
-            <div>
-              <dt>ID</dt>
-              <dd>{session?.id ?? "not created"}</dd>
-            </div>
-            <div>
-              <dt>Status</dt>
-              <dd>{session?.status ?? "idle"}</dd>
-            </div>
-            <div>
-              <dt>Updated</dt>
-              <dd>{formatTimestamp(session?.updatedAt)}</dd>
-            </div>
-          </dl>
-        </section>
-
-        <section className="panel">
-          <div className="section-header">
-            <h2>Current Task</h2>
-            <button type="button" onClick={handleRefreshTask} disabled={!task || refreshBusy}>
-              {refreshBusy ? "Refreshing..." : "Refresh"}
-            </button>
-          </div>
-          <dl className="meta compact">
-            <div>
-              <dt>ID</dt>
-              <dd>{task?.id ?? "no task yet"}</dd>
-            </div>
-            <div>
-              <dt>Status</dt>
-              <dd>
-                <span className={`badge ${getTaskBadgeClass(task?.status)}`}>
-                  {task?.status ?? "idle"}
-                </span>
-              </dd>
-            </div>
-            <div>
-              <dt>Error</dt>
-              <dd>{task?.errorCode ?? "none"}</dd>
-            </div>
-            <div>
-              <dt>Updated</dt>
-              <dd>{formatTimestamp(task?.updatedAt)}</dd>
-            </div>
-          </dl>
-          {task && taskControlActions.length > 0 ? (
-            <div className="task-controls">
-              <div className="section-header task-controls-header">
-                <h3>Task Controls</h3>
-                <span className="muted">Active task: {task.id}</span>
-              </div>
-              <div className="task-control-actions">
-                {taskControlActions.map((control) => {
-                  const isBusy = taskControlBusyAction === control.action;
-                  return (
-                    <button
-                      key={control.action}
-                      type="button"
-                      className={`secondary ${control.tone === "warn" ? "warn" : ""}`}
-                      onClick={() => handleTaskControl(control.action)}
-                      disabled={Boolean(taskControlBusyAction)}
-                    >
-                      {isBusy ? control.busyLabel : control.label}
-                    </button>
-                  );
-                })}
-              </div>
-              {taskControlError ? <p className="error-banner compact">{taskControlError}</p> : null}
-            </div>
-          ) : null}
-        </section>
-
-        <section className="panel">
-          <div className="section-header">
-            <h2>Task History</h2>
-            <span className="muted">{visibleTaskHistory.length} item(s)</span>
-          </div>
-          <ul className="history-list">
-            {visibleTaskHistory.length > 0 ? (
-              visibleTaskHistory.map((item) => (
-                <li key={item.id}>
-                  <button
-                    type="button"
-                    className={`history-card ${activeTaskId === item.id ? "active" : ""}`}
-                    onClick={() => selectTask(item.id)}
-                  >
-                    <strong>{item.goal}</strong>
-                    <span>
-                      <span className={`badge mini ${getTaskBadgeClass(item.status)}`}>
-                        {item.status}
-                      </span>
-                    </span>
-                    <span>{formatTimestamp(item.updatedAt)}</span>
-                  </button>
-                </li>
-              ))
-            ) : (
-              <li className="empty-state">
-                <strong>No tasks yet</strong>
-                <span>Send a message to start recording task history.</span>
-              </li>
-            )}
-          </ul>
-        </section>
-      </aside>
-
-      <main className="main">
-        <section className="panel hero">
-          <p className="eyebrow">Current Goal</p>
-          <h2>{task?.goal ?? "Connect a workspace and create a session first."}</h2>
-          <p className="muted">
-            On startup the app reads host status, config and session history. After you send a message, task, plan and
-            event stream panels all update from bridge-driven data.
-          </p>
-          {task?.resultSummary ? <p className="success-banner">{task.resultSummary}</p> : null}
-          {error ? <p className="error-banner">{error}</p> : null}
-        </section>
-
-        <section className="grid">
-          <section className="panel">
-            <div className="section-header">
-              <h2>Plan</h2>
-              <span className="muted">{planSteps.length} step(s)</span>
-            </div>
-            <ul className="steps">
-              {planSteps.length > 0 ? (
-                planSteps.map((step) => (
-                  <li key={step.id} data-status={step.status}>
-                    <strong>{step.title}</strong>
-                    <span>{step.detail ?? "No detail yet."}</span>
-                  </li>
-                ))
-              ) : (
-                <li>
-                  <strong>No plan yet</strong>
-                  <span>Send a message and the runtime will populate the first task plan.</span>
-                </li>
-              )}
-            </ul>
-          </section>
-
-          <section className="panel">
-            <div className="section-header">
-              <h2>Chat</h2>
-              <span className="muted">
-                {visibleChatMessages.length > 0
-                  ? `${visibleChatMessages.length} message(s)`
-                  : "waiting"}
-              </span>
-            </div>
-            <div className="chat-list">
-              {visibleChatMessages.length > 0 ? (
-                visibleChatMessages.map((message) => (
-                  <article key={message.id} className="chat-message" data-role={message.role}>
-                    <div className="chat-meta">
-                      <strong>{message.role}</strong>
-                      <span>{formatTimestamp(message.updatedAt)}</span>
-                      {message.streaming ? <span className="streaming-pill">streaming</span> : null}
-                    </div>
-                    <p>{message.content}</p>
-                  </article>
-                ))
-              ) : (
-                <p className="empty-state compact">
-                  <strong>No chat messages yet</strong>
-                  <span>User messages appear after send; assistant.token events stream into one assistant bubble.</span>
-                </p>
-              )}
-            </div>
-          </section>
-        </section>
-
-        <section className="panel">
-          <div className="section-header">
-            <h2>Composer</h2>
-            <span className="muted">
-              {hostStatus?.runtimeRunning ? "Connected to desktop runtime" : "Using browser/mock fallback"}
-            </span>
-          </div>
-          <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={DEFAULT_PROMPT} />
-          {providerRuntimeNotice ? <p className="provider-runtime-notice composer">{providerRuntimeNotice}</p> : null}
-          <div className="actions">
-            <button type="button" onClick={handleSendMessage} disabled={messageBusy || loading}>
-              {messageBusy ? "Sending..." : "Send Message"}
-            </button>
-            <span className="muted">
-              Session: {session?.title ?? "auto-create on send"} | Workspace: {workspace?.name ?? "auto-connect on send"}
-            </span>
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="section-header">
-            <h2>Runtime Timeline</h2>
-            <span className="muted">{eventItems.length} event(s)</span>
-          </div>
-          <section className="trace-stack">
-            <div className="section-header approval-header">
-              <h3>Persistent Trace</h3>
-              <div className="timeline-badges">
-                <span className="muted">{traceItems.length} trace item(s)</span>
-                <button type="button" onClick={handleRefreshTrace} disabled={!activeTaskId || traceBusy}>
-                  {traceBusy ? "Loading..." : "Refresh"}
-                </button>
-              </div>
-            </div>
-            {traceError ? <p className="error-banner compact">{traceError}</p> : null}
-            {traceItems.length > 0 ? (
-              <ul className="trace-list">
-                {traceItems.map((item) => (
-                  <li key={item.id} className="trace-card">
-                    <div className="timeline-row">
-                      <div className="timeline-title">
-                        <strong>{item.type}</strong>
-                        <span className="muted">source: {item.source}</span>
-                      </div>
-                      <div className="timeline-badges">
-                        <span className="badge mini neutral">#{item.sequence}</span>
-                        <span>{item.time}</span>
-                      </div>
-                    </div>
-                    <dl className="meta compact trace-meta">
-                      <div>
-                        <dt>related</dt>
-                        <dd className="break">{item.relatedId}</dd>
-                      </div>
-                      <div>
-                        <dt>task</dt>
-                        <dd className="break">{activeTaskId ?? "none"}</dd>
-                      </div>
-                    </dl>
-                    <code className="trace-payload">{item.payloadSummary}</code>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="empty-state compact">
-                <strong>No persistent trace loaded</strong>
-                <span>
-                  Select a task or click Refresh to load trace.list. Runtime events and tool timeline remain separate.
-                </span>
-              </p>
-            )}
-          </section>
-          <section className="tool-stack">
-            <div className="section-header approval-header">
-              <h3>Tool Timeline</h3>
-              <span className="muted">{toolTimelineItems.length} call(s)</span>
-            </div>
-            {toolTimelineItems.length > 0 ? (
-              <ul className="tool-list">
-                {toolTimelineItems.map((item) => {
-                  const badgeClass =
-                    item.status === "completed" ? "ok" : item.status === "failed" ? "error" : "info";
-                  return (
-                    <li key={item.id} className="tool-card" data-status={item.status}>
-                      <div className="section-header approval-topline">
-                        <div>
-                          <strong>{item.toolName}</strong>
-                          <span className="muted">toolCallId: {item.toolCallId}</span>
-                        </div>
-                        <span className={`badge ${badgeClass}`}>{item.status}</span>
-                      </div>
-                      <dl className="meta compact tool-meta">
-                        <div>
-                          <dt>duration</dt>
-                          <dd>{formatDuration(item.durationMs)}</dd>
-                        </div>
-                        <div>
-                          <dt>task</dt>
-                          <dd className="break">{item.taskId}</dd>
-                        </div>
-                        <div>
-                          <dt>started</dt>
-                          <dd>{formatTimestamp(item.startedAt)}</dd>
-                        </div>
-                        <div>
-                          <dt>updated</dt>
-                          <dd>{formatTimestamp(item.updatedAt)}</dd>
-                        </div>
-                      </dl>
-                      <div className="tool-summary-grid">
-                        <div>
-                          <span className="label">Args</span>
-                          <code>{item.argsSummary}</code>
-                        </div>
-                        <div>
-                          <span className="label">{item.status === "failed" ? "Error" : "Result"}</span>
-                          <code>{item.errorSummary ?? item.resultSummary}</code>
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <p className="empty-state compact">
-                <strong>No tool calls yet</strong>
-                <span>tool.started, tool.completed and tool.failed events will aggregate here by toolCallId.</span>
-              </p>
-            )}
-          </section>
-          <section className="patch-stack">
-            <div className="section-header approval-header">
-              <h3>Patches</h3>
-              <span className="muted">{patchCards.length} item(s)</span>
-            </div>
-            {patchCards.length > 0 ? (
-              <ul className="patch-list">
-                {patchCards.map((item) => {
-                  const approvalPending = item.approvalStatus === "pending" && item.approvalId;
-                  const hasLoadedDiff = Boolean(patchCacheById[item.patchId]?.diffText || item.diffText);
-                  const diffText = patchCacheById[item.patchId]?.diffText ?? item.diffText;
-                  const badgeClass =
-                    item.status === "approved" || item.status === "applied"
-                      ? "ok"
-                      : item.status === "rejected" || item.status === "failed"
-                        ? "error"
-                        : "warn";
-
-                  return (
-                    <li key={item.patchId} className="patch-card" data-status={item.status}>
-                      <div className="section-header approval-topline">
-                        <div>
-                          <strong>{item.summary}</strong>
-                          <span className="muted">patchId: {item.patchId}</span>
-                        </div>
-                        <span className={`badge ${badgeClass}`}>{item.status}</span>
-                      </div>
-                      <dl className="meta compact patch-meta">
-                        <div>
-                          <dt>files changed</dt>
-                          <dd>{item.filesChanged}</dd>
-                        </div>
-                        <div>
-                          <dt>task</dt>
-                          <dd className="break">{item.taskId}</dd>
-                        </div>
-                        <div>
-                          <dt>requested</dt>
-                          <dd>{formatTimestamp(item.requestedAt)}</dd>
-                        </div>
-                        <div>
-                          <dt>updated</dt>
-                          <dd>{formatTimestamp(item.updatedAt)}</dd>
-                        </div>
-                      </dl>
-                      <div className="patch-actions">
-                        <button
-                          type="button"
-                          onClick={() => handleLoadPatchDiff(item.patchId)}
-                          disabled={patchBusyId === item.patchId || loading}
-                        >
-                          {patchBusyId === item.patchId
-                            ? "Loading..."
-                            : hasLoadedDiff
-                              ? "Reload diff"
-                              : "Load diff"}
-                        </button>
-                        {approvalPending ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => handleApprovalSubmit(item.approvalId as string, "approved")}
-                              disabled={approvalBusyId === item.approvalId || loading}
-                            >
-                              Approve patch
-                            </button>
-                            <button
-                              type="button"
-                              className="secondary"
-                              onClick={() => handleApprovalSubmit(item.approvalId as string, "rejected")}
-                              disabled={approvalBusyId === item.approvalId || loading}
-                            >
-                              Reject patch
-                            </button>
-                          </>
-                        ) : null}
-                      </div>
-                      {item.approvalStatus ? (
-                        <p className="muted approval-decision">
-                          Approval: {item.approvalStatus}
-                          {item.approvalResolvedAt ? ` | ${formatTimestamp(item.approvalResolvedAt)}` : ""}
-                        </p>
-                      ) : null}
-                      <pre className="patch-diff">
-                        {diffText ?? "Diff not loaded yet. Click Load diff to fetch diff.get."}
-                      </pre>
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <p className="empty-state compact">
-                <strong>No patches yet</strong>
-                <span>When the runtime emits patch.proposed, the patch summary and diff will show up here.</span>
-              </p>
-            )}
-          </section>
-          <section className="approval-stack">
-            <div className="section-header approval-header">
-              <h3>Approvals</h3>
-              <span className="muted">{approvalCards.length} item(s)</span>
-            </div>
-            {approvalCards.length > 0 ? (
-              <ul className="approval-list">
-                {approvalCards.map((item) => {
-                  const outputLines = commandOutputByTaskId.get(item.taskId) ?? [];
-                  const isPending = item.status === "pending";
-                  const patch = item.patchId ? patchCardById.get(item.patchId) : undefined;
-                  const diffText = item.patchId
-                    ? patchCacheById[item.patchId]?.diffText ?? patch?.diffText
-                    : undefined;
-                  const hasLoadedDiff = Boolean(diffText);
-                  const isPatchApproval = item.kind === "apply_patch";
-                  const cardTitle = isPatchApproval
-                    ? item.patchSummary ?? patch?.summary ?? "Apply patch"
-                    : item.command;
-                  return (
-                    <li key={item.approvalId} className="approval-card" data-status={item.status}>
-                      <div className="section-header approval-topline">
-                        <div>
-                          <strong>{cardTitle}</strong>
-                          <span className="muted">
-                            {item.kind} | approvalId: {item.approvalId}
-                          </span>
-                        </div>
-                        <span className={`badge ${getApprovalBadgeClass(item.status)}`}>{item.status}</span>
-                      </div>
-
-                      {isPatchApproval ? (
-                        <>
-                          <dl className="meta compact approval-meta">
-                            <div>
-                              <dt>files changed</dt>
-                              <dd>{item.filesChanged ?? patch?.filesChanged ?? "not recorded"}</dd>
-                            </div>
-                            <div>
-                              <dt>patch id</dt>
-                              <dd className="break">{item.patchId ?? "not recorded"}</dd>
-                            </div>
-                            <div>
-                              <dt>summary</dt>
-                              <dd>{item.patchSummary ?? patch?.summary ?? item.requestSummary}</dd>
-                            </div>
-                            <div>
-                              <dt>risk</dt>
-                              <dd>{item.risk}</dd>
-                            </div>
-                          </dl>
-                          <div className="approval-request-summary">
-                            <span className="label">Diff preview</span>
-                            <code>{diffText ? diffText.slice(0, 900) : "Diff not loaded yet."}</code>
-                          </div>
-                          <div className="patch-actions">
-                            {item.patchId ? (
-                              <button
-                                type="button"
-                                onClick={() => handleLoadPatchDiff(item.patchId as string)}
-                                disabled={patchBusyId === item.patchId || loading}
-                              >
-                                {patchBusyId === item.patchId
-                                  ? "Loading..."
-                                  : hasLoadedDiff
-                                    ? "Reload diff"
-                                    : "Load diff"}
-                              </button>
-                            ) : null}
-                          </div>
-                          {diffText ? <pre className="patch-diff">{diffText}</pre> : null}
-                        </>
-                      ) : (
-                        <>
-                          <dl className="meta compact approval-meta">
-                            <div>
-                              <dt>command</dt>
-                              <dd className="break">{item.command}</dd>
-                            </div>
-                            <div>
-                              <dt>cwd</dt>
-                              <dd className="break">{item.cwd}</dd>
-                            </div>
-                            <div>
-                              <dt>shell</dt>
-                              <dd>{item.shell}</dd>
-                            </div>
-                            <div>
-                              <dt>timeout</dt>
-                              <dd>{item.timeoutMs > 0 ? `${item.timeoutMs} ms` : "not recorded"}</dd>
-                            </div>
-                            <div>
-                              <dt>risk</dt>
-                              <dd>{item.risk}</dd>
-                            </div>
-                          </dl>
-                          <div className="approval-request-summary">
-                            <span className="label">Request summary</span>
-                            <code>{item.requestSummary}</code>
-                          </div>
-                          <div className="approval-request-summary">
-                            <span className="label">Approval request JSON</span>
-                            <code>{item.requestJson}</code>
-                          </div>
-                          {outputLines.length > 0 ? (
-                            <pre className="approval-output">{outputLines.join("\n")}</pre>
-                          ) : null}
-                        </>
-                      )}
-
-                      <dl className="meta compact approval-meta approval-trace-meta">
-                        <div>
-                          <dt>decision</dt>
-                          <dd>{item.status === "pending" ? "pending user decision" : item.status}</dd>
-                        </div>
-                        <div>
-                          <dt>task</dt>
-                          <dd className="break">{item.taskId}</dd>
-                        </div>
-                        <div>
-                          <dt>requested</dt>
-                          <dd>{formatTimestamp(item.requestedAt)}</dd>
-                        </div>
-                        <div>
-                          <dt>resolved</dt>
-                          <dd>{item.resolvedAt ? formatTimestamp(item.resolvedAt) : "not resolved"}</dd>
-                        </div>
-                        <div>
-                          <dt>trace hint</dt>
-                          <dd className="break">
-                            Refresh Persistent Trace and filter by approvalId/taskId if event history is incomplete.
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>event ids</dt>
-                          <dd className="break">
-                            requested {item.requestedEventId ?? "unknown"}
-                            {item.resolvedEventId ? ` | resolved ${item.resolvedEventId}` : ""}
-                          </dd>
-                        </div>
-                      </dl>
-
-                      {isPending ? (
-                        <div className="approval-actions">
-                          <button
-                            type="button"
-                            onClick={() => handleApprovalSubmit(item.approvalId, "approved")}
-                            disabled={approvalBusyId === item.approvalId || loading}
-                          >
-                            {approvalBusyId === item.approvalId ? "Submitting..." : "Approve"}
-                          </button>
-                          <button
-                            type="button"
-                            className="secondary"
-                            onClick={() => handleApprovalSubmit(item.approvalId, "rejected")}
-                            disabled={approvalBusyId === item.approvalId || loading}
-                          >
-                            Reject
-                          </button>
-                        </div>
-                      ) : (
-                        <p className="muted approval-decision">
-                          Decision: {item.status}
-                          {item.resolvedAt ? ` | ${formatTimestamp(item.resolvedAt)}` : ""}
-                        </p>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <p className="empty-state compact">
-                <strong>No approval requests yet</strong>
-                <span>When the runtime pauses on a command, the pending approval card appears here.</span>
-              </p>
-            )}
-          </section>
-          <ul className="timeline rich">
-            {eventItems.length > 0 ? (
-              eventItems.map((item) => (
-                <li key={item.id} data-category={item.category}>
-                  <div className="timeline-row">
-                    <div className="timeline-title">
-                      <strong>{item.title}</strong>
-                      <span className="muted">{item.type}</span>
-                    </div>
-                    <div className="timeline-badges">
-                      {item.status ? <span className="badge mini neutral">{item.status}</span> : null}
-                      <span>{item.time}</span>
-                    </div>
-                  </div>
-                  <span>{item.summary}</span>
-                  {item.relatedId ? <span className="muted">Related: {item.relatedId}</span> : null}
-                  {config?.ui.showRawEvents ? <pre className="raw">{item.raw}</pre> : null}
-                </li>
-              ))
-            ) : (
-              <li>
-                <strong>No events yet</strong>
-                <span>Initialize the workspace and send a message to populate the runtime event stream.</span>
-              </li>
-            )}
-          </ul>
-        </section>
-      </main>
-    </div>
+    <AppShell
+      tabs={openTabs}
+      activeTabId={activeTabId}
+      sessions={sessions}
+      activeSessionId={session?.id ?? null}
+      workspaceName={workspaceName}
+      composerVisible={composerVisible}
+      promptValue={prompt}
+      onPromptChange={setPrompt}
+      onOpenSystemTab={handleOpenSystemTab}
+      onOpenSessionTab={handleOpenSessionTab}
+      onActivateTab={handleActivateTab}
+      onCloseTab={handleCloseTab}
+      onSubmitPrompt={handleSendMessage}
+      disabled={loading || messageBusy}
+      providerLabel={providerLabel}
+      cwdLabel={cwdLabel}
+    >
+      {error ? <p className="error-banner compact">{error}</p> : null}
+      {workspaceContent}
+    </AppShell>
   );
 }

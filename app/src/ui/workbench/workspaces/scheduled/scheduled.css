@@ -1,0 +1,419 @@
+.scheduled-workspace {
+  min-height: 100%;
+  padding: clamp(24px, 4vw, 56px);
+  color: #261a12;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(177, 103, 49, 0.16), transparent 28%),
+    linear-gradient(180deg, rgba(255, 249, 235, 0.82), rgba(225, 202, 163, 0.7)),
+    repeating-linear-gradient(
+      90deg,
+      rgba(80, 50, 30, 0.035) 0,
+      rgba(80, 50, 30, 0.035) 1px,
+      transparent 1px,
+      transparent 18px
+    );
+}
+
+.scheduled-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin: 0 auto 20px;
+  max-width: 1180px;
+}
+
+.scheduled-kicker {
+  margin: 0 0 8px;
+  color: #86522c;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+}
+
+.scheduled-heading h1 {
+  margin: 0;
+  color: #21150f;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2.7rem, 7vw, 5.8rem);
+  letter-spacing: -0.07em;
+  line-height: 0.9;
+}
+
+.scheduled-copy {
+  max-width: 680px;
+  margin: 18px 0 0;
+  color: #4d3829;
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.scheduled-create-button {
+  flex: 0 0 auto;
+  margin-top: 8px;
+  padding: 12px 18px;
+  border: 1px solid rgba(104, 62, 31, 0.48);
+  border-radius: 999px;
+  color: #fff6e5;
+  background: linear-gradient(145deg, #744221, #a56536);
+  box-shadow:
+    0 16px 34px rgba(91, 52, 25, 0.22),
+    inset 0 1px 0 rgba(255, 237, 204, 0.3);
+  font: inherit;
+  font-weight: 800;
+}
+
+.scheduled-create-button:disabled,
+.scheduled-task-actions button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+.scheduled-notice,
+.scheduled-metrics,
+.scheduled-ledger {
+  max-width: 1180px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+.scheduled-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px 18px;
+  border: 1px solid rgba(140, 91, 45, 0.3);
+  border-radius: 22px;
+  background: rgba(255, 248, 233, 0.66);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.56);
+}
+
+.scheduled-notice span {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #a86634;
+  box-shadow: 0 0 0 5px rgba(168, 102, 52, 0.13);
+}
+
+.scheduled-notice p {
+  margin: 0;
+  color: #503726;
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.scheduled-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.scheduled-metrics div,
+.scheduled-task-panel,
+.scheduled-log-panel {
+  border: 1px solid rgba(99, 63, 35, 0.23);
+  border-radius: 26px;
+  background:
+    linear-gradient(135deg, rgba(255, 252, 242, 0.82), rgba(240, 222, 188, 0.72)),
+    repeating-linear-gradient(
+      0deg,
+      rgba(74, 47, 29, 0.03) 0,
+      rgba(74, 47, 29, 0.03) 1px,
+      transparent 1px,
+      transparent 13px
+    );
+  box-shadow:
+    0 22px 58px rgba(69, 42, 20, 0.13),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+.scheduled-metrics div {
+  padding: 18px 20px;
+}
+
+.scheduled-metrics dt {
+  color: #81502c;
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.scheduled-metrics dd {
+  margin: 6px 0 0;
+  color: #21150f;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 2.45rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.scheduled-ledger {
+  display: grid;
+  grid-template-columns: minmax(0, 1.16fr) minmax(320px, 0.84fr);
+  gap: 18px;
+}
+
+.scheduled-task-panel,
+.scheduled-log-panel {
+  min-width: 0;
+  padding: 20px;
+}
+
+.scheduled-panel-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(110, 70, 37, 0.18);
+}
+
+.scheduled-panel-heading h2 {
+  margin: 0;
+  color: #251811;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.35rem;
+}
+
+.scheduled-panel-heading span {
+  overflow: hidden;
+  color: #80502c;
+  font-size: 0.84rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduled-task-list,
+.scheduled-log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.scheduled-task-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 0.48fr);
+  gap: 18px;
+  padding: 18px 0;
+  border-bottom: 1px solid rgba(99, 63, 35, 0.14);
+}
+
+.scheduled-task-item:last-child {
+  border-bottom: 0;
+}
+
+.scheduled-task-item[data-selected="true"] {
+  position: relative;
+}
+
+.scheduled-task-item[data-selected="true"]::before {
+  content: "";
+  position: absolute;
+  top: 18px;
+  bottom: 18px;
+  left: -20px;
+  width: 4px;
+  border-radius: 999px;
+  background: #9b5d2e;
+}
+
+.scheduled-task-main h3,
+.scheduled-empty h3 {
+  margin: 0;
+  color: #24170f;
+  font-size: 1.05rem;
+}
+
+.scheduled-task-select {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+}
+
+.scheduled-task-select:hover h3,
+.scheduled-task-select:focus-visible h3 {
+  color: #8f5229;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+}
+
+.scheduled-task-select:focus-visible,
+.scheduled-task-actions button:focus-visible,
+.scheduled-create-button:focus-visible {
+  outline: 2px solid rgba(151, 87, 41, 0.68);
+  outline-offset: 3px;
+}
+
+.scheduled-task-main p,
+.scheduled-empty p {
+  margin: 8px 0 0;
+  color: #604836;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.scheduled-task-meta {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  color: #6a4d38;
+  font-size: 0.83rem;
+}
+
+.scheduled-status {
+  width: max-content;
+  padding: 4px 9px;
+  border: 1px solid rgba(89, 62, 37, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 248, 235, 0.66);
+  font-weight: 900;
+}
+
+.scheduled-status[data-status="active"] {
+  color: #336348;
+}
+
+.scheduled-status[data-status="disabled"] {
+  color: #7a6b5e;
+}
+
+.scheduled-status[data-status="failed"] {
+  color: #9a3f2f;
+}
+
+.scheduled-status[data-status="completed"] {
+  color: #5f5c2f;
+}
+
+.scheduled-task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 3px;
+}
+
+.scheduled-task-actions button {
+  min-height: 28px;
+  padding: 5px 10px;
+  border: 1px solid rgba(89, 62, 37, 0.18);
+  border-radius: 999px;
+  color: #4d321f;
+  background:
+    linear-gradient(180deg, rgba(255, 252, 241, 0.84), rgba(229, 207, 169, 0.72));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+
+.scheduled-task-actions button:hover:not(:disabled) {
+  color: #fff6e5;
+  background: linear-gradient(145deg, #744221, #a56536);
+}
+
+.scheduled-task-busy {
+  color: #80502c;
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.scheduled-empty,
+.scheduled-log-empty {
+  margin-top: 18px;
+  padding: 28px;
+  border: 1px dashed rgba(111, 70, 38, 0.28);
+  border-radius: 22px;
+  background: rgba(255, 250, 239, 0.46);
+  color: #604836;
+}
+
+.scheduled-log-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.scheduled-log-row {
+  display: grid;
+  grid-template-columns: 92px 48px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(99, 63, 35, 0.12);
+  color: #4e3929;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.scheduled-log-row:last-child {
+  border-bottom: 0;
+}
+
+.scheduled-log-row time {
+  color: #7b5b43;
+}
+
+.scheduled-log-row strong {
+  font-weight: 900;
+}
+
+.scheduled-log-row strong[data-result="completed"] {
+  color: #376449;
+}
+
+.scheduled-log-row strong[data-result="failed"] {
+  color: #9a3f2f;
+}
+
+@media (max-width: 860px) {
+  .scheduled-heading,
+  .scheduled-ledger {
+    grid-template-columns: 1fr;
+  }
+
+  .scheduled-heading {
+    display: grid;
+  }
+
+  .scheduled-create-button {
+    justify-self: start;
+  }
+
+  .scheduled-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .scheduled-task-item,
+  .scheduled-log-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .scheduled-workspace {
+    padding: 18px;
+  }
+
+  .scheduled-task-panel,
+  .scheduled-log-panel {
+    padding: 16px;
+    border-radius: 22px;
+  }
+}

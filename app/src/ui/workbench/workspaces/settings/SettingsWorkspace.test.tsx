@@ -215,9 +215,47 @@ describe("SettingsWorkspace", () => {
 
     expect(screen.getAllByText("Last test: missing_env").length).toBeGreaterThan(0);
     expect(screen.getByText("Failure reason")).toBeInTheDocument();
-    expect(screen.getByText("OPENAI_API_KEY is not set.")).toBeInTheDocument();
+    expect(screen.getAllByText("OPENAI_API_KEY is not set.").length).toBeGreaterThan(0);
     expect(screen.getByText("Last test: ok")).toBeInTheDocument();
     expect(screen.getByText("primary-chat / stop")).toBeInTheDocument();
+  });
+
+  it("shows active provider, current model, save notice, and connection state", () => {
+    render(
+      <SettingsWorkspace
+        providers={[
+          {
+            id: "primary",
+            name: "Primary Provider",
+            endpoint: "https://primary.example.com",
+            models: ["primary-chat"],
+            status: "ready",
+            lastTest: {
+              ok: true,
+              status: "ok",
+              model: "primary-chat",
+              finishReason: "stop",
+              message: "Connection succeeded.",
+            },
+          },
+        ]}
+        activeProviderId="primary"
+        providerFeedback={{
+          providerId: "primary",
+          tone: "success",
+          title: "Saved and activated",
+          message: "Primary Provider is now the active provider.",
+          detail: "Model: primary-chat",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("ACTIVE")).toBeInTheDocument();
+    expect(screen.getByText("Active provider")).toBeInTheDocument();
+    expect(screen.getByText("Current model")).toBeInTheDocument();
+    expect(screen.getByText("Test passed")).toBeInTheDocument();
+    expect(screen.getByText("Saved and activated")).toBeInTheDocument();
+    expect(screen.getByText("Primary Provider is now the active provider.")).toBeInTheDocument();
   });
 
   it("uses provider selection, test and save callbacks", async () => {

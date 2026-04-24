@@ -60,6 +60,8 @@ import {
 
 const EVENT_CHANNEL = "agent://event";
 const browserEventTarget = new EventTarget();
+const RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE =
+  "Desktop runtime bridge is unavailable. Open Yuanbao Agent through the Tauri desktop app or explicitly enable browser mock mode for tests/previews.";
 
 export type RuntimeConfig = AppConfig & Required<Pick<AppConfig, "search">>;
 export type RuntimeCommandLog = CommandLogRecord;
@@ -103,6 +105,31 @@ export interface HostStatus {
 
 function isTauriBridgeAvailable(): boolean {
   return typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+}
+
+function isBrowserMockEnabled(): boolean {
+  const env =
+    (import.meta as ImportMeta & { env?: Record<string, string | boolean | undefined> }).env ?? {};
+  const windowFlag =
+    typeof window !== "undefined" &&
+    (window as Window & { __YUANBAO_ENABLE_BROWSER_MOCK__?: unknown }).__YUANBAO_ENABLE_BROWSER_MOCK__;
+
+  return (
+    windowFlag === true ||
+    windowFlag === "1" ||
+    env.VITE_YUANBAO_ENABLE_BROWSER_MOCK === "1" ||
+    env.VITE_YUANBAO_ENABLE_BROWSER_MOCK === "true"
+  );
+}
+
+function shouldUseBrowserMock(): boolean {
+  return !isTauriBridgeAvailable() && isBrowserMockEnabled();
+}
+
+function assertRuntimeBridgeAvailable(command: string): void {
+  if (!isTauriBridgeAvailable()) {
+    throw new Error(`${RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE} Command: ${command}.`);
+  }
 }
 
 function emitBrowserEvent(event: AgentEventEnvelope): void {
@@ -854,6 +881,7 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
 }
 
 async function invokeOrReject<T>(command: string, payload?: unknown): Promise<T> {
+  assertRuntimeBridgeAvailable(command);
   try {
     return await invoke<T>(command, payload as Record<string, unknown> | undefined);
   } catch (reason) {
@@ -867,14 +895,14 @@ function invokePayloadOrReject<T>(command: string, payload: unknown): Promise<T>
 
 export class RuntimeClient {
   async getHostStatus(): Promise<HostStatus> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       return buildMockHostStatus();
     }
     return invokeOrReject<HostStatus>("host_status");
   }
 
   async openWorkspace(path: string): Promise<WorkspaceOpenResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const result = {
         workspace: buildMockWorkspace(path),
       } satisfies WorkspaceOpenResult;
@@ -915,7 +943,7 @@ export class RuntimeClient {
   }
 
   async createSession(payload: SessionCreateParams): Promise<SessionCreateResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const result = {
         session: buildMockSession(payload.workspaceId, payload.title),
       } satisfies SessionCreateResult;
@@ -928,7 +956,7 @@ export class RuntimeClient {
   }
 
   async listSessions(): Promise<SessionListResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       return {
         sessions: sortSessions(mockState.sessions),
       };
@@ -940,7 +968,7 @@ export class RuntimeClient {
   }
 
   async sendMessage(payload: MessageSendParams): Promise<MessageSendResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const task = buildMockTask(payload.sessionId, payload.content);
       mockState.tasks[task.id] = task;
       emitMockTaskSequence(payload.sessionId, task);
@@ -950,7 +978,7 @@ export class RuntimeClient {
   }
 
   async approvalSubmit(payload: ApprovalSubmitParams): Promise<ApprovalSubmitResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const currentApproval = mockState.approvals[payload.approvalId];
       if (!currentApproval) {
         throw new Error(`Approval not found: ${payload.approvalId}`);
@@ -1117,7 +1145,7 @@ export class RuntimeClient {
   }
 
   async diffGet(payload: DiffGetParams): Promise<DiffGetResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const patch = mockState.patches[payload.patchId];
       if (!patch) {
         throw new Error(`Patch not found: ${payload.patchId}`);
@@ -1129,7 +1157,7 @@ export class RuntimeClient {
   }
 
   async commandLogList(payload: CommandLogListParams = {}): Promise<CommandLogListResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       return {
         commandLogs: filterMockCommandLogs(payload),
       };
@@ -1139,7 +1167,7 @@ export class RuntimeClient {
   }
 
   async commandLogGet(payload: CommandLogGetParams): Promise<CommandLogGetResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       return {
         commandLog: getMockCommandLog(payload.commandId),
       };
@@ -1149,7 +1177,7 @@ export class RuntimeClient {
   }
 
   async commandCancel(payload: CommandCancelParams): Promise<CommandCancelResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const commandLog = getMockCommandLog(payload.commandId);
       const sessionId = getMockCommandSessionId(commandLog);
       const now = Date.now();
@@ -1176,7 +1204,7 @@ export class RuntimeClient {
   }
 
   async getTask(taskId: string): Promise<TaskGetResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const task = mockState.tasks[taskId];
       if (!task) {
         throw new Error(`Task not found: ${taskId}`);
@@ -1187,21 +1215,21 @@ export class RuntimeClient {
   }
 
   async cancelTask(payload: TaskCancelParams): Promise<TaskControlResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       return applyMockTaskControl(payload.taskId, "cancelled", "task.cancelled");
     }
     return invokePayloadOrReject<TaskControlResult>("task_cancel", payload);
   }
 
   async pauseTask(payload: TaskPauseParams): Promise<TaskControlResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       return applyMockTaskControl(payload.taskId, "paused", "task.paused");
     }
     return invokePayloadOrReject<TaskControlResult>("task_pause", payload);
   }
 
   async resumeTask(payload: TaskResumeParams): Promise<TaskControlResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       return applyMockTaskControl(
         payload.taskId,
         (current) => (current.status === "paused" ? "waiting_approval" : current.status),
@@ -1212,7 +1240,7 @@ export class RuntimeClient {
   }
 
   async listTasks(payload: TaskListParams = {}): Promise<TaskListResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const tasks = Object.values(mockState.tasks)
         .filter((task) => !payload.sessionId || task.sessionId === payload.sessionId)
         .sort((left, right) => right.updatedAt - left.updatedAt);
@@ -1223,7 +1251,7 @@ export class RuntimeClient {
   }
 
   async createScheduledTask(payload: ScheduledTaskCreateParams): Promise<ScheduledTaskResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const task = buildMockScheduledTask(payload);
       mockState.scheduledTasks[task.id] = task;
       return { task };
@@ -1235,7 +1263,7 @@ export class RuntimeClient {
   }
 
   async listScheduledTasks(): Promise<ScheduledTaskListResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       return {
         tasks: sortScheduledTasks(Object.values(mockState.scheduledTasks)),
       };
@@ -1247,7 +1275,7 @@ export class RuntimeClient {
   }
 
   async updateScheduledTask(payload: ScheduledTaskUpdateParams): Promise<ScheduledTaskResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const task = updateMockScheduledTask(payload.taskId, (current) => {
         const enabled = payload.enabled ?? current.enabled;
         const schedule = payload.schedule?.trim() || current.schedule;
@@ -1271,7 +1299,7 @@ export class RuntimeClient {
   }
 
   async toggleScheduledTask(payload: ScheduledTaskToggleParams): Promise<ScheduledTaskResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const task = updateMockScheduledTask(payload.taskId, (current) => ({
         ...current,
         enabled: payload.enabled,
@@ -1288,7 +1316,7 @@ export class RuntimeClient {
   }
 
   async runScheduledTaskNow(payload: ScheduledTaskRunNowParams): Promise<ScheduledTaskRunNowResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const startedAt = Date.now();
       const task = updateMockScheduledTask(payload.taskId, (current) => ({
         ...current,
@@ -1319,7 +1347,7 @@ export class RuntimeClient {
   }
 
   async listScheduledTaskLogs(payload: ScheduledTaskLogsParams = {}): Promise<ScheduledTaskLogsResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const logs = sortScheduledRuns(mockState.scheduledRuns)
         .filter((run) => !payload.taskId || run.taskId === payload.taskId)
         .slice(0, payload.limit ?? 100);
@@ -1332,7 +1360,7 @@ export class RuntimeClient {
   }
 
   async listTrace(payload: TraceListParams): Promise<TraceListResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const limit = payload.limit ?? 50;
       return {
         traceEvents: mockState.traces
@@ -1346,7 +1374,7 @@ export class RuntimeClient {
   }
 
   async getConfig(): Promise<ConfigGetResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       return {
         config: mockState.config,
       };
@@ -1357,7 +1385,7 @@ export class RuntimeClient {
   }
 
   async updateConfig(payload: ConfigUpdateParams): Promise<ConfigUpdateResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       mockState.config = mergeRuntimeConfig(mockState.config, payload);
       return {
         config: mockState.config,
@@ -1370,7 +1398,7 @@ export class RuntimeClient {
   }
 
   async testProvider(payload: ProviderTestParams = {}): Promise<ProviderTestResult> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const result = buildProviderTestFallback(payload);
       rememberProviderTestResult(result);
       return result;
@@ -1382,7 +1410,7 @@ export class RuntimeClient {
   }
 
   async subscribeEvents(handler: (event: AgentEventEnvelope) => void): Promise<() => void> {
-    if (!isTauriBridgeAvailable()) {
+    if (shouldUseBrowserMock()) {
       const listener = (event: Event) => {
         handler((event as CustomEvent<AgentEventEnvelope>).detail);
       };
@@ -1393,6 +1421,7 @@ export class RuntimeClient {
       };
     }
 
+    assertRuntimeBridgeAvailable("agent_event_subscribe");
     const unlisten = await listen<AgentEventEnvelope>(EVENT_CHANNEL, (event) => {
       handler(event.payload);
     });

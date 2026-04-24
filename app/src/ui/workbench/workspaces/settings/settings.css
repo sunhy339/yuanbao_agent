@@ -285,6 +285,37 @@
   font-weight: 700;
 }
 
+.settings-provider-badge,
+.settings-status-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--wood-dark);
+  background: rgba(255, 251, 244, 0.72);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-provider-badge,
+.settings-status-pill.is-active,
+.settings-status-pill.is-pass {
+  border-color: rgba(21, 147, 72, 0.32);
+  color: #12683a;
+  background: rgba(21, 147, 72, 0.1);
+}
+
+.settings-status-pill.is-fail {
+  border-color: rgba(151, 51, 32, 0.34);
+  color: #8b2c1d;
+  background: rgba(151, 51, 32, 0.1);
+}
+
 .settings-provider-detail {
   padding: 20px;
   border: 1px solid var(--line);
@@ -297,6 +328,43 @@
 .settings-provider-detail h3 {
   margin: 6px 0 16px;
   font-size: 1.2rem;
+}
+
+.settings-provider-state {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 16px;
+}
+
+.settings-provider-state > div {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 251, 244, 0.6);
+}
+
+.settings-provider-state strong {
+  color: var(--ink);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.settings-provider-state small,
+.settings-provider-feedback span {
+  color: var(--ink-muted);
+  line-height: 1.4;
+}
+
+.settings-provider-feedback.is-success {
+  border-color: rgba(21, 147, 72, 0.32);
+  background: rgba(21, 147, 72, 0.08);
+}
+
+.settings-provider-feedback.is-danger {
+  border-color: rgba(151, 51, 32, 0.34);
+  background: rgba(151, 51, 32, 0.08);
 }
 
 .settings-provider-detail dl,

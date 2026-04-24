@@ -49,6 +49,14 @@ export interface SettingsProvider {
   lastTest?: SettingsProviderTestResult;
 }
 
+export interface SettingsProviderFeedback {
+  providerId?: string;
+  tone: "success" | "danger" | "info";
+  title: string;
+  message: string;
+  detail?: string;
+}
+
 export interface SettingsProviderPayload {
   name: string;
   note: string;
@@ -130,6 +138,7 @@ export interface SettingsWorkspaceProps {
   onSaveProvider?: (providerId?: string) => void | Promise<void>;
   providerBusy?: boolean;
   providerTestBusy?: boolean;
+  providerFeedback?: SettingsProviderFeedback | null;
   permissionMode?: string;
   onPermissionModeChange?: (mode: string) => void;
   general?: SettingsGeneralConfig;
@@ -389,6 +398,7 @@ export function SettingsWorkspace({
   onSaveProvider,
   providerBusy = false,
   providerTestBusy = false,
+  providerFeedback = null,
   permissionMode,
   onPermissionModeChange,
   general,
@@ -527,7 +537,9 @@ export function SettingsWorkspace({
             <ProvidersPanel
               providers={providers}
               activeProvider={activeProvider}
+              activeProviderId={activeProviderId}
               selectedProviderId={selectedProviderId}
+              providerFeedback={providerFeedback}
               onSelectProvider={handleSelectProvider}
               onAddProvider={() => setProviderModal({ mode: "add" })}
               onEditProvider={() =>
@@ -602,7 +614,9 @@ export function SettingsWorkspace({
 function ProvidersPanel({
   providers,
   activeProvider,
+  activeProviderId,
   selectedProviderId,
+  providerFeedback,
   onSelectProvider,
   onAddProvider,
   onEditProvider,
@@ -613,7 +627,9 @@ function ProvidersPanel({
 }: {
   providers: SettingsProvider[];
   activeProvider?: SettingsProvider;
+  activeProviderId?: string;
   selectedProviderId: string;
+  providerFeedback?: SettingsProviderFeedback | null;
   onSelectProvider: (providerId: string) => void;
   onAddProvider: () => void;
   onEditProvider: () => void;
@@ -670,7 +686,11 @@ function ProvidersPanel({
                   <small>{formatProviderSuccessDetail(provider.lastTest)}</small>
                 ) : null}
               </span>
-              {provider.status ? <em>{provider.status}</em> : null}
+              {provider.id === activeProviderId ? (
+                <em className="settings-provider-badge">ACTIVE</em>
+              ) : provider.status ? (
+                <em>{provider.status}</em>
+              ) : null}
             </button>
           ))}
         </div>
@@ -680,6 +700,17 @@ function ProvidersPanel({
             <p className="settings-kicker">Selected Provider</p>
             <h3>{activeProvider?.name ?? "未选择服务商"}</h3>
           </div>
+          {activeProvider ? (
+            <ProviderStateSummary
+              provider={activeProvider}
+              isActive={activeProvider.id === activeProviderId}
+              feedback={
+                providerFeedback && (!providerFeedback.providerId || providerFeedback.providerId === activeProvider.id)
+                  ? providerFeedback
+                  : null
+              }
+            />
+          ) : null}
           <dl>
             <div>
               <dt>接口地址</dt>
@@ -720,6 +751,63 @@ function ProvidersPanel({
           </div>
         </article>
       </div>
+    </div>
+  );
+}
+
+function ProviderStateSummary({
+  provider,
+  isActive,
+  feedback,
+}: {
+  provider: SettingsProvider;
+  isActive: boolean;
+  feedback?: SettingsProviderFeedback | null;
+}) {
+  const currentModel = provider.modelMapping?.main || provider.models?.[0] || "Not configured";
+  const lastTest = provider.lastTest;
+  const connectionLabel = lastTest
+    ? lastTest.ok
+      ? "Test passed"
+      : "Test failed"
+    : "Not tested";
+  const connectionDetail = lastTest
+    ? lastTest.ok
+      ? formatProviderSuccessDetail(lastTest) || lastTest.message
+      : lastTest.errorSummary || lastTest.message
+    : "Run Test connection to verify this provider before starting a real task.";
+
+  return (
+    <div className="settings-provider-state" aria-label="Provider status summary">
+      <div>
+        <span className={isActive ? "settings-status-pill is-active" : "settings-status-pill"}>
+          {isActive ? "Active provider" : "Selected only"}
+        </span>
+        <strong>{currentModel}</strong>
+        <small>Current model</small>
+      </div>
+      <div>
+        <span
+          className={
+            lastTest?.ok
+              ? "settings-status-pill is-pass"
+              : lastTest
+                ? "settings-status-pill is-fail"
+                : "settings-status-pill"
+          }
+        >
+          {connectionLabel}
+        </span>
+        <strong>{connectionDetail}</strong>
+        <small>Connection status</small>
+      </div>
+      {feedback ? (
+        <div className={`settings-provider-feedback is-${feedback.tone}`} role="status">
+          <strong>{feedback.title}</strong>
+          <span>{feedback.message}</span>
+          {feedback.detail ? <small>{feedback.detail}</small> : null}
+        </div>
+      ) : null}
     </div>
   );
 }

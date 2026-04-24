@@ -55,6 +55,7 @@ import {
   type SettingsGeneralConfig,
   type SettingsIMConfig,
   type SettingsProvider,
+  type SettingsProviderFeedback,
   type SettingsProviderPayload,
   type SettingsProviderTestResult,
 } from "./ui/workbench/workspaces/settings/SettingsWorkspace";
@@ -1801,6 +1802,7 @@ export function App() {
   );
   const [activeProviderProfileId, setActiveProviderProfileId] = useState("default");
   const [providerTestResult, setProviderTestResult] = useState<ProviderTestResult | null>(null);
+  const [providerFeedback, setProviderFeedback] = useState<SettingsProviderFeedback | null>(null);
   const [searchGlob, setSearchGlob] = useState(DEFAULT_SEARCH_GLOB_TEXT);
   const [searchIgnoreText, setSearchIgnoreText] = useState("");
   const [workspacePath, setWorkspacePath] = useState(DEFAULT_WORKSPACE_PATH);
@@ -2516,6 +2518,38 @@ export function App() {
     setActiveProviderProfileId(normalized.activeProfileId ?? profileId);
     setProviderSettings(buildProviderSettingsForm({ ...config, provider: normalized }));
     setProviderTestResult(null);
+    setProviderFeedback(null);
+  }
+
+  function showProviderSavedFeedback(normalized: RuntimeConfig, fallbackProfileId: string) {
+    const provider = normalizeProviderConfig(normalized.provider);
+    const activeProfile =
+      provider.profiles?.find((profile) => profile.id === provider.activeProfileId) ??
+      provider.profiles?.find((profile) => profile.id === fallbackProfileId);
+
+    setProviderFeedback({
+      providerId: activeProfile?.id ?? fallbackProfileId,
+      tone: "success",
+      title: "Saved and activated",
+      message: `${activeProfile?.name ?? "Provider"} is now the active provider.`,
+      detail: `Model: ${activeProfile?.model ?? provider.model ?? DEFAULT_PROVIDER_MODEL}`,
+    });
+  }
+
+  function showProviderTestFeedback(result: ProviderTestResult, profileId: string) {
+    setProviderFeedback({
+      providerId: result.profileId ?? profileId,
+      tone: result.ok ? "success" : "danger",
+      title: result.ok ? "Test passed" : "Test failed",
+      message: result.ok
+        ? `Runtime can reach ${result.model ?? DEFAULT_PROVIDER_MODEL}.`
+        : result.lastErrorSummary ?? result.message,
+      detail: result.ok
+        ? result.lastStatus ?? result.status
+        : result.checkedEnvVarName
+          ? `Check env var: ${result.checkedEnvVarName}`
+          : undefined,
+    });
   }
 
   async function refreshSessionHistory(preferredSessionId?: string) {
@@ -2571,6 +2605,7 @@ export function App() {
     setConfig(normalized);
     setProviderSettings(buildProviderSettingsForm(normalized));
     setActiveProviderProfileId(normalized.provider.activeProfileId ?? activeProviderProfileId);
+    showProviderSavedFeedback(normalized, providerPatch.activeProfileId ?? activeProviderProfileId);
     return normalized;
   }
 
@@ -2581,6 +2616,7 @@ export function App() {
     try {
       const result = await runtimeClient.testProvider(provider ? { profileId, provider } : { profileId });
       setProviderTestResult(result);
+      showProviderTestFeedback(result, profileId);
       if (!provider) {
         const nextConfig = await runtimeClient.getConfig();
         const normalized = normalizeRuntimeConfig(nextConfig.config);
@@ -2829,6 +2865,7 @@ export function App() {
       setConfig(normalized);
       setActiveProviderProfileId(normalized.provider.activeProfileId ?? profile.id);
       setProviderSettings(buildProviderSettingsForm(normalized));
+      showProviderSavedFeedback(normalized, profile.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -2866,6 +2903,7 @@ export function App() {
       setConfig(normalized);
       setActiveProviderProfileId(normalized.provider.activeProfileId ?? profile.id);
       setProviderSettings(buildProviderSettingsForm(normalized));
+      showProviderSavedFeedback(normalized, profile.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -3560,6 +3598,7 @@ export function App() {
         onSaveProvider={handleSaveProviderConfig}
         providerBusy={providerConfigBusy}
         providerTestBusy={providerTestBusy}
+        providerFeedback={providerFeedback}
         permissionMode={approvalModeToSettingsMode(config?.policy.approvalMode)}
         onPermissionModeChange={handlePermissionModeChange}
         general={generalSettings}

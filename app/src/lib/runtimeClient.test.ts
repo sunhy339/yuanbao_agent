@@ -17,15 +17,21 @@ beforeEach(() => {
   invokeMock.mockReset();
   delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
+  delete (window as Window & { __YUANBAO_ENABLE_BROWSER_MOCK__?: unknown }).__YUANBAO_ENABLE_BROWSER_MOCK__;
 });
 
 afterEach(() => {
   vi.useRealTimers();
   delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
+  delete (window as Window & { __YUANBAO_ENABLE_BROWSER_MOCK__?: unknown }).__YUANBAO_ENABLE_BROWSER_MOCK__;
 });
 
 describe("RuntimeClient schedule fallback", () => {
+  beforeEach(() => {
+    (window as Window & { __YUANBAO_ENABLE_BROWSER_MOCK__?: unknown }).__YUANBAO_ENABLE_BROWSER_MOCK__ = true;
+  });
+
   it("creates, lists, toggles, runs, and lists logs in browser mode", async () => {
     const client = new RuntimeClient();
 
@@ -54,6 +60,10 @@ describe("RuntimeClient schedule fallback", () => {
 });
 
 describe("RuntimeClient command log fallback", () => {
+  beforeEach(() => {
+    (window as Window & { __YUANBAO_ENABLE_BROWSER_MOCK__?: unknown }).__YUANBAO_ENABLE_BROWSER_MOCK__ = true;
+  });
+
   it("lists, gets, and cancels command jobs from browser trace state", async () => {
     const client = new RuntimeClient();
     const session = await client.createSession({
@@ -113,6 +123,17 @@ describe("RuntimeClient desktop transport", () => {
       value: {},
       configurable: true,
     });
+  });
+
+  it("rejects browser runtime calls unless mock mode is explicitly enabled", async () => {
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+
+    const client = new RuntimeClient();
+
+    await expect(client.getConfig()).rejects.toThrow("Desktop runtime bridge is unavailable");
+    await expect(client.sendMessage({ sessionId: "session", content: "hello", attachments: [] })).rejects.toThrow(
+      "Desktop runtime bridge is unavailable",
+    );
   });
 
   it("does not silently fallback to mock data when Tauri config/provider calls fail", async () => {

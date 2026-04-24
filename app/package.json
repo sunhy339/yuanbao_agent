@@ -10,6 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --environment jsdom",
     "test:watch": "vitest --environment jsdom",
+    "e2e:mock": "node e2e/local-regression.mjs --mock",
+    "e2e:real": "node e2e/tauri-provider-flow.mjs",
+    "e2e:ci": "node e2e/local-regression.mjs --ci",
     "e2e:tauri:provider": "node e2e/tauri-provider-flow.mjs",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

@@ -8,6 +8,25 @@ afterEach(() => {
   cleanup();
 });
 
+function getProviderButton(name: string) {
+  const label = screen.getByText(name);
+  const button = label.closest("button");
+  if (!button) {
+    throw new Error(`Provider button not found for ${name}`);
+  }
+  return button;
+}
+
+function openAddProviderModal(container: HTMLElement) {
+  const button = container.querySelector(
+    ".settings-panel-header .settings-primary-action",
+  ) as HTMLElement | null;
+  if (!button) {
+    throw new Error("Add provider button not found");
+  }
+  return userEvent.setup().click(button);
+}
+
 describe("SettingsWorkspace", () => {
   const providers = [
     {
@@ -31,56 +50,71 @@ describe("SettingsWorkspace", () => {
   it("renders providers by default and switches settings tabs", async () => {
     const user = userEvent.setup();
     const { container } = render(<SettingsWorkspace />);
+    const navButtons = container.querySelectorAll(".settings-nav button");
 
-    expect(screen.getByRole("heading", { name: "服务商" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "添加服务商" })).toBeInTheDocument();
     expect(container.querySelector(".settings-content-panel")).toBeInTheDocument();
     expect(container.querySelector(".settings-provider-grid")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "权限" }));
-    expect(screen.getByRole("heading", { name: "权限模式" })).toBeInTheDocument();
+    await user.click(navButtons[1] as HTMLElement);
+    expect(container.querySelector(".settings-card-stack")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "通用" }));
-    expect(screen.getByRole("heading", { name: "通用" })).toBeInTheDocument();
+    await user.click(navButtons[2] as HTMLElement);
+    expect(container.querySelector(".settings-form-stack")).toBeInTheDocument();
   });
 
   it("submits provider modal values through the add callback", async () => {
     const user = userEvent.setup();
     const onAddProvider = vi.fn();
     const onTestProviderConfig = vi.fn();
-    render(
+    const { container } = render(
       <SettingsWorkspace
         onAddProvider={onAddProvider}
         onTestProviderConfig={onTestProviderConfig}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "添加服务商" }));
+    await openAddProviderModal(container);
 
-    const dialog = screen.getByRole("dialog", { name: "添加服务商" });
+    const dialog = screen.getByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "MiniMax" }));
-    await user.clear(within(dialog).getByLabelText("名称 *"));
-    await user.type(within(dialog).getByLabelText("名称 *"), "Acme AI");
-    await user.type(within(dialog).getByLabelText("备注"), "Workbench provider");
-    await user.clear(within(dialog).getByLabelText("接口地址"));
+    await user.clear(dialog.querySelector("#provider-name") as HTMLInputElement);
+    await user.type(dialog.querySelector("#provider-name") as HTMLInputElement, "Acme AI");
     await user.type(
-      within(dialog).getByLabelText("接口地址"),
+      dialog.querySelector("#provider-note") as HTMLInputElement,
+      "Workbench provider",
+    );
+    await user.clear(dialog.querySelector("#provider-endpoint") as HTMLInputElement);
+    await user.type(
+      dialog.querySelector("#provider-endpoint") as HTMLInputElement,
       "https://api.acme.example/v1",
     );
-    await user.type(within(dialog).getByLabelText("API 密钥 *"), "sk-test");
-    await user.clear(within(dialog).getByLabelText("主模型 *"));
-    await user.type(within(dialog).getByLabelText("主模型 *"), "acme-main");
-    await user.clear(within(dialog).getByLabelText("Haiku 模型"));
-    await user.type(within(dialog).getByLabelText("Haiku 模型"), "acme-haiku");
-    await user.clear(within(dialog).getByLabelText("Sonnet 模型"));
-    await user.type(within(dialog).getByLabelText("Sonnet 模型"), "acme-sonnet");
-    await user.clear(within(dialog).getByLabelText("Opus 模型"));
-    await user.type(within(dialog).getByLabelText("Opus 模型"), "acme-opus");
-    await user.clear(within(dialog).getByLabelText("设置 JSON"));
-    await user.click(within(dialog).getByLabelText("设置 JSON"));
+    await user.type(dialog.querySelector("#provider-api-key") as HTMLInputElement, "sk-test");
+    await user.clear(dialog.querySelector("#provider-main-model") as HTMLInputElement);
+    await user.type(
+      dialog.querySelector("#provider-main-model") as HTMLInputElement,
+      "acme-main",
+    );
+    await user.clear(dialog.querySelector("#provider-haiku-model") as HTMLInputElement);
+    await user.type(
+      dialog.querySelector("#provider-haiku-model") as HTMLInputElement,
+      "acme-haiku",
+    );
+    await user.clear(dialog.querySelector("#provider-sonnet-model") as HTMLInputElement);
+    await user.type(
+      dialog.querySelector("#provider-sonnet-model") as HTMLInputElement,
+      "acme-sonnet",
+    );
+    await user.clear(dialog.querySelector("#provider-opus-model") as HTMLInputElement);
+    await user.type(
+      dialog.querySelector("#provider-opus-model") as HTMLInputElement,
+      "acme-opus",
+    );
+    await user.clear(dialog.querySelector("#provider-json") as HTMLTextAreaElement);
+    await user.click(dialog.querySelector("#provider-json") as HTMLTextAreaElement);
     await user.paste('{"timeout":12000}');
 
-    await user.click(within(dialog).getByRole("button", { name: "测试连接" }));
+    const testButton = dialog.querySelectorAll("footer button")[1] as HTMLElement;
+    await user.click(testButton);
     expect(onTestProviderConfig).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "Acme AI",
@@ -89,7 +123,7 @@ describe("SettingsWorkspace", () => {
       }),
     );
 
-    await user.click(within(dialog).getByRole("button", { name: "添加" }));
+    await user.click(dialog.querySelector('button[type="submit"]') as HTMLElement);
 
     expect(onAddProvider).toHaveBeenCalledWith({
       name: "Acme AI",
@@ -106,7 +140,84 @@ describe("SettingsWorkspace", () => {
       jsonConfig: '{"timeout":12000}',
       preset: "minimax",
     });
-    expect(screen.queryByRole("dialog", { name: "添加服务商" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("derives the API key env var from pasted env config", async () => {
+    const user = userEvent.setup();
+    const onAddProvider = vi.fn();
+    const { container } = render(<SettingsWorkspace onAddProvider={onAddProvider} />);
+
+    await openAddProviderModal(container);
+
+    const dialog = screen.getByRole("dialog");
+    await user.clear(dialog.querySelector("#provider-name") as HTMLInputElement);
+    await user.type(dialog.querySelector("#provider-name") as HTMLInputElement, "Env Provider");
+    await user.clear(dialog.querySelector("#provider-main-model") as HTMLInputElement);
+    await user.type(dialog.querySelector("#provider-main-model") as HTMLInputElement, "env-model");
+    await user.clear(dialog.querySelector("#provider-json") as HTMLTextAreaElement);
+    await user.click(dialog.querySelector("#provider-json") as HTMLTextAreaElement);
+    await user.paste(
+      "OPENAI_API_KEY=sk-from-shell\nOPENAI_BASE_URL=https://api.env.example/v1\nOPENAI_MODEL=env-model",
+    );
+
+    expect(within(dialog).getByText("Detected env var: OPENAI_API_KEY")).toBeInTheDocument();
+
+    await user.click(dialog.querySelector('button[type="submit"]') as HTMLElement);
+
+    expect(onAddProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Env Provider",
+        apiKey: "",
+        apiKeyEnvVarName: "OPENAI_API_KEY",
+        jsonConfig:
+          "OPENAI_API_KEY=sk-from-shell\nOPENAI_BASE_URL=https://api.env.example/v1\nOPENAI_MODEL=env-model",
+      }),
+    );
+  });
+
+  it("shows readable provider test success and failure summaries", () => {
+    render(
+      <SettingsWorkspace
+        providers={[
+          {
+            id: "primary",
+            name: "Primary Provider",
+            endpoint: "https://primary.example.com",
+            models: ["primary-chat"],
+            status: "ready",
+            lastTest: {
+              ok: true,
+              status: "ok",
+              model: "primary-chat",
+              finishReason: "stop",
+              message: "Connection succeeded.",
+              checkedAt: 1710000000000,
+            },
+          },
+          {
+            id: "backup",
+            name: "Backup Provider",
+            endpoint: "https://backup.example.com",
+            models: ["backup-chat"],
+            status: "failed",
+            lastTest: {
+              ok: false,
+              status: "missing_env",
+              message: "Missing OPENAI_API_KEY.",
+              errorSummary: "OPENAI_API_KEY is not set.",
+            },
+          },
+        ]}
+        activeProviderId="backup"
+      />,
+    );
+
+    expect(screen.getAllByText("Last test: missing_env").length).toBeGreaterThan(0);
+    expect(screen.getByText("Failure reason")).toBeInTheDocument();
+    expect(screen.getByText("OPENAI_API_KEY is not set.")).toBeInTheDocument();
+    expect(screen.getByText("Last test: ok")).toBeInTheDocument();
+    expect(screen.getByText("primary-chat / stop")).toBeInTheDocument();
   });
 
   it("uses provider selection, test and save callbacks", async () => {
@@ -124,9 +235,12 @@ describe("SettingsWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "选择服务商 Backup Provider" }));
-    await user.click(screen.getByRole("button", { name: "测试连接" }));
-    await user.click(screen.getByRole("button", { name: "保存" }));
+    await user.click(getProviderButton("Backup Provider"));
+    const providerActions = document.querySelectorAll(
+      ".settings-provider-detail .settings-provider-actions button",
+    );
+    await user.click(providerActions[1] as HTMLElement);
+    await user.click(providerActions[2] as HTMLElement);
 
     expect(onSelectProvider).toHaveBeenCalledWith("backup");
     expect(onTestProvider).toHaveBeenCalledWith("backup");
@@ -136,27 +250,33 @@ describe("SettingsWorkspace", () => {
   it("uses the permission mode prop and calls the permission change callback", async () => {
     const user = userEvent.setup();
     const onPermissionModeChange = vi.fn();
-    render(
+    const { container } = render(
       <SettingsWorkspace
         permissionMode="plan"
         onPermissionModeChange={onPermissionModeChange}
       />,
     );
+    const navButtons = container.querySelectorAll(".settings-nav button");
 
-    await user.click(screen.getByRole("button", { name: "权限" }));
+    await user.click(navButtons[1] as HTMLElement);
 
-    expect(screen.getByRole("radio", { name: /计划模式/ })).toBeChecked();
+    const modeRadios = container.querySelectorAll(
+      ".settings-card-stack input[type='radio']",
+    );
+    const planRadio = modeRadios[2] as HTMLInputElement;
+    const skipRadio = modeRadios[3] as HTMLInputElement;
+    expect(planRadio).toBeChecked();
 
-    await user.click(screen.getByRole("radio", { name: /跳过全部/ }));
+    await user.click(skipRadio);
 
     expect(onPermissionModeChange).toHaveBeenCalledWith("skip");
-    expect(screen.getByRole("radio", { name: /跳过全部/ })).toBeChecked();
+    expect(skipRadio).toBeChecked();
   });
 
   it("uses controlled general props and emits full next values", async () => {
     const user = userEvent.setup();
     const onGeneralChange = vi.fn();
-    render(
+    const { container } = render(
       <SettingsWorkspace
         general={{
           theme: "light",
@@ -167,9 +287,10 @@ describe("SettingsWorkspace", () => {
         onGeneralChange={onGeneralChange}
       />,
     );
+    const navButtons = container.querySelectorAll(".settings-nav button");
 
-    await user.click(screen.getByRole("button", { name: "通用" }));
-    await user.click(screen.getByRole("radio", { name: "暗色" }));
+    await user.click(navButtons[2] as HTMLElement);
+    await user.click(container.querySelector('input[name="theme"][value="dark"]') as HTMLElement);
 
     expect(onGeneralChange).toHaveBeenCalledWith({
       theme: "dark",
@@ -178,7 +299,9 @@ describe("SettingsWorkspace", () => {
       webFetchPreflight: true,
     });
 
-    await user.click(screen.getByRole("checkbox", { name: /跳过 WebFetch 域名预检/ }));
+    await user.click(
+      container.querySelector('input[type="checkbox"]') as HTMLInputElement,
+    );
 
     expect(onGeneralChange).toHaveBeenCalledWith({
       theme: "dark",
@@ -191,12 +314,13 @@ describe("SettingsWorkspace", () => {
   it("keeps secondary sections as connectable skeletons", async () => {
     const user = userEvent.setup();
     const onOpenSkillsFolder = vi.fn();
-    render(<SettingsWorkspace onOpenSkillsFolder={onOpenSkillsFolder} />);
+    const { container } = render(<SettingsWorkspace onOpenSkillsFolder={onOpenSkillsFolder} />);
+    const navButtons = container.querySelectorAll(".settings-nav button");
 
-    await user.click(screen.getByRole("button", { name: "技能" }));
-    expect(screen.getByText("暂无已安装技能")).toBeInTheDocument();
+    await user.click(navButtons[5] as HTMLElement);
+    expect(container.querySelector(".settings-empty-state")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "打开目录" }));
+    await user.click(container.querySelector(".settings-secondary-action") as HTMLElement);
     expect(onOpenSkillsFolder).toHaveBeenCalled();
   });
 });

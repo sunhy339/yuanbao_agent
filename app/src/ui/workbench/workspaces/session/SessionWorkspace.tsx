@@ -135,6 +135,7 @@ export interface SessionWorkspaceToolCall {
   id: string;
   toolName: string;
   status: string;
+  time?: number;
   resultSummary?: string;
   durationMs?: number;
   tokenCount?: number;
@@ -190,7 +191,10 @@ export interface SessionWorkspaceProps {
   onCopyPatchPath?(patchId: string, path: string): void | Promise<void>;
   onRefreshCommandJob?(commandId: string): void | Promise<void>;
   onStopCommandJob?(commandId: string): void | Promise<void>;
+  onRefreshTask?(): void | Promise<void>;
+  onStopTask?(taskId: string): void | Promise<void>;
   onRefreshTrace?(): void | Promise<void>;
+  taskBusyAction?: "refresh" | "stop" | null;
   busyId?: string | null;
 }
 
@@ -247,6 +251,24 @@ function formatTokens(tokenCount?: number) {
 
 function canStopCommandJob(job: SessionWorkspaceBackgroundJob) {
   return job.status === "running";
+}
+
+function isCommandJobTerminal(job: SessionWorkspaceBackgroundJob) {
+  return (
+    job.status === "completed" ||
+    job.status === "failed" ||
+    job.status === "timeout" ||
+    job.status === "killed"
+  );
+}
+
+function canStopTask(task: SessionWorkspaceActiveTask | null) {
+  return Boolean(
+    task &&
+      task.status !== "completed" &&
+      task.status !== "failed" &&
+      task.status !== "cancelled",
+  );
 }
 
 function formatHeartbeatAge(heartbeatAgeMs?: number) {
@@ -381,7 +403,10 @@ export function SessionWorkspace({
   onCopyPatchPath,
   onRefreshCommandJob,
   onStopCommandJob,
+  onRefreshTask,
+  onStopTask,
   onRefreshTrace,
+  taskBusyAction = null,
   busyId = null,
 }: SessionWorkspaceProps) {
   const [expandedPanels, setExpandedPanels] = useState<Set<string>>(() => new Set(["active-task"]));
@@ -497,12 +522,34 @@ export function SessionWorkspace({
                 <p className="session-kicker">Task progress</p>
                 <h2 id="active-task-title">Active task</h2>
               </div>
-              <PanelToggle
-                controls="active-task-detail"
-                expanded={activeTaskExpanded}
-                label="task"
-                onClick={() => togglePanel("active-task")}
-              />
+              <div className="operation-actions">
+                {onRefreshTask ? (
+                  <button
+                    aria-label="Refresh active task"
+                    disabled={!activeTask || taskBusyAction !== null}
+                    onClick={() => void onRefreshTask()}
+                    type="button"
+                  >
+                    {taskBusyAction === "refresh" ? "Refreshing" : "Refresh"}
+                  </button>
+                ) : null}
+                {onStopTask ? (
+                  <button
+                    aria-label="Stop active task"
+                    disabled={!canStopTask(activeTask) || taskBusyAction !== null}
+                    onClick={() => activeTask && void onStopTask(activeTask.id)}
+                    type="button"
+                  >
+                    {taskBusyAction === "stop" ? "Stopping" : "Stop"}
+                  </button>
+                ) : null}
+                <PanelToggle
+                  controls="active-task-detail"
+                  expanded={activeTaskExpanded}
+                  label="task"
+                  onClick={() => togglePanel("active-task")}
+                />
+              </div>
             </div>
 
             <div className="task-readout">
@@ -550,272 +597,9 @@ export function SessionWorkspace({
               <h2 id="operation-shelf-title">Runtime shelf</h2>
             </div>
 
-            <section className="operation-section" aria-labelledby="approvals-title">
+            <section className="operation-section" aria-labelledby="runtime-timeline-title">
               <div className="operation-section-head">
-                <h3 id="approvals-title">Approvals</h3>
-                <span>{approvals.length}</span>
-              </div>
-              {approvals.length === 0 ? (
-                <p className="operation-empty">No pending approval slips.</p>
-              ) : (
-                <ul className="operation-list">
-                  {approvals.map((approval) => {
-                    const isBusy = busyId === approval.id;
-                    const inputExpanded = fullApprovalInputs.has(approval.id);
-                    const input = approval.fullInput ?? approval.command ?? approval.parametersPreview;
-
-                    return (
-                      <li className="operation-card approval-card" data-risk={approval.risk ?? "medium"} key={approval.id}>
-                        <div className="operation-card-head">
-                          <strong>{approval.title}</strong>
-                          <span>{approval.status}</span>
-                        </div>
-                        <div className="operation-tags">
-                          {approval.kind ? <span>{approval.kind}</span> : null}
-                          {approval.cwd ? <span>{approval.cwd}</span> : null}
-                          {approval.requestedAt ? <time>{formatTimestamp(approval.requestedAt)}</time> : null}
-                        </div>
-                        {approval.summary ? <p>{approval.summary}</p> : null}
-                        {approval.parametersPreview ? (
-                          <CodeBlock label={`${approval.title} parameters preview`}>
-                            {approval.parametersPreview}
-                          </CodeBlock>
-                        ) : null}
-                        {input ? (
-                          <div className="approval-input">
-                            <button
-                              aria-controls={`approval-input-${approval.id}`}
-                              aria-expanded={inputExpanded}
-                              className="session-plain-button"
-                              onClick={() => toggleApprovalInput(approval.id)}
-                              type="button"
-                            >
-                              {inputExpanded ? "Hide full input" : "Show full input"}
-                            </button>
-                            {inputExpanded ? (
-                              <CodeBlock label={`${approval.title} full input`}>
-                                {approval.fullInput ?? input}
-                              </CodeBlock>
-                            ) : null}
-                          </div>
-                        ) : null}
-                        <div className="operation-actions">
-                          {onApprove ? (
-                            <button
-                              aria-label={`Allow ${approval.title}`}
-                              disabled={isBusy}
-                              onClick={() => void onApprove(approval.id)}
-                              type="button"
-                            >
-                              Allow
-                            </button>
-                          ) : null}
-                          {onApproveForSession ? (
-                            <button
-                              aria-label={`Allow ${approval.title} for session`}
-                              disabled={isBusy}
-                              onClick={() => void onApproveForSession(approval.id)}
-                              type="button"
-                            >
-                              Allow for session
-                            </button>
-                          ) : null}
-                          {onReject ? (
-                            <button
-                              aria-label={`Deny ${approval.title}`}
-                              disabled={isBusy}
-                              onClick={() => void onReject(approval.id)}
-                              type="button"
-                            >
-                              Deny
-                            </button>
-                          ) : null}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
-
-            <section className="operation-section" aria-labelledby="patches-title">
-              <div className="operation-section-head">
-                <h3 id="patches-title">Patches</h3>
-                <span>{patches.length}</span>
-              </div>
-              {patches.length === 0 ? (
-                <p className="operation-empty">No patch docket loaded.</p>
-              ) : (
-                <ul className="operation-list">
-                  {patches.map((patch) => {
-                    const filesChanged = formatFilesChanged(patch.filesChanged ?? patch.files?.length);
-                    const isBusy = busyId === patch.id;
-                    const panelId = `patch-detail-${patch.id}`;
-                    const isExpanded = expandedPanels.has(panelId);
-                    const patchFiles = getPatchFiles(patch);
-                    const patchDiff = getPatchDiff(patch);
-
-                    return (
-                      <li className="operation-card patch-card" key={patch.id}>
-                        <div className="operation-card-head">
-                          <strong>{patch.summary}</strong>
-                          <span>{patch.status}</span>
-                        </div>
-                        <div className="operation-tags">
-                          {filesChanged ? <span>{filesChanged}</span> : null}
-                          {formatLineStat(patch.additions) ? <span className="line-add">{formatLineStat(patch.additions)}</span> : null}
-                          {formatLineStat(patch.deletions) ? <span className="line-del">-{patch.deletions}</span> : null}
-                          {patch.updatedAt ? <time>{formatTimestamp(patch.updatedAt)}</time> : null}
-                        </div>
-                        <div className="operation-actions">
-                          <PanelToggle
-                            controls={panelId}
-                            expanded={isExpanded}
-                            label="patch"
-                            onClick={() => togglePanel(panelId)}
-                          />
-                          {onLoadPatch ? (
-                            <button
-                              aria-label={`Load patch details ${patch.summary}`}
-                              disabled={isBusy}
-                              onClick={() => void onLoadPatch(patch.id)}
-                              type="button"
-                            >
-                              Load details
-                            </button>
-                          ) : null}
-                        </div>
-                        {isExpanded ? (
-                          <div className="patch-detail" id={panelId}>
-                            {patchFiles.length > 0 ? (
-                              <ul className="patch-file-list" aria-label={`${patch.summary} files`}>
-                                {patchFiles.map((file) => (
-                                  <li key={file.path}>
-                                    <span>{file.status ?? "changed"}</span>
-                                    <code>{file.path}</code>
-                                    {file.additions !== undefined ? <em className="line-add">+{file.additions}</em> : null}
-                                    {file.deletions !== undefined ? <em className="line-del">-{file.deletions}</em> : null}
-                                    {onCopyPatchPath ? (
-                                      <button
-                                        aria-label={`Copy path ${file.path}`}
-                                        onClick={() => void onCopyPatchPath(patch.id, file.path)}
-                                        type="button"
-                                      >
-                                        Copy path
-                                      </button>
-                                    ) : null}
-                                  </li>
-                                ))}
-                              </ul>
-                            ) : (
-                              <p className="operation-empty">No file list is attached to this patch.</p>
-                            )}
-                            {patchDiff ? (
-                              <CodeBlock label={`${patch.summary} diff`}>{patchDiff}</CodeBlock>
-                            ) : (
-                              <p className="operation-empty">Diff body is not loaded yet.</p>
-                            )}
-                          </div>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
-
-            <section className="operation-section" aria-labelledby="background-jobs-title">
-              <div className="operation-section-head">
-                <h3 id="background-jobs-title">Command jobs</h3>
-                <span>{backgroundJobs.length}</span>
-              </div>
-              {backgroundJobs.length === 0 ? (
-                <p className="operation-empty">No runtime command jobs have been recorded.</p>
-              ) : (
-                <ul className="operation-list">
-                  {backgroundJobs.map((job) => {
-                    const panelId = `command-job-${job.id}`;
-                    const isExpanded = expandedPanels.has(panelId);
-                    const duration = formatDuration(job.durationMs);
-                    const isBusy = busyId === job.id;
-                    const stopDisabled = isBusy || !canStopCommandJob(job);
-
-                    return (
-                      <li
-                        className="operation-card command-job-card"
-                        data-command-status={job.status}
-                        key={job.id}
-                      >
-                        <div className="operation-card-head">
-                          <strong>{job.command}</strong>
-                          <span>{job.status}</span>
-                        </div>
-                        <div className="operation-tags">
-                          {job.isBackground ? <span>background</span> : <span>command</span>}
-                          {job.shell ? <span>{job.shell}</span> : null}
-                          {job.cwd ? <span>{job.cwd}</span> : null}
-                          {duration ? <span>{duration}</span> : null}
-                          {typeof job.exitCode === "number" ? <span>exit {job.exitCode}</span> : null}
-                          {job.startedAt ? <time>{formatTimestamp(job.startedAt)}</time> : null}
-                        </div>
-                        {job.summary ? <p>{job.summary}</p> : null}
-                        <div className="operation-actions">
-                          <PanelToggle
-                            controls={panelId}
-                            expanded={isExpanded}
-                            label="command job"
-                            onClick={() => togglePanel(panelId)}
-                          />
-                          {onRefreshCommandJob ? (
-                            <button
-                              aria-label={`Refresh command job ${job.command}`}
-                              disabled={isBusy}
-                              onClick={() => void onRefreshCommandJob(job.id)}
-                              type="button"
-                            >
-                              Refresh
-                            </button>
-                          ) : null}
-                          {onStopCommandJob ? (
-                            <button
-                              aria-label={`Stop command job ${job.command}`}
-                              disabled={stopDisabled}
-                              onClick={() => void onStopCommandJob(job.id)}
-                              type="button"
-                            >
-                              Stop
-                            </button>
-                          ) : null}
-                        </div>
-                        {isExpanded ? (
-                          <div className="trace-detail" id={panelId}>
-                            {job.stdout ? (
-                              <CodeBlock label={`${job.command} stdout`}>{job.stdout}</CodeBlock>
-                            ) : null}
-                            {job.stderr ? (
-                              <CodeBlock label={`${job.command} stderr`}>{job.stderr}</CodeBlock>
-                            ) : null}
-                            {job.stdoutPath || job.stderrPath ? (
-                              <div className="command-artifact-list">
-                                {job.stdoutPath ? <p>stdout file: {job.stdoutPath}</p> : null}
-                                {job.stderrPath ? <p>stderr file: {job.stderrPath}</p> : null}
-                              </div>
-                            ) : null}
-                            {!job.stdout && !job.stderr && !job.stdoutPath && !job.stderrPath ? (
-                              <p className="operation-empty">No captured output is attached yet.</p>
-                            ) : null}
-                          </div>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </section>
-
-            <section className="operation-section" aria-labelledby="trace-tools-title">
-              <div className="operation-section-head">
-                <h3 id="trace-tools-title">Trace and tools</h3>
+                <h3 id="runtime-timeline-title">Runtime timeline</h3>
                 {onRefreshTrace ? (
                   <button
                     aria-label="Refresh trace"
@@ -826,94 +610,302 @@ export function SessionWorkspace({
                     Refresh
                   </button>
                 ) : (
-                  <span>{traces.length + toolCalls.length}</span>
+                  <span>{approvals.length + patches.length + backgroundJobs.length + traces.length + toolCalls.length}</span>
                 )}
               </div>
-              {traces.length === 0 && toolCalls.length === 0 ? (
-                <p className="operation-empty">Trace desk is quiet.</p>
+              {approvals.length + patches.length + backgroundJobs.length + traces.length + toolCalls.length === 0 ? (
+                <p className="operation-empty">Runtime timeline is quiet.</p>
               ) : (
-                <div className="trace-stack">
-                  {traces.map((trace) => {
-                    const panelId = `trace-detail-${trace.id}`;
-                    const isExpanded = expandedPanels.has(panelId);
-                    const duration = formatDuration(trace.durationMs);
-                    const tokens = formatTokens(trace.tokenCount);
+                <ul className="operation-list" aria-label="Runtime timeline">
+                  {[
+                    ...approvals.map((approval, index) => ({
+                      kind: "approval" as const,
+                      id: approval.id,
+                      time: approval.requestedAt ?? 0,
+                      index,
+                      approval,
+                    })),
+                    ...patches.map((patch, index) => ({
+                      kind: "patch" as const,
+                      id: patch.id,
+                      time: patch.updatedAt ?? 0,
+                      index: approvals.length + index,
+                      patch,
+                    })),
+                    ...backgroundJobs.map((job, index) => ({
+                      kind: "command" as const,
+                      id: job.id,
+                      time: job.finishedAt ?? job.startedAt ?? 0,
+                      index: approvals.length + patches.length + index,
+                      job,
+                    })),
+                    ...traces.map((trace, index) => ({
+                      kind: "trace" as const,
+                      id: trace.id,
+                      time: trace.time ?? 0,
+                      index: approvals.length + patches.length + backgroundJobs.length + index,
+                      trace,
+                    })),
+                    ...toolCalls.map((toolCall, index) => ({
+                      kind: "tool" as const,
+                      id: toolCall.id,
+                      time: toolCall.time ?? 0,
+                      index: approvals.length + patches.length + backgroundJobs.length + traces.length + index,
+                      toolCall,
+                    })),
+                  ]
+                    .sort((left, right) => right.time - left.time || left.index - right.index)
+                    .map((item) => {
+                      if (item.kind === "approval") {
+                        const approval = item.approval;
+                        const isBusy = busyId === approval.id;
+                        const inputExpanded = fullApprovalInputs.has(approval.id);
+                        const input = approval.fullInput ?? approval.command ?? approval.parametersPreview;
 
-                    return (
-                      <article className="operation-card trace-card" data-trace-type={trace.type} key={trace.id}>
-                        <div className="operation-card-head">
-                          <strong>{getTraceTitle(trace)}</strong>
-                          <span>{trace.status ?? trace.type}</span>
-                        </div>
-                        <div className="operation-tags">
-                          {trace.source ? <span>{trace.source}</span> : null}
-                          {duration ? <span>{duration}</span> : null}
-                          {tokens ? <span>{tokens}</span> : null}
-                          {trace.time ? <time>{formatTimestamp(trace.time)}</time> : null}
-                        </div>
-                        {trace.summary && trace.summary !== getTraceTitle(trace) ? <p>{trace.summary}</p> : null}
-                        <div className="operation-actions">
-                          <PanelToggle
-                            controls={panelId}
-                            expanded={isExpanded}
-                            label="trace"
-                            onClick={() => togglePanel(panelId)}
-                          />
-                        </div>
-                        {isExpanded ? (
-                          <div className="trace-detail" id={panelId}>
-                            {trace.detail ? <p>{trace.detail}</p> : null}
-                            {trace.stdout ? <CodeBlock label={`${getTraceTitle(trace)} stdout`}>{trace.stdout}</CodeBlock> : null}
-                            {trace.stderr ? <CodeBlock label={`${getTraceTitle(trace)} stderr`}>{trace.stderr}</CodeBlock> : null}
-                            {!trace.detail && !trace.stdout && !trace.stderr ? (
-                              <p className="operation-empty">No expanded trace payload is attached.</p>
+                        return (
+                          <li className="operation-card approval-card" data-risk={approval.risk ?? "medium"} key={`approval-${item.id}`}>
+                            <div className="operation-card-head">
+                              <strong>{approval.title}</strong>
+                              <span>{approval.status}</span>
+                            </div>
+                            <div className="operation-tags">
+                              <span>approval</span>
+                              {approval.kind ? <span>{approval.kind}</span> : null}
+                              {approval.cwd ? <span>{approval.cwd}</span> : null}
+                              {approval.requestedAt ? <time>{formatTimestamp(approval.requestedAt)}</time> : null}
+                            </div>
+                            {approval.summary ? <p>{approval.summary}</p> : null}
+                            {approval.parametersPreview ? (
+                              <CodeBlock label={`${approval.title} parameters preview`}>{approval.parametersPreview}</CodeBlock>
                             ) : null}
-                          </div>
-                        ) : null}
-                      </article>
-                    );
-                  })}
-                  {toolCalls.map((toolCall) => {
-                    const panelId = `tool-detail-${toolCall.id}`;
-                    const isExpanded = expandedPanels.has(panelId);
-                    const duration = formatDuration(toolCall.durationMs);
-                    const tokens = formatTokens(toolCall.tokenCount);
+                            {input ? (
+                              <div className="approval-input">
+                                <button
+                                  aria-controls={`approval-input-${approval.id}`}
+                                  aria-expanded={inputExpanded}
+                                  className="session-plain-button"
+                                  onClick={() => toggleApprovalInput(approval.id)}
+                                  type="button"
+                                >
+                                  {inputExpanded ? "Hide full input" : "Show full input"}
+                                </button>
+                                {inputExpanded ? (
+                                  <CodeBlock label={`${approval.title} full input`}>
+                                    {approval.fullInput ?? input}
+                                  </CodeBlock>
+                                ) : null}
+                              </div>
+                            ) : null}
+                            <div className="operation-actions">
+                              {onApprove ? (
+                                <button aria-label={`Allow ${approval.title}`} disabled={isBusy} onClick={() => void onApprove(approval.id)} type="button">
+                                  Allow
+                                </button>
+                              ) : null}
+                              {onApproveForSession ? (
+                                <button aria-label={`Allow ${approval.title} for session`} disabled={isBusy} onClick={() => void onApproveForSession(approval.id)} type="button">
+                                  Allow for session
+                                </button>
+                              ) : null}
+                              {onReject ? (
+                                <button aria-label={`Deny ${approval.title}`} disabled={isBusy} onClick={() => void onReject(approval.id)} type="button">
+                                  Deny
+                                </button>
+                              ) : null}
+                            </div>
+                          </li>
+                        );
+                      }
 
-                    return (
-                      <article className="operation-card tool-card" key={toolCall.id}>
-                        <div className="operation-card-head">
-                          <strong>{toolCall.toolName}</strong>
-                          <span>{toolCall.status}</span>
-                        </div>
-                        <div className="operation-tags">
-                          {duration ? <span>{duration}</span> : null}
-                          {tokens ? <span>{tokens}</span> : null}
-                        </div>
-                        {toolCall.resultSummary ? <p>{toolCall.resultSummary}</p> : null}
-                        <div className="operation-actions">
-                          <PanelToggle
-                            controls={panelId}
-                            expanded={isExpanded}
-                            label="tool"
-                            onClick={() => togglePanel(panelId)}
-                          />
-                        </div>
-                        {isExpanded ? (
-                          <div className="trace-detail" id={panelId}>
-                            {toolCall.argsPreview ? <CodeBlock label={`${toolCall.toolName} args preview`}>{toolCall.argsPreview}</CodeBlock> : null}
-                            {toolCall.input ? <CodeBlock label={`${toolCall.toolName} input`}>{toolCall.input}</CodeBlock> : null}
-                            {toolCall.output ? <CodeBlock label={`${toolCall.toolName} output`}>{toolCall.output}</CodeBlock> : null}
-                            {toolCall.stdout ? <CodeBlock label={`${toolCall.toolName} stdout`}>{toolCall.stdout}</CodeBlock> : null}
-                            {toolCall.stderr ? <CodeBlock label={`${toolCall.toolName} stderr`}>{toolCall.stderr}</CodeBlock> : null}
-                            {!toolCall.argsPreview && !toolCall.input && !toolCall.output && !toolCall.stdout && !toolCall.stderr ? (
-                              <p className="operation-empty">No expanded tool payload is attached.</p>
+                      if (item.kind === "patch") {
+                        const patch = item.patch;
+                        const filesChanged = formatFilesChanged(patch.filesChanged ?? patch.files?.length);
+                        const isBusy = busyId === patch.id;
+                        const panelId = `patch-detail-${patch.id}`;
+                        const isExpanded = expandedPanels.has(panelId);
+                        const patchFiles = getPatchFiles(patch);
+                        const patchDiff = getPatchDiff(patch);
+
+                        return (
+                          <li className="operation-card patch-card" key={`patch-${item.id}`}>
+                            <div className="operation-card-head">
+                              <strong>{patch.summary}</strong>
+                              <span>{patch.status}</span>
+                            </div>
+                            <div className="operation-tags">
+                              <span>patch</span>
+                              {filesChanged ? <span>{filesChanged}</span> : null}
+                              {formatLineStat(patch.additions) ? <span className="line-add">{formatLineStat(patch.additions)}</span> : null}
+                              {formatLineStat(patch.deletions) ? <span className="line-del">-{patch.deletions}</span> : null}
+                              {patch.updatedAt ? <time>{formatTimestamp(patch.updatedAt)}</time> : null}
+                            </div>
+                            <div className="operation-actions">
+                              <PanelToggle controls={panelId} expanded={isExpanded} label="patch" onClick={() => togglePanel(panelId)} />
+                              {onLoadPatch ? (
+                                <button aria-label={`Load patch details ${patch.summary}`} disabled={isBusy} onClick={() => void onLoadPatch(patch.id)} type="button">
+                                  Load details
+                                </button>
+                              ) : null}
+                            </div>
+                            {isExpanded ? (
+                              <div className="patch-detail" id={panelId}>
+                                {patchFiles.length > 0 ? (
+                                  <ul className="patch-file-list" aria-label={`${patch.summary} files`}>
+                                    {patchFiles.map((file) => (
+                                      <li key={file.path}>
+                                        <span>{file.status ?? "changed"}</span>
+                                        <code>{file.path}</code>
+                                        {file.additions !== undefined ? <em className="line-add">+{file.additions}</em> : null}
+                                        {file.deletions !== undefined ? <em className="line-del">-{file.deletions}</em> : null}
+                                        {onCopyPatchPath ? (
+                                          <button aria-label={`Copy path ${file.path}`} onClick={() => void onCopyPatchPath(patch.id, file.path)} type="button">
+                                            Copy path
+                                          </button>
+                                        ) : null}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p className="operation-empty">No file list is attached to this patch.</p>
+                                )}
+                                {patchDiff ? <CodeBlock label={`${patch.summary} diff`}>{patchDiff}</CodeBlock> : <p className="operation-empty">Diff body is not loaded yet.</p>}
+                              </div>
                             ) : null}
+                          </li>
+                        );
+                      }
+
+                      if (item.kind === "command") {
+                        const job = item.job;
+                        const panelId = `command-job-${job.id}`;
+                        const isExpanded = expandedPanels.has(panelId);
+                        const duration = formatDuration(job.durationMs);
+                        const isBusy = busyId === job.id;
+                        const stopDisabled = isBusy || !canStopCommandJob(job);
+                        const refreshDisabled = isBusy || isCommandJobTerminal(job);
+
+                        return (
+                          <li className="operation-card command-job-card" data-command-status={job.status} key={`command-${item.id}`}>
+                            <div className="operation-card-head">
+                              <strong>{job.command}</strong>
+                              <span>{job.status}</span>
+                            </div>
+                            <div className="operation-tags">
+                              {job.isBackground ? <span>background</span> : <span>command</span>}
+                              {job.shell ? <span>{job.shell}</span> : null}
+                              {job.cwd ? <span>{job.cwd}</span> : null}
+                              {duration ? <span>{duration}</span> : null}
+                              {typeof job.exitCode === "number" ? <span>exit {job.exitCode}</span> : null}
+                              {job.startedAt ? <time>{formatTimestamp(job.startedAt)}</time> : null}
+                            </div>
+                            {job.summary ? <p>{job.summary}</p> : null}
+                            <div className="operation-actions">
+                              <PanelToggle controls={panelId} expanded={isExpanded} label="command job" onClick={() => togglePanel(panelId)} />
+                              {onRefreshCommandJob ? (
+                                <button aria-label={`Refresh command job ${job.command}`} disabled={refreshDisabled} onClick={() => void onRefreshCommandJob(job.id)} type="button">
+                                  {isBusy ? "Refreshing" : "Refresh"}
+                                </button>
+                              ) : null}
+                              {onStopCommandJob ? (
+                                <button aria-label={`Stop command job ${job.command}`} disabled={stopDisabled} onClick={() => void onStopCommandJob(job.id)} type="button">
+                                  {isBusy ? "Stopping" : "Stop"}
+                                </button>
+                              ) : null}
+                            </div>
+                            {isExpanded ? (
+                              <div className="trace-detail" id={panelId}>
+                                {job.stdout ? <CodeBlock label={`${job.command} stdout`}>{job.stdout}</CodeBlock> : null}
+                                {job.stderr ? <CodeBlock label={`${job.command} stderr`}>{job.stderr}</CodeBlock> : null}
+                                {job.stdoutPath || job.stderrPath ? (
+                                  <div className="command-artifact-list">
+                                    {job.stdoutPath ? <p>stdout file: {job.stdoutPath}</p> : null}
+                                    {job.stderrPath ? <p>stderr file: {job.stderrPath}</p> : null}
+                                  </div>
+                                ) : null}
+                                {!job.stdout && !job.stderr && !job.stdoutPath && !job.stderrPath ? (
+                                  <p className="operation-empty">No captured output is attached yet.</p>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </li>
+                        );
+                      }
+
+                      if (item.kind === "trace") {
+                        const trace = item.trace;
+                        const panelId = `trace-detail-${trace.id}`;
+                        const isExpanded = expandedPanels.has(panelId);
+                        const duration = formatDuration(trace.durationMs);
+                        const tokens = formatTokens(trace.tokenCount);
+
+                        return (
+                          <li className="operation-card trace-card" data-trace-type={trace.type} key={`trace-${item.id}`}>
+                            <div className="operation-card-head">
+                              <strong>{getTraceTitle(trace)}</strong>
+                              <span>{trace.status ?? trace.type}</span>
+                            </div>
+                            <div className="operation-tags">
+                              {trace.source ? <span>{trace.source}</span> : null}
+                              {duration ? <span>{duration}</span> : null}
+                              {tokens ? <span>{tokens}</span> : null}
+                              {trace.time ? <time>{formatTimestamp(trace.time)}</time> : null}
+                            </div>
+                            {trace.summary && trace.summary !== getTraceTitle(trace) ? <p>{trace.summary}</p> : null}
+                            <div className="operation-actions">
+                              <PanelToggle controls={panelId} expanded={isExpanded} label="trace" onClick={() => togglePanel(panelId)} />
+                            </div>
+                            {isExpanded ? (
+                              <div className="trace-detail" id={panelId}>
+                                {trace.detail ? <p>{trace.detail}</p> : null}
+                                {trace.stdout ? <CodeBlock label={`${getTraceTitle(trace)} stdout`}>{trace.stdout}</CodeBlock> : null}
+                                {trace.stderr ? <CodeBlock label={`${getTraceTitle(trace)} stderr`}>{trace.stderr}</CodeBlock> : null}
+                                {!trace.detail && !trace.stdout && !trace.stderr ? (
+                                  <p className="operation-empty">No expanded trace payload is attached.</p>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </li>
+                        );
+                      }
+
+                      const toolCall = item.toolCall;
+                      const panelId = `tool-detail-${toolCall.id}`;
+                      const isExpanded = expandedPanels.has(panelId);
+                      const duration = formatDuration(toolCall.durationMs);
+                      const tokens = formatTokens(toolCall.tokenCount);
+
+                      return (
+                        <li className="operation-card tool-card" key={`tool-${item.id}`}>
+                          <div className="operation-card-head">
+                            <strong>{toolCall.toolName}</strong>
+                            <span>{toolCall.status}</span>
                           </div>
-                        ) : null}
-                      </article>
-                    );
-                  })}
-                </div>
+                          <div className="operation-tags">
+                            <span>tool</span>
+                            {duration ? <span>{duration}</span> : null}
+                            {tokens ? <span>{tokens}</span> : null}
+                            {toolCall.time ? <time>{formatTimestamp(toolCall.time)}</time> : null}
+                          </div>
+                          {toolCall.resultSummary ? <p>{toolCall.resultSummary}</p> : null}
+                          <div className="operation-actions">
+                            <PanelToggle controls={panelId} expanded={isExpanded} label="tool" onClick={() => togglePanel(panelId)} />
+                          </div>
+                          {isExpanded ? (
+                            <div className="trace-detail" id={panelId}>
+                              {toolCall.argsPreview ? <CodeBlock label={`${toolCall.toolName} args preview`}>{toolCall.argsPreview}</CodeBlock> : null}
+                              {toolCall.input ? <CodeBlock label={`${toolCall.toolName} input`}>{toolCall.input}</CodeBlock> : null}
+                              {toolCall.output ? <CodeBlock label={`${toolCall.toolName} output`}>{toolCall.output}</CodeBlock> : null}
+                              {toolCall.stdout ? <CodeBlock label={`${toolCall.toolName} stdout`}>{toolCall.stdout}</CodeBlock> : null}
+                              {toolCall.stderr ? <CodeBlock label={`${toolCall.toolName} stderr`}>{toolCall.stderr}</CodeBlock> : null}
+                              {!toolCall.argsPreview && !toolCall.input && !toolCall.output && !toolCall.stdout && !toolCall.stderr ? (
+                                <p className="operation-empty">No expanded tool payload is attached.</p>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                </ul>
               )}
             </section>
           </section>

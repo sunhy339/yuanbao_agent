@@ -56,6 +56,7 @@ import {
   type SettingsIMConfig,
   type SettingsProvider,
   type SettingsProviderPayload,
+  type SettingsProviderTestResult,
 } from "./ui/workbench/workspaces/settings/SettingsWorkspace";
 
 const runtimeClient = new RuntimeClient();
@@ -432,6 +433,62 @@ function getProviderHealthView(
   };
 }
 
+function readProviderTestDetail(
+  result: ProviderTestResult | null | undefined,
+  ...keys: string[]
+): string | undefined {
+  if (!result?.details) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = result.details[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return undefined;
+}
+
+function buildSettingsProviderLastTest(
+  profile: ProviderProfile,
+  result: ProviderTestResult | null,
+  activeProfileId?: string,
+): SettingsProviderTestResult | undefined {
+  const matchesResult =
+    result &&
+    (result.profileId === profile.id ||
+      (!result.profileId && activeProfileId === profile.id));
+
+  if (matchesResult) {
+    return {
+      ok: result.ok,
+      status: result.lastStatus ?? result.status,
+      message: result.message,
+      model: result.model ?? profile.model,
+      finishReason: readProviderTestDetail(result, "finishReason", "finish_reason", "stopReason", "stop_reason"),
+      checkedAt: result.lastCheckedAt,
+      errorSummary: result.lastErrorSummary ?? getProviderErrorSummary(result),
+      checkedEnvVarName: result.checkedEnvVarName ?? result.envVarName,
+      details: result.details,
+    };
+  }
+
+  if (!profile.lastStatus) {
+    return undefined;
+  }
+
+  return {
+    ok: profile.lastStatus === "ok",
+    status: profile.lastStatus,
+    message: profile.lastErrorSummary ?? profile.lastStatus,
+    model: profile.model,
+    checkedAt: profile.lastCheckedAt,
+    errorSummary: profile.lastErrorSummary,
+  };
+}
+
 function buildDefaultProviderProfile(): ProviderProfile {
   return {
     id: "default",
@@ -472,6 +529,9 @@ function getModelFromProviderPayload(payload: SettingsProviderPayload): string {
 }
 
 function getProviderEnvVarName(payload: SettingsProviderPayload): string {
+  if (payload.apiKeyEnvVarName?.trim()) {
+    return payload.apiKeyEnvVarName.trim();
+  }
   const raw = payload.apiKey.trim();
   if (raw && !raw.startsWith("sk-")) {
     return raw;
@@ -496,16 +556,48 @@ interface ProviderJsonConfig {
   timeout?: number;
 }
 
+const providerApiKeyEnvKeys = [
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "LOCAL_AGENT_PROVIDER_API_KEY",
+  "LOCAL_AGENT_OPENAI_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "MOONSHOT_API_KEY",
+  "MINIMAX_API_KEY",
+  "ZHIPU_API_KEY",
+];
+
 function readProviderJsonConfig(payload: SettingsProviderPayload): ProviderJsonConfig {
   if (!payload.jsonConfig.trim()) {
-    return {};
+    return payload.apiKeyEnvVarName ? { apiKeyEnvVarName: payload.apiKeyEnvVarName } : {};
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(payload.jsonConfig);
   } catch {
-    return {};
+    const env = readEnvConfigText(payload.jsonConfig);
+    return {
+      endpoint: readEnvString(env, "LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"),
+      model: readEnvString(
+        env,
+        "LOCAL_AGENT_PROVIDER_MODEL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      ),
+      apiKeyEnvVarName: payload.apiKeyEnvVarName || providerApiKeyEnvKeys.find((key) => key in env),
+      maxTokens: readEnvNumber(
+        env,
+        "LOCAL_AGENT_PROVIDER_MAX_TOKENS",
+        "OPENAI_MAX_TOKENS",
+        "ANTHROPIC_MAX_TOKENS",
+      ),
+      timeout: readEnvNumber(env, "LOCAL_AGENT_PROVIDER_TIMEOUT", "OPENAI_TIMEOUT", "ANTHROPIC_TIMEOUT"),
+    };
   }
   if (!parsed || typeof parsed !== "object") {
     return {};
@@ -532,12 +624,11 @@ function readProviderJsonConfig(payload: SettingsProviderPayload): ProviderJsonC
     const parsedValue = Number(value);
     return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : undefined;
   };
-  const apiKeyEnvVarName = [
-    "ANTHROPIC_AUTH_TOKEN",
-    "LOCAL_AGENT_PROVIDER_API_KEY",
-    "LOCAL_AGENT_OPENAI_API_KEY",
-    "OPENAI_API_KEY",
-  ].find((key) => typeof env[key] === "string" && String(env[key]).trim());
+  const explicitApiKeyEnvVarName = readString("apiKeyEnvVarName", "api_key_env_var", "apiKeyEnv");
+  const apiKeyEnvVarName =
+    payload.apiKeyEnvVarName ||
+    explicitApiKeyEnvVarName ||
+    providerApiKeyEnvKeys.find((key) => typeof env[key] === "string" && String(env[key]).trim());
 
   return {
     endpoint: readString("LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"),
@@ -553,6 +644,42 @@ function readProviderJsonConfig(payload: SettingsProviderPayload): ProviderJsonC
     maxTokens: readNumber("LOCAL_AGENT_PROVIDER_MAX_TOKENS", "OPENAI_MAX_TOKENS", "ANTHROPIC_MAX_TOKENS"),
     timeout: readNumber("LOCAL_AGENT_PROVIDER_TIMEOUT", "OPENAI_TIMEOUT", "ANTHROPIC_TIMEOUT"),
   };
+}
+
+function readEnvConfigText(value: string): Record<string, string> {
+  return Object.fromEntries(
+    value
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#") && line.includes("="))
+      .map((line) => {
+        const separatorIndex = line.indexOf("=");
+        return [
+          line.slice(0, separatorIndex).trim(),
+          line.slice(separatorIndex + 1).trim().replace(/^["']|["']$/g, ""),
+        ];
+      })
+      .filter(([key]) => key),
+  );
+}
+
+function readEnvString(env: Record<string, string>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = env[key];
+    if (value?.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function readEnvNumber(env: Record<string, string>, ...keys: string[]) {
+  const value = readEnvString(env, ...keys);
+  if (!value) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function buildProviderProfileFromPayload(
@@ -574,7 +701,7 @@ function buildProviderProfileFromPayload(
     id: profileId,
     name: payload.name.trim() || existingProfile?.name || "Provider profile",
     mode: "openai-compatible",
-    baseUrl: payload.endpoint.trim() || jsonConfig.endpoint || existingProfile?.baseUrl || DEFAULT_PROVIDER_BASE_URL,
+    baseUrl: jsonConfig.endpoint || payload.endpoint.trim() || existingProfile?.baseUrl || DEFAULT_PROVIDER_BASE_URL,
     model,
     defaultModel: model,
     fallbackModel: payload.opusModel.trim() || existingProfile?.fallbackModel || config.provider.fallbackModel,
@@ -2461,6 +2588,7 @@ export function App() {
         setProviderSettings(buildProviderSettingsForm(normalized));
         setActiveProviderProfileId(normalized.provider.activeProfileId ?? profileId);
       }
+      return result;
     } finally {
       setProviderTestBusy(false);
     }
@@ -2658,7 +2786,7 @@ export function App() {
         config,
         activeProviderProfile,
       );
-      await runProviderTest(
+      return await runProviderTest(
         {
           ...profile,
           defaultModel: profile.defaultModel ?? profile.model ?? DEFAULT_PROVIDER_MODEL,
@@ -3051,14 +3179,16 @@ export function App() {
       return;
     }
 
+    const taskId = task.id;
     setRefreshBusy(true);
     setError(null);
 
     try {
-      const result = await runtimeClient.getTask(task.id);
+      const result = await runtimeClient.getTask(taskId);
       setTask(result.task);
       setActiveTaskId(result.task.id);
       setTaskHistory((current) => upsertRecord(current, result.task));
+      await loadTraceForTask(taskId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -3224,13 +3354,18 @@ export function App() {
           opus: profile.fallbackModel ?? "",
         },
         apiKeyMasked: profile.apiKey ? "已输入密钥" : profile.apiKeyEnvVarName,
+        lastTest: buildSettingsProviderLastTest(
+          profile,
+          providerTestResult,
+          providerConfig.activeProfileId,
+        ),
         status:
           profile.id === providerConfig.activeProfileId
             ? "已激活"
             : profile.lastStatus ?? "已配置",
       };
     });
-  }, [config]);
+  }, [config, providerTestResult]);
   const sessionTaskCount = useMemo(() => {
     if (!session) {
       return undefined;
@@ -3308,6 +3443,7 @@ export function App() {
         id: toolCall.id,
         toolName: toolCall.toolName,
         status: toolCall.status,
+        time: toolCall.updatedAt,
         resultSummary: toolCall.errorSummary ?? toolCall.resultSummary,
         durationMs: toolCall.durationMs,
         argsPreview: toolCall.argsSummary,
@@ -3388,8 +3524,11 @@ export function App() {
           }}
           onRefreshCommandJob={handleRefreshCommandJob}
           onStopCommandJob={handleStopCommandJob}
+          onRefreshTask={handleRefreshTask}
+          onStopTask={() => handleTaskControl("cancel")}
           onRefreshTrace={handleRefreshTrace}
-          busyId={approvalBusyId ?? patchBusyId ?? commandJobBusyId}
+          taskBusyAction={refreshBusy ? "refresh" : taskControlBusyAction === "cancel" ? "stop" : null}
+          busyId={approvalBusyId ?? patchBusyId ?? commandJobBusyId ?? (traceBusy ? "trace" : null)}
         />
       );
     }

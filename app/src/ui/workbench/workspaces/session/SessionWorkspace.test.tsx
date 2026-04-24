@@ -158,7 +158,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Command jobs" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Runtime timeline" })).toBeInTheDocument();
     expect(screen.getByText("python worker.py --sync")).toBeInTheDocument();
     expect(screen.getByText("Background worker is still streaming output.")).toBeInTheDocument();
     expect(screen.getByText("background")).toBeInTheDocument();
@@ -194,6 +194,97 @@ describe("SessionWorkspace", () => {
     );
 
     expect(screen.getByRole("button", { name: "Stop command job npm test" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Refresh command job npm test" })).toBeDisabled();
+  });
+
+  it("renders approvals, patches, traces, tools, and command jobs in one chronological runtime timeline", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[]}
+        approvals={[
+          {
+            id: "approval_1",
+            title: "Allow npm test",
+            kind: "command",
+            status: "pending",
+            requestedAt: 200,
+          },
+        ]}
+        patches={[
+          {
+            id: "patch_1",
+            summary: "Patch session timeline",
+            status: "proposed",
+            updatedAt: 400,
+          },
+        ]}
+        backgroundJobs={[
+          {
+            id: "cmd_1",
+            command: "npm test",
+            status: "running",
+            startedAt: 500,
+          },
+        ]}
+        traces={[
+          {
+            id: "trace_1",
+            type: "provider.response",
+            source: "provider",
+            title: "Provider response",
+            status: "completed",
+            time: 300,
+          },
+        ]}
+        toolCalls={[
+          {
+            id: "tool_1",
+            toolName: "shell_command",
+            status: "completed",
+            time: 100,
+          },
+        ]}
+      />,
+    );
+
+    const timeline = screen.getByRole("list", { name: "Runtime timeline" });
+    const items = within(timeline).getAllByRole("listitem");
+    expect(items).toHaveLength(5);
+    expect(items.map((item) => item.textContent)).toEqual([
+      expect.stringContaining("npm test"),
+      expect.stringContaining("Patch session timeline"),
+      expect.stringContaining("Provider response"),
+      expect.stringContaining("Allow npm test"),
+      expect.stringContaining("shell_command"),
+    ]);
+  });
+
+  it("supports task-level refresh and stop controls", async () => {
+    const user = userEvent.setup();
+    const onRefreshTask = vi.fn();
+    const onStopTask = vi.fn();
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_1",
+          status: "running",
+          goal: "Run command jobs",
+        }}
+        messages={[]}
+        onRefreshTask={onRefreshTask}
+        onStopTask={onStopTask}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Refresh active task" }));
+    await user.click(screen.getByRole("button", { name: "Stop active task" }));
+
+    expect(onRefreshTask).toHaveBeenCalledOnce();
+    expect(onStopTask).toHaveBeenCalledWith("task_1");
   });
 
   it("handles approval buttons and full input disclosure", async () => {
@@ -333,14 +424,14 @@ describe("SessionWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Refresh trace" }));
     expect(onRefreshTrace).toHaveBeenCalledOnce();
 
-    const traceCard = screen.getByText("Thinking").closest("article");
+    const traceCard = screen.getByText("Thinking").closest("li");
     expect(traceCard).not.toBeNull();
     await user.click(within(traceCard as HTMLElement).getByRole("button", { name: "Expand trace" }));
     expect(screen.getByText("Need to inspect the focused component before editing.")).toBeInTheDocument();
     expect(screen.getByLabelText("Thinking stdout")).toHaveTextContent("planner ready");
     expect(screen.getByLabelText("Thinking stderr")).toHaveTextContent("stale snapshot");
 
-    const toolCard = screen.getByText("shell_command").closest("article");
+    const toolCard = screen.getByText("shell_command").closest("li");
     expect(toolCard).not.toBeNull();
     await user.click(within(toolCard as HTMLElement).getByRole("button", { name: "Expand tool" }));
     expect(screen.getByLabelText("shell_command args preview")).toHaveTextContent('"command":"npm test"');

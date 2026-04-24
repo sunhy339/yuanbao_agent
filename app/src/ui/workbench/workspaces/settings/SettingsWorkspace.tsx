@@ -23,6 +23,18 @@ export interface SettingsProviderModelMapping {
   opus: string;
 }
 
+export interface SettingsProviderTestResult {
+  ok: boolean;
+  status: string;
+  message: string;
+  model?: string;
+  finishReason?: string;
+  checkedAt?: number;
+  errorSummary?: string | null;
+  checkedEnvVarName?: string;
+  details?: Record<string, unknown>;
+}
+
 export interface SettingsProvider {
   id: string;
   name: string;
@@ -34,6 +46,7 @@ export interface SettingsProvider {
   modelMapping?: Partial<SettingsProviderModelMapping>;
   jsonConfig?: string;
   preset?: ProviderPresetId;
+  lastTest?: SettingsProviderTestResult;
 }
 
 export interface SettingsProviderPayload {
@@ -41,6 +54,7 @@ export interface SettingsProviderPayload {
   note: string;
   endpoint: string;
   apiKey: string;
+  apiKeyEnvVarName?: string;
   modelMapping: string;
   mainModel: string;
   haikuModel: string;
@@ -110,7 +124,9 @@ export interface SettingsWorkspaceProps {
     payload: SettingsProviderPayload,
   ) => void | Promise<void>;
   onTestProvider?: (providerId?: string) => void | Promise<void>;
-  onTestProviderConfig?: (payload: SettingsProviderPayload) => void | Promise<void>;
+  onTestProviderConfig?: (
+    payload: SettingsProviderPayload,
+  ) => void | SettingsProviderTestResult | Promise<void | SettingsProviderTestResult>;
   onSaveProvider?: (providerId?: string) => void | Promise<void>;
   providerBusy?: boolean;
   providerTestBusy?: boolean;
@@ -238,6 +254,82 @@ const providerPresets: Array<{
     opusModel: "",
   },
 ];
+
+const providerApiKeyEnvKeys = [
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "LOCAL_AGENT_PROVIDER_API_KEY",
+  "LOCAL_AGENT_OPENAI_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "MOONSHOT_API_KEY",
+  "MINIMAX_API_KEY",
+  "ZHIPU_API_KEY",
+];
+
+interface ParsedProviderConfigText {
+  env: Record<string, string>;
+  apiKeyEnvVarName?: string;
+  jsonConfig?: Record<string, unknown>;
+  parseError?: string;
+}
+
+function parseProviderConfigText(value: string): ParsedProviderConfigText {
+  const raw = value.trim();
+  if (!raw) {
+    return { env: {} };
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return { env: {}, parseError: "JSON config must be an object." };
+    }
+
+    const record = parsed as Record<string, unknown>;
+    const envRecord = record.env && typeof record.env === "object"
+      ? (record.env as Record<string, unknown>)
+      : record;
+    const env = Object.fromEntries(
+      Object.entries(envRecord)
+        .filter(([, item]) => typeof item === "string" && item.trim())
+        .map(([key, item]) => [key, String(item).trim()]),
+    );
+
+    return {
+      env,
+      apiKeyEnvVarName: providerApiKeyEnvKeys.find((key) => key in env),
+      jsonConfig: record,
+    };
+  } catch {
+    const env = Object.fromEntries(
+      raw
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("#") && line.includes("="))
+        .map((line) => {
+          const separatorIndex = line.indexOf("=");
+          const key = line.slice(0, separatorIndex).trim();
+          const item = line.slice(separatorIndex + 1).trim().replace(/^["']|["']$/g, "");
+          return [key, item];
+        })
+        .filter(([key]) => key),
+    );
+
+    if (Object.keys(env).length) {
+      return {
+        env,
+        apiKeyEnvVarName: providerApiKeyEnvKeys.find((key) => key in env),
+      };
+    }
+
+    return { env: {}, parseError: "JSON format needs correction." };
+  }
+}
+
+function isDirectApiKey(value: string) {
+  return value.startsWith("sk-");
+}
 
 const permissionModes = [
   {
@@ -571,6 +663,12 @@ function ProvidersPanel({
                   {provider.models?.[0] ? ` · ${provider.models[0]}` : ""}
                 </small>
                 {provider.note ? <small>{provider.note}</small> : null}
+                {provider.lastTest ? (
+                  <small>{`Last test: ${provider.lastTest.status}`}</small>
+                ) : null}
+                {provider.lastTest?.ok && formatProviderSuccessDetail(provider.lastTest) ? (
+                  <small>{formatProviderSuccessDetail(provider.lastTest)}</small>
+                ) : null}
               </span>
               {provider.status ? <em>{provider.status}</em> : null}
             </button>
@@ -595,6 +693,9 @@ function ProvidersPanel({
               <dt>密钥状态</dt>
               <dd>{activeProvider?.apiKeyMasked ?? "由运行时保存，不在界面明文展示"}</dd>
             </div>
+            {activeProvider?.lastTest ? (
+              <ProviderTestSummaryRows result={activeProvider.lastTest} />
+            ) : null}
           </dl>
           <div className="settings-provider-actions">
             <button type="button" className="settings-secondary-action" onClick={onEditProvider}>
@@ -621,6 +722,55 @@ function ProvidersPanel({
       </div>
     </div>
   );
+}
+
+function ProviderTestSummaryRows({ result }: { result: SettingsProviderTestResult }) {
+  const successDetail = formatProviderSuccessDetail(result);
+  const failureDetail = result.errorSummary ?? result.message;
+
+  return (
+    <>
+      <div>
+        <dt>Last test</dt>
+        <dd>{`Last test: ${result.status}`}</dd>
+      </div>
+      {result.ok ? (
+        <div>
+          <dt>Model / finish</dt>
+          <dd>{successDetail || result.message}</dd>
+        </div>
+      ) : (
+        <div>
+          <dt>Failure reason</dt>
+          <dd>{failureDetail}</dd>
+        </div>
+      )}
+      {result.checkedAt ? (
+        <div>
+          <dt>Checked at</dt>
+          <dd>{new Date(result.checkedAt).toLocaleString()}</dd>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function formatProviderSuccessDetail(result: SettingsProviderTestResult) {
+  return [result.model, result.finishReason].filter(Boolean).join(" / ");
+}
+
+function formatProviderTestResult(result: SettingsProviderTestResult) {
+  const lines = [
+    result.ok ? "Connection succeeded." : "Connection failed.",
+    `Status: ${result.status}`,
+    result.model ? `Model: ${result.model}` : undefined,
+    result.finishReason ? `Finish: ${result.finishReason}` : undefined,
+    result.checkedEnvVarName ? `Env var: ${result.checkedEnvVarName}` : undefined,
+    result.errorSummary ? `Reason: ${result.errorSummary}` : undefined,
+    result.message ? `Message: ${result.message}` : undefined,
+  ];
+
+  return lines.filter(Boolean).join("\n");
 }
 
 function PermissionsPanel({
@@ -1051,16 +1201,41 @@ function ProviderModal({
     providerId: string,
     payload: SettingsProviderPayload,
   ) => void | Promise<void>;
-  onTestProviderConfig?: (payload: SettingsProviderPayload) => void | Promise<void>;
+  onTestProviderConfig?: (
+    payload: SettingsProviderPayload,
+  ) => void | SettingsProviderTestResult | Promise<void | SettingsProviderTestResult>;
   providerBusy: boolean;
   providerTestBusy: boolean;
 }) {
   const [draft, setDraft] = useState(() => createProviderDraft(provider));
+  const [testResult, setTestResult] = useState<SettingsProviderTestResult | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
   const title = mode === "edit" ? "编辑服务商" : "添加服务商";
   const jsonPreview = buildProviderJson(draft);
+  const parsedConfig = parseProviderConfigText(draft.jsonConfig);
+  const detectedApiKeyEnvVarName =
+    !draft.apiKey.trim() || !isDirectApiKey(draft.apiKey.trim())
+      ? parsedConfig.apiKeyEnvVarName
+      : undefined;
 
   const updateDraft = (patch: Partial<ProviderFormDraft>) => {
+    setTestResult(null);
+    setTestError(null);
     setDraft((current) => ({ ...current, ...patch }));
+  };
+
+  const handleTestProvider = async () => {
+    setTestResult(null);
+    setTestError(null);
+
+    try {
+      const result = await onTestProviderConfig?.(toProviderPayload(draft));
+      if (result) {
+        setTestResult(result);
+      }
+    } catch (reason) {
+      setTestError(reason instanceof Error ? reason.message : String(reason));
+    }
   };
 
   const applyPreset = (presetId: ProviderPresetId) => {
@@ -1171,6 +1346,9 @@ function ProviderModal({
               autoComplete="off"
               required={mode === "add" && !draft.jsonConfig.trim()}
             />
+            {detectedApiKeyEnvVarName ? (
+              <small>{`Detected env var: ${detectedApiKeyEnvVarName}`}</small>
+            ) : null}
           </label>
 
           <fieldset className="settings-model-grid">
@@ -1239,6 +1417,13 @@ function ProviderModal({
             <pre>{jsonPreview}</pre>
           </div>
 
+          {testResult || testError ? (
+            <div className="settings-json-preview settings-form-wide" role="status">
+              <span>{testResult ? `Last test: ${testResult.status}` : "Last test failed"}</span>
+              <pre>{testResult ? formatProviderTestResult(testResult) : testError}</pre>
+            </div>
+          ) : null}
+
           <footer className="settings-modal-actions settings-form-wide">
             <button type="button" className="settings-secondary-action" onClick={onClose}>
               取消
@@ -1247,7 +1432,7 @@ function ProviderModal({
               type="button"
               className="settings-secondary-action"
               disabled={providerTestBusy}
-              onClick={() => void onTestProviderConfig?.(toProviderPayload(draft))}
+              onClick={() => void handleTestProvider()}
             >
               {providerTestBusy ? "测试中..." : "测试连接"}
             </button>
@@ -1357,12 +1542,18 @@ function toProviderPayload(draft: ProviderFormDraft): SettingsProviderPayload {
     `sonnet=${draft.sonnetModel}`,
     `opus=${draft.opusModel}`,
   ].join("\n");
+  const apiKeyInput = draft.apiKey.trim();
+  const parsedConfig = parseProviderConfigText(draft.jsonConfig);
+  const apiKeyEnvVarName = isDirectApiKey(apiKeyInput)
+    ? undefined
+    : apiKeyInput || parsedConfig.apiKeyEnvVarName;
 
   return {
     name: draft.name,
     note: draft.note,
     endpoint: draft.endpoint,
-    apiKey: draft.apiKey,
+    apiKey: isDirectApiKey(apiKeyInput) ? apiKeyInput : "",
+    ...(apiKeyEnvVarName ? { apiKeyEnvVarName } : {}),
     modelMapping,
     mainModel: draft.mainModel,
     haikuModel: draft.haikuModel,

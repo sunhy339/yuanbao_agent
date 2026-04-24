@@ -9,6 +9,7 @@ export interface ProviderProfile {
   name: string;
   mode?: ProviderMode;
   baseUrl?: string;
+  apiFormat?: string;
   model?: string;
   defaultModel?: string;
   fallbackModel?: string;
@@ -27,6 +28,7 @@ export interface ProviderProfile {
 export interface ProviderConfig {
   mode?: ProviderMode;
   baseUrl?: string;
+  apiFormat?: string;
   model?: string;
   defaultModel: string;
   fallbackModel?: string;
@@ -93,6 +95,7 @@ export const defaultAppConfig: AppConfig = {
   provider: {
     mode: "mock",
     baseUrl: "https://api.openai.com/v1",
+    apiFormat: "openai-chat",
     model: "gpt-5-codex",
     defaultModel: "gpt-5-codex",
     fallbackModel: "claude-sonnet",
@@ -109,6 +112,7 @@ export const defaultAppConfig: AppConfig = {
         name: "Default",
         mode: "mock",
         baseUrl: "https://api.openai.com/v1",
+        apiFormat: "openai-chat",
         model: "gpt-5-codex",
         defaultModel: "gpt-5-codex",
         fallbackModel: "claude-sonnet",

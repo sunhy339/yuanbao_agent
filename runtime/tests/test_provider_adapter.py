@@ -17,11 +17,12 @@ def _context() -> dict[str, Any]:
     }
 
 
-def test_no_api_key_falls_back_to_deterministic_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_openai_compatible_without_api_key_raises_readable_error(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in (
         "OPENAI_API_KEY",
         "LOCAL_AGENT_OPENAI_API_KEY",
         "LOCAL_AGENT_PROVIDER_API_KEY",
+        "MISSING_PROVIDER_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -29,9 +30,22 @@ def test_no_api_key_falls_back_to_deterministic_provider(monkeypatch: pytest.Mon
         raise AssertionError("HTTP transport should not be used without an API key")
 
     adapter = ProviderAdapter(
-        config={"provider": {"mode": "openai-compatible", "model": "real-model"}},
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "model": "real-model",
+                "apiKeyEnvVarName": "MISSING_PROVIDER_KEY",
+            }
+        },
         http_post=fail_post,
     )
+
+    with pytest.raises(ProviderAdapterError, match="MISSING_PROVIDER_KEY"):
+        adapter.generate("inspect workspace", _context())
+
+
+def test_mock_provider_still_uses_deterministic_fallback() -> None:
+    adapter = ProviderAdapter(config={"provider": {"mode": "mock", "model": "mock-model"}})
 
     response = adapter.generate("inspect workspace", _context())
 

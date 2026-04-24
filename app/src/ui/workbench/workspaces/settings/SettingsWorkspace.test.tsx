@@ -88,6 +88,7 @@ describe("SettingsWorkspace", () => {
       dialog.querySelector("#provider-endpoint") as HTMLInputElement,
       "https://api.acme.example/v1",
     );
+    await user.selectOptions(dialog.querySelector("#provider-api-format") as HTMLSelectElement, "openai-chat");
     await user.type(dialog.querySelector("#provider-api-key") as HTMLInputElement, "sk-test");
     await user.clear(dialog.querySelector("#provider-main-model") as HTMLInputElement);
     await user.type(
@@ -119,6 +120,7 @@ describe("SettingsWorkspace", () => {
       expect.objectContaining({
         name: "Acme AI",
         mainModel: "acme-main",
+        apiFormat: "openai-chat",
         preset: "minimax",
       }),
     );
@@ -129,6 +131,7 @@ describe("SettingsWorkspace", () => {
       name: "Acme AI",
       note: "Workbench provider",
       endpoint: "https://api.acme.example/v1",
+      apiFormat: "openai-chat",
       apiKey: "sk-test",
       modelMapping:
         "main=acme-main\nhaiku=acme-haiku\nsonnet=acme-sonnet\nopus=acme-opus",

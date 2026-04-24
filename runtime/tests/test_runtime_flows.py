@@ -84,6 +84,56 @@ def test_provider_test_reports_mock_and_missing_env(runtime_harness: Any) -> Non
     assert missing_env["checkedEnvVarName"] == "YUANBAO_TEST_MISSING_KEY"
 
 
+def test_message_send_fails_when_openai_provider_key_is_missing(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("YUANBAO_TEST_MISSING_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_AGENT_PROVIDER_API_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_AGENT_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Greeting"},
+        ),
+        "session",
+    )
+    runtime_harness.call(
+        "config.update",
+        {
+            "config": {
+                "provider": {
+                    "mode": "openai-compatible",
+                    "baseUrl": "https://api.example.test/v1",
+                    "model": "real-model",
+                    "apiKeyEnvVarName": "YUANBAO_TEST_MISSING_KEY",
+                }
+            }
+        },
+    )
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "你好"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "failed"
+    assert "YUANBAO_TEST_MISSING_KEY" in task["resultSummary"]
+    assert "Completed an initial pass" not in task["resultSummary"]
+    assert not [event for event in runtime_harness.events if event["type"] == "assistant.message.completed"]
+
+
 def test_config_get_normalizes_legacy_provider_into_active_profile(runtime_harness: Any) -> None:
     config = runtime_harness.call("config.get", {})["result"]["config"]
     provider = config["provider"]

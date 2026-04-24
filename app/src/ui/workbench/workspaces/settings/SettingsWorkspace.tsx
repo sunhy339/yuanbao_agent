@@ -12,6 +12,7 @@ type SettingsSection =
   | "about";
 
 type ProviderPresetId = "deepseek" | "zhipu" | "kimi" | "minimax" | "custom";
+type ProviderApiFormat = "openai-chat" | "openai-responses" | "anthropic-messages";
 type ThemeMode = "light" | "dark" | "system";
 type LanguageMode = "zh" | "en" | "auto";
 type ReasoningEffort = "low" | "medium" | "high" | "max";
@@ -39,6 +40,7 @@ export interface SettingsProvider {
   id: string;
   name: string;
   endpoint: string;
+  apiFormat?: ProviderApiFormat;
   note?: string;
   models?: string[];
   status?: string;
@@ -61,6 +63,7 @@ export interface SettingsProviderPayload {
   name: string;
   note: string;
   endpoint: string;
+  apiFormat: ProviderApiFormat;
   apiKey: string;
   apiKeyEnvVarName?: string;
   modelMapping: string;
@@ -186,6 +189,7 @@ const providerPresets = [
     id: "deepseek",
     label: "DeepSeek",
     endpoint: "https://api.deepseek.com/anthropic",
+    apiFormat: "openai-chat",
     mainModel: "DeepSeek-V3.2",
     haikuModel: "DeepSeek-V3.2",
     sonnetModel: "DeepSeek-V3.2",
@@ -195,6 +199,7 @@ const providerPresets = [
     id: "zhipu",
     label: "Zhipu GLM",
     endpoint: "https://open.bigmodel.cn/api/paas/v4",
+    apiFormat: "openai-chat",
     mainModel: "glm-4-plus",
     haikuModel: "glm-4-air",
     sonnetModel: "glm-4-plus",
@@ -204,6 +209,7 @@ const providerPresets = [
     id: "kimi",
     label: "Kimi",
     endpoint: "https://api.moonshot.cn/v1",
+    apiFormat: "openai-chat",
     mainModel: "moonshot-v1-128k",
     haikuModel: "moonshot-v1-8k",
     sonnetModel: "moonshot-v1-32k",
@@ -213,6 +219,7 @@ const providerPresets = [
     id: "minimax",
     label: "MiniMax",
     endpoint: "https://api.minimax.chat/v1",
+    apiFormat: "openai-chat",
     mainModel: "MiniMax-M2.7-highspeed",
     haikuModel: "MiniMax-M2.7-highspeed",
     sonnetModel: "MiniMax-M2.7-highspeed",
@@ -222,6 +229,7 @@ const providerPresets = [
     id: "custom",
     label: "Custom",
     endpoint: "",
+    apiFormat: "openai-chat",
     mainModel: "",
     haikuModel: "",
     sonnetModel: "",
@@ -231,6 +239,7 @@ const providerPresets = [
   id: ProviderPresetId;
   label: string;
   endpoint: string;
+  apiFormat: ProviderApiFormat;
   mainModel: string;
   haikuModel: string;
   sonnetModel: string;
@@ -301,6 +310,7 @@ interface ProviderFormDraft {
   name: string;
   note: string;
   endpoint: string;
+  apiFormat: ProviderApiFormat;
   apiKey: string;
   mainModel: string;
   haikuModel: string;
@@ -363,6 +373,7 @@ function createProviderDraft(provider?: SettingsProvider): ProviderFormDraft {
     name: provider?.name ?? "Custom Provider",
     note: provider?.note ?? "",
     endpoint: provider?.endpoint ?? "",
+    apiFormat: provider?.apiFormat ?? "openai-chat",
     apiKey: "",
     mainModel: provider?.modelMapping?.main ?? provider?.models?.[0] ?? "",
     haikuModel: provider?.modelMapping?.haiku ?? provider?.models?.[0] ?? "",
@@ -383,6 +394,7 @@ function toProviderPayload(draft: ProviderFormDraft): SettingsProviderPayload {
     name: draft.name.trim(),
     note: draft.note.trim(),
     endpoint: draft.endpoint.trim(),
+    apiFormat: draft.apiFormat,
     apiKey: isDirectApiKey(draft.apiKey) ? draft.apiKey.trim() : "",
     modelMapping: [
       `main=${draft.mainModel.trim()}`,
@@ -438,6 +450,7 @@ function buildProviderJson(draft: ProviderFormDraft) {
     {
       env: {
         LOCAL_AGENT_PROVIDER_BASE_URL: draft.endpoint || "(provider base URL)",
+        LOCAL_AGENT_PROVIDER_API_FORMAT: draft.apiFormat,
         LOCAL_AGENT_PROVIDER_MODEL: draft.mainModel || "(model id)",
         LOCAL_AGENT_PROVIDER_API_KEY: draft.apiKey ? "(provided in form)" : "(set in runtime env)",
       },
@@ -1190,6 +1203,7 @@ function ProviderModal({
       preset: preset.id,
       name: preset.id === "custom" ? draft.name : preset.label,
       endpoint: preset.endpoint,
+      apiFormat: preset.apiFormat,
       mainModel: preset.mainModel,
       haikuModel: preset.haikuModel,
       sonnetModel: preset.sonnetModel,
@@ -1257,6 +1271,14 @@ function ProviderModal({
           <label className="settings-field" htmlFor="provider-endpoint">
             <span>接口地址</span>
             <input id="provider-endpoint" value={draft.endpoint} onChange={(event) => updateDraft({ endpoint: event.currentTarget.value })} placeholder="https://api.example.com/v1" />
+          </label>
+          <label className="settings-field" htmlFor="provider-api-format">
+            <span>API format</span>
+            <select id="provider-api-format" value={draft.apiFormat} onChange={(event) => updateDraft({ apiFormat: event.currentTarget.value as ProviderApiFormat })}>
+              <option value="openai-chat">OpenAI Chat Completions</option>
+              <option value="openai-responses">OpenAI Responses API</option>
+              <option value="anthropic-messages">Anthropic Messages</option>
+            </select>
           </label>
           <label className="settings-field" htmlFor="provider-api-key">
             <span>API 密钥</span>

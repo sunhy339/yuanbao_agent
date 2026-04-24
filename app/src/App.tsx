@@ -65,6 +65,7 @@ const runtimeClient = new RuntimeClient();
 const DEFAULT_SEARCH_GLOB_TEXT = "";
 const DEFAULT_PROVIDER_MODE: ProviderMode = "mock";
 const DEFAULT_PROVIDER_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_PROVIDER_API_FORMAT = "openai-chat";
 const DEFAULT_PROVIDER_MODEL = "gpt-5-codex";
 const DEFAULT_PROVIDER_API_KEY_ENV_VAR = "LOCAL_AGENT_PROVIDER_API_KEY";
 const DEFAULT_PROVIDER_TEMPERATURE = 0.2;
@@ -205,6 +206,7 @@ function normalizeProviderConfig(provider: AppConfig["provider"]): AppConfig["pr
     ...activeProfile,
     mode: activeProfile?.mode ?? provider.mode ?? DEFAULT_PROVIDER_MODE,
     baseUrl: activeProfile?.baseUrl ?? provider.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
+    apiFormat: activeProfile?.apiFormat ?? provider.apiFormat ?? DEFAULT_PROVIDER_API_FORMAT,
     model,
     defaultModel: activeProfile?.defaultModel || provider.defaultModel || model,
     apiKeyEnvVarName:
@@ -242,6 +244,7 @@ function normalizeProviderProfile(
     name: merged.name?.trim() || `Profile ${index + 1}`,
     mode: merged.mode ?? DEFAULT_PROVIDER_MODE,
     baseUrl: merged.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
+    apiFormat: merged.apiFormat ?? DEFAULT_PROVIDER_API_FORMAT,
     model,
     defaultModel: merged.defaultModel || model,
     apiKeyEnvVarName: merged.apiKeyEnvVarName ?? DEFAULT_PROVIDER_API_KEY_ENV_VAR,
@@ -261,6 +264,7 @@ function providerToProfile(provider: AppConfig["provider"], id: string, name: st
     name,
     mode: provider.mode ?? DEFAULT_PROVIDER_MODE,
     baseUrl: provider.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
+    apiFormat: provider.apiFormat ?? DEFAULT_PROVIDER_API_FORMAT,
     model,
     defaultModel: provider.defaultModel || model,
     fallbackModel: provider.fallbackModel,
@@ -497,6 +501,7 @@ function buildDefaultProviderProfile(): ProviderProfile {
     name: "Default",
     mode: DEFAULT_PROVIDER_MODE,
     baseUrl: DEFAULT_PROVIDER_BASE_URL,
+    apiFormat: DEFAULT_PROVIDER_API_FORMAT,
     model: DEFAULT_PROVIDER_MODEL,
     defaultModel: DEFAULT_PROVIDER_MODEL,
     apiKeyEnvVarName: DEFAULT_PROVIDER_API_KEY_ENV_VAR,
@@ -552,6 +557,7 @@ function getProviderEnvVarName(payload: SettingsProviderPayload): string {
 
 interface ProviderJsonConfig {
   endpoint?: string;
+  apiFormat?: string;
   model?: string;
   apiKeyEnvVarName?: string;
   maxTokens?: number;
@@ -582,6 +588,7 @@ function readProviderJsonConfig(payload: SettingsProviderPayload): ProviderJsonC
     const env = readEnvConfigText(payload.jsonConfig);
     return {
       endpoint: readEnvString(env, "LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"),
+      apiFormat: readEnvString(env, "LOCAL_AGENT_PROVIDER_API_FORMAT", "API_FORMAT"),
       model: readEnvString(
         env,
         "LOCAL_AGENT_PROVIDER_MODEL",
@@ -627,6 +634,7 @@ function readProviderJsonConfig(payload: SettingsProviderPayload): ProviderJsonC
     return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : undefined;
   };
   const explicitApiKeyEnvVarName = readString("apiKeyEnvVarName", "api_key_env_var", "apiKeyEnv");
+  const apiFormat = readString("apiFormat", "api_format", "LOCAL_AGENT_PROVIDER_API_FORMAT", "API_FORMAT");
   const apiKeyEnvVarName =
     payload.apiKeyEnvVarName ||
     explicitApiKeyEnvVarName ||
@@ -634,6 +642,7 @@ function readProviderJsonConfig(payload: SettingsProviderPayload): ProviderJsonC
 
   return {
     endpoint: readString("LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"),
+    apiFormat,
     model: readString(
       "LOCAL_AGENT_PROVIDER_MODEL",
       "OPENAI_MODEL",
@@ -704,6 +713,7 @@ function buildProviderProfileFromPayload(
     name: payload.name.trim() || existingProfile?.name || "Provider profile",
     mode: "openai-compatible",
     baseUrl: jsonConfig.endpoint || payload.endpoint.trim() || existingProfile?.baseUrl || DEFAULT_PROVIDER_BASE_URL,
+    apiFormat: jsonConfig.apiFormat || payload.apiFormat || existingProfile?.apiFormat || DEFAULT_PROVIDER_API_FORMAT,
     model,
     defaultModel: model,
     fallbackModel: payload.opusModel.trim() || existingProfile?.fallbackModel || config.provider.fallbackModel,
@@ -3420,6 +3430,7 @@ export function App() {
         id: profile.id,
         name: profile.name,
         endpoint: profile.baseUrl ?? "未配置接口",
+        apiFormat: profile.apiFormat as SettingsProvider["apiFormat"],
         note:
           profile.mode === "mock"
             ? "测试模式，不会调用真实模型"

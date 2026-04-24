@@ -350,11 +350,21 @@ class ProviderAdapter:
             "envKey",
             "env_key",
         )
+        api_format = (
+            self._string_value(provider_config, "apiFormat", "api_format", "providerApiFormat")
+            or self._env("LOCAL_AGENT_PROVIDER_API_FORMAT", "API_FORMAT")
+            or "openai-chat"
+        )
         uses_anthropic_env = self._uses_anthropic_env(configured_env_var_name)
-        if self._normalize_mode(mode) not in OPENAI_COMPATIBLE_MODES:
+        normalized_mode = self._normalize_mode(mode)
+        if normalized_mode not in OPENAI_COMPATIBLE_MODES:
             if not self._anthropic_env_available():
                 return None
             uses_anthropic_env = True
+        if normalized_mode in OPENAI_COMPATIBLE_MODES and api_format not in {"openai-chat", "chat-completions"}:
+            raise ProviderAdapterError(
+                f"Provider API format {api_format} is not supported yet. Use OpenAI Chat Completions."
+            )
 
         api_key = self._string_value(provider_config, "apiKey", "api_key")
         if not api_key and configured_env_var_name:
@@ -367,6 +377,9 @@ class ProviderAdapter:
                 "ANTHROPIC_AUTH_TOKEN",
             )
         if not api_key:
+            if normalized_mode in OPENAI_COMPATIBLE_MODES:
+                env_hint = configured_env_var_name or "LOCAL_AGENT_PROVIDER_API_KEY"
+                raise ProviderAdapterError(f"Environment variable {env_hint} is not set.")
             return None
 
         raw_base_url = self._string_value(provider_config, "baseUrl", "base_url")

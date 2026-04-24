@@ -4,13 +4,12 @@ import json
 import subprocess
 import sys
 import time
-from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from queue import Empty, Queue
-from threading import Event, Lock, Thread
+from threading import Lock
 from typing import Any
 
-from .worker_process_runtime import WorkerProcessRuntime
+from .worker_process_runtime import WorkerProcessRuntime, WorkerProcessStreamDrain
 
 
 class WorkerProcessTransportError(RuntimeError):
@@ -55,12 +54,12 @@ class WorkerProcessTransport:
         self._request_id = 0
         self._response_queues: dict[str, Queue[dict[str, Any]]] = {}
         self._event_queue: Queue[dict[str, Any]] = Queue()
-        self._stderr_lines: deque[str] = deque(maxlen=50)
         self._lock = Lock()
+        self._stdout_buffer_lock = Lock()
+        self._stdout_buffer = ""
         self._closed = False
-        self._reader_done = Event()
-        self._stdout_thread: Thread | None = None
-        self._stderr_thread: Thread | None = None
+        self._stdout_drain: WorkerProcessStreamDrain | None = None
+        self._stderr_drain: WorkerProcessStreamDrain | None = None
 
     @classmethod
     def for_python_module(
@@ -81,11 +80,9 @@ class WorkerProcessTransport:
 
     def start(self) -> WorkerProcessTransport:
         self._runtime.start()
-        process = self._process()
-        self._stdout_thread = Thread(target=self._read_stdout, args=(process,), daemon=True)
-        self._stdout_thread.start()
-        self._stderr_thread = Thread(target=self._read_stderr, args=(process,), daemon=True)
-        self._stderr_thread.start()
+        self._stdout_buffer = ""
+        self._stdout_drain = self._runtime.open_stream_drain("stdout", chunk_callback=self._handle_stdout_chunk)
+        self._stderr_drain = self._runtime.open_stream_drain("stderr")
         return self
 
     def close(self) -> None:
@@ -93,7 +90,6 @@ class WorkerProcessTransport:
             return
         self._closed = True
         self._runtime.cleanup()
-        self._reader_done.wait(timeout=1.0)
 
     def request(
         self,
@@ -121,6 +117,10 @@ class WorkerProcessTransport:
                 self._drain_events(event_callback)
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    response = self._take_ready_response(response_queue)
+                    if response is not None:
+                        self._drain_events(event_callback)
+                        return response
                     self._raise_if_exited()
                     raise WorkerProcessTimeoutError(f"Timed out waiting for worker response to {method}.")
                 try:
@@ -128,6 +128,10 @@ class WorkerProcessTransport:
                     self._drain_events(event_callback)
                     return response
                 except Empty:
+                    response = self._take_ready_response(response_queue)
+                    if response is not None:
+                        self._drain_events(event_callback)
+                        return response
                     self._raise_if_exited()
         finally:
             with self._lock:
@@ -140,6 +144,15 @@ class WorkerProcessTransport:
             self._raise_if_exited()
             raise WorkerProcessTimeoutError("Timed out waiting for worker event.") from exc
 
+    def add_stream_callback(self, stream_name: str, callback: Callable[[str], None]) -> None:
+        self._stream_drain(stream_name).add_callback(callback)
+
+    def take_stream_chunks(self, stream_name: str) -> list[str]:
+        return self._stream_drain(stream_name).take_chunks()
+
+    def stream_tail(self, stream_name: str) -> str:
+        return self._stream_drain(stream_name).tail_text()
+
     def _send_json(self, payload: dict[str, Any]) -> None:
         process = self._process()
         stdin = process.stdin
@@ -148,39 +161,37 @@ class WorkerProcessTransport:
         stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
         stdin.flush()
 
-    def _read_stdout(self, process: subprocess.Popen[str]) -> None:
-        try:
-            stdout = process.stdout
-            if stdout is None:
-                return
-            for raw_line in stdout:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if payload.get("kind") == "event" and isinstance(payload.get("payload"), dict):
-                    self._event_queue.put(payload["payload"])
-                    continue
-                request_id = payload.get("id")
-                if isinstance(request_id, str):
-                    with self._lock:
-                        queue = self._response_queues.get(request_id)
-                    if queue is not None:
-                        queue.put(payload)
-        finally:
-            self._reader_done.set()
+    def _handle_stdout_chunk(self, chunk: str) -> None:
+        lines: list[str] = []
+        with self._stdout_buffer_lock:
+            self._stdout_buffer += chunk
+            while True:
+                newline_index = self._stdout_buffer.find("\n")
+                if newline_index < 0:
+                    break
+                line = self._stdout_buffer[:newline_index].rstrip("\r")
+                self._stdout_buffer = self._stdout_buffer[newline_index + 1 :]
+                lines.append(line)
+        for line in lines:
+            self._handle_stdout_line(line)
 
-    def _read_stderr(self, process: subprocess.Popen[str]) -> None:
-        stderr = process.stderr
-        if stderr is None:
+    def _handle_stdout_line(self, line: str) -> None:
+        line = line.strip()
+        if not line:
             return
-        for raw_line in stderr:
-            line = raw_line.rstrip()
-            if line:
-                self._stderr_lines.append(line)
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if payload.get("kind") == "event" and isinstance(payload.get("payload"), dict):
+            self._event_queue.put(payload["payload"])
+            return
+        request_id = payload.get("id")
+        if isinstance(request_id, str):
+            with self._lock:
+                queue = self._response_queues.get(request_id)
+            if queue is not None:
+                queue.put(payload)
 
     def _process(self) -> subprocess.Popen[str]:
         process = self._runtime._require_process()  # noqa: SLF001
@@ -192,13 +203,17 @@ class WorkerProcessTransport:
             return f"rpc_{self._request_id}"
 
     def _raise_if_exited(self) -> None:
+        self._flush_stdout_buffer_if_closed()
         returncode = self._runtime.poll()
         if returncode is None:
             return
         raise WorkerProcessExitError(returncode, self._stderr_text())
 
     def _stderr_text(self) -> str:
-        return "\n".join(self._stderr_lines)
+        drain = self._stderr_drain
+        if drain is None:
+            return ""
+        return drain.tail_text()
 
     def _drain_events(self, event_callback: Any | None) -> None:
         if event_callback is None:
@@ -209,3 +224,31 @@ class WorkerProcessTransport:
             except Empty:
                 return
             event_callback(event)
+
+    def _flush_stdout_buffer_if_closed(self) -> None:
+        drain = self._stdout_drain
+        if drain is None or not drain.is_closed:
+            return
+        with self._stdout_buffer_lock:
+            remainder = self._stdout_buffer.rstrip("\r")
+            self._stdout_buffer = ""
+        if remainder:
+            self._handle_stdout_line(remainder)
+
+    def _take_ready_response(self, response_queue: Queue[dict[str, Any]]) -> dict[str, Any] | None:
+        self._flush_stdout_buffer_if_closed()
+        try:
+            return response_queue.get_nowait()
+        except Empty:
+            return None
+
+    def _stream_drain(self, stream_name: str) -> WorkerProcessStreamDrain:
+        if stream_name == "stdout":
+            drain = self._stdout_drain
+        elif stream_name == "stderr":
+            drain = self._stderr_drain
+        else:
+            raise ValueError(f"Unsupported worker stream: {stream_name}")
+        if drain is None:
+            raise RuntimeError("Worker transport has not been started")
+        return drain

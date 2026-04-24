@@ -357,6 +357,34 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "maximum": 1800000,
                     "default": 600000,
                 },
+                "background": {
+                    "type": "boolean",
+                    "description": "If true, schedule the command as a background runtime job and return immediately.",
+                    "default": False,
+                },
+                "backgroundJob": {
+                    "description": "Alias for background mode; accepts a boolean or an object with enabled=true/false.",
+                    "oneOf": [
+                        {
+                            "type": "boolean",
+                        },
+                        {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "enabled": {
+                                    "type": "boolean",
+                                    "default": True,
+                                }
+                            },
+                        },
+                    ],
+                },
+                "runInBackground": {
+                    "type": "boolean",
+                    "description": "Secondary alias for background mode.",
+                    "default": False,
+                },
                 "taskId": {
                     "type": "string",
                     "description": "Runtime task id injected by the orchestrator; models usually omit this.",
@@ -376,6 +404,7 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "hints": [
             "Prefer read-only commands first, such as tests, git status, or file listings.",
             "Use explicit timeouts for long-running test/build commands.",
+            "Set background=true when the command should keep running while the runtime continues other work.",
         ],
     },
     {

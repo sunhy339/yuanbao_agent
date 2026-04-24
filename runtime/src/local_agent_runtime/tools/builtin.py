@@ -11,6 +11,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..services.command_background import BackgroundCommandRequest, get_background_command_service
+from ..services.command_execution import build_shell_command, run_shell_command
+
 DEFAULT_IGNORED_DIR_NAMES = {
     ".git",
     ".venv",
@@ -540,13 +543,6 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
             raise ValueError(f"Unsupported shell: {raw_shell}")
         return shell_name
 
-    def _build_shell_command(shell_name: str, command: str) -> list[str]:
-        if shell_name == "bash":
-            return ["bash", "-lc", command]
-        if shell_name == "zsh":
-            return ["zsh", "-lc", command]
-        return ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", command]
-
     def _normalize_patch_path(workspace_root: Path, candidate_path: str) -> tuple[str, Path]:
         raw_path = str(candidate_path).strip()
         if not raw_path:
@@ -884,6 +880,7 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
         shell: str,
         timeout_ms: int,
         workspace_root: str,
+        background: bool,
     ) -> dict[str, Any]:
         return {
             "taskId": task_id,
@@ -892,6 +889,7 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
             "shell": shell,
             "timeoutMs": timeout_ms,
             "workspaceRoot": workspace_root,
+            "background": background,
         }
 
     def _approval_for_request(task_id: str | None, request: dict[str, Any], approval_id: str | None) -> dict[str, Any] | None:
@@ -914,11 +912,22 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
             request=request,
         )
 
+    def _background_requested(params: dict[str, Any]) -> bool:
+        raw_value = params.get("background")
+        if raw_value is None:
+            raw_value = params.get("backgroundJob")
+        if raw_value is None:
+            raw_value = params.get("runInBackground")
+        if isinstance(raw_value, dict):
+            enabled = raw_value.get("enabled")
+            return True if enabled is None else bool(enabled)
+        return bool(raw_value)
+
     def _run_shell(shell_name: str, command: str, cwd: Path, timeout_ms: int) -> tuple[str, str, int | None, str, int]:
         started = time.perf_counter()
         try:
             completed = subprocess.run(
-                _build_shell_command(shell_name, command),
+                build_shell_command(shell_name, command),
                 cwd=str(cwd),
                 capture_output=True,
                 text=True,
@@ -952,6 +961,7 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
         task_id = str(params.get("taskId") or params.get("task_id") or "").strip()
         approval_id = str(params.get("approvalId") or params.get("approval_id") or "").strip() or None
         internal_validation = bool(params.get("internalValidation") or params.get("internal_validation"))
+        background = _background_requested(params)
         cwd_rel = _normalize_cwd(workspace_root, params, active_run_command_config)
         shell_name = _normalize_shell(params.get("shell"))
         timeout_ms = int(params.get("timeoutMs") or params.get("timeout_ms") or active_command_policy["commandTimeoutMs"])
@@ -971,6 +981,7 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
             shell=shell_name,
             timeout_ms=timeout_ms,
             workspace_root=str(workspace_root),
+            background=background,
         )
         existing_approval = _approval_for_request(request_task_id, request, approval_id)
         if existing_approval is not None:
@@ -985,6 +996,7 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
                     "cwd": cwd_rel,
                     "shell": shell_name,
                     "timeoutMs": timeout_ms,
+                    "background": background,
                 }
         elif (
             not internal_validation
@@ -1004,6 +1016,7 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
                 "cwd": cwd_rel,
                 "shell": shell_name,
                 "timeoutMs": timeout_ms,
+                "background": background,
             }
 
         if not request_task_id:
@@ -1015,6 +1028,31 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
             cwd=cwd_rel,
             shell=shell_name,
         )
+
+        if background:
+            service = get_background_command_service(store.database_path)
+            service.submit(
+                BackgroundCommandRequest(
+                    database_path=store.database_path,
+                    command_log_id=command_log["id"],
+                    command=command,
+                    cwd=cwd_rel,
+                    shell=shell_name,
+                    timeout_ms=timeout_ms,
+                    workspace_root=str(workspace_root),
+                )
+            )
+            return {
+                "status": "running",
+                "background": True,
+                "commandLog": command_log,
+                "stdout": "",
+                "stderr": "",
+                "exitCode": None,
+                "durationMs": None,
+                "shell": shell_name,
+                "cwd": cwd_rel,
+            }
 
         stdout = ""
         stderr = ""

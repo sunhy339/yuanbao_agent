@@ -74,6 +74,16 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
                 "apply_patch",
             }
             assert task_properties["child_tool_allowlist"] == task_properties["childToolAllowlist"]
+        elif name == "run_command":
+            run_command_properties = input_schema["properties"]
+            assert set(run_command_properties) >= {
+                "background",
+                "backgroundJob",
+                "runInBackground",
+            }
+            assert run_command_properties["background"]["type"] == "boolean"
+            assert run_command_properties["runInBackground"]["type"] == "boolean"
+            assert run_command_properties["backgroundJob"]["oneOf"][0]["type"] == "boolean"
         else:
             assert "workspaceRoot" in input_schema["required"]
         assert json.loads(json.dumps(input_schema)) == input_schema

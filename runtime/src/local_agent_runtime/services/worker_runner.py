@@ -75,6 +75,8 @@ class ChildTaskProcessRequiredError(RuntimeError):
 class WorkerRunner:
     """Executes child collaboration tasks behind a stable runner boundary."""
 
+    _MIN_RETRY_EXECUTION_SLICE_SECONDS = 0.001
+
     def __init__(self, collaboration: Any, executor: ChildTaskExecutor | None = None) -> None:
         self._collaboration = collaboration
         self._executor = executor
@@ -267,6 +269,10 @@ class WorkerRunner:
                 last_error = exc
                 if not policy.retry.should_retry(attempt_number=attempt_number, error=exc):
                     raise
+                remaining_seconds = deadline.remaining(time.monotonic())
+                if remaining_seconds is not None and remaining_seconds <= self._MIN_RETRY_EXECUTION_SLICE_SECONDS:
+                    context.attempt_number = min(attempt_number + 1, policy.retry.max_attempts)
+                    raise ChildTaskTimeoutError(0)
         if last_error is not None:
             raise last_error
         raise RuntimeError("Child task executor did not run")

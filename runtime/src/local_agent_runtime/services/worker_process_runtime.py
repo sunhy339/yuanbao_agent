@@ -3,9 +3,96 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections import deque
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from threading import Event, Lock, Thread
 from typing import Any, TextIO
+
+
+class WorkerProcessStreamDrain:
+    """Background stream drain that captures chunks and a bounded tail."""
+
+    def __init__(
+        self,
+        stream_name: str,
+        stream: TextIO,
+        *,
+        chunk_size: int = 4096,
+        tail_max_chunks: int = 50,
+        chunk_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero")
+        if tail_max_chunks <= 0:
+            raise ValueError("tail_max_chunks must be greater than zero")
+
+        self._stream_name = stream_name
+        self._stream = stream
+        self._chunk_size = chunk_size
+        self._drained_chunks: deque[str] = deque()
+        self._tail_chunks: deque[str] = deque(maxlen=tail_max_chunks)
+        self._callbacks: list[Callable[[str], None]] = []
+        self._lock = Lock()
+        self._closed = Event()
+        self._thread = Thread(target=self._run, name=f"worker-process-{stream_name}-drain", daemon=True)
+        if chunk_callback is not None:
+            self._callbacks.append(chunk_callback)
+
+    @property
+    def is_closed(self) -> bool:
+        return self._closed.is_set()
+
+    def start(self) -> "WorkerProcessStreamDrain":
+        self._thread.start()
+        return self
+
+    def add_callback(self, callback: Callable[[str], None]) -> None:
+        with self._lock:
+            self._callbacks.append(callback)
+
+    def take_chunks(self) -> list[str]:
+        with self._lock:
+            chunks = list(self._drained_chunks)
+            self._drained_chunks.clear()
+        return chunks
+
+    def tail_chunks(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(self._tail_chunks)
+
+    def tail_text(self) -> str:
+        return "".join(self.tail_chunks())
+
+    def wait_closed(self, timeout: float | None = None) -> bool:
+        return self._closed.wait(timeout)
+
+    def join(self, timeout: float | None = None) -> bool:
+        self._thread.join(timeout=timeout)
+        return not self._thread.is_alive()
+
+    def _run(self) -> None:
+        try:
+            while True:
+                try:
+                    chunk = self._stream.read(1)
+                except (OSError, ValueError):
+                    return
+                if not chunk:
+                    return
+                self._emit_chunk(chunk)
+        finally:
+            self._closed.set()
+
+    def _emit_chunk(self, chunk: str) -> None:
+        if not chunk:
+            return
+        with self._lock:
+            self._drained_chunks.append(chunk)
+            self._tail_chunks.append(chunk)
+            callbacks = tuple(self._callbacks)
+        for callback in callbacks:
+            callback(chunk)
 
 
 class WorkerProcessRuntime:
@@ -32,6 +119,8 @@ class WorkerProcessRuntime:
         self._text = text
         self._creationflags = creationflags
         self._process: subprocess.Popen[Any] | None = None
+        self._stream_drains: dict[str, WorkerProcessStreamDrain] = {}
+        self._stream_lock = Lock()
 
     @property
     def pid(self) -> int | None:
@@ -108,7 +197,45 @@ class WorkerProcessRuntime:
         self._close_stream(process.stdin)
         self._close_stream(process.stdout)
         self._close_stream(process.stderr)
+        self._join_stream_drains()
         self._process = None
+
+    def open_stream_drain(
+        self,
+        stream_name: str,
+        *,
+        chunk_callback: Callable[[str], None] | None = None,
+        chunk_size: int = 4096,
+        tail_max_chunks: int = 50,
+    ) -> WorkerProcessStreamDrain:
+        if stream_name not in {"stdout", "stderr"}:
+            raise ValueError(f"Unsupported worker stream: {stream_name}")
+
+        with self._stream_lock:
+            drain = self._stream_drains.get(stream_name)
+            if drain is not None:
+                if chunk_callback is not None:
+                    drain.add_callback(chunk_callback)
+                return drain
+
+            process = self._require_process()
+            stream = getattr(process, stream_name)
+            if stream is None:
+                raise RuntimeError(f"Worker process stream {stream_name} is not available")
+
+            drain = WorkerProcessStreamDrain(
+                stream_name,
+                stream,
+                chunk_size=chunk_size,
+                tail_max_chunks=tail_max_chunks,
+                chunk_callback=chunk_callback,
+            ).start()
+            self._stream_drains[stream_name] = drain
+            return drain
+
+    def stream_drain(self, stream_name: str) -> WorkerProcessStreamDrain | None:
+        with self._stream_lock:
+            return self._stream_drains.get(stream_name)
 
     def _require_process(self) -> subprocess.Popen[Any]:
         process = self._process
@@ -141,3 +268,10 @@ class WorkerProcessRuntime:
             close()
         except OSError:
             pass
+
+    def _join_stream_drains(self) -> None:
+        with self._stream_lock:
+            drains = tuple(self._stream_drains.values())
+            self._stream_drains.clear()
+        for drain in drains:
+            drain.join(timeout=1.0)

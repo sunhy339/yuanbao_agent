@@ -175,3 +175,99 @@ def test_worker_process_transport_raises_when_child_exits_before_reply(tmp_path:
             transport.request("child.exit", {}, timeout=2.0)
 
     assert exc_info.value.returncode == 7
+
+
+def test_worker_process_transport_exposes_stream_callbacks_and_tails(tmp_path: Path) -> None:
+    script_path = _write_child_script(
+        tmp_path,
+        "streaming_child.py",
+        """
+        import json
+        import sys
+        import time
+
+        for raw_line in sys.stdin:
+            request = json.loads(raw_line)
+            sys.stdout.write("log:")
+            sys.stdout.flush()
+            time.sleep(0.05)
+            sys.stdout.write("ready\\n")
+            sys.stdout.flush()
+            sys.stderr.write("warn:")
+            sys.stderr.flush()
+            time.sleep(0.05)
+            sys.stderr.write("done\\n")
+            sys.stderr.flush()
+            sys.stdout.write(json.dumps({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {"ok": True},
+            }) + "\\n")
+            sys.stdout.flush()
+        """,
+    )
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    with WorkerProcessTransport(
+        [sys.executable, "-u", str(script_path)],
+        cwd=str(PROJECT_ROOT),
+        env=_python_env(),
+    ) as transport:
+        transport.add_stream_callback("stdout", stdout_chunks.append)
+        transport.add_stream_callback("stderr", stderr_chunks.append)
+        response = transport.request("stream.call", {}, timeout=2.0)
+        drained_stdout = "".join(transport.take_stream_chunks("stdout"))
+        drained_stderr = "".join(transport.take_stream_chunks("stderr"))
+
+    result = response["result"]
+    assert isinstance(result, dict)
+    assert result["ok"] is True
+    assert "log:ready\n" in "".join(stdout_chunks)
+    assert "warn:done\n" in "".join(stderr_chunks)
+    assert "log:ready\n" in drained_stdout
+    assert "\"ok\": true" in drained_stdout
+    assert drained_stderr == "warn:done\n"
+    assert transport.take_stream_chunks("stderr") == []
+    assert transport.stream_tail("stderr") == "warn:done\n"
+
+
+def test_worker_process_transport_times_out_when_child_only_streams_partial_output(tmp_path: Path) -> None:
+    script_path = _write_child_script(
+        tmp_path,
+        "partial_only_child.py",
+        """
+        import json
+        import sys
+        import time
+
+        for raw_line in sys.stdin:
+            json.loads(raw_line)
+            sys.stdout.write("partial-stdout")
+            sys.stdout.flush()
+            sys.stderr.write("partial-stderr")
+            sys.stderr.flush()
+            time.sleep(0.5)
+        """,
+    )
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    with WorkerProcessTransport(
+        [sys.executable, "-u", str(script_path)],
+        cwd=str(PROJECT_ROOT),
+        env=_python_env(),
+    ) as transport:
+        transport.add_stream_callback("stdout", stdout_chunks.append)
+        transport.add_stream_callback("stderr", stderr_chunks.append)
+        with pytest.raises(WorkerProcessTimeoutError):
+            transport.request("partial.call", {}, timeout=0.1)
+        drained_stdout = "".join(transport.take_stream_chunks("stdout"))
+        drained_stderr = "".join(transport.take_stream_chunks("stderr"))
+
+    assert "partial-stdout" in "".join(stdout_chunks)
+    assert "partial-stderr" in "".join(stderr_chunks)
+    assert drained_stdout == "partial-stdout"
+    assert drained_stderr == "partial-stderr"
+    assert transport.stream_tail("stdout") == "partial-stdout"
+    assert transport.stream_tail("stderr") == "partial-stderr"

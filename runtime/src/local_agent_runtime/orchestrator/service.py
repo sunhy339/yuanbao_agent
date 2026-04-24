@@ -71,10 +71,7 @@ class Orchestrator:
             profile_id=params.get("profileId"),
             provider_patch=provider_patch if isinstance(provider_patch, dict) else None,
         )
-        if isinstance(provider_patch, dict):
-            config["provider"] = self._provider_root_for_test(provider_root, provider_config)
-        else:
-            config["provider"] = provider_config
+        config["provider"] = provider_config
 
         mode = str(provider_config.get("mode") or provider_config.get("providerMode") or "").strip()
         normalized_mode = mode.lower()
@@ -282,17 +279,6 @@ class Orchestrator:
                 if isinstance(profile, dict) and profile.get("id") == requested_id:
                     return profile
         return next((profile for profile in profiles if isinstance(profile, dict)), None)
-
-    def _provider_root_for_test(
-        self,
-        provider_root: dict[str, Any],
-        provider_config: dict[str, Any],
-    ) -> dict[str, Any]:
-        provider = deepcopy(provider_root)
-        for key, value in provider_config.items():
-            if key not in {"profiles", "activeProfileId"}:
-                provider[key] = deepcopy(value)
-        return provider
 
     def send_message(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._store.require_session(params["sessionId"])

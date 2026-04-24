@@ -147,7 +147,7 @@ class OpenAICompatibleChatClient:
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": settings.model,
-            "messages": messages,
+            "messages": self._serialize_messages_for_request(messages),
         }
         if settings.temperature is not None:
             payload["temperature"] = settings.temperature
@@ -159,6 +159,65 @@ class OpenAICompatibleChatClient:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         return payload
+
+    def _serialize_messages_for_request(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        serialized: list[dict[str, Any]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            if role == "assistant":
+                serialized_message = {
+                    "role": "assistant",
+                    "content": message.get("content") if isinstance(message.get("content"), str) else "",
+                }
+                tool_calls = self._serialize_tool_calls_for_request(message.get("tool_calls"))
+                if tool_calls:
+                    serialized_message["tool_calls"] = tool_calls
+                serialized.append(serialized_message)
+                continue
+            if role == "tool":
+                tool_message = {
+                    "role": "tool",
+                    "content": message.get("content") if isinstance(message.get("content"), str) else "",
+                    "tool_call_id": str(message.get("tool_call_id") or ""),
+                }
+                serialized.append(tool_message)
+                continue
+            serialized.append(dict(message))
+        return serialized
+
+    def _serialize_tool_calls_for_request(self, tool_calls: Any) -> list[dict[str, Any]]:
+        if not isinstance(tool_calls, list):
+            return []
+        serialized: list[dict[str, Any]] = []
+        for item in tool_calls:
+            if not isinstance(item, dict):
+                continue
+            function = item.get("function")
+            if isinstance(function, dict):
+                name = function.get("name")
+                raw_arguments = function.get("arguments")
+            else:
+                name = item.get("name")
+                raw_arguments = item.get("arguments")
+            if not isinstance(name, str) or not name:
+                continue
+            if isinstance(raw_arguments, str):
+                arguments = raw_arguments
+            else:
+                arguments = json.dumps(raw_arguments or {}, ensure_ascii=False)
+            serialized.append(
+                {
+                    "id": str(item.get("id") or ""),
+                    "type": item.get("type") if isinstance(item.get("type"), str) else "function",
+                    "function": {
+                        "name": name,
+                        "arguments": arguments,
+                    },
+                }
+            )
+        return serialized
 
     def _request(self, *, settings: OpenAICompatibleSettings, body: bytes) -> tuple[int, bytes]:
         url = self._chat_completions_url(settings.base_url)
@@ -269,9 +328,11 @@ class OpenAICompatibleChatClient:
             name = function.get("name")
             if not isinstance(name, str) or not name:
                 raise ProviderAdapterError("Provider returned invalid response: tool call is missing function name")
+            raw_id = item.get("id")
+            tool_call_id = raw_id if isinstance(raw_id, str) and raw_id else f"call_{len(normalized)}"
             normalized.append(
                 {
-                    "id": item.get("id"),
+                    "id": tool_call_id,
                     "type": item.get("type") or "function",
                     "name": name,
                     "arguments": self._parse_tool_arguments(name, function.get("arguments")),

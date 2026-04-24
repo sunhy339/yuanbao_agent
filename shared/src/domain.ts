@@ -30,6 +30,7 @@ export type CommandStatus =
   | "completed"
   | "failed"
   | "timeout"
+  | "cancelled"
   | "killed";
 export type ScheduledTaskStatus = "active" | "disabled";
 export type ScheduledRunStatus =

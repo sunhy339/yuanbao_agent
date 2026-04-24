@@ -6,6 +6,7 @@ import type {
   AppConfig,
   AssistantTokenPayload,
   CommandLifecyclePayload,
+  CommandLogRecord,
   CommandOutputPayload,
   PatchRecord,
   PatchProposedPayload,
@@ -449,6 +450,10 @@ function buildDefaultProviderProfile(): ProviderProfile {
 }
 
 function getModelFromProviderPayload(payload: SettingsProviderPayload): string {
+  const jsonConfig = readProviderJsonConfig(payload);
+  if (jsonConfig.model) {
+    return jsonConfig.model;
+  }
   if (payload.mainModel.trim()) {
     return payload.mainModel.trim();
   }
@@ -471,6 +476,10 @@ function getProviderEnvVarName(payload: SettingsProviderPayload): string {
   if (raw && !raw.startsWith("sk-")) {
     return raw;
   }
+  const jsonConfig = readProviderJsonConfig(payload);
+  if (jsonConfig.apiKeyEnvVarName) {
+    return jsonConfig.apiKeyEnvVarName;
+  }
 
   const normalizedName = (payload.name || "provider")
     .replace(/[^a-z0-9]+/gi, "_")
@@ -479,31 +488,103 @@ function getProviderEnvVarName(payload: SettingsProviderPayload): string {
   return `${normalizedName || "PROVIDER"}_API_KEY`;
 }
 
+interface ProviderJsonConfig {
+  endpoint?: string;
+  model?: string;
+  apiKeyEnvVarName?: string;
+  maxTokens?: number;
+  timeout?: number;
+}
+
+function readProviderJsonConfig(payload: SettingsProviderPayload): ProviderJsonConfig {
+  if (!payload.jsonConfig.trim()) {
+    return {};
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload.jsonConfig);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object") {
+    return {};
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const env = record.env && typeof record.env === "object"
+    ? (record.env as Record<string, unknown>)
+    : {};
+  const readString = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = env[key] ?? record[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+    return undefined;
+  };
+  const readNumber = (...keys: string[]) => {
+    const value = readString(...keys);
+    if (!value) {
+      return undefined;
+    }
+    const parsedValue = Number(value);
+    return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : undefined;
+  };
+  const apiKeyEnvVarName = [
+    "ANTHROPIC_AUTH_TOKEN",
+    "LOCAL_AGENT_PROVIDER_API_KEY",
+    "LOCAL_AGENT_OPENAI_API_KEY",
+    "OPENAI_API_KEY",
+  ].find((key) => typeof env[key] === "string" && String(env[key]).trim());
+
+  return {
+    endpoint: readString("LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"),
+    model: readString(
+      "LOCAL_AGENT_PROVIDER_MODEL",
+      "OPENAI_MODEL",
+      "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ),
+    apiKeyEnvVarName,
+    maxTokens: readNumber("LOCAL_AGENT_PROVIDER_MAX_TOKENS", "OPENAI_MAX_TOKENS", "ANTHROPIC_MAX_TOKENS"),
+    timeout: readNumber("LOCAL_AGENT_PROVIDER_TIMEOUT", "OPENAI_TIMEOUT", "ANTHROPIC_TIMEOUT"),
+  };
+}
+
 function buildProviderProfileFromPayload(
   payload: SettingsProviderPayload,
   profileId: string,
   config: RuntimeConfig,
   existingProfile?: ProviderProfile,
 ): ProviderProfile {
+  const jsonConfig = readProviderJsonConfig(payload);
   const model = getModelFromProviderPayload(payload);
+  const apiKeyInput = payload.apiKey.trim();
+  const directApiKey = apiKeyInput.startsWith("sk-") ? apiKeyInput : undefined;
+  const hasApiKeyInput = apiKeyInput.length > 0;
+  const apiKeyEnvVarName = hasApiKeyInput || jsonConfig.apiKeyEnvVarName
+    ? getProviderEnvVarName(payload)
+    : existingProfile?.apiKeyEnvVarName ?? getProviderEnvVarName(payload);
   return {
     ...existingProfile,
     id: profileId,
     name: payload.name.trim() || existingProfile?.name || "Provider profile",
     mode: "openai-compatible",
-    baseUrl: payload.endpoint.trim() || existingProfile?.baseUrl || DEFAULT_PROVIDER_BASE_URL,
+    baseUrl: payload.endpoint.trim() || jsonConfig.endpoint || existingProfile?.baseUrl || DEFAULT_PROVIDER_BASE_URL,
     model,
     defaultModel: model,
     fallbackModel: payload.opusModel.trim() || existingProfile?.fallbackModel || config.provider.fallbackModel,
-    apiKey: payload.apiKey.trim() || existingProfile?.apiKey,
-    apiKeyEnvVarName: payload.apiKey.trim()
-      ? getProviderEnvVarName(payload)
-      : existingProfile?.apiKeyEnvVarName ?? getProviderEnvVarName(payload),
+    apiKey: directApiKey ?? (hasApiKeyInput ? undefined : existingProfile?.apiKey),
+    apiKeyEnvVarName,
     temperature: existingProfile?.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
-    maxTokens: existingProfile?.maxTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
-    maxOutputTokens: existingProfile?.maxOutputTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
+    maxTokens: jsonConfig.maxTokens ?? existingProfile?.maxTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
+    maxOutputTokens: jsonConfig.maxTokens ?? existingProfile?.maxOutputTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
     maxContextTokens: existingProfile?.maxContextTokens ?? DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS,
-    timeout: existingProfile?.timeout ?? DEFAULT_PROVIDER_TIMEOUT,
+    timeout: jsonConfig.timeout ?? existingProfile?.timeout ?? DEFAULT_PROVIDER_TIMEOUT,
     lastCheckedAt: existingProfile?.lastCheckedAt,
     lastStatus: existingProfile?.lastStatus,
     lastErrorSummary: existingProfile?.lastErrorSummary,
@@ -1371,7 +1452,13 @@ function buildSessionBackgroundJobs(
     const current = jobs.get(id);
     const status =
       readRecordString(payload, "status") ??
-      (type === "command.started" ? "running" : type === "command.completed" ? "completed" : "failed");
+      (type === "command.started"
+        ? "running"
+        : type === "command.completed"
+          ? "completed"
+          : type === "command.cancelled"
+            ? "killed"
+            : "failed");
     const next: SessionWorkspaceBackgroundJob = {
       id,
       command: readRecordString(payload, "command") ?? current?.command ?? id,
@@ -1430,13 +1517,63 @@ function buildSessionBackgroundJobs(
     if (
       source.type === "command.started" ||
       source.type === "command.completed" ||
-      source.type === "command.failed"
+      source.type === "command.failed" ||
+      source.type === "command.cancelled"
     ) {
       rememberLifecycle(source.type, payload, source.time);
     }
   }
 
   return [...jobs.values()].sort(
+    (left, right) =>
+      (right.finishedAt ?? right.startedAt ?? 0) - (left.finishedAt ?? left.startedAt ?? 0),
+  );
+}
+
+function commandLogToSessionBackgroundJob(log: CommandLogRecord): SessionWorkspaceBackgroundJob {
+  return {
+    id: log.id,
+    command: log.command,
+    status: log.status,
+    cwd: log.cwd,
+    shell: log.shell,
+    startedAt: log.startedAt,
+    finishedAt: log.finishedAt,
+    durationMs: log.durationMs,
+    exitCode: log.exitCode ?? null,
+    stdout: log.stdout,
+    stderr: log.stderr,
+    stdoutPath: log.stdoutPath,
+    stderrPath: log.stderrPath,
+    isBackground: false,
+    summary:
+      log.status === "running"
+        ? "Command is still running."
+        : log.status === "completed"
+          ? `Command completed${typeof log.exitCode === "number" ? ` with exit ${log.exitCode}` : "."}`
+          : `Command ${log.status}${typeof log.exitCode === "number" ? ` with exit ${log.exitCode}` : "."}`,
+  };
+}
+
+function mergeSessionBackgroundJobs(
+  eventJobs: SessionWorkspaceBackgroundJob[],
+  commandLogs: CommandLogRecord[],
+): SessionWorkspaceBackgroundJob[] {
+  const jobsById = new Map(eventJobs.map((job) => [job.id, job]));
+
+  for (const log of commandLogs) {
+    const current = jobsById.get(log.id);
+    jobsById.set(log.id, {
+      ...current,
+      ...commandLogToSessionBackgroundJob(log),
+      stdout: log.stdout ?? current?.stdout,
+      stderr: log.stderr ?? current?.stderr,
+      stdoutPath: log.stdoutPath ?? current?.stdoutPath,
+      stderrPath: log.stderrPath ?? current?.stderrPath,
+    });
+  }
+
+  return [...jobsById.values()].sort(
     (left, right) =>
       (right.finishedAt ?? right.startedAt ?? 0) - (left.finishedAt ?? left.startedAt ?? 0),
   );
@@ -1548,6 +1685,7 @@ export function App() {
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [events, setEvents] = useState<Array<AgentEventEnvelope>>([]);
   const [traceEvents, setTraceEvents] = useState<Array<TraceEventRecord>>([]);
+  const [commandLogCacheById, setCommandLogCacheById] = useState<Record<string, CommandLogRecord>>({});
   const [patchCacheById, setPatchCacheById] = useState<Record<string, PatchRecord>>({});
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [assistantOutput, setAssistantOutput] = useState("");
@@ -1565,6 +1703,7 @@ export function App() {
   const [searchConfigBusy, setSearchConfigBusy] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [patchBusyId, setPatchBusyId] = useState<string | null>(null);
+  const [commandJobBusyId, setCommandJobBusyId] = useState<string | null>(null);
   const [traceBusy, setTraceBusy] = useState(false);
   const [traceError, setTraceError] = useState<string | null>(null);
   const [taskControlBusyAction, setTaskControlBusyAction] = useState<TaskControlAction | null>(null);
@@ -1745,12 +1884,24 @@ export function App() {
     setTraceError(null);
 
     try {
-      const result = await runtimeClient.listTrace({
-        taskId,
-        limit: TRACE_LIMIT,
-      });
+      const [result, commandResult] = await Promise.all([
+        runtimeClient.listTrace({
+          taskId,
+          limit: TRACE_LIMIT,
+        }),
+        runtimeClient
+          .commandLogList({
+            taskId,
+            limit: TRACE_LIMIT,
+          })
+          .catch(() => ({ commandLogs: [] as CommandLogRecord[] })),
+      ]);
       if (!isCancelled()) {
         setTraceEvents(result.traceEvents);
+        setCommandLogCacheById((current) => ({
+          ...current,
+          ...Object.fromEntries(commandResult.commandLogs.map((log) => [log.id, log])),
+        }));
       }
     } catch (reason) {
       if (!isCancelled()) {
@@ -1772,6 +1923,7 @@ export function App() {
   useEffect(() => {
     if (!activeTaskId) {
       setTraceEvents([]);
+      setCommandLogCacheById({});
       setTraceError(null);
       setTraceBusy(false);
       return;
@@ -2066,6 +2218,7 @@ export function App() {
     setTask(null);
     setEvents([]);
     setTraceEvents([]);
+    setCommandLogCacheById({});
     setTraceError(null);
     setPatchCacheById({});
     setPatchBusyId(null);
@@ -2389,6 +2542,7 @@ export function App() {
       setSessions([]);
       setActiveTaskId(null);
       setTraceEvents([]);
+      setCommandLogCacheById({});
       setTraceError(null);
       setApprovalBusyId(null);
       setPatchCacheById({});
@@ -2506,9 +2660,10 @@ export function App() {
       );
       await runProviderTest(
         {
-          ...config.provider,
           ...profile,
-          profiles: config.provider.profiles,
+          defaultModel: profile.defaultModel ?? profile.model ?? DEFAULT_PROVIDER_MODEL,
+          temperature: profile.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
+          maxOutputTokens: profile.maxOutputTokens ?? profile.maxTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
         },
         profile.id,
       );
@@ -2829,6 +2984,7 @@ export function App() {
       const pendingUserMessageId = `user_${Date.now()}`;
       setEvents([]);
       setTraceEvents([]);
+      setCommandLogCacheById({});
       setTraceError(null);
       setPatchCacheById({});
       setPatchBusyId(null);
@@ -2953,11 +3109,48 @@ export function App() {
   async function handleRefreshTrace() {
     if (!activeTaskId) {
       setTraceEvents([]);
+      setCommandLogCacheById({});
       setTraceError(null);
       return;
     }
 
     await loadTraceForTask(activeTaskId);
+  }
+
+  async function handleRefreshCommandJob(commandId: string) {
+    setCommandJobBusyId(commandId);
+    setError(null);
+
+    try {
+      const result = await runtimeClient.commandLogGet({ commandId });
+      setCommandLogCacheById((current) => ({
+        ...current,
+        [result.commandLog.id]: result.commandLog,
+      }));
+      await loadTraceForTask(result.commandLog.taskId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setCommandJobBusyId((current) => (current === commandId ? null : current));
+    }
+  }
+
+  async function handleStopCommandJob(commandId: string) {
+    setCommandJobBusyId(commandId);
+    setError(null);
+
+    try {
+      const result = await runtimeClient.commandCancel({ commandId });
+      setCommandLogCacheById((current) => ({
+        ...current,
+        [result.commandLog.id]: result.commandLog,
+      }));
+      await loadTraceForTask(result.commandLog.taskId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setCommandJobBusyId((current) => (current === commandId ? null : current));
+    }
   }
 
   async function handleLoadPatchDiff(patchId: string) {
@@ -3129,8 +3322,14 @@ export function App() {
     [events, traceEvents],
   );
   const sessionBackgroundJobs = useMemo(
-    () => buildSessionBackgroundJobs(events, traceEvents),
-    [events, traceEvents],
+    () => {
+      const eventJobs = buildSessionBackgroundJobs(events, traceEvents);
+      const commandLogs = Object.values(commandLogCacheById).filter(
+        (log) => !activeTaskId || log.taskId === activeTaskId,
+      );
+      return mergeSessionBackgroundJobs(eventJobs, commandLogs);
+    },
+    [activeTaskId, commandLogCacheById, events, traceEvents],
   );
 
   function handleSelectScheduledTask(taskId: string) {
@@ -3187,8 +3386,10 @@ export function App() {
           onCopyPatchPath={(_patchId, path) => {
             void navigator.clipboard?.writeText(path);
           }}
+          onRefreshCommandJob={handleRefreshCommandJob}
+          onStopCommandJob={handleStopCommandJob}
           onRefreshTrace={handleRefreshTrace}
-          busyId={approvalBusyId ?? patchBusyId}
+          busyId={approvalBusyId ?? patchBusyId ?? commandJobBusyId}
         />
       );
     }

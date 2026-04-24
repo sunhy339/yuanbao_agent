@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit, urlunsplit
 from collections.abc import Iterator
 from typing import Any
 
@@ -342,9 +343,6 @@ class ProviderAdapter:
             "LOCAL_AGENT_PROVIDER_MODE",
             "YUANBAO_PROVIDER_MODE",
         )
-        if self._normalize_mode(mode) not in OPENAI_COMPATIBLE_MODES:
-            return None
-
         configured_env_var_name = self._string_value(
             provider_config,
             "apiKeyEnvVarName",
@@ -352,26 +350,47 @@ class ProviderAdapter:
             "envKey",
             "env_key",
         )
+        uses_anthropic_env = self._uses_anthropic_env(configured_env_var_name)
+        if self._normalize_mode(mode) not in OPENAI_COMPATIBLE_MODES:
+            if not self._anthropic_env_available():
+                return None
+            uses_anthropic_env = True
+
         api_key = self._string_value(provider_config, "apiKey", "api_key")
         if not api_key and configured_env_var_name:
             api_key = self._env(configured_env_var_name)
         if not api_key:
             api_key = self._env(
-            "LOCAL_AGENT_PROVIDER_API_KEY",
-            "LOCAL_AGENT_OPENAI_API_KEY",
-            "OPENAI_API_KEY",
-        )
+                "LOCAL_AGENT_PROVIDER_API_KEY",
+                "LOCAL_AGENT_OPENAI_API_KEY",
+                "OPENAI_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+            )
         if not api_key:
             return None
 
-        base_url = (
-            self._string_value(provider_config, "baseUrl", "base_url")
-            or self._env("LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL")
-            or "https://api.openai.com/v1"
+        raw_base_url = self._string_value(provider_config, "baseUrl", "base_url")
+        base_url_source = "config" if raw_base_url else None
+        if not raw_base_url:
+            raw_base_url = self._env("LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL")
+            base_url_source = "openai_env" if raw_base_url else base_url_source
+        if not raw_base_url:
+            raw_base_url = self._env("ANTHROPIC_BASE_URL")
+            base_url_source = "anthropic_env" if raw_base_url else base_url_source
+        base_url = self._normalize_base_url(
+            raw_base_url or "https://api.openai.com/v1",
+            append_v1=uses_anthropic_env or base_url_source == "anthropic_env",
         )
         model = (
             self._string_value(provider_config, "model", "defaultModel")
-            or self._env("LOCAL_AGENT_PROVIDER_MODEL", "OPENAI_MODEL")
+            or self._env(
+                "LOCAL_AGENT_PROVIDER_MODEL",
+                "OPENAI_MODEL",
+                "ANTHROPIC_MODEL",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            )
             or "gpt-5-codex"
         )
         temperature = self._float_value(provider_config, "temperature")
@@ -388,6 +407,23 @@ class ProviderAdapter:
             max_tokens=max_tokens,
             timeout=self._timeout_value(provider_config),
         )
+
+    def _anthropic_env_available(self) -> bool:
+        return bool(self._env("ANTHROPIC_AUTH_TOKEN") and self._env("ANTHROPIC_BASE_URL"))
+
+    def _uses_anthropic_env(self, configured_env_var_name: str | None) -> bool:
+        return bool(configured_env_var_name and configured_env_var_name.upper().startswith("ANTHROPIC_"))
+
+    def _normalize_base_url(self, base_url: str, *, append_v1: bool = False) -> str:
+        trimmed = base_url.rstrip("/")
+        if not append_v1:
+            return trimmed
+        if trimmed.endswith("/v1") or trimmed.endswith("/chat/completions"):
+            return trimmed
+        parsed = urlsplit(trimmed)
+        if parsed.path in {"", "/"}:
+            return urlunsplit((parsed.scheme, parsed.netloc, "/v1", "", ""))
+        return trimmed
 
     def _merged_provider_config(self, context: dict[str, Any] | None) -> dict[str, Any]:
         merged = self._resolve_active_provider_config(self._config.get("provider", self._config))

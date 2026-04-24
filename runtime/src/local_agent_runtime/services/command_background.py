@@ -119,6 +119,14 @@ class BackgroundCommandService:
             state.cancel()
         return [state.request.command_log_id for state in states]
 
+    def cancel_command(self, command_log_id: str) -> bool:
+        with self._lock:
+            state = self._running.get(command_log_id)
+        if state is None:
+            return False
+        state.cancel()
+        return True
+
     def _run(self, state: _RunningBackgroundCommand) -> None:
         request = state.request
         store = SQLiteStore(request.database_path)
@@ -472,3 +480,7 @@ def get_background_command_service(database_path: str) -> BackgroundCommandServi
 
 def cancel_background_commands(*, database_path: str, task_id: str) -> list[str]:
     return get_background_command_service(database_path).cancel_task(task_id)
+
+
+def cancel_background_command(*, database_path: str, command_log_id: str) -> bool:
+    return get_background_command_service(database_path).cancel_command(command_log_id)

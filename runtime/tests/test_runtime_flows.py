@@ -139,6 +139,63 @@ def test_provider_test_uses_profile_id_and_redacts_direct_api_key(runtime_harnes
     assert "sk-secret-profile" not in str(result)
 
 
+def test_provider_test_patch_reaches_adapter_without_active_profile_override(runtime_harness: Any) -> None:
+    class CapturingProvider:
+        def __init__(self) -> None:
+            self.contexts: list[dict[str, Any]] = []
+
+        def chat(self, *, messages: list[dict[str, Any]], tools: Any = None, context: dict[str, Any] | None = None) -> dict[str, Any]:
+            self.contexts.append(context or {})
+            return {
+                "message": {"role": "assistant", "content": "provider ok", "tool_calls": []},
+                "finish_reason": "stop",
+                "raw": {"model": "patched-chat", "usage": {"total_tokens": 1}},
+            }
+
+    runtime_harness.call(
+        "config.update",
+        {
+            "config": {
+                "provider": {
+                    "activeProfileId": "default",
+                    "profiles": [
+                        {
+                            "id": "default",
+                            "name": "Default mock",
+                            "mode": "mock",
+                            "baseUrl": "https://default.example.test/v1",
+                            "model": "default-chat",
+                        }
+                    ],
+                }
+            }
+        },
+    )
+    provider = CapturingProvider()
+    runtime_harness.server._orchestrator._provider = provider
+
+    result = runtime_harness.call(
+        "provider.test",
+        {
+            "provider": {
+                "mode": "openai-compatible",
+                "baseUrl": "https://patched.example.test/v1",
+                "model": "patched-chat",
+                "apiKey": "sk-patched",
+            }
+        },
+    )["result"]
+
+    assert result["ok"] is True
+    assert result["status"] == "ok"
+    provider_config = provider.contexts[0]["config"]["provider"]
+    assert provider_config["mode"] == "openai-compatible"
+    assert provider_config["model"] == "patched-chat"
+    assert provider_config["baseUrl"] == "https://patched.example.test/v1"
+    assert "profiles" not in provider_config
+    assert "sk-patched" not in str(result)
+
+
 def test_provider_test_persists_profile_health_metadata(runtime_harness: Any) -> None:
     runtime_harness.call(
         "config.update",

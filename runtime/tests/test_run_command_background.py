@@ -96,6 +96,22 @@ def _wait_for_event(
     raise AssertionError(f"Timed out waiting for event within {timeout} seconds")
 
 
+def _rpc_call(server: JsonRpcServer, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    response = server.handle_line(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": f"{method}_test",
+                "method": method,
+                "params": params,
+            },
+            ensure_ascii=False,
+        )
+    )
+    assert "error" not in response
+    return response["result"]
+
+
 @pytest.mark.parametrize("flag_name", ["background", "backgroundJob", "runInBackground"])
 def test_run_command_background_returns_immediately_and_finishes(flag_name: str, tmp_path: Path) -> None:
     store, run_command, ctx = _make_run_command(
@@ -230,6 +246,61 @@ def test_run_command_background_preserves_approval_flow(tmp_path: Path) -> None:
         store.close()
 
 
+def test_command_log_rpc_get_and_list_filters_logs(tmp_path: Path) -> None:
+    store, server, _run_command, ctx, _events = _make_runtime(tmp_path)
+    try:
+        task = store.get_task({"taskId": ctx["task_id"]})["task"]
+        workspace = store.upsert_workspace(str(ctx["workspace_root"]))
+        second_task = store.create_task(session_id=task["sessionId"], task_type="chat", goal="second task", plan=[])
+        other_session = store.create_session(workspace_id=workspace["id"], title="Other session")
+        other_task = store.create_task(session_id=other_session["id"], task_type="chat", goal="other task", plan=[])
+
+        first_log = store.create_command_log(
+            task_id=task["id"],
+            command="Write-Output first",
+            cwd=str(ctx["workspace_root"]),
+            shell="powershell",
+        )
+        first_log = store.update_command_log(
+            first_log["id"],
+            status="completed",
+            exit_code=0,
+            stdout_path=None,
+            stderr_path=None,
+        )
+        second_log = store.create_command_log(
+            task_id=second_task["id"],
+            command="Write-Output second",
+            cwd=str(ctx["workspace_root"]),
+            shell="powershell",
+        )
+        other_log = store.create_command_log(
+            task_id=other_task["id"],
+            command="Write-Output other",
+            cwd=str(ctx["workspace_root"]),
+            shell="powershell",
+        )
+
+        get_result = _rpc_call(server, "command_log.get", {"commandId": first_log["id"]})
+        assert get_result["commandLog"]["id"] == first_log["id"]
+        assert get_result["commandLog"]["status"] == "completed"
+
+        by_task = _rpc_call(server, "command_log.list", {"taskId": second_task["id"]})
+        assert [log["id"] for log in by_task["commandLogs"]] == [second_log["id"]]
+
+        by_session = _rpc_call(server, "command_log.list", {"sessionId": task["sessionId"]})
+        assert {log["id"] for log in by_session["commandLogs"]} == {first_log["id"], second_log["id"]}
+        assert other_log["id"] not in {log["id"] for log in by_session["commandLogs"]}
+
+        by_status = _rpc_call(server, "command_log.list", {"status": "completed"})
+        assert [log["id"] for log in by_status["commandLogs"]] == [first_log["id"]]
+
+        limited = _rpc_call(server, "command_log.list", {"limit": 1})
+        assert len(limited["commandLogs"]) == 1
+    finally:
+        store.close()
+
+
 def test_run_command_background_emits_realtime_runtime_events(tmp_path: Path) -> None:
     store, _server, run_command, ctx, events = _make_runtime(tmp_path)
     try:
@@ -270,6 +341,70 @@ def test_run_command_background_emits_realtime_runtime_events(tmp_path: Path) ->
             ),
         )
         assert completed_event["payload"]["status"] == "completed"
+    finally:
+        store.close()
+
+
+def test_command_cancel_stops_only_requested_background_command(tmp_path: Path) -> None:
+    store, server, run_command, ctx, events = _make_runtime(tmp_path)
+    try:
+        first = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": 'Write-Output "first-begin"; Start-Sleep -Seconds 15; Write-Output "first-never"',
+                "background": True,
+                "internalValidation": True,
+            }
+        )
+        second = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": 'Write-Output "second-begin"; Start-Sleep -Milliseconds 300; Write-Output "second-done"',
+                "background": True,
+                "internalValidation": True,
+            }
+        )
+        first_command_id = first["commandLog"]["id"]
+        second_command_id = second["commandLog"]["id"]
+
+        _wait_for_event(
+            events,
+            lambda event: (
+                event["type"] == "command.output"
+                and event["payload"]["commandId"] == first_command_id
+                and "first-begin" in event["payload"]["chunk"]
+            ),
+        )
+        _wait_for_event(
+            events,
+            lambda event: (
+                event["type"] == "command.output"
+                and event["payload"]["commandId"] == second_command_id
+                and "second-begin" in event["payload"]["chunk"]
+            ),
+        )
+
+        cancel_result = _rpc_call(server, "command.cancel", {"commandId": first_command_id})
+        assert cancel_result["cancelled"] is True
+        assert cancel_result["commandLog"]["id"] == first_command_id
+        assert cancel_result["commandLog"]["status"] == "cancelled"
+
+        first_log = _wait_for_command_log(store, first_command_id)
+        second_log = _wait_for_command_log(store, second_command_id)
+
+        assert first_log["status"] == "cancelled"
+        assert second_log["status"] == "completed"
+        terminal_event = _wait_for_event(
+            events,
+            lambda event: (
+                event["type"] == "command.failed"
+                and event["payload"]["commandId"] == first_command_id
+                and event["payload"]["status"] == "cancelled"
+            ),
+        )
+        assert terminal_event["taskId"] == ctx["task_id"]
     finally:
         store.close()
 

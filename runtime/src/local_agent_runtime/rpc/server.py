@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from typing import Any, Callable, TextIO
 
 from ..models import RpcEnvelope
 from ..services.collaboration_service import CollaborationService
-from ..services.command_background import get_background_command_event_bridge
+from ..services.command_background import cancel_background_command, get_background_command_event_bridge
 from ..services.schedule_service import ScheduleService
 
 RpcHandler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -46,6 +47,8 @@ class JsonRpcServer:
             "provider.test": self._orchestrator.test_provider,
             "diff.get": self._store.get_patch,
             "command_log.get": self._store.get_command_log,
+            "command_log.list": self._store.list_command_logs,
+            "command.cancel": self._cancel_command,
             "trace.list": self._store.list_trace_events,
             "schedule.create": self._schedule.create,
             "schedule.list": self._schedule.list,
@@ -127,6 +130,30 @@ class JsonRpcServer:
 
     def _emit_bridge_event(self, event: dict[str, Any]) -> None:
         self._write_event_payload(event)
+
+    def _cancel_command(self, params: dict[str, Any]) -> dict[str, Any]:
+        command_id = params.get("commandId") or params.get("command_id")
+        if not isinstance(command_id, str) or not command_id.strip():
+            raise ValueError("commandId is required")
+        command_id = command_id.strip()
+        command_log = self._store.get_command_log({"commandId": command_id})["commandLog"]
+        if command_log["status"] != "running":
+            return {"commandLog": command_log, "cancelled": False}
+
+        cancelled = cancel_background_command(
+            database_path=getattr(self._store, "database_path", ":memory:"),
+            command_log_id=command_id,
+        )
+        if cancelled:
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                command_log = self._store.get_command_log({"commandId": command_id})["commandLog"]
+                if command_log["status"] != "running":
+                    break
+                time.sleep(0.05)
+        else:
+            command_log = self._store.get_command_log({"commandId": command_id})["commandLog"]
+        return {"commandLog": command_log, "cancelled": cancelled}
 
     def _write_event_payload(self, payload: dict[str, Any]) -> None:
         if self._writer is None:

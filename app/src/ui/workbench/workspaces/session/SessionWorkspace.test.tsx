@@ -131,6 +131,8 @@ describe("SessionWorkspace", () => {
 
   it("renders command job cards with runtime status and captured output", async () => {
     const user = userEvent.setup();
+    const onRefreshCommandJob = vi.fn();
+    const onStopCommandJob = vi.fn();
 
     render(
       <SessionWorkspace
@@ -151,6 +153,8 @@ describe("SessionWorkspace", () => {
             isBackground: true,
           },
         ]}
+        onRefreshCommandJob={onRefreshCommandJob}
+        onStopCommandJob={onStopCommandJob}
       />,
     );
 
@@ -163,6 +167,33 @@ describe("SessionWorkspace", () => {
 
     expect(screen.getByLabelText("python worker.py --sync stdout")).toHaveTextContent("step 2 running");
     expect(screen.getByText(/stdout file:/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Refresh command job python worker.py --sync" }));
+    await user.click(screen.getByRole("button", { name: "Stop command job python worker.py --sync" }));
+
+    expect(onRefreshCommandJob).toHaveBeenCalledWith("cmd_1");
+    expect(onStopCommandJob).toHaveBeenCalledWith("cmd_1");
+  });
+
+  it("disables stop for finished command jobs", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[]}
+        backgroundJobs={[
+          {
+            id: "cmd_done",
+            command: "npm test",
+            status: "completed",
+          },
+        ]}
+        onRefreshCommandJob={vi.fn()}
+        onStopCommandJob={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Stop command job npm test" })).toBeDisabled();
   });
 
   it("handles approval buttons and full input disclosure", async () => {

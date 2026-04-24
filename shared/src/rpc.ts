@@ -153,6 +153,15 @@ export interface CommandLogGetParams {
   commandId: Identifier;
 }
 
+export interface CommandLogListParams {
+  taskId?: Identifier;
+  sessionId?: Identifier;
+  status?: CommandLogRecord["status"];
+  limit?: number;
+}
+
+export type CommandCancelParams = CommandLogGetParams;
+
 export interface TraceListParams {
   taskId: Identifier;
   limit?: number;
@@ -248,6 +257,15 @@ export interface DiffGetResult {
 
 export interface CommandLogGetResult {
   commandLog: CommandLogRecord;
+}
+
+export interface CommandLogListResult {
+  commandLogs: CommandLogRecord[];
+}
+
+export interface CommandCancelResult {
+  commandLog: CommandLogRecord;
+  cancelled: boolean;
 }
 
 export interface TraceListResult {

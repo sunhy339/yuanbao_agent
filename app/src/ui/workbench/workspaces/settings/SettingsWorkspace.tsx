@@ -1169,7 +1169,7 @@ function ProviderModal({
               onChange={(event) => updateDraft({ apiKey: event.currentTarget.value })}
               placeholder="sk-..."
               autoComplete="off"
-              required={mode === "add"}
+              required={mode === "add" && !draft.jsonConfig.trim()}
             />
           </label>
 

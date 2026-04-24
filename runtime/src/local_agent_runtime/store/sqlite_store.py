@@ -1283,6 +1283,39 @@ class SQLiteStore:
             raise ValueError(f"Command log not found: {params['commandId']}")
         return {"commandLog": self._serialize_command_log(dict(row))}
 
+    def list_command_logs(self, params: dict[str, Any]) -> dict[str, Any]:
+        task_id = params.get("taskId") or params.get("task_id")
+        session_id = params.get("sessionId") or params.get("session_id")
+        status = params.get("status")
+        limit = int(params.get("limit", 100))
+        limit = max(1, min(limit, 1000))
+
+        query = [
+            """
+            SELECT command_logs.*
+            FROM command_logs
+            JOIN tasks ON tasks.id = command_logs.task_id
+            """
+        ]
+        where: list[str] = []
+        values: list[Any] = []
+        if isinstance(task_id, str) and task_id.strip():
+            where.append("command_logs.task_id = ?")
+            values.append(task_id.strip())
+        if isinstance(session_id, str) and session_id.strip():
+            where.append("tasks.session_id = ?")
+            values.append(session_id.strip())
+        if isinstance(status, str) and status.strip():
+            where.append("command_logs.status = ?")
+            values.append(status.strip())
+        if where:
+            query.append("WHERE " + " AND ".join(where))
+        query.append("ORDER BY command_logs.started_at DESC LIMIT ?")
+        values.append(limit)
+
+        rows = self._conn.execute("\n".join(query), values).fetchall()
+        return {"commandLogs": [self._serialize_command_log(dict(row)) for row in rows]}
+
     def create_command_log(
         self,
         *,

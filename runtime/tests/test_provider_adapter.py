@@ -100,6 +100,74 @@ def test_openai_compatible_request_payload() -> None:
     }
 
 
+def test_openai_compatible_serializes_internal_tool_messages_for_request() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(
+        messages=[
+            {"role": "user", "content": "find files"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_search",
+                        "type": "function",
+                        "name": "search_files",
+                        "arguments": {"query": "needle"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_search",
+                "name": "search_files",
+                "content": '{"matches":[]}',
+            },
+        ]
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["messages"] == [
+        {"role": "user", "content": "find files"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_search",
+                    "type": "function",
+                    "function": {
+                        "name": "search_files",
+                        "arguments": '{"query": "needle"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_search",
+            "content": '{"matches":[]}',
+        },
+    ]
+
+
 def test_openai_compatible_request_can_be_configured_from_env() -> None:
     calls: list[dict[str, Any]] = []
 
@@ -131,6 +199,60 @@ def test_openai_compatible_request_can_be_configured_from_env() -> None:
     assert payload["model"] == "env-chat"
     assert payload["temperature"] == 0.4
     assert payload["max_tokens"] == 321
+
+
+def test_anthropic_env_can_drive_openai_compatible_request_without_mode() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"choices":[{"message":{"role":"assistant","content":"anthropic env answer"}}]}'
+
+    adapter = ProviderAdapter(
+        http_post=fake_post,
+        environ={
+            "ANTHROPIC_AUTH_TOKEN": "sk-anthropic",
+            "ANTHROPIC_BASE_URL": "https://anthropic-proxy.example.test",
+            "ANTHROPIC_MODEL": "anthropic-env-chat",
+        },
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "anthropic env answer"
+    call = calls[0]
+    assert call["url"] == "https://anthropic-proxy.example.test/v1/chat/completions"
+    assert call["headers"]["Authorization"] == "Bearer sk-anthropic"
+    payload = json.loads(call["body"].decode("utf-8"))
+    assert payload["model"] == "anthropic-env-chat"
+
+
+def test_anthropic_env_var_name_normalizes_root_base_url() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"choices":[{"message":{"role":"assistant","content":"configured env answer"}}]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKeyEnvVarName": "ANTHROPIC_AUTH_TOKEN",
+                "baseUrl": "https://anthropic-profile.example.test",
+                "model": "configured-env-chat",
+            }
+        },
+        http_post=fake_post,
+        environ={"ANTHROPIC_AUTH_TOKEN": "sk-configured-anthropic"},
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "configured env answer"
+    call = calls[0]
+    assert call["url"] == "https://anthropic-profile.example.test/v1/chat/completions"
+    assert call["headers"]["Authorization"] == "Bearer sk-configured-anthropic"
 
 
 def test_configured_api_key_env_var_name_is_used() -> None:

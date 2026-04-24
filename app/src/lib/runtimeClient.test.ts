@@ -1,5 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RuntimeClient } from "./runtimeClient";
+
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("RuntimeClient schedule fallback", () => {
   it("creates, lists, toggles, runs, and lists logs in browser mode", async () => {
@@ -26,5 +34,59 @@ describe("RuntimeClient schedule fallback", () => {
 
     const logs = await client.listScheduledTaskLogs({ taskId: created.task.id });
     expect(logs.logs.some((log) => log.id === run.run.id)).toBe(true);
+  });
+});
+
+describe("RuntimeClient command log fallback", () => {
+  it("lists, gets, and cancels command jobs from browser trace state", async () => {
+    const client = new RuntimeClient();
+    const session = await client.createSession({
+      workspaceId: "workspace_mock",
+      title: "Command controls",
+    });
+    const message = await client.sendMessage({
+      sessionId: session.session.id,
+      content: "Run the focused test",
+      attachments: [],
+    });
+
+    await vi.advanceTimersByTimeAsync(400);
+
+    const traces = await client.listTrace({ taskId: message.task.id, limit: 50 });
+    const approvalTrace = traces.traceEvents.find((trace) => trace.type === "approval.requested");
+    const approvalId =
+      approvalTrace?.payload && typeof approvalTrace.payload === "object"
+        ? (approvalTrace.payload as Record<string, unknown>).approvalId
+        : null;
+    expect(approvalId).toEqual(expect.any(String));
+
+    await client.approvalSubmit({
+      approvalId: String(approvalId),
+      decision: "approved",
+    });
+
+    const listed = await client.commandLogList({ sessionId: session.session.id, status: "completed" });
+    expect(listed.commandLogs).toHaveLength(1);
+    expect(listed.commandLogs[0]).toMatchObject({
+      taskId: message.task.id,
+      command: "pytest",
+      cwd: ".",
+      shell: "powershell",
+      status: "completed",
+      exitCode: 0,
+      stdout: expect.stringContaining("Approved command finished successfully"),
+    });
+
+    const fetched = await client.commandLogGet({ commandId: listed.commandLogs[0].id });
+    expect(fetched.commandLog.id).toBe(listed.commandLogs[0].id);
+
+    const cancelled = await client.commandCancel({ commandId: listed.commandLogs[0].id });
+    expect(cancelled.commandLog).toMatchObject({
+      id: listed.commandLogs[0].id,
+      status: "killed",
+    });
+
+    const afterCancel = await client.commandLogGet({ commandId: listed.commandLogs[0].id });
+    expect(afterCancel.commandLog.status).toBe("killed");
   });
 });

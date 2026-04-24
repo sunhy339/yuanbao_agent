@@ -6,6 +6,12 @@ import type {
   ApprovalSubmitResult,
   AgentEventEnvelope,
   AppConfig,
+  CommandCancelParams,
+  CommandLogGetParams,
+  CommandLogGetResult,
+  CommandLogListParams,
+  CommandLogListResult,
+  CommandLogRecord,
   ConfigGetResult,
   ConfigUpdateParams,
   ConfigUpdateResult,
@@ -56,6 +62,12 @@ const EVENT_CHANNEL = "agent://event";
 const browserEventTarget = new EventTarget();
 
 export type RuntimeConfig = AppConfig & Required<Pick<AppConfig, "search">>;
+export type RuntimeCommandLog = CommandLogRecord;
+
+export interface CommandCancelResult {
+  commandLog: CommandLogRecord;
+  cancelled?: boolean;
+}
 
 interface MockState {
   config: RuntimeConfig;
@@ -221,6 +233,188 @@ function sortScheduledTasks(tasks: ScheduledTaskRecord[]): ScheduledTaskRecord[]
 
 function sortScheduledRuns(runs: ScheduledTaskRunRecord[]): ScheduledTaskRunRecord[] {
   return [...runs].sort((left, right) => right.startedAt - left.startedAt);
+}
+
+function isCommandShell(value: string | undefined): CommandLogRecord["shell"] | undefined {
+  if (value === "powershell" || value === "bash" || value === "zsh") {
+    return value;
+  }
+  return undefined;
+}
+
+function isCommandLogStatus(value: string | undefined): CommandLogRecord["status"] | undefined {
+  if (
+    value === "running" ||
+    value === "completed" ||
+    value === "failed" ||
+    value === "timeout" ||
+    value === "killed"
+  ) {
+    return value;
+  }
+  if (value === "cancelled") {
+    return "killed";
+  }
+  return undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function readRecordString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function readRecordRawString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function readRecordNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function appendOutputTail(current: string, chunk: string): string {
+  return `${current}${chunk}`.slice(-12_000);
+}
+
+function getCommandStatusForEvent(
+  type: string,
+  payload: Record<string, unknown>,
+): CommandLogRecord["status"] {
+  const payloadStatus = isCommandLogStatus(readRecordString(payload, "status"));
+  if (payloadStatus) {
+    return payloadStatus;
+  }
+
+  if (type === "command.started") {
+    return "running";
+  }
+  if (type === "command.completed") {
+    return "completed";
+  }
+  if (type === "command.cancelled") {
+    return "killed";
+  }
+  return "failed";
+}
+
+function buildMockCommandLogs(): CommandLogRecord[] {
+  const logs = new Map<string, CommandLogRecord>();
+  const sources = [...mockState.traces].sort((left, right) => left.sequence - right.sequence);
+
+  for (const source of sources) {
+    const payload = asRecord(source.payload);
+    if (!payload || !source.type.startsWith("command.")) {
+      continue;
+    }
+
+    const commandId = readRecordString(payload, "commandId");
+    if (!commandId) {
+      continue;
+    }
+
+    const current = logs.get(commandId);
+    if (source.type === "command.output") {
+      const stream = readRecordString(payload, "stream");
+      const chunk = readRecordRawString(payload, "chunk");
+      if (!stream || chunk === undefined) {
+        continue;
+      }
+
+      const base = current ?? {
+        id: commandId,
+        taskId: source.taskId,
+        command: commandId,
+        cwd: ".",
+        status: "running",
+        startedAt: source.createdAt,
+      };
+      logs.set(commandId, {
+        ...base,
+        stdout: stream === "stdout" ? appendOutputTail(base.stdout ?? "", chunk) : base.stdout,
+        stderr: stream === "stderr" ? appendOutputTail(base.stderr ?? "", chunk) : base.stderr,
+      });
+      continue;
+    }
+
+    if (
+      source.type !== "command.started" &&
+      source.type !== "command.completed" &&
+      source.type !== "command.failed" &&
+      source.type !== "command.cancelled"
+    ) {
+      continue;
+    }
+
+    const status = getCommandStatusForEvent(source.type, payload);
+    logs.set(commandId, {
+      id: commandId,
+      taskId: source.taskId,
+      command: readRecordString(payload, "command") ?? current?.command ?? commandId,
+      cwd: readRecordString(payload, "cwd") ?? current?.cwd ?? ".",
+      shell: isCommandShell(readRecordString(payload, "shell")) ?? current?.shell,
+      status,
+      exitCode:
+        readRecordNumber(payload, "exitCode") ??
+        (payload.exitCode === null ? undefined : current?.exitCode),
+      startedAt:
+        readRecordNumber(payload, "startedAt") ??
+        current?.startedAt ??
+        source.createdAt,
+      finishedAt:
+        readRecordNumber(payload, "finishedAt") ??
+        (status === "running" ? current?.finishedAt : source.createdAt),
+      durationMs: readRecordNumber(payload, "durationMs") ?? current?.durationMs,
+      stdoutPath: readRecordString(payload, "stdoutPath") ?? current?.stdoutPath,
+      stderrPath: readRecordString(payload, "stderrPath") ?? current?.stderrPath,
+      stdout: readRecordRawString(payload, "stdout") ?? current?.stdout,
+      stderr: readRecordRawString(payload, "stderr") ?? current?.stderr,
+    });
+  }
+
+  return [...logs.values()].sort(
+    (left, right) =>
+      (right.finishedAt ?? right.startedAt) - (left.finishedAt ?? left.startedAt),
+  );
+}
+
+function getMockCommandLog(commandId: string): CommandLogRecord {
+  const commandLog = buildMockCommandLogs().find((log) => log.id === commandId);
+  if (!commandLog) {
+    throw new Error(`Command log not found: ${commandId}`);
+  }
+  return commandLog;
+}
+
+function getMockCommandSessionId(commandLog: CommandLogRecord): string {
+  const trace = mockState.traces.find((item) => {
+    if (item.taskId !== commandLog.taskId) {
+      return false;
+    }
+    const payload = asRecord(item.payload);
+    return readRecordString(payload ?? {}, "commandId") === commandLog.id;
+  });
+  return trace?.sessionId ?? commandLog.taskId;
+}
+
+function filterMockCommandLogs(payload: CommandLogListParams = {}): CommandLogRecord[] {
+  const limit = payload.limit ?? 100;
+  return buildMockCommandLogs()
+    .filter((log) => !payload.taskId || log.taskId === payload.taskId)
+    .filter((log) => !payload.status || log.status === payload.status)
+    .filter((log) => {
+      if (!payload.sessionId) {
+        return true;
+      }
+      return mockState.traces.some(
+        (trace) => trace.sessionId === payload.sessionId && trace.taskId === log.taskId,
+      );
+    })
+    .slice(0, limit);
 }
 
 function parseScheduleOffsetMs(schedule: string): number {
@@ -941,6 +1135,88 @@ export class RuntimeClient {
         throw new Error(`Patch not found: ${payload.patchId}`);
       }
       return { patch, diffText: patch.diffText };
+    }
+  }
+
+  async commandLogList(payload: CommandLogListParams = {}): Promise<CommandLogListResult> {
+    if (!isTauriBridgeAvailable()) {
+      return {
+        commandLogs: filterMockCommandLogs(payload),
+      };
+    }
+
+    try {
+      return await invokeOrReject<CommandLogListResult>("command_log_list", payload);
+    } catch {
+      return {
+        commandLogs: filterMockCommandLogs(payload),
+      };
+    }
+  }
+
+  async commandLogGet(payload: CommandLogGetParams): Promise<CommandLogGetResult> {
+    if (!isTauriBridgeAvailable()) {
+      return {
+        commandLog: getMockCommandLog(payload.commandId),
+      };
+    }
+
+    try {
+      return await invokeOrReject<CommandLogGetResult>("command_log_get", payload);
+    } catch {
+      return {
+        commandLog: getMockCommandLog(payload.commandId),
+      };
+    }
+  }
+
+  async commandCancel(payload: CommandCancelParams): Promise<CommandCancelResult> {
+    if (!isTauriBridgeAvailable()) {
+      const commandLog = getMockCommandLog(payload.commandId);
+      const sessionId = getMockCommandSessionId(commandLog);
+      const now = Date.now();
+      emitBrowserEvent(
+        buildMockEvent(sessionId, commandLog.taskId, "command.failed", {
+          commandId: commandLog.id,
+          command: commandLog.command,
+          cwd: commandLog.cwd,
+          shell: commandLog.shell,
+          status: "killed",
+          exitCode: commandLog.exitCode ?? null,
+          durationMs: Math.max(0, now - commandLog.startedAt),
+          stdoutPath: commandLog.stdoutPath,
+          stderrPath: commandLog.stderrPath,
+        }),
+      );
+      return {
+        commandLog: getMockCommandLog(payload.commandId),
+        cancelled: true,
+      };
+    }
+
+    try {
+      return await invokeOrReject<CommandCancelResult>("command_cancel", payload);
+    } catch {
+      const commandLog = getMockCommandLog(payload.commandId);
+      const sessionId = getMockCommandSessionId(commandLog);
+      const now = Date.now();
+      emitBrowserEvent(
+        buildMockEvent(sessionId, commandLog.taskId, "command.failed", {
+          commandId: commandLog.id,
+          command: commandLog.command,
+          cwd: commandLog.cwd,
+          shell: commandLog.shell,
+          status: "killed",
+          exitCode: commandLog.exitCode ?? null,
+          durationMs: Math.max(0, now - commandLog.startedAt),
+          stdoutPath: commandLog.stdoutPath,
+          stderrPath: commandLog.stderrPath,
+        }),
+      );
+      return {
+        commandLog: getMockCommandLog(payload.commandId),
+        cancelled: true,
+      };
     }
   }
 

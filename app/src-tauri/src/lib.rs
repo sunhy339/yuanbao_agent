@@ -116,6 +116,21 @@ struct CommandLogGetPayload {
     command_id: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct CommandLogListPayload {
+    task_id: Option<String>,
+    session_id: Option<String>,
+    status: Option<String>,
+    limit: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommandCancelPayload {
+    command_id: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DiffGetPayload {
@@ -164,7 +179,12 @@ impl RuntimeManager {
 }
 
 impl RuntimeBridge {
-    fn call(&mut self, app_handle: &AppHandle, method: &str, params: Value) -> Result<Value, String> {
+    fn call(
+        &mut self,
+        app_handle: &AppHandle,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, String> {
         self.ensure_started(app_handle)?;
 
         let request_id = format!(
@@ -210,8 +230,11 @@ impl RuntimeBridge {
 
         let repo_root = repo_root()?;
         let runtime_src = repo_root.join("runtime").join("src");
-        let database_path = repo_root.join("runtime").join(".local-agent-runtime.sqlite3");
-        let python_executable = env::var("LOCAL_AGENT_PYTHON").unwrap_or_else(|_| "python".to_string());
+        let database_path = repo_root
+            .join("runtime")
+            .join(".local-agent-runtime.sqlite3");
+        let python_executable =
+            env::var("LOCAL_AGENT_PYTHON").unwrap_or_else(|_| "python".to_string());
 
         let mut command = Command::new(python_executable);
         command
@@ -336,7 +359,9 @@ fn repo_root() -> Result<PathBuf, String> {
         .parent()
         .and_then(Path::parent)
         .map(Path::to_path_buf)
-        .ok_or_else(|| "Failed to resolve repository root from Cargo manifest directory".to_string())
+        .ok_or_else(|| {
+            "Failed to resolve repository root from Cargo manifest directory".to_string()
+        })
 }
 
 fn append_path_env(name: &str, first_path: &Path) -> Result<std::ffi::OsString, String> {
@@ -411,7 +436,11 @@ fn task_get(
     state: State<'_, RuntimeManager>,
     payload: TaskGetPayload,
 ) -> Result<Value, String> {
-    state.call(&app_handle, "task.get", json!({ "taskId": payload.task_id }))
+    state.call(
+        &app_handle,
+        "task.get",
+        json!({ "taskId": payload.task_id }),
+    )
 }
 
 #[tauri::command]
@@ -420,7 +449,11 @@ fn task_cancel(
     state: State<'_, RuntimeManager>,
     payload: TaskControlPayload,
 ) -> Result<Value, String> {
-    state.call(&app_handle, "task.cancel", json!({ "taskId": payload.task_id }))
+    state.call(
+        &app_handle,
+        "task.cancel",
+        json!({ "taskId": payload.task_id }),
+    )
 }
 
 #[tauri::command]
@@ -429,7 +462,11 @@ fn task_pause(
     state: State<'_, RuntimeManager>,
     payload: TaskControlPayload,
 ) -> Result<Value, String> {
-    state.call(&app_handle, "task.pause", json!({ "taskId": payload.task_id }))
+    state.call(
+        &app_handle,
+        "task.pause",
+        json!({ "taskId": payload.task_id }),
+    )
 }
 
 #[tauri::command]
@@ -438,7 +475,11 @@ fn task_resume(
     state: State<'_, RuntimeManager>,
     payload: TaskControlPayload,
 ) -> Result<Value, String> {
-    state.call(&app_handle, "task.resume", json!({ "taskId": payload.task_id }))
+    state.call(
+        &app_handle,
+        "task.resume",
+        json!({ "taskId": payload.task_id }),
+    )
 }
 
 #[tauri::command]
@@ -520,7 +561,11 @@ fn schedule_run_now(
     state: State<'_, RuntimeManager>,
     payload: ScheduledTaskIdPayload,
 ) -> Result<Value, String> {
-    state.call(&app_handle, "schedule.run_now", json!({ "taskId": payload.task_id }))
+    state.call(
+        &app_handle,
+        "schedule.run_now",
+        json!({ "taskId": payload.task_id }),
+    )
 }
 
 #[tauri::command]
@@ -592,12 +637,48 @@ fn command_log_get(
 }
 
 #[tauri::command]
+fn command_log_list(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Option<CommandLogListPayload>,
+) -> Result<Value, String> {
+    let payload = payload.unwrap_or_default();
+    state.call(
+        &app_handle,
+        "command_log.list",
+        json!({
+            "taskId": payload.task_id,
+            "sessionId": payload.session_id,
+            "status": payload.status,
+            "limit": payload.limit,
+        }),
+    )
+}
+
+#[tauri::command]
+fn command_cancel(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: CommandCancelPayload,
+) -> Result<Value, String> {
+    state.call(
+        &app_handle,
+        "command.cancel",
+        json!({ "commandId": payload.command_id }),
+    )
+}
+
+#[tauri::command]
 fn diff_get(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: DiffGetPayload,
 ) -> Result<Value, String> {
-    state.call(&app_handle, "diff.get", json!({ "patchId": payload.patch_id }))
+    state.call(
+        &app_handle,
+        "diff.get",
+        json!({ "patchId": payload.patch_id }),
+    )
 }
 
 #[tauri::command]
@@ -641,6 +722,8 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             config_update,
             provider_test,
             command_log_get,
+            command_log_list,
+            command_cancel,
             diff_get,
             trace_list
         ])

@@ -188,6 +188,8 @@ export interface SessionWorkspaceProps {
   onReject?(approvalId: string): void | Promise<void>;
   onLoadPatch?(patchId: string): void | Promise<void>;
   onCopyPatchPath?(patchId: string, path: string): void | Promise<void>;
+  onRefreshCommandJob?(commandId: string): void | Promise<void>;
+  onStopCommandJob?(commandId: string): void | Promise<void>;
   onRefreshTrace?(): void | Promise<void>;
   busyId?: string | null;
 }
@@ -241,6 +243,10 @@ function formatTokens(tokenCount?: number) {
   }
 
   return `${tokenCount.toLocaleString()} tokens`;
+}
+
+function canStopCommandJob(job: SessionWorkspaceBackgroundJob) {
+  return job.status === "running";
 }
 
 function formatHeartbeatAge(heartbeatAgeMs?: number) {
@@ -373,6 +379,8 @@ export function SessionWorkspace({
   onReject,
   onLoadPatch,
   onCopyPatchPath,
+  onRefreshCommandJob,
+  onStopCommandJob,
   onRefreshTrace,
   busyId = null,
 }: SessionWorkspaceProps) {
@@ -729,6 +737,8 @@ export function SessionWorkspace({
                     const panelId = `command-job-${job.id}`;
                     const isExpanded = expandedPanels.has(panelId);
                     const duration = formatDuration(job.durationMs);
+                    const isBusy = busyId === job.id;
+                    const stopDisabled = isBusy || !canStopCommandJob(job);
 
                     return (
                       <li
@@ -756,6 +766,26 @@ export function SessionWorkspace({
                             label="command job"
                             onClick={() => togglePanel(panelId)}
                           />
+                          {onRefreshCommandJob ? (
+                            <button
+                              aria-label={`Refresh command job ${job.command}`}
+                              disabled={isBusy}
+                              onClick={() => void onRefreshCommandJob(job.id)}
+                              type="button"
+                            >
+                              Refresh
+                            </button>
+                          ) : null}
+                          {onStopCommandJob ? (
+                            <button
+                              aria-label={`Stop command job ${job.command}`}
+                              disabled={stopDisabled}
+                              onClick={() => void onStopCommandJob(job.id)}
+                              type="button"
+                            >
+                              Stop
+                            </button>
+                          ) : null}
                         </div>
                         {isExpanded ? (
                           <div className="trace-detail" id={panelId}>

@@ -494,8 +494,26 @@
 
 .patch-card,
 .trace-card,
-.tool-card {
+.tool-card,
+.command-job-card {
   background: rgba(255, 250, 241, 0.5);
+}
+
+.command-job-card[data-command-status="running"] {
+  border-left: 4px solid var(--session-copper);
+  background:
+    linear-gradient(135deg, rgba(183, 122, 73, 0.1), transparent 58%),
+    rgba(255, 250, 241, 0.74);
+}
+
+.command-job-card[data-command-status="completed"] {
+  border-left: 4px solid var(--session-green);
+}
+
+.command-job-card[data-command-status="failed"],
+.command-job-card[data-command-status="timeout"],
+.command-job-card[data-command-status="killed"] {
+  border-left: 4px solid var(--session-seal);
 }
 
 .operation-card-head,
@@ -709,6 +727,16 @@
   padding-top: 12px;
 }
 
+.collaboration-health-summary {
+  margin: -2px 0 0;
+  color: var(--session-copper-dark);
+  font-family: var(--session-mono);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .collaboration-section-head {
   display: flex;
   gap: 10px;
@@ -779,6 +807,18 @@
   font-weight: 900;
 }
 
+.collaboration-tags span[data-health="healthy"] {
+  color: var(--session-green);
+}
+
+.collaboration-tags span[data-health="stale"] {
+  color: var(--session-amber);
+}
+
+.collaboration-tags span[data-health="offline"] {
+  color: var(--session-seal);
+}
+
 .collaboration-row p {
   margin-bottom: 0;
   color: var(--session-muted);
@@ -796,6 +836,20 @@
 
 .trace-detail p {
   margin-bottom: 0;
+}
+
+.command-artifact-list {
+  display: grid;
+  gap: 4px;
+}
+
+.command-artifact-list p {
+  margin: 0;
+  color: var(--session-muted);
+  font-family: var(--session-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 1120px) {

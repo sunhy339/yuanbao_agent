@@ -10,6 +10,7 @@ from ..event_bus import EventBus
 from ..models import RuntimeEvent
 from ..planner.service import Planner
 from ..services.collaboration_service import CollaborationService
+from ..services.command_background import cancel_background_commands
 from ..services.session_service import SessionService
 from ..services.subagent_service import SubagentService
 from ..services.worker_budget import WorkerBudget
@@ -822,6 +823,8 @@ class Orchestrator:
         return " ".join(part for part in (changed_text, validation_text) if part).strip() + failure_text
 
     def cancel_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        task = self._store.get_task({"taskId": params["taskId"]})["task"]
+        cancel_background_commands(database_path=self._store.database_path, task_id=task["id"])
         task = self._store.update_task(task_id=params["taskId"], status="cancelled")
         self._clear_pending_react_state(task["id"])
         self._publish(

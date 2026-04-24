@@ -7,9 +7,17 @@ from typing import Any
 
 import pytest
 
+from local_agent_runtime.event_bus import EventBus
+from local_agent_runtime.orchestrator.service import Orchestrator
+from local_agent_runtime.policy.guard import PolicyGuard
+from local_agent_runtime.provider.adapter import ProviderAdapter
+from local_agent_runtime.rpc.server import JsonRpcServer
+from local_agent_runtime.services import CollaborationService, SubagentService
+from local_agent_runtime.services.command_background import get_background_command_event_bridge
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.builtin import build_builtin_tools
+from local_agent_runtime.tools.registry import ToolRegistry
 
 
 def _make_run_command(
@@ -43,6 +51,49 @@ def _wait_for_command_log(store: SQLiteStore, command_id: str, *, timeout: float
 def _command_artifact_path(store: SQLiteStore, command_id: str, stream_name: str) -> Path:
     assert store.database_path != ":memory:"
     return Path(store.database_path).resolve().parent / "runtime_artifacts" / f"{command_id}_{stream_name}.log"
+
+
+def _make_runtime(tmp_path: Path) -> tuple[SQLiteStore, JsonRpcServer, Any, dict[str, Any], list[dict[str, Any]]]:
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    store.update_config({"config": {"policy": {"approvalMode": "never"}}})
+    config = store.get_config({})["config"]
+    event_bus = EventBus()
+    events: list[dict[str, Any]] = []
+    event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
+    get_background_command_event_bridge(store.database_path).add_listener(lambda event: events.append(event))
+    policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
+    collaboration = CollaborationService(store, event_bus)
+    subagent_service = SubagentService(store, collaboration)
+    tools = build_builtin_tools(policy_guard=policy_guard, store=store, subagent_service=subagent_service)
+    tool_registry = ToolRegistry(tools)
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=tool_registry,
+        provider=ProviderAdapter(),
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Background runtime")
+    task = store.create_task(session_id=session["id"], task_type="chat", goal="background runtime", plan=[])
+    return store, server, tools["run_command"], {"workspace_root": workspace_root, "task_id": task["id"]}, events
+
+
+def _wait_for_event(
+    events: list[dict[str, Any]],
+    predicate: Any,
+    *,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for event in list(events):
+            if predicate(event):
+                return event
+        time.sleep(0.05)
+    raise AssertionError(f"Timed out waiting for event within {timeout} seconds")
 
 
 @pytest.mark.parametrize("flag_name", ["background", "backgroundJob", "runInBackground"])
@@ -175,5 +226,108 @@ def test_run_command_background_preserves_approval_flow(tmp_path: Path) -> None:
         assert result["status"] == "approval_required"
         assert result["background"] is True
         assert json.loads(result["approval"]["requestJson"])["background"] is True
+    finally:
+        store.close()
+
+
+def test_run_command_background_emits_realtime_runtime_events(tmp_path: Path) -> None:
+    store, _server, run_command, ctx, events = _make_runtime(tmp_path)
+    try:
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": 'Write-Output "alpha"; Start-Sleep -Milliseconds 500; Write-Output "omega"',
+                "background": True,
+                "internalValidation": True,
+            }
+        )
+
+        command_id = result["commandLog"]["id"]
+        started_event = _wait_for_event(
+            events,
+            lambda event: event["type"] == "command.started" and event["payload"]["commandId"] == command_id,
+        )
+        assert started_event["taskId"] == ctx["task_id"]
+
+        output_event = _wait_for_event(
+            events,
+            lambda event: (
+                event["type"] == "command.output"
+                and event["payload"]["commandId"] == command_id
+                and event["payload"]["stream"] == "stdout"
+                and "alpha" in event["payload"]["chunk"]
+            ),
+        )
+        assert output_event["taskId"] == ctx["task_id"]
+        assert store.get_command_log({"commandId": command_id})["commandLog"]["status"] == "running"
+
+        completed_event = _wait_for_event(
+            events,
+            lambda event: (
+                event["type"] in {"command.completed", "command.failed"}
+                and event["payload"]["commandId"] == command_id
+            ),
+        )
+        assert completed_event["payload"]["status"] == "completed"
+    finally:
+        store.close()
+
+
+def test_task_cancel_stops_running_background_command(tmp_path: Path) -> None:
+    store, server, run_command, ctx, events = _make_runtime(tmp_path)
+    try:
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": 'Write-Output "begin"; Start-Sleep -Seconds 15; Write-Output "never"',
+                "background": True,
+                "internalValidation": True,
+            }
+        )
+        command_id = result["commandLog"]["id"]
+
+        _wait_for_event(
+            events,
+            lambda event: (
+                event["type"] == "command.output"
+                and event["payload"]["commandId"] == command_id
+                and "begin" in event["payload"]["chunk"]
+            ),
+        )
+
+        response = server.handle_line(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "cancel_1",
+                    "method": "task.cancel",
+                    "params": {"taskId": ctx["task_id"]},
+                },
+                ensure_ascii=False,
+            )
+        )
+        assert response["result"]["task"]["status"] == "cancelled"
+
+        command_log = _wait_for_command_log(store, command_id)
+        assert command_log["status"] == "cancelled"
+        assert command_log["finishedAt"] is not None
+        terminal_event = _wait_for_event(
+            events,
+            lambda event: (
+                event["type"] == "command.failed"
+                and event["payload"]["commandId"] == command_id
+                and event["payload"]["status"] == "cancelled"
+            ),
+        )
+        assert terminal_event["taskId"] == ctx["task_id"]
+        trace_events = store.list_trace_events({"taskId": ctx["task_id"]})["traceEvents"]
+        assert any(
+            event["type"] == "command.failed"
+            and event["payload"]["commandId"] == command_id
+            and event["payload"]["status"] == "cancelled"
+            for event in trace_events
+        )
     finally:
         store.close()

@@ -45,6 +45,7 @@ import {
 } from "./ui/workbench/workspaces/scheduled/ScheduledWorkspace";
 import {
   SessionWorkspace,
+  type SessionWorkspaceBackgroundJob,
   type SessionWorkspaceCollaboration,
 } from "./ui/workbench/workspaces/session/SessionWorkspace";
 import {
@@ -790,6 +791,28 @@ interface ToolTimelineItem {
   eventCount: number;
 }
 
+interface CommandJobTimelineItem {
+  id: string;
+  taskId: string;
+  commandId: string;
+  command: string;
+  status: string;
+  cwd?: string;
+  shell?: string;
+  summary?: string;
+  startedAt: number;
+  updatedAt: number;
+  finishedAt?: number;
+  durationMs?: number;
+  exitCode?: number | null;
+  stdout: string;
+  stderr: string;
+  stdoutPath?: string;
+  stderrPath?: string;
+  isBackground?: boolean;
+  eventCount: number;
+}
+
 interface ActivityTimelineItem {
   id: string;
   type: string;
@@ -1097,6 +1120,7 @@ interface CollaborationSourceEvent {
   type: string;
   payload: unknown;
   time: number;
+  taskId?: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -1110,9 +1134,31 @@ function readRecordString(record: Record<string, unknown>, key: string): string 
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function readRecordRawString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 function readRecordNumber(record: Record<string, unknown>, key: string): number | undefined {
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readRecordBoolean(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") {
+      return true;
+    }
+    if (normalized === "false") {
+      return false;
+    }
+  }
+  return undefined;
 }
 
 function readChildRecord(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
@@ -1126,6 +1172,17 @@ function readResultSummary(record: Record<string, unknown>): string | undefined 
     (result ? readRecordString(result, "summary") : undefined) ??
     readRecordString(record, "description")
   );
+}
+
+function appendOutputTail(current: string, chunk: string, maxLength = 4000): string {
+  if (current.endsWith(chunk)) {
+    return current;
+  }
+  const combined = `${current}${chunk}`;
+  if (combined.length <= maxLength) {
+    return combined;
+  }
+  return combined.slice(combined.length - maxLength);
 }
 
 function buildSessionCollaboration(
@@ -1159,11 +1216,17 @@ function buildSessionCollaboration(
       return;
     }
     const metadata = readChildRecord(worker, "metadata");
+    const health = readChildRecord(worker, "health");
     workers.set(id, {
       id,
       name: readRecordString(worker, "name") ?? id,
       status: readRecordString(worker, "status"),
       mode: readRecordString(worker, "role") ?? (metadata ? readRecordString(metadata, "mode") : undefined),
+      healthState:
+        readRecordString(worker, "healthState") ?? (health ? readRecordString(health, "state") : undefined),
+      healthReason: health ? readRecordString(health, "reason") : undefined,
+      heartbeatAgeMs: health ? readRecordNumber(health, "heartbeatAgeMs") : undefined,
+      lastHeartbeatAt: health ? readRecordNumber(health, "lastHeartbeatAt") : undefined,
       claimedTaskId: readRecordString(worker, "currentTaskId") ?? undefined,
       summary: Array.isArray(worker.capabilities)
         ? worker.capabilities.filter((item): item is string => typeof item === "string").join(", ")
@@ -1259,12 +1322,124 @@ function buildSessionCollaboration(
     workerName: task.workerId ? workers.get(task.workerId)?.name ?? task.workerName : task.workerName,
   }));
   const resultList = [...results.values()];
+  const healthSummary = workerList.reduce(
+    (summary, worker) => {
+      summary.total += 1;
+      if (worker.healthState === "healthy" || worker.healthState === "stale" || worker.healthState === "offline") {
+        summary[worker.healthState] += 1;
+      }
+      return summary;
+    },
+    { healthy: 0, stale: 0, offline: 0, total: 0 },
+  );
 
   return {
     workers: workerList.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
     childTasks: taskList.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
     results: resultList.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
+    healthSummary,
   };
+}
+
+function buildSessionBackgroundJobs(
+  events: AgentEventEnvelope[],
+  traceEvents: TraceEventRecord[],
+): SessionWorkspaceBackgroundJob[] {
+  const jobs = new Map<string, SessionWorkspaceBackgroundJob>();
+  const sources: CollaborationSourceEvent[] = [
+    ...traceEvents.map((trace) => ({
+      id: trace.id,
+      type: trace.type,
+      payload: trace.payload,
+      time: trace.createdAt,
+      taskId: trace.taskId,
+    })),
+    ...events.map((event) => ({
+      id: event.eventId,
+      type: event.type,
+      payload: event.payload,
+      time: event.ts,
+      taskId: event.taskId,
+    })),
+  ].sort((left, right) => left.time - right.time);
+
+  const rememberLifecycle = (type: string, payload: Record<string, unknown>, time: number) => {
+    const id = readRecordString(payload, "commandId");
+    if (!id) {
+      return;
+    }
+    const current = jobs.get(id);
+    const status =
+      readRecordString(payload, "status") ??
+      (type === "command.started" ? "running" : type === "command.completed" ? "completed" : "failed");
+    const next: SessionWorkspaceBackgroundJob = {
+      id,
+      command: readRecordString(payload, "command") ?? current?.command ?? id,
+      status,
+      cwd: readRecordString(payload, "cwd") ?? current?.cwd,
+      shell: readRecordString(payload, "shell") ?? current?.shell,
+      startedAt: current?.startedAt ?? (type === "command.started" ? time : undefined),
+      finishedAt: type === "command.started" ? current?.finishedAt : time,
+      durationMs: readRecordNumber(payload, "durationMs") ?? current?.durationMs,
+      exitCode:
+        readRecordNumber(payload, "exitCode") ??
+        (payload.exitCode === null ? null : current?.exitCode),
+      stdout: current?.stdout,
+      stderr: current?.stderr,
+      stdoutPath: readRecordString(payload, "stdoutPath") ?? current?.stdoutPath,
+      stderrPath: readRecordString(payload, "stderrPath") ?? current?.stderrPath,
+      isBackground: readRecordBoolean(payload, "background") ?? current?.isBackground,
+      summary:
+        status === "running"
+          ? "Command is still running."
+          : status === "completed"
+            ? `Command completed${typeof readRecordNumber(payload, "exitCode") === "number" ? ` with exit ${readRecordNumber(payload, "exitCode")}` : "."}`
+            : `Command ${status}${typeof readRecordNumber(payload, "exitCode") === "number" ? ` with exit ${readRecordNumber(payload, "exitCode")}` : "."}`,
+    };
+    jobs.set(id, next);
+  };
+
+  const rememberOutput = (payload: Record<string, unknown>) => {
+    const id = readRecordString(payload, "commandId");
+    const stream = readRecordString(payload, "stream");
+    const chunk = readRecordRawString(payload, "chunk");
+    if (!id || !stream || !chunk) {
+      return;
+    }
+    const current = jobs.get(id) ?? {
+      id,
+      command: id,
+      status: "running",
+    };
+    jobs.set(id, {
+      ...current,
+      stdout: stream === "stdout" ? appendOutputTail(current.stdout ?? "", chunk) : current.stdout,
+      stderr: stream === "stderr" ? appendOutputTail(current.stderr ?? "", chunk) : current.stderr,
+    });
+  };
+
+  for (const source of sources) {
+    const payload = asRecord(source.payload);
+    if (!payload) {
+      continue;
+    }
+    if (source.type === "command.output") {
+      rememberOutput(payload);
+      continue;
+    }
+    if (
+      source.type === "command.started" ||
+      source.type === "command.completed" ||
+      source.type === "command.failed"
+    ) {
+      rememberLifecycle(source.type, payload, source.time);
+    }
+  }
+
+  return [...jobs.values()].sort(
+    (left, right) =>
+      (right.finishedAt ?? right.startedAt ?? 0) - (left.finishedAt ?? left.startedAt ?? 0),
+  );
 }
 
 function summarizeEvent(event: AgentEventEnvelope): string {
@@ -2953,6 +3128,10 @@ export function App() {
     () => buildSessionCollaboration(events, traceEvents),
     [events, traceEvents],
   );
+  const sessionBackgroundJobs = useMemo(
+    () => buildSessionBackgroundJobs(events, traceEvents),
+    [events, traceEvents],
+  );
 
   function handleSelectScheduledTask(taskId: string) {
     setSelectedScheduledTaskId(taskId);
@@ -2990,6 +3169,7 @@ export function App() {
           messages={visibleChatMessages}
           taskCount={sessionTaskCount}
           collaboration={sessionCollaboration}
+          backgroundJobs={sessionBackgroundJobs}
           approvals={sessionApprovals}
           patches={sessionPatches}
           traces={sessionTraceItems}

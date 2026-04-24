@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import threading
 from typing import Any, Callable, TextIO
 
 from ..models import RpcEnvelope
 from ..services.collaboration_service import CollaborationService
+from ..services.command_background import get_background_command_event_bridge
 from ..services.schedule_service import ScheduleService
 
 RpcHandler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -25,6 +27,7 @@ class JsonRpcServer:
         self._schedule = ScheduleService(store)
         self._collaboration = CollaborationService(store, event_bus)
         self._writer: TextIO | None = None
+        self._writer_lock = threading.Lock()
         self._handlers: dict[str, RpcHandler] = {
             "workspace.open": self._orchestrator.open_workspace,
             "session.create": self._orchestrator.create_session,
@@ -67,6 +70,8 @@ class JsonRpcServer:
         }
         if hasattr(self._store, "append_runtime_event"):
             self._event_bus.subscribe(self._store.append_runtime_event)
+        bridge = get_background_command_event_bridge(getattr(self._store, "database_path", ":memory:"))
+        bridge.add_listener(self._emit_bridge_event)
 
     def serve(self, stdin: TextIO, stdout: TextIO) -> None:
         self._writer = stdout
@@ -76,8 +81,9 @@ class JsonRpcServer:
             if not line:
                 continue
             response = self.handle_line(line)
-            stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-            stdout.flush()
+            with self._writer_lock:
+                stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
+                stdout.flush()
 
     def handle_line(self, line: str) -> dict[str, Any]:
         envelope = RpcEnvelope(**json.loads(line))
@@ -117,17 +123,24 @@ class JsonRpcServer:
         }
 
     def _emit_event(self, event: Any) -> None:
+        self._write_event_payload(self._event_bus.as_payload(event))
+
+    def _emit_bridge_event(self, event: dict[str, Any]) -> None:
+        self._write_event_payload(event)
+
+    def _write_event_payload(self, payload: dict[str, Any]) -> None:
         if self._writer is None:
             return
 
-        self._writer.write(
-            json.dumps(
-                {
-                    "kind": "event",
-                    "payload": self._event_bus.as_payload(event),
-                },
-                ensure_ascii=False,
+        with self._writer_lock:
+            self._writer.write(
+                json.dumps(
+                    {
+                        "kind": "event",
+                        "payload": payload,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
             )
-            + "\n"
-        )
-        self._writer.flush()
+            self._writer.flush()

@@ -86,6 +86,9 @@ describe("SessionWorkspace", () => {
               name: "Planner",
               status: "active",
               mode: "analysis",
+              healthState: "stale",
+              healthReason: "heartbeat_stale",
+              heartbeatAgeMs: 34_000,
               claimedTaskId: "child_1",
             },
           ],
@@ -107,6 +110,12 @@ describe("SessionWorkspace", () => {
               updatedAt: Date.UTC(2026, 3, 23, 3, 40),
             },
           ],
+          healthSummary: {
+            healthy: 0,
+            stale: 1,
+            offline: 0,
+            total: 1,
+          },
         }}
       />,
     );
@@ -115,6 +124,45 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText("Planner")).toBeInTheDocument();
     expect(screen.getAllByText("Refine session lane")).toHaveLength(2);
     expect(screen.getByText("Lane draft ready.")).toBeInTheDocument();
+    expect(screen.getByText(/Health: 0 healthy/i)).toBeInTheDocument();
+    expect(screen.getByText(/heartbeat_stale/i)).toBeInTheDocument();
+    expect(screen.getByText("stale")).toBeInTheDocument();
+  });
+
+  it("renders command job cards with runtime status and captured output", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[]}
+        backgroundJobs={[
+          {
+            id: "cmd_1",
+            command: "python worker.py --sync",
+            status: "running",
+            cwd: "D:/py/yuanbao_agent",
+            shell: "powershell",
+            summary: "Background worker is still streaming output.",
+            startedAt: Date.UTC(2026, 3, 23, 3, 32),
+            stdout: "step 1 complete\nstep 2 running",
+            stdoutPath: "D:/py/yuanbao_agent/runtime_artifacts/cmd_1_stdout.log",
+            isBackground: true,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Command jobs" })).toBeInTheDocument();
+    expect(screen.getByText("python worker.py --sync")).toBeInTheDocument();
+    expect(screen.getByText("Background worker is still streaming output.")).toBeInTheDocument();
+    expect(screen.getByText("background")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Expand command job" }));
+
+    expect(screen.getByLabelText("python worker.py --sync stdout")).toHaveTextContent("step 2 running");
+    expect(screen.getByText(/stdout file:/i)).toBeInTheDocument();
   });
 
   it("handles approval buttons and full input disclosure", async () => {

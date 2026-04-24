@@ -32,6 +32,10 @@ export interface SessionWorkspaceCollaborator {
   name: string;
   status?: string;
   mode?: string;
+  healthState?: string;
+  healthReason?: string;
+  heartbeatAgeMs?: number;
+  lastHeartbeatAt?: number;
   claimedTaskId?: string;
   summary?: string;
   updatedAt?: number;
@@ -60,6 +64,12 @@ export interface SessionWorkspaceCollaboration {
   workers?: SessionWorkspaceCollaborator[];
   childTasks?: SessionWorkspaceChildTask[];
   results?: SessionWorkspaceChildTaskResult[];
+  healthSummary?: {
+    healthy: number;
+    stale: number;
+    offline: number;
+    total: number;
+  };
 }
 
 export interface SessionWorkspaceMessage {
@@ -135,6 +145,24 @@ export interface SessionWorkspaceToolCall {
   stderr?: string;
 }
 
+export interface SessionWorkspaceBackgroundJob {
+  id: string;
+  command: string;
+  status: string;
+  cwd?: string;
+  shell?: string;
+  summary?: string;
+  startedAt?: number;
+  finishedAt?: number;
+  durationMs?: number;
+  exitCode?: number | null;
+  stdout?: string;
+  stderr?: string;
+  stdoutPath?: string;
+  stderrPath?: string;
+  isBackground?: boolean;
+}
+
 export interface SessionWorkspaceComposerContext {
   cwd?: string;
   repo?: string;
@@ -149,6 +177,7 @@ export interface SessionWorkspaceProps {
   messages: SessionWorkspaceMessage[];
   taskCount?: number;
   collaboration?: SessionWorkspaceCollaboration;
+  backgroundJobs?: SessionWorkspaceBackgroundJob[];
   approvals?: SessionWorkspaceApproval[];
   patches?: SessionWorkspacePatch[];
   traces?: SessionWorkspaceTrace[];
@@ -212,6 +241,22 @@ function formatTokens(tokenCount?: number) {
   }
 
   return `${tokenCount.toLocaleString()} tokens`;
+}
+
+function formatHeartbeatAge(heartbeatAgeMs?: number) {
+  if (heartbeatAgeMs === undefined) {
+    return null;
+  }
+
+  if (heartbeatAgeMs < 1000) {
+    return `${heartbeatAgeMs}ms ago`;
+  }
+
+  if (heartbeatAgeMs < 60_000) {
+    return `${Math.round(heartbeatAgeMs / 1000)}s ago`;
+  }
+
+  return `${Math.round(heartbeatAgeMs / 60_000)}m ago`;
 }
 
 function formatLineStat(value?: number, label = "") {
@@ -317,6 +362,7 @@ export function SessionWorkspace({
   messages,
   taskCount,
   collaboration,
+  backgroundJobs = [],
   approvals = [],
   patches = [],
   traces = [],
@@ -335,6 +381,7 @@ export function SessionWorkspace({
   const collaborationWorkers = collaboration?.workers ?? [];
   const collaborationChildTasks = collaboration?.childTasks ?? [];
   const collaborationResults = collaboration?.results ?? [];
+  const collaborationHealthSummary = collaboration?.healthSummary;
   const collaborationTaskById = new Map(collaborationChildTasks.map((task) => [task.id, task]));
   const collaborationWorkerById = new Map(collaborationWorkers.map((worker) => [worker.id, worker]));
 
@@ -669,6 +716,73 @@ export function SessionWorkspace({
               )}
             </section>
 
+            <section className="operation-section" aria-labelledby="background-jobs-title">
+              <div className="operation-section-head">
+                <h3 id="background-jobs-title">Command jobs</h3>
+                <span>{backgroundJobs.length}</span>
+              </div>
+              {backgroundJobs.length === 0 ? (
+                <p className="operation-empty">No runtime command jobs have been recorded.</p>
+              ) : (
+                <ul className="operation-list">
+                  {backgroundJobs.map((job) => {
+                    const panelId = `command-job-${job.id}`;
+                    const isExpanded = expandedPanels.has(panelId);
+                    const duration = formatDuration(job.durationMs);
+
+                    return (
+                      <li
+                        className="operation-card command-job-card"
+                        data-command-status={job.status}
+                        key={job.id}
+                      >
+                        <div className="operation-card-head">
+                          <strong>{job.command}</strong>
+                          <span>{job.status}</span>
+                        </div>
+                        <div className="operation-tags">
+                          {job.isBackground ? <span>background</span> : <span>command</span>}
+                          {job.shell ? <span>{job.shell}</span> : null}
+                          {job.cwd ? <span>{job.cwd}</span> : null}
+                          {duration ? <span>{duration}</span> : null}
+                          {typeof job.exitCode === "number" ? <span>exit {job.exitCode}</span> : null}
+                          {job.startedAt ? <time>{formatTimestamp(job.startedAt)}</time> : null}
+                        </div>
+                        {job.summary ? <p>{job.summary}</p> : null}
+                        <div className="operation-actions">
+                          <PanelToggle
+                            controls={panelId}
+                            expanded={isExpanded}
+                            label="command job"
+                            onClick={() => togglePanel(panelId)}
+                          />
+                        </div>
+                        {isExpanded ? (
+                          <div className="trace-detail" id={panelId}>
+                            {job.stdout ? (
+                              <CodeBlock label={`${job.command} stdout`}>{job.stdout}</CodeBlock>
+                            ) : null}
+                            {job.stderr ? (
+                              <CodeBlock label={`${job.command} stderr`}>{job.stderr}</CodeBlock>
+                            ) : null}
+                            {job.stdoutPath || job.stderrPath ? (
+                              <div className="command-artifact-list">
+                                {job.stdoutPath ? <p>stdout file: {job.stdoutPath}</p> : null}
+                                {job.stderrPath ? <p>stderr file: {job.stderrPath}</p> : null}
+                              </div>
+                            ) : null}
+                            {!job.stdout && !job.stderr && !job.stdoutPath && !job.stderrPath ? (
+                              <p className="operation-empty">No captured output is attached yet.</p>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
             <section className="operation-section" aria-labelledby="trace-tools-title">
               <div className="operation-section-head">
                 <h3 id="trace-tools-title">Trace and tools</h3>
@@ -794,6 +908,12 @@ export function SessionWorkspace({
                 <dd>{collaborationResults.length}</dd>
               </div>
             </dl>
+            {collaborationHealthSummary ? (
+              <p className="collaboration-health-summary">
+                Health: {collaborationHealthSummary.healthy} healthy · {collaborationHealthSummary.stale} stale ·{" "}
+                {collaborationHealthSummary.offline} offline
+              </p>
+            ) : null}
 
             <section className="collaboration-section" aria-labelledby="workers-title">
               <div className="collaboration-section-head">
@@ -813,11 +933,20 @@ export function SessionWorkspace({
                           <strong>{worker.name}</strong>
                           <div className="collaboration-tags">
                             {worker.status ? <span>{worker.status}</span> : null}
+                            {worker.healthState ? <span data-health={worker.healthState}>{worker.healthState}</span> : null}
                             {worker.mode ? <span>{worker.mode}</span> : null}
                             {worker.updatedAt ? <time>{formatTimestamp(worker.updatedAt)}</time> : null}
                           </div>
                         </div>
                         {worker.summary ? <p>{worker.summary}</p> : null}
+                        {worker.healthReason || worker.heartbeatAgeMs !== undefined ? (
+                          <p className="collaboration-note">
+                            {worker.healthReason ?? "health unknown"}
+                            {formatHeartbeatAge(worker.heartbeatAgeMs)
+                              ? ` · heartbeat ${formatHeartbeatAge(worker.heartbeatAgeMs)}`
+                              : ""}
+                          </p>
+                        ) : null}
                         {claimedTask ? (
                           <p className="collaboration-note">Claimed: {getCollaborationTaskTitle(claimedTask)}</p>
                         ) : worker.claimedTaskId ? (

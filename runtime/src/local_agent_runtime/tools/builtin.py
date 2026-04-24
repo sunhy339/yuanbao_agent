@@ -1030,18 +1030,21 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
         )
 
         if background:
+            session_id = store.get_task({"taskId": request_task_id})["task"]["sessionId"]
             service = get_background_command_service(store.database_path)
-            service.submit(
-                BackgroundCommandRequest(
-                    database_path=store.database_path,
-                    command_log_id=command_log["id"],
-                    command=command,
-                    cwd=cwd_rel,
-                    shell=shell_name,
-                    timeout_ms=timeout_ms,
-                    workspace_root=str(workspace_root),
-                )
+            request = BackgroundCommandRequest(
+                database_path=store.database_path,
+                command_log_id=command_log["id"],
+                task_id=request_task_id,
+                session_id=session_id,
+                command=command,
+                cwd=cwd_rel,
+                shell=shell_name,
+                timeout_ms=timeout_ms,
+                workspace_root=str(workspace_root),
             )
+            service.emit_started_event(request)
+            service.submit(request)
             return {
                 "status": "running",
                 "background": True,

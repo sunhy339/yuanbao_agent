@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --environment jsdom",
     "test:watch": "vitest --environment jsdom",
+    "e2e:tauri:provider": "node e2e/tauri-provider-flow.mjs",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },

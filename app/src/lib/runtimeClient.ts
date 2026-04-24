@@ -861,6 +861,10 @@ async function invokeOrReject<T>(command: string, payload?: unknown): Promise<T>
   }
 }
 
+function invokePayloadOrReject<T>(command: string, payload: unknown): Promise<T> {
+  return invokeOrReject<T>(command, { payload });
+}
+
 export class RuntimeClient {
   async getHostStatus(): Promise<HostStatus> {
     if (!isTauriBridgeAvailable()) {
@@ -918,7 +922,7 @@ export class RuntimeClient {
       rememberSession(result.session);
       return result;
     }
-    const result = await invokeOrReject<SessionCreateResult>("session_create", payload);
+    const result = await invokePayloadOrReject<SessionCreateResult>("session_create", payload);
     rememberSession(result.session);
     return result;
   }
@@ -930,15 +934,9 @@ export class RuntimeClient {
       };
     }
 
-    try {
-      const result = await invokeOrReject<SessionListResult>("session_list");
-      mockState.sessions = sortSessions(result.sessions);
-      return result;
-    } catch {
-      return {
-        sessions: sortSessions(mockState.sessions),
-      };
-    }
+    const result = await invokeOrReject<SessionListResult>("session_list");
+    mockState.sessions = sortSessions(result.sessions);
+    return result;
   }
 
   async sendMessage(payload: MessageSendParams): Promise<MessageSendResult> {
@@ -948,7 +946,7 @@ export class RuntimeClient {
       emitMockTaskSequence(payload.sessionId, task);
       return { task };
     }
-    return invokeOrReject<MessageSendResult>("message_send", payload);
+    return invokePayloadOrReject<MessageSendResult>("message_send", payload);
   }
 
   async approvalSubmit(payload: ApprovalSubmitParams): Promise<ApprovalSubmitResult> {
@@ -1115,7 +1113,7 @@ export class RuntimeClient {
       return { approval };
     }
 
-    return invokeOrReject<ApprovalSubmitResult>("approval_submit", payload);
+    return invokePayloadOrReject<ApprovalSubmitResult>("approval_submit", payload);
   }
 
   async diffGet(payload: DiffGetParams): Promise<DiffGetResult> {
@@ -1127,15 +1125,7 @@ export class RuntimeClient {
       return { patch, diffText: patch.diffText };
     }
 
-    try {
-      return await invokeOrReject<DiffGetResult>("diff_get", payload);
-    } catch {
-      const patch = mockState.patches[payload.patchId];
-      if (!patch) {
-        throw new Error(`Patch not found: ${payload.patchId}`);
-      }
-      return { patch, diffText: patch.diffText };
-    }
+    return invokePayloadOrReject<DiffGetResult>("diff_get", payload);
   }
 
   async commandLogList(payload: CommandLogListParams = {}): Promise<CommandLogListResult> {
@@ -1145,13 +1135,7 @@ export class RuntimeClient {
       };
     }
 
-    try {
-      return await invokeOrReject<CommandLogListResult>("command_log_list", payload);
-    } catch {
-      return {
-        commandLogs: filterMockCommandLogs(payload),
-      };
-    }
+    return invokePayloadOrReject<CommandLogListResult>("command_log_list", payload);
   }
 
   async commandLogGet(payload: CommandLogGetParams): Promise<CommandLogGetResult> {
@@ -1161,13 +1145,7 @@ export class RuntimeClient {
       };
     }
 
-    try {
-      return await invokeOrReject<CommandLogGetResult>("command_log_get", payload);
-    } catch {
-      return {
-        commandLog: getMockCommandLog(payload.commandId),
-      };
-    }
+    return invokePayloadOrReject<CommandLogGetResult>("command_log_get", payload);
   }
 
   async commandCancel(payload: CommandCancelParams): Promise<CommandCancelResult> {
@@ -1194,30 +1172,7 @@ export class RuntimeClient {
       };
     }
 
-    try {
-      return await invokeOrReject<CommandCancelResult>("command_cancel", payload);
-    } catch {
-      const commandLog = getMockCommandLog(payload.commandId);
-      const sessionId = getMockCommandSessionId(commandLog);
-      const now = Date.now();
-      emitBrowserEvent(
-        buildMockEvent(sessionId, commandLog.taskId, "command.failed", {
-          commandId: commandLog.id,
-          command: commandLog.command,
-          cwd: commandLog.cwd,
-          shell: commandLog.shell,
-          status: "killed",
-          exitCode: commandLog.exitCode ?? null,
-          durationMs: Math.max(0, now - commandLog.startedAt),
-          stdoutPath: commandLog.stdoutPath,
-          stderrPath: commandLog.stderrPath,
-        }),
-      );
-      return {
-        commandLog: getMockCommandLog(payload.commandId),
-        cancelled: true,
-      };
-    }
+    return invokePayloadOrReject<CommandCancelResult>("command_cancel", payload);
   }
 
   async getTask(taskId: string): Promise<TaskGetResult> {
@@ -1228,29 +1183,21 @@ export class RuntimeClient {
       }
       return { task };
     }
-    return invokeOrReject<TaskGetResult>("task_get", { taskId });
+    return invokePayloadOrReject<TaskGetResult>("task_get", { taskId });
   }
 
   async cancelTask(payload: TaskCancelParams): Promise<TaskControlResult> {
     if (!isTauriBridgeAvailable()) {
       return applyMockTaskControl(payload.taskId, "cancelled", "task.cancelled");
     }
-    try {
-      return await invokeOrReject<TaskControlResult>("task_cancel", payload);
-    } catch {
-      return applyMockTaskControl(payload.taskId, "cancelled", "task.cancelled");
-    }
+    return invokePayloadOrReject<TaskControlResult>("task_cancel", payload);
   }
 
   async pauseTask(payload: TaskPauseParams): Promise<TaskControlResult> {
     if (!isTauriBridgeAvailable()) {
       return applyMockTaskControl(payload.taskId, "paused", "task.paused");
     }
-    try {
-      return await invokeOrReject<TaskControlResult>("task_pause", payload);
-    } catch {
-      return applyMockTaskControl(payload.taskId, "paused", "task.paused");
-    }
+    return invokePayloadOrReject<TaskControlResult>("task_pause", payload);
   }
 
   async resumeTask(payload: TaskResumeParams): Promise<TaskControlResult> {
@@ -1261,15 +1208,7 @@ export class RuntimeClient {
         "task.resumed",
       );
     }
-    try {
-      return await invokeOrReject<TaskControlResult>("task_resume", payload);
-    } catch {
-      return applyMockTaskControl(
-        payload.taskId,
-        (current) => (current.status === "paused" ? "waiting_approval" : current.status),
-        "task.resumed",
-      );
-    }
+    return invokePayloadOrReject<TaskControlResult>("task_resume", payload);
   }
 
   async listTasks(payload: TaskListParams = {}): Promise<TaskListResult> {
@@ -1280,7 +1219,7 @@ export class RuntimeClient {
       return { tasks };
     }
 
-    return invokeOrReject<TaskListResult>("task_list", payload);
+    return invokePayloadOrReject<TaskListResult>("task_list", payload);
   }
 
   async createScheduledTask(payload: ScheduledTaskCreateParams): Promise<ScheduledTaskResult> {
@@ -1290,7 +1229,7 @@ export class RuntimeClient {
       return { task };
     }
 
-    const result = await invokeOrReject<ScheduledTaskResult>("schedule_create", payload);
+    const result = await invokePayloadOrReject<ScheduledTaskResult>("schedule_create", payload);
     mockState.scheduledTasks[result.task.id] = result.task;
     return result;
   }
@@ -1326,7 +1265,7 @@ export class RuntimeClient {
       return { task };
     }
 
-    const result = await invokeOrReject<ScheduledTaskResult>("schedule_update", payload);
+    const result = await invokePayloadOrReject<ScheduledTaskResult>("schedule_update", payload);
     mockState.scheduledTasks[result.task.id] = result.task;
     return result;
   }
@@ -1343,7 +1282,7 @@ export class RuntimeClient {
       return { task };
     }
 
-    const result = await invokeOrReject<ScheduledTaskResult>("schedule_toggle", payload);
+    const result = await invokePayloadOrReject<ScheduledTaskResult>("schedule_toggle", payload);
     mockState.scheduledTasks[result.task.id] = result.task;
     return result;
   }
@@ -1371,7 +1310,7 @@ export class RuntimeClient {
       return { run, task };
     }
 
-    const result = await invokeOrReject<ScheduledTaskRunNowResult>("schedule_run_now", payload);
+    const result = await invokePayloadOrReject<ScheduledTaskRunNowResult>("schedule_run_now", payload);
     if (result.task) {
       mockState.scheduledTasks[result.task.id] = result.task;
     }
@@ -1387,7 +1326,7 @@ export class RuntimeClient {
       return { logs };
     }
 
-    const result = await invokeOrReject<ScheduledTaskLogsResult>("schedule_logs", payload);
+    const result = await invokePayloadOrReject<ScheduledTaskLogsResult>("schedule_logs", payload);
     mockState.scheduledRuns = sortScheduledRuns(result.logs);
     return result;
   }
@@ -1403,17 +1342,7 @@ export class RuntimeClient {
       };
     }
 
-    try {
-      return await invokeOrReject<TraceListResult>("trace_list", payload);
-    } catch {
-      const limit = payload.limit ?? 50;
-      return {
-        traceEvents: mockState.traces
-          .filter((trace) => trace.taskId === payload.taskId)
-          .sort((left, right) => right.sequence - left.sequence)
-          .slice(0, limit),
-      };
-    }
+    return invokePayloadOrReject<TraceListResult>("trace_list", payload);
   }
 
   async getConfig(): Promise<ConfigGetResult> {
@@ -1435,16 +1364,9 @@ export class RuntimeClient {
       };
     }
 
-    try {
-      const result = await invokeOrReject<ConfigUpdateResult>("config_update", payload);
-      mockState.config = mergeRuntimeConfig(mockState.config, result.config as RuntimeConfig);
-      return result;
-    } catch {
-      mockState.config = mergeRuntimeConfig(mockState.config, payload);
-      return {
-        config: mockState.config,
-      };
-    }
+    const result = await invokePayloadOrReject<ConfigUpdateResult>("config_update", payload);
+    mockState.config = mergeRuntimeConfig(mockState.config, result.config as RuntimeConfig);
+    return result;
   }
 
   async testProvider(payload: ProviderTestParams = {}): Promise<ProviderTestResult> {
@@ -1454,15 +1376,9 @@ export class RuntimeClient {
       return result;
     }
 
-    try {
-      const result = await invokeOrReject<ProviderTestResult>("provider_test", payload);
-      rememberProviderTestResult(result);
-      return result;
-    } catch (reason) {
-      const result = buildProviderTestFallback(payload, reason);
-      rememberProviderTestResult(result);
-      return result;
-    }
+    const result = await invokePayloadOrReject<ProviderTestResult>("provider_test", payload);
+    rememberProviderTestResult(result);
+    return result;
   }
 
   async subscribeEvents(handler: (event: AgentEventEnvelope) => void): Promise<() => void> {

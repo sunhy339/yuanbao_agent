@@ -14,6 +14,14 @@ from .tools.builtin import build_builtin_tools
 from .tools.registry import ToolRegistry
 
 
+def _configure_stdio() -> None:
+    for stream_name in ("stdin", "stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def build_server(database_path: str = ":memory:") -> JsonRpcServer:
     event_bus = EventBus()
     store = SQLiteStore(database_path)
@@ -35,6 +43,7 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
 
 
 def main() -> int:
+    _configure_stdio()
     server = build_server(database_path=os.environ.get("LOCAL_AGENT_DB_PATH", ":memory:"))
     server.serve(stdin=sys.stdin, stdout=sys.stdout)
     return 0

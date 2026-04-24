@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     env,
+    fs,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
@@ -17,7 +18,7 @@ use std::{
 use tauri::{AppHandle, Emitter, State};
 
 const EVENT_CHANNEL: &str = "agent://event";
-const RPC_TIMEOUT: Duration = Duration::from_secs(10);
+const RPC_TIMEOUT: Duration = Duration::from_secs(240);
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -212,14 +213,24 @@ impl RuntimeBridge {
         }))
         .map_err(|reason| format!("Failed to serialize RPC request: {reason}"))?;
 
-        writeln!(process.stdin, "{payload}")
-            .and_then(|_| process.stdin.flush())
-            .map_err(|reason| format!("Failed to write RPC request to runtime: {reason}"))?;
+        if let Err(reason) = writeln!(process.stdin, "{payload}").and_then(|_| process.stdin.flush()) {
+            let _ = process
+                .pending
+                .lock()
+                .map(|mut pending| pending.remove(&request_id));
+            return Err(format!("Failed to write RPC request to runtime: {reason}"));
+        }
 
         match rx.recv_timeout(RPC_TIMEOUT) {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(message)) => Err(message),
-            Err(_) => Err("Timed out while waiting for the Python runtime".to_string()),
+            Err(_) => {
+                let _ = process
+                    .pending
+                    .lock()
+                    .map(|mut pending| pending.remove(&request_id));
+                Err("Timed out while waiting for the Python runtime".to_string())
+            }
         }
     }
 
@@ -245,7 +256,9 @@ impl RuntimeBridge {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env("PYTHONPATH", append_path_env("PYTHONPATH", &runtime_src)?)
-            .env("LOCAL_AGENT_DB_PATH", database_path.as_os_str());
+            .env("LOCAL_AGENT_DB_PATH", database_path.as_os_str())
+            .env("PYTHONUTF8", "1")
+            .env("PYTHONIOENCODING", "utf-8");
 
         let mut child = command
             .spawn()
@@ -697,6 +710,85 @@ fn trace_list(
     )
 }
 
+#[tauri::command]
+fn e2e_fixture() -> Result<Value, String> {
+    let flow = env::var("YUANBAO_TAURI_E2E").unwrap_or_default();
+    if flow != "provider-flow" {
+        return Ok(json!({ "enabled": false }));
+    }
+
+    let repo_root = repo_root()?;
+    let api_key_env_var_name =
+        env::var("YUANBAO_TAURI_E2E_API_KEY_ENV").unwrap_or_else(|_| "LOCAL_AGENT_PROVIDER_API_KEY".to_string());
+    if env::var(&api_key_env_var_name).unwrap_or_default().is_empty() {
+        return Err(format!(
+            "E2E provider API key env var is not set: {api_key_env_var_name}"
+        ));
+    }
+
+    let workspace_path = env::var("YUANBAO_TAURI_E2E_WORKSPACE")
+        .unwrap_or_else(|_| repo_root.display().to_string());
+    let prompt = env::var("YUANBAO_TAURI_E2E_PROMPT").unwrap_or_else(|_| {
+        "Read-only check: confirm whether app/src/lib/runtimeClient.ts exists. Answer in one short sentence and do not modify files.".to_string()
+    });
+
+    Ok(json!({
+        "enabled": true,
+        "flow": flow,
+        "workspacePath": workspace_path,
+        "prompt": prompt,
+        "provider": {
+            "profileId": env::var("YUANBAO_TAURI_E2E_PROVIDER_ID").unwrap_or_else(|_| "e2e-provider".to_string()),
+            "name": env::var("YUANBAO_TAURI_E2E_PROVIDER_NAME").unwrap_or_else(|_| "E2E Provider".to_string()),
+            "baseUrl": env::var("YUANBAO_TAURI_E2E_BASE_URL").unwrap_or_else(|_| "https://api.ximeixg.cloud/v1".to_string()),
+            "model": env::var("YUANBAO_TAURI_E2E_MODEL").unwrap_or_else(|_| "MiniMax-M2.7-highspeed".to_string()),
+            "apiKeyEnvVarName": api_key_env_var_name,
+            "timeout": env::var("YUANBAO_TAURI_E2E_PROVIDER_TIMEOUT")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(120),
+        }
+    }))
+}
+
+#[tauri::command]
+fn e2e_finish(app_handle: AppHandle, payload: Value) -> Result<(), String> {
+    if env::var("YUANBAO_TAURI_E2E").unwrap_or_default() != "provider-flow" {
+        return Err("E2E result writing is disabled.".to_string());
+    }
+
+    let result_path = env::var("YUANBAO_TAURI_E2E_RESULT_PATH")
+        .map_err(|_| "YUANBAO_TAURI_E2E_RESULT_PATH is required.".to_string())?;
+    let result_path = PathBuf::from(result_path);
+    if let Some(parent) = result_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|reason| format!("Failed to create E2E result directory: {reason}"))?;
+    }
+
+    let body = serde_json::to_string_pretty(&payload)
+        .map_err(|reason| format!("Failed to serialize E2E result: {reason}"))?;
+    fs::write(&result_path, body)
+        .map_err(|reason| format!("Failed to write E2E result: {reason}"))?;
+
+    if env::var("YUANBAO_TAURI_E2E_EXIT").unwrap_or_else(|_| "1".to_string()) != "0" {
+        let exit_code = if payload
+            .get("ok")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            0
+        } else {
+            1
+        };
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(200));
+            app_handle.exit(exit_code);
+        });
+    }
+
+    Ok(())
+}
+
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .manage(RuntimeManager::default())
@@ -725,6 +817,8 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             command_log_list,
             command_cancel,
             diff_get,
-            trace_list
+            trace_list,
+            e2e_fixture,
+            e2e_finish
         ])
 }

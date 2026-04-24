@@ -31,6 +31,7 @@ import {
   DEFAULT_WORKSPACE_PATH,
 } from "./state/mockData";
 import { AppShell } from "./ui/workbench/AppShell";
+import { getSidebarActiveSessionId, resolveSessionForTab } from "./ui/workbench/sessionRouting";
 import {
   closeTab,
   getInitialTabs,
@@ -1791,6 +1792,35 @@ function describeMode(hostStatus: HostStatus | null): string {
   return hostStatus.runtimeRunning ? "Connected to local runtime" : "Browser / Mock mode";
 }
 
+function RuntimeUnavailableWorkspace({ errorMessage }: { errorMessage: string }) {
+  return (
+    <main className="runtime-unavailable-workspace" aria-labelledby="runtime-unavailable-title">
+      <section className="runtime-unavailable-card">
+        <p className="runtime-unavailable-kicker">Runtime required</p>
+        <h1 id="runtime-unavailable-title">Desktop runtime unavailable</h1>
+        <p className="runtime-unavailable-copy">
+          This UI is not connected to the Tauri desktop runtime, so provider setup, chat, tool calls,
+          and task execution are blocked.
+        </p>
+        <div className="runtime-unavailable-actions">
+          <div>
+            <strong>Run the real desktop app</strong>
+            <code>npm run tauri:dev</code>
+          </div>
+          <div>
+            <strong>Preview-only browser mode</strong>
+            <code>VITE_YUANBAO_ENABLE_BROWSER_MOCK=1 npm run dev</code>
+          </div>
+        </div>
+        <div className="runtime-unavailable-detail" role="status">
+          <strong>Current failure</strong>
+          <pre>{errorMessage}</pre>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 export function App() {
   const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
@@ -3145,7 +3175,10 @@ export function App() {
 
     try {
       await persistSearchConfig();
-      const activeSession = session ?? (await ensureSessionForSend());
+      const activeSession =
+        activeTab.kind === "session"
+          ? activeSessionRecord ?? (await ensureSessionForSend())
+          : await ensureSessionForSend();
       const messageContent = prompt.trim();
       const pendingUserMessageId = `user_${Date.now()}`;
       setEvents([]);
@@ -3358,11 +3391,20 @@ export function App() {
   }
 
   const activeTab = openTabs.find((tabItem) => tabItem.id === activeTabId) ?? openTabs[0] ?? getInitialTabs()[0];
-  const composerVisible = activeTab.kind === "new-session" || activeTab.kind === "session";
+  const activeSessionRecord = resolveSessionForTab(activeTab, sessions, session);
+  const runtimeReady = Boolean(hostStatus && config);
+  const composerVisible = runtimeReady && (activeTab.kind === "new-session" || activeTab.kind === "session");
   const workspaceName = workspace?.name ?? workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? "yuanbao_agent";
-  const providerLabel = providerSettings.model || providerSettings.name || DEFAULT_PROVIDER_MODEL;
+  const providerLabel =
+    providerSettings.mode === "mock"
+      ? "测试模式"
+      : providerSettings.model || providerSettings.name || "未配置模型";
   const cwdLabel = workspace?.rootPath ?? workspacePath ?? DEFAULT_WORKSPACE_PATH;
   const hostStatusText = describeMode(hostStatus);
+  const runtimeUnavailableReason =
+    !loading && !runtimeReady
+      ? error ?? "Runtime handshake did not complete. The frontend cannot execute tasks on its own."
+      : null;
   const settingsProviders = useMemo<SettingsProvider[] | undefined>(() => {
     if (!config) {
       return undefined;
@@ -3380,7 +3422,7 @@ export function App() {
         endpoint: profile.baseUrl ?? "未配置接口",
         note:
           profile.mode === "mock"
-            ? "本地模拟，无需 API 密钥"
+            ? "测试模式，不会调用真实模型"
             : profile.apiKeyEnvVarName
               ? `环境变量：${profile.apiKeyEnvVarName}`
               : "需要配置 API 密钥",
@@ -3405,12 +3447,12 @@ export function App() {
     });
   }, [config, providerTestResult]);
   const sessionTaskCount = useMemo(() => {
-    if (!session) {
+    if (!activeSessionRecord) {
       return undefined;
     }
 
-    return taskHistory.filter((item) => item.sessionId === session.id).length;
-  }, [session, taskHistory]);
+    return taskHistory.filter((item) => item.sessionId === activeSessionRecord.id).length;
+  }, [activeSessionRecord, taskHistory]);
   const scheduledTasks = useMemo<ScheduledTask[]>(
     () => scheduledRecords.map(scheduledRecordToWorkspaceTask),
     [scheduledRecords],
@@ -3515,6 +3557,10 @@ export function App() {
   }
 
   const workspaceContent = (() => {
+    if (!runtimeReady && !loading) {
+      return <RuntimeUnavailableWorkspace errorMessage={runtimeUnavailableReason ?? "Runtime unavailable."} />;
+    }
+
     if (activeTab.kind === "new-session") {
       return <NewSessionWorkspace workspacePath={cwdLabel} hostStatusText={hostStatusText} />;
     }
@@ -3522,7 +3568,7 @@ export function App() {
     if (activeTab.kind === "session") {
       return (
         <SessionWorkspace
-          session={session}
+          session={activeSessionRecord}
           activeTask={
             task
               ? {
@@ -3628,7 +3674,7 @@ export function App() {
       tabs={openTabs}
       activeTabId={activeTabId}
       sessions={sessions}
-      activeSessionId={session?.id ?? null}
+      activeSessionId={getSidebarActiveSessionId(activeTab)}
       workspaceName={workspaceName}
       composerVisible={composerVisible}
       promptValue={prompt}
@@ -3638,7 +3684,7 @@ export function App() {
       onActivateTab={handleActivateTab}
       onCloseTab={handleCloseTab}
       onSubmitPrompt={handleSendMessage}
-      disabled={loading || messageBusy}
+      disabled={loading || messageBusy || !runtimeReady}
       providerLabel={providerLabel}
       cwdLabel={cwdLabel}
     >

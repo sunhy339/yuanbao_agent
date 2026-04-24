@@ -19,7 +19,7 @@ interface TauriProviderFlowFixture {
 
 interface TauriProviderFlowResult {
   ok: boolean;
-  flow: "provider-flow";
+  flow: "provider-flow" | "ui-smoke";
   phase: string;
   provider?: {
     ok?: boolean;
@@ -117,6 +117,12 @@ function assertText(text: string) {
   }
 }
 
+function assertElement(selector: string, description: string) {
+  if (!query(selector)) {
+    throw new Error(`Expected ${description} not found: ${selector}`);
+  }
+}
+
 function click(selector: string, description: string) {
   const target = query<HTMLElement>(selector);
   if (!target) {
@@ -159,13 +165,23 @@ async function configureProviderThroughUi(fixture: Required<TauriProviderFlowFix
   setFieldValue("#provider-haiku-model", fixture.model);
   setFieldValue("#provider-sonnet-model", fixture.model);
   setFieldValue("#provider-opus-model", fixture.model);
-  setFieldValue("#provider-json", JSON.stringify({ timeout: fixture.timeout }, null, 2));
+  setFieldValue(
+    "#provider-json",
+    JSON.stringify(
+      {
+        apiKeyEnvVarName: fixture.apiKeyEnvVarName,
+        timeout: fixture.timeout,
+      },
+      null,
+      2,
+    ),
+  );
 
-  click(".settings-modal-actions .settings-secondary-action:nth-of-type(2)", "Test connection");
+  click(".settings-modal-footer .settings-secondary-action:nth-of-type(2)", "Test connection");
   await waitFor("provider test success", () =>
     document.body.textContent?.includes("Last test: ok") ? true : null,
   );
-  click('.settings-modal-actions button[type="submit"]', "Save provider");
+  click('.settings-modal-footer button[type="submit"]', "Save provider");
   await waitFor("provider save confirmation", () =>
     document.body.textContent?.includes("Saved and activated") &&
     document.body.textContent?.includes("Active provider") &&
@@ -187,6 +203,44 @@ async function sendPromptThroughUi(prompt: string) {
   await waitFor("session workspace", () => query(".session-workspace:not(.session-workspace-empty)"));
 }
 
+async function runUiSmokeFlow(workspacePath?: string) {
+  const assertions: string[] = [];
+
+  await waitFor("workbench shell", () => query(".workbench-shell"));
+  assertElement(".new-session-workspace", "new session workspace");
+  await waitFor("command composer", () => query('textarea[aria-label="Task prompt"]'));
+  assertText("New Session");
+  assertions.push("new session workspace renders");
+
+  click('button[aria-label="Settings"]', "Settings navigation");
+  await waitFor("settings workspace", () => query(".settings-workspace"));
+  assertElement(".settings-panel-providers", "settings providers panel");
+  assertText("服务商");
+  assertions.push("settings providers page renders");
+
+  click('button[aria-label="Scheduled"]', "Scheduled navigation");
+  await waitFor("scheduled workspace", () => query(".scheduled-workspace"));
+  assertElement(".scheduled-empty", "scheduled empty state");
+  assertText("暂无调度任务");
+  assertions.push("scheduled empty state renders without demo data");
+
+  click('button[aria-label="New Session"]', "New Session navigation");
+  await waitFor("new session workspace", () => query(".new-session-workspace"));
+  await waitFor("command composer after returning", () => query('textarea[aria-label="Task prompt"]'));
+  assertions.push("top-level navigation returns to new session");
+
+  await finish({
+    ok: true,
+    flow: "ui-smoke",
+    phase: "complete",
+    eventTypes: [],
+    traceTypes: [],
+    uiAssertions: workspacePath
+      ? [...assertions, `workspace path fixture received: ${workspacePath}`]
+      : assertions,
+  });
+}
+
 export async function maybeRunTauriProviderFlowE2e() {
   if (started) {
     return;
@@ -202,16 +256,23 @@ export async function maybeRunTauriProviderFlowE2e() {
   const events: AgentEventEnvelope[] = [];
   let unsubscribe: (() => void) | null = null;
   let phase = "start";
+  const flow = fixture.flow === "ui-smoke" ? "ui-smoke" : "provider-flow";
 
   const baseResult = (): TauriProviderFlowResult => ({
     ok: false,
-    flow: "provider-flow",
+    flow,
     phase,
     eventTypes: events.map((event) => event.type),
     traceTypes: [],
   });
 
   try {
+    if (fixture.flow === "ui-smoke") {
+      phase = "ui-smoke";
+      await runUiSmokeFlow(fixture.workspacePath);
+      return;
+    }
+
     if (fixture.flow !== "provider-flow") {
       throw new Error(`Unsupported E2E flow: ${fixture.flow ?? "unknown"}`);
     }
@@ -260,10 +321,9 @@ export async function maybeRunTauriProviderFlowE2e() {
     if (finalTask.status !== "completed") {
       throw new Error(`Expected completed task, got ${finalTask.status}.`);
     }
-    assertText("Active task");
-    assertText("Runtime timeline");
+    assertElement('.runtime-timeline[aria-label="Runtime timeline"]', "runtime timeline");
+    assertText(finalTask.id);
     assertText("completed");
-    assertText(fixture.provider.model);
 
     const traceEvents = (await client.listTrace({ taskId: finalTask.id, limit: 100 })).traceEvents;
     const traceTypes = traceTypesFrom(traceEvents);
@@ -271,9 +331,7 @@ export async function maybeRunTauriProviderFlowE2e() {
     if (missingTraceTypes.length > 0) {
       throw new Error(`Timeline is missing trace types: ${missingTraceTypes.join(", ")}.`);
     }
-    await waitFor("provider request trace card in UI", () =>
-      query('[data-trace-type="provider.request"]') ?? query(".tool-card"),
-    );
+    await waitFor("provider request trace card in UI", () => query('.runtime-event-card[data-kind="trace"]'));
 
     phase = "complete";
     await finish({

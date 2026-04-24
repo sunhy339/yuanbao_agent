@@ -4,22 +4,16 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const appRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const tempRoot = process.env.TEMP || process.env.TMP || appRoot;
 const resultPath = resolve(
   process.env.YUANBAO_TAURI_E2E_RESULT_PATH ||
-    `${process.env.TEMP || process.env.TMP || appRoot}/yuanbao-tauri-provider-flow-result.json`,
+    `${tempRoot}/yuanbao-tauri-ui-smoke-result.json`,
 );
 const databasePath = resolve(
   process.env.YUANBAO_TAURI_E2E_DB_PATH ||
-    `${process.env.TEMP || process.env.TMP || appRoot}/yuanbao-tauri-provider-flow.sqlite3`,
+    `${tempRoot}/yuanbao-tauri-ui-smoke.sqlite3`,
 );
-const timeoutMs = Number(process.env.YUANBAO_TAURI_E2E_TIMEOUT_MS || 300_000);
-const apiKeyEnvVarName = process.env.YUANBAO_TAURI_E2E_API_KEY_ENV || "LOCAL_AGENT_PROVIDER_API_KEY";
-
-if (!process.env[apiKeyEnvVarName]) {
-  console.error(`Missing provider API key env var: ${apiKeyEnvVarName}`);
-  console.error(`Set ${apiKeyEnvVarName} before running this E2E harness.`);
-  process.exit(2);
-}
+const timeoutMs = Number(process.env.YUANBAO_TAURI_E2E_TIMEOUT_MS || 180_000);
 
 mkdirSync(dirname(resultPath), { recursive: true });
 if (existsSync(resultPath)) {
@@ -32,14 +26,9 @@ if (existsSync(databasePath)) {
 const env = {
   ...process.env,
   LOCAL_AGENT_DB_PATH: databasePath,
-  YUANBAO_TAURI_E2E: "provider-flow",
+  YUANBAO_TAURI_E2E: "ui-smoke",
   YUANBAO_TAURI_E2E_RESULT_PATH: resultPath,
   YUANBAO_TAURI_E2E_EXIT: process.env.YUANBAO_TAURI_E2E_EXIT || "1",
-  YUANBAO_TAURI_E2E_API_KEY_ENV: apiKeyEnvVarName,
-  YUANBAO_TAURI_E2E_BASE_URL:
-    process.env.YUANBAO_TAURI_E2E_BASE_URL || "https://api.ximeixg.cloud/v1",
-  YUANBAO_TAURI_E2E_MODEL:
-    process.env.YUANBAO_TAURI_E2E_MODEL || "MiniMax-M2.7-highspeed",
 };
 
 const command = process.platform === "win32" ? "cmd.exe" : "npm";
@@ -96,7 +85,7 @@ try {
   }
 
   if (!existsSync(resultPath)) {
-    console.error(`Tauri provider E2E did not produce a result within ${timeoutMs}ms.`);
+    console.error(`Tauri UI smoke E2E did not produce a result within ${timeoutMs}ms.`);
     console.error("--- tauri stdout tail ---");
     console.error(tail(stdout));
     console.error("--- tauri stderr tail ---");

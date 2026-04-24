@@ -1,7 +1,6 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { SessionWorkspace } from "./SessionWorkspace";
 
 afterEach(() => {
@@ -21,10 +20,10 @@ describe("SessionWorkspace", () => {
     render(<SessionWorkspace session={null} activeTask={null} messages={[]} />);
 
     expect(screen.getByRole("heading", { name: "Open or create a session" })).toBeInTheDocument();
-    expect(screen.getByText(/approvals, patches, and runtime trace/i)).toBeInTheDocument();
+    expect(screen.getByText(/begin chatting here/i)).toBeInTheDocument();
   });
 
-  it("renders session metadata, composer context, messages, and plan steps", () => {
+  it("renders only the conversation area for an active session", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -32,16 +31,6 @@ describe("SessionWorkspace", () => {
           id: "task_1",
           status: "running",
           goal: "Patch the session workspace",
-          resultSummary: "Tests are being prepared.",
-          planSteps: [
-            {
-              id: "step_1",
-              title: "Inspect old runtime events",
-              status: "done",
-              summary: "Mapped approvals and patches.",
-              durationMs: 1280,
-            },
-          ],
         }}
         composerContext={{
           cwd: "D:/py/yuanbao_agent",
@@ -57,386 +46,75 @@ describe("SessionWorkspace", () => {
           { id: "m4", role: "tool", toolName: "shell_command", status: "completed", content: "Tests passed." },
         ]}
         taskCount={3}
-      />,
-    );
-
-    expect(screen.getByRole("heading", { name: "Investigate runtime boot" })).toBeInTheDocument();
-    expect(screen.getByText("active")).toBeInTheDocument();
-    expect(screen.getByText("3 tasks")).toBeInTheDocument();
-    expect(screen.getByText("36,115")).toBeInTheDocument();
-    expect(screen.getByText("D:/py/yuanbao_agent")).toBeInTheDocument();
-    expect(screen.getByText("MiniMax-M2.7-highspeed")).toBeInTheDocument();
-    expect(screen.getByText("I found the failure in the session renderer.")).toBeInTheDocument();
-    expect(screen.getByText("Runtime resumed session state.")).toBeInTheDocument();
-    expect(screen.getByText("shell_command")).toBeInTheDocument();
-    expect(screen.getByText("Inspect old runtime events")).toBeInTheDocument();
-    expect(screen.getByText("1.3s")).toBeInTheDocument();
-  });
-
-  it("renders a compact collaboration lane with workers, claimed tasks, and latest results", () => {
-    render(
-      <SessionWorkspace
-        session={session}
-        activeTask={null}
-        messages={[]}
-        collaboration={{
-          workers: [
-            {
-              id: "worker_1",
-              name: "Planner",
-              status: "active",
-              mode: "analysis",
-              healthState: "stale",
-              healthReason: "heartbeat_stale",
-              heartbeatAgeMs: 34_000,
-              claimedTaskId: "child_1",
-            },
-          ],
-          childTasks: [
-            {
-              id: "child_1",
-              title: "Refine session lane",
-              status: "claimed",
-              workerId: "worker_1",
-              summary: "Focus on the read-only worker rail.",
-            },
-          ],
-          results: [
-            {
-              id: "result_1",
-              taskId: "child_1",
-              status: "done",
-              summary: "Lane draft ready.",
-              updatedAt: Date.UTC(2026, 3, 23, 3, 40),
-            },
-          ],
-          healthSummary: {
-            healthy: 0,
-            stale: 1,
-            offline: 0,
-            total: 1,
-          },
-        }}
-      />,
-    );
-
-    expect(screen.getByRole("heading", { name: "Collaboration" })).toBeInTheDocument();
-    expect(screen.getByText("Planner")).toBeInTheDocument();
-    expect(screen.getAllByText("Refine session lane")).toHaveLength(2);
-    expect(screen.getByText("Lane draft ready.")).toBeInTheDocument();
-    expect(screen.getByText(/Health: 0 healthy/i)).toBeInTheDocument();
-    expect(screen.getByText(/heartbeat_stale/i)).toBeInTheDocument();
-    expect(screen.getByText("stale")).toBeInTheDocument();
-  });
-
-  it("renders command job cards with runtime status and captured output", async () => {
-    const user = userEvent.setup();
-    const onRefreshCommandJob = vi.fn();
-    const onStopCommandJob = vi.fn();
-
-    render(
-      <SessionWorkspace
-        session={session}
-        activeTask={null}
-        messages={[]}
-        backgroundJobs={[
-          {
-            id: "cmd_1",
-            command: "python worker.py --sync",
-            status: "running",
-            cwd: "D:/py/yuanbao_agent",
-            shell: "powershell",
-            summary: "Background worker is still streaming output.",
-            startedAt: Date.UTC(2026, 3, 23, 3, 32),
-            stdout: "step 1 complete\nstep 2 running",
-            stdoutPath: "D:/py/yuanbao_agent/runtime_artifacts/cmd_1_stdout.log",
-            isBackground: true,
-          },
-        ]}
-        onRefreshCommandJob={onRefreshCommandJob}
-        onStopCommandJob={onStopCommandJob}
-      />,
-    );
-
-    expect(screen.getByRole("heading", { name: "Runtime timeline" })).toBeInTheDocument();
-    expect(screen.getByText("python worker.py --sync")).toBeInTheDocument();
-    expect(screen.getByText("Background worker is still streaming output.")).toBeInTheDocument();
-    expect(screen.getByText("background")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Expand command job" }));
-
-    expect(screen.getByLabelText("python worker.py --sync stdout")).toHaveTextContent("step 2 running");
-    expect(screen.getByText(/stdout file:/i)).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Refresh command job python worker.py --sync" }));
-    await user.click(screen.getByRole("button", { name: "Stop command job python worker.py --sync" }));
-
-    expect(onRefreshCommandJob).toHaveBeenCalledWith("cmd_1");
-    expect(onStopCommandJob).toHaveBeenCalledWith("cmd_1");
-  });
-
-  it("disables stop for finished command jobs", () => {
-    render(
-      <SessionWorkspace
-        session={session}
-        activeTask={null}
-        messages={[]}
-        backgroundJobs={[
-          {
-            id: "cmd_done",
-            command: "npm test",
-            status: "completed",
-          },
-        ]}
-        onRefreshCommandJob={vi.fn()}
-        onStopCommandJob={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: "Stop command job npm test" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Refresh command job npm test" })).toBeDisabled();
-  });
-
-  it("renders approvals, patches, traces, tools, and command jobs in one chronological runtime timeline", () => {
-    render(
-      <SessionWorkspace
-        session={session}
-        activeTask={null}
-        messages={[]}
         approvals={[
           {
             id: "approval_1",
             title: "Allow npm test",
-            kind: "command",
             status: "pending",
-            requestedAt: 200,
+            kind: "shell",
+            command: "npm test",
           },
         ]}
         patches={[
           {
             id: "patch_1",
-            summary: "Patch session timeline",
-            status: "proposed",
-            updatedAt: 400,
-          },
-        ]}
-        backgroundJobs={[
-          {
-            id: "cmd_1",
-            command: "npm test",
-            status: "running",
-            startedAt: 500,
+            summary: "Updated session layout",
+            status: "applied",
+            filesChanged: 1,
+            additions: 12,
+            deletions: 4,
           },
         ]}
         traces={[
           {
             id: "trace_1",
             type: "provider.response",
-            source: "provider",
             title: "Provider response",
             status: "completed",
-            time: 300,
           },
         ]}
         toolCalls={[
           {
             id: "tool_1",
-            toolName: "shell_command",
+            toolName: "apply_patch",
             status: "completed",
-            time: 100,
+            resultSummary: "Patch applied.",
           },
         ]}
-      />,
-    );
-
-    const timeline = screen.getByRole("list", { name: "Runtime timeline" });
-    const items = within(timeline).getAllByRole("listitem");
-    expect(items).toHaveLength(5);
-    expect(items.map((item) => item.textContent)).toEqual([
-      expect.stringContaining("npm test"),
-      expect.stringContaining("Patch session timeline"),
-      expect.stringContaining("Provider response"),
-      expect.stringContaining("Allow npm test"),
-      expect.stringContaining("shell_command"),
-    ]);
-  });
-
-  it("supports task-level refresh and stop controls", async () => {
-    const user = userEvent.setup();
-    const onRefreshTask = vi.fn();
-    const onStopTask = vi.fn();
-
-    render(
-      <SessionWorkspace
-        session={session}
-        activeTask={{
-          id: "task_1",
-          status: "running",
-          goal: "Run command jobs",
-        }}
-        messages={[]}
-        onRefreshTask={onRefreshTask}
-        onStopTask={onStopTask}
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: "Refresh active task" }));
-    await user.click(screen.getByRole("button", { name: "Stop active task" }));
-
-    expect(onRefreshTask).toHaveBeenCalledOnce();
-    expect(onStopTask).toHaveBeenCalledWith("task_1");
-  });
-
-  it("handles approval buttons and full input disclosure", async () => {
-    const user = userEvent.setup();
-    const onApprove = vi.fn();
-    const onApproveForSession = vi.fn();
-    const onReject = vi.fn();
-
-    render(
-      <SessionWorkspace
-        session={session}
-        activeTask={null}
-        messages={[]}
-        approvals={[
+        backgroundJobs={[
           {
-            id: "approval_1",
-            title: "Allow npm test",
-            kind: "command",
-            status: "pending",
-            summary: "Run the focused session workspace test.",
-            parametersPreview: "npm run test -- SessionWorkspace",
-            fullInput: '{"command":"npm run test -- SessionWorkspace","cwd":"D:/py/yuanbao_agent"}',
-            cwd: "D:/py/yuanbao_agent",
-          },
-        ]}
-        onApprove={onApprove}
-        onApproveForSession={onApproveForSession}
-        onReject={onReject}
-      />,
-    );
-
-    expect(screen.getByText("Run the focused session workspace test.")).toBeInTheDocument();
-    expect(screen.getByLabelText("Allow npm test parameters preview")).toHaveTextContent("npm run test");
-
-    await user.click(screen.getByRole("button", { name: "Show full input" }));
-    expect(screen.getByLabelText("Allow npm test full input")).toHaveTextContent('"cwd":"D:/py/yuanbao_agent"');
-
-    await user.click(screen.getByRole("button", { name: "Allow Allow npm test" }));
-    await user.click(screen.getByRole("button", { name: "Allow Allow npm test for session" }));
-    await user.click(screen.getByRole("button", { name: "Deny Allow npm test" }));
-
-    expect(onApprove).toHaveBeenCalledWith("approval_1");
-    expect(onApproveForSession).toHaveBeenCalledWith("approval_1");
-    expect(onReject).toHaveBeenCalledWith("approval_1");
-  });
-
-  it("expands patch cards, copies paths, and loads details", async () => {
-    const user = userEvent.setup();
-    const onLoadPatch = vi.fn();
-    const onCopyPatchPath = vi.fn();
-
-    render(
-      <SessionWorkspace
-        session={session}
-        activeTask={null}
-        messages={[]}
-        patches={[
-          {
-            id: "patch_1",
-            summary: "Session runtime shelf",
-            status: "ready",
-            filesChanged: 1,
-            additions: 12,
-            deletions: 3,
-            files: [
-              {
-                path: "app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx",
-                status: "modified",
-                additions: 12,
-                deletions: 3,
-                diff: "+ added runtime shelf\n- old shelf",
-              },
-            ],
-          },
-        ]}
-        onLoadPatch={onLoadPatch}
-        onCopyPatchPath={onCopyPatchPath}
-      />,
-    );
-
-    expect(screen.queryByText("+ added runtime shelf")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Expand patch" }));
-
-    expect(screen.getByText("app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx")).toBeInTheDocument();
-    expect(screen.getByLabelText("Session runtime shelf diff")).toHaveTextContent("+ added runtime shelf");
-
-    await user.click(screen.getByRole("button", { name: /Copy path app\/src\/ui\/workbench\/workspaces\/session\/SessionWorkspace\.tsx/i }));
-    await user.click(screen.getByRole("button", { name: "Load patch details Session runtime shelf" }));
-
-    expect(onCopyPatchPath).toHaveBeenCalledWith(
-      "patch_1",
-      "app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx",
-    );
-    expect(onLoadPatch).toHaveBeenCalledWith("patch_1");
-  });
-
-  it("expands trace and tool cards with runtime details", async () => {
-    const user = userEvent.setup();
-    const onRefreshTrace = vi.fn();
-
-    render(
-      <SessionWorkspace
-        session={session}
-        activeTask={null}
-        messages={[]}
-        traces={[
-          {
-            id: "trace_1",
-            type: "thinking",
-            source: "runtime",
-            title: "Thinking",
-            summary: "Planning next action",
-            detail: "Need to inspect the focused component before editing.",
-            durationMs: 410,
-            tokenCount: 5817,
-            stdout: "planner ready",
-            stderr: "warning: stale snapshot",
-          },
-        ]}
-        toolCalls={[
-          {
-            id: "tool_1",
-            toolName: "shell_command",
+            id: "job_1",
+            command: "npm run typecheck",
             status: "completed",
-            resultSummary: "Tests passed",
-            durationMs: 1280,
-            tokenCount: 80,
-            argsPreview: '{"command":"npm test"}',
-            output: "PASS SessionWorkspace.test.tsx",
+            cwd: "D:/py/yuanbao_agent/app",
           },
         ]}
-        onRefreshTrace={onRefreshTrace}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Refresh trace" }));
-    expect(onRefreshTrace).toHaveBeenCalledOnce();
+    expect(screen.getByRole("heading", { name: "Investigate runtime boot" })).toBeInTheDocument();
+    expect(screen.getByText("Check the current failing test.")).toBeInTheDocument();
+    expect(screen.getByText("I found the failure in the session renderer.")).toBeInTheDocument();
+    expect(screen.getByText("Runtime resumed session state.")).toBeInTheDocument();
+    expect(screen.getByText("shell_command")).toBeInTheDocument();
+    expect(screen.getByLabelText("Runtime timeline")).toBeInTheDocument();
+    expect(screen.getByText("Patch the session workspace")).toBeInTheDocument();
+    expect(screen.getByText("Allow npm test")).toBeInTheDocument();
+    expect(screen.getByText("Updated session layout")).toBeInTheDocument();
+    expect(screen.getByText("Provider response")).toBeInTheDocument();
+    expect(screen.getByText("apply_patch")).toBeInTheDocument();
+    expect(screen.getByText("npm run typecheck")).toBeInTheDocument();
 
-    const traceCard = screen.getByText("Thinking").closest("li");
-    expect(traceCard).not.toBeNull();
-    await user.click(within(traceCard as HTMLElement).getByRole("button", { name: "Expand trace" }));
-    expect(screen.getByText("Need to inspect the focused component before editing.")).toBeInTheDocument();
-    expect(screen.getByLabelText("Thinking stdout")).toHaveTextContent("planner ready");
-    expect(screen.getByLabelText("Thinking stderr")).toHaveTextContent("stale snapshot");
+    expect(screen.queryByRole("heading", { name: "Active task" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Runtime shelf" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Collaboration" })).not.toBeInTheDocument();
+    expect(screen.queryByText("MiniMax-M2.7-highspeed")).not.toBeInTheDocument();
+  });
 
-    const toolCard = screen.getByText("shell_command").closest("li");
-    expect(toolCard).not.toBeNull();
-    await user.click(within(toolCard as HTMLElement).getByRole("button", { name: "Expand tool" }));
-    expect(screen.getByLabelText("shell_command args preview")).toHaveTextContent('"command":"npm test"');
-    expect(screen.getByLabelText("shell_command output")).toHaveTextContent("PASS SessionWorkspace.test.tsx");
-    expect(screen.getByText("1.3s")).toBeInTheDocument();
-    expect(screen.getByText("5,817 tokens")).toBeInTheDocument();
+  it("renders a message empty state inside the conversation area", () => {
+    render(<SessionWorkspace session={session} activeTask={null} messages={[]} />);
+
+    expect(screen.getByRole("heading", { name: "No messages yet" })).toBeInTheDocument();
+    expect(screen.getByText(/send the first message from the composer below/i)).toBeInTheDocument();
   });
 });

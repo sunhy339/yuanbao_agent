@@ -37,12 +37,12 @@ export function GlobalSidebar({
       <section className="sidebar-session-section" aria-labelledby="sidebar-sessions-title">
         <div className="sidebar-section-heading">
           <h2 id="sidebar-sessions-title">会话</h2>
-          <span>Session ledger</span>
+          <span>Sessions</span>
         </div>
 
         <label className="sidebar-search">
-          <span>检索</span>
-          <input type="search" aria-label="Search sessions" placeholder="Search the archive" />
+          <span>搜索</span>
+          <input type="search" aria-label="Search sessions" placeholder="Search sessions" />
         </label>
 
         <div className="session-rail" aria-label="Sessions">

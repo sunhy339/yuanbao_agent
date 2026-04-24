@@ -10,8 +10,8 @@ import type {
 const now = Date.now();
 
 export const DEFAULT_WORKSPACE_PATH = "D:/py/yuanbao_agent";
-export const DEFAULT_SESSION_TITLE = "Sprint 1 Demo Session";
-export const DEFAULT_PROMPT = "Fix the current failing pytest and inspect the key config files first.";
+export const DEFAULT_SESSION_TITLE = "New Session";
+export const DEFAULT_PROMPT = "";
 
 export function buildMockWorkspace(path: string): WorkspaceRef {
   return {

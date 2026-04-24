@@ -241,9 +241,13 @@ impl RuntimeBridge {
 
         let repo_root = repo_root()?;
         let runtime_src = repo_root.join("runtime").join("src");
-        let database_path = repo_root
-            .join("runtime")
-            .join(".local-agent-runtime.sqlite3");
+        let database_path = env::var_os("LOCAL_AGENT_DB_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                repo_root
+                    .join("runtime")
+                    .join(".local-agent-runtime.sqlite3")
+            });
         let python_executable =
             env::var("LOCAL_AGENT_PYTHON").unwrap_or_else(|_| "python".to_string());
 
@@ -713,6 +717,18 @@ fn trace_list(
 #[tauri::command]
 fn e2e_fixture() -> Result<Value, String> {
     let flow = env::var("YUANBAO_TAURI_E2E").unwrap_or_default();
+    if flow == "ui-smoke" {
+        let repo_root = repo_root()?;
+        let workspace_path = env::var("YUANBAO_TAURI_E2E_WORKSPACE")
+            .unwrap_or_else(|_| repo_root.display().to_string());
+
+        return Ok(json!({
+            "enabled": true,
+            "flow": flow,
+            "workspacePath": workspace_path,
+        }));
+    }
+
     if flow != "provider-flow" {
         return Ok(json!({ "enabled": false }));
     }
@@ -753,7 +769,8 @@ fn e2e_fixture() -> Result<Value, String> {
 
 #[tauri::command]
 fn e2e_finish(app_handle: AppHandle, payload: Value) -> Result<(), String> {
-    if env::var("YUANBAO_TAURI_E2E").unwrap_or_default() != "provider-flow" {
+    let flow = env::var("YUANBAO_TAURI_E2E").unwrap_or_default();
+    if flow != "provider-flow" && flow != "ui-smoke" {
         return Err("E2E result writing is disabled.".to_string());
     }
 

@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  HAS_REAL_PROVIDER_KEY: ${{ secrets.LOCAL_AGENT_PROVIDER_API_KEY != '' }}
+
+jobs:
+  desktop-regression:
+    name: Desktop regression
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Setup Rust
+        run: rustup default stable
+
+      - name: Install app dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Run mock E2E regression
+        working-directory: app
+        run: npm run e2e:mock
+
+      - name: Run real provider Tauri E2E
+        if: env.HAS_REAL_PROVIDER_KEY == 'true'
+        working-directory: app
+        env:
+          LOCAL_AGENT_PROVIDER_API_KEY: ${{ secrets.LOCAL_AGENT_PROVIDER_API_KEY }}
+          YUANBAO_TAURI_E2E_API_KEY_ENV: LOCAL_AGENT_PROVIDER_API_KEY
+        run: npm run e2e:real
+
+      - name: Skip real provider E2E
+        if: env.HAS_REAL_PROVIDER_KEY != 'true'
+        run: Write-Host "Skipping real provider E2E because LOCAL_AGENT_PROVIDER_API_KEY is not configured."

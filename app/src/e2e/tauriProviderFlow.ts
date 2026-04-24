@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AgentEventEnvelope, AppConfig, TaskRecord, TraceEventRecord } from "@shared";
+import type { AgentEventEnvelope, TaskRecord, TraceEventRecord } from "@shared";
 import { RuntimeClient } from "../lib/runtimeClient";
 
 interface TauriProviderFlowFixture {
@@ -35,6 +35,7 @@ interface TauriProviderFlowResult {
   eventTypes: string[];
   traceTypes: string[];
   missingTraceTypes?: string[];
+  uiAssertions?: string[];
   error?: string;
 }
 
@@ -48,32 +49,10 @@ const REQUIRED_TRACE_TYPES = [
   "task.completed",
 ];
 
+const UI_ASSERTION_TIMEOUT_MS = 180_000;
+
 function isTerminalStatus(status: TaskRecord["status"]) {
   return status === "completed" || status === "failed" || status === "cancelled";
-}
-
-function buildProviderConfig(fixture: Required<TauriProviderFlowFixture>["provider"]): AppConfig["provider"] {
-  const profile = {
-    id: fixture.profileId,
-    name: fixture.name,
-    mode: "openai-compatible" as const,
-    baseUrl: fixture.baseUrl,
-    model: fixture.model,
-    defaultModel: fixture.model,
-    fallbackModel: fixture.model,
-    apiKeyEnvVarName: fixture.apiKeyEnvVarName,
-    temperature: 0.2,
-    maxTokens: 4000,
-    maxOutputTokens: 4000,
-    maxContextTokens: 120000,
-    timeout: fixture.timeout,
-  };
-
-  return {
-    ...profile,
-    activeProfileId: profile.id,
-    profiles: [profile],
-  };
 }
 
 async function getFixture(): Promise<TauriProviderFlowFixture | null> {
@@ -108,6 +87,104 @@ async function pollTask(client: RuntimeClient, taskId: string, initialTask: Task
 
 function traceTypesFrom(traceEvents: TraceEventRecord[]) {
   return [...new Set(traceEvents.map((event) => event.type))].sort();
+}
+
+async function waitFor<T>(
+  description: string,
+  read: () => T | null | undefined | false,
+  timeoutMs = UI_ASSERTION_TIMEOUT_MS,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const result = read();
+    if (result) {
+      return result;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  throw new Error(`Timed out waiting for ${description}.`);
+}
+
+function query<T extends Element>(selector: string): T | null {
+  return document.querySelector(selector) as T | null;
+}
+
+function assertText(text: string) {
+  if (!document.body.textContent?.includes(text)) {
+    throw new Error(`Expected UI text not found: ${text}`);
+  }
+}
+
+function click(selector: string, description: string) {
+  const target = query<HTMLElement>(selector);
+  if (!target) {
+    throw new Error(`Cannot click ${description}; selector not found: ${selector}`);
+  }
+  target.click();
+}
+
+function setFieldValue(selector: string, value: string) {
+  const field = query<HTMLInputElement | HTMLTextAreaElement>(selector);
+  if (!field) {
+    throw new Error(`Input not found: ${selector}`);
+  }
+
+  const prototype = field instanceof HTMLTextAreaElement
+    ? HTMLTextAreaElement.prototype
+    : HTMLInputElement.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
+  descriptor?.set?.call(field, value);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  field.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+async function configureProviderThroughUi(fixture: Required<TauriProviderFlowFixture>["provider"]) {
+  await waitFor("workbench shell", () => query(".workbench-shell"));
+  await waitFor("composer ready", () => {
+    const composer = query<HTMLTextAreaElement>('textarea[aria-label="Task prompt"]');
+    return composer && !composer.disabled ? composer : null;
+  });
+
+  click('button[aria-label="Settings"]', "Settings navigation");
+  await waitFor("settings provider panel", () => query(".settings-panel-providers"));
+  click(".settings-panel-header .settings-primary-action", "Add Provider");
+  await waitFor("provider dialog", () => query('[role="dialog"].settings-modal'));
+
+  setFieldValue("#provider-name", fixture.name);
+  setFieldValue("#provider-endpoint", fixture.baseUrl);
+  setFieldValue("#provider-api-key", fixture.apiKeyEnvVarName);
+  setFieldValue("#provider-main-model", fixture.model);
+  setFieldValue("#provider-haiku-model", fixture.model);
+  setFieldValue("#provider-sonnet-model", fixture.model);
+  setFieldValue("#provider-opus-model", fixture.model);
+  setFieldValue("#provider-json", JSON.stringify({ timeout: fixture.timeout }, null, 2));
+
+  click(".settings-modal-actions .settings-secondary-action:nth-of-type(2)", "Test connection");
+  await waitFor("provider test success", () =>
+    document.body.textContent?.includes("Last test: ok") ? true : null,
+  );
+  click('.settings-modal-actions button[type="submit"]', "Save provider");
+  await waitFor("provider save confirmation", () =>
+    document.body.textContent?.includes("Saved and activated") &&
+    document.body.textContent?.includes("Active provider") &&
+    document.body.textContent?.includes(fixture.model)
+      ? true
+      : null,
+  );
+}
+
+async function sendPromptThroughUi(prompt: string) {
+  click('button[aria-label="New Session"]', "New Session navigation");
+  await waitFor("task prompt composer", () => query<HTMLTextAreaElement>('textarea[aria-label="Task prompt"]'));
+  setFieldValue('textarea[aria-label="Task prompt"]', prompt);
+  await waitFor("composer run enabled", () => {
+    const button = query<HTMLButtonElement>(".composer-run");
+    return button && !button.disabled ? button : null;
+  });
+  click(".composer-run", "composer run");
+  await waitFor("session workspace", () => query(".session-workspace:not(.session-workspace-empty)"));
 }
 
 export async function maybeRunTauriProviderFlowE2e() {
@@ -146,45 +223,47 @@ export async function maybeRunTauriProviderFlowE2e() {
       events.push(event);
     });
 
-    phase = "save-provider-config";
-    const providerConfig = buildProviderConfig(fixture.provider);
-    const configResult = await client.updateConfig({
-      config: {
-        provider: providerConfig,
-      },
-    });
+    phase = "configure-provider-ui";
+    await configureProviderThroughUi(fixture.provider);
+    const configResult = await client.getConfig();
     const activeProfileId = configResult.config.provider.activeProfileId;
-    if (activeProfileId !== fixture.provider.profileId) {
-      throw new Error(`Expected active provider ${fixture.provider.profileId}, got ${activeProfileId ?? "none"}.`);
+    const activeProfile = configResult.config.provider.profiles?.find((profile) => profile.id === activeProfileId);
+    if (!activeProfile) {
+      throw new Error("Provider saved through UI, but runtime config has no active profile.");
+    }
+    if (activeProfile.model !== fixture.provider.model) {
+      throw new Error(`Expected active model ${fixture.provider.model}, got ${activeProfile.model ?? "none"}.`);
     }
 
     phase = "test-provider";
-    const providerResult = await client.testProvider({ profileId: fixture.provider.profileId });
+    const providerResult = await client.testProvider({ profileId: activeProfileId });
     if (!providerResult.ok) {
       throw new Error(providerResult.message || `Provider test failed with status ${providerResult.status}.`);
     }
 
     phase = "open-workspace";
-    const workspace = (await client.openWorkspace(fixture.workspacePath)).workspace;
+    await client.openWorkspace(fixture.workspacePath);
 
-    phase = "create-session";
-    const session = (await client.createSession({
-      workspaceId: workspace.id,
-      title: "Tauri E2E provider flow",
-    })).session;
-
-    phase = "send-message";
-    const taskResult = await client.sendMessage({
-      sessionId: session.id,
-      content: fixture.prompt,
-      attachments: [],
-    });
-    const finalTask = await pollTask(client, taskResult.task.id, taskResult.task);
+    phase = "send-message-ui";
+    await sendPromptThroughUi(fixture.prompt);
+    const completedEvent = await waitFor("task completed event", () =>
+      events.find((event) => event.type === "task.completed"),
+    );
+    const startedEvent = events.find((event) => event.taskId === completedEvent.taskId && event.type === "task.started");
+    const finalTask = await pollTask(
+      client,
+      completedEvent.taskId,
+      (await client.getTask(completedEvent.taskId)).task,
+    );
 
     phase = "assert-timeline";
     if (finalTask.status !== "completed") {
       throw new Error(`Expected completed task, got ${finalTask.status}.`);
     }
+    assertText("Active task");
+    assertText("Runtime timeline");
+    assertText("completed");
+    assertText(fixture.provider.model);
 
     const traceEvents = (await client.listTrace({ taskId: finalTask.id, limit: 100 })).traceEvents;
     const traceTypes = traceTypesFrom(traceEvents);
@@ -192,6 +271,9 @@ export async function maybeRunTauriProviderFlowE2e() {
     if (missingTraceTypes.length > 0) {
       throw new Error(`Timeline is missing trace types: ${missingTraceTypes.join(", ")}.`);
     }
+    await waitFor("provider request trace card in UI", () =>
+      query('[data-trace-type="provider.request"]') ?? query(".tool-card"),
+    );
 
     phase = "complete";
     await finish({
@@ -205,12 +287,19 @@ export async function maybeRunTauriProviderFlowE2e() {
         baseUrl: providerResult.baseUrl,
         checkedEnvVarName: providerResult.checkedEnvVarName,
       },
-      sessionId: session.id,
+      sessionId: completedEvent.sessionId || startedEvent?.sessionId,
       taskId: finalTask.id,
       taskStatus: finalTask.status,
       taskSummary: finalTask.resultSummary,
       eventTypes: events.map((event) => event.type),
       traceTypes,
+      uiAssertions: [
+        "provider settings saved through UI",
+        "provider test result visible in UI",
+        "composer submitted through UI",
+        "session task completion visible in UI",
+        "runtime timeline rendered in UI",
+      ],
     });
   } catch (reason) {
     await finish({

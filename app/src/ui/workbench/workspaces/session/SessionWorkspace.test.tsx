@@ -24,7 +24,7 @@ describe("SessionWorkspace", () => {
   });
 
   it("renders only the conversation area for an active session", () => {
-    render(
+    const { container } = render(
       <SessionWorkspace
         session={session}
         activeTask={{
@@ -40,8 +40,8 @@ describe("SessionWorkspace", () => {
           permissionMode: "bypass",
         }}
         messages={[
-          { id: "m1", role: "user", content: "Check the current failing test." },
-          { id: "m2", role: "assistant", content: "I found the failure in the session renderer.", streaming: true },
+          { id: "m1", role: "user", content: "Check the current failing test.", createdAt: 1 },
+          { id: "m2", role: "assistant", content: "I found the failure in the session renderer.", streaming: true, createdAt: 4 },
           { id: "m3", role: "system", content: "Runtime resumed session state." },
           { id: "m4", role: "tool", toolName: "shell_command", status: "completed", content: "Tests passed." },
         ]}
@@ -79,6 +79,7 @@ describe("SessionWorkspace", () => {
             toolName: "apply_patch",
             status: "completed",
             resultSummary: "Patch applied.",
+            time: 2,
           },
         ]}
         backgroundJobs={[
@@ -87,6 +88,7 @@ describe("SessionWorkspace", () => {
             command: "npm run typecheck",
             status: "completed",
             cwd: "D:/py/yuanbao_agent/app",
+            startedAt: 3,
           },
         ]}
       />,
@@ -104,6 +106,14 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText("Provider response")).toBeInTheDocument();
     expect(screen.getByText("apply_patch")).toBeInTheDocument();
     expect(screen.getByText("npm run typecheck")).toBeInTheDocument();
+    expect(screen.getByLabelText("Conversation activity")).toBeInTheDocument();
+    const activityText = Array.from(container.querySelectorAll("[data-activity-kind]")).map((item) =>
+      item.textContent ?? "",
+    );
+    expect(activityText[0]).toContain("Check the current failing test.");
+    expect(activityText[1]).toContain("apply_patch");
+    expect(activityText[2]).toContain("npm run typecheck");
+    expect(activityText[3]).toContain("I found the failure in the session renderer.");
 
     expect(screen.queryByRole("heading", { name: "Active task" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Runtime shelf" })).not.toBeInTheDocument();

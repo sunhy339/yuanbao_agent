@@ -321,7 +321,7 @@ export async function maybeRunTauriProviderFlowE2e() {
     if (finalTask.status !== "completed") {
       throw new Error(`Expected completed task, got ${finalTask.status}.`);
     }
-    assertElement('.runtime-timeline[aria-label="Runtime timeline"]', "runtime timeline");
+    assertElement('.conversation-activity[aria-label="Conversation activity"]', "conversation activity stream");
     assertText(finalTask.id);
     assertText("completed");
 

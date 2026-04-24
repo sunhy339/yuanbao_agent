@@ -212,60 +212,31 @@ function formatTimestamp(timestamp?: number) {
   return dateTimeFormatter.format(new Date(timestamp));
 }
 
-type RuntimeTimelineItem =
+interface RuntimeTimelineItem {
+  id: string;
+  kind: "approval" | "patch" | "trace" | "tool" | "command" | "task";
+  title: string;
+  status?: string;
+  summary?: string;
+  meta?: string[];
+  code?: string;
+  time?: number;
+}
+
+type ConversationActivityItem =
   | {
       id: string;
-      kind: "approval";
-      title: string;
-      status: string;
-      summary?: string;
-      meta?: string[];
-      code?: string;
+      kind: "message";
+      order: number;
+      time?: number;
+      message: SessionWorkspaceMessage;
     }
   | {
       id: string;
-      kind: "patch";
-      title: string;
-      status: string;
-      summary?: string;
-      meta?: string[];
-      code?: string;
-    }
-  | {
-      id: string;
-      kind: "trace";
-      title: string;
-      status?: string;
-      summary?: string;
-      meta?: string[];
-      code?: string;
-    }
-  | {
-      id: string;
-      kind: "tool";
-      title: string;
-      status: string;
-      summary?: string;
-      meta?: string[];
-      code?: string;
-    }
-  | {
-      id: string;
-      kind: "command";
-      title: string;
-      status: string;
-      summary?: string;
-      meta?: string[];
-      code?: string;
-    }
-  | {
-      id: string;
-      kind: "task";
-      title: string;
-      status?: string;
-      summary?: string;
-      meta?: string[];
-      code?: string;
+      kind: "runtime";
+      order: number;
+      time?: number;
+      runtime: RuntimeTimelineItem;
     };
 
 function getRoleLabel(role: SessionWorkspaceMessage["role"]) {
@@ -320,6 +291,7 @@ function buildRuntimeItems({
       status: activeTask.status,
       summary: activeTask.resultSummary,
       meta: compactMeta([activeTask.id, activeTask.planSteps?.length ? `${activeTask.planSteps.length} steps` : null]),
+      time: undefined,
     });
   }
 
@@ -332,6 +304,7 @@ function buildRuntimeItems({
       summary: approval.summary,
       meta: compactMeta([approval.kind, approval.risk ? `risk: ${approval.risk}` : null, approval.cwd]),
       code: approval.command || approval.parametersPreview || approval.fullInput,
+      time: approval.requestedAt,
     });
   });
 
@@ -348,6 +321,7 @@ function buildRuntimeItems({
         patch.deletions !== undefined ? `-${patch.deletions}` : null,
       ]),
       code: patch.diff,
+      time: patch.updatedAt,
     });
   });
 
@@ -364,6 +338,7 @@ function buildRuntimeItems({
         formatDuration(trace.durationMs),
         trace.tokenCount !== undefined ? `${trace.tokenCount} tokens` : null,
       ]),
+      time: trace.time,
     });
   });
 
@@ -379,6 +354,7 @@ function buildRuntimeItems({
         toolCall.tokenCount !== undefined ? `${toolCall.tokenCount} tokens` : null,
       ]),
       code: toolCall.argsPreview || toolCall.input,
+      time: toolCall.time,
     });
   });
 
@@ -396,42 +372,104 @@ function buildRuntimeItems({
         formatDuration(job.durationMs),
       ]),
       code: job.stdoutPath || job.stderrPath,
+      time: job.startedAt ?? job.finishedAt,
     });
   });
 
   return items;
 }
 
-function RuntimeTimeline({ items }: { items: RuntimeTimelineItem[] }) {
-  if (items.length === 0) {
-    return null;
-  }
-
+function RuntimeEventCard({ item }: { item: RuntimeTimelineItem }) {
   return (
-    <section className="runtime-timeline" aria-label="Runtime timeline">
-      <div className="runtime-timeline-heading">
-        <span>Runtime</span>
-        <strong>{items.length} events</strong>
+    <article className="runtime-event-card" data-activity-kind="runtime" data-kind={item.kind}>
+      <div className="runtime-event-head">
+        <span>{item.kind}</span>
+        <strong>{item.title}</strong>
+        {item.status ? <em>{item.status}</em> : null}
       </div>
-      {items.map((item) => (
-        <article className="runtime-event-card" data-kind={item.kind} key={item.id}>
-          <div className="runtime-event-head">
-            <span>{item.kind}</span>
-            <strong>{item.title}</strong>
-            {item.status ? <em>{item.status}</em> : null}
-          </div>
-          {item.meta?.length ? (
-            <div className="runtime-event-meta">
-              {item.meta.map((entry) => (
-                <span key={entry}>{entry}</span>
-              ))}
-            </div>
-          ) : null}
-          {item.summary ? <p>{item.summary}</p> : null}
-          {item.code ? <pre>{item.code}</pre> : null}
-        </article>
-      ))}
-    </section>
+      {item.meta?.length ? (
+        <div className="runtime-event-meta">
+          {item.meta.map((entry) => (
+            <span key={entry}>{entry}</span>
+          ))}
+        </div>
+      ) : null}
+      {item.summary ? <p>{item.summary}</p> : null}
+      {item.code ? <pre>{item.code}</pre> : null}
+    </article>
+  );
+}
+
+function MessageBubble({ message }: { message: SessionWorkspaceMessage }) {
+  return (
+    <article
+      className="message-bubble"
+      data-activity-kind="message"
+      data-role={message.role}
+      aria-label={`${message.role} message`}
+    >
+      <div className="message-bubble-head">
+        <span>{getRoleLabel(message.role)}</span>
+        {message.toolName ? <em>{message.toolName}</em> : null}
+        {message.status ? <em>{message.status}</em> : null}
+        {message.streaming ? <em>Streaming</em> : null}
+        {message.createdAt ? <time>{formatTimestamp(message.createdAt)}</time> : null}
+      </div>
+      <p>{message.content}</p>
+    </article>
+  );
+}
+
+function buildConversationActivity(
+  messages: SessionWorkspaceMessage[],
+  runtimeItems: RuntimeTimelineItem[],
+): ConversationActivityItem[] {
+  const activity: ConversationActivityItem[] = [
+    ...messages.map((message, index) => ({
+      id: `message:${message.id}`,
+      kind: "message" as const,
+      order: index,
+      time: message.createdAt,
+      message,
+    })),
+    ...runtimeItems.map((runtime, index) => ({
+      id: `runtime:${runtime.id}`,
+      kind: "runtime" as const,
+      order: messages.length + index,
+      time: runtime.time,
+      runtime,
+    })),
+  ];
+
+  return activity.sort((left, right) => {
+    if (left.time !== undefined && right.time !== undefined && left.time !== right.time) {
+      return left.time - right.time;
+    }
+    if (left.time !== undefined && right.time === undefined) {
+      return -1;
+    }
+    if (left.time === undefined && right.time !== undefined) {
+      return 1;
+    }
+    return left.order - right.order;
+  });
+}
+
+function ConversationActivity({ items }: { items: ConversationActivityItem[] }) {
+  return (
+    <div className="conversation-activity" aria-label="Conversation activity">
+      <div className="runtime-timeline-heading" aria-label="Runtime timeline">
+        <span>Runtime</span>
+        <strong>{items.filter((item) => item.kind === "runtime").length} events</strong>
+      </div>
+      {items.map((item) =>
+        item.kind === "message" ? (
+          <MessageBubble message={item.message} key={item.id} />
+        ) : (
+          <RuntimeEventCard item={item.runtime} key={item.id} />
+        ),
+      )}
+    </div>
   );
 }
 
@@ -466,6 +504,7 @@ export function SessionWorkspace({
     toolCalls,
     backgroundJobs,
   });
+  const activityItems = buildConversationActivity(messages, runtimeItems);
 
   return (
     <main className="session-workspace session-workspace-chat-only" aria-labelledby="session-title">
@@ -475,32 +514,15 @@ export function SessionWorkspace({
       </header>
 
       <section className="message-stream message-stream-chat-only" aria-label="Conversation messages">
-        {messages.length === 0 ? (
+        {activityItems.length === 0 ? (
           <div className="message-stream-empty">
             <p className="session-kicker">Quiet thread</p>
             <h2>No messages yet</h2>
             <p>Send the first message from the composer below.</p>
           </div>
         ) : (
-          messages.map((message) => (
-            <article
-              className="message-bubble"
-              data-role={message.role}
-              key={message.id}
-              aria-label={`${message.role} message`}
-            >
-              <div className="message-bubble-head">
-                <span>{getRoleLabel(message.role)}</span>
-                {message.toolName ? <em>{message.toolName}</em> : null}
-                {message.status ? <em>{message.status}</em> : null}
-                {message.streaming ? <em>Streaming</em> : null}
-                {message.createdAt ? <time>{formatTimestamp(message.createdAt)}</time> : null}
-              </div>
-              <p>{message.content}</p>
-            </article>
-          ))
+          <ConversationActivity items={activityItems} />
         )}
-        <RuntimeTimeline items={runtimeItems} />
       </section>
     </main>
   );

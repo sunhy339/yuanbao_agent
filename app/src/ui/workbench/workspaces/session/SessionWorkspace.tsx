@@ -271,10 +271,8 @@ function compactMeta(values: Array<string | null | undefined>) {
 }
 
 function buildRuntimeItems({
-  activeTask,
   approvals = [],
   patches = [],
-  traces = [],
   toolCalls = [],
   backgroundJobs = [],
 }: Pick<
@@ -282,18 +280,6 @@ function buildRuntimeItems({
   "activeTask" | "approvals" | "patches" | "traces" | "toolCalls" | "backgroundJobs"
 >): RuntimeTimelineItem[] {
   const items: RuntimeTimelineItem[] = [];
-
-  if (activeTask) {
-    items.push({
-      id: `task:${activeTask.id}`,
-      kind: "task",
-      title: activeTask.goal || "Active task",
-      status: activeTask.status,
-      summary: activeTask.resultSummary,
-      meta: compactMeta([activeTask.id, activeTask.planSteps?.length ? `${activeTask.planSteps.length} steps` : null]),
-      time: undefined,
-    });
-  }
 
   approvals.forEach((approval) => {
     items.push({
@@ -322,23 +308,6 @@ function buildRuntimeItems({
       ]),
       code: patch.diff,
       time: patch.updatedAt,
-    });
-  });
-
-  traces.forEach((trace) => {
-    items.push({
-      id: `trace:${trace.id}`,
-      kind: "trace",
-      title: trace.title || trace.type,
-      status: trace.status,
-      summary: trace.summary || trace.detail,
-      meta: compactMeta([
-        trace.source,
-        trace.type,
-        formatDuration(trace.durationMs),
-        trace.tokenCount !== undefined ? `${trace.tokenCount} tokens` : null,
-      ]),
-      time: trace.time,
     });
   });
 

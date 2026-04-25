@@ -100,10 +100,10 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText("Runtime resumed session state.")).toBeInTheDocument();
     expect(screen.getByText("shell_command")).toBeInTheDocument();
     expect(screen.getByLabelText("Runtime timeline")).toBeInTheDocument();
-    expect(screen.getByText("Patch the session workspace")).toBeInTheDocument();
+    expect(screen.queryByText("Patch the session workspace")).not.toBeInTheDocument();
     expect(screen.getByText("Allow npm test")).toBeInTheDocument();
     expect(screen.getByText("Updated session layout")).toBeInTheDocument();
-    expect(screen.getByText("Provider response")).toBeInTheDocument();
+    expect(screen.queryByText("Provider response")).not.toBeInTheDocument();
     expect(screen.getByText("apply_patch")).toBeInTheDocument();
     expect(screen.getByText("npm run typecheck")).toBeInTheDocument();
     expect(screen.getByLabelText("Conversation activity")).toBeInTheDocument();

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import "./scheduled.css";
 
 export type ScheduledTaskStatus = "active" | "disabled" | "failed" | "completed";
@@ -20,16 +20,26 @@ export interface ExecutionLog {
   message: string;
 }
 
+export interface ScheduledTaskDraft {
+  name: string;
+  description: string;
+  prompt: string;
+  schedule: string;
+  enabled: boolean;
+}
+
 export interface ScheduledWorkspaceProps {
   tasks?: ScheduledTask[];
   logs?: ExecutionLog[];
   logsByTaskId?: Record<string, ExecutionLog[]>;
   selectedTaskId?: string;
   onSelectTask?(taskId: string): void;
-  onCreateTask?(): void;
+  onCreateTask?(draft?: ScheduledTaskDraft): void | Promise<void>;
   onRunTask?(taskId: string): void | Promise<void>;
   onToggleTask?(taskId: string): void | Promise<void>;
   busyTaskId?: string | null;
+  workspacePath?: string;
+  createBusy?: boolean;
 }
 
 const statusLabel: Record<ScheduledTaskStatus, string> = {
@@ -37,6 +47,14 @@ const statusLabel: Record<ScheduledTaskStatus, string> = {
   disabled: "已停用",
   failed: "异常",
   completed: "已完成",
+};
+
+const defaultDraft: ScheduledTaskDraft = {
+  name: "",
+  description: "",
+  prompt: "",
+  schedule: "every 24 hours",
+  enabled: true,
 };
 
 function buildLogsForTask(
@@ -69,8 +87,12 @@ export function ScheduledWorkspace({
   onRunTask,
   onToggleTask,
   busyTaskId = null,
+  workspacePath,
+  createBusy = false,
 }: ScheduledWorkspaceProps) {
   const [localSelectedTaskId, setLocalSelectedTaskId] = useState<string | null>(null);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [draft, setDraft] = useState<ScheduledTaskDraft>(defaultDraft);
   const resolvedSelectedTaskId = selectedTaskId ?? localSelectedTaskId ?? tasks[0]?.id ?? null;
   const selectedTask = tasks.find((task) => task.id === resolvedSelectedTaskId) ?? tasks[0];
   const selectedLogs = buildLogsForTask(selectedTask, logs, logsByTaskId);
@@ -78,6 +100,33 @@ export function ScheduledWorkspace({
   const activeCount = tasks.filter((task) => task.status === "active").length;
   const disabledCount = tasks.filter((task) => task.status === "disabled").length;
   const failedCount = tasks.filter((task) => task.status === "failed").length;
+  const createDisabled = createBusy || !draft.name.trim() || !draft.prompt.trim();
+
+  function updateDraft<K extends keyof ScheduledTaskDraft>(key: K, value: ScheduledTaskDraft[K]) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  function closeCreateDialog() {
+    setCreateDialogOpen(false);
+    setDraft(defaultDraft);
+  }
+
+  async function submitCreateDialog(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (createDisabled) {
+      return;
+    }
+
+    const payload: ScheduledTaskDraft = {
+      name: draft.name.trim(),
+      description: draft.description.trim(),
+      prompt: draft.prompt.trim(),
+      schedule: draft.schedule,
+      enabled: draft.enabled,
+    };
+    await onCreateTask?.(payload);
+    closeCreateDialog();
+  }
 
   return (
     <main className="scheduled-workspace" aria-labelledby="scheduled-title">
@@ -93,7 +142,7 @@ export function ScheduledWorkspace({
           <button
             aria-label="Create scheduled task"
             className="scheduled-create-button"
-            onClick={onCreateTask}
+            onClick={() => setCreateDialogOpen(true)}
             type="button"
           >
             新建任务
@@ -242,6 +291,99 @@ export function ScheduledWorkspace({
           )}
         </section>
       </section>
+      {createDialogOpen ? (
+        <div className="scheduled-dialog-backdrop">
+          <form
+            aria-labelledby="scheduled-create-title"
+            className="scheduled-dialog"
+            onSubmit={(event) => {
+              void submitCreateDialog(event);
+            }}
+            role="dialog"
+          >
+            <div className="scheduled-dialog-heading">
+              <h2 id="scheduled-create-title">新建定时任务</h2>
+              <button aria-label="关闭" onClick={closeCreateDialog} type="button">
+                ×
+              </button>
+            </div>
+
+            <p className="scheduled-dialog-note">本地任务仅在电脑唤醒时运行。</p>
+
+            <label className="scheduled-field">
+              <span>名称</span>
+              <input
+                aria-label="名称"
+                onChange={(event) => updateDraft("name", event.currentTarget.value)}
+                placeholder="daily-code-review"
+                value={draft.name}
+              />
+            </label>
+
+            <label className="scheduled-field">
+              <span>描述</span>
+              <input
+                aria-label="描述"
+                onChange={(event) => updateDraft("description", event.currentTarget.value)}
+                placeholder="审查昨天的提交并标记可疑之处"
+                value={draft.description}
+              />
+            </label>
+
+            <label className="scheduled-field">
+              <span>任务内容</span>
+              <textarea
+                aria-label="任务内容"
+                onChange={(event) => updateDraft("prompt", event.currentTarget.value)}
+                placeholder="查看过去 24 小时的提交。总结变更内容，标记有风险的模式或缺失的测试。"
+                rows={5}
+                value={draft.prompt}
+              />
+            </label>
+
+            <div className="scheduled-dialog-context">
+              <span>访问权限</span>
+              <strong>{workspacePath ?? "当前工作区"}</strong>
+            </div>
+
+            <label className="scheduled-field">
+              <span>频率</span>
+              <select
+                aria-label="频率"
+                onChange={(event) => updateDraft("schedule", event.currentTarget.value)}
+                value={draft.schedule}
+              >
+                <option value="every 24 hours">每天</option>
+                <option value="every 12 hours">每 12 小时</option>
+                <option value="every 4 hours">每 4 小时</option>
+                <option value="every 30 minutes">每 30 分钟</option>
+              </select>
+            </label>
+
+            <label className="scheduled-checkbox">
+              <input
+                checked={draft.enabled}
+                onChange={(event) => updateDraft("enabled", event.currentTarget.checked)}
+                type="checkbox"
+              />
+              <span>创建后启用</span>
+            </label>
+
+            <p className="scheduled-dialog-summary">
+              {draft.schedule === "every 24 hours" ? "每天执行" : `${draft.schedule} 执行`}
+            </p>
+
+            <div className="scheduled-dialog-actions">
+              <button onClick={closeCreateDialog} type="button">
+                取消
+              </button>
+              <button disabled={createDisabled} type="submit">
+                {createBusy ? "创建中" : "创建任务"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </main>
   );
 }

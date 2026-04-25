@@ -44,6 +44,7 @@ import {
   ScheduledWorkspace,
   type ExecutionLog,
   type ScheduledTask,
+  type ScheduledTaskDraft,
 } from "./ui/workbench/workspaces/scheduled/ScheduledWorkspace";
 import {
   SessionWorkspace,
@@ -1882,6 +1883,7 @@ export function App() {
   const [scheduledLogs, setScheduledLogs] = useState<ScheduledTaskRunRecord[]>([]);
   const [selectedScheduledTaskId, setSelectedScheduledTaskId] = useState<string | null>(null);
   const [scheduledBusyTaskId, setScheduledBusyTaskId] = useState<string | null>(null);
+  const [scheduledCreateBusy, setScheduledCreateBusy] = useState(false);
   const [generalSettings, setGeneralSettings] = useState<SettingsGeneralConfig>({
     theme: "light",
     language: "zh",
@@ -3563,8 +3565,29 @@ export function App() {
     setSelectedScheduledTaskId(taskId);
   }
 
-  function handleCreateScheduledTask() {
-    handleOpenSystemTab("new-session");
+  async function handleCreateScheduledTask(draft?: ScheduledTaskDraft) {
+    if (!draft) {
+      return;
+    }
+
+    setScheduledCreateBusy(true);
+    setError(null);
+
+    try {
+      const prompt = draft.description ? `${draft.description}\n\n${draft.prompt}` : draft.prompt;
+      const result = await runtimeClient.createScheduledTask({
+        name: draft.name,
+        prompt,
+        schedule: draft.schedule,
+        enabled: draft.enabled,
+      });
+      await refreshScheduledRecords(result.task.id);
+      setSelectedScheduledTaskId(result.task.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setScheduledCreateBusy(false);
+    }
   }
 
   const workspaceContent = (() => {
@@ -3573,7 +3596,22 @@ export function App() {
     }
 
     if (activeTab.kind === "new-session") {
-      return <NewSessionWorkspace workspacePath={cwdLabel} hostStatusText={hostStatusText} />;
+      return (
+        <NewSessionWorkspace
+          workspacePath={workspacePath}
+          hostStatusText={hostStatusText}
+          modelLabel={providerLabel}
+          modelOptions={(settingsProviders ?? []).map((provider) => ({
+            id: provider.id,
+            label: provider.models?.[0] ?? provider.name,
+          }))}
+          selectedModelId={activeProviderProfileId}
+          workspaceBusy={workspaceBusy}
+          onSelectModel={selectProviderProfile}
+          onWorkspacePathChange={setWorkspacePath}
+          onOpenWorkspace={handleOpenWorkspace}
+        />
+      );
     }
 
     if (activeTab.kind === "session") {
@@ -3639,6 +3677,8 @@ export function App() {
           onRunTask={handleRunScheduledTask}
           onToggleTask={handleToggleScheduledTask}
           busyTaskId={scheduledBusyTaskId}
+          createBusy={scheduledCreateBusy}
+          workspacePath={cwdLabel}
         />
       );
     }

@@ -54,7 +54,9 @@
   margin-top: 28px;
 }
 
-.new-session-status-row span {
+.new-session-status-row > span,
+.new-session-control-pill,
+.new-session-folder-control {
   display: inline-flex;
   align-items: center;
   min-width: 0;
@@ -70,7 +72,9 @@
   font-weight: 700;
 }
 
-.new-session-status-row span::before {
+.new-session-status-row > span::before,
+.new-session-control-pill::before,
+.new-session-folder-control::before {
   content: "";
   width: 7px;
   height: 7px;
@@ -79,13 +83,75 @@
   background: var(--wb-muted-soft, #94a3b8);
 }
 
-.new-session-status-row span[data-status="ready"]::before {
+.new-session-status-row > span[data-status="ready"]::before {
   background: var(--wb-green, #16a34a);
   box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.12);
+}
+
+.new-session-control-pill > span,
+.new-session-folder-control label > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.new-session-control-pill select,
+.new-session-folder-control input,
+.new-session-folder-control button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+}
+
+.new-session-control-pill select {
+  max-width: min(260px, 52vw);
+  cursor: pointer;
+}
+
+.new-session-folder-control {
+  padding-right: 6px;
+}
+
+.new-session-folder-control label {
+  min-width: min(320px, 54vw);
+}
+
+.new-session-folder-control input {
+  width: 100%;
+  min-width: 0;
+}
+
+.new-session-folder-control button {
+  min-height: 24px;
+  flex: 0 0 auto;
+  border-left: 1px solid var(--wb-line, rgba(15, 23, 42, 0.1));
+  padding-left: 8px;
+  color: var(--wb-primary, #2563eb);
+  cursor: pointer;
+}
+
+.new-session-folder-control button:disabled,
+.new-session-control-pill select:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 @media (max-width: 640px) {
   .new-session-desk {
     padding: 24px;
+  }
+
+  .new-session-folder-control {
+    width: 100%;
+  }
+
+  .new-session-folder-control label {
+    min-width: 0;
+    flex: 1 1 auto;
   }
 }

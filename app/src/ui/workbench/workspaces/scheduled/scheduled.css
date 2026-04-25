@@ -474,6 +474,166 @@
   color: #b91c1c;
 }
 
+.scheduled-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.scheduled-dialog {
+  width: min(700px, 100%);
+  max-height: min(92vh, 860px);
+  overflow: auto;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 12px;
+  padding: 24px 30px;
+  background: var(--scheduled-bg);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
+}
+
+.scheduled-dialog-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.scheduled-dialog-heading h2 {
+  margin: 0;
+  color: var(--scheduled-ink);
+  font-size: 24px;
+}
+
+.scheduled-dialog-heading button {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  color: #5f4b43;
+  background: transparent;
+  font: inherit;
+  font-size: 30px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.scheduled-dialog-note,
+.scheduled-dialog-summary {
+  margin: 18px 0;
+  border-radius: 8px;
+  padding: 13px 16px;
+  background: var(--scheduled-muted-bg);
+  color: #5f4b43;
+  font-size: 14px;
+}
+
+.scheduled-field {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  color: var(--scheduled-ink);
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.scheduled-field input,
+.scheduled-field textarea,
+.scheduled-field select {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(148, 100, 84, 0.34);
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: var(--scheduled-ink);
+  background: #fffefc;
+  font: inherit;
+  font-weight: 600;
+}
+
+.scheduled-field textarea {
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.scheduled-dialog-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 14px;
+  border: 1px solid rgba(148, 100, 84, 0.26);
+  border-radius: 8px;
+  padding: 11px 14px;
+  color: #5f4b43;
+  background: #fffefc;
+}
+
+.scheduled-dialog-context span {
+  color: var(--scheduled-muted);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.scheduled-dialog-context strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduled-checkbox {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 14px;
+  border: 1px solid var(--scheduled-border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  color: #334155;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.scheduled-checkbox input {
+  width: 18px;
+  height: 18px;
+}
+
+.scheduled-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.scheduled-dialog-actions button {
+  min-height: 38px;
+  border: 1px solid rgba(148, 100, 84, 0.34);
+  border-radius: 8px;
+  padding: 8px 16px;
+  background: #fffefc;
+  color: var(--scheduled-ink);
+  font: inherit;
+  font-weight: 760;
+  cursor: pointer;
+}
+
+.scheduled-dialog-actions button[type="submit"] {
+  border-color: transparent;
+  color: #ffffff;
+  background: #c89b8e;
+}
+
+.scheduled-dialog-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 @media (max-width: 980px) {
   .scheduled-overview-row,
   .scheduled-ledger,

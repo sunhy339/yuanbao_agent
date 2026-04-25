@@ -155,7 +155,7 @@ describe("ScheduledWorkspace", () => {
     expect(screen.queryByText("Other task log is hidden.")).not.toBeInTheDocument();
   });
 
-  it("calls create, run, and toggle callbacks", async () => {
+  it("calls run and toggle callbacks", async () => {
     const user = userEvent.setup();
     const onCreateTask = vi.fn();
     const onRunTask = vi.fn();
@@ -169,15 +169,43 @@ describe("ScheduledWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Create scheduled task" }));
     await user.click(screen.getByRole("button", { name: "Run task Morning sync" }));
     await user.click(screen.getByRole("button", { name: "Disable task Morning sync" }));
     await user.click(screen.getByRole("button", { name: "Enable task Archive records" }));
 
-    expect(onCreateTask).toHaveBeenCalledTimes(1);
+    expect(onCreateTask).not.toHaveBeenCalled();
     expect(onRunTask).toHaveBeenCalledWith("morning");
     expect(onToggleTask).toHaveBeenCalledWith("morning");
     expect(onToggleTask).toHaveBeenCalledWith("archive");
+  });
+
+  it("opens a scheduled task dialog and submits the draft", async () => {
+    const user = userEvent.setup();
+    const onCreateTask = vi.fn();
+    render(<ScheduledWorkspace onCreateTask={onCreateTask} workspacePath="D:\\py\\yuanbao_agent" />);
+
+    await user.click(screen.getByRole("button", { name: "Create scheduled task" }));
+
+    expect(screen.getByRole("dialog", { name: "新建定时任务" })).toBeInTheDocument();
+    expect(screen.getByText("本地任务仅在电脑唤醒时运行。")).toBeInTheDocument();
+    expect(screen.getByText(/yuanbao_agent/)).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("名称"), "daily-code-review");
+    await user.type(screen.getByLabelText("描述"), "审查昨天的提交并标记可疑之处");
+    await user.type(
+      screen.getByLabelText("任务内容"),
+      "查看过去 24 小时的提交。总结变更内容，标记有风险的模式或缺失的测试。",
+    );
+    await user.selectOptions(screen.getByLabelText("频率"), "every 24 hours");
+    await user.click(screen.getByRole("button", { name: "创建任务" }));
+
+    expect(onCreateTask).toHaveBeenCalledWith({
+      name: "daily-code-review",
+      description: "审查昨天的提交并标记可疑之处",
+      prompt: "查看过去 24 小时的提交。总结变更内容，标记有风险的模式或缺失的测试。",
+      schedule: "every 24 hours",
+      enabled: true,
+    });
   });
 
   it("marks the busy task controls as disabled", () => {

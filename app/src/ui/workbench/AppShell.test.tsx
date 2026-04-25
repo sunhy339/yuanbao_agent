@@ -30,6 +30,7 @@ function renderShell(options: { activeTab?: WorkbenchTab["id"]; composerVisible?
     onOpenSessionTab: vi.fn(),
     onActivateTab: vi.fn(),
     onCloseTab: vi.fn(),
+    onCloseOtherTabs: vi.fn(),
     onSubmitPrompt: vi.fn(),
     onPromptChange: vi.fn(),
   };
@@ -85,6 +86,7 @@ describe("AppShell", () => {
         onOpenSessionTab={vi.fn()}
         onActivateTab={vi.fn()}
         onCloseTab={vi.fn()}
+        onCloseOtherTabs={vi.fn()}
         onSubmitPrompt={vi.fn()}
         disabled={false}
         providerLabel="MiniMax-M2.7-highspeed"

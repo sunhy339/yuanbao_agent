@@ -19,6 +19,7 @@ interface AppShellProps {
   onOpenSessionTab: (session: WorkbenchSession) => void;
   onActivateTab: (tabId: WorkbenchTab["id"]) => void;
   onCloseTab: (tabId: WorkbenchTab["id"]) => void;
+  onCloseOtherTabs: (tabId: WorkbenchTab["id"]) => void;
   onSubmitPrompt: () => void;
   disabled: boolean;
   providerLabel: string;
@@ -39,6 +40,7 @@ export function AppShell({
   onOpenSessionTab,
   onActivateTab,
   onCloseTab,
+  onCloseOtherTabs,
   onSubmitPrompt,
   disabled,
   providerLabel,
@@ -57,7 +59,13 @@ export function AppShell({
           onOpenSessionTab={onOpenSessionTab}
         />
         <section className="workbench-main" aria-label="Workbench desk">
-          <WorkspaceTabs tabs={tabs} activeTabId={activeTabId} onActivateTab={onActivateTab} onCloseTab={onCloseTab} />
+          <WorkspaceTabs
+            tabs={tabs}
+            activeTabId={activeTabId}
+            onActivateTab={onActivateTab}
+            onCloseTab={onCloseTab}
+            onCloseOtherTabs={onCloseOtherTabs}
+          />
           <WorkspaceFrame composerVisible={composerVisible}>{children}</WorkspaceFrame>
           {composerVisible ? (
             <ComposerDock

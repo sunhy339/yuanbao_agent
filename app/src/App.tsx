@@ -33,6 +33,7 @@ import {
 import { AppShell } from "./ui/workbench/AppShell";
 import { getSidebarActiveSessionId, resolveSessionForTab } from "./ui/workbench/sessionRouting";
 import {
+  closeOtherTabs,
   closeTab,
   getInitialTabs,
   openSessionTab,
@@ -2443,6 +2444,22 @@ export function App() {
       if (result.activeTabId.startsWith("session:")) {
         const sessionId = result.activeTabId.slice("session:".length);
         selectSession(sessions.find((item) => item.id === sessionId) ?? null);
+      } else {
+        selectSession(null);
+      }
+      return result.tabs;
+    });
+  }
+
+  function handleCloseOtherTabs(tabId: WorkbenchTab["id"]) {
+    setOpenTabs((current) => {
+      const result = closeOtherTabs(current, tabId);
+      setActiveTabId(result.activeTabId);
+      if (result.activeTabId.startsWith("session:")) {
+        const sessionId = result.activeTabId.slice("session:".length);
+        selectSession(sessions.find((item) => item.id === sessionId) ?? null);
+      } else {
+        selectSession(null);
       }
       return result.tabs;
     });
@@ -3734,6 +3751,7 @@ export function App() {
       onOpenSessionTab={handleOpenSessionTab}
       onActivateTab={handleActivateTab}
       onCloseTab={handleCloseTab}
+      onCloseOtherTabs={handleCloseOtherTabs}
       onSubmitPrompt={handleSendMessage}
       disabled={loading || messageBusy || !runtimeReady}
       providerLabel={providerLabel}

@@ -67,3 +67,19 @@ export function closeTab(
   const neighbor = nextTabs[index] ?? nextTabs[index - 1] ?? ensuredTabs[0];
   return { tabs: ensuredTabs, activeTabId: neighbor.id };
 }
+
+export function closeOtherTabs(tabs: WorkbenchTab[], tabId: WorkbenchTab["id"]): WorkbenchTabResult {
+  const target = tabs.find((tab) => tab.id === tabId);
+  if (!target) {
+    return { tabs, activeTabId: tabs[0]?.id ?? getInitialTabs()[0].id };
+  }
+
+  const nextTabs = tabs.filter((tab) => tab.id === tabId || !tab.closable);
+  const ensuredTabs = nextTabs.length ? nextTabs : getInitialTabs();
+  const nextActive = ensuredTabs.find((tab) => tab.id === tabId) ?? ensuredTabs[0];
+
+  return {
+    tabs: ensuredTabs,
+    activeTabId: nextActive.id,
+  };
+}

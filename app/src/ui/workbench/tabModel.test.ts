@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { closeTab, getInitialTabs, openSessionTab, openSystemTab } from "./tabModel";
+import { closeOtherTabs, closeTab, getInitialTabs, openSessionTab, openSystemTab } from "./tabModel";
 import type { WorkbenchTab } from "./types";
 
 describe("tabModel", () => {
@@ -45,5 +45,19 @@ describe("tabModel", () => {
 
     expect(result.tabs).toEqual(tabs);
     expect(result.activeTabId).toBe("system:settings");
+  });
+
+  it("closes other closable tabs and activates the selected tab", () => {
+    const tabs: WorkbenchTab[] = [
+      { id: "system:new-session", kind: "new-session", title: "New Session", closable: true },
+      { id: "session:sess_1", kind: "session", title: "Session A", sessionId: "sess_1", closable: true },
+      { id: "session:sess_2", kind: "session", title: "Session B", sessionId: "sess_2", closable: true },
+      { id: "system:settings", kind: "settings", title: "Settings", closable: true },
+    ];
+
+    const result = closeOtherTabs(tabs, "session:sess_1");
+
+    expect(result.tabs.map((tab) => tab.id)).toEqual(["session:sess_1"]);
+    expect(result.activeTabId).toBe("session:sess_1");
   });
 });

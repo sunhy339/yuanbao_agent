@@ -26,6 +26,12 @@ import type {
 } from "@shared";
 import { RuntimeClient, type HostStatus, type RuntimeConfig } from "./lib/runtimeClient";
 import {
+  appendUserMessage,
+  getVisibleChatMessages,
+  updatePendingMessageTask,
+  type ChatMessageView,
+} from "./state/chatMessages";
+import {
   DEFAULT_PROMPT,
   DEFAULT_SESSION_TITLE,
   DEFAULT_WORKSPACE_PATH,
@@ -987,16 +993,6 @@ interface PatchCardView {
   approvalResolvedAt?: number;
 }
 
-interface ChatMessageView {
-  id: string;
-  taskId: string;
-  role: "user" | "assistant";
-  content: string;
-  createdAt: number;
-  updatedAt: number;
-  streaming?: boolean;
-}
-
 interface ToolTimelineItem {
   id: string;
   taskId: string;
@@ -1201,6 +1197,7 @@ function appendAssistantToken(current: ChatMessageView[], event: AgentEventEnvel
     ...next,
     {
       id: `assistant_${event.eventId}`,
+      sessionId: event.sessionId,
       taskId: event.taskId,
       role: "assistant",
       content: delta,
@@ -1247,6 +1244,7 @@ function completeAssistantMessage(current: ChatMessageView[], event: AgentEventE
     ...next,
     {
       id: `assistant_${event.eventId}`,
+      sessionId: event.sessionId,
       taskId: event.taskId,
       role: "assistant",
       content: completedContent,
@@ -2354,11 +2352,8 @@ export function App() {
   }, [taskHistory, session]);
 
   const visibleChatMessages = useMemo(
-    () =>
-      chatMessages.filter(
-        (message) => message.taskId === activeTaskId || message.taskId === "pending",
-      ),
-    [activeTaskId, chatMessages],
+    () => getVisibleChatMessages(chatMessages, session?.id),
+    [chatMessages, session?.id],
   );
   const taskControlActions = useMemo(() => getTaskControlActions(task?.status), [task?.status]);
 
@@ -2395,7 +2390,6 @@ export function App() {
     setPatchCacheById({});
     setPatchBusyId(null);
     setAssistantOutput("");
-    setChatMessages([]);
     setApprovalBusyId(null);
 
     if (!nextSession) {
@@ -3217,16 +3211,15 @@ export function App() {
       setPatchCacheById({});
       setPatchBusyId(null);
       setAssistantOutput("");
-      setChatMessages([
-        {
+      setPrompt("");
+      setChatMessages((current) =>
+        appendUserMessage(current, {
           id: pendingUserMessageId,
-          taskId: "pending",
-          role: "user",
+          sessionId: activeSession.id,
           content: messageContent,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        },
-      ]);
+          now: Date.now(),
+        }),
+      );
       setApprovalBusyId(null);
 
       const result = await runtimeClient.sendMessage({
@@ -3235,11 +3228,7 @@ export function App() {
         attachments: [],
       });
 
-      setChatMessages((current) =>
-        current.map((message) =>
-          message.id === pendingUserMessageId ? { ...message, taskId: result.task.id } : message,
-        ),
-      );
+      setChatMessages((current) => updatePendingMessageTask(current, pendingUserMessageId, result.task.id));
       setTaskHistory((current) => upsertRecord(current, result.task));
       setTask(result.task);
       setActiveTaskId(result.task.id);

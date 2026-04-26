@@ -127,4 +127,17 @@ describe("SessionWorkspace", () => {
     expect(screen.getByRole("heading", { name: "No messages yet" })).toBeInTheDocument();
     expect(screen.getByText(/send the first message from the composer below/i)).toBeInTheDocument();
   });
+
+  it("does not render a runtime divider when only chat messages are visible", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "你好", createdAt: 1 }]}
+      />,
+    );
+
+    expect(screen.getByText("你好")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Runtime timeline")).not.toBeInTheDocument();
+  });
 });

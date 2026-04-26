@@ -425,12 +425,16 @@ function buildConversationActivity(
 }
 
 function ConversationActivity({ items }: { items: ConversationActivityItem[] }) {
+  const runtimeCount = items.filter((item) => item.kind === "runtime").length;
+
   return (
     <div className="conversation-activity" aria-label="Conversation activity">
-      <div className="runtime-timeline-heading" aria-label="Runtime timeline">
-        <span>Runtime</span>
-        <strong>{items.filter((item) => item.kind === "runtime").length} events</strong>
-      </div>
+      {runtimeCount ? (
+        <div className="runtime-timeline-heading" aria-label="Runtime timeline">
+          <span>Runtime</span>
+          <strong>{runtimeCount} events</strong>
+        </div>
+      ) : null}
       {items.map((item) =>
         item.kind === "message" ? (
           <MessageBubble message={item.message} key={item.id} />

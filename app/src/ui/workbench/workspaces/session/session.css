@@ -173,7 +173,7 @@
 }
 
 .message-bubble-head em,
-.runtime-event-head em,
+.runtime-event-summary em,
 .runtime-event-meta span {
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 999px;
@@ -232,15 +232,15 @@
 .runtime-event-card {
   position: relative;
   display: grid;
-  gap: 7px;
-  width: min(86ch, 94%);
+  gap: 6px;
+  width: min(78ch, 92%);
   justify-self: start;
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--session-border);
   border-radius: 8px;
-  padding: 10px;
-  background: var(--session-surface-muted);
+  padding: 0;
+  background: var(--session-surface);
 }
 
 .runtime-event-card::before {
@@ -286,14 +286,27 @@
   justify-self: start;
 }
 
-.runtime-event-head {
+.runtime-event-summary {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   gap: 8px;
   align-items: baseline;
+  width: 100%;
+  min-height: 42px;
+  border: 0;
+  padding: 9px 12px 9px 14px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
 }
 
-.runtime-event-head > span {
+.runtime-event-summary:hover {
+  background: var(--session-surface-muted);
+}
+
+.runtime-event-summary > span {
   color: var(--session-blue);
   font-family: var(--session-mono);
   font-size: 11px;
@@ -302,7 +315,7 @@
   text-transform: uppercase;
 }
 
-.runtime-event-head strong {
+.runtime-event-summary strong {
   min-width: 0;
   overflow: hidden;
   color: var(--session-ink);
@@ -313,13 +326,28 @@
   white-space: nowrap;
 }
 
+.runtime-event-summary i {
+  color: var(--session-muted);
+  font-style: normal;
+}
+
 .runtime-event-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.runtime-event-card p {
+.runtime-event-meta-compact {
+  padding: 0 12px 10px 14px;
+}
+
+.runtime-event-detail {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px 14px;
+}
+
+.runtime-event-detail p {
   margin-bottom: 0;
   color: #475569;
   font-size: 13px;
@@ -328,7 +356,7 @@
   overflow-wrap: anywhere;
 }
 
-.runtime-event-card pre {
+.runtime-event-detail pre {
   max-height: 220px;
   overflow: auto;
   margin: 0;
@@ -340,6 +368,35 @@
   font: 12px/1.55 var(--session-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.runtime-event-actions {
+  display: flex;
+  gap: 7px;
+  padding: 0 12px 10px 14px;
+}
+
+.runtime-event-actions button {
+  min-height: 28px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 7px;
+  padding: 5px 10px;
+  background: var(--session-surface);
+  color: #334155;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.runtime-event-actions button:first-child {
+  border-color: rgba(37, 99, 235, 0.2);
+  background: #eff6ff;
+  color: var(--session-blue);
+}
+
+.runtime-event-actions button:hover {
+  filter: brightness(0.98);
 }
 
 @media (max-width: 640px) {

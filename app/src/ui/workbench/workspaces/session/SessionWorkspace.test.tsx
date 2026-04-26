@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionWorkspace } from "./SessionWorkspace";
 
 afterEach(() => {
@@ -99,10 +100,10 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText("I found the failure in the session renderer.")).toBeInTheDocument();
     expect(screen.getByText("Runtime resumed session state.")).toBeInTheDocument();
     expect(screen.getByText("shell_command")).toBeInTheDocument();
-    expect(screen.getByLabelText("Runtime timeline")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Runtime timeline")).not.toBeInTheDocument();
     expect(screen.queryByText("Patch the session workspace")).not.toBeInTheDocument();
     expect(screen.getByText("Allow npm test")).toBeInTheDocument();
-    expect(screen.getByText("Updated session layout")).toBeInTheDocument();
+    expect(screen.queryByText("Updated session layout")).not.toBeInTheDocument();
     expect(screen.queryByText("Provider response")).not.toBeInTheDocument();
     expect(screen.getByText("apply_patch")).toBeInTheDocument();
     expect(screen.getByText("npm run typecheck")).toBeInTheDocument();
@@ -139,5 +140,66 @@ describe("SessionWorkspace", () => {
 
     expect(screen.getByText("你好")).toBeInTheDocument();
     expect(screen.queryByLabelText("Runtime timeline")).not.toBeInTheDocument();
+  });
+
+  it("renders runtime cards collapsed by default and expands details on demand", async () => {
+    const user = userEvent.setup();
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Run tests", createdAt: 1 }]}
+        toolCalls={[
+          {
+            id: "tool_1",
+            toolName: "run_command",
+            status: "failed",
+            resultSummary: "Command failed with exit 1.",
+            argsPreview: '{"command":"npm test","cwd":"app"}',
+            time: 2,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /Tool run_command failed/ })).toBeInTheDocument();
+    expect(screen.queryByText("Command failed with exit 1.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/"command":"npm test"/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Tool run_command failed/ }));
+
+    expect(screen.getByText("Command failed with exit 1.")).toBeInTheDocument();
+    expect(screen.getByText(/"command":"npm test"/)).toBeInTheDocument();
+  });
+
+  it("shows pending approval actions so commands do not wait invisibly", async () => {
+    const user = userEvent.setup();
+    const onApprove = vi.fn();
+    const onReject = vi.fn();
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "assistant", content: "需要确认执行。", createdAt: 1 }]}
+        approvals={[
+          {
+            id: "approval_1",
+            title: "apply_patch",
+            status: "pending",
+            kind: "apply_patch",
+            command: "apply_patch",
+          },
+        ]}
+        onApprove={onApprove}
+        onReject={onReject}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "批准 apply_patch" }));
+    await user.click(screen.getByRole("button", { name: "拒绝 apply_patch" }));
+
+    expect(onApprove).toHaveBeenCalledWith("approval_1");
+    expect(onReject).toHaveBeenCalledWith("approval_1");
   });
 });

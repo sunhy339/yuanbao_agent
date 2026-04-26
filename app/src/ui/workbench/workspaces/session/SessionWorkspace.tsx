@@ -1,3 +1,4 @@
+import { useState } from "react";
 import "./session.css";
 
 export interface SessionWorkspaceSession {
@@ -215,6 +216,7 @@ function formatTimestamp(timestamp?: number) {
 interface RuntimeTimelineItem {
   id: string;
   kind: "approval" | "patch" | "trace" | "tool" | "command" | "task";
+  sourceId?: string;
   title: string;
   status?: string;
   summary?: string;
@@ -272,7 +274,6 @@ function compactMeta(values: Array<string | null | undefined>) {
 
 function buildRuntimeItems({
   approvals = [],
-  patches = [],
   toolCalls = [],
   backgroundJobs = [],
 }: Pick<
@@ -285,29 +286,13 @@ function buildRuntimeItems({
     items.push({
       id: `approval:${approval.id}`,
       kind: "approval",
+      sourceId: approval.id,
       title: approval.title,
       status: approval.status,
       summary: approval.summary,
       meta: compactMeta([approval.kind, approval.risk ? `risk: ${approval.risk}` : null, approval.cwd]),
       code: approval.command || approval.parametersPreview || approval.fullInput,
       time: approval.requestedAt,
-    });
-  });
-
-  patches.forEach((patch) => {
-    items.push({
-      id: `patch:${patch.id}`,
-      kind: "patch",
-      title: patch.summary,
-      status: patch.status,
-      summary: patch.files?.map((file) => file.path).join("\n"),
-      meta: compactMeta([
-        patch.filesChanged !== undefined ? `${patch.filesChanged} files` : null,
-        patch.additions !== undefined ? `+${patch.additions}` : null,
-        patch.deletions !== undefined ? `-${patch.deletions}` : null,
-      ]),
-      code: patch.diff,
-      time: patch.updatedAt,
     });
   });
 
@@ -348,23 +333,88 @@ function buildRuntimeItems({
   return items;
 }
 
-function RuntimeEventCard({ item }: { item: RuntimeTimelineItem }) {
+function getRuntimeKindLabel(kind: RuntimeTimelineItem["kind"]) {
+  if (kind === "command") {
+    return "Bash";
+  }
+  if (kind === "approval") {
+    return "Approval";
+  }
+  if (kind === "tool") {
+    return "Tool";
+  }
+  return kind;
+}
+
+function RuntimeEventCard({
+  item,
+  onApprove,
+  onReject,
+}: {
+  item: RuntimeTimelineItem;
+  onApprove?(approvalId: string): void | Promise<void>;
+  onReject?(approvalId: string): void | Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const kindLabel = getRuntimeKindLabel(item.kind);
+  const canResolveApproval = item.kind === "approval" && item.status === "pending" && item.sourceId;
+
   return (
     <article className="runtime-event-card" data-activity-kind="runtime" data-kind={item.kind}>
-      <div className="runtime-event-head">
-        <span>{item.kind}</span>
+      <button
+        aria-label={`${kindLabel} ${item.title}${item.status ? ` ${item.status}` : ""}`}
+        aria-expanded={expanded}
+        className="runtime-event-summary"
+        onClick={() => setExpanded((current) => !current)}
+        type="button"
+      >
+        <span>{kindLabel}</span>
         <strong>{item.title}</strong>
         {item.status ? <em>{item.status}</em> : null}
-      </div>
-      {item.meta?.length ? (
-        <div className="runtime-event-meta">
-          {item.meta.map((entry) => (
+        <i aria-hidden="true">{expanded ? "⌃" : "⌄"}</i>
+      </button>
+      {item.meta?.length && !expanded ? (
+        <div className="runtime-event-meta runtime-event-meta-compact">
+          {item.meta.slice(0, 2).map((entry) => (
             <span key={entry}>{entry}</span>
           ))}
         </div>
       ) : null}
-      {item.summary ? <p>{item.summary}</p> : null}
-      {item.code ? <pre>{item.code}</pre> : null}
+      {canResolveApproval ? (
+        <div className="runtime-event-actions">
+          <button
+            aria-label={`批准 ${item.title}`}
+            onClick={() => {
+              void onApprove?.(item.sourceId ?? "");
+            }}
+            type="button"
+          >
+            批准
+          </button>
+          <button
+            aria-label={`拒绝 ${item.title}`}
+            onClick={() => {
+              void onReject?.(item.sourceId ?? "");
+            }}
+            type="button"
+          >
+            拒绝
+          </button>
+        </div>
+      ) : null}
+      {expanded ? (
+        <div className="runtime-event-detail">
+          {item.meta?.length ? (
+            <div className="runtime-event-meta">
+              {item.meta.map((entry) => (
+                <span key={entry}>{entry}</span>
+              ))}
+            </div>
+          ) : null}
+          {item.summary ? <p>{item.summary}</p> : null}
+          {item.code ? <pre>{item.code}</pre> : null}
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -424,22 +474,22 @@ function buildConversationActivity(
   });
 }
 
-function ConversationActivity({ items }: { items: ConversationActivityItem[] }) {
-  const runtimeCount = items.filter((item) => item.kind === "runtime").length;
-
+function ConversationActivity({
+  items,
+  onApprove,
+  onReject,
+}: {
+  items: ConversationActivityItem[];
+  onApprove?(approvalId: string): void | Promise<void>;
+  onReject?(approvalId: string): void | Promise<void>;
+}) {
   return (
     <div className="conversation-activity" aria-label="Conversation activity">
-      {runtimeCount ? (
-        <div className="runtime-timeline-heading" aria-label="Runtime timeline">
-          <span>Runtime</span>
-          <strong>{runtimeCount} events</strong>
-        </div>
-      ) : null}
       {items.map((item) =>
         item.kind === "message" ? (
           <MessageBubble message={item.message} key={item.id} />
         ) : (
-          <RuntimeEventCard item={item.runtime} key={item.id} />
+          <RuntimeEventCard item={item.runtime} key={item.id} onApprove={onApprove} onReject={onReject} />
         ),
       )}
     </div>
@@ -455,6 +505,8 @@ export function SessionWorkspace({
   traces,
   toolCalls,
   backgroundJobs,
+  onApprove,
+  onReject,
 }: SessionWorkspaceProps) {
   if (!session) {
     return (
@@ -494,7 +546,7 @@ export function SessionWorkspace({
             <p>Send the first message from the composer below.</p>
           </div>
         ) : (
-          <ConversationActivity items={activityItems} />
+          <ConversationActivity items={activityItems} onApprove={onApprove} onReject={onReject} />
         )}
       </section>
     </main>

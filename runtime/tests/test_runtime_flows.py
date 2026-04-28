@@ -4,7 +4,11 @@ from pathlib import Path
 from typing import Any
 
 import subprocess
+import time
 import pytest
+
+from local_agent_runtime.policy.guard import PolicyGuard
+from local_agent_runtime.tools.builtin import build_builtin_tools
 
 
 def _event_types(events: list[dict[str, Any]]) -> list[str]:
@@ -62,6 +66,51 @@ def test_workspace_session_message_tool_flow(runtime_harness: Any, tmp_path: Pat
     assert task_from_store["status"] == "completed"
     assert task_from_store["id"] == task["id"]
     assert task_from_store["plan"][-1]["status"] == "completed"
+
+
+def test_message_list_returns_persisted_conversation(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Persisted conversation"},
+        ),
+        "session",
+    )
+    other_session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Other conversation"},
+        ),
+        "session",
+    )
+
+    runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "remember this"},
+    )
+    runtime_harness.call(
+        "message.send",
+        {"sessionId": other_session["id"], "content": "do not include this"},
+    )
+
+    messages = runtime_harness.call(
+        "message.list",
+        {"sessionId": session["id"]},
+    )["result"]["messages"]
+
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[0]["sessionId"] == session["id"]
+    assert messages[0]["content"] == "remember this"
+    assert messages[1]["sessionId"] == session["id"]
+    assert messages[1]["content"]
+    assert "do not include this" not in [message["content"] for message in messages]
+    assert messages[0]["createdAt"] <= messages[1]["createdAt"]
 
 
 def test_provider_test_reports_mock_and_missing_env(runtime_harness: Any) -> None:
@@ -132,6 +181,161 @@ def test_message_send_fails_when_openai_provider_key_is_missing(
     assert "YUANBAO_TEST_MISSING_KEY" in task["resultSummary"]
     assert "Completed an initial pass" not in task["resultSummary"]
     assert not [event for event in runtime_harness.events if event["type"] == "assistant.message.completed"]
+
+
+def test_background_message_send_returns_before_agent_loop_completes(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from local_agent_runtime.provider.adapter import ProviderAdapter
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Slow task"},
+        ),
+        "session",
+    )
+
+    def slow_generate(self: ProviderAdapter, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        time.sleep(0.5)
+        return {
+            "final": "Slow answer completed.",
+            "prompt": prompt,
+            "context": context,
+        }
+
+    monkeypatch.setattr(ProviderAdapter, "generate", slow_generate)
+
+    started_at = time.monotonic()
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "slow answer", "background": True},
+        ),
+        "task",
+    )
+
+    assert time.monotonic() - started_at < 0.25
+    assert task["status"] == "running"
+
+    deadline = time.monotonic() + 2
+    completed_task = task
+    while time.monotonic() < deadline:
+        completed_task = _call_result(runtime_harness.call("task.get", {"taskId": task["id"]}), "task")
+        if completed_task["status"] == "completed":
+            break
+        time.sleep(0.05)
+
+    assert completed_task["status"] == "completed"
+    assert completed_task["resultSummary"] == "Slow answer completed."
+
+
+def test_background_message_send_persists_user_before_completion(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from local_agent_runtime.provider.adapter import ProviderAdapter
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Background history"},
+        ),
+        "session",
+    )
+
+    def slow_generate(self: ProviderAdapter, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        time.sleep(0.5)
+        return {"final": "Background answer completed.", "prompt": prompt, "context": context}
+
+    monkeypatch.setattr(ProviderAdapter, "generate", slow_generate)
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "persist immediately", "background": True},
+        ),
+        "task",
+    )
+    assert task["status"] == "running"
+
+    immediate_messages = runtime_harness.call(
+        "message.list",
+        {"sessionId": session["id"]},
+    )["result"]["messages"]
+    assert [(message["role"], message["content"]) for message in immediate_messages] == [
+        ("user", "persist immediately")
+    ]
+
+    messages = immediate_messages
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        messages = runtime_harness.call(
+            "message.list",
+            {"sessionId": session["id"]},
+        )["result"]["messages"]
+        if [message["role"] for message in messages] == ["user", "assistant"]:
+            break
+        time.sleep(0.05)
+
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[1]["content"] == "Background answer completed."
+
+
+def test_background_message_send_returns_before_context_build_completes(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from local_agent_runtime.context.builder import ContextBuilder
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Slow context"},
+        ),
+        "session",
+    )
+    original_build = ContextBuilder.build
+
+    def slow_build(self: ContextBuilder, session_id: str, goal: str) -> dict[str, object]:
+        time.sleep(0.5)
+        return original_build(self, session_id, goal)
+
+    monkeypatch.setattr(ContextBuilder, "build", slow_build)
+
+    started_at = time.monotonic()
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "slow context", "background": True},
+        ),
+        "task",
+    )
+
+    assert time.monotonic() - started_at < 0.25
+    assert task["status"] == "running"
 
 
 def test_config_get_normalizes_legacy_provider_into_active_profile(runtime_harness: Any) -> None:
@@ -525,6 +729,40 @@ def test_explicit_apply_patch_routes_to_patch_tool(runtime_harness: Any, tmp_pat
     assert started_tools.count("apply_patch") == 2
     assert final_task["plan"][1]["id"] == "apply-patch"
     assert final_task["plan"][1]["status"] == "completed"
+
+
+def test_apply_patch_files_can_create_new_file_after_approval(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = runtime_harness.store.upsert_workspace(str(workspace_root))
+    session = runtime_harness.store.create_session(workspace_id=workspace["id"], title="Create file")
+    task = runtime_harness.store.create_task(session_id=session["id"], task_type="chat", goal="create file", plan=[])
+    tools = build_builtin_tools(policy_guard=PolicyGuard(), store=runtime_harness.store)
+    files = [{"path": "hello_world.py", "content": "print('Hello, World!')\n"}]
+
+    proposed = tools["apply_patch"](
+        {
+            "workspaceRoot": str(workspace_root),
+            "taskId": task["id"],
+            "files": files,
+        }
+    )
+
+    assert proposed["status"] == "approval_required"
+    approval_id = proposed["approval"]["id"]
+    runtime_harness.store.resolve_approval(approval_id, "approved")
+
+    applied = tools["apply_patch"](
+        {
+            "workspaceRoot": str(workspace_root),
+            "taskId": task["id"],
+            "approvalId": approval_id,
+            "files": files,
+        }
+    )
+
+    assert applied["status"] == "applied"
+    assert (workspace_root / "hello_world.py").read_text(encoding="utf-8") == "print('Hello, World!')\n"
 
 
 def test_explicit_apply_patch_rejects_invalid_patch_before_approval(runtime_harness: Any, tmp_path: Path) -> None:

@@ -156,6 +156,12 @@ export interface SettingsWorkspaceProps {
   computerUse?: SettingsComputerUseConfig;
   onComputerUseChange?: (next: SettingsComputerUseConfig) => void;
   onRecheckComputerUse?: () => void | Promise<void>;
+  workspaceFocus?: string | null;
+  workspaceFocusBusy?: boolean;
+  onSaveWorkspaceFocus?: (focus: string) => void | Promise<void>;
+  workspaceMemorySummary?: string | null;
+  workspaceMemoryBusy?: boolean;
+  onClearWorkspaceMemory?: () => void | Promise<void>;
   about?: SettingsAboutInfo;
   onOpenLogs?: () => void;
   onOpenDataDirectory?: () => void;
@@ -489,6 +495,12 @@ export function SettingsWorkspace({
   computerUse,
   onComputerUseChange,
   onRecheckComputerUse,
+  workspaceFocus,
+  workspaceFocusBusy = false,
+  onSaveWorkspaceFocus,
+  workspaceMemorySummary,
+  workspaceMemoryBusy = false,
+  onClearWorkspaceMemory,
   about,
   onOpenLogs,
   onOpenDataDirectory,
@@ -632,7 +644,19 @@ export function SettingsWorkspace({
               onRecheckComputerUse={onRecheckComputerUse}
             />
           ) : null}
-          {section === "about" ? <AboutPanel about={about} onOpenLogs={onOpenLogs} onOpenDataDirectory={onOpenDataDirectory} /> : null}
+          {section === "about" ? (
+            <AboutPanel
+              about={about}
+              workspaceFocus={workspaceFocus}
+              workspaceFocusBusy={workspaceFocusBusy}
+              onSaveWorkspaceFocus={onSaveWorkspaceFocus}
+              workspaceMemorySummary={workspaceMemorySummary}
+              workspaceMemoryBusy={workspaceMemoryBusy}
+              onClearWorkspaceMemory={onClearWorkspaceMemory}
+              onOpenLogs={onOpenLogs}
+              onOpenDataDirectory={onOpenDataDirectory}
+            />
+          ) : null}
         </div>
       </section>
 
@@ -1126,13 +1150,44 @@ function ComputerUsePanel({ value, onChange, onRecheckComputerUse }: { value: Se
   );
 }
 
-function AboutPanel({ about, onOpenLogs, onOpenDataDirectory }: { about?: SettingsAboutInfo; onOpenLogs?: () => void; onOpenDataDirectory?: () => void }) {
+function AboutPanel({
+  about,
+  workspaceFocus,
+  workspaceFocusBusy,
+  onSaveWorkspaceFocus,
+  workspaceMemorySummary,
+  workspaceMemoryBusy,
+  onClearWorkspaceMemory,
+  onOpenLogs,
+  onOpenDataDirectory,
+}: {
+  about?: SettingsAboutInfo;
+  workspaceFocus?: string | null;
+  workspaceFocusBusy: boolean;
+  onSaveWorkspaceFocus?: (focus: string) => void | Promise<void>;
+  workspaceMemorySummary?: string | null;
+  workspaceMemoryBusy: boolean;
+  onClearWorkspaceMemory?: () => void | Promise<void>;
+  onOpenLogs?: () => void;
+  onOpenDataDirectory?: () => void;
+}) {
   const rows = [
     ["版本", about?.version ?? "0.1.0"],
     ["运行时", about?.runtime ?? "Tauri + React"],
     ["数据目录", about?.dataPath ?? "未连接运行时"],
     ["构建", about?.build ?? "development"],
   ];
+  const memoryPreview = workspaceMemorySummary
+    ?.split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && line !== "Project memory:")
+    .slice(0, 4)
+    .join("\n");
+  const [focusDraft, setFocusDraft] = useState(workspaceFocus ?? "");
+
+  useEffect(() => {
+    setFocusDraft(workspaceFocus ?? "");
+  }, [workspaceFocus]);
 
   return (
     <div className="settings-panel settings-narrow-panel">
@@ -1155,6 +1210,60 @@ function AboutPanel({ about, onOpenLogs, onOpenDataDirectory }: { about?: Settin
         <button type="button" className="settings-secondary-action" onClick={onOpenLogs}>打开日志</button>
         <button type="button" className="settings-secondary-action" onClick={onOpenDataDirectory}>打开数据目录</button>
       </div>
+      <section className="settings-memory-card" aria-label="Project focus">
+        <div>
+          <p className="settings-kicker">Context</p>
+          <h3>Project focus</h3>
+          <p>固定写入每个新任务上下文的项目目标、边界和偏好。</p>
+        </div>
+        <label className="settings-field" htmlFor="project-focus">
+          <span>固定焦点</span>
+          <textarea
+            id="project-focus"
+            value={focusDraft}
+            rows={4}
+            placeholder="例如：优先实现稳定的本地编码代理，保持任务焦点，不做无关重构。"
+            onChange={(event) => setFocusDraft(event.currentTarget.value)}
+          />
+        </label>
+        <div className="settings-provider-actions">
+          <button
+            type="button"
+            className="settings-primary-action"
+            onClick={() => void onSaveWorkspaceFocus?.(focusDraft)}
+            disabled={workspaceFocusBusy || !onSaveWorkspaceFocus}
+          >
+            {workspaceFocusBusy ? "保存中..." : "保存项目焦点"}
+          </button>
+          <button
+            type="button"
+            className="settings-secondary-action"
+            onClick={() => {
+              setFocusDraft("");
+              void onSaveWorkspaceFocus?.("");
+            }}
+            disabled={workspaceFocusBusy || !onSaveWorkspaceFocus || !focusDraft.trim()}
+          >
+            清空项目焦点
+          </button>
+        </div>
+      </section>
+      <section className="settings-memory-card" aria-label="Project memory">
+        <div>
+          <p className="settings-kicker">Context</p>
+          <h3>Project memory</h3>
+          <p>跨会话保留的项目结论会进入下一次模型上下文。</p>
+        </div>
+        <pre>{memoryPreview || "No project memory stored."}</pre>
+        <button
+          type="button"
+          className="settings-secondary-action"
+          onClick={() => void onClearWorkspaceMemory?.()}
+          disabled={workspaceMemoryBusy || !workspaceMemorySummary?.trim() || !onClearWorkspaceMemory}
+        >
+          {workspaceMemoryBusy ? "清空中..." : "清空项目记忆"}
+        </button>
+      </section>
     </div>
   );
 }

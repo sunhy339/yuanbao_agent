@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 import re
@@ -54,20 +55,23 @@ class ContextBuilder:
             "glob": search_glob,
             "ignore": list(dict.fromkeys([*workspace_ignore, *search_ignore])),
         }
-        tools = self._tool_schemas or DEFAULT_TOOL_SCHEMAS
+        tools = DEFAULT_TOOL_SCHEMAS if self._tool_schemas is None else self._tool_schemas
+        tool_schema_tokens = estimate_tokens(tools)
         openai_tools = to_openai_function_tools(tools)
         messages, budget_stats = self._build_messages(
             session=session,
             workspace=workspace,
             config=config,
             goal=goal,
-            tools=tools,
+            tool_schema_tokens=tool_schema_tokens,
         )
         return {
             "session_id": session_id,
             "workspace_id": session["workspaceId"],
             "workspace_name": workspace["name"],
             "workspace_root": workspace["rootPath"],
+            "project_focus": workspace.get("focus"),
+            "project_memory": workspace.get("summary"),
             "config": config,
             "post_task_validation": self._post_task_validation_config(config),
             "search_config": search_config_bundle,
@@ -100,15 +104,28 @@ class ContextBuilder:
         workspace: dict[str, Any],
         config: dict[str, Any],
         goal: str,
-        tools: list[dict[str, Any]],
+        tool_schema_tokens: int,
     ) -> tuple[list[dict[str, str]], dict[str, Any]]:
         max_context_tokens = self._max_context_tokens(config)
+        project_focus = self._project_focus_summary(workspace, max_chars=min(1200, max_context_tokens * 2))
         sections = [
             BudgetSection(
                 name="system_prompt",
                 text=self._system_prompt(workspace_root=workspace["rootPath"]),
                 priority=1000,
                 truncatable=False,
+            ),
+            *(
+                [
+                    BudgetSection(
+                        name="project_focus",
+                        text=project_focus,
+                        priority=950,
+                        truncatable=False,
+                    )
+                ]
+                if project_focus
+                else []
             ),
             BudgetSection(
                 name="workspace_summary",
@@ -132,18 +149,18 @@ class ContextBuilder:
         ]
 
         budget = TokenBudget(max_context_tokens)
-        budget_result = budget.fit(sections)
+        budget_result = budget.fit(sections, fixed_tokens=tool_schema_tokens)
         kept_sections = budget_result.sections
         system_section = next((section for section in kept_sections if section.name == "system_prompt"), sections[0])
         user_context = "\n\n".join(section.text for section in kept_sections if section.name != "system_prompt")
         if not user_context:
             user_context = f"User request:\n{goal}"
 
-        tool_schema_tokens = estimate_tokens(tools)
+        message_tokens = max(0, budget_result.stats["estimatedTokens"] - tool_schema_tokens)
         stats = {
             **budget_result.stats,
             "toolSchemaTokens": tool_schema_tokens,
-            "messageTokens": budget_result.stats["estimatedTokens"],
+            "messageTokens": message_tokens,
         }
         return (
             [
@@ -185,6 +202,9 @@ class ContextBuilder:
             f"- name: {workspace['name']}",
             f"- root: {workspace['rootPath']}",
         ]
+        summary = str(workspace.get("summary") or "").strip()
+        if summary:
+            lines.append(summary if summary.startswith("Project memory:") else f"Project memory:\n{summary}")
         if not root.exists() or not root.is_dir():
             lines.append("- status: Workspace root is not accessible.")
             return "\n".join(lines)
@@ -206,6 +226,18 @@ class ContextBuilder:
         extra = "" if len(children) <= 12 else f" (+{len(children) - 12} more)"
         lines.append(f"- top-level entries: {', '.join(entries)}{extra}")
         return "\n".join(lines)
+
+    def _project_focus_summary(self, workspace: dict[str, Any], *, max_chars: int) -> str:
+        focus = str(workspace.get("focus") or "").strip()
+        if not focus:
+            return ""
+
+        normalized = "\n".join(line.rstrip() for line in focus.splitlines()).strip()
+        max_chars = max(1, int(max_chars))
+        if len(normalized) > max_chars:
+            marker = " [truncated]"
+            normalized = normalized[: max(1, max_chars - len(marker))].rstrip() + marker
+        return f"Project focus:\n{normalized}"
 
     def _git_summary(self, workspace_root: str) -> str:
         root = Path(workspace_root)
@@ -266,6 +298,17 @@ class ContextBuilder:
                 )
             )
 
+        recent_messages = self._recent_messages(session["id"], limit=8)
+        if recent_messages:
+            sections.append(
+                BudgetSection(
+                    name="recent_conversation",
+                    text=self._conversation_summary(recent_messages),
+                    priority=640,
+                    minimum_tokens=32,
+                )
+            )
+
         tasks = self._recent_tasks(session["id"], limit=6)
         total_tasks = len(tasks)
         for index, task in enumerate(tasks):
@@ -299,6 +342,20 @@ class ContextBuilder:
                 )
             )
         return sections
+
+    def _recent_messages(self, session_id: str, *, limit: int) -> list[dict[str, Any]]:
+        rows = self._store._conn.execute(  # noqa: SLF001
+            """
+            SELECT *
+            FROM messages
+            WHERE session_id = ?
+              AND role IN ('user', 'assistant')
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (session_id, limit),
+        ).fetchall()
+        return list(reversed([dict(row) for row in rows]))
 
     def _recent_tasks(self, session_id: str, *, limit: int) -> list[dict[str, Any]]:
         rows = self._store._conn.execute(  # noqa: SLF001
@@ -341,16 +398,98 @@ class ContextBuilder:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def _conversation_summary(self, messages: list[dict[str, Any]]) -> str:
+        lines = ["Recent conversation:"]
+        for message in messages:
+            role = "User" if message.get("role") == "user" else "Assistant"
+            lines.append(f"{role}: {self._single_line(message.get('content'), max_chars=900)}")
+        return "\n".join(lines)
+
     def _task_summary(self, task: dict[str, Any]) -> str:
         lines = [
             f"Recent task event: task {task['status']}",
             f"- goal: {task['goal']}",
         ]
-        if task.get("result_json"):
-            lines.append(f"- result: {task['result_json']}")
+        acceptance_criteria = self._json_list(task.get("acceptance_criteria_json"))
+        out_of_scope = self._json_list(task.get("out_of_scope_json"))
+        changed_files = self._json_list(task.get("changed_files_json"))
+        commands = self._json_list(task.get("commands_json"))
+        verification = self._json_list(task.get("verification_json"))
+
+        summary = task.get("summary") or task.get("result_json")
+        if summary:
+            lines.append(f"- result: {self._single_line(summary)}")
+        if acceptance_criteria or out_of_scope:
+            lines.append("Task focus:")
+            if acceptance_criteria:
+                lines.append(
+                    "- acceptance: "
+                    + "; ".join(self._single_line(item) for item in acceptance_criteria[:4])
+                )
+            if out_of_scope:
+                lines.append(
+                    "- out of scope: "
+                    + "; ".join(self._single_line(item) for item in out_of_scope[:4])
+                )
+        if changed_files or commands or verification:
+            lines.append("Task artifacts:")
+            if changed_files:
+                lines.append(
+                    "- changed files: "
+                    + ", ".join(
+                        self._single_line(
+                            f"{item.get('path')} ({item.get('status') or 'changed'})"
+                        )
+                        for item in changed_files[:8]
+                        if isinstance(item, dict) and item.get("path")
+                    )
+                )
+            if commands:
+                lines.append(
+                    "- commands: "
+                    + "; ".join(
+                        self._single_line(
+                            f"{item.get('command')} -> {item.get('status') or 'recorded'}"
+                            + (
+                                f" exit {item.get('exitCode')}"
+                                if item.get("exitCode") is not None
+                                else ""
+                            )
+                        )
+                        for item in commands[:5]
+                        if isinstance(item, dict) and item.get("command")
+                    )
+                )
+            if verification:
+                lines.append(
+                    "- verification: "
+                    + "; ".join(
+                        self._single_line(
+                            f"{item.get('status') or 'recorded'}"
+                            + (f" - {item.get('summary')}" if item.get("summary") else "")
+                        )
+                        for item in verification[:5]
+                        if isinstance(item, dict)
+                    )
+                )
         if task.get("error_code"):
             lines.append(f"- error: {task['error_code']}")
         return "\n".join(lines)
+
+    def _json_list(self, raw: Any) -> list[Any]:
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    def _single_line(self, value: Any, *, max_chars: int = 220) -> str:
+        text = " ".join(str(value).split())
+        if len(text) <= max_chars:
+            return text
+        return f"{text[: max_chars - 15].rstrip()} [truncated]"
 
     def _patch_summary(self, patch: dict[str, Any]) -> str:
         return "\n".join(
@@ -387,6 +526,8 @@ class ContextBuilder:
             "id": workspace["id"],
             "name": workspace["name"],
             "rootPath": workspace["root_path"],
+            "focus": workspace.get("focus"),
+            "summary": workspace.get("summary"),
         }
 
     def _load_config(self) -> dict[str, Any]:

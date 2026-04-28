@@ -17,8 +17,11 @@ import type {
   ConfigUpdateResult,
   DiffGetParams,
   DiffGetResult,
+  MessageListParams,
+  MessageListResult,
   MessageSendParams,
   MessageSendResult,
+  MessageRecord,
   PatchRecord,
   ProviderTestParams,
   ProviderTestResult,
@@ -48,6 +51,10 @@ import type {
   TraceEventRecord,
   TraceListParams,
   TraceListResult,
+  WorkspaceFocusUpdateParams,
+  WorkspaceFocusUpdateResult,
+  WorkspaceMemoryClearParams,
+  WorkspaceMemoryClearResult,
   WorkspaceOpenResult,
 } from "@shared";
 import {
@@ -75,6 +82,7 @@ interface MockState {
   config: RuntimeConfig;
   workspace: WorkspaceOpenResult["workspace"] | null;
   sessions: SessionRecord[];
+  messages: MessageRecord[];
   tasks: Record<string, TaskRecord>;
   patches: Record<string, PatchRecord>;
   approvals: Record<string, ApprovalRecord>;
@@ -87,6 +95,7 @@ const mockState: MockState = {
   config: buildMockRuntimeConfig(),
   workspace: null,
   sessions: [],
+  messages: [],
   tasks: {},
   patches: {},
   approvals: {},
@@ -718,6 +727,13 @@ function updateMockTask(taskId: string, updater: (task: TaskRecord) => TaskRecor
   return next;
 }
 
+function rememberMockMessage(message: MessageRecord): void {
+  mockState.messages = [
+    ...mockState.messages.filter((current) => current.id !== message.id),
+    message,
+  ].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+}
+
 function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
   const searchToolCallId = `tool_search_${Date.now()}`;
 
@@ -790,6 +806,14 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
   }, 180);
 
   window.setTimeout(() => {
+    rememberMockMessage({
+      id: `msg_assistant_${task.id}`,
+      sessionId,
+      taskId: task.id,
+      role: "assistant",
+      content: "Browser mock assistant response completed.",
+      createdAt: Date.now(),
+    });
     emitBrowserEvent(
       buildMockEvent(sessionId, task.id, "assistant.message.completed", {
         summary: "Browser mock assistant response completed.",
@@ -908,6 +932,7 @@ export class RuntimeClient {
       } satisfies WorkspaceOpenResult;
       mockState.workspace = result.workspace;
       mockState.sessions = [];
+      mockState.messages = [];
       mockState.tasks = {};
       mockState.patches = {};
       mockState.approvals = {};
@@ -926,6 +951,7 @@ export class RuntimeClient {
     const result = await invokeOrReject<WorkspaceOpenResult>("workspace_open", { path });
     mockState.workspace = result.workspace;
     mockState.sessions = [];
+    mockState.messages = [];
     mockState.tasks = {};
     mockState.patches = {};
     mockState.approvals = {};
@@ -939,6 +965,36 @@ export class RuntimeClient {
         writableRoots: [result.workspace.rootPath],
       },
     });
+    return result;
+  }
+
+  async clearWorkspaceMemory(payload: WorkspaceMemoryClearParams): Promise<WorkspaceMemoryClearResult> {
+    if (shouldUseBrowserMock()) {
+      if (!mockState.workspace || mockState.workspace.id !== payload.workspaceId) {
+        throw new Error(`Workspace not found: ${payload.workspaceId}`);
+      }
+      mockState.workspace = { ...mockState.workspace, summary: null, updatedAt: Date.now() };
+      return { workspace: mockState.workspace };
+    }
+    const result = await invokePayloadOrReject<WorkspaceMemoryClearResult>("workspace_memory_clear", payload);
+    mockState.workspace = result.workspace;
+    return result;
+  }
+
+  async updateWorkspaceFocus(payload: WorkspaceFocusUpdateParams): Promise<WorkspaceFocusUpdateResult> {
+    if (shouldUseBrowserMock()) {
+      if (!mockState.workspace || mockState.workspace.id !== payload.workspaceId) {
+        throw new Error(`Workspace not found: ${payload.workspaceId}`);
+      }
+      mockState.workspace = {
+        ...mockState.workspace,
+        focus: payload.focus?.trim() || null,
+        updatedAt: Date.now(),
+      };
+      return { workspace: mockState.workspace };
+    }
+    const result = await invokePayloadOrReject<WorkspaceFocusUpdateResult>("workspace_focus_update", payload);
+    mockState.workspace = result.workspace;
     return result;
   }
 
@@ -971,10 +1027,30 @@ export class RuntimeClient {
     if (shouldUseBrowserMock()) {
       const task = buildMockTask(payload.sessionId, payload.content);
       mockState.tasks[task.id] = task;
+      rememberMockMessage({
+        id: `msg_user_${task.id}`,
+        sessionId: payload.sessionId,
+        taskId: task.id,
+        role: "user",
+        content: payload.content,
+        createdAt: Date.now(),
+      });
       emitMockTaskSequence(payload.sessionId, task);
       return { task };
     }
     return invokePayloadOrReject<MessageSendResult>("message_send", payload);
+  }
+
+  async listMessages(payload: MessageListParams): Promise<MessageListResult> {
+    if (shouldUseBrowserMock()) {
+      const limit = payload.limit ?? 500;
+      return {
+        messages: mockState.messages
+          .filter((message) => message.sessionId === payload.sessionId)
+          .slice(-Math.max(1, Math.min(limit, 1000))),
+      };
+    }
+    return invokePayloadOrReject<MessageListResult>("message_list", payload);
   }
 
   async approvalSubmit(payload: ApprovalSubmitParams): Promise<ApprovalSubmitResult> {

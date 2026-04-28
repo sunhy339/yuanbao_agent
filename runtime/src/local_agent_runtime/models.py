@@ -6,8 +6,10 @@ from typing import Any, Literal
 JsonValue = dict[str, Any] | list[Any] | str | int | float | bool | None
 TaskStatus = Literal[
     "queued",
+    "planning",
     "running",
     "waiting_approval",
+    "verifying",
     "paused",
     "completed",
     "failed",
@@ -31,6 +33,8 @@ class Workspace:
     root_path: str
     created_at: int
     updated_at: int
+    focus: str | None = None
+    summary: str | None = None
 
 
 @dataclass(slots=True)
@@ -53,7 +57,14 @@ class Task:
     goal: str
     created_at: int
     updated_at: int
+    acceptance_criteria: list[str] = field(default_factory=list)
+    out_of_scope: list[str] = field(default_factory=list)
+    current_step: str | None = None
     plan: list[dict[str, Any]] = field(default_factory=list)
+    changed_files: list[dict[str, Any]] = field(default_factory=list)
+    commands: list[dict[str, Any]] = field(default_factory=list)
+    verification: list[dict[str, Any]] = field(default_factory=list)
+    summary: str | None = None
     result: dict[str, Any] | None = None
     error_code: str | None = None
 

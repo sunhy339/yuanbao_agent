@@ -39,10 +39,30 @@ struct SessionCreatePayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct WorkspaceMemoryClearPayload {
+    workspace_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceFocusUpdatePayload {
+    workspace_id: String,
+    focus: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MessageSendPayload {
     session_id: String,
     content: String,
     attachments: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MessageListPayload {
+    session_id: String,
+    limit: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,9 +165,9 @@ struct TraceListPayload {
     limit: Option<u64>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct RuntimeManager {
-    bridge: Mutex<RuntimeBridge>,
+    bridge: Arc<Mutex<RuntimeBridge>>,
 }
 
 #[derive(Default)]
@@ -410,6 +430,32 @@ fn workspace_open(
 }
 
 #[tauri::command]
+fn workspace_memory_clear(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: WorkspaceMemoryClearPayload,
+) -> Result<Value, String> {
+    state.call(
+        &app_handle,
+        "workspace.memory.clear",
+        json!({ "workspaceId": payload.workspace_id }),
+    )
+}
+
+#[tauri::command]
+fn workspace_focus_update(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: WorkspaceFocusUpdatePayload,
+) -> Result<Value, String> {
+    state.call(
+        &app_handle,
+        "workspace.focus.update",
+        json!({ "workspaceId": payload.workspace_id, "focus": payload.focus }),
+    )
+}
+
+#[tauri::command]
 fn session_create(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -431,19 +477,34 @@ fn session_list(app_handle: AppHandle, state: State<'_, RuntimeManager>) -> Resu
 }
 
 #[tauri::command]
-fn message_send(
+async fn message_send(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: MessageSendPayload,
 ) -> Result<Value, String> {
+    let manager = state.inner().clone();
+    let params = json!({
+        "sessionId": payload.session_id,
+        "content": payload.content,
+        "attachments": payload.attachments,
+        "background": true,
+    });
+
+    tauri::async_runtime::spawn_blocking(move || manager.call(&app_handle, "message.send", params))
+        .await
+        .map_err(|reason| format!("Runtime message worker failed: {reason}"))?
+}
+
+#[tauri::command]
+fn message_list(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: MessageListPayload,
+) -> Result<Value, String> {
     state.call(
         &app_handle,
-        "message.send",
-        json!({
-            "sessionId": payload.session_id,
-            "content": payload.content,
-            "attachments": payload.attachments,
-        }),
+        "message.list",
+        json!({ "sessionId": payload.session_id, "limit": payload.limit }),
     )
 }
 
@@ -602,19 +663,20 @@ fn schedule_logs(
 }
 
 #[tauri::command]
-fn approval_submit(
+async fn approval_submit(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: ApprovalSubmitPayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "approval.submit",
-        json!({
-            "approvalId": payload.approval_id,
-            "decision": payload.decision,
-        }),
-    )
+    let manager = state.inner().clone();
+    let params = json!({
+        "approvalId": payload.approval_id,
+        "decision": payload.decision,
+    });
+
+    tauri::async_runtime::spawn_blocking(move || manager.call(&app_handle, "approval.submit", params))
+        .await
+        .map_err(|reason| format!("Runtime approval worker failed: {reason}"))?
 }
 
 #[tauri::command]
@@ -812,9 +874,12 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
         .invoke_handler(tauri::generate_handler![
             host_status,
             workspace_open,
+            workspace_focus_update,
+            workspace_memory_clear,
             session_create,
             session_list,
             message_send,
+            message_list,
             task_get,
             task_cancel,
             task_pause,
@@ -838,4 +903,19 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             e2e_fixture,
             e2e_finish
         ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_manager_clones_share_the_same_bridge() {
+        let manager = RuntimeManager::default();
+        let cloned = manager.clone();
+
+        let _guard = manager.bridge.lock().expect("manager bridge lock");
+
+        assert!(cloned.bridge.try_lock().is_err());
+    }
 }

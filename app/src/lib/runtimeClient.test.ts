@@ -117,6 +117,53 @@ describe("RuntimeClient command log fallback", () => {
   });
 });
 
+describe("RuntimeClient message fallback", () => {
+  beforeEach(() => {
+    (window as Window & { __YUANBAO_ENABLE_BROWSER_MOCK__?: unknown }).__YUANBAO_ENABLE_BROWSER_MOCK__ = true;
+  });
+
+  it("persists browser mock user and assistant messages by session", async () => {
+    const client = new RuntimeClient();
+    const firstSession = await client.createSession({
+      workspaceId: "workspace_mock",
+      title: "First",
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    const secondSession = await client.createSession({
+      workspaceId: "workspace_mock",
+      title: "Second",
+    });
+
+    await client.sendMessage({
+      sessionId: firstSession.session.id,
+      content: "remember me",
+      attachments: [],
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    await client.sendMessage({
+      sessionId: secondSession.session.id,
+      content: "do not leak",
+      attachments: [],
+    });
+
+    expect((await client.listMessages({ sessionId: firstSession.session.id })).messages).toMatchObject([
+      {
+        sessionId: firstSession.session.id,
+        role: "user",
+        content: "remember me",
+      },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(230);
+
+    const listed = await client.listMessages({ sessionId: firstSession.session.id });
+    expect(listed.messages.map((message) => message.content)).toEqual([
+      "remember me",
+      "Browser mock assistant response completed.",
+    ]);
+  });
+});
+
 describe("RuntimeClient desktop transport", () => {
   beforeEach(() => {
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
@@ -176,8 +223,72 @@ describe("RuntimeClient desktop transport", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("provider_test", { payload: providerPayload });
   });
 
+  it("wraps workspace memory clear payload for Tauri command arguments", async () => {
+    const client = new RuntimeClient();
+    const workspace = {
+      id: "ws_real",
+      name: "Real",
+      rootPath: "D:/project",
+      summary: null,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+
+    invokeMock.mockResolvedValueOnce({ workspace });
+
+    await expect(client.clearWorkspaceMemory({ workspaceId: "ws_real" })).resolves.toEqual({ workspace });
+    expect(invokeMock).toHaveBeenLastCalledWith("workspace_memory_clear", {
+      payload: { workspaceId: "ws_real" },
+    });
+  });
+
+  it("wraps workspace focus update payload for Tauri command arguments", async () => {
+    const client = new RuntimeClient();
+    const workspace = {
+      id: "ws_real",
+      name: "Real",
+      rootPath: "D:/project",
+      focus: "Keep scope narrow.",
+      summary: null,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+
+    invokeMock.mockResolvedValueOnce({ workspace });
+
+    await expect(
+      client.updateWorkspaceFocus({ workspaceId: "ws_real", focus: "Keep scope narrow." }),
+    ).resolves.toEqual({ workspace });
+    expect(invokeMock).toHaveBeenLastCalledWith("workspace_focus_update", {
+      payload: { workspaceId: "ws_real", focus: "Keep scope narrow." },
+    });
+  });
+
+  it("wraps message list payload for Tauri command arguments", async () => {
+    const client = new RuntimeClient();
+    const messages = [
+      {
+        id: "msg_real",
+        sessionId: "sess_real",
+        role: "user",
+        content: "hello",
+        createdAt: 1,
+      },
+    ];
+
+    invokeMock.mockResolvedValueOnce({ messages });
+
+    await expect(client.listMessages({ sessionId: "sess_real", limit: 50 })).resolves.toEqual({
+      messages,
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("message_list", {
+      payload: { sessionId: "sess_real", limit: 50 },
+    });
+  });
+
   it.each([
     ["session list", () => new RuntimeClient().listSessions()],
+    ["message list", () => new RuntimeClient().listMessages({ sessionId: "sess_real" })],
     ["diff get", () => new RuntimeClient().diffGet({ patchId: "patch_real" })],
     ["command log list", () => new RuntimeClient().commandLogList({ taskId: "task_real" })],
     ["command log get", () => new RuntimeClient().commandLogGet({ commandId: "cmd_real" })],

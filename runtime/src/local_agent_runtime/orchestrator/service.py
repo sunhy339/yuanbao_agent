@@ -2,20 +2,26 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from ..context.builder import ContextBuilder
 from ..event_bus import EventBus
 from ..models import RuntimeEvent
 from ..planner.service import Planner
+from ..policy.guard import PolicyGuard
+from ..provider.adapter import ProviderAdapter
 from ..services.collaboration_service import CollaborationService
 from ..services.command_background import cancel_background_commands
 from ..services.session_service import SessionService
 from ..services.subagent_service import SubagentService
 from ..services.worker_budget import WorkerBudget
 from ..services.worker_environment import normalize_child_tool_allowlist
-from ..tools.registry import BUILTIN_TOOL_SCHEMAS
+from ..store.sqlite_store import SQLiteStore
+from ..tools.builtin import build_builtin_tools
+from ..tools.registry import BUILTIN_TOOL_SCHEMAS, ToolRegistry
 
 
 class Orchestrator:
@@ -282,6 +288,31 @@ class Orchestrator:
 
     def send_message(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._store.require_session(params["sessionId"])
+        if params.get("background") is True:
+            plan = self._planner.plan(params["content"])
+            task = self._store.create_task(
+                session_id=session["id"],
+                task_type="edit",
+                goal=params["content"],
+                plan=plan,
+                acceptance_criteria=self._default_acceptance_criteria(params["content"]),
+                out_of_scope=self._default_out_of_scope(),
+            )
+            runtime_task = {**task, "plan": plan}
+            self._store.create_message(
+                session_id=session["id"],
+                task_id=runtime_task["id"],
+                role="user",
+                content=params["content"],
+            )
+            self._start_background_message(
+                session_id=session["id"],
+                task=runtime_task,
+                goal=params["content"],
+                context=None,
+            )
+            return {"task": runtime_task}
+
         context = self._context_builder.build(session_id=session["id"], goal=params["content"])
         plan = self._planner.plan(params["content"], context=context)
         task = self._store.create_task(
@@ -289,8 +320,17 @@ class Orchestrator:
             task_type="edit",
             goal=params["content"],
             plan=plan,
+            acceptance_criteria=self._default_acceptance_criteria(params["content"]),
+            out_of_scope=self._default_out_of_scope(),
         )
         runtime_task = {**task, "plan": plan}
+        self._store.create_message(
+            session_id=session["id"],
+            task_id=runtime_task["id"],
+            role="user",
+            content=params["content"],
+        )
+        context = self._context_with_task_focus(context, runtime_task)
 
         self._publish(
             session_id=session["id"],
@@ -299,7 +339,8 @@ class Orchestrator:
             payload={
                 "status": runtime_task["status"],
                 "plan": runtime_task["plan"],
-                "context": context,
+                "currentStep": runtime_task.get("currentStep"),
+                "context": self._event_context_summary(context),
             },
         )
         self._publish(
@@ -309,20 +350,35 @@ class Orchestrator:
             payload={"delta": "Building context and preparing the first tool calls..."},
         )
 
+        return self._execute_message_task(
+            session_id=session["id"],
+            task=runtime_task,
+            goal=params["content"],
+            context=context,
+        )
+
+    def _execute_message_task(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
         try:
             react_result = self._run_react_loop(
-                session_id=session["id"],
-                task=runtime_task,
-                goal=params["content"],
+                session_id=session_id,
+                task=task,
+                goal=goal,
                 context=context,
             )
             if react_result["status"] == "waiting_approval":
-                return {"task": runtime_task}
+                return {"task": task}
             if react_result["status"] == "completed":
                 return {
                     "task": self._complete_task(
-                        session_id=session["id"],
-                        task=runtime_task,
+                        session_id=session_id,
+                        task=task,
                         summary=react_result["summary"],
                         context=context,
                         tool_results=react_result.get("tool_results", []),
@@ -330,29 +386,29 @@ class Orchestrator:
                 }
 
             tool_results = self._run_minimal_loop(
-                session_id=session["id"],
-                task=runtime_task,
-                goal=params["content"],
+                session_id=session_id,
+                task=task,
+                goal=goal,
                 context=context,
             )
-            if runtime_task["status"] == "waiting_approval":
-                return {"task": runtime_task}
+            if task["status"] == "waiting_approval":
+                return {"task": task}
             summary = self._provider.summarize_findings(
-                goal=params["content"],
+                goal=goal,
                 context=context,
                 tool_results=tool_results,
             )
             self._publish(
-                session_id=session["id"],
-                task=runtime_task,
+                session_id=session_id,
+                task=task,
                 event_type="assistant.token",
                 payload={"delta": summary},
             )
 
             return {
                 "task": self._complete_task(
-                    session_id=session["id"],
-                    task=runtime_task,
+                    session_id=session_id,
+                    task=task,
                     summary=summary,
                     context=context,
                     tool_results=tool_results,
@@ -361,12 +417,203 @@ class Orchestrator:
         except Exception as exc:  # noqa: BLE001
             return {
                 "task": self._fail_task(
-                    session_id=session["id"],
-                    task=runtime_task,
+                    session_id=session_id,
+                    task=task,
                     summary=str(exc),
                     error_code="LOOP_EXECUTION_FAILED",
                 )
             }
+
+    def _start_background_message(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any] | None,
+    ) -> None:
+        worker = threading.Thread(
+            target=self._run_background_message,
+            kwargs={
+                "session_id": session_id,
+                "task": deepcopy(task),
+                "goal": goal,
+                "context": deepcopy(context) if context is not None else None,
+            },
+            name=f"message-task-{task['id']}",
+            daemon=True,
+        )
+        worker.start()
+
+    def _run_background_message(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any] | None,
+    ) -> None:
+        background_store: SQLiteStore | None = None
+        worker = self
+        try:
+            worker, background_store = self._background_worker_orchestrator()
+            if context is None:
+                context = worker._context_builder.build(session_id=session_id, goal=goal)
+                plan = worker._planner.plan(goal, context=context)
+                task = worker._store.update_task(task_id=task["id"], plan=plan)
+                task = {**task, "plan": plan}
+                context = worker._context_with_task_focus(context, task)
+                worker._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="task.started",
+                    payload={
+                        "status": task["status"],
+                        "plan": task["plan"],
+                        "currentStep": task.get("currentStep"),
+                        "context": worker._event_context_summary(context),
+                    },
+                )
+                worker._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="assistant.token",
+                    payload={"delta": "Building context and preparing the first tool calls..."},
+                )
+            else:
+                context = worker._context_with_task_focus(context, task)
+            worker._execute_message_task(
+                session_id=session_id,
+                task=task,
+                goal=goal,
+                context=context,
+            )
+        except Exception as exc:  # noqa: BLE001
+            worker._fail_task(
+                session_id=session_id,
+                task=task,
+                summary=str(exc),
+                error_code="BACKGROUND_LOOP_FAILED",
+            )
+        finally:
+            if background_store is not None:
+                background_store.close()
+
+    def _background_worker_orchestrator(self) -> tuple["Orchestrator", SQLiteStore | None]:
+        database_path = str(getattr(self._store, "database_path", ":memory:"))
+        if database_path == ":memory:":
+            return self, None
+
+        store = SQLiteStore(database_path)
+        config = store.get_config({})["config"]
+        policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
+        collaboration = CollaborationService(store, self._event_bus)
+        subagent_service = SubagentService(store, collaboration)
+        tool_registry = ToolRegistry(
+            build_builtin_tools(policy_guard=policy_guard, store=store, subagent_service=subagent_service)
+        )
+        return (
+            Orchestrator(
+                store=store,
+                event_bus=self._event_bus,
+                tool_registry=tool_registry,
+                provider=ProviderAdapter(),
+            ),
+            store,
+        )
+
+    def _event_context_summary(self, context: dict[str, Any]) -> dict[str, Any]:
+        budget_stats = context.get("budgetStats")
+        summary: dict[str, Any] = {
+            "workspaceId": context.get("workspace_id"),
+            "workspaceName": context.get("workspace_name"),
+            "workspaceRoot": context.get("workspace_root"),
+            "projectFocus": context.get("project_focus"),
+            "projectMemory": context.get("project_memory"),
+            "searchQuery": context.get("search_query"),
+            "searchMode": context.get("search_mode"),
+            "toolCount": len(context.get("tools") or []),
+        }
+        if isinstance(budget_stats, dict):
+            summary["budgetStats"] = {
+                "estimatedTokens": budget_stats.get("estimatedTokens"),
+                "estimatedInputTokens": budget_stats.get("estimatedInputTokens"),
+                "messageTokens": budget_stats.get("messageTokens"),
+                "toolSchemaTokens": budget_stats.get("toolSchemaTokens"),
+                "maxContextTokens": budget_stats.get("maxContextTokens"),
+                "droppedSections": budget_stats.get("droppedSections"),
+                "trimmedSections": budget_stats.get("trimmedSections"),
+            }
+        task_focus = context.get("task_focus")
+        if isinstance(task_focus, dict):
+            summary["taskFocus"] = {
+                "taskId": task_focus.get("taskId"),
+                "currentStep": task_focus.get("currentStep"),
+                "acceptanceCriteriaCount": len(task_focus.get("acceptanceCriteria") or []),
+                "outOfScopeCount": len(task_focus.get("outOfScope") or []),
+            }
+        return summary
+
+    def _default_acceptance_criteria(self, goal: str) -> list[str]:
+        normalized_goal = " ".join(str(goal).split())
+        return [
+            f"Resolve the user's request: {normalized_goal}",
+            "Keep the work focused on the requested task and avoid unrelated changes.",
+            "Use local tools for inspection, edits and commands; report real results instead of guessing.",
+            "When files or commands are involved, summarize changed files, command outcomes and verification.",
+        ]
+
+    def _default_out_of_scope(self) -> list[str]:
+        return [
+            "Unrelated refactors, broad rewrites or cosmetic churn not needed for the request.",
+            "Operations outside the workspace root unless the user explicitly supplies or approves them.",
+            "Claiming success before required edits, commands or verification have actually completed.",
+        ]
+
+    def _context_with_task_focus(self, context: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+        focused_context = deepcopy(context)
+        task_focus = {
+            "taskId": task.get("id"),
+            "goal": task.get("goal"),
+            "status": task.get("status"),
+            "currentStep": task.get("currentStep"),
+            "acceptanceCriteria": list(task.get("acceptanceCriteria") or []),
+            "outOfScope": list(task.get("outOfScope") or []),
+        }
+        focused_context["task_focus"] = task_focus
+
+        messages = deepcopy(focused_context.get("messages") or [])
+        focus_text = self._task_focus_text(task_focus)
+        if messages and messages[-1].get("role") == "user":
+            content = str(messages[-1].get("content") or "")
+            if "Task focus:" not in content:
+                messages[-1] = {**messages[-1], "content": f"{content}\n\n{focus_text}"}
+        else:
+            messages.append({"role": "user", "content": focus_text})
+        focused_context["messages"] = messages
+        return focused_context
+
+    def _task_focus_text(self, task_focus: dict[str, Any]) -> str:
+        lines = [
+            "Task focus:",
+            f"- task id: {task_focus.get('taskId')}",
+            f"- status: {task_focus.get('status')}",
+            f"- goal: {task_focus.get('goal')}",
+        ]
+        current_step = task_focus.get("currentStep")
+        if current_step:
+            lines.append(f"- current step: {current_step}")
+
+        acceptance = task_focus.get("acceptanceCriteria") or []
+        if acceptance:
+            lines.append("Acceptance criteria:")
+            lines.extend(f"- {item}" for item in acceptance)
+
+        out_of_scope = task_focus.get("outOfScope") or []
+        if out_of_scope:
+            lines.append("Out of scope:")
+            lines.extend(f"- {item}" for item in out_of_scope)
+        return "\n".join(lines)
 
     def run_child_task(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = params.get("sessionId")
@@ -386,8 +633,11 @@ class Orchestrator:
             task_type="subagent",
             goal=prompt.strip(),
             plan=plan,
+            acceptance_criteria=self._default_acceptance_criteria(prompt.strip()),
+            out_of_scope=self._default_out_of_scope(),
         )
         runtime_task = {**task, "plan": plan}
+        context = self._context_with_task_focus(context, runtime_task)
 
         self._publish(
             session_id=session["id"],
@@ -396,6 +646,7 @@ class Orchestrator:
             payload={
                 "status": runtime_task["status"],
                 "plan": runtime_task["plan"],
+                "currentStep": runtime_task.get("currentStep"),
                 "context": context,
                 "childWorker": True,
             },
@@ -542,6 +793,7 @@ class Orchestrator:
             task_id=task["id"],
             status="completed",
             plan=task["plan"],
+            summary=final_summary,
             result_summary=final_summary,
         )
         runtime_task = {
@@ -549,6 +801,13 @@ class Orchestrator:
             "plan": task["plan"],
             "resultSummary": final_summary,
         }
+        self._store.create_message(
+            session_id=session_id,
+            task_id=runtime_task["id"],
+            role="assistant",
+            content=final_summary,
+        )
+        self._remember_task_result(session_id=session_id, task=runtime_task)
         self._clear_pending_react_state(task["id"])
         self._publish(
             session_id=session_id,
@@ -563,6 +822,12 @@ class Orchestrator:
             payload={
                 "status": runtime_task["status"],
                 "plan": runtime_task["plan"],
+                "currentStep": runtime_task.get("currentStep"),
+                "changedFiles": runtime_task.get("changedFiles") or [],
+                "commands": runtime_task.get("commands") or [],
+                "verification": runtime_task.get("verification") or [],
+                "summary": final_summary,
+                "resultSummary": final_summary,
                 "detail": final_summary,
             },
         )
@@ -580,6 +845,7 @@ class Orchestrator:
             task_id=task["id"],
             status="failed",
             plan=task_plan,
+            summary=summary,
             result_summary=summary,
             error_code=error_code,
         )
@@ -588,6 +854,7 @@ class Orchestrator:
             "plan": task_plan,
             "errorCode": error_code,
         }
+        self._remember_task_result(session_id=session_id, task=runtime_task)
         self._clear_pending_react_state(task["id"])
         self._publish(
             session_id=session_id,
@@ -596,15 +863,202 @@ class Orchestrator:
             payload={
                 "status": runtime_task["status"],
                 "plan": runtime_task["plan"],
+                "currentStep": runtime_task.get("currentStep"),
+                "changedFiles": runtime_task.get("changedFiles") or [],
+                "commands": runtime_task.get("commands") or [],
+                "verification": runtime_task.get("verification") or [],
+                "summary": summary,
+                "resultSummary": summary,
                 "detail": summary,
                 "errorCode": error_code,
             },
         )
         return runtime_task
 
+    def _remember_task_result(self, *, session_id: str, task: dict[str, Any]) -> None:
+        if not hasattr(self._store, "update_session_summary"):
+            return
+        if task.get("status") not in {"completed", "failed", "cancelled"}:
+            return
+
+        current_session = self._store.require_session(session_id)
+        current_summary = current_session.get("summary")
+        entry = self._task_memory_entry(task)
+        updated_summary = self._append_memory(current_summary, entry, marker="Task memory:")
+        session = self._store.update_session_summary(session_id, updated_summary)
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="session.updated",
+            payload={
+                "summary": session.get("summary"),
+                "title": session.get("title"),
+                "status": session.get("status"),
+            },
+        )
+        if hasattr(self._store, "require_workspace") and hasattr(self._store, "update_workspace_summary"):
+            workspace = self._store.require_workspace(current_session["workspaceId"])
+            updated_workspace_summary = self._append_memory(
+                workspace.get("summary"),
+                entry,
+                marker="Project memory:",
+                max_chars=6000,
+            )
+            self._store.update_workspace_summary(workspace["id"], updated_workspace_summary)
+
+    def _task_memory_entry(self, task: dict[str, Any]) -> str:
+        status = task.get("status") or "completed"
+        goal = self._single_line(task.get("goal") or "")
+        lines = [f"- {status}: {goal}"]
+        summary = self._single_line(task.get("summary") or task.get("resultSummary") or "")
+        if summary:
+            lines.append(f"  result: {summary}")
+
+        changed_files = [
+            item
+            for item in task.get("changedFiles") or []
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        ]
+        if changed_files:
+            lines.append(
+                "  files: "
+                + ", ".join(
+                    self._single_line(
+                        f"{item.get('path')} ({item.get('status') or 'changed'})"
+                    )
+                    for item in changed_files[:6]
+                )
+            )
+
+        commands = [
+            item
+            for item in task.get("commands") or []
+            if isinstance(item, dict) and isinstance(item.get("command"), str)
+        ]
+        if commands:
+            lines.append(
+                "  commands: "
+                + "; ".join(
+                    self._single_line(
+                        f"{item.get('command')} -> {item.get('status') or 'recorded'}"
+                        + (
+                            f" exit {item.get('exitCode')}"
+                            if item.get("exitCode") is not None
+                            else ""
+                        )
+                    )
+                    for item in commands[:4]
+                )
+            )
+
+        verification = [
+            item
+            for item in task.get("verification") or []
+            if isinstance(item, dict)
+        ]
+        if verification:
+            lines.append(
+                "  verification: "
+                + "; ".join(
+                    self._single_line(
+                        f"{item.get('status') or 'recorded'}"
+                        + (f" - {item.get('summary')}" if item.get("summary") else "")
+                    )
+                    for item in verification[:4]
+                )
+            )
+        return "\n".join(lines)
+
+    def _append_memory(
+        self,
+        current_summary: Any,
+        entry: str,
+        *,
+        marker: str,
+        max_chars: int = 4000,
+    ) -> str:
+        current = str(current_summary or "").strip()
+        if self._memory_contains_entry(current, entry):
+            return current or f"{marker}\n{entry}"
+        if not current:
+            combined = f"{marker}\n{entry}"
+        elif marker in current:
+            combined = f"{current}\n{entry}"
+        else:
+            combined = f"{current}\n\n{marker}\n{entry}"
+
+        return self._trim_memory_blocks(combined, marker=marker, max_chars=max_chars)
+
+    def _trim_memory_blocks(self, combined: str, *, marker: str, max_chars: int) -> str:
+        marker_index = combined.find(marker)
+        if marker_index < 0:
+            return combined[-max_chars:].lstrip()
+        prefix = combined[: marker_index + len(marker)].rstrip()
+        memory_body = combined[marker_index + len(marker) :].strip()
+        blocks = self._dedupe_memory_blocks(self._memory_blocks(memory_body))
+        candidate = f"{prefix}\n" + "\n".join(blocks) if blocks else prefix
+        if len(candidate) <= max_chars:
+            return candidate
+
+        kept_blocks: list[str] = []
+        total = len(prefix) + 1
+        for block in reversed(blocks):
+            block_length = len(block) + 1
+            if total + block_length > max_chars:
+                if kept_blocks:
+                    break
+                continue
+            kept_blocks.append(block)
+            total += block_length
+        kept_blocks.reverse()
+        return f"{prefix}\n" + "\n".join(kept_blocks) if kept_blocks else prefix
+
+    def _memory_blocks(self, body: str) -> list[str]:
+        blocks: list[list[str]] = []
+        current: list[str] = []
+        for line in body.splitlines():
+            if line.startswith("- ") and current:
+                blocks.append(current)
+                current = [line]
+            elif line.strip():
+                current.append(line.rstrip())
+        if current:
+            blocks.append(current)
+        return ["\n".join(block) for block in blocks]
+
+    def _dedupe_memory_blocks(self, blocks: list[str]) -> list[str]:
+        seen: set[str] = set()
+        kept: list[str] = []
+        for block in reversed(blocks):
+            key = " ".join(block.split()).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            kept.append(block)
+        kept.reverse()
+        return kept
+
+    def _memory_contains_entry(self, current: str, entry: str) -> bool:
+        if not current:
+            return False
+        normalized_current = "\n".join(line.rstrip() for line in current.splitlines())
+        normalized_entry = "\n".join(line.rstrip() for line in entry.strip().splitlines())
+        return normalized_entry in normalized_current
+
+    def _single_line(self, value: Any, *, max_chars: int = 220) -> str:
+        text = " ".join(str(value).split())
+        if len(text) <= max_chars:
+            return text
+        return f"{text[: max_chars - 15].rstrip()} [truncated]"
+
     def _merge_completion_summary(self, *, summary: str, validation: dict[str, Any] | None) -> str:
         base = (summary or "").strip()
         if not validation:
+            return base
+        ran = validation.get("ran")
+        checks = validation.get("checks")
+        failed_checks = [check for check in checks if isinstance(check, dict) and check.get("status") == "failed"] if isinstance(checks, list) else []
+        if not ran and not failed_checks:
             return base
         validation_summary = (validation.get("summary") or "").strip()
         if not validation_summary:
@@ -628,20 +1082,36 @@ class Orchestrator:
         checks: list[dict[str, Any]] = []
         ran: list[str] = []
 
-        for tool_name, start_token in (
-            ("git_status", "Running post-task git status validation..."),
-            ("git_diff", "Running post-task git diff validation..."),
-        ):
-            check = self._run_validation_tool(
-                session_id=session_id,
-                task=task,
-                tool_name=tool_name,
-                arguments={"workspaceRoot": context.get("workspace_root")},
-                start_token=start_token,
+        if self._workspace_has_git_root(context.get("workspace_root")):
+            for tool_name, start_token in (
+                ("git_status", "Running post-task git status validation..."),
+                ("git_diff", "Running post-task git diff validation..."),
+            ):
+                check = self._run_validation_tool(
+                    session_id=session_id,
+                    task=task,
+                    tool_name=tool_name,
+                    arguments={"workspaceRoot": context.get("workspace_root")},
+                    start_token=start_token,
+                )
+                checks.append(check)
+                if check["status"] == "completed":
+                    ran.append(tool_name)
+        else:
+            checks.extend(
+                [
+                    {
+                        "name": "git_status",
+                        "status": "skipped",
+                        "reason": "Workspace is not a Git repository.",
+                    },
+                    {
+                        "name": "git_diff",
+                        "status": "skipped",
+                        "reason": "Workspace is not a Git repository.",
+                    },
+                ]
             )
-            checks.append(check)
-            if check["status"] == "completed":
-                ran.append(tool_name)
 
         validation_command = self._resolve_validation_command(context=context, patches=patches)
         if validation_command:
@@ -675,6 +1145,8 @@ class Orchestrator:
             "command": command_check if command_check["name"] == "run_command" else None,
             "summary": summary,
         }
+        self._record_task_verification(session_id=session_id, task=task, validation=payload)
+        payload["verification"] = task.get("verification") or []
         self._publish(
             session_id=session_id,
             task=task,
@@ -683,13 +1155,24 @@ class Orchestrator:
         )
         return payload
 
+    def _workspace_has_git_root(self, workspace_root: Any) -> bool:
+        if not isinstance(workspace_root, str) or not workspace_root.strip():
+            return False
+        root = Path(workspace_root)
+        if not root.exists():
+            return False
+        for candidate in (root, *root.parents):
+            if (candidate / ".git").exists():
+                return True
+        return False
+
     def _completed_patch_results(self, tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         patches: list[dict[str, Any]] = []
         for tool_result in tool_results:
             if tool_result.get("name") != "apply_patch":
                 continue
             result = tool_result.get("result", {})
-            if not isinstance(result, dict) or result.get("status") != "completed":
+            if not isinstance(result, dict) or result.get("status") not in {"applied", "completed"}:
                 continue
             patch_record = result.get("patch", {}) if isinstance(result.get("patch"), dict) else {}
             patches.append(
@@ -711,7 +1194,27 @@ class Orchestrator:
             patch_paths = patch_record.get("changedPaths")
             if isinstance(patch_paths, list):
                 return [str(path) for path in patch_paths if str(path).strip()]
+        diff_text = result.get("diffText")
+        if isinstance(diff_text, str):
+            return self._changed_paths_from_diff_text(diff_text)
         return []
+
+    def _changed_paths_from_diff_text(self, diff_text: str) -> list[str]:
+        paths: list[str] = []
+        for line in diff_text.splitlines():
+            if line.startswith("+++ "):
+                path = line[4:].strip()
+                if path == "/dev/null":
+                    continue
+                paths.append(path[2:] if path.startswith("b/") else path)
+            elif line.startswith("--- "):
+                path = line[4:].strip()
+                if path == "/dev/null":
+                    continue
+                normalized = path[2:] if path.startswith("a/") else path
+                if normalized not in paths:
+                    paths.append(normalized)
+        return list(dict.fromkeys(path for path in paths if path))
 
     def _run_validation_tool(
         self,
@@ -752,6 +1255,72 @@ class Orchestrator:
         if tool_name == "run_command" and isinstance(arguments.get("command"), str):
             check["command"] = arguments["command"]
         return check
+
+    def _record_task_verification(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        validation: dict[str, Any],
+    ) -> None:
+        records = self._verification_records_from_validation(validation)
+        if not records:
+            return
+        updated_task = self._store.update_task(
+            task_id=task["id"],
+            verification=records,
+        )
+        task.update(updated_task)
+        self._publish_task_run_snapshot(session_id=session_id, task=task)
+
+    def _verification_records_from_validation(self, validation: dict[str, Any]) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for check in validation.get("checks", []):
+            if not isinstance(check, dict):
+                continue
+            result = check.get("result") if isinstance(check.get("result"), dict) else {}
+            command_log = result.get("commandLog") if isinstance(result.get("commandLog"), dict) else {}
+            command = check.get("command")
+            if not isinstance(command, str):
+                command = result.get("command") if isinstance(result.get("command"), str) else None
+            records.append(
+                {
+                    "id": command_log.get("id"),
+                    "command": command,
+                    "status": self._verification_status(check.get("status")),
+                    "exitCode": result.get("exitCode") if isinstance(result, dict) else None,
+                    "durationMs": result.get("durationMs") if isinstance(result, dict) else None,
+                    "summary": self._validation_check_summary(check),
+                    "startedAt": command_log.get("startedAt"),
+                    "finishedAt": command_log.get("finishedAt"),
+                }
+            )
+        return records
+
+    def _verification_status(self, status: Any) -> str:
+        if status == "completed":
+            return "passed"
+        if status in {"failed", "timeout", "killed", "validation_failed"}:
+            return "failed"
+        if status == "skipped":
+            return "skipped"
+        if status == "running":
+            return "running"
+        return str(status or "not_run")
+
+    def _validation_check_summary(self, check: dict[str, Any]) -> str:
+        if isinstance(check.get("reason"), str):
+            return check["reason"]
+        if isinstance(check.get("error"), str):
+            return check["error"]
+        result = check.get("result") if isinstance(check.get("result"), dict) else {}
+        if isinstance(result.get("summary"), str):
+            return result["summary"]
+        if isinstance(result.get("stderr"), str) and result["stderr"].strip():
+            return result["stderr"].strip().splitlines()[0]
+        if isinstance(result.get("stdout"), str) and result["stdout"].strip():
+            return result["stdout"].strip().splitlines()[0]
+        return f"{check.get('name', 'validation')} {check.get('status', 'not_run')}"
 
     def _resolve_validation_command(self, *, context: dict[str, Any], patches: list[dict[str, Any]]) -> str | None:
         validation = context.get("post_task_validation")
@@ -807,6 +1376,163 @@ class Orchestrator:
             )
 
         return " ".join(part for part in (changed_text, validation_text) if part).strip() + failure_text
+
+    def _record_task_run_tool_result(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        tool_result: dict[str, Any],
+    ) -> None:
+        tool_name = tool_result.get("name")
+        result = tool_result.get("result")
+        if not isinstance(result, dict):
+            return
+
+        update: dict[str, Any] = {}
+        if tool_name == "apply_patch":
+            changed_files = self._merge_changed_files(
+                task.get("changedFiles") or [],
+                self._changed_files_from_patch_result(result),
+            )
+            if changed_files != (task.get("changedFiles") or []):
+                update["changed_files"] = changed_files
+        elif tool_name == "run_command":
+            arguments = tool_result.get("arguments") if isinstance(tool_result.get("arguments"), dict) else {}
+            commands = self._merge_command_records(
+                task.get("commands") or [],
+                self._command_record_from_result(result, arguments),
+            )
+            if commands != (task.get("commands") or []):
+                update["commands"] = commands
+
+        if not update:
+            return
+
+        updated_task = self._store.update_task(task_id=task["id"], **update)
+        task.update(updated_task)
+        self._publish_task_run_snapshot(session_id=session_id, task=task)
+
+    def _changed_files_from_patch_result(self, result: dict[str, Any]) -> list[dict[str, Any]]:
+        if result.get("status") not in {"applied", "completed"}:
+            return []
+        summary = result.get("summary")
+        patch = result.get("patch") if isinstance(result.get("patch"), dict) else {}
+        patch_id = result.get("patchId") or patch.get("id")
+        return [
+            {
+                "path": path,
+                "status": self._patch_file_status(result.get("diffText"), path),
+                "reason": summary if isinstance(summary, str) else None,
+                "patchId": patch_id,
+            }
+            for path in self._changed_paths_from_patch_result(result)
+        ]
+
+    def _patch_file_status(self, diff_text: Any, path: str) -> str:
+        if not isinstance(diff_text, str):
+            return "modified"
+        normalized = path.replace("\\", "/")
+        for section in diff_text.split("diff --git "):
+            if not section.strip() or normalized not in section.replace("\\", "/"):
+                continue
+            if "\n--- /dev/null" in section:
+                return "added"
+            if "\n+++ /dev/null" in section:
+                return "deleted"
+            if "\nrename from " in section and "\nrename to " in section:
+                return "renamed"
+        return "modified"
+
+    def _merge_changed_files(
+        self,
+        current: list[dict[str, Any]],
+        additions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        for item in current:
+            if isinstance(item, dict) and isinstance(item.get("path"), str):
+                merged[item["path"]] = dict(item)
+        for item in additions:
+            path = item.get("path")
+            if isinstance(path, str) and path.strip():
+                merged[path] = {**merged.get(path, {}), **item}
+        return list(merged.values())
+
+    def _command_record_from_result(
+        self,
+        result: dict[str, Any],
+        arguments: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if result.get("status") == "approval_required":
+            return None
+        command_log = result.get("commandLog") if isinstance(result.get("commandLog"), dict) else {}
+        command = command_log.get("command") or result.get("command") or arguments.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return None
+        return {
+            "id": command_log.get("id"),
+            "command": command.strip(),
+            "cwd": command_log.get("cwd") or result.get("cwd") or arguments.get("cwd"),
+            "shell": result.get("shell") or arguments.get("shell"),
+            "status": command_log.get("status") or result.get("status"),
+            "exitCode": command_log.get("exitCode") if command_log.get("exitCode") is not None else result.get("exitCode"),
+            "durationMs": command_log.get("durationMs") if command_log.get("durationMs") is not None else result.get("durationMs"),
+            "summary": self._command_result_summary(result),
+            "startedAt": command_log.get("startedAt"),
+            "finishedAt": command_log.get("finishedAt"),
+            "stdoutPath": command_log.get("stdoutPath"),
+            "stderrPath": command_log.get("stderrPath"),
+            "background": result.get("background") is True,
+        }
+
+    def _merge_command_records(
+        self,
+        current: list[dict[str, Any]],
+        addition: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        if not addition:
+            return current
+        merged: list[dict[str, Any]] = []
+        replaced = False
+        addition_id = addition.get("id")
+        for item in current:
+            if addition_id and isinstance(item, dict) and item.get("id") == addition_id:
+                merged.append({**item, **addition})
+                replaced = True
+            else:
+                merged.append(item)
+        if not replaced:
+            merged.append(addition)
+        return merged
+
+    def _command_result_summary(self, result: dict[str, Any]) -> str:
+        status = result.get("status") or "completed"
+        stderr = result.get("stderr")
+        stdout = result.get("stdout")
+        if isinstance(stderr, str) and stderr.strip():
+            return stderr.strip().splitlines()[0]
+        if isinstance(stdout, str) and stdout.strip():
+            return stdout.strip().splitlines()[0]
+        exit_code = result.get("exitCode")
+        return f"Command {status}" + (f" with exit {exit_code}" if exit_code is not None else "")
+
+    def _publish_task_run_snapshot(self, *, session_id: str, task: dict[str, Any]) -> None:
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="task.updated",
+            payload={
+                "status": task["status"],
+                "plan": task.get("plan"),
+                "currentStep": task.get("currentStep"),
+                "changedFiles": task.get("changedFiles") or [],
+                "commands": task.get("commands") or [],
+                "verification": task.get("verification") or [],
+                "summary": task.get("summary"),
+                "resultSummary": task.get("resultSummary"),
+            },
+        )
 
     def cancel_task(self, params: dict[str, Any]) -> dict[str, Any]:
         task = self._store.get_task({"taskId": params["taskId"]})["task"]
@@ -1867,16 +2593,17 @@ class Orchestrator:
             tool_spec["plan_step_id"],
             next_step_id="summarize-findings",
         )
-        self._store.update_task(
+        updated_task = self._store.update_task(
             task_id=task["id"],
             status=task["status"],
             plan=task["plan"],
         )
+        task.update(updated_task)
         self._publish(
             session_id=session_id,
             task=task,
             event_type="task.updated",
-            payload={"status": task["status"], "plan": task["plan"]},
+            payload={"status": task["status"], "plan": task["plan"], "currentStep": task.get("currentStep")},
         )
 
     def _run_minimal_loop(
@@ -1905,7 +2632,7 @@ class Orchestrator:
                     session_id=session_id,
                     task=task,
                     event_type="task.updated",
-                    payload={"status": task["status"], "plan": task["plan"]},
+                    payload={"status": task["status"], "plan": task["plan"], "currentStep": task.get("currentStep")},
                 )
                 return tool_results
             task["plan"] = self._planner.advance(
@@ -1913,16 +2640,17 @@ class Orchestrator:
                 tool_spec["plan_step_id"],
                 next_step_id=self._next_step_id(tool_sequence, index),
             )
-            self._store.update_task(
+            updated_task = self._store.update_task(
                 task_id=task["id"],
                 status=task["status"],
                 plan=task["plan"],
             )
+            task.update(updated_task)
             self._publish(
                 session_id=session_id,
                 task=task,
                 event_type="task.updated",
-                payload={"status": task["status"], "plan": task["plan"]},
+                payload={"status": task["status"], "plan": task["plan"], "currentStep": task.get("currentStep")},
             )
 
         follow_up_tool = self._provider.pick_follow_up_tool(context=context, tool_results=tool_results)
@@ -1941,16 +2669,17 @@ class Orchestrator:
             "search-relevant-files",
             next_step_id="summarize-findings",
         )
-        self._store.update_task(
+        updated_task = self._store.update_task(
             task_id=task["id"],
             status=task["status"],
             plan=task["plan"],
         )
+        task.update(updated_task)
         self._publish(
             session_id=session_id,
             task=task,
             event_type="task.updated",
-            payload={"status": task["status"], "plan": task["plan"]},
+            payload={"status": task["status"], "plan": task["plan"], "currentStep": task.get("currentStep")},
         )
         self._publish(
             session_id=session_id,
@@ -2125,6 +2854,13 @@ class Orchestrator:
             return tool_result
 
         if self._tool_failed(tool_spec["name"], result):
+            tool_result = {
+                "id": tool_call_id,
+                "name": tool_spec["name"],
+                "arguments": tool_arguments,
+                "result": result,
+            }
+            self._record_task_run_tool_result(session_id=session_id, task=task, tool_result=tool_result)
             self._publish(
                 session_id=session_id,
                 task=task,
@@ -2145,6 +2881,7 @@ class Orchestrator:
                 "arguments": tool_arguments,
                 "result": result,
             }
+            self._record_task_run_tool_result(session_id=session_id, task=task, tool_result=tool_result)
             self._publish(
                 session_id=session_id,
                 task=task,
@@ -2165,6 +2902,7 @@ class Orchestrator:
                 "arguments": tool_arguments,
                 "result": result,
             }
+            self._record_task_run_tool_result(session_id=session_id, task=task, tool_result=tool_result)
             self._publish(
                 session_id=session_id,
                 task=task,

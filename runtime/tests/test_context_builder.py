@@ -44,6 +44,8 @@ def test_context_builder_injects_messages_tools_and_safety_prompt(store: SQLiteS
 
     assert context["workspace_root"] == str(workspace_root)
     assert context["goal"] == "Update README.md"
+    assert context["project_focus"] is None
+    assert context["project_memory"] is None
     assert [message["role"] for message in context["messages"]] == ["system", "user"]
     assert {tool["name"] for tool in context["tools"]} >= {
         "list_dir",
@@ -98,6 +100,199 @@ def test_context_builder_summarizes_recent_history(store: SQLiteStore, tmp_path:
     assert "task failed" in text
 
 
+def test_context_builder_includes_recent_chat_messages(store: SQLiteStore, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Chat memory")
+    store.create_message(session_id=session["id"], role="user", content="Keep the UI compact.")
+    store.create_message(session_id=session["id"], role="assistant", content="I will preserve compact layout.")
+
+    context = ContextBuilder(store).build(session_id=session["id"], goal="Continue the interface work")
+
+    text = _message_text(context)
+    assert "Recent conversation:" in text
+    assert "User: Keep the UI compact." in text
+    assert "Assistant: I will preserve compact layout." in text
+
+
+def test_context_builder_summarizes_task_run_artifacts(store: SQLiteStore, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Task run artifacts")
+    task = store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="Build bead art generator",
+        plan=[{"id": "verify", "title": "Verify CLI", "status": "completed"}],
+        acceptance_criteria=["CLI writes an output file"],
+        out_of_scope=["No GUI"],
+    )
+    store.update_task(
+        task_id=task["id"],
+        status="completed",
+        changed_files=[
+            {
+                "path": "tools/bead_art_generator.py",
+                "status": "added",
+                "additions": 148,
+                "deletions": 0,
+            }
+        ],
+        commands=[
+            {
+                "command": "python tools/bead_art_generator.py --help",
+                "status": "completed",
+                "exitCode": 0,
+            }
+        ],
+        verification=[
+            {
+                "command": "python tools/bead_art_generator.py --help",
+                "status": "passed",
+                "summary": "Help text prints.",
+            }
+        ],
+        summary="Created a CLI generator and verified help output.",
+        result_summary="Created a CLI generator and verified help output.",
+    )
+
+    context = ContextBuilder(store).build(session_id=session["id"], goal="Continue bead tool work")
+
+    text = _message_text(context)
+    assert "Task artifacts:" in text
+    assert "tools/bead_art_generator.py" in text
+    assert "python tools/bead_art_generator.py --help" in text
+    assert "Help text prints." in text
+    assert "CLI writes an output file" in text
+    assert "No GUI" in text
+
+
+def test_context_builder_injects_workspace_project_memory_across_sessions(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    store.update_workspace_summary(
+        workspace["id"],
+        "Project memory:\n- completed: chose SQLite for local project memory.",
+    )
+    session = store.create_session(workspace_id=workspace["id"], title="Next session")
+
+    context = ContextBuilder(store).build(session_id=session["id"], goal="Continue the product iteration")
+
+    text = _message_text(context)
+    assert "Project memory:" in text
+    assert "chose SQLite for local project memory" in text
+
+
+def test_context_builder_injects_workspace_project_focus_across_sessions(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    store.update_workspace_focus(
+        {
+            "workspaceId": workspace["id"],
+            "focus": "Build a coding agent that can sustain large product iterations.",
+        }
+    )
+    session = store.create_session(workspace_id=workspace["id"], title="Focused session")
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Continue implementation",
+    )
+
+    text = _message_text(context)
+    assert "Project focus:" in text
+    assert "sustain large product iterations" in text
+    assert context["project_focus"] == "Build a coding agent that can sustain large product iterations."
+
+
+def test_context_builder_keeps_workspace_project_focus_under_tight_budget(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    focus = "DO NOT LOSE THIS ATTENTION ANCHOR."
+    store.update_workspace_focus({"workspaceId": workspace["id"], "focus": focus})
+    store.update_workspace_summary(
+        workspace["id"],
+        "Project memory:\n" + ("historical implementation detail " * 80),
+    )
+    session = store.create_session(workspace_id=workspace["id"], title="Focused tight budget")
+    store._conn.execute(  # noqa: SLF001
+        "UPDATE sessions SET summary = ? WHERE id = ?",
+        ("old session detail " * 120, session["id"]),
+    )
+    store.update_config({"config": {"provider": {"maxContextTokens": 210}}})
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Continue implementation",
+    )
+
+    text = _message_text(context)
+    assert "Project focus:" in text
+    assert focus in text
+    assert "Continue implementation" in text
+    assert context["budgetStats"]["estimatedTokens"] <= 210
+    assert context["budgetStats"]["droppedSections"] or context["budgetStats"]["trimmedSections"]
+    assert "project_focus" not in context["budgetStats"]["droppedSections"]
+    assert "project_focus" not in context["budgetStats"]["trimmedSections"]
+
+
+def test_context_builder_reserves_tool_schema_tokens_when_trimming_messages(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Tool budget")
+    store._conn.execute(  # noqa: SLF001
+        "UPDATE sessions SET summary = ? WHERE id = ?",
+        ("large historical detail " * 180, session["id"]),
+    )
+    store.update_config({"config": {"provider": {"maxContextTokens": 1600}}})
+    tool_schemas = [
+        {
+            "name": "large_tool",
+            "description": "Large tool description. " * 120,
+            "input_schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query. " * 80,
+                    },
+                },
+                "required": ["query"],
+            },
+        }
+    ]
+
+    context = ContextBuilder(store, tool_schemas=tool_schemas).build(
+        session_id=session["id"],
+        goal="Continue implementation",
+    )
+
+    stats = context["budgetStats"]
+    assert stats["toolSchemaTokens"] > 0
+    assert stats["messageTokens"] + stats["toolSchemaTokens"] <= 1600
+    assert stats["estimatedInputTokens"] <= 1600
+    assert stats["droppedSections"] or stats["trimmedSections"]
+
+
 def test_context_builder_trims_low_priority_history_large_results_and_diff(
     store: SQLiteStore,
     tmp_path: Path,
@@ -137,7 +332,10 @@ def test_context_builder_trims_low_priority_history_large_results_and_diff(
         files_changed=1,
     )
 
-    context = ContextBuilder(store).build(session_id=session["id"], goal="Implement the feature")
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Implement the feature",
+    )
 
     text = _message_text(context)
     assert "Implement the feature" in text

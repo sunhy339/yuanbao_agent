@@ -5,8 +5,10 @@ export type ProviderMode = "mock" | "openai-compatible";
 export type SessionStatus = "active" | "archived" | "failed";
 export type TaskStatus =
   | "queued"
+  | "planning"
   | "running"
   | "waiting_approval"
+  | "verifying"
   | "paused"
   | "completed"
   | "failed"
@@ -103,6 +105,8 @@ export interface WorkspaceRef {
   id: Identifier;
   name: string;
   rootPath: string;
+  focus?: string | null;
+  summary?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -120,6 +124,7 @@ export interface SessionRecord {
 export interface MessageRecord {
   id: Identifier;
   sessionId: Identifier;
+  taskId?: Identifier;
   role: MessageRole;
   content: string;
   createdAt: number;
@@ -132,13 +137,56 @@ export interface PlanStep {
   detail?: string;
 }
 
+export interface TaskChangedFile {
+  path: string;
+  status?: "added" | "modified" | "deleted" | "renamed" | string;
+  additions?: number;
+  deletions?: number;
+  reason?: string;
+  patchId?: Identifier | string | null;
+}
+
+export interface TaskCommandRun {
+  id?: Identifier;
+  command: string;
+  cwd?: string;
+  shell?: string;
+  status?: CommandStatus | string;
+  exitCode?: number | null;
+  durationMs?: number | null;
+  summary?: string;
+  startedAt?: number;
+  finishedAt?: number | null;
+  stdoutPath?: string | null;
+  stderrPath?: string | null;
+  background?: boolean;
+}
+
+export interface TaskVerificationRecord {
+  id?: Identifier;
+  command?: string;
+  status: "not_run" | "running" | "passed" | "failed" | "skipped" | string;
+  exitCode?: number | null;
+  durationMs?: number | null;
+  summary?: string;
+  startedAt?: number;
+  finishedAt?: number | null;
+}
+
 export interface TaskRecord {
   id: Identifier;
   sessionId: Identifier;
   type: TaskType;
   status: TaskStatus;
   goal: string;
+  acceptanceCriteria?: string[];
+  outOfScope?: string[];
+  currentStep?: string;
   plan?: PlanStep[];
+  changedFiles?: TaskChangedFile[];
+  commands?: TaskCommandRun[];
+  verification?: TaskVerificationRecord[];
+  summary?: string;
   resultSummary?: string;
   errorCode?: string;
   createdAt: number;

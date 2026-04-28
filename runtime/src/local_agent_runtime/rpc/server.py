@@ -9,6 +9,7 @@ from ..models import RpcEnvelope
 from ..services.collaboration_service import CollaborationService
 from ..services.command_background import cancel_background_command, get_background_command_event_bridge
 from ..services.schedule_service import ScheduleService
+from ..store.sqlite_store import SQLiteStore
 
 RpcHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -31,10 +32,13 @@ class JsonRpcServer:
         self._writer_lock = threading.Lock()
         self._handlers: dict[str, RpcHandler] = {
             "workspace.open": self._orchestrator.open_workspace,
+            "workspace.focus.update": self._store.update_workspace_focus,
+            "workspace.memory.clear": self._store.clear_workspace_memory,
             "session.create": self._orchestrator.create_session,
             "session.get": self._store.get_session,
             "session.list": self._store.list_sessions,
             "message.send": self._orchestrator.send_message,
+            "message.list": self._store.list_messages,
             "worker.run_child_task": self._orchestrator.run_child_task,
             "task.get": self._store.get_task,
             "task.list": self._store.list_tasks,
@@ -71,8 +75,12 @@ class JsonRpcServer:
             "collab.message.send": self._collaboration.send_agent_message,
             "collab.message.list": self._collaboration.list_agent_messages,
         }
+        self._runtime_event_store_path = str(getattr(self._store, "database_path", ":memory:"))
         if hasattr(self._store, "append_runtime_event"):
-            self._event_bus.subscribe(self._store.append_runtime_event)
+            if self._runtime_event_store_path == ":memory:":
+                self._event_bus.subscribe(self._store.append_runtime_event)
+            else:
+                self._event_bus.subscribe(self._append_runtime_event)
         bridge = get_background_command_event_bridge(getattr(self._store, "database_path", ":memory:"))
         bridge.add_listener(self._emit_bridge_event)
 
@@ -130,6 +138,13 @@ class JsonRpcServer:
 
     def _emit_bridge_event(self, event: dict[str, Any]) -> None:
         self._write_event_payload(event)
+
+    def _append_runtime_event(self, event: Any) -> dict[str, Any] | None:
+        trace_store = SQLiteStore(self._runtime_event_store_path)
+        try:
+            return trace_store.append_runtime_event(event)
+        finally:
+            trace_store.close()
 
     def _cancel_command(self, params: dict[str, Any]) -> dict[str, Any]:
         command_id = params.get("commandId") or params.get("command_id")

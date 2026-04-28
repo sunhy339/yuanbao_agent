@@ -5,6 +5,7 @@ import type {
   GitDiffRecord,
   GitStatusRecord,
   Identifier,
+  MessageRecord,
   PatchRecord,
   ProviderMode,
   ScheduledTaskRecord,
@@ -51,10 +52,13 @@ export interface RpcError {
 
 export type RpcMethod =
   | "workspace.open"
+  | "workspace.focus.update"
+  | "workspace.memory.clear"
   | "session.create"
   | "session.get"
   | "session.list"
   | "message.send"
+  | "message.list"
   | "task.get"
   | "task.cancel"
   | "task.pause"
@@ -78,6 +82,15 @@ export interface WorkspaceOpenParams {
   path: string;
 }
 
+export interface WorkspaceMemoryClearParams {
+  workspaceId: Identifier;
+}
+
+export interface WorkspaceFocusUpdateParams {
+  workspaceId: Identifier;
+  focus?: string | null;
+}
+
 export interface SessionCreateParams {
   workspaceId: Identifier;
   title: string;
@@ -87,6 +100,11 @@ export interface MessageSendParams {
   sessionId: Identifier;
   content: string;
   attachments: string[];
+}
+
+export interface MessageListParams {
+  sessionId: Identifier;
+  limit?: number;
 }
 
 export interface TaskGetParams {
@@ -171,6 +189,9 @@ export interface WorkspaceOpenResult {
   workspace: WorkspaceRef;
 }
 
+export type WorkspaceMemoryClearResult = WorkspaceOpenResult;
+export type WorkspaceFocusUpdateResult = WorkspaceOpenResult;
+
 export interface SessionCreateResult {
   session: SessionRecord;
 }
@@ -185,6 +206,10 @@ export interface SessionListResult {
 
 export interface MessageSendResult {
   task: TaskRecord;
+}
+
+export interface MessageListResult {
+  messages: MessageRecord[];
 }
 
 export interface TaskGetResult {

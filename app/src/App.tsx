@@ -1,23 +1,22 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ApprovalRequestedPayload,
   ApprovalResolvedPayload,
   AgentEventEnvelope,
   AppConfig,
   AssistantTokenPayload,
-  CommandLifecyclePayload,
   CommandLogRecord,
-  CommandOutputPayload,
   PatchRecord,
   PatchProposedPayload,
-  PlanStep,
   ProviderMode,
   ProviderProfile,
   ProviderTestResult,
   ScheduledTaskRecord,
   ScheduledTaskRunRecord,
   SessionRecord,
+  SessionUpdatedPayload,
   TaskRecord,
+  TaskContextPreviewPayload,
   TaskUpdatedPayload,
   ToolRuntimeConfig,
   ToolLifecyclePayload,
@@ -26,8 +25,12 @@ import type {
 } from "@shared";
 import { RuntimeClient, type HostStatus, type RuntimeConfig } from "./lib/runtimeClient";
 import {
+  appendAssistantPlaceholder,
   appendUserMessage,
   getVisibleChatMessages,
+  isOperationalAssistantDelta,
+  removeChatMessage,
+  replaceSessionMessages,
   updatePendingMessageTask,
   type ChatMessageView,
 } from "./state/chatMessages";
@@ -57,6 +60,7 @@ import {
   SessionWorkspace,
   type SessionWorkspaceBackgroundJob,
   type SessionWorkspaceCollaboration,
+  type SessionWorkspaceContextPreview,
 } from "./ui/workbench/workspaces/session/SessionWorkspace";
 import {
   SettingsWorkspace,
@@ -88,34 +92,6 @@ const TRACE_AUTO_REFRESH_STATUSES = new Set<TaskRecord["status"]>([
   "waiting_approval",
 ]);
 type TaskControlAction = "cancel" | "pause" | "resume";
-
-interface TaskControlButtonView {
-  action: TaskControlAction;
-  label: string;
-  busyLabel: string;
-  tone: "neutral" | "warn";
-}
-
-const TASK_CONTROL_BUTTONS: Record<TaskControlAction, TaskControlButtonView> = {
-  cancel: {
-    action: "cancel",
-    label: "Cancel",
-    busyLabel: "Cancelling...",
-    tone: "warn",
-  },
-  pause: {
-    action: "pause",
-    label: "Pause",
-    busyLabel: "Pausing...",
-    tone: "neutral",
-  },
-  resume: {
-    action: "resume",
-    label: "Resume",
-    busyLabel: "Resuming...",
-    tone: "neutral",
-  },
-};
 
 interface ProviderSettingsForm {
   name: string;
@@ -171,18 +147,6 @@ function formatDuration(durationMs?: number): string {
   }
 
   return `${(durationMs / 1000).toFixed(1)} s`;
-}
-
-function getTaskControlActions(status?: TaskRecord["status"]): TaskControlButtonView[] {
-  if (status === "running" || status === "waiting_approval") {
-    return [TASK_CONTROL_BUTTONS.cancel, TASK_CONTROL_BUTTONS.pause];
-  }
-
-  if (status === "paused") {
-    return [TASK_CONTROL_BUTTONS.resume, TASK_CONTROL_BUTTONS.cancel];
-  }
-
-  return [];
 }
 
 function normalizeRuntimeConfig(config: AppConfig | RuntimeConfig): RuntimeConfig {
@@ -953,6 +917,179 @@ function getPayloadValue(payload: unknown, keys: string[]): unknown {
   return undefined;
 }
 
+function truncateText(value: string, maxLength: number): string {
+  const text = value.trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
+function formatRawValue(value: unknown, maxLength = 1800): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  try {
+    const raw = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    return raw && raw.trim() ? truncateText(raw, maxLength) : undefined;
+  } catch {
+    return summarizeValue(value, "", maxLength) || undefined;
+  }
+}
+
+function parseToolValue(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) {
+    return value;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function toolString(record: Record<string, unknown> | null, keys: string[]): string | undefined {
+  if (!record) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
+    }
+  }
+  return undefined;
+}
+
+function toolNumber(record: Record<string, unknown> | null, keys: string[]): number | undefined {
+  if (!record) {
+    return undefined;
+  }
+
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+  }
+  return undefined;
+}
+
+function compactToolList(values: string[], limit = 5): string {
+  const visible = values.filter(Boolean).slice(0, limit);
+  const suffix = values.length > limit ? ` 等 ${values.length} 项` : "";
+  return visible.length ? `${visible.join("、")}${suffix}` : "";
+}
+
+function firstUsefulLine(value?: string): string | undefined {
+  return value
+    ?.split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+}
+
+function summarizeToolArguments(toolName: string, value: unknown, fallback = "未记录参数"): string {
+  const parsed = parseToolValue(value);
+  const record = asRecord(parsed);
+  const path = toolString(record, ["path", "file", "cwd", "root"]);
+
+  if (toolName === "list_dir") {
+    return `列出 ${path ?? "."}`;
+  }
+  if (toolName === "read_file") {
+    return `读取 ${path ?? "文件"}`;
+  }
+  if (toolName === "search_files") {
+    const query = toolString(record, ["query", "pattern", "glob"]);
+    return query ? `搜索 ${query}${path ? ` @ ${path}` : ""}` : `搜索${path ? ` ${path}` : ""}`;
+  }
+  if (toolName === "apply_patch") {
+    const filesValue = record?.files;
+    const changedPathsValue = record?.changedPaths ?? record?.paths;
+    const files = Array.isArray(filesValue)
+      ? filesValue.map((item) => toolString(asRecord(item), ["path"])).filter((item): item is string => Boolean(item))
+      : Array.isArray(changedPathsValue)
+        ? changedPathsValue.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+        : [];
+    return files.length ? `修改 ${compactToolList(files)}` : "应用补丁";
+  }
+  if (toolName === "run_command") {
+    const command = toolString(record, ["command", "cmd"]);
+    return command ? `执行 ${command}` : "执行命令";
+  }
+
+  return summarizeValue(value, fallback, 120);
+}
+
+function summarizeToolResult(toolName: string, resultValue: unknown, errorValue: unknown, fallback = "等待结果"): string {
+  if (errorValue !== undefined && errorValue !== null && summarizeValue(errorValue, "", 160)) {
+    return `失败：${summarizeValue(errorValue, "", 160)}`;
+  }
+
+  const parsed = parseToolValue(resultValue);
+  const record = asRecord(parsed);
+
+  if (toolName === "list_dir") {
+    const itemsValue = record?.items ?? parsed;
+    const items = Array.isArray(itemsValue) ? itemsValue : [];
+    if (!items.length) {
+      return resultValue === undefined ? fallback : "没有找到项目";
+    }
+    const names = items
+      .map((item) => {
+        const itemRecord = asRecord(item);
+        const name = toolString(itemRecord, ["name", "path"]);
+        const type = toolString(itemRecord, ["type"]);
+        return name ? `${name}${type === "directory" ? "/" : ""}` : undefined;
+      })
+      .filter((item): item is string => Boolean(item));
+    const dirCount = items.filter((item) => toolString(asRecord(item), ["type"]) === "directory").length;
+    const fileCount = items.filter((item) => toolString(asRecord(item), ["type"]) === "file").length;
+    return `找到 ${items.length} 项（${dirCount} 个目录，${fileCount} 个文件）：${compactToolList(names)}`;
+  }
+
+  if (toolName === "read_file") {
+    const bytes = toolNumber(record, ["bytesRead", "bytes", "size"]);
+    const content = toolString(record, ["content", "text"]);
+    const preview = firstUsefulLine(content);
+    return `读取完成${bytes !== undefined ? `，${bytes} 字节` : ""}${preview ? `：${truncateText(preview, 80)}` : ""}`;
+  }
+
+  if (toolName === "apply_patch") {
+    const pathsValue = record?.changedPaths ?? record?.paths;
+    const paths = Array.isArray(pathsValue)
+      ? pathsValue.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+      : [];
+    const error = toolString(record, ["error"]);
+    if (error) {
+      return `补丁失败：${truncateText(error, 140)}`;
+    }
+    return paths.length ? `补丁完成：${compactToolList(paths)}` : summarizeValue(resultValue, "补丁完成", 140);
+  }
+
+  if (toolName === "run_command") {
+    const exitCode = toolNumber(record, ["exitCode", "code"]);
+    const output = firstUsefulLine(toolString(record, ["stdout", "stderr", "output"]));
+    return `命令${exitCode === undefined ? "完成" : `退出 ${exitCode}`}${output ? `：${truncateText(output, 100)}` : ""}`;
+  }
+
+  return summarizeValue(resultValue, fallback, 160);
+}
+
 function sortByUpdatedAtDesc<T extends { updatedAt: number }>(items: T[]): T[] {
   return [...items].sort((left, right) => right.updatedAt - left.updatedAt);
 }
@@ -1002,6 +1139,8 @@ interface ToolTimelineItem {
   argsSummary: string;
   resultSummary: string;
   errorSummary?: string;
+  argsRaw?: string;
+  resultRaw?: string;
   startedAt: number;
   updatedAt: number;
   finishedAt?: number;
@@ -1029,29 +1168,6 @@ interface CommandJobTimelineItem {
   stderrPath?: string;
   isBackground?: boolean;
   eventCount: number;
-}
-
-interface ActivityTimelineItem {
-  id: string;
-  type: string;
-  category: "task" | "tool" | "approval" | "patch" | "command" | "assistant" | "event";
-  taskId: string;
-  time: string;
-  status?: string;
-  title: string;
-  summary: string;
-  relatedId?: string;
-  raw: string;
-}
-
-interface TracePanelItem {
-  id: string;
-  type: string;
-  source: string;
-  relatedId: string;
-  time: string;
-  payloadSummary: string;
-  sequence: number;
 }
 
 function stringifyRequestJson(request: Record<string, unknown>): string {
@@ -1143,9 +1259,66 @@ function applyEventToTask(current: TaskRecord | null, event: AgentEventEnvelope)
     ...current,
     status: payload.status ?? coerceTaskStatus(event, current.status),
     plan: payload.plan ?? current.plan,
-    resultSummary: payload.detail ?? payload.resultSummary ?? current.resultSummary,
+    acceptanceCriteria: payload.acceptanceCriteria ?? current.acceptanceCriteria,
+    outOfScope: payload.outOfScope ?? current.outOfScope,
+    currentStep: payload.currentStep ?? current.currentStep,
+    changedFiles: payload.changedFiles ?? current.changedFiles,
+    commands: payload.commands ?? current.commands,
+    verification: payload.verification ?? current.verification,
+    summary: payload.summary ?? current.summary,
+    resultSummary: payload.detail ?? payload.resultSummary ?? payload.summary ?? current.resultSummary,
     errorCode: payload.errorCode ?? current.errorCode,
     updatedAt: event.ts,
+  };
+}
+
+function readTaskContextPreview(value: unknown): TaskContextPreviewPayload | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const payload = value as { context?: unknown };
+  if (!payload.context || typeof payload.context !== "object") {
+    return null;
+  }
+  return payload.context as TaskContextPreviewPayload;
+}
+
+function buildSessionContextPreview({
+  events,
+  traceEvents,
+  workspace,
+  activeTaskId,
+}: {
+  events: AgentEventEnvelope[];
+  traceEvents: TraceEventRecord[];
+  workspace: WorkspaceRef | null;
+  activeTaskId: string | null;
+}): SessionWorkspaceContextPreview | undefined {
+  const liveContexts = events
+    .filter((event) => !activeTaskId || event.taskId === activeTaskId)
+    .map((event) => ({ ts: event.ts, context: readTaskContextPreview(event.payload) }))
+    .filter((entry): entry is { ts: number; context: TaskContextPreviewPayload } => Boolean(entry.context));
+  const traceContexts = traceEvents
+    .filter((event) => !activeTaskId || event.taskId === activeTaskId)
+    .map((event) => ({ ts: event.createdAt, context: readTaskContextPreview(event.payload) }))
+    .filter((entry): entry is { ts: number; context: TaskContextPreviewPayload } => Boolean(entry.context));
+  const latest = [...liveContexts, ...traceContexts].sort((left, right) => right.ts - left.ts)[0]?.context;
+  const projectFocus = workspace?.focus ?? latest?.projectFocus ?? null;
+  const projectMemory = workspace?.summary ?? latest?.projectMemory ?? null;
+
+  if (!latest && !projectFocus && !projectMemory) {
+    return undefined;
+  }
+
+  return {
+    projectFocus,
+    projectMemory,
+    workspaceRoot: latest?.workspaceRoot ?? workspace?.rootPath,
+    searchQuery: latest?.searchQuery,
+    searchMode: latest?.searchMode,
+    toolCount: latest?.toolCount,
+    budgetStats: latest?.budgetStats,
+    taskFocus: latest?.taskFocus,
   };
 }
 
@@ -1159,6 +1332,9 @@ function getTaskBadgeClass(status?: TaskRecord["status"]): string {
   if (status === "running") {
     return "info";
   }
+  if (status === "planning" || status === "verifying") {
+    return "info";
+  }
   if (status === "waiting_approval") {
     return "warn";
   }
@@ -1168,7 +1344,7 @@ function getTaskBadgeClass(status?: TaskRecord["status"]): string {
 function appendAssistantToken(current: ChatMessageView[], event: AgentEventEnvelope): ChatMessageView[] {
   const payload = event.payload as AssistantTokenPayload;
   const delta = payload.delta ?? "";
-  if (!delta) {
+  if (!delta || isOperationalAssistantDelta(delta)) {
     return current;
   }
 
@@ -1187,8 +1363,9 @@ function appendAssistantToken(current: ChatMessageView[], event: AgentEventEnvel
     const currentMessage = next[lastAssistantIndex];
     next[lastAssistantIndex] = {
       ...currentMessage,
-      content: `${currentMessage.content}${delta}`,
+      content: currentMessage.placeholder ? delta : `${currentMessage.content}${delta}`,
       updatedAt: event.ts,
+      placeholder: false,
     };
     return next;
   }
@@ -1253,86 +1430,6 @@ function completeAssistantMessage(current: ChatMessageView[], event: AgentEventE
       streaming: false,
     },
   ];
-}
-
-function buildActivityTitle(event: AgentEventEnvelope): string {
-  if (event.type.startsWith("task.")) {
-    return event.type.replace("task.", "task ");
-  }
-  if (event.type.startsWith("tool.")) {
-    const payload = event.payload as Partial<ToolLifecyclePayload>;
-    return payload.toolName ? `${payload.toolName} ${event.type.replace("tool.", "")}` : event.type;
-  }
-  if (event.type.startsWith("command.")) {
-    const command = readEventText(event.payload, "command");
-    return command ? `${command} ${event.type.replace("command.", "")}` : event.type;
-  }
-  if (event.type.startsWith("approval.")) {
-    return event.type.replace("approval.", "approval ");
-  }
-  if (event.type.startsWith("patch.")) {
-    return event.type.replace("patch.", "patch ");
-  }
-  if (event.type.startsWith("assistant.")) {
-    return event.type.replace("assistant.", "assistant ");
-  }
-  return event.type;
-}
-
-function buildActivityItem(event: AgentEventEnvelope): ActivityTimelineItem {
-  const category = event.type.startsWith("task.")
-    ? "task"
-    : event.type.startsWith("tool.")
-      ? "tool"
-      : event.type.startsWith("approval.")
-        ? "approval"
-        : event.type.startsWith("patch.")
-          ? "patch"
-          : event.type.startsWith("command.")
-            ? "command"
-            : event.type.startsWith("assistant.")
-              ? "assistant"
-              : "event";
-  const status =
-    readEventText(event.payload, "status") ??
-    readEventText(event.payload, "decision") ??
-    event.type.split(".")[1];
-  const relatedId = summarizeValue(
-    getPayloadValue(event.payload, [
-      "toolCallId",
-      "commandId",
-      "approvalId",
-      "patchId",
-      "messageId",
-    ]),
-    "",
-    80,
-  );
-
-  return {
-    id: event.eventId,
-    type: event.type,
-    category,
-    taskId: event.taskId,
-    time: formatTimestamp(event.ts),
-    status,
-    title: buildActivityTitle(event),
-    summary: summarizeEvent(event),
-    relatedId: relatedId || undefined,
-    raw: JSON.stringify(event.payload, null, 2),
-  };
-}
-
-function buildTracePanelItem(trace: TraceEventRecord): TracePanelItem {
-  return {
-    id: trace.id,
-    type: trace.type,
-    source: trace.source,
-    relatedId: trace.relatedId ?? "none",
-    time: formatTimestamp(trace.createdAt),
-    payloadSummary: summarizeValue(trace.payload, "empty payload", 240),
-    sequence: trace.sequence,
-  };
 }
 
 interface CollaborationSourceEvent {
@@ -1718,82 +1815,6 @@ function mergeSessionBackgroundJobs(
   );
 }
 
-function summarizeEvent(event: AgentEventEnvelope): string {
-  if (event.type === "assistant.token") {
-    return ((event.payload as AssistantTokenPayload).delta ?? "").trim() || "Model is streaming output.";
-  }
-
-  if (event.type === "assistant.message.completed") {
-    return "Assistant message completed.";
-  }
-
-  if (event.type === "command.output") {
-    const payload = event.payload as CommandOutputPayload;
-    return `${payload.stream}: ${payload.chunk.trim()}`.trim();
-  }
-
-  if (
-    event.type === "command.started" ||
-    event.type === "command.completed" ||
-    event.type === "command.failed"
-  ) {
-    const payload = event.payload as Partial<CommandLifecyclePayload>;
-    const command = payload.command ?? "command";
-    const status = payload.status ?? event.type.replace("command.", "");
-    const exit = typeof payload.exitCode === "number" ? ` | exit ${payload.exitCode}` : "";
-    return `${command} ${status}${exit}`;
-  }
-
-  if (event.type === "approval.requested") {
-    const payload = event.payload as ApprovalRequestedPayload;
-    const request = payload.request as Record<string, unknown>;
-    if (payload.kind === "apply_patch") {
-      const patchId = readRequestPatchId(request);
-      return patchId ? `Patch approval requested for ${patchId}` : "Patch approval requested";
-    }
-    return `Approval requested for ${readRequestText(request, "command", "command")} in ${readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", "."))}`;
-  }
-
-  if (event.type === "approval.resolved") {
-    const payload = event.payload as ApprovalResolvedPayload;
-    return `Approval ${payload.decision}`;
-  }
-
-  if (event.type === "patch.proposed") {
-    const payload = event.payload as PatchProposedPayload;
-    return `${payload.summary} | ${payload.filesChanged} file(s) changed`;
-  }
-
-  if (event.type.startsWith("task.")) {
-    const payload = event.payload as Partial<TaskUpdatedPayload>;
-    return payload.detail ?? `Task status changed to ${payload.status ?? "unknown"}`;
-  }
-
-  if (
-    event.type === "tool.started" ||
-    event.type === "tool.completed" ||
-    event.type === "tool.failed"
-  ) {
-    const payload = event.payload as Partial<ToolLifecyclePayload>;
-    const result = summarizeValue(
-      getPayloadValue(event.payload, ["result", "output", "content", "summary"]),
-      "",
-      120,
-    );
-    const error = summarizeValue(getPayloadValue(event.payload, ["error", "errorJson"]), "", 120);
-    const detail = error || result;
-    return payload.toolName
-      ? `${payload.toolName} ${event.type.replace("tool.", "")}${detail ? ` | ${detail}` : ""}`
-      : "Tool lifecycle event";
-  }
-
-  try {
-    return JSON.stringify(event.payload);
-  } catch {
-    return "Unable to serialize event payload.";
-  }
-}
-
 function describeMode(hostStatus: HostStatus | null): string {
   if (!hostStatus) {
     return "Detecting runtime";
@@ -1857,11 +1878,12 @@ export function App() {
   const [commandLogCacheById, setCommandLogCacheById] = useState<Record<string, CommandLogRecord>>({});
   const [patchCacheById, setPatchCacheById] = useState<Record<string, PatchRecord>>({});
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
-  const [assistantOutput, setAssistantOutput] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessageView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [workspaceFocusBusy, setWorkspaceFocusBusy] = useState(false);
+  const [workspaceMemoryBusy, setWorkspaceMemoryBusy] = useState(false);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [messageBusy, setMessageBusy] = useState(false);
   const [refreshBusy, setRefreshBusy] = useState(false);
@@ -1906,6 +1928,72 @@ export function App() {
   });
   const [openTabs, setOpenTabs] = useState<WorkbenchTab[]>(() => getInitialTabs());
   const [activeTabId, setActiveTabId] = useState<WorkbenchTab["id"]>("system:new-session");
+  const pendingAssistantTokenEventsRef = useRef<AgentEventEnvelope[]>([]);
+  const assistantTokenFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const messageLoadRequestRef = useRef(0);
+
+  function clearPendingAssistantTokens() {
+    pendingAssistantTokenEventsRef.current = [];
+    if (assistantTokenFlushTimerRef.current !== null) {
+      clearTimeout(assistantTokenFlushTimerRef.current);
+      assistantTokenFlushTimerRef.current = null;
+    }
+  }
+
+  function flushPendingAssistantTokens() {
+    const pendingEvents = pendingAssistantTokenEventsRef.current;
+    if (!pendingEvents.length) {
+      return;
+    }
+
+    pendingAssistantTokenEventsRef.current = [];
+    if (assistantTokenFlushTimerRef.current !== null) {
+      clearTimeout(assistantTokenFlushTimerRef.current);
+      assistantTokenFlushTimerRef.current = null;
+    }
+
+    setChatMessages((current) =>
+      pendingEvents.reduce((nextMessages, event) => appendAssistantToken(nextMessages, event), current),
+    );
+  }
+
+  function queueAssistantToken(event: AgentEventEnvelope) {
+    const payload = event.payload as AssistantTokenPayload;
+    const delta = payload.delta ?? "";
+    if (!delta || isOperationalAssistantDelta(delta)) {
+      return;
+    }
+
+    pendingAssistantTokenEventsRef.current.push(event);
+    if (assistantTokenFlushTimerRef.current !== null) {
+      return;
+    }
+
+    assistantTokenFlushTimerRef.current = setTimeout(() => {
+      assistantTokenFlushTimerRef.current = null;
+      flushPendingAssistantTokens();
+    }, 33);
+  }
+
+  async function loadSessionMessages(sessionId: string | null | undefined) {
+    if (!sessionId) {
+      return;
+    }
+
+    const requestId = messageLoadRequestRef.current + 1;
+    messageLoadRequestRef.current = requestId;
+    try {
+      const result = await runtimeClient.listMessages({ sessionId, limit: 500 });
+      if (messageLoadRequestRef.current !== requestId) {
+        return;
+      }
+      setChatMessages((current) => replaceSessionMessages(current, sessionId, result.messages));
+    } catch (reason) {
+      if (messageLoadRequestRef.current === requestId) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    }
+  }
 
   useEffect(() => {
     let disposed = false;
@@ -1940,6 +2028,7 @@ export function App() {
         setSession(initialSession);
         setTask(initialTask);
         setActiveTaskId(initialTask?.id ?? null);
+        void loadSessionMessages(initialSession?.id);
         setScheduledRecords(nextScheduledTasks.tasks);
         setSelectedScheduledTaskId(nextScheduledTasks.tasks[0]?.id ?? null);
 
@@ -2001,19 +2090,52 @@ export function App() {
           return;
         }
 
-        setEvents((current) => [...current, event].slice(-80));
-        setTask((current) => applyEventToTask(current, event));
-        setTaskHistory((current) => {
-          const existing = current.find((item) => item.id === event.taskId);
-          if (!existing) {
-            return current;
-          }
+        if (event.type === "assistant.token") {
+          queueAssistantToken(event);
+          return;
+        }
 
-          const updated = applyEventToTask(existing, event);
-          return updated ? upsertRecord(current, updated) : current;
-        });
+        setEvents((current) => [...current, event].slice(-80));
+
+        if (event.type === "session.updated") {
+          const payload = (event.payload ?? {}) as SessionUpdatedPayload;
+          setSession((current) =>
+            current && current.id === event.sessionId
+              ? {
+                  ...current,
+                  title: payload.title ?? current.title,
+                  status: (payload.status as SessionRecord["status"] | undefined) ?? current.status,
+                  summary: payload.summary ?? current.summary,
+                  updatedAt: event.ts,
+                }
+              : current,
+          );
+          setSessions((current) =>
+            current.map((item) =>
+              item.id === event.sessionId
+                ? {
+                    ...item,
+                    title: payload.title ?? item.title,
+                    status: (payload.status as SessionRecord["status"] | undefined) ?? item.status,
+                    summary: payload.summary ?? item.summary,
+                    updatedAt: event.ts,
+                  }
+                : item,
+            ),
+          );
+        }
 
         if (event.type.startsWith("task.")) {
+          setTask((current) => applyEventToTask(current, event));
+          setTaskHistory((current) => {
+            const existing = current.find((item) => item.id === event.taskId);
+            if (!existing) {
+              return current;
+            }
+
+            const updated = applyEventToTask(existing, event);
+            return updated ? upsertRecord(current, updated) : current;
+          });
           setSession((current) =>
             current && current.id === event.sessionId
               ? { ...current, updatedAt: event.ts }
@@ -2024,13 +2146,8 @@ export function App() {
           );
         }
 
-        if (event.type === "assistant.token") {
-          const payload = event.payload as AssistantTokenPayload;
-          setAssistantOutput((current) => `${current}${payload.delta}`);
-          setChatMessages((current) => appendAssistantToken(current, event));
-        }
-
         if (event.type === "assistant.message.completed") {
+          flushPendingAssistantTokens();
           setChatMessages((current) => completeAssistantMessage(current, event));
         }
       })
@@ -2045,6 +2162,7 @@ export function App() {
 
     return () => {
       active = false;
+      clearPendingAssistantTokens();
       dispose?.();
     };
   }, []);
@@ -2110,17 +2228,6 @@ export function App() {
     setTaskControlError(null);
   }, [task?.id, task?.status]);
 
-  const eventItems = useMemo(
-    () => [...events].reverse().map((event) => buildActivityItem(event)),
-    [events],
-  );
-  const traceItems = useMemo(
-    () =>
-      [...traceEvents]
-        .sort((left, right) => right.sequence - left.sequence)
-        .map((trace) => buildTracePanelItem(trace)),
-    [traceEvents],
-  );
   const activeProviderProfile = useMemo(
     () => config?.provider.profiles?.find((profile) => profile.id === activeProviderProfileId),
     [activeProviderProfileId, config],
@@ -2145,30 +2252,27 @@ export function App() {
       const toolCallId = payload.toolCallId ?? event.eventId;
       const current = items.get(toolCallId);
       const status = event.type.replace("tool.", "") as ToolTimelineItem["status"];
+      const toolName = payload.toolName ?? current?.toolName ?? "unknown_tool";
+      const argumentValue = payload.arguments ?? getPayloadValue(event.payload, ["args", "input", "parameters"]);
+      const resultValue = getPayloadValue(event.payload, ["result", "output", "content", "summary"]);
+      const errorValue = getPayloadValue(event.payload, ["error", "errorJson", "message"]);
       const durationMs =
         readEventNumber(event.payload, "durationMs") ??
         (current ? event.ts - current.startedAt : undefined);
-      const resultSummary = summarizeValue(
-        getPayloadValue(event.payload, ["result", "output", "content", "summary"]),
-        current?.resultSummary ?? "waiting for result",
-      );
-      const errorSummary = summarizeValue(
-        getPayloadValue(event.payload, ["error", "errorJson", "message"]),
-        "",
-      );
+      const resultSummary = summarizeToolResult(toolName, resultValue, errorValue, current?.resultSummary ?? "等待结果");
+      const errorSummary = summarizeValue(errorValue, "");
 
       items.set(toolCallId, {
         id: toolCallId,
         taskId: event.taskId,
         toolCallId,
-        toolName: payload.toolName ?? current?.toolName ?? "unknown_tool",
+        toolName,
         status,
-        argsSummary: summarizeValue(
-          payload.arguments ?? getPayloadValue(event.payload, ["args", "input", "parameters"]),
-          current?.argsSummary ?? "not recorded",
-        ),
+        argsSummary: summarizeToolArguments(toolName, argumentValue, current?.argsSummary ?? "未记录参数"),
         resultSummary,
         errorSummary: errorSummary || current?.errorSummary,
+        argsRaw: formatRawValue(argumentValue) ?? current?.argsRaw,
+        resultRaw: formatRawValue(resultValue ?? errorValue) ?? current?.resultRaw,
         startedAt: current?.startedAt ?? event.ts,
         updatedAt: event.ts,
         finishedAt: status === "started" ? current?.finishedAt : event.ts,
@@ -2322,40 +2426,10 @@ export function App() {
     return sortByUpdatedAtDesc(Array.from(cards.values()));
   }, [approvalByPatchId, events, patchCacheById]);
 
-  const patchCardById = useMemo(() => {
-    return new Map(patchCards.map((patch) => [patch.patchId, patch]));
-  }, [patchCards]);
-
-  const commandOutputByTaskId = useMemo(() => {
-    const outputs = new Map<string, string[]>();
-
-    for (const event of events) {
-      if (event.type !== "command.output") {
-        continue;
-      }
-
-      const payload = event.payload as CommandOutputPayload;
-      const chunk = payload.chunk.trim();
-      const summary = chunk ? `${payload.stream}: ${chunk}` : `${payload.stream}: output event`;
-      const next = outputs.get(event.taskId) ?? [];
-      outputs.set(event.taskId, [...next, summary].slice(-3));
-    }
-
-    return outputs;
-  }, [events]);
-
-  const planSteps = useMemo<Array<PlanStep>>(() => task?.plan ?? [], [task]);
-
-  const visibleTaskHistory = useMemo(() => {
-    const scopedTasks = session ? taskHistory.filter((item) => item.sessionId === session.id) : taskHistory;
-    return sortByUpdatedAtDesc(scopedTasks);
-  }, [taskHistory, session]);
-
   const visibleChatMessages = useMemo(
     () => getVisibleChatMessages(chatMessages, session?.id),
     [chatMessages, session?.id],
   );
-  const taskControlActions = useMemo(() => getTaskControlActions(task?.status), [task?.status]);
 
   async function ensureWorkspace(): Promise<WorkspaceRef> {
     if (workspace) {
@@ -2380,6 +2454,7 @@ export function App() {
   }
 
   function selectSession(nextSession: SessionRecord | null) {
+    clearPendingAssistantTokens();
     setSession(nextSession);
     setActiveTaskId(null);
     setTask(null);
@@ -2389,13 +2464,13 @@ export function App() {
     setTraceError(null);
     setPatchCacheById({});
     setPatchBusyId(null);
-    setAssistantOutput("");
     setApprovalBusyId(null);
 
     if (!nextSession) {
       return;
     }
 
+    void loadSessionMessages(nextSession.id);
     const nextTask = sortByUpdatedAtDesc(
       taskHistory.filter((item) => item.sessionId === nextSession.id),
     )[0];
@@ -2636,6 +2711,7 @@ export function App() {
       )[0];
       setTask(nextTask ?? null);
       setActiveTaskId(nextTask?.id ?? null);
+      void loadSessionMessages(preferredSession.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -2752,6 +2828,7 @@ export function App() {
 
     try {
       const result = await runtimeClient.openWorkspace(workspacePath.trim());
+      clearPendingAssistantTokens();
       setWorkspace(result.workspace);
       setSession(null);
       setTask(null);
@@ -2765,13 +2842,51 @@ export function App() {
       setPatchCacheById({});
       setPatchBusyId(null);
       setEvents([]);
-      setAssistantOutput("");
       setChatMessages([]);
       await refreshSessionHistory();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setWorkspaceBusy(false);
+    }
+  }
+
+  async function handleClearWorkspaceMemory() {
+    if (!workspace) {
+      setError("Open a workspace before clearing project memory.");
+      return;
+    }
+
+    setWorkspaceMemoryBusy(true);
+    setError(null);
+    try {
+      const result = await runtimeClient.clearWorkspaceMemory({ workspaceId: workspace.id });
+      setWorkspace(result.workspace);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setWorkspaceMemoryBusy(false);
+    }
+  }
+
+  async function handleSaveWorkspaceFocus(focus: string) {
+    if (!workspace) {
+      setError("Open a workspace before saving project focus.");
+      return;
+    }
+
+    setWorkspaceFocusBusy(true);
+    setError(null);
+    try {
+      const result = await runtimeClient.updateWorkspaceFocus({
+        workspaceId: workspace.id,
+        focus,
+      });
+      setWorkspace(result.workspace);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setWorkspaceFocusBusy(false);
     }
   }
 
@@ -3195,6 +3310,7 @@ export function App() {
 
     setMessageBusy(true);
     setError(null);
+    let pendingAssistantMessageIdForCatch: string | null = null;
 
     try {
       await persistSearchConfig();
@@ -3203,22 +3319,33 @@ export function App() {
           ? activeSessionRecord ?? (await ensureSessionForSend())
           : await ensureSessionForSend();
       const messageContent = prompt.trim();
-      const pendingUserMessageId = `user_${Date.now()}`;
+      const messageCreatedAt = Date.now();
+      const pendingUserMessageId = `user_${messageCreatedAt}`;
+      const pendingAssistantMessageId = `assistant_pending_${messageCreatedAt}`;
+      pendingAssistantMessageIdForCatch = pendingAssistantMessageId;
+      clearPendingAssistantTokens();
       setEvents([]);
       setTraceEvents([]);
       setCommandLogCacheById({});
       setTraceError(null);
       setPatchCacheById({});
       setPatchBusyId(null);
-      setAssistantOutput("");
       setPrompt("");
       setChatMessages((current) =>
-        appendUserMessage(current, {
-          id: pendingUserMessageId,
-          sessionId: activeSession.id,
-          content: messageContent,
-          now: Date.now(),
-        }),
+        appendAssistantPlaceholder(
+          appendUserMessage(current, {
+            id: pendingUserMessageId,
+            sessionId: activeSession.id,
+            content: messageContent,
+            now: messageCreatedAt,
+          }),
+          {
+            id: pendingAssistantMessageId,
+            sessionId: activeSession.id,
+            content: "\u601d\u8003\u4e2d...",
+            now: messageCreatedAt + 1,
+          },
+        ),
       );
       setApprovalBusyId(null);
 
@@ -3229,6 +3356,7 @@ export function App() {
       });
 
       setChatMessages((current) => updatePendingMessageTask(current, pendingUserMessageId, result.task.id));
+      setChatMessages((current) => updatePendingMessageTask(current, pendingAssistantMessageId, result.task.id));
       setTaskHistory((current) => upsertRecord(current, result.task));
       setTask(result.task);
       setActiveTaskId(result.task.id);
@@ -3241,6 +3369,10 @@ export function App() {
         return resultTabs.tabs;
       });
     } catch (reason) {
+      if (pendingAssistantMessageIdForCatch) {
+        const failedAssistantMessageId = pendingAssistantMessageIdForCatch;
+        setChatMessages((current) => removeChatMessage(current, failedAssistantMessageId));
+      }
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setMessageBusy(false);
@@ -3548,6 +3680,8 @@ export function App() {
         argsPreview: toolCall.argsSummary,
         input: toolCall.argsSummary,
         output: toolCall.resultSummary,
+        rawInput: toolCall.argsRaw,
+        rawOutput: toolCall.resultRaw,
         stderr: toolCall.errorSummary,
       })),
     [toolTimelineItems],
@@ -3565,6 +3699,16 @@ export function App() {
       return mergeSessionBackgroundJobs(eventJobs, commandLogs);
     },
     [activeTaskId, commandLogCacheById, events, traceEvents],
+  );
+  const sessionContextPreview = useMemo(
+    () =>
+      buildSessionContextPreview({
+        events,
+        traceEvents,
+        workspace,
+        activeTaskId,
+      }),
+    [activeTaskId, events, traceEvents, workspace],
   );
 
   function handleSelectScheduledTask(taskId: string) {
@@ -3630,6 +3774,13 @@ export function App() {
                   id: task.id,
                   status: task.status,
                   goal: task.goal,
+                  acceptanceCriteria: task.acceptanceCriteria,
+                  outOfScope: task.outOfScope,
+                  currentStep: task.currentStep,
+                  changedFiles: task.changedFiles,
+                  commands: task.commands,
+                  verification: task.verification,
+                  summary: task.summary,
                   resultSummary: task.resultSummary,
                   planSteps: task.plan?.map((step) => ({
                     id: step.id,
@@ -3648,6 +3799,7 @@ export function App() {
           patches={sessionPatches}
           traces={sessionTraceItems}
           toolCalls={sessionToolCalls}
+          contextPreview={sessionContextPreview}
           composerContext={{
             cwd: cwdLabel,
             repo: workspaceName,
@@ -3714,6 +3866,12 @@ export function App() {
         onRecheckComputerUse={() =>
           setComputerUseSettings((current) => ({ ...current, status: "桌面权限检查待接入" }))
         }
+        workspaceFocus={workspace?.focus}
+        workspaceFocusBusy={workspaceFocusBusy}
+        onSaveWorkspaceFocus={workspace ? handleSaveWorkspaceFocus : undefined}
+        workspaceMemorySummary={workspace?.summary}
+        workspaceMemoryBusy={workspaceMemoryBusy}
+        onClearWorkspaceMemory={workspace ? handleClearWorkspaceMemory : undefined}
         about={{
           version: "0.1.0",
           runtime: hostStatus?.runtimeTransport ?? "mock-browser",

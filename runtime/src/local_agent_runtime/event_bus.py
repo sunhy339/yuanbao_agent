@@ -22,7 +22,10 @@ class EventBus:
 
     def publish(self, event: RuntimeEvent) -> None:
         for sink in list(self._subscribers):
-            sink(event)
+            try:
+                sink(event)
+            except Exception:
+                continue
 
     def as_payload(self, event: RuntimeEvent) -> dict[str, Any]:
         return {

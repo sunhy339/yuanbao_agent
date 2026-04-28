@@ -2,10 +2,14 @@ import type {
   ApprovalKind,
   Identifier,
   PlanStep,
+  TaskChangedFile,
+  TaskCommandRun,
+  TaskVerificationRecord,
   TaskStatus,
 } from "./domain";
 
 export type AgentEventType =
+  | "session.updated"
   | "task.queued"
   | "task.started"
   | "task.updated"
@@ -43,6 +47,48 @@ export interface TaskUpdatedPayload {
   status: TaskStatus;
   plan?: PlanStep[];
   detail?: string;
+  acceptanceCriteria?: string[];
+  outOfScope?: string[];
+  currentStep?: string;
+  changedFiles?: TaskChangedFile[];
+  commands?: TaskCommandRun[];
+  verification?: TaskVerificationRecord[];
+  summary?: string;
+  resultSummary?: string;
+  errorCode?: string;
+  context?: TaskContextPreviewPayload;
+}
+
+export interface TaskContextPreviewPayload {
+  workspaceId?: string;
+  workspaceName?: string;
+  workspaceRoot?: string;
+  projectFocus?: string | null;
+  projectMemory?: string | null;
+  searchQuery?: string;
+  searchMode?: string;
+  toolCount?: number;
+  budgetStats?: {
+    estimatedTokens?: number;
+    estimatedInputTokens?: number;
+    messageTokens?: number;
+    toolSchemaTokens?: number;
+    maxContextTokens?: number;
+    droppedSections?: string[];
+    trimmedSections?: string[];
+  };
+  taskFocus?: {
+    taskId?: string;
+    currentStep?: string | null;
+    acceptanceCriteriaCount?: number;
+    outOfScopeCount?: number;
+  };
+}
+
+export interface SessionUpdatedPayload {
+  summary?: string | null;
+  title?: string;
+  status?: string;
 }
 
 export interface AssistantTokenPayload {

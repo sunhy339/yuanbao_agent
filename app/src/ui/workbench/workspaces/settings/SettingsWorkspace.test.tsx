@@ -364,4 +364,52 @@ describe("SettingsWorkspace", () => {
     await user.click(container.querySelector(".settings-secondary-action") as HTMLElement);
     expect(onOpenSkillsFolder).toHaveBeenCalled();
   });
+
+  it("shows project memory state and clears it from settings", async () => {
+    const user = userEvent.setup();
+    const onClearWorkspaceMemory = vi.fn();
+    const { container } = render(
+      <SettingsWorkspace
+        workspaceMemorySummary="Project memory:\n- completed: roadmap aligned"
+        onClearWorkspaceMemory={onClearWorkspaceMemory}
+      />,
+    );
+    const navButtons = container.querySelectorAll(".settings-nav button");
+
+    await user.click(navButtons[7] as HTMLElement);
+    expect(screen.getByText("Project memory")).toBeInTheDocument();
+    expect(screen.getByText(/roadmap aligned/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "清空项目记忆" }));
+
+    expect(onClearWorkspaceMemory).toHaveBeenCalledTimes(1);
+  });
+
+  it("edits and clears project focus separately from project memory", async () => {
+    const user = userEvent.setup();
+    const onSaveWorkspaceFocus = vi.fn();
+    const onClearWorkspaceMemory = vi.fn();
+    const { container } = render(
+      <SettingsWorkspace
+        workspaceFocus="Build durable product iteration."
+        workspaceMemorySummary="Project memory:\n- completed: roadmap aligned"
+        onSaveWorkspaceFocus={onSaveWorkspaceFocus}
+        onClearWorkspaceMemory={onClearWorkspaceMemory}
+      />,
+    );
+    const navButtons = container.querySelectorAll(".settings-nav button");
+
+    await user.click(navButtons[7] as HTMLElement);
+    const focusInput = screen.getByRole("textbox", { name: "固定焦点" }) as HTMLTextAreaElement;
+    await user.clear(focusInput);
+    await user.type(focusInput, "Keep context focused on large projects.");
+    await user.click(screen.getByRole("button", { name: "保存项目焦点" }));
+
+    expect(onSaveWorkspaceFocus).toHaveBeenCalledWith("Keep context focused on large projects.");
+    expect(onClearWorkspaceMemory).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "清空项目焦点" }));
+
+    expect(onSaveWorkspaceFocus).toHaveBeenLastCalledWith("");
+  });
 });

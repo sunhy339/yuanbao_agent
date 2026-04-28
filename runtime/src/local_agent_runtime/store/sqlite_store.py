@@ -124,8 +124,8 @@ class SQLiteStore:
         now = self.now()
         self._conn.execute(
             """
-            INSERT INTO workspaces (id, name, root_path, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO workspaces (id, name, root_path, focus, summary, created_at, updated_at)
+            VALUES (?, ?, ?, NULL, NULL, ?, ?)
             ON CONFLICT(root_path) DO UPDATE SET updated_at = excluded.updated_at
             """,
             (workspace_id, Path(root).name or root, root, now, now),
@@ -136,6 +136,54 @@ class SQLiteStore:
             (root,),
         ).fetchone()
         return self._serialize_workspace(dict(row))
+
+    def require_workspace(self, workspace_id: str) -> dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT * FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Workspace not found: {workspace_id}")
+        return self._serialize_workspace(dict(row))
+
+    def update_workspace_summary(self, workspace_id: str, summary: str | None) -> dict[str, Any]:
+        now = self.now()
+        self._conn.execute(
+            """
+            UPDATE workspaces
+            SET summary = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (summary, now, workspace_id),
+        )
+        self._conn.commit()
+        return self.require_workspace(workspace_id)
+
+    def update_workspace_focus(self, params: dict[str, Any]) -> dict[str, Any]:
+        workspace_id = params.get("workspaceId") or params.get("workspace_id")
+        if not isinstance(workspace_id, str) or not workspace_id.strip():
+            raise ValueError("workspaceId is required")
+        focus = params.get("focus")
+        if focus is not None:
+            focus = str(focus).strip() or None
+        now = self.now()
+        self._conn.execute(
+            """
+            UPDATE workspaces
+            SET focus = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (focus, now, workspace_id.strip()),
+        )
+        self._conn.commit()
+        return {"workspace": self.require_workspace(workspace_id.strip())}
+
+    def clear_workspace_memory(self, params: dict[str, Any]) -> dict[str, Any]:
+        workspace_id = params.get("workspaceId") or params.get("workspace_id")
+        if not isinstance(workspace_id, str) or not workspace_id.strip():
+            raise ValueError("workspaceId is required")
+        workspace = self.update_workspace_summary(workspace_id.strip(), None)
+        return {"workspace": workspace}
 
     def create_session(self, workspace_id: str, title: str) -> dict[str, Any]:
         session_id = self.new_id("sess")
@@ -165,6 +213,67 @@ class SQLiteStore:
     def list_sessions(self, _params: dict[str, Any]) -> dict[str, Any]:
         rows = self._conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC").fetchall()
         return {"sessions": [self._serialize_session(dict(row)) for row in rows]}
+
+    def create_message(
+        self,
+        *,
+        session_id: str,
+        role: str,
+        content: str,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        if role not in {"user", "assistant", "system", "tool"}:
+            raise ValueError(f"Unsupported message role: {role}")
+        message_id = self.new_id("msg")
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO messages (id, session_id, task_id, role, content, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (message_id, session_id, task_id, role, content, now),
+        )
+        self._conn.execute(
+            """
+            UPDATE sessions
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            (now, session_id),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Message not found: {message_id}")
+        return self._serialize_message(dict(row))
+
+    def list_messages(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = self._require_non_empty(params, "sessionId")
+        limit = int(params.get("limit") or 500)
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM messages
+            WHERE session_id = ?
+            ORDER BY created_at ASC, id ASC
+            LIMIT ?
+            """,
+            (session_id, max(1, min(limit, 1000))),
+        ).fetchall()
+        return {"messages": [self._serialize_message(dict(row)) for row in rows]}
+
+    def update_session_summary(self, session_id: str, summary: str | None) -> dict[str, Any]:
+        now = self.now()
+        self._conn.execute(
+            """
+            UPDATE sessions
+            SET summary = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (summary, now, session_id),
+        )
+        self._conn.commit()
+        return self.require_session(session_id)
 
     def create_scheduled_task(self, params: dict[str, Any]) -> dict[str, Any]:
         name = self._require_non_empty(params, "name")
@@ -310,15 +419,41 @@ class SQLiteStore:
             ).fetchall()
         return {"logs": [self._serialize_scheduled_task_run(dict(row)) for row in rows]}
 
-    def create_task(self, session_id: str, task_type: str, goal: str, plan: list[dict[str, Any]]) -> dict[str, Any]:
+    def create_task(
+        self,
+        session_id: str,
+        task_type: str,
+        goal: str,
+        plan: list[dict[str, Any]],
+        *,
+        acceptance_criteria: list[str] | None = None,
+        out_of_scope: list[str] | None = None,
+        current_step: str | None = None,
+    ) -> dict[str, Any]:
         task_id = self.new_id("task")
         now = self.now()
+        current_step = current_step or self._current_step_from_plan(plan)
         self._conn.execute(
             """
-            INSERT INTO tasks (id, session_id, type, status, goal, plan_json, result_json, error_code, created_at, updated_at)
-            VALUES (?, ?, ?, 'running', ?, ?, NULL, NULL, ?, ?)
+            INSERT INTO tasks (
+                id, session_id, type, status, goal, acceptance_criteria_json, out_of_scope_json,
+                current_step, plan_json, changed_files_json, commands_json, verification_json,
+                summary, result_json, error_code, created_at, updated_at
+            )
+            VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, '[]', '[]', '[]', NULL, NULL, NULL, ?, ?)
             """,
-            (task_id, session_id, task_type, goal, json.dumps(plan, ensure_ascii=False), now, now),
+            (
+                task_id,
+                session_id,
+                task_type,
+                goal,
+                json.dumps(acceptance_criteria or [], ensure_ascii=False),
+                json.dumps(out_of_scope or [], ensure_ascii=False),
+                current_step,
+                json.dumps(plan, ensure_ascii=False),
+                now,
+                now,
+            ),
         )
         self._conn.commit()
         row = self._conn.execute(
@@ -342,6 +477,13 @@ class SQLiteStore:
         *,
         status: str | None = None,
         plan: list[dict[str, Any]] | None = None,
+        acceptance_criteria: list[str] | None = None,
+        out_of_scope: list[str] | None = None,
+        current_step: str | None = None,
+        changed_files: list[dict[str, Any]] | None = None,
+        commands: list[dict[str, Any]] | None = None,
+        verification: list[dict[str, Any]] | None = None,
+        summary: str | None = None,
         result_summary: str | None = None,
         error_code: str | None = None,
     ) -> dict[str, Any]:
@@ -354,6 +496,29 @@ class SQLiteStore:
         if plan is not None:
             assignments.append("plan_json = ?")
             values.append(json.dumps(plan, ensure_ascii=False))
+            if current_step is None:
+                current_step = self._current_step_from_plan(plan)
+        if acceptance_criteria is not None:
+            assignments.append("acceptance_criteria_json = ?")
+            values.append(json.dumps(acceptance_criteria, ensure_ascii=False))
+        if out_of_scope is not None:
+            assignments.append("out_of_scope_json = ?")
+            values.append(json.dumps(out_of_scope, ensure_ascii=False))
+        if current_step is not None:
+            assignments.append("current_step = ?")
+            values.append(current_step)
+        if changed_files is not None:
+            assignments.append("changed_files_json = ?")
+            values.append(json.dumps(changed_files, ensure_ascii=False))
+        if commands is not None:
+            assignments.append("commands_json = ?")
+            values.append(json.dumps(commands, ensure_ascii=False))
+        if verification is not None:
+            assignments.append("verification_json = ?")
+            values.append(json.dumps(verification, ensure_ascii=False))
+        if summary is not None:
+            assignments.append("summary = ?")
+            values.append(summary)
         if result_summary is not None:
             assignments.append("result_json = ?")
             values.append(result_summary)
@@ -1467,6 +1632,8 @@ class SQLiteStore:
             "id": row["id"],
             "name": row["name"],
             "rootPath": row["root_path"],
+            "focus": row.get("focus"),
+            "summary": row.get("summary"),
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -1481,6 +1648,18 @@ class SQLiteStore:
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
+
+    def _serialize_message(self, row: dict[str, Any]) -> dict[str, Any]:
+        message = {
+            "id": row["id"],
+            "sessionId": row["session_id"],
+            "role": row["role"],
+            "content": row["content"],
+            "createdAt": row["created_at"],
+        }
+        if row.get("task_id"):
+            message["taskId"] = row["task_id"]
+        return message
 
     def _serialize_scheduled_task(self, row: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1518,12 +1697,36 @@ class SQLiteStore:
             "type": row["type"],
             "status": row["status"],
             "goal": row["goal"],
-            "plan": json.loads(row["plan_json"] or "[]"),
+            "acceptanceCriteria": self._json_list(row.get("acceptance_criteria_json")),
+            "outOfScope": self._json_list(row.get("out_of_scope_json")),
+            "currentStep": row.get("current_step"),
+            "plan": self._json_list(row.get("plan_json")),
+            "changedFiles": self._json_list(row.get("changed_files_json")),
+            "commands": self._json_list(row.get("commands_json")),
+            "verification": self._json_list(row.get("verification_json")),
+            "summary": row.get("summary"),
             "resultSummary": row["result_json"],
             "errorCode": row["error_code"],
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
+
+    def _json_list(self, raw: Any) -> list[Any]:
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+
+    def _current_step_from_plan(self, plan: list[dict[str, Any]]) -> str | None:
+        for preferred_status in ("active", "pending"):
+            for step in plan:
+                if step.get("status") == preferred_status and isinstance(step.get("title"), str):
+                    return step["title"]
+        first_title = plan[0].get("title") if plan else None
+        return first_title if isinstance(first_title, str) else None
 
     def _serialize_collaboration_task(self, row: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1956,6 +2159,8 @@ class SQLiteStore:
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 root_path TEXT NOT NULL UNIQUE,
+                focus TEXT,
+                summary TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -1976,11 +2181,27 @@ class SQLiteStore:
                 type TEXT NOT NULL,
                 status TEXT NOT NULL,
                 goal TEXT NOT NULL,
+                acceptance_criteria_json TEXT,
+                out_of_scope_json TEXT,
+                current_step TEXT,
                 plan_json TEXT,
+                changed_files_json TEXT,
+                commands_json TEXT,
+                verification_json TEXT,
+                summary TEXT,
                 result_json TEXT,
                 error_code TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                task_id TEXT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
@@ -2117,6 +2338,9 @@ class SQLiteStore:
             CREATE INDEX IF NOT EXISTS idx_trace_events_task_order
                 ON trace_events (task_id, created_at, sequence);
 
+            CREATE INDEX IF NOT EXISTS idx_messages_session_created
+                ON messages (session_id, created_at);
+
             CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task_started
                 ON scheduled_task_runs (task_id, started_at DESC);
 
@@ -2137,9 +2361,41 @@ class SQLiteStore:
             """
         )
         self._conn.commit()
+        self._ensure_workspace_columns()
+        self._ensure_task_columns()
         self._ensure_patch_columns()
         self._ensure_collaboration_task_columns()
         self._ensure_schedule_columns()
+
+    def _ensure_workspace_columns(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(workspaces)").fetchall()
+        }
+        if "focus" not in columns:
+            self._conn.execute("ALTER TABLE workspaces ADD COLUMN focus TEXT")
+        if "summary" not in columns:
+            self._conn.execute("ALTER TABLE workspaces ADD COLUMN summary TEXT")
+        self._conn.commit()
+
+    def _ensure_task_columns(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        expected = {
+            "acceptance_criteria_json": "TEXT DEFAULT '[]'",
+            "out_of_scope_json": "TEXT DEFAULT '[]'",
+            "current_step": "TEXT",
+            "changed_files_json": "TEXT DEFAULT '[]'",
+            "commands_json": "TEXT DEFAULT '[]'",
+            "verification_json": "TEXT DEFAULT '[]'",
+            "summary": "TEXT",
+        }
+        for column, definition in expected.items():
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
+        self._conn.commit()
 
     def _ensure_patch_columns(self) -> None:
         columns = {

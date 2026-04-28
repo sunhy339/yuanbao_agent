@@ -18,6 +18,8 @@ export function buildMockWorkspace(path: string): WorkspaceRef {
     id: `ws_${Date.now()}`,
     name: path.split(/[\\/]/).filter(Boolean).pop() ?? "workspace",
     rootPath: path,
+    focus: null,
+    summary: null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -59,15 +61,22 @@ export function buildMockPlan(goal: string): PlanStep[] {
 }
 
 export function buildMockTask(sessionId: string, content: string): TaskRecord {
+  const plan = buildMockPlan(content);
   return {
     id: `task_${Date.now()}`,
     sessionId,
     type: "edit",
     status: "queued",
     goal: content,
+    acceptanceCriteria: ["Understand the request", "Make a focused change", "Report verification results"],
+    outOfScope: ["Unrelated refactors", "Provider configuration changes"],
+    currentStep: plan.find((step) => step.status === "active")?.title ?? plan[0]?.title,
+    changedFiles: [],
+    commands: [],
+    verification: [],
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    plan: buildMockPlan(content),
+    plan,
   };
 }
 
@@ -174,6 +183,12 @@ export const seedTask: TaskRecord = {
   type: "edit",
   status: "running",
   goal: "Run tests, inspect key files, then prepare a reviewable patch.",
+  acceptanceCriteria: ["Inspect relevant files", "Prepare a reviewable patch", "Run the configured verification"],
+  outOfScope: ["Rewrite unrelated UI"],
+  currentStep: "Inspect the task request",
+  changedFiles: [],
+  commands: [],
+  verification: [],
   createdAt: now,
   updatedAt: now,
   plan: buildMockPlan("Run tests, inspect key files, then prepare a reviewable patch."),

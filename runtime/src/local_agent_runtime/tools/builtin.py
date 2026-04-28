@@ -792,6 +792,7 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
                 original_text = absolute_path.read_text(encoding="utf-8", errors="replace") if absolute_path.exists() else ""
                 new_text = str(item.get("content") or "")
 
+            is_new_file = not absolute_path.exists()
             if original_text == new_text and not delete_file:
                 continue
 
@@ -801,7 +802,7 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
                 difflib.unified_diff(
                     original_lines,
                     new_lines,
-                    fromfile=f"a/{relative_path}",
+                    fromfile="/dev/null" if is_new_file and not delete_file else f"a/{relative_path}",
                     tofile="/dev/null" if delete_file else f"b/{relative_path}",
                     lineterm="",
                     n=3,

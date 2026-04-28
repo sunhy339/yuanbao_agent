@@ -138,6 +138,299 @@ def test_react_loop_accepts_simple_final_answer(tmp_path: Any) -> None:
     assert not [event for event in runtime.events if event["type"] == "tool.started"]
 
 
+def test_react_loop_injects_task_focus_into_provider_context(tmp_path: Any) -> None:
+    provider = ScriptedProvider([{"final": "I will stay on the requested change."}])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "add a focused project checklist"},
+        ),
+        "task",
+    )
+
+    first_context = provider.calls[0]["context"]
+    user_context = first_context["messages"][-1]["content"]
+    assert "Task focus:" in user_context
+    assert "- goal: add a focused project checklist" in user_context
+    assert "Acceptance criteria:" in user_context
+    assert "Out of scope:" in user_context
+    assert task["acceptanceCriteria"]
+    assert task["outOfScope"]
+    assert task["currentStep"] == "Inspect workspace"
+
+
+def test_completed_task_updates_session_memory_for_next_context(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {"final": "Created the checklist and verified the focused flow."},
+            {"final": "I can continue from the checklist work."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    first_task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "add a focused project checklist"},
+        ),
+        "task",
+    )
+
+    remembered_session = runtime.store.require_session(session["id"])
+    assert "Task memory:" in remembered_session["summary"]
+    assert "completed: add a focused project checklist" in remembered_session["summary"]
+    assert "Created the checklist and verified the focused flow." in remembered_session["summary"]
+
+    second_task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "continue from the checklist"},
+        ),
+        "task",
+    )
+
+    second_context = provider.calls[1]["context"]["messages"][-1]["content"]
+    assert first_task["id"] != second_task["id"]
+    assert "Task memory:" in second_context
+    assert "add a focused project checklist" in second_context
+
+
+def test_completed_task_updates_workspace_memory_for_new_session_context(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {"final": "Documented the product direction and next milestone."},
+            {"final": "I can continue with the remembered direction."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        _rpc(runtime, "workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    first_session = _call_result(
+        _rpc(
+            runtime,
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "First session"},
+        ),
+        "session",
+    )
+
+    first_task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": first_session["id"], "content": "define the product iteration direction"},
+        ),
+        "task",
+    )
+    remembered_workspace = runtime.store.require_workspace(workspace["id"])
+    assert "Project memory:" in remembered_workspace["summary"]
+    assert "completed: define the product iteration direction" in remembered_workspace["summary"]
+
+    second_session = _call_result(
+        _rpc(
+            runtime,
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Second session"},
+        ),
+        "session",
+    )
+    second_task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": second_session["id"], "content": "continue product work"},
+        ),
+        "task",
+    )
+
+    second_context = provider.calls[1]["context"]["messages"][-1]["content"]
+    assert first_task["id"] != second_task["id"]
+    assert "Project memory:" in second_context
+    assert "define the product iteration direction" in second_context
+
+
+def test_workspace_memory_deduplicates_repeated_task_entries(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {"final": "Documented the product direction and next milestone."},
+            {"final": "Documented the product direction and next milestone."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        _rpc(runtime, "workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+
+    for title in ("First session", "Second session"):
+        session = _call_result(
+            _rpc(
+                runtime,
+                "session.create",
+                {"workspaceId": workspace["id"], "title": title},
+            ),
+            "session",
+        )
+        _call_result(
+            _rpc(
+                runtime,
+                "message.send",
+                {"sessionId": session["id"], "content": "define the product iteration direction"},
+            ),
+            "task",
+        )
+
+    remembered_workspace = runtime.store.require_workspace(workspace["id"])
+    assert remembered_workspace["summary"].count("define the product iteration direction") == 1
+
+
+def test_workspace_memory_can_be_cleared_and_removed_from_future_context(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {"final": "Documented the product direction and next milestone."},
+            {"final": "I do not see cleared project memory."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        _rpc(runtime, "workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    first_session = _call_result(
+        _rpc(
+            runtime,
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "First session"},
+        ),
+        "session",
+    )
+    _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": first_session["id"], "content": "define the product iteration direction"},
+        ),
+        "task",
+    )
+
+    cleared_workspace = _call_result(
+        _rpc(runtime, "workspace.memory.clear", {"workspaceId": workspace["id"]}),
+        "workspace",
+    )
+    assert cleared_workspace["summary"] is None
+
+    second_session = _call_result(
+        _rpc(
+            runtime,
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Second session"},
+        ),
+        "session",
+    )
+    _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": second_session["id"], "content": "continue product work"},
+        ),
+        "task",
+    )
+
+    second_context = provider.calls[1]["context"]["messages"][-1]["content"]
+    assert "Project memory:" not in second_context
+    assert "define the product iteration direction" not in second_context
+
+
+def test_workspace_focus_update_rpc_injects_future_task_context(tmp_path: Any) -> None:
+    provider = ScriptedProvider([{"final": "I will keep the product focus in mind."}])
+    runtime = _make_runtime(tmp_path, provider)
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        _rpc(runtime, "workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+
+    updated_workspace = _call_result(
+        _rpc(
+            runtime,
+            "workspace.focus.update",
+            {
+                "workspaceId": workspace["id"],
+                "focus": "Keep attention on durable context and long-running product work.",
+            },
+        ),
+        "workspace",
+    )
+    session = _call_result(
+        _rpc(
+            runtime,
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Focused session"},
+        ),
+        "session",
+    )
+    _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "continue"},
+        ),
+        "task",
+    )
+
+    first_context = provider.calls[0]["context"]["messages"][-1]["content"]
+    started_event = next(event for event in runtime.events if event["type"] == "task.started")
+    event_context = started_event["payload"]["context"]
+    assert updated_workspace["focus"] == "Keep attention on durable context and long-running product work."
+    assert "Project focus:" in first_context
+    assert "durable context and long-running product work" in first_context
+    assert event_context["projectFocus"] == "Keep attention on durable context and long-running product work."
+    assert event_context["budgetStats"]["estimatedInputTokens"] > 0
+    assert event_context["budgetStats"]["messageTokens"] > 0
+    assert event_context["budgetStats"]["toolSchemaTokens"] >= 0
+
+
+def test_workspace_memory_limit_drops_whole_entries_without_orphan_detail_lines(tmp_path: Any) -> None:
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    append_memory = runtime.server._orchestrator._append_memory  # noqa: SLF001
+
+    current = "\n".join(
+        [
+            "Project memory:",
+            "- completed: old task",
+            "  result: old result",
+        ]
+    )
+    entry = "\n".join(
+        [
+            "- completed: newest task",
+            "  result: this detail line is longer than the small remaining budget",
+        ]
+    )
+
+    summary = append_memory(current, entry, marker="Project memory:", max_chars=64)
+
+    body_lines = [line for line in summary.splitlines() if line != "Project memory:"]
+    assert not body_lines or body_lines[0].startswith("- ")
+
+
 def test_react_loop_executes_tool_call_and_returns_result_to_provider(tmp_path: Any) -> None:
     tool_calls = [
         {
@@ -930,11 +1223,11 @@ def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: 
     def apply_patch(params: dict[str, Any]) -> dict[str, Any]:
         tool_invocations.append("apply_patch")
         return {
-            "status": "completed",
+            "status": "applied",
             "ok": True,
             "summary": "Updated todo.txt",
             "filesChanged": 1,
-            "changedPaths": ["todo.txt"],
+            "diffText": "diff --git a/todo.txt b/todo.txt\n--- a/todo.txt\n+++ b/todo.txt\n",
             "patch": {
                 "id": "patch_validation",
                 "summary": "Updated todo.txt",
@@ -994,6 +1287,7 @@ def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: 
             "run_command": run_command,
         },
     )
+    (tmp_path / ".git").mkdir()
     session = _open_session(runtime, tmp_path)
     runtime.store.update_config(
         {
@@ -1016,6 +1310,20 @@ def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: 
     assert tool_invocations == ["apply_patch", "git_status", "git_diff", "run_command"]
     assert "Updated todo.txt" in task["resultSummary"]
     assert "Validated with git status, git diff, and pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation." in task["resultSummary"]
+    assert task["changedFiles"] == [
+        {
+            "path": "todo.txt",
+            "status": "modified",
+            "reason": "Updated todo.txt",
+            "patchId": "patch_validation",
+        }
+    ]
+    assert [command["command"] for command in task["commands"]] == [
+        "pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation"
+    ]
+    assert task["commands"][0]["status"] == "completed"
+    assert task["verification"][-1]["command"] == "pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation"
+    assert task["verification"][-1]["status"] == "passed"
 
     trace = _rpc(runtime, "trace.list", {"taskId": task["id"]})["result"]["traceEvents"]
     trace_types = [event["type"] for event in trace]
@@ -1024,6 +1332,11 @@ def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: 
     assert validation_event["payload"]["ran"] == ["git_status", "git_diff", "run_command"]
     assert validation_event["payload"]["command"]["command"] == "pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation"
     assert validation_event["payload"]["patches"][0]["summary"] == "Updated todo.txt"
+    assert validation_event["payload"]["verification"][-1]["status"] == "passed"
+    task_updates = [event for event in runtime.events if event["type"] == "task.updated"]
+    assert any(event["payload"].get("changedFiles") for event in task_updates)
+    assert any(event["payload"].get("commands") for event in task_updates)
+    assert any(event["payload"].get("verification") for event in task_updates)
 
 
 def test_patch_completion_skips_run_command_without_validate_command(tmp_path: Any) -> None:
@@ -1092,6 +1405,7 @@ def test_patch_completion_skips_run_command_without_validate_command(tmp_path: A
             "run_command": run_command,
         },
     )
+    (tmp_path / ".git").mkdir()
     session = _open_session(runtime, tmp_path)
 
     task = _call_result(

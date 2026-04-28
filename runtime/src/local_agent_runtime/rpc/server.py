@@ -76,6 +76,7 @@ class JsonRpcServer:
             "collab.message.list": self._collaboration.list_agent_messages,
             "log.export": self._store.export_logs,
             "errors.list": self._store.list_errors,
+            "metrics.list": self._store.list_metrics,
         }
         self._runtime_event_store_path = str(getattr(self._store, "database_path", ":memory:"))
         if hasattr(self._store, "append_runtime_event"):

@@ -181,6 +181,12 @@ def test_message_send_fails_when_openai_provider_key_is_missing(
     assert "YUANBAO_TEST_MISSING_KEY" in task["resultSummary"]
     assert "Completed an initial pass" not in task["resultSummary"]
     assert not [event for event in runtime_harness.events if event["type"] == "assistant.message.completed"]
+    messages = runtime_harness.call(
+        "message.list",
+        {"sessionId": session["id"]},
+    )["result"]["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert "YUANBAO_TEST_MISSING_KEY" in messages[1]["content"]
 
 
 def test_background_message_send_returns_before_agent_loop_completes(
@@ -901,3 +907,10 @@ def test_failed_tool_surfaces_clear_task_summary(runtime_harness: Any, monkeypat
     )
     assert final_task["status"] == "failed"
     assert "Command failed with status failed" in final_task["resultSummary"]
+
+    messages = runtime_harness.call(
+        "message.list",
+        {"sessionId": session["id"]},
+    )["result"]["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert "Command failed with status failed" in messages[1]["content"]

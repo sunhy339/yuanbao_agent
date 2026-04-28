@@ -7,6 +7,7 @@ interface TauriProviderFlowFixture {
   flow?: string;
   workspacePath?: string;
   prompt?: string;
+  sessionTitle?: string;
   provider?: {
     profileId: string;
     name: string;
@@ -19,7 +20,7 @@ interface TauriProviderFlowFixture {
 
 interface TauriProviderFlowResult {
   ok: boolean;
-  flow: "provider-flow" | "ui-smoke";
+  flow: "provider-flow" | "ui-smoke" | "session-recovery-seed" | "session-recovery-verify";
   phase: string;
   provider?: {
     ok?: boolean;
@@ -32,6 +33,8 @@ interface TauriProviderFlowResult {
   taskId?: string;
   taskStatus?: TaskRecord["status"];
   taskSummary?: string | null;
+  persistedMessageRoles?: string[];
+  persistedMessageCount?: number;
   eventTypes: string[];
   traceTypes: string[];
   missingTraceTypes?: string[];
@@ -241,6 +244,138 @@ async function runUiSmokeFlow(workspacePath?: string) {
   });
 }
 
+function flowFromFixture(fixture: TauriProviderFlowFixture): TauriProviderFlowResult["flow"] {
+  if (
+    fixture.flow === "ui-smoke" ||
+    fixture.flow === "session-recovery-seed" ||
+    fixture.flow === "session-recovery-verify"
+  ) {
+    return fixture.flow;
+  }
+  return "provider-flow";
+}
+
+async function runSessionRecoverySeedFlow(client: RuntimeClient, fixture: TauriProviderFlowFixture) {
+  const workspacePath = fixture.workspacePath;
+  const prompt = fixture.prompt;
+  const sessionTitle = fixture.sessionTitle || "E2E Recovery Session";
+  if (!workspacePath || !prompt) {
+    throw new Error("Session recovery seed fixture is missing workspacePath or prompt.");
+  }
+
+  const events: AgentEventEnvelope[] = [];
+  const unsubscribe = await client.subscribeEvents((event) => {
+    events.push(event);
+  });
+
+  try {
+    await waitFor("workbench shell", () => query(".workbench-shell"));
+    const workspaceResult = await client.openWorkspace(workspacePath);
+    const sessionResult = await client.createSession({
+      workspaceId: workspaceResult.workspace.id,
+      title: sessionTitle,
+    });
+    const sendResult = await client.sendMessage({
+      sessionId: sessionResult.session.id,
+      content: prompt,
+      attachments: [],
+    });
+    const finalTask = await pollTask(
+      client,
+      sendResult.task.id,
+      (await client.getTask(sendResult.task.id)).task,
+    );
+    if (finalTask.status !== "completed") {
+      throw new Error(`Expected seeded task to complete, got ${finalTask.status}.`);
+    }
+
+    const persistedMessages = (await client.listMessages({ sessionId: sessionResult.session.id, limit: 20 })).messages;
+    const persistedRoles = persistedMessages.map((message) => message.role);
+    if (!persistedRoles.includes("user") || !persistedRoles.includes("assistant")) {
+      throw new Error(`Expected seeded user and assistant messages, got: ${persistedRoles.join(", ") || "none"}.`);
+    }
+    if (!persistedMessages.some((message) => message.role === "user" && message.content.includes(prompt))) {
+      throw new Error("Seeded messages do not include the recovery prompt.");
+    }
+
+    await finish({
+      ok: true,
+      flow: "session-recovery-seed",
+      phase: "complete",
+      sessionId: sessionResult.session.id,
+      taskId: finalTask.id,
+      taskStatus: finalTask.status,
+      taskSummary: finalTask.resultSummary,
+      persistedMessageRoles: persistedRoles,
+      persistedMessageCount: persistedMessages.length,
+      eventTypes: events.map((event) => event.type),
+      traceTypes: [],
+      uiAssertions: [
+        "seeded session through runtime API",
+        "seeded task completed",
+        "seeded messages persisted to runtime API",
+      ],
+    });
+  } finally {
+    unsubscribe();
+  }
+}
+
+async function runSessionRecoveryVerifyFlow(client: RuntimeClient, fixture: TauriProviderFlowFixture) {
+  const prompt = fixture.prompt;
+  const sessionTitle = fixture.sessionTitle || "E2E Recovery Session";
+  if (!prompt) {
+    throw new Error("Session recovery verify fixture is missing prompt.");
+  }
+
+  await waitFor("workbench shell", () => query(".workbench-shell"));
+  const sessions = (await client.listSessions()).sessions;
+  const recoveredSession = sessions.find((session) => session.title === sessionTitle);
+  if (!recoveredSession) {
+    throw new Error(`Recovered session not found after restart: ${sessionTitle}.`);
+  }
+
+  const persistedMessages = (await client.listMessages({ sessionId: recoveredSession.id, limit: 20 })).messages;
+  const persistedRoles = persistedMessages.map((message) => message.role);
+  const userMessage = persistedMessages.find((message) => message.role === "user" && message.content.includes(prompt));
+  const assistantMessage = persistedMessages.find((message) => message.role === "assistant" && message.content.trim());
+  if (!userMessage || !assistantMessage) {
+    throw new Error(`Recovered messages are incomplete: ${persistedRoles.join(", ") || "none"}.`);
+  }
+
+  await waitFor("recovered session in sidebar", () => {
+    const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".session-rail-item"));
+    return buttons.find((button) => button.textContent?.includes(sessionTitle));
+  });
+  const sessionButton = Array.from(document.querySelectorAll<HTMLButtonElement>(".session-rail-item"))
+    .find((button) => button.textContent?.includes(sessionTitle));
+  if (!sessionButton) {
+    throw new Error(`Recovered session button disappeared: ${sessionTitle}.`);
+  }
+  sessionButton.click();
+  await waitFor("recovered user message visible", () =>
+    document.body.textContent?.includes(userMessage.content) ? true : null,
+  );
+  assertText(assistantMessage.content);
+
+  await finish({
+    ok: true,
+    flow: "session-recovery-verify",
+    phase: "complete",
+    sessionId: recoveredSession.id,
+    persistedMessageRoles: persistedRoles,
+    persistedMessageCount: persistedMessages.length,
+    eventTypes: [],
+    traceTypes: [],
+    uiAssertions: [
+      "recovered session listed after desktop restart",
+      "recovered session opens from sidebar",
+      "persisted user message visible after restart",
+      "persisted assistant message visible after restart",
+    ],
+  });
+}
+
 export async function maybeRunTauriProviderFlowE2e() {
   if (started) {
     return;
@@ -256,7 +391,7 @@ export async function maybeRunTauriProviderFlowE2e() {
   const events: AgentEventEnvelope[] = [];
   let unsubscribe: (() => void) | null = null;
   let phase = "start";
-  const flow = fixture.flow === "ui-smoke" ? "ui-smoke" : "provider-flow";
+  const flow = flowFromFixture(fixture);
 
   const baseResult = (): TauriProviderFlowResult => ({
     ok: false,
@@ -273,12 +408,25 @@ export async function maybeRunTauriProviderFlowE2e() {
       return;
     }
 
+    if (fixture.flow === "session-recovery-seed") {
+      phase = "session-recovery-seed";
+      await runSessionRecoverySeedFlow(client, fixture);
+      return;
+    }
+
+    if (fixture.flow === "session-recovery-verify") {
+      phase = "session-recovery-verify";
+      await runSessionRecoveryVerifyFlow(client, fixture);
+      return;
+    }
+
     if (fixture.flow !== "provider-flow") {
       throw new Error(`Unsupported E2E flow: ${fixture.flow ?? "unknown"}`);
     }
     if (!fixture.provider || !fixture.workspacePath || !fixture.prompt) {
       throw new Error("E2E fixture is missing provider, workspacePath, or prompt.");
     }
+    const prompt = fixture.prompt;
 
     unsubscribe = await client.subscribeEvents((event) => {
       events.push(event);
@@ -306,7 +454,7 @@ export async function maybeRunTauriProviderFlowE2e() {
     await client.openWorkspace(fixture.workspacePath);
 
     phase = "send-message-ui";
-    await sendPromptThroughUi(fixture.prompt);
+    await sendPromptThroughUi(prompt);
     const completedEvent = await waitFor("task completed event", () =>
       events.find((event) => event.type === "task.completed"),
     );
@@ -316,6 +464,7 @@ export async function maybeRunTauriProviderFlowE2e() {
       completedEvent.taskId,
       (await client.getTask(completedEvent.taskId)).task,
     );
+    const sessionId = completedEvent.sessionId || startedEvent?.sessionId || finalTask.sessionId;
 
     phase = "assert-timeline";
     if (finalTask.status !== "completed") {
@@ -333,6 +482,23 @@ export async function maybeRunTauriProviderFlowE2e() {
     }
     await waitFor("provider request trace card in UI", () => query('.runtime-event-card[data-kind="trace"]'));
 
+    phase = "assert-message-persistence";
+    if (!sessionId) {
+      throw new Error("Completed task did not expose a session id for message persistence checks.");
+    }
+    const persistedMessages = (await client.listMessages({ sessionId, limit: 20 })).messages;
+    const persistedRoles = persistedMessages.map((message) => message.role);
+    if (!persistedRoles.includes("user") || !persistedRoles.includes("assistant")) {
+      throw new Error(`Expected persisted user and assistant messages, got: ${persistedRoles.join(", ") || "none"}.`);
+    }
+    if (!persistedMessages.some((message) => message.role === "user" && message.content.includes(prompt))) {
+      throw new Error("Persisted messages do not include the submitted prompt.");
+    }
+    const assistantMessage = persistedMessages.find((message) => message.role === "assistant");
+    if (!assistantMessage?.content?.trim()) {
+      throw new Error("Persisted assistant message is empty.");
+    }
+
     phase = "complete";
     await finish({
       ok: true,
@@ -345,10 +511,12 @@ export async function maybeRunTauriProviderFlowE2e() {
         baseUrl: providerResult.baseUrl,
         checkedEnvVarName: providerResult.checkedEnvVarName,
       },
-      sessionId: completedEvent.sessionId || startedEvent?.sessionId,
+      sessionId,
       taskId: finalTask.id,
       taskStatus: finalTask.status,
       taskSummary: finalTask.resultSummary,
+      persistedMessageRoles: persistedRoles,
+      persistedMessageCount: persistedMessages.length,
       eventTypes: events.map((event) => event.type),
       traceTypes,
       uiAssertions: [
@@ -357,6 +525,7 @@ export async function maybeRunTauriProviderFlowE2e() {
         "composer submitted through UI",
         "session task completion visible in UI",
         "runtime timeline rendered in UI",
+        "message persistence verified through runtime API",
       ],
     });
   } catch (reason) {

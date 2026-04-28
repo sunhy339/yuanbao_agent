@@ -793,6 +793,9 @@ def test_react_loop_rejection_cleans_pending_state(tmp_path: Any) -> None:
     assert final_task["errorCode"] == "APPROVAL_REJECTED"
     assert runtime.store.get_pending_react_state(task["id"]) is None
     assert task["id"] not in runtime.server._orchestrator._pending_react_tasks  # noqa: SLF001
+    messages = _call_result(_rpc(runtime, "message.list", {"sessionId": session["id"]}), "messages")
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[1]["content"] == "Approval was rejected by the user."
 
 
 def test_react_loop_completion_cleans_pending_state(tmp_path: Any) -> None:
@@ -1072,6 +1075,9 @@ def test_react_loop_fails_when_tool_fails(tmp_path: Any) -> None:
     assert task["status"] == "failed"
     assert "Tool explode failed." in task["resultSummary"]
     assert "tool.failed" in [event["type"] for event in runtime.events]
+    messages = _call_result(_rpc(runtime, "message.list", {"sessionId": session["id"]}), "messages")
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert "Tool explode failed." in messages[1]["content"]
 
 
 def test_react_loop_fails_on_invalid_provider_output(tmp_path: Any) -> None:
@@ -1149,7 +1155,8 @@ def test_react_loop_returns_invalid_patch_to_provider_and_accepts_repair(tmp_pat
 
     final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
     assert final_task["status"] == "completed"
-    assert final_task["resultSummary"] == "Patch repaired and applied."
+    assert final_task["resultSummary"].startswith("Patch repaired and applied.")
+    assert "Validated with git status" in final_task["resultSummary"]
     assert (workspace_root / "README.md").read_text(encoding="utf-8") == "new line\n"
 
 
@@ -1198,6 +1205,10 @@ def test_react_loop_fails_when_patch_repair_attempts_are_exhausted(tmp_path: Any
     assert "Patch repair attempts exhausted" in task["resultSummary"]
     assert "Patch removal mismatch in README.md" in task["resultSummary"]
     assert not [event for event in runtime.events if event["type"] == "approval.requested"]
+    messages = _call_result(_rpc(runtime, "message.list", {"sessionId": session["id"]}), "messages")
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert "Patch repair attempts exhausted" in messages[1]["content"]
+    assert "Patch removal mismatch in README.md" in messages[1]["content"]
 
 
 def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: Any) -> None:

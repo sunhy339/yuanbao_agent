@@ -19,6 +19,7 @@ from ..services.session_service import SessionService
 from ..services.subagent_service import SubagentService
 from ..services.worker_budget import WorkerBudget
 from ..services.worker_environment import normalize_child_tool_allowlist
+from ..services.worker_runner import WorkerRunner
 from ..store.sqlite_store import SQLiteStore
 from ..tools.builtin import build_builtin_tools
 from ..tools.registry import BUILTIN_TOOL_SCHEMAS, ToolRegistry
@@ -42,7 +43,8 @@ class Orchestrator:
         self._context_builder = ContextBuilder(store, tool_schemas=self._context_tool_schemas())
         self._session_service = SessionService(store)
         self._collaboration_service = CollaborationService(store, event_bus)
-        self._subagent_service = SubagentService(store, self._collaboration_service)
+        self._worker_runner = WorkerRunner(self._collaboration_service)
+        self._subagent_service = SubagentService(store, self._collaboration_service, runner=self._worker_runner)
         self._pending_react_tasks: dict[str, dict[str, Any]] = {}
 
     def open_workspace(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -854,6 +856,12 @@ class Orchestrator:
             "plan": task_plan,
             "errorCode": error_code,
         }
+        self._store.create_message(
+            session_id=session_id,
+            task_id=runtime_task["id"],
+            role="assistant",
+            content=summary,
+        )
         self._remember_task_result(session_id=session_id, task=runtime_task)
         self._clear_pending_react_state(task["id"])
         self._publish(
@@ -1665,6 +1673,22 @@ class Orchestrator:
         )
         pending_state = self._load_pending_react_state(approval["taskId"])
         if pending_state is not None:
+            child_task = self._blocked_child_collaboration_for_runtime_task(approval=approval, runtime_task=task)
+            if child_task is not None and self._should_resume_child_approval_in_process(params, child_task):
+                try:
+                    runtime_task = self._worker_runner.resume_child_approval(
+                        approval=approval,
+                        child_task=child_task,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    runtime_task = self._fail_task(
+                        session_id=task["sessionId"],
+                        task=task,
+                        summary=str(exc),
+                        error_code=str(getattr(exc, "code", None) or "CHILD_WORKER_APPROVAL_RESUME_FAILED"),
+                    )
+                self._finalize_child_collaboration_after_approval(approval=approval, runtime_task=runtime_task)
+                return {"approval": approval}
             if approval["decision"] == "approved":
                 resumed_task = self._resume_react_after_approval(task=task, approval=approval)
                 self._finalize_child_collaboration_after_approval(approval=approval, runtime_task=resumed_task)
@@ -1682,6 +1706,12 @@ class Orchestrator:
         if approval["decision"] == "approved" and approval["kind"] == "apply_patch":
             task = self._resume_approved_patch(task=task, approval=approval)
         return {"approval": approval}
+
+    def _should_resume_child_approval_in_process(self, params: dict[str, Any], child_task: dict[str, Any]) -> bool:
+        if params.get("_childWorkerApprovalResume") is True:
+            return False
+        metadata = child_task.get("metadata") if isinstance(child_task.get("metadata"), dict) else {}
+        return metadata.get("executionMode") == "process-rpc"
 
     def _resume_approved_command(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
         request = json.loads(approval.get("requestJson") or "{}")
@@ -1741,26 +1771,12 @@ class Orchestrator:
             )
             return runtime_task
         except Exception as exc:  # noqa: BLE001
-            failure_summary = str(exc)
-            failed_task = self._store.update_task(
-                task_id=task["id"],
-                status="failed",
-                plan=runtime_task["plan"],
-                result_summary=failure_summary,
+            return self._fail_task(
+                session_id=task["sessionId"],
+                task={**runtime_task, "sessionId": task["sessionId"]},
+                summary=str(exc),
                 error_code="COMMAND_EXECUTION_FAILED",
             )
-            self._publish(
-                session_id=task["sessionId"],
-                task=failed_task,
-                event_type="task.failed",
-                payload={
-                    "status": "failed",
-                    "plan": runtime_task["plan"],
-                    "detail": failure_summary,
-                    "errorCode": "COMMAND_EXECUTION_FAILED",
-                },
-            )
-            return failed_task
 
     def _resume_approved_patch(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
         request = json.loads(approval.get("requestJson") or "{}")
@@ -1807,26 +1823,12 @@ class Orchestrator:
             )
             return runtime_task
         except Exception as exc:  # noqa: BLE001
-            failure_summary = str(exc)
-            failed_task = self._store.update_task(
-                task_id=task["id"],
-                status="failed",
-                plan=runtime_task["plan"],
-                result_summary=failure_summary,
+            return self._fail_task(
+                session_id=task["sessionId"],
+                task={**runtime_task, "sessionId": task["sessionId"]},
+                summary=str(exc),
                 error_code="PATCH_APPLY_FAILED",
             )
-            self._publish(
-                session_id=task["sessionId"],
-                task=failed_task,
-                event_type="task.failed",
-                payload={
-                    "status": "failed",
-                    "plan": runtime_task["plan"],
-                    "detail": failure_summary,
-                    "errorCode": "PATCH_APPLY_FAILED",
-                },
-            )
-            return failed_task
 
     def _publish(self, session_id: str, task: dict[str, Any], event_type: str, payload: dict[str, Any]) -> None:
         event = RuntimeEvent(

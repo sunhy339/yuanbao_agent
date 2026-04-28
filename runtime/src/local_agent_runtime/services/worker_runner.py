@@ -175,6 +175,96 @@ class WorkerRunner:
             "summary": execution["summary"],
         }
 
+    def resume_child_approval(
+        self,
+        *,
+        approval: dict[str, Any],
+        child_task: dict[str, Any],
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        request = self._request_from_blocked_child_task(child_task)
+        worker = self._worker_for_blocked_child_task(child_task)
+        context = ChildTaskExecutionContext(
+            request=request,
+            task=child_task,
+            worker=worker,
+            cancellation_event=Event(),
+        )
+        request_timeout = timeout_seconds if timeout_seconds is not None else self._resume_timeout_seconds(request)
+        with WorkerProcessTransport.for_python_module(
+            "local_agent_runtime.main",
+            cwd=str(self._repo_root()),
+            env=self._worker_process_env(request),
+        ) as transport:
+            try:
+                response = transport.request(
+                    "approval.submit",
+                    {
+                        "approvalId": approval["id"],
+                        "decision": approval["decision"],
+                        "_childWorkerApprovalResume": True,
+                    },
+                    timeout=request_timeout,
+                    event_callback=lambda event: self._forward_process_event(context, event),
+                )
+            except WorkerProcessTimeoutError as exc:
+                raise ChildTaskTimeoutError(request_timeout) from exc
+            except WorkerProcessExitError as exc:
+                raise ChildTaskRemoteError(
+                    code="CHILD_WORKER_EXITED",
+                    message=str(exc),
+                    retryable=True,
+                ) from exc
+
+        error = response.get("error")
+        if isinstance(error, dict):
+            raise ChildTaskRemoteError(
+                code=str(error.get("code") or "CHILD_WORKER_APPROVAL_RESUME_FAILED"),
+                message=str(error.get("message") or "Child worker approval resume failed."),
+                retryable=bool(error.get("retryable", False)),
+                payload=deepcopy(error),
+            )
+
+        store = self._collaboration.store
+        return store.get_task({"taskId": approval["taskId"]})["task"]
+
+    def _request_from_blocked_child_task(self, child_task: dict[str, Any]) -> ChildTaskRequest:
+        metadata = child_task.get("metadata") if isinstance(child_task.get("metadata"), dict) else {}
+        return ChildTaskRequest(
+            prompt=str(child_task.get("description") or child_task.get("title") or "Resume child approval"),
+            title=str(child_task.get("title") or "Resume child approval"),
+            agent_type=str(metadata.get("agentType") or "explorer"),
+            priority=self._priority_or_default(child_task.get("priority")),
+            session_id=child_task.get("sessionId") if isinstance(child_task.get("sessionId"), str) else None,
+            parent_runtime_task_id=metadata.get("parentRuntimeTaskId")
+            if isinstance(metadata.get("parentRuntimeTaskId"), str)
+            else None,
+            timeout_ms=metadata.get("timeoutMs") if isinstance(metadata.get("timeoutMs"), int) else None,
+            retry=deepcopy(metadata.get("retry")) if isinstance(metadata.get("retry"), dict) else None,
+            cancellation=deepcopy(metadata.get("cancellation")) if isinstance(metadata.get("cancellation"), dict) else None,
+            budget=deepcopy(metadata.get("budget")) if isinstance(metadata.get("budget"), dict) else None,
+        )
+
+    def _worker_for_blocked_child_task(self, child_task: dict[str, Any]) -> dict[str, Any]:
+        worker_id = child_task.get("assignedWorkerId")
+        if not isinstance(worker_id, str) or not worker_id:
+            raise ChildTaskRemoteError(
+                code="CHILD_WORKER_MISSING_WORKER",
+                message="Blocked child task has no assigned worker to resume approval.",
+            )
+        return self._collaboration.get_agent_worker({"workerId": worker_id})["worker"]
+
+    def _resume_timeout_seconds(self, request: ChildTaskRequest) -> float:
+        policy = self._policy_for(request)
+        timeout = self._timeout_seconds(request, policy)
+        return timeout if timeout is not None and timeout > 0 else 300.0
+
+    def _priority_or_default(self, value: Any) -> int:
+        try:
+            return max(0, min(int(value), 9))
+        except (TypeError, ValueError):
+            return 3
+
     def _block_child_task(
         self,
         *,

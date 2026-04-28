@@ -779,15 +779,22 @@ fn trace_list(
 #[tauri::command]
 fn e2e_fixture() -> Result<Value, String> {
     let flow = env::var("YUANBAO_TAURI_E2E").unwrap_or_default();
-    if flow == "ui-smoke" {
+    if flow == "ui-smoke" || flow == "session-recovery-seed" || flow == "session-recovery-verify" {
         let repo_root = repo_root()?;
         let workspace_path = env::var("YUANBAO_TAURI_E2E_WORKSPACE")
             .unwrap_or_else(|_| repo_root.display().to_string());
+        let prompt = env::var("YUANBAO_TAURI_E2E_PROMPT").unwrap_or_else(|_| {
+            "Session recovery seed: persist this message across a desktop restart.".to_string()
+        });
+        let session_title = env::var("YUANBAO_TAURI_E2E_SESSION_TITLE")
+            .unwrap_or_else(|_| "E2E Recovery Session".to_string());
 
         return Ok(json!({
             "enabled": true,
             "flow": flow,
             "workspacePath": workspace_path,
+            "prompt": prompt,
+            "sessionTitle": session_title,
         }));
     }
 
@@ -832,7 +839,10 @@ fn e2e_fixture() -> Result<Value, String> {
 #[tauri::command]
 fn e2e_finish(app_handle: AppHandle, payload: Value) -> Result<(), String> {
     let flow = env::var("YUANBAO_TAURI_E2E").unwrap_or_default();
-    if flow != "provider-flow" && flow != "ui-smoke" {
+    if flow != "provider-flow"
+        && flow != "ui-smoke"
+        && flow != "session-recovery-seed"
+        && flow != "session-recovery-verify" {
         return Err("E2E result writing is disabled.".to_string());
     }
 

@@ -60,10 +60,16 @@ class _WaitingApprovalTransport:
         store: SQLiteStore,
         workspace_root: Path,
         approval_request: dict[str, Any],
+        resume_status: str = "completed",
+        resume_summary: str = "Child completed after approval.",
+        resume_error: dict[str, Any] | None = None,
     ) -> None:
         self._store = store
         self._workspace_root = workspace_root
         self._approval_request = approval_request
+        self._resume_status = resume_status
+        self._resume_summary = resume_summary
+        self._resume_error = resume_error
         self.requests: list[dict[str, Any]] = []
         self.child_runtime_task: dict[str, Any] | None = None
         self.approval: dict[str, Any] | None = None
@@ -82,9 +88,54 @@ class _WaitingApprovalTransport:
         timeout: float,
         event_callback: Any | None = None,
     ) -> dict[str, Any]:
-        assert method == "worker.run_child_task"
         assert timeout > 0
         self.requests.append({"method": method, "params": deepcopy(params)})
+        if method == "approval.submit":
+            assert self.child_runtime_task is not None
+            assert self.approval is not None
+            assert params["approvalId"] == self.approval["id"]
+            assert params.get("_childWorkerApprovalResume") is True
+            approval = self._store.get_approval({"approvalId": params["approvalId"]})["approval"]
+            if self._resume_error is not None:
+                return {"jsonrpc": "2.0", "id": "rpc_2", "error": deepcopy(self._resume_error)}
+            if self._resume_status == "completed":
+                self._store.update_task(
+                    task_id=self.child_runtime_task["id"],
+                    status="completed",
+                    summary=self._resume_summary,
+                    result_summary=self._resume_summary,
+                )
+            else:
+                self._store.update_task(
+                    task_id=self.child_runtime_task["id"],
+                    status="failed",
+                    summary=self._resume_summary,
+                    result_summary=self._resume_summary,
+                    error_code="LOOP_EXECUTION_FAILED",
+                )
+            self._store.create_message(
+                session_id=self.child_runtime_task["sessionId"],
+                task_id=self.child_runtime_task["id"],
+                role="assistant",
+                content=self._resume_summary,
+            )
+            self._store.delete_pending_react_state(self.child_runtime_task["id"])
+            if event_callback is not None:
+                event_callback(
+                    {
+                        "sessionId": self.child_runtime_task["sessionId"],
+                        "taskId": self.child_runtime_task["id"],
+                        "type": "approval.resolved",
+                        "payload": {
+                            "approvalId": approval["id"],
+                            "taskId": self.child_runtime_task["id"],
+                            "decision": approval["decision"],
+                        },
+                    }
+                )
+            return {"jsonrpc": "2.0", "id": "rpc_2", "result": {"approval": approval}}
+
+        assert method == "worker.run_child_task"
 
         child_task = self._store.create_task(
             session_id=params["sessionId"],
@@ -314,24 +365,20 @@ def test_parent_approval_submit_resumes_waiting_process_child_and_completes_coll
         classmethod(lambda cls, *args, **kwargs: transport),
     )
 
-    executed_after_approval: list[dict[str, Any]] = []
-
-    def run_command(params: dict[str, Any]) -> dict[str, Any]:
-        executed_after_approval.append(deepcopy(params))
-        return {
-            "status": "completed",
-            "stdout": "child-approved\n",
-            "stderr": "",
-            "exitCode": 0,
-        }
-
     orchestrator = Orchestrator(
         store=store,
         event_bus=event_bus,
-        tool_registry=ToolRegistry({"run_command": run_command}),
+        tool_registry=ToolRegistry({}),
         provider=_FinalProvider("Child completed after approval."),
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    monkeypatch.setattr(
+        orchestrator,
+        "_resume_react_after_approval",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("parent Orchestrator performed local child approval resume")
+        ),
+    )
 
     try:
         response = runner.run_child_task(
@@ -357,16 +404,18 @@ def test_parent_approval_submit_resumes_waiting_process_child_and_completes_coll
         child_collaboration_task = store.get_collaboration_task({"taskId": response["childTaskId"]})["task"]
         child_worker = store.get_agent_worker({"workerId": response["workerId"]})["worker"]
 
-        assert executed_after_approval == [
-            {
-                **approval_request,
-                "approvalId": approval_id,
-                "taskId": transport.child_runtime_task["id"],
-                "sessionId": session["id"],
-            }
-        ]
+        assert [request["method"] for request in transport.requests] == ["worker.run_child_task", "approval.submit"]
+        assert transport.requests[1]["params"] == {
+            "approvalId": approval_id,
+            "decision": "approved",
+            "_childWorkerApprovalResume": True,
+        }
         assert child_runtime_task["status"] == "completed"
         assert child_runtime_task["resultSummary"] == "Child completed after approval."
+        stored_parent_task = store.get_task({"taskId": parent_task["id"]})["task"]
+        assert stored_parent_task["status"] == "running"
+        assert stored_parent_task["resultSummary"] is None
+        assert store.get_pending_react_state(parent_task["id"]) is None
         assert child_collaboration_task["status"] == "completed"
         assert child_collaboration_task["result"]["summary"] == "Child completed after approval."
         assert child_collaboration_task["result"]["runtimeTaskId"] == transport.child_runtime_task["id"]
@@ -401,6 +450,8 @@ def test_parent_approval_submit_fails_child_collaboration_when_resume_fails(
         store=store,
         workspace_root=workspace_root,
         approval_request=approval_request,
+        resume_status="failed",
+        resume_summary="child command failed after approval",
     )
     monkeypatch.setattr(
         worker_runner_module.WorkerProcessTransport,
@@ -408,19 +459,20 @@ def test_parent_approval_submit_fails_child_collaboration_when_resume_fails(
         classmethod(lambda cls, *args, **kwargs: transport),
     )
 
-    executed_after_approval: list[str] = []
-
-    def run_command(params: dict[str, Any]) -> dict[str, Any]:
-        executed_after_approval.append(params["approvalId"])
-        raise RuntimeError("child command failed after approval")
-
     orchestrator = Orchestrator(
         store=store,
         event_bus=event_bus,
-        tool_registry=ToolRegistry({"run_command": run_command}),
+        tool_registry=ToolRegistry({}),
         provider=_FinalProvider("This final answer should not be used."),
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    monkeypatch.setattr(
+        orchestrator,
+        "_resume_react_after_approval",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("parent Orchestrator performed local child approval resume")
+        ),
+    )
 
     try:
         response = runner.run_child_task(
@@ -444,7 +496,7 @@ def test_parent_approval_submit_fails_child_collaboration_when_resume_fails(
         child_collaboration_task = store.get_collaboration_task({"taskId": response["childTaskId"]})["task"]
         child_worker = store.get_agent_worker({"workerId": response["workerId"]})["worker"]
 
-        assert executed_after_approval == [approval_id]
+        assert [request["method"] for request in transport.requests] == ["worker.run_child_task", "approval.submit"]
         assert child_runtime_task["status"] == "failed"
         assert child_runtime_task["errorCode"] == "LOOP_EXECUTION_FAILED"
         assert child_collaboration_task["status"] == "failed"
@@ -454,5 +506,91 @@ def test_parent_approval_submit_fails_child_collaboration_when_resume_fails(
         assert child_worker["status"] == "failed"
         assert child_worker["currentTaskId"] is None
         assert store.get_pending_react_state(transport.child_runtime_task["id"]) is None
+    finally:
+        store.close()
+
+
+def test_parent_approval_submit_persists_child_resume_transport_error(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    event_bus = EventBus()
+    collaboration = CollaborationService(store, event_bus)
+    runner = WorkerRunner(collaboration)
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="child approval resume rpc error")
+    parent_task = store.create_task(session_id=session["id"], task_type="chat", goal="delegate", plan=[])
+
+    transport = _WaitingApprovalTransport(
+        store=store,
+        workspace_root=workspace_root,
+        approval_request={"command": "Write-Output child-rpc-error", "cwd": "."},
+        resume_error={
+            "code": "CHILD_WORKER_APPROVAL_RESUME_FAILED",
+            "message": "resume subprocess could not submit approval",
+            "retryable": False,
+        },
+    )
+    monkeypatch.setattr(
+        worker_runner_module.WorkerProcessTransport,
+        "for_python_module",
+        classmethod(lambda cls, *args, **kwargs: transport),
+    )
+
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=ToolRegistry({}),
+        provider=_FinalProvider("This final answer should not be used."),
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    monkeypatch.setattr(
+        orchestrator,
+        "_resume_react_after_approval",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("parent Orchestrator performed local child approval resume")
+        ),
+    )
+
+    try:
+        response = runner.run_child_task(
+            ChildTaskRequest(
+                prompt="run child command with rpc error",
+                title="Run child command with rpc error",
+                agent_type="coder",
+                session_id=session["id"],
+                parent_runtime_task_id=parent_task["id"],
+            )
+        )
+        assert response["status"] == "waiting_approval"
+        assert transport.approval is not None
+        approval_id = transport.approval["id"]
+
+        submit = _rpc(server, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+        assert "result" in submit, submit
+
+        child_runtime_task = store.get_task({"taskId": transport.child_runtime_task["id"]})["task"]
+        child_collaboration_task = store.get_collaboration_task({"taskId": response["childTaskId"]})["task"]
+        child_worker = store.get_agent_worker({"workerId": response["workerId"]})["worker"]
+        messages = store.list_messages({"sessionId": session["id"]})["messages"]
+
+        assert [request["method"] for request in transport.requests] == ["worker.run_child_task", "approval.submit"]
+        assert child_runtime_task["status"] == "failed"
+        assert child_runtime_task["errorCode"] == "CHILD_WORKER_APPROVAL_RESUME_FAILED"
+        assert child_runtime_task["resultSummary"] == "resume subprocess could not submit approval"
+        assert child_collaboration_task["status"] == "failed"
+        assert child_collaboration_task["error"]["code"] == "CHILD_WORKER_APPROVAL_RESUME_FAILED"
+        assert child_collaboration_task["error"]["runtimeTaskId"] == transport.child_runtime_task["id"]
+        assert child_worker["status"] == "failed"
+        assert child_worker["currentTaskId"] is None
+        assert store.get_pending_react_state(transport.child_runtime_task["id"]) is None
+        assert any(
+            message["role"] == "assistant" and message["content"] == "resume subprocess could not submit approval"
+            for message in messages
+        )
     finally:
         store.close()

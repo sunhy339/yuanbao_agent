@@ -2358,6 +2358,30 @@ class SQLiteStore:
 
             CREATE INDEX IF NOT EXISTS idx_agent_messages_recipient_created
                 ON agent_messages (recipient_worker_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS task_metrics (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                duration_ms INTEGER,
+                tool_call_count INTEGER DEFAULT 0,
+                command_count INTEGER DEFAULT 0,
+                patch_count INTEGER DEFAULT 0,
+                provider_call_count INTEGER DEFAULT 0,
+                patch_success_count INTEGER DEFAULT 0,
+                patch_failure_count INTEGER DEFAULT 0,
+                command_success_count INTEGER DEFAULT 0,
+                command_failure_count INTEGER DEFAULT 0,
+                task_status TEXT,
+                patch_repair_attempts INTEGER DEFAULT 0,
+                approval_approved_count INTEGER DEFAULT 0,
+                approval_rejected_count INTEGER DEFAULT 0,
+                was_cancelled INTEGER DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_task_metrics_session
+                ON task_metrics (session_id, created_at DESC);
             """
         )
         self._conn.commit()
@@ -2450,6 +2474,163 @@ class SQLiteStore:
             if column not in run_columns:
                 self._conn.execute(f"ALTER TABLE scheduled_task_runs ADD COLUMN {column} {definition}")
         self._conn.commit()
+
+    def export_logs(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = params.get("sessionId")
+        sessions = self._rows("SELECT * FROM sessions", session_id)
+        tasks = self._rows("SELECT * FROM tasks", session_id)
+        messages = self._rows("SELECT * FROM messages", session_id)
+        command_logs = self._rows_joined("command_logs", "tasks", session_id)
+        patches = self._rows_joined("patches", "tasks", session_id)
+        approvals = self._rows_joined("approvals", "tasks", session_id)
+        trace_events = self._rows("SELECT * FROM trace_events", session_id)
+        return {
+            "exportedAt": self.now(),
+            "sessions": sessions,
+            "tasks": tasks,
+            "messages": messages,
+            "commandLogs": command_logs,
+            "patches": patches,
+            "approvals": approvals,
+            "traceEvents": trace_events,
+            "config": self.get_config({})["config"],
+        }
+
+    def list_errors(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = params.get("sessionId")
+        task_id = params.get("taskId")
+        source = params.get("source")
+        limit = min(int(params.get("limit") or 50), 200)
+        errors: list[dict[str, Any]] = []
+
+        if not source or source == "task":
+            query, args = "SELECT * FROM tasks WHERE status = 'failed'", []
+            if session_id:
+                query += " AND session_id = ?"
+                args.append(session_id)
+            if task_id:
+                query += " AND id = ?"
+                args.append(task_id)
+            for r in self._conn.execute(query, args).fetchall():
+                d = dict(r)
+                errors.append({
+                    "id": d["id"], "source": "task",
+                    "sessionId": d["session_id"], "taskId": d["id"],
+                    "errorCode": d.get("error_code"),
+                    "errorMessage": d.get("summary") or d.get("goal") or "Task failed",
+                    "timestamp": d.get("updated_at") or d.get("created_at", 0),
+                    "metadata": {"status": d["status"], "goal": d.get("goal")},
+                })
+
+        if not source or source == "command":
+            query, args = "SELECT cl.*, t.session_id FROM command_logs cl JOIN tasks t ON t.id = cl.task_id WHERE cl.status IN ('failed','timeout','killed')", []
+            if session_id:
+                query += " AND t.session_id = ?"
+                args.append(session_id)
+            if task_id:
+                query += " AND cl.task_id = ?"
+                args.append(task_id)
+            for r in self._conn.execute(query, args).fetchall():
+                d = dict(r)
+                errors.append({
+                    "id": d["id"], "source": "command",
+                    "sessionId": d["session_id"], "taskId": d["task_id"],
+                    "errorCode": d.get("status"),
+                    "errorMessage": d.get("summary") or f"Command {d.get('status')}: {(d.get('command') or '')[:100]}",
+                    "timestamp": d.get("finished_at") or d.get("started_at", 0),
+                    "metadata": {"command": d.get("command"), "exitCode": d.get("exit_code"), "cwd": d.get("cwd")},
+                })
+
+        if not source or source == "patch":
+            query, args = "SELECT p.*, t.session_id FROM patches p JOIN tasks t ON t.id = p.task_id WHERE p.status IN ('failed','rejected')", []
+            if session_id:
+                query += " AND t.session_id = ?"
+                args.append(session_id)
+            if task_id:
+                query += " AND p.task_id = ?"
+                args.append(task_id)
+            for r in self._conn.execute(query, args).fetchall():
+                d = dict(r)
+                errors.append({
+                    "id": d["id"], "source": "patch",
+                    "sessionId": d["session_id"], "taskId": d["task_id"],
+                    "errorCode": d.get("status"),
+                    "errorMessage": d.get("summary") or f"Patch {d.get('status')}: {d.get('files_changed', 0)} files",
+                    "timestamp": d.get("updated_at") or d.get("created_at", 0),
+                    "metadata": {"status": d["status"], "filesChanged": d.get("files_changed")},
+                })
+
+        errors.sort(key=lambda e: e["timestamp"], reverse=True)
+        by_source: dict[str, int] = {}
+        for e in errors:
+            s = e["source"]
+            by_source[s] = by_source.get(s, 0) + 1
+        return {
+            "errors": errors[:limit],
+            "summary": {"totalErrors": len(errors), "bySource": by_source},
+        }
+
+    def _rows(self, query: str, session_id: str | None = None) -> list[dict[str, Any]]:
+        if session_id and "session_id" in query:
+            query += " WHERE session_id = ?"
+            return [dict(r) for r in self._conn.execute(query, [session_id]).fetchall()]
+        return [dict(r) for r in self._conn.execute(query).fetchall()]
+
+    def _rows_joined(self, table: str, join_table: str, session_id: str | None = None) -> list[dict[str, Any]]:
+        query = f"SELECT {table}.* FROM {table} JOIN {join_table} t ON t.id = {table}.task_id"
+        if session_id:
+            query += " WHERE t.session_id = ?"
+            return [dict(r) for r in self._conn.execute(query, [session_id]).fetchall()]
+        return [dict(r) for r in self._conn.execute(query).fetchall()]
+
+    def record_task_metrics(self, metrics: dict[str, Any]) -> None:
+        self._conn.execute(
+            """INSERT INTO task_metrics (
+                id, task_id, session_id, created_at, duration_ms,
+                tool_call_count, command_count, patch_count, provider_call_count,
+                patch_success_count, patch_failure_count,
+                command_success_count, command_failure_count,
+                task_status, patch_repair_attempts,
+                approval_approved_count, approval_rejected_count, was_cancelled
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                metrics.get("id") or self.new_id("metric"),
+                metrics["taskId"],
+                metrics["sessionId"],
+                metrics.get("createdAt") or self.now(),
+                metrics.get("durationMs"),
+                metrics.get("toolCallCount", 0),
+                metrics.get("commandCount", 0),
+                metrics.get("patchCount", 0),
+                metrics.get("providerCallCount", 0),
+                metrics.get("patchSuccessCount", 0),
+                metrics.get("patchFailureCount", 0),
+                metrics.get("commandSuccessCount", 0),
+                metrics.get("commandFailureCount", 0),
+                metrics.get("taskStatus"),
+                metrics.get("patchRepairAttempts", 0),
+                metrics.get("approvalApprovedCount", 0),
+                metrics.get("approvalRejectedCount", 0),
+                1 if metrics.get("wasCancelled") else 0,
+            ),
+        )
+        self._conn.commit()
+
+    def list_metrics(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = params.get("sessionId")
+        limit = min(int(params.get("limit") or 50), 200)
+        query = "SELECT * FROM task_metrics"
+        args: list[Any] = []
+        if session_id:
+            query += " WHERE session_id = ?"
+            args.append(session_id)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        args.append(limit)
+        rows = [dict(r) for r in self._conn.execute(query, args).fetchall()]
+        return {"metrics": rows}
+
+    def _ensure_collaboration_task_columns_original(self) -> None:
+        pass
 
     def _ensure_collaboration_task_columns(self) -> None:
         columns = {

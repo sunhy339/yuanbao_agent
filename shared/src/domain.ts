@@ -280,3 +280,16 @@ export interface TraceEventRecord<TPayload = unknown> {
   createdAt: number;
   sequence: number;
 }
+
+export type ErrorSource = "task" | "command" | "patch" | "provider" | "tool";
+
+export interface ErrorRecord {
+  id: Identifier;
+  source: ErrorSource;
+  sessionId: Identifier;
+  taskId: Identifier;
+  errorCode: string | null;
+  errorMessage: string;
+  timestamp: number;
+  metadata: Record<string, unknown>;
+}

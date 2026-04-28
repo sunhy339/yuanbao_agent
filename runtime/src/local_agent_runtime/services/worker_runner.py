@@ -11,6 +11,7 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
+from .worker_budget import WorkerBudget
 from .worker_process_transport import (
     WorkerProcessExitError,
     WorkerProcessTimeoutError,
@@ -82,6 +83,10 @@ class WorkerRunner:
         self._executor = executor
 
     def run_child_task(self, request: ChildTaskRequest) -> dict[str, Any]:
+        budget_error = self._check_budget_exhausted(request)
+        if budget_error is not None:
+            return budget_error
+
         worker = self._create_inline_worker(request=request)
         task = self._create_inline_task(request=request)
         claimed = self._collaboration.claim_collaboration_task(
@@ -716,6 +721,31 @@ class WorkerRunner:
             if isinstance(value, str) and value:
                 return value
         return "process-required"
+
+    def _check_budget_exhausted(self, request: ChildTaskRequest) -> dict[str, Any] | None:
+        if request.budget is None:
+            return None
+        try:
+            budget = WorkerBudget.from_metadata(request.budget)
+        except (TypeError, ValueError):
+            return None
+        if budget.tool_calls.limit is not None and budget.tool_calls.limit <= budget.tool_calls.consumed:
+            return {
+                "error": {
+                    "code": "WORKER_BUDGET_TOOL_CALLS_EXCEEDED",
+                    "message": f"Tool call budget exceeded: limit={budget.tool_calls.limit}, consumed={budget.tool_calls.consumed}",
+                    "retryable": False,
+                }
+            }
+        if budget.tokens.limit is not None and budget.tokens.limit <= budget.tokens.consumed:
+            return {
+                "error": {
+                    "code": "WORKER_BUDGET_TOKENS_EXCEEDED",
+                    "message": f"Token budget exceeded: limit={budget.tokens.limit}, consumed={budget.tokens.consumed}",
+                    "retryable": False,
+                }
+            }
+        return None
 
     def _cancel_requested(self, request: ChildTaskRequest) -> bool:
         cancellation = request.cancellation

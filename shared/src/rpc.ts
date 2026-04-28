@@ -76,7 +76,9 @@ export type RpcMethod =
   | "schedule.toggle"
   | "schedule.run_now"
   | "schedule.logs"
-  | "task.list";
+  | "task.list"
+  | "log.export"
+  | "errors.list";
 
 export interface WorkspaceOpenParams {
   path: string;
@@ -299,3 +301,34 @@ export interface TraceListResult {
 
 export type GitStatusResult = GitStatusRecord;
 export type GitDiffResult = GitDiffRecord;
+
+export interface LogExportParams {
+  sessionId?: Identifier;
+}
+
+export interface LogExportResult {
+  exportedAt: number;
+  sessions: SessionRecord[];
+  tasks: TaskRecord[];
+  messages: MessageRecord[];
+  commandLogs: CommandLogRecord[];
+  patches: PatchRecord[];
+  approvals: ApprovalRecord[];
+  traceEvents: TraceEventRecord[];
+  config: Record<string, unknown>;
+}
+
+export interface ErrorsListParams {
+  sessionId?: Identifier;
+  taskId?: Identifier;
+  source?: string;
+  limit?: number;
+}
+
+export interface ErrorsListResult {
+  errors: import("./domain").ErrorRecord[];
+  summary: {
+    totalErrors: number;
+    bySource: Record<string, number>;
+  };
+}

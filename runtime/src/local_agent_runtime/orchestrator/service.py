@@ -17,7 +17,7 @@ from ..services.collaboration_service import CollaborationService
 from ..services.command_background import cancel_background_commands
 from ..services.session_service import SessionService
 from ..services.subagent_service import SubagentService
-from ..services.worker_budget import WorkerBudget
+from ..services.worker_budget import WorkerBudget, WorkerBudgetExceededError
 from ..services.worker_environment import normalize_child_tool_allowlist
 from ..services.worker_runner import WorkerRunner
 from ..store.sqlite_store import SQLiteStore
@@ -1971,6 +1971,14 @@ class Orchestrator:
         steps = int(state.get("steps", 0)) if state else 0
         react_started = bool(state.get("react_started", False)) if state else False
         patch_repair_attempts = int(state.get("patch_repair_attempts", 0)) if state else 0
+
+        if budget is not None and budget.tool_calls.exhausted:
+            raise WorkerBudgetExceededError(
+                dimension="tool_calls",
+                limit=budget.tool_calls.limit or 0,
+                attempted=budget.tool_calls.consumed + 1,
+                consumed=budget.tool_calls.consumed,
+            )
 
         while True:
             if steps >= max_steps:

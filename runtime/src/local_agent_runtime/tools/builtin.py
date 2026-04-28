@@ -60,16 +60,37 @@ def build_builtin_tools(policy_guard: Any, store: Any, subagent_service: Any | N
                 expanded.append(f"**/{pattern}/**")
         return list(dict.fromkeys(expanded))
 
+    _gitignore_cache: dict[str, list[str]] = {}
+
+    def load_gitignore_patterns(workspace_root: str) -> list[str]:
+        if workspace_root in _gitignore_cache:
+            return _gitignore_cache[workspace_root]
+        gitignore_path = Path(workspace_root) / ".gitignore"
+        patterns: list[str] = []
+        if gitignore_path.is_file():
+            try:
+                for line in gitignore_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                    stripped = line.rstrip()
+                    if stripped and not stripped.startswith("#"):
+                        patterns.append(stripped)
+            except OSError:
+                pass
+        _gitignore_cache[workspace_root] = patterns
+        return patterns
+
     def current_search_defaults() -> tuple[list[str], list[str]]:
         config = store.get_config({})["config"]
         workspace_config = config.get("workspace") or {}
         search_config = config.get("search") or {}
+        workspace_root = workspace_config.get("rootPath") or ""
+        gitignore_patterns = load_gitignore_patterns(workspace_root) if workspace_root else []
         base_ignore_patterns = list(
             dict.fromkeys(
                 [
                     *DEFAULT_IGNORED_DIR_NAMES,
                     *workspace_config.get("ignore", []),
                     *search_config.get("ignore", []),
+                    *gitignore_patterns,
                 ]
             )
         )

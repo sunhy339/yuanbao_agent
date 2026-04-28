@@ -133,6 +133,7 @@ class ContextBuilder:
                 priority=800,
                 minimum_tokens=30,
             ),
+            *self._key_file_sections(workspace["rootPath"]),
             BudgetSection(
                 name="git_status",
                 text=self._git_summary(workspace["rootPath"]),
@@ -179,6 +180,64 @@ class ContextBuilder:
             return max(1, int(value))
         except (TypeError, ValueError):
             return DEFAULT_MAX_CONTEXT_TOKENS
+
+    _KEY_FILE_NAMES = (
+        "README.md",
+        "README",
+        "README.txt",
+        "package.json",
+        "pyproject.toml",
+        "Cargo.toml",
+        "Makefile",
+        "makefile",
+        "go.mod",
+    )
+
+    _KEY_FILE_MAX_BYTES = 4000
+
+    def _key_file_sections(self, workspace_root: str) -> list[BudgetSection]:
+        root = Path(workspace_root)
+        if not root.exists() or not root.is_dir():
+            return []
+
+        sections: list[BudgetSection] = []
+        max_bytes = self._KEY_FILE_MAX_BYTES
+        candidate_names = list(self._KEY_FILE_NAMES) + [".claude/CLAUDE.md"]
+
+        for filename in candidate_names:
+            filepath = root / filename
+            if not filepath.exists() or not filepath.is_file():
+                continue
+            try:
+                raw = filepath.read_bytes()
+            except OSError:
+                continue
+            if not raw:
+                continue
+
+            truncated = len(raw) > max_bytes
+            content = raw[:max_bytes]
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    text = content.decode("latin-1")
+                except UnicodeDecodeError:
+                    continue
+
+            if truncated:
+                text = text.rstrip() + f"\n[truncated at {max_bytes} bytes]"
+
+            sections.append(
+                BudgetSection(
+                    name=f"key_file:{filename}",
+                    text=f"--- {filename} ---\n{text}",
+                    priority=850,
+                    minimum_tokens=24,
+                )
+            )
+
+        return sections
 
     def _system_prompt(self, *, workspace_root: str) -> str:
         return "\n".join(

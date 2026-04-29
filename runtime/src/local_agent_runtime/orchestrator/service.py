@@ -811,6 +811,7 @@ class Orchestrator:
         )
         self._remember_task_result(session_id=session_id, task=runtime_task)
         self._clear_pending_react_state(task["id"])
+        self._record_task_metrics(session_id=session_id, task=runtime_task, tool_results=tool_results, task_status="completed")
         self._publish(
             session_id=session_id,
             task=runtime_task,
@@ -864,6 +865,7 @@ class Orchestrator:
         )
         self._remember_task_result(session_id=session_id, task=runtime_task)
         self._clear_pending_react_state(task["id"])
+        self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="failed")
         self._publish(
             session_id=session_id,
             task=runtime_task,
@@ -882,6 +884,55 @@ class Orchestrator:
             },
         )
         return runtime_task
+
+    def _record_task_metrics(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        tool_results: list[dict[str, Any]] | None = None,
+        task_status: str = "completed",
+    ) -> None:
+        tool_results = tool_results or []
+        duration_ms = (task.get("updated_at") or 0) - (task.get("created_at") or 0)
+        if duration_ms < 0:
+            duration_ms = 0
+        command_count = 0
+        patch_count = 0
+        command_success = 0
+        command_failure = 0
+        patch_success = 0
+        patch_failure = 0
+        for tr in tool_results:
+            name = tr.get("name", "")
+            result = tr.get("result", {})
+            if name == "run_command":
+                command_count += 1
+                status = result.get("status") or result.get("exitCode")
+                if status in ("completed", 0):
+                    command_success += 1
+                else:
+                    command_failure += 1
+            elif name == "apply_patch":
+                patch_count += 1
+                if result.get("patch_id") or result.get("applied"):
+                    patch_success += 1
+                else:
+                    patch_failure += 1
+        self._store.record_task_metrics({
+            "taskId": task["id"],
+            "sessionId": session_id,
+            "durationMs": duration_ms,
+            "toolCallCount": len(tool_results),
+            "commandCount": command_count,
+            "patchCount": patch_count,
+            "commandSuccessCount": command_success,
+            "commandFailureCount": command_failure,
+            "patchSuccessCount": patch_success,
+            "patchFailureCount": patch_failure,
+            "taskStatus": task_status,
+            "wasCancelled": task_status == "cancelled",
+        })
 
     def _remember_task_result(self, *, session_id: str, task: dict[str, Any]) -> None:
         if not hasattr(self._store, "update_session_summary"):

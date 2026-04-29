@@ -293,3 +293,24 @@ export interface ErrorRecord {
   timestamp: number;
   metadata: Record<string, unknown>;
 }
+
+export interface TaskMetricRecord {
+  id: Identifier;
+  taskId: Identifier;
+  sessionId: Identifier;
+  createdAt: number;
+  durationMs: number | null;
+  toolCallCount: number;
+  commandCount: number;
+  patchCount: number;
+  providerCallCount: number;
+  patchSuccessCount: number;
+  patchFailureCount: number;
+  commandSuccessCount: number;
+  commandFailureCount: number;
+  taskStatus: string;
+  patchRepairAttempts: number;
+  approvalApprovedCount: number;
+  approvalRejectedCount: number;
+  wasCancelled: boolean;
+}

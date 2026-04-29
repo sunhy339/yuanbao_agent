@@ -78,7 +78,8 @@ export type RpcMethod =
   | "schedule.logs"
   | "task.list"
   | "log.export"
-  | "errors.list";
+  | "errors.list"
+  | "metrics.list";
 
 export interface WorkspaceOpenParams {
   path: string;
@@ -331,4 +332,13 @@ export interface ErrorsListResult {
     totalErrors: number;
     bySource: Record<string, number>;
   };
+}
+
+export interface MetricsListParams {
+  sessionId?: Identifier;
+  limit?: number;
+}
+
+export interface MetricsListResult {
+  metrics: import("./domain").TaskMetricRecord[];
 }

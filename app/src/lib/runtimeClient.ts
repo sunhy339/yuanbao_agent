@@ -1485,6 +1485,33 @@ export class RuntimeClient {
     return result;
   }
 
+  async exportLogs(payload?: { sessionId?: string }): Promise<Record<string, unknown>> {
+    if (shouldUseBrowserMock()) {
+      return {
+        exportedAt: Date.now(),
+        sessions: [], tasks: [], messages: [], commandLogs: [],
+        patches: [], approvals: [], traceEvents: [], config: mockState.config,
+      };
+    }
+    return invokePayloadOrReject<Record<string, unknown>>("log_export", payload ?? {});
+  }
+
+  async listErrors(payload?: { sessionId?: string; taskId?: string; source?: string; limit?: number }) {
+    if (shouldUseBrowserMock()) {
+      return { errors: [], summary: { totalErrors: 0, bySource: {} } };
+    }
+    return invokePayloadOrReject<{ errors: unknown[]; summary: { totalErrors: number; bySource: Record<string, number> } }>(
+      "errors_list", payload ?? {}
+    );
+  }
+
+  async listMetrics(payload?: { sessionId?: string; limit?: number }) {
+    if (shouldUseBrowserMock()) {
+      return { metrics: [] };
+    }
+    return invokePayloadOrReject<{ metrics: unknown[] }>("metrics_list", payload ?? {});
+  }
+
   async subscribeEvents(handler: (event: AgentEventEnvelope) => void): Promise<() => void> {
     if (shouldUseBrowserMock()) {
       const listener = (event: Event) => {

@@ -357,6 +357,8 @@ class ProviderAdapter:
         )
         uses_anthropic_env = self._uses_anthropic_env(configured_env_var_name)
         normalized_mode = self._normalize_mode(mode)
+        if normalized_mode == "mock":
+            return None
         if normalized_mode not in OPENAI_COMPATIBLE_MODES:
             if not self._anthropic_env_available():
                 return None
@@ -369,7 +371,7 @@ class ProviderAdapter:
         api_key = self._string_value(provider_config, "apiKey", "api_key")
         if not api_key and configured_env_var_name:
             api_key = self._env(configured_env_var_name)
-        if not api_key:
+        if not api_key and not configured_env_var_name:
             api_key = self._env(
                 "LOCAL_AGENT_PROVIDER_API_KEY",
                 "LOCAL_AGENT_OPENAI_API_KEY",

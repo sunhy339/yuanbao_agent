@@ -142,6 +142,9 @@ def test_message_send_fails_when_openai_provider_key_is_missing(
     monkeypatch.delenv("LOCAL_AGENT_PROVIDER_API_KEY", raising=False)
     monkeypatch.delenv("LOCAL_AGENT_OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     workspace = _call_result(

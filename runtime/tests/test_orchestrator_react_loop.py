@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from types import SimpleNamespace
 from typing import Any
 
@@ -1101,7 +1102,12 @@ def test_react_loop_fails_on_invalid_provider_output(tmp_path: Any) -> None:
 def test_react_loop_returns_invalid_patch_to_provider_and_accepts_repair(tmp_path: Any) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
+    subprocess.run(["git", "init"], cwd=str(workspace_root), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=str(workspace_root), capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(workspace_root), capture_output=True, check=True)
     (workspace_root / "README.md").write_text("old line\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=str(workspace_root), capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(workspace_root), capture_output=True, check=True)
     invalid_patch = _patch_text("README.md", "missing line", "new line")
     repaired_patch = _patch_text("README.md", "old line", "new line")
     provider = ScriptedProvider(

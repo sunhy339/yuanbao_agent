@@ -1,3 +1,5 @@
+import { useCallback } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import "./newSession.css";
 
 export interface NewSessionWorkspaceProps {
@@ -28,6 +30,21 @@ export function NewSessionWorkspace({
 }: NewSessionWorkspaceProps) {
   const resolvedModelId = selectedModelId ?? modelOptions[0]?.id ?? "";
 
+  const handleBrowseFolder = useCallback(async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "选择工作文件夹",
+      });
+      if (selected) {
+        onWorkspacePathChange?.(selected);
+      }
+    } catch {
+      // dialog cancelled or unavailable – silently ignore
+    }
+  }, [onWorkspacePathChange]);
+
   return (
     <main className="new-session-workspace" aria-labelledby="new-session-title">
       <section className="new-session-desk" aria-label="New session desk">
@@ -42,7 +59,7 @@ export function NewSessionWorkspace({
           <div className="new-session-status-row" aria-label="Session status">
             <span data-status="ready">{hostStatusText}</span>
             <label className="new-session-control-pill">
-              <span>选择模型</span>
+              <span>🤖 模型</span>
               <select
                 aria-label="选择模型"
                 disabled={!modelOptions.length || !onSelectModel}
@@ -68,15 +85,24 @@ export function NewSessionWorkspace({
               }}
             >
               <label>
-                <span>工作文件夹</span>
+                <span>📁 工作目录</span>
                 <input
                   aria-label="工作文件夹"
                   onChange={(event) => onWorkspacePathChange?.(event.currentTarget.value)}
                   value={workspacePath}
                 />
               </label>
+              <button
+                type="button"
+                className="new-session-browse-btn"
+                disabled={workspaceBusy}
+                onClick={handleBrowseFolder}
+                title="浏览文件夹"
+              >
+                📂 浏览
+              </button>
               <button disabled={workspaceBusy || !onOpenWorkspace} type="submit">
-                {workspaceBusy ? "应用中" : "应用文件夹"}
+                {workspaceBusy ? "应用中" : "应用"}
               </button>
             </form>
           </div>

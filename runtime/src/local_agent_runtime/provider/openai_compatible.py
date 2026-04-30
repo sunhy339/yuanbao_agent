@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import codecs
+import concurrent.futures
 import json
 import urllib.error
 import urllib.request
@@ -42,7 +43,36 @@ class OpenAICompatibleSettings:
     model: str
     temperature: float | None = None
     max_tokens: int | None = None
-    timeout: float = 30.0
+    timeout: float = 10.0
+
+
+def _run_with_hard_timeout(fn: Any, timeout: float) -> Any:
+    """Run *fn* in a worker thread and enforce a hard wall-clock deadline.
+
+    On Windows, ``urllib``'s socket-level ``timeout`` only covers read/write
+    phases — DNS resolution and TCP SYN retransmission can block for 20-75 s.
+    This wrapper guarantees the caller never waits longer than *timeout* seconds.
+
+    IMPORTANT: We must NOT use ``with ThreadPoolExecutor`` because its
+    ``__exit__`` calls ``shutdown(wait=True)`` which blocks until the worker
+    thread completes — exactly the hang we're trying to avoid.
+    """
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(fn)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        # shutdown(wait=False) lets the orphaned thread die in the background
+        # without blocking the caller.  cancel_futures=True (Python 3.9+)
+        # prevents any queued-but-not-started work from running.
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise ProviderAdapterError(
+            f"Provider request timed out after {timeout:g}s "
+            "(DNS or TCP connection may be unreachable)"
+        )
+    else:
+        pool.shutdown(wait=False)
 
 
 def default_http_post(
@@ -53,16 +83,20 @@ def default_http_post(
     timeout: float,
 ) -> tuple[int, bytes]:
     request = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            return response.status, response.read()
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read()
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", exc)
-        raise ProviderAdapterError(f"Provider request failed: {reason}") from exc
-    except TimeoutError as exc:
-        raise ProviderAdapterError(f"Provider request timed out after {timeout:g}s") from exc
+
+    def _do_request() -> tuple[int, bytes]:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+                return response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read()
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", exc)
+            raise ProviderAdapterError(f"Provider request failed: {reason}") from exc
+        except TimeoutError as exc:
+            raise ProviderAdapterError(f"Provider request timed out after {timeout:g}s") from exc
+
+    return _run_with_hard_timeout(_do_request, timeout)
 
 
 def default_http_stream(
@@ -73,20 +107,37 @@ def default_http_stream(
     timeout: float,
 ) -> tuple[int, Iterable[bytes]]:
     request = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
-    try:
-        response = urllib.request.urlopen(request, timeout=timeout)  # noqa: S310
-    except urllib.error.HTTPError as exc:
-        return exc.code, [exc.read()]
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", exc)
-        raise ProviderAdapterError(f"Provider request failed: {reason}") from exc
-    except TimeoutError as exc:
-        raise ProviderAdapterError(f"Provider request timed out after {timeout:g}s") from exc
+
+    def _do_connect() -> Any:
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310
+        except urllib.error.HTTPError as exc:
+            return exc
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", exc)
+            raise ProviderAdapterError(f"Provider request failed: {reason}") from exc
+        except TimeoutError as exc:
+            raise ProviderAdapterError(f"Provider request timed out after {timeout:g}s") from exc
+
+    result = _run_with_hard_timeout(_do_connect, timeout)
+
+    # HTTPError is a special case — it carries the error body
+    if isinstance(result, urllib.error.HTTPError):
+        return result.code, [result.read()]
+
+    response = result
 
     def iter_lines() -> Iterator[bytes]:
         try:
             while True:
-                line = response.readline()
+                try:
+                    line = response.readline()
+                except urllib.error.URLError as exc:
+                    reason = getattr(exc, "reason", exc)
+                    raise ProviderAdapterError(f"Provider stream failed: {reason}") from exc
+                except TimeoutError as exc:
+                    raise ProviderAdapterError(f"Provider stream timed out after {timeout:g}s") from exc
+
                 if not line:
                     break
                 yield line
@@ -227,7 +278,7 @@ class OpenAICompatibleChatClient:
             "Accept": "application/json",
         }
         try:
-            return self._http_post(url=url, headers=headers, body=body, timeout=settings.timeout)
+            return self._http_post(url=url, headers=headers, body=body, timeout=max(settings.timeout, 30.0))
         except ProviderAdapterError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -241,7 +292,7 @@ class OpenAICompatibleChatClient:
             "Accept": "text/event-stream",
         }
         try:
-            return self._http_stream(url=url, headers=headers, body=body, timeout=settings.timeout)
+            return self._http_stream(url=url, headers=headers, body=body, timeout=max(settings.timeout, 30.0))
         except ProviderAdapterError:
             raise
         except Exception as exc:  # noqa: BLE001

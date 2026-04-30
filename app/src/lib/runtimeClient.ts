@@ -38,7 +38,11 @@ import type {
   ScheduledTaskUpdateParams,
   SessionCreateParams,
   SessionCreateResult,
+  SessionDeleteParams,
+  SessionDeleteResult,
   SessionListResult,
+  SessionUpdateParams,
+  SessionUpdateResult,
   SessionRecord,
   TaskCancelParams,
   TaskControlResult,
@@ -64,6 +68,17 @@ import {
   buildMockTask,
   buildMockWorkspace,
 } from "../state/mockData";
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  return Promise.race([
+    promise,
+    new Promise<never>(
+      (_, reject) =>
+        (timer = setTimeout(() => reject(new Error(message)), ms)),
+    ),
+  ]).finally(() => clearTimeout(timer));
+}
 
 const EVENT_CHANNEL = "agent://event";
 const browserEventTarget = new EventTarget();
@@ -1023,6 +1038,28 @@ export class RuntimeClient {
     return result;
   }
 
+  async updateSession(payload: SessionUpdateParams): Promise<SessionUpdateResult> {
+    if (shouldUseBrowserMock()) {
+      const session = mockState.sessions.find((s) => s.id === payload.sessionId);
+      if (!session) throw new Error(`Session not found: ${payload.sessionId}`);
+      if (payload.title !== undefined) session.title = payload.title;
+      if (payload.status !== undefined) session.status = payload.status as SessionRecord["status"];
+      session.updatedAt = Date.now();
+      return { session };
+    }
+    return invokePayloadOrReject<SessionUpdateResult>("session_update", payload);
+  }
+
+  async deleteSession(payload: SessionDeleteParams): Promise<SessionDeleteResult> {
+    if (shouldUseBrowserMock()) {
+      const idx = mockState.sessions.findIndex((s) => s.id === payload.sessionId);
+      if (idx === -1) throw new Error(`Session not found: ${payload.sessionId}`);
+      const [session] = mockState.sessions.splice(idx, 1);
+      return { session };
+    }
+    return invokePayloadOrReject<SessionDeleteResult>("session_delete", payload);
+  }
+
   async sendMessage(payload: MessageSendParams): Promise<MessageSendResult> {
     if (shouldUseBrowserMock()) {
       const task = buildMockTask(payload.sessionId, payload.content);
@@ -1480,7 +1517,11 @@ export class RuntimeClient {
       return result;
     }
 
-    const result = await invokePayloadOrReject<ProviderTestResult>("provider_test", payload);
+    const result = await withTimeout(
+      invokePayloadOrReject<ProviderTestResult>("provider_test", payload),
+      12_000,
+      "Provider test timed out. Check your API key, base URL, and network connection.",
+    );
     rememberProviderTestResult(result);
     return result;
   }

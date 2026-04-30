@@ -11,6 +11,9 @@ DEFAULT_CHILD_TOOL_ALLOWLIST = (
     "read_file",
     "git_status",
     "git_diff",
+    "code_search",
+    "web_fetch",
+    "browser",
 )
 
 DEFAULT_ENV_ALLOWLIST = (

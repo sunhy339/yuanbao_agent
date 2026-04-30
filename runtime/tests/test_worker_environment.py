@@ -96,6 +96,9 @@ def test_normalize_child_tool_allowlist_defaults_to_read_only_tools() -> None:
         "read_file",
         "git_status",
         "git_diff",
+        "code_search",
+        "web_fetch",
+        "browser",
     )
 
 

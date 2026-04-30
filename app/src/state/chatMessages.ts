@@ -41,7 +41,13 @@ export function replaceSessionMessages(
   );
   const otherSessionMessages = current.filter((message) => message.sessionId !== sessionId);
 
-  return [...otherSessionMessages, ...persistedMessages, ...liveStreamingMessages].sort(
+  const maxPersistedTime = persistedMessages.reduce((max, msg) => Math.max(max, msg.createdAt), 0);
+  const updatedLiveStreamingMessages = liveStreamingMessages.map((msg, index) => ({
+    ...msg,
+    createdAt: Math.max(msg.createdAt, maxPersistedTime + 1 + index),
+  }));
+
+  return [...otherSessionMessages, ...persistedMessages, ...updatedLiveStreamingMessages].sort(
     (left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
   );
 }

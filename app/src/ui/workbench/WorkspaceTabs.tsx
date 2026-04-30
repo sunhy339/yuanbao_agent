@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { WorkbenchTab } from "./types";
 
 interface WorkspaceTabsProps {
@@ -7,6 +7,7 @@ interface WorkspaceTabsProps {
   onActivateTab: (tabId: WorkbenchTab["id"]) => void;
   onCloseTab: (tabId: WorkbenchTab["id"]) => void;
   onCloseOtherTabs?: (tabId: WorkbenchTab["id"]) => void;
+  onRenameSession?: (sessionId: string, newTitle: string) => void;
 }
 
 interface TabContextMenuState {
@@ -21,19 +22,56 @@ export function WorkspaceTabs({
   onActivateTab,
   onCloseTab,
   onCloseOtherTabs,
+  onRenameSession,
 }: WorkspaceTabsProps) {
   const [contextMenu, setContextMenu] = useState<TabContextMenuState | null>(null);
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
   const otherClosableCount = contextMenu
     ? tabs.filter((tab) => tab.id !== contextMenu.tab.id && tab.closable).length
     : 0;
 
-  function closeContextMenu() {
+  useEffect(() => {
+    if (!contextMenu) return;
+    function handleClick() { setContextMenu(null); }
+    function handleKey(event: KeyboardEvent) { if (event.key === "Escape") setContextMenu(null); }
+    document.addEventListener("click", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("click", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [contextMenu]);
+
+  useEffect(() => {
+    if (renamingTabId && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renamingTabId]);
+
+  function handleStartRename() {
+    if (!contextMenu?.tab.id.startsWith("session:") || !onRenameSession) return;
+    const sessionId = contextMenu.tab.id.slice("session:".length);
     setContextMenu(null);
+    setRenamingTabId(contextMenu.tab.id);
+    setRenameValue(contextMenu.tab.title);
   }
+
+  function handleCommitRename() {
+    if (renamingTabId && renameValue.trim() && onRenameSession) {
+      const sessionId = renamingTabId.slice("session:".length);
+      onRenameSession(sessionId, renameValue.trim());
+    }
+    setRenamingTabId(null);
+  }
+
+  const contextMenuIsSession = contextMenu?.tab.id.startsWith("session:");
 
   return (
     <>
-      <div className="workspace-tabs" role="tablist" aria-label="Open workspaces" onClick={closeContextMenu}>
+      <div className="workspace-tabs" role="tablist" aria-label="Open workspaces">
         {tabs.map((tab) => (
           <div
             key={tab.id}
@@ -56,7 +94,24 @@ export function WorkspaceTabs({
               className="workspace-tab"
               onClick={() => onActivateTab(tab.id)}
             >
-              {tab.title}
+              {renamingTabId === tab.id ? (
+                <input
+                  ref={renameInputRef}
+                  type="text"
+                  className="tab-rename-input"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={handleCommitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleCommitRename();
+                    if (e.key === "Escape") setRenamingTabId(null);
+                    e.stopPropagation();
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                tab.title
+              )}
             </button>
             {tab.closable ? (
               <button
@@ -65,7 +120,7 @@ export function WorkspaceTabs({
                 aria-label={`Close ${tab.title}`}
                 onClick={() => onCloseTab(tab.id)}
               >
-                {"\u00d7"}
+                {"×"}
               </button>
             ) : null}
           </div>
@@ -78,13 +133,25 @@ export function WorkspaceTabs({
           aria-label={`${contextMenu.tab.title} tab actions`}
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
+          {contextMenuIsSession && onRenameSession ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                handleStartRename();
+                setContextMenu(null);
+              }}
+            >
+              重命名
+            </button>
+          ) : null}
           <button
             type="button"
             role="menuitem"
             disabled={!contextMenu.tab.closable}
             onClick={() => {
               onCloseTab(contextMenu.tab.id);
-              closeContextMenu();
+              setContextMenu(null);
             }}
           >
             关闭此对话
@@ -95,7 +162,7 @@ export function WorkspaceTabs({
             disabled={!otherClosableCount || !onCloseOtherTabs}
             onClick={() => {
               onCloseOtherTabs?.(contextMenu.tab.id);
-              closeContextMenu();
+              setContextMenu(null);
             }}
           >
             关闭其他对话

@@ -71,7 +71,7 @@ describe("NewSessionWorkspace", () => {
     await user.selectOptions(screen.getByLabelText("选择模型"), "kimi");
     await user.clear(screen.getByLabelText("工作文件夹"));
     await user.type(screen.getByLabelText("工作文件夹"), "D:\\py\\doubao_client");
-    await user.click(screen.getByRole("button", { name: "应用文件夹" }));
+    await user.click(screen.getByRole("button", { name: "应用" }));
 
     expect(onSelectModel).toHaveBeenCalledWith("kimi");
     expect(onWorkspacePathChange).toHaveBeenLastCalledWith("D:\\py\\doubao_client");

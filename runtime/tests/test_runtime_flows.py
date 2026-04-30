@@ -8,7 +8,7 @@ import time
 import pytest
 
 from local_agent_runtime.policy.guard import PolicyGuard
-from local_agent_runtime.tools.builtin import build_builtin_tools
+from local_agent_runtime.tools import build_builtin_tools
 
 
 def _event_types(events: list[dict[str, Any]]) -> list[str]:
@@ -603,7 +603,7 @@ def test_run_command_approval_closure(runtime_harness: Any, monkeypatch: Any, tm
             stderr="",
         )
 
-    monkeypatch.setattr("local_agent_runtime.tools.builtin.subprocess.run", fake_run)
+    monkeypatch.setattr("local_agent_runtime.tools._shared.subprocess.run", fake_run)
 
     send_response = runtime_harness.call(
         "message.send",
@@ -642,7 +642,7 @@ def test_search_config_is_applied(runtime_harness: Any, monkeypatch: Any, tmp_pa
     (workspace_root / "ignored.py").write_text("needle\n", encoding="utf-8")
     (workspace_root / "readme.md").write_text("needle\n", encoding="utf-8")
 
-    monkeypatch.setattr("local_agent_runtime.tools.builtin.shutil.which", lambda _name: None)
+    monkeypatch.setattr("local_agent_runtime.tools._shared.shutil.which", lambda _name: None)
 
     workspace = _call_result(
         runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
@@ -885,7 +885,7 @@ def test_failed_tool_surfaces_clear_task_summary(runtime_harness: Any, monkeypat
             stderr="boom\n",
         )
 
-    monkeypatch.setattr("local_agent_runtime.tools.builtin.subprocess.run", fake_run)
+    monkeypatch.setattr("local_agent_runtime.tools._shared.subprocess.run", fake_run)
 
     send_response = runtime_harness.call(
         "message.send",

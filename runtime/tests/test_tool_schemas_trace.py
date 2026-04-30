@@ -22,6 +22,15 @@ EXPECTED_TOOL_NAMES = {
     "git_status",
     "git_diff",
     "task",
+    "write_file",
+    "web_fetch",
+    "code_search",
+    "notebook",
+    "browser",
+    "memory.remember",
+    "memory.recall",
+    "scratchpad.write",
+    "scratchpad.read",
 }
 
 
@@ -84,6 +93,10 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
             assert run_command_properties["background"]["type"] == "boolean"
             assert run_command_properties["runInBackground"]["type"] == "boolean"
             assert run_command_properties["backgroundJob"]["oneOf"][0]["type"] == "boolean"
+        elif name in {"web_fetch", "browser"}:
+            assert "url" in input_schema["required"]
+        elif name in {"memory.remember", "memory.recall", "scratchpad.write", "scratchpad.read"}:
+            pass  # memory/scratchpad tools use session-scoped params, not workspaceRoot
         else:
             assert "workspaceRoot" in input_schema["required"]
         assert json.loads(json.dumps(input_schema)) == input_schema
@@ -92,6 +105,10 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
             safety_text = " ".join(schema["safety"]).lower()
             assert "approval" in safety_text
             assert "destructive" in safety_text or "modify" in safety_text
+
+        if name in {"write_file"}:
+            safety_text = " ".join(schema["safety"]).lower()
+            assert "overwrite" in safety_text or "create" in safety_text
 
     registry = ToolRegistry({name: lambda _params: {} for name in EXPECTED_TOOL_NAMES})
     assert {schema["name"] for schema in registry.schemas} == EXPECTED_TOOL_NAMES

@@ -262,6 +262,37 @@ class SQLiteStore:
         ).fetchall()
         return {"messages": [self._serialize_message(dict(row)) for row in rows]}
 
+    def update_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = self._require_non_empty(params, "sessionId")
+        now = self.now()
+        updates: list[str] = []
+        values: list[Any] = []
+        if "title" in params:
+            updates.append("title = ?")
+            values.append(params["title"])
+        if "status" in params:
+            updates.append("status = ?")
+            values.append(params["status"])
+        if not updates:
+            return {"session": self.require_session(session_id)}
+        updates.append("updated_at = ?")
+        values.append(now)
+        values.append(session_id)
+        self._conn.execute(
+            f"UPDATE sessions SET {', '.join(updates)} WHERE id = ?",
+            values,
+        )
+        self._conn.commit()
+        return {"session": self.require_session(session_id)}
+
+    def delete_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = self._require_non_empty(params, "sessionId")
+        session = self.require_session(session_id)
+        self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        self._conn.commit()
+        return {"session": session}
+
     def update_session_summary(self, session_id: str, summary: str | None) -> dict[str, Any]:
         now = self.now()
         self._conn.execute(
@@ -2146,6 +2177,288 @@ class SQLiteStore:
         )
         self._conn.commit()
 
+    # ------------------------------------------------------------------
+    # Skill presets
+    # ------------------------------------------------------------------
+
+    def get_skill(self, params: dict[str, Any]) -> dict[str, Any]:
+        skill_id = params.get("skillId") or params.get("skill_id")
+        if not isinstance(skill_id, str) or not skill_id.strip():
+            raise ValueError("skillId is required")
+        row = self._conn.execute(
+            "SELECT * FROM skill_presets WHERE id = ?",
+            (skill_id.strip(),),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Skill not found: {skill_id}")
+        return {"skill": self._serialize_skill(dict(row))}
+
+    def list_skills(self, params: dict[str, Any]) -> dict[str, Any]:
+        category = params.get("category")
+        if isinstance(category, str) and category.strip():
+            rows = self._conn.execute(
+                "SELECT * FROM skill_presets WHERE category = ? ORDER BY created_at DESC",
+                (category.strip(),),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM skill_presets ORDER BY created_at DESC"
+            ).fetchall()
+        return {"skills": [self._serialize_skill(dict(r)) for r in rows]}
+
+    def create_skill(self, params: dict[str, Any]) -> dict[str, Any]:
+        skill_id = params.get("id") or params.get("skillId") or self.new_id("skill")
+        if not isinstance(skill_id, str) or not skill_id.strip():
+            raise ValueError("id is required")
+        skill_id = skill_id.strip()
+        name = params.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("name is required")
+        description = params.get("description", "")
+        system_prompt = params.get("system_prompt", "")
+        tool_whitelist = params.get("tool_whitelist", [])
+        parameter_constraints = params.get("parameter_constraints", {})
+        category = params.get("category", "custom")
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO skill_presets (id, name, description, system_prompt, tool_whitelist,
+                                        parameter_constraints, category, is_builtin, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+            """,
+            (
+                skill_id,
+                name.strip(),
+                description,
+                system_prompt,
+                json.dumps(tool_whitelist, ensure_ascii=False),
+                json.dumps(parameter_constraints, ensure_ascii=False),
+                category,
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        return self.get_skill({"skillId": skill_id})
+
+    def update_skill(self, params: dict[str, Any]) -> dict[str, Any]:
+        skill_id = params.get("skillId") or params.get("skill_id")
+        if not isinstance(skill_id, str) or not skill_id.strip():
+            raise ValueError("skillId is required")
+        skill_id = skill_id.strip()
+        existing = self._conn.execute(
+            "SELECT * FROM skill_presets WHERE id = ?", (skill_id,)
+        ).fetchone()
+        if existing is None:
+            raise ValueError(f"Skill not found: {skill_id}")
+        existing = dict(existing)
+        updates: dict[str, Any] = {}
+        for field_name in ("name", "description", "system_prompt", "category"):
+            if field_name in params:
+                updates[field_name] = params[field_name]
+        if "tool_whitelist" in params:
+            updates["tool_whitelist"] = json.dumps(params["tool_whitelist"], ensure_ascii=False)
+        if "parameter_constraints" in params:
+            updates["parameter_constraints"] = json.dumps(params["parameter_constraints"], ensure_ascii=False)
+        if not updates:
+            return {"skill": self._serialize_skill(existing)}
+        updates["updated_at"] = self.now()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        self._conn.execute(
+            f"UPDATE skill_presets SET {set_clause} WHERE id = ?",
+            (*updates.values(), skill_id),
+        )
+        self._conn.commit()
+        return self.get_skill({"skillId": skill_id})
+
+    def delete_skill(self, params: dict[str, Any]) -> dict[str, Any]:
+        skill_id = params.get("skillId") or params.get("skill_id")
+        if not isinstance(skill_id, str) or not skill_id.strip():
+            raise ValueError("skillId is required")
+        skill_id = skill_id.strip()
+        existing = self._conn.execute(
+            "SELECT * FROM skill_presets WHERE id = ?", (skill_id,)
+        ).fetchone()
+        if existing is None:
+            raise ValueError(f"Skill not found: {skill_id}")
+        if dict(existing).get("is_builtin"):
+            raise ValueError("Cannot delete built-in skills")
+        self._conn.execute("DELETE FROM skill_presets WHERE id = ?", (skill_id,))
+        self._conn.commit()
+        return {"deleted": True, "skillId": skill_id}
+
+    def upsert_skill(self, skill_id: str, *, name: str, description: str,
+                     system_prompt: str, tool_whitelist: list[str],
+                     parameter_constraints: dict[str, Any], category: str,
+                     is_builtin: bool = True) -> dict[str, Any]:
+        """Upsert a skill preset (used for loading built-in skills)."""
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO skill_presets (id, name, description, system_prompt, tool_whitelist,
+                                        parameter_constraints, category, is_builtin, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                description = excluded.description,
+                system_prompt = excluded.system_prompt,
+                tool_whitelist = excluded.tool_whitelist,
+                parameter_constraints = excluded.parameter_constraints,
+                category = excluded.category,
+                updated_at = excluded.updated_at
+            """,
+            (
+                skill_id,
+                name,
+                description,
+                system_prompt,
+                json.dumps(tool_whitelist, ensure_ascii=False),
+                json.dumps(parameter_constraints, ensure_ascii=False),
+                category,
+                1 if is_builtin else 0,
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM skill_presets WHERE id = ?", (skill_id,)
+        ).fetchone()
+        return self._serialize_skill(dict(row))
+
+    def _serialize_skill(self, row: dict[str, Any]) -> dict[str, Any]:
+        result = dict(row)
+        for json_field in ("tool_whitelist", "parameter_constraints"):
+            raw = result.get(json_field)
+            if isinstance(raw, str):
+                try:
+                    result[json_field] = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    result[json_field] = [] if json_field == "tool_whitelist" else {}
+        return result
+
+    # ── mcp_servers CRUD ────────────────────────────────────────────
+
+    def get_mcp_server(self, params: dict[str, Any]) -> dict[str, Any]:
+        server_id = params.get("serverId") or params.get("server_id")
+        if not isinstance(server_id, str) or not server_id.strip():
+            raise ValueError("serverId is required")
+        row = self._conn.execute(
+            "SELECT * FROM mcp_servers WHERE id = ?", (server_id.strip(),)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"MCP server not found: {server_id}")
+        return {"server": self._serialize_mcp_server(dict(row))}
+
+    def list_mcp_servers(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        enabled_only = (params or {}).get("enabledOnly", False)
+        if enabled_only:
+            rows = self._conn.execute(
+                "SELECT * FROM mcp_servers WHERE enabled = 1 ORDER BY created_at DESC"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM mcp_servers ORDER BY created_at DESC"
+            ).fetchall()
+        return {"servers": [self._serialize_mcp_server(dict(r)) for r in rows]}
+
+    def create_mcp_server(self, params: dict[str, Any]) -> dict[str, Any]:
+        server_id = params.get("id") or params.get("serverId") or self.new_id("mcp")
+        if not isinstance(server_id, str) or not server_id.strip():
+            raise ValueError("id is required")
+        server_id = server_id.strip()
+        name = params.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("name is required")
+        transport = params.get("transport", "stdio")
+        command = params.get("command")
+        args = params.get("args", [])
+        url = params.get("url")
+        headers = params.get("headers", {})
+        env = params.get("env", {})
+        enabled = 1 if params.get("enabled", True) else 0
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO mcp_servers (id, name, transport, command, args, url, headers, env,
+                                      enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                server_id,
+                name.strip(),
+                transport,
+                command,
+                json.dumps(args, ensure_ascii=False),
+                url,
+                json.dumps(headers, ensure_ascii=False),
+                json.dumps(env, ensure_ascii=False),
+                enabled,
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        return self.get_mcp_server({"serverId": server_id})
+
+    def update_mcp_server(self, params: dict[str, Any]) -> dict[str, Any]:
+        server_id = params.get("serverId") or params.get("server_id")
+        if not isinstance(server_id, str) or not server_id.strip():
+            raise ValueError("serverId is required")
+        server_id = server_id.strip()
+        existing = self._conn.execute(
+            "SELECT * FROM mcp_servers WHERE id = ?", (server_id,)
+        ).fetchone()
+        if existing is None:
+            raise ValueError(f"MCP server not found: {server_id}")
+        updates: dict[str, Any] = {}
+        for field_name in ("name", "transport", "command", "url"):
+            if field_name in params:
+                updates[field_name] = params[field_name]
+        if "args" in params:
+            updates["args"] = json.dumps(params["args"], ensure_ascii=False)
+        if "headers" in params:
+            updates["headers"] = json.dumps(params["headers"], ensure_ascii=False)
+        if "env" in params:
+            updates["env"] = json.dumps(params["env"], ensure_ascii=False)
+        if "enabled" in params:
+            updates["enabled"] = 1 if params["enabled"] else 0
+        if not updates:
+            return {"server": self._serialize_mcp_server(dict(existing))}
+        updates["updated_at"] = self.now()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        self._conn.execute(
+            f"UPDATE mcp_servers SET {set_clause} WHERE id = ?",
+            (*updates.values(), server_id),
+        )
+        self._conn.commit()
+        return self.get_mcp_server({"serverId": server_id})
+
+    def delete_mcp_server(self, params: dict[str, Any]) -> dict[str, Any]:
+        server_id = params.get("serverId") or params.get("server_id")
+        if not isinstance(server_id, str) or not server_id.strip():
+            raise ValueError("serverId is required")
+        server_id = server_id.strip()
+        existing = self._conn.execute(
+            "SELECT * FROM mcp_servers WHERE id = ?", (server_id,)
+        ).fetchone()
+        if existing is None:
+            raise ValueError(f"MCP server not found: {server_id}")
+        self._conn.execute("DELETE FROM mcp_servers WHERE id = ?", (server_id,))
+        self._conn.commit()
+        return {"deleted": True, "serverId": server_id}
+
+    def _serialize_mcp_server(self, row: dict[str, Any]) -> dict[str, Any]:
+        result = dict(row)
+        for json_field in ("args", "headers", "env"):
+            raw = result.get(json_field)
+            if isinstance(raw, str):
+                try:
+                    result[json_field] = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    result[json_field] = [] if json_field == "args" else {}
+        return result
+
     def _bootstrap(self) -> None:
         self._conn.executescript(
             """
@@ -2382,6 +2695,85 @@ class SQLiteStore:
 
             CREATE INDEX IF NOT EXISTS idx_task_metrics_session
                 ON task_metrics (session_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS scratchpad_entries (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(session_id, key)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_scratchpad_session
+                ON scratchpad_entries (session_id, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS compaction_records (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                tokens_before INTEGER NOT NULL,
+                tokens_after INTEGER NOT NULL,
+                summary TEXT,
+                primer_hash TEXT,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_compaction_session
+                ON compaction_records (session_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS skill_presets (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                tool_whitelist TEXT NOT NULL,
+                parameter_constraints TEXT NOT NULL DEFAULT '{}',
+                category TEXT NOT NULL DEFAULT 'custom',
+                is_builtin INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_skill_presets_category
+                ON skill_presets (category);
+
+            CREATE TABLE IF NOT EXISTS mcp_servers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                transport TEXT NOT NULL DEFAULT 'stdio',
+                command TEXT,
+                args TEXT DEFAULT '[]',
+                url TEXT,
+                headers TEXT DEFAULT '{}',
+                env TEXT DEFAULT '{}',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS memory_entries (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                workspace_id TEXT,
+                kind TEXT NOT NULL,
+                content TEXT NOT NULL,
+                keywords TEXT,
+                metadata TEXT DEFAULT '{}',
+                created_at INTEGER NOT NULL,
+                accessed_at INTEGER NOT NULL,
+                access_count INTEGER DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_memory_kind
+                ON memory_entries (kind);
+            CREATE INDEX IF NOT EXISTS idx_memory_workspace
+                ON memory_entries (workspace_id);
+            CREATE INDEX IF NOT EXISTS idx_memory_session
+                ON memory_entries (session_id);
+            CREATE INDEX IF NOT EXISTS idx_memory_accessed
+                ON memory_entries (accessed_at);
             """
         )
         self._conn.commit()

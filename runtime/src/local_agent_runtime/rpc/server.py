@@ -37,6 +37,8 @@ class JsonRpcServer:
             "session.create": self._orchestrator.create_session,
             "session.get": self._store.get_session,
             "session.list": self._store.list_sessions,
+            "session.update": self._store.update_session,
+            "session.delete": self._delete_session,
             "message.send": self._orchestrator.send_message,
             "message.list": self._store.list_messages,
             "worker.run_child_task": self._orchestrator.run_child_task,
@@ -77,6 +79,15 @@ class JsonRpcServer:
             "log.export": self._store.export_logs,
             "errors.list": self._store.list_errors,
             "metrics.list": self._store.list_metrics,
+            "skill.list": self._orchestrator.skill_list,
+            "skill.create": self._orchestrator.skill_create,
+            "skill.update": self._orchestrator.skill_update,
+            "skill.delete": self._orchestrator.skill_delete,
+            "mcp.server.list": self._orchestrator.mcp_server_list,
+            "mcp.server.create": self._orchestrator.mcp_server_create,
+            "mcp.server.update": self._orchestrator.mcp_server_update,
+            "mcp.server.delete": self._orchestrator.mcp_server_delete,
+            "mcp.tools.refresh": self._orchestrator.mcp_tools_refresh,
         }
         self._runtime_event_store_path = str(getattr(self._store, "database_path", ":memory:"))
         if hasattr(self._store, "append_runtime_event"):
@@ -98,6 +109,12 @@ class JsonRpcServer:
             with self._writer_lock:
                 stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
                 stdout.flush()
+
+    def initialize_mcp_servers(self) -> None:
+        self._orchestrator.initialize_mcp_servers()
+
+    def shutdown_mcp(self) -> None:
+        self._orchestrator.shutdown_mcp()
 
     def handle_line(self, line: str) -> dict[str, Any]:
         envelope = RpcEnvelope(**json.loads(line))
@@ -148,6 +165,14 @@ class JsonRpcServer:
             return trace_store.append_runtime_event(event)
         finally:
             trace_store.close()
+
+    def _delete_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Consolidate working memory, then delete the session."""
+        session_id = params.get("sessionId") or params.get("session_id")
+        if session_id and getattr(self._orchestrator, "_memory_manager", None) is not None:
+            self._orchestrator._memory_manager.consolidate(session_id)
+            self._orchestrator._memory_manager.forget_working(session_id)
+        return self._store.delete_session(params)
 
     def _cancel_command(self, params: dict[str, Any]) -> dict[str, Any]:
         command_id = params.get("commandId") or params.get("command_id")

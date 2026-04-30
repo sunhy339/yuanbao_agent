@@ -9,7 +9,7 @@
 .new-session-desk {
   width: min(680px, 100%);
   border: 1px solid var(--wb-line, rgba(15, 23, 42, 0.1));
-  border-radius: 8px;
+  border-radius: 12px;
   padding: clamp(22px, 4vw, 34px);
   background:
     radial-gradient(circle at 12% 0%, rgba(37, 99, 235, 0.08), transparent 30%),
@@ -49,32 +49,56 @@
 
 .new-session-status-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 18px;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 20px;
 }
 
-.new-session-status-row > span,
-.new-session-control-pill,
-.new-session-folder-control {
+.new-session-status-row > span {
   display: inline-flex;
   align-items: center;
   min-width: 0;
-  min-height: 32px;
+  min-height: 36px;
   max-width: 100%;
   gap: 8px;
-  border: 1px solid var(--wb-line, rgba(15, 23, 42, 0.1));
-  border-radius: 999px;
-  padding: 6px 11px;
-  background: var(--wb-surface-muted, #f8fafc);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 10px;
+  padding: 6px 14px;
+  background: var(--wb-surface, #ffffff);
   color: #334155;
   font-size: 13px;
   font-weight: 700;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 
-.new-session-status-row > span::before,
-.new-session-control-pill::before,
-.new-session-folder-control::before {
+.new-session-control-pill,
+.new-session-folder-control {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 40px;
+  max-width: 100%;
+  gap: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 10px;
+  padding: 6px 14px;
+  background: var(--wb-surface, #ffffff);
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.new-session-status-row > span:hover,
+.new-session-control-pill:hover,
+.new-session-folder-control:hover {
+  border-color: rgba(37, 99, 235, 0.18);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+}
+
+.new-session-status-row > span::before {
   content: "";
   width: 7px;
   height: 7px;
@@ -88,13 +112,17 @@
   box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.12);
 }
 
-.new-session-control-pill > span,
+.new-session-control-pill > span {
+  color: var(--wb-muted, #64748b);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .new-session-folder-control label > span {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
+  color: var(--wb-muted, #64748b);
+  font-size: 12px;
+  font-weight: 700;
   white-space: nowrap;
 }
 
@@ -106,11 +134,26 @@
   color: inherit;
   font: inherit;
   font-weight: 700;
+  outline: none;
 }
 
 .new-session-control-pill select {
-  max-width: min(260px, 52vw);
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
   cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 2px 24px 2px 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%2364748b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 2px center;
+}
+
+.new-session-control-pill select:focus-visible {
+  outline: 2px solid var(--wb-primary, #2563eb);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .new-session-folder-control {
@@ -118,21 +161,45 @@
 }
 
 .new-session-folder-control label {
-  min-width: min(320px, 54vw);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .new-session-folder-control input {
-  width: 100%;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
 .new-session-folder-control button {
-  min-height: 24px;
+  min-height: 28px;
   flex: 0 0 auto;
   border-left: 1px solid var(--wb-line, rgba(15, 23, 42, 0.1));
-  padding-left: 8px;
+  padding-left: 10px;
   color: var(--wb-primary, #2563eb);
   cursor: pointer;
+}
+
+.new-session-browse-btn {
+  min-height: 28px;
+  flex: 0 0 auto;
+  border: 0;
+  border-left: 1px solid var(--wb-line, rgba(15, 23, 42, 0.1));
+  padding: 0 10px;
+  color: var(--wb-primary, #2563eb);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  font-size: 12px;
+  background: transparent;
+}
+
+.new-session-browse-btn:hover:not(:disabled) {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.06);
+  border-radius: 6px;
 }
 
 .new-session-folder-control button:disabled,

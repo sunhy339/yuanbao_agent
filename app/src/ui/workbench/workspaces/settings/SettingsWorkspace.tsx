@@ -1428,7 +1428,7 @@ function ProviderModal({
 
         <footer className="settings-modal-footer">
           <button type="button" className="settings-secondary-action" onClick={onClose}>取消</button>
-          <button type="button" className="settings-secondary-action" onClick={handleTestProvider} disabled={providerTestBusy}>测试连接</button>
+          <button type="button" className="settings-secondary-action" onClick={handleTestProvider} disabled={providerTestBusy}>{providerTestBusy ? "测试中..." : "测试连接"}</button>
           <button type="submit" className="settings-primary-action" disabled={providerBusy}>{mode === "edit" ? "保存" : "添加"}</button>
         </footer>
       </form>

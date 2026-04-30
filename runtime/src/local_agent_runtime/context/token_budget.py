@@ -1,11 +1,38 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
 
+# Default ratio for Latin/ASCII text (~4 chars per token).
 CHARS_PER_TOKEN = 4
+# CJK characters are typically 2-3 tokens each; use 1.5 chars per token.
+_CJK_CHARS_PER_TOKEN = 1.5
+
+# Regex matching CJK Unified Ideographs, CJK Extension A/B, and common
+# fullwidth punctuation / kana / hangul ranges that tokenizers encode densely.
+_CJK_RE = re.compile(
+    r"[\u2e80-\u2fff"   # CJK radicals, Kangxi radicals
+    r"\u3000-\u303f"    # CJK symbols and punctuation
+    r"\u3040-\u30ff"    # Hiragana + Katakana
+    r"\u3400-\u4dbf"    # CJK Extension A
+    r"\u4e00-\u9fff"    # CJK Unified Ideographs
+    r"\uf900-\ufaff"    # CJK Compatibility Ideographs
+    r"\ufe30-\ufe4f"    # CJK Compatibility Forms
+    r"\U00020000-\U0002a6df"  # CJK Extension B
+    r"\U0002a700-\U0002b73f"  # CJK Extension C
+    r"\U0002b740-\U0002b81f"  # CJK Extension D
+    r"\uac00-\ud7af"    # Hangul Syllables
+    r"\uff00-\uffef"    # Fullwidth Forms
+    r"]"
+)
+
+
+def _count_cjk_chars(text: str) -> int:
+    """Count the number of CJK / fullwidth characters in *text*."""
+    return len(_CJK_RE.findall(text))
 
 
 @dataclass(frozen=True)
@@ -24,8 +51,11 @@ class BudgetResult:
 
 
 def estimate_tokens(value: Any) -> int:
-    """Estimate token count cheaply using a conservative char/token ratio."""
+    """Estimate token count using a CJK-aware char/token ratio.
 
+    Latin/ASCII text uses ~4 chars per token; CJK characters use ~1.5 chars
+    per token (each CJK char is typically 2-3 tokens in BPE tokenizers).
+    """
     if value is None:
         return 0
     if isinstance(value, str):
@@ -34,11 +64,33 @@ def estimate_tokens(value: Any) -> int:
         text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     if not text:
         return 0
-    return max(1, (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
+
+    cjk_count = _count_cjk_chars(text)
+    latin_count = len(text) - cjk_count
+
+    cjk_tokens = int(cjk_count / _CJK_CHARS_PER_TOKEN + 0.5) if cjk_count else 0
+    latin_tokens = (latin_count + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN if latin_count else 0
+    return max(1, cjk_tokens + latin_tokens)
+
+
+def _effective_max_chars(text: str, max_tokens: int) -> int:
+    """Calculate the effective character limit for *max_tokens* given the
+    CJK ratio of *text*.  Falls back to the simple Latin ratio when the
+    text contains no CJK characters."""
+    total = len(text)
+    if total == 0:
+        return max(0, max_tokens * CHARS_PER_TOKEN)
+    cjk_count = _count_cjk_chars(text)
+    if cjk_count == 0:
+        return max(0, max_tokens * CHARS_PER_TOKEN)
+    # Weighted average chars-per-token based on the CJK ratio of the text.
+    cjk_ratio = cjk_count / total
+    weighted_cpt = cjk_ratio * _CJK_CHARS_PER_TOKEN + (1.0 - cjk_ratio) * CHARS_PER_TOKEN
+    return max(0, int(max_tokens * weighted_cpt))
 
 
 def trim_text_to_tokens(text: str, max_tokens: int) -> str:
-    max_chars = max(0, max_tokens * CHARS_PER_TOKEN)
+    max_chars = _effective_max_chars(text, max_tokens)
     if len(text) <= max_chars:
         return text
     if max_chars <= 0:

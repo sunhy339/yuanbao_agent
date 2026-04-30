@@ -7,7 +7,7 @@ import pytest
 
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.store.sqlite_store import SQLiteStore
-from local_agent_runtime.tools.builtin import build_builtin_tools
+from local_agent_runtime.tools import build_builtin_tools
 
 
 def _make_run_command(tmp_path: Path, config_patch: dict[str, Any] | None = None) -> tuple[SQLiteStore, Any, dict[str, Any]]:

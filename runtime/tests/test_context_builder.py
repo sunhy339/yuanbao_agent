@@ -91,7 +91,7 @@ def test_context_builder_summarizes_recent_history(store: SQLiteStore, tmp_path:
     )
     store.update_task(task_id=new_task["id"], status="failed", result_summary="Recent task failed.")
 
-    context = ContextBuilder(store).build(session_id=session["id"], goal="Continue the work")
+    context = ContextBuilder(store).build(session_id=session["id"], goal="Continue the work", lightweight=False)
 
     text = _message_text(context)
     assert "The user prefers focused pytest runs." in text
@@ -108,7 +108,7 @@ def test_context_builder_includes_recent_chat_messages(store: SQLiteStore, tmp_p
     store.create_message(session_id=session["id"], role="user", content="Keep the UI compact.")
     store.create_message(session_id=session["id"], role="assistant", content="I will preserve compact layout.")
 
-    context = ContextBuilder(store).build(session_id=session["id"], goal="Continue the interface work")
+    context = ContextBuilder(store).build(session_id=session["id"], goal="Continue the interface work", lightweight=False)
 
     text = _message_text(context)
     assert "Recent conversation:" in text
@@ -158,7 +158,7 @@ def test_context_builder_summarizes_task_run_artifacts(store: SQLiteStore, tmp_p
         result_summary="Created a CLI generator and verified help output.",
     )
 
-    context = ContextBuilder(store).build(session_id=session["id"], goal="Continue bead tool work")
+    context = ContextBuilder(store).build(session_id=session["id"], goal="Continue bead tool work", lightweight=False)
 
     text = _message_text(context)
     assert "Task artifacts:" in text
@@ -182,7 +182,7 @@ def test_context_builder_injects_workspace_project_memory_across_sessions(
     )
     session = store.create_session(workspace_id=workspace["id"], title="Next session")
 
-    context = ContextBuilder(store).build(session_id=session["id"], goal="Continue the product iteration")
+    context = ContextBuilder(store).build(session_id=session["id"], goal="Continue the product iteration", lightweight=False)
 
     text = _message_text(context)
     assert "Project memory:" in text
@@ -207,6 +207,7 @@ def test_context_builder_injects_workspace_project_focus_across_sessions(
     context = ContextBuilder(store, tool_schemas=[]).build(
         session_id=session["id"],
         goal="Continue implementation",
+        lightweight=False,
     )
 
     text = _message_text(context)
@@ -238,6 +239,7 @@ def test_context_builder_keeps_workspace_project_focus_under_tight_budget(
     context = ContextBuilder(store, tool_schemas=[]).build(
         session_id=session["id"],
         goal="Continue implementation",
+        lightweight=False,
     )
 
     text = _message_text(context)
@@ -284,6 +286,7 @@ def test_context_builder_reserves_tool_schema_tokens_when_trimming_messages(
     context = ContextBuilder(store, tool_schemas=tool_schemas).build(
         session_id=session["id"],
         goal="Continue implementation",
+        lightweight=False,
     )
 
     stats = context["budgetStats"]
@@ -335,6 +338,7 @@ def test_context_builder_trims_low_priority_history_large_results_and_diff(
     context = ContextBuilder(store, tool_schemas=[]).build(
         session_id=session["id"],
         goal="Implement the feature",
+        lightweight=False,
     )
 
     text = _message_text(context)

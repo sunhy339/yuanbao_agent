@@ -31,6 +31,8 @@ function renderShell(options: { activeTab?: WorkbenchTab["id"]; composerVisible?
     onActivateTab: vi.fn(),
     onCloseTab: vi.fn(),
     onCloseOtherTabs: vi.fn(),
+    onRenameSession: vi.fn(),
+    onDeleteSession: vi.fn(),
     onSubmitPrompt: vi.fn(),
     onPromptChange: vi.fn(),
   };
@@ -87,6 +89,8 @@ describe("AppShell", () => {
         onActivateTab={vi.fn()}
         onCloseTab={vi.fn()}
         onCloseOtherTabs={vi.fn()}
+        onRenameSession={vi.fn()}
+        onDeleteSession={vi.fn()}
         onSubmitPrompt={vi.fn()}
         disabled={false}
         providerLabel="MiniMax-M2.7-highspeed"
@@ -96,7 +100,8 @@ describe("AppShell", () => {
       </AppShell>,
     );
 
-    expect(screen.queryByLabelText("Task prompt")).not.toBeInTheDocument();
+    const form = document.querySelector("form.composer-dock-hidden");
+    expect(form).toBeTruthy();
   });
 
   it("calls open handlers from sidebar", async () => {

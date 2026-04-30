@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from ..context.builder import ContextBuilder
+from ..context.compactor import ContextCompactor
+from ..context.scratchpad import Scratchpad
 from ..event_bus import EventBus
+from ..memory import MemoryManager
 from ..models import RuntimeEvent
 from ..planner.service import Planner
 from ..policy.guard import PolicyGuard
@@ -20,8 +23,11 @@ from ..services.subagent_service import SubagentService
 from ..services.worker_budget import WorkerBudget, WorkerBudgetExceededError
 from ..services.worker_environment import normalize_child_tool_allowlist
 from ..services.worker_runner import WorkerRunner
+from ..router import MetaRouter, RoutingDecision
+from ..skills.registry import SkillRegistry
+from ..mcp.client import McpClientManager, McpServerConfig
 from ..store.sqlite_store import SQLiteStore
-from ..tools.builtin import build_builtin_tools
+from ..tools import build_builtin_tools
 from ..tools.registry import BUILTIN_TOOL_SCHEMAS, ToolRegistry
 
 
@@ -34,17 +40,31 @@ class Orchestrator:
         event_bus: EventBus,
         tool_registry: Any,
         provider: Any,
+        meta_router: MetaRouter | None = None,
+        memory_manager: MemoryManager | None = None,
     ) -> None:
         self._store = store
         self._event_bus = event_bus
         self._tool_registry = tool_registry
         self._provider = provider
+        self._meta_router = meta_router or MetaRouter()
+        self._memory_manager = memory_manager
         self._planner = Planner()
-        self._context_builder = ContextBuilder(store, tool_schemas=self._context_tool_schemas())
+        self._scratchpad = Scratchpad(store)
+        self._compactor = ContextCompactor(store, provider=provider)
+        self._skill_registry = SkillRegistry(store)
+        self._context_builder = ContextBuilder(
+            store,
+            tool_schemas=self._context_tool_schemas(),
+            compactor=self._compactor,
+            scratchpad=self._scratchpad,
+            skill_registry=self._skill_registry,
+        )
         self._session_service = SessionService(store)
         self._collaboration_service = CollaborationService(store, event_bus)
         self._worker_runner = WorkerRunner(self._collaboration_service)
         self._subagent_service = SubagentService(store, self._collaboration_service, runner=self._worker_runner)
+        self._mcp_manager = McpClientManager(store)
         self._pending_react_tasks: dict[str, dict[str, Any]] = {}
 
     def open_workspace(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -288,16 +308,138 @@ class Orchestrator:
                     return profile
         return next((profile for profile in profiles if isinstance(profile, dict)), None)
 
+    # ------------------------------------------------------------------
+    # Skill presets
+    # ------------------------------------------------------------------
+
+    def skill_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._store.list_skills(params)
+
+    def skill_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._store.create_skill(params)
+
+    def skill_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._store.update_skill(params)
+
+    def skill_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._store.delete_skill(params)
+
+    # ------------------------------------------------------------------
+    # MCP Server management
+    # ------------------------------------------------------------------
+
+    def initialize_mcp_servers(self) -> None:
+        """Connect to all enabled MCP servers and register their tools."""
+        result = self._store.list_mcp_servers({"enabledOnly": True})
+        for server_row in result["servers"]:
+            try:
+                config = McpServerConfig.from_row(server_row)
+                schemas = self._mcp_manager.sync_connect_server(config)
+                for schema in schemas:
+                    namespaced_name = schema["name"]
+                    self._tool_registry.register(
+                        namespaced_name,
+                        lambda args, _name=namespaced_name: self._mcp_manager.sync_call_tool(_name, args),
+                        schema,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).warning("Failed to connect MCP server %s: %s", server_row.get("id"), exc)
+
+    def mcp_server_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._store.list_mcp_servers(params)
+
+    def mcp_server_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        result = self._store.create_mcp_server(params)
+        server = result["server"]
+        if server.get("enabled", True):
+            try:
+                config = McpServerConfig.from_row(server)
+                schemas = self._mcp_manager.sync_connect_server(config)
+                for schema in schemas:
+                    namespaced_name = schema["name"]
+                    self._tool_registry.register(
+                        namespaced_name,
+                        lambda args, _name=namespaced_name: self._mcp_manager.sync_call_tool(_name, args),
+                        schema,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).warning("Failed to connect MCP server %s: %s", server.get("id"), exc)
+        return result
+
+    def mcp_server_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        server_id = params.get("serverId") or params.get("server_id")
+        # Disconnect old tools if server was connected
+        if server_id and self._mcp_manager.is_connected(server_id):
+            prefix = f"mcp__{server_id}__"
+            self._tool_registry.unregister_prefix(prefix)
+            self._mcp_manager.sync_disconnect_server(server_id)
+        result = self._store.update_mcp_server(params)
+        server = result["server"]
+        if server.get("enabled", True):
+            try:
+                config = McpServerConfig.from_row(server)
+                schemas = self._mcp_manager.sync_connect_server(config)
+                for schema in schemas:
+                    namespaced_name = schema["name"]
+                    self._tool_registry.register(
+                        namespaced_name,
+                        lambda args, _name=namespaced_name: self._mcp_manager.sync_call_tool(_name, args),
+                        schema,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                import logging
+                logging.getLogger(__name__).warning("Failed to reconnect MCP server %s: %s", server.get("id"), exc)
+        return result
+
+    def mcp_server_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        server_id = params.get("serverId") or params.get("server_id")
+        if server_id:
+            prefix = f"mcp__{server_id}__"
+            self._tool_registry.unregister_prefix(prefix)
+            self._mcp_manager.sync_disconnect_server(server_id)
+        return self._store.delete_mcp_server(params)
+
+    def mcp_tools_refresh(self, params: dict[str, Any]) -> dict[str, Any]:
+        server_id = params.get("serverId") or params.get("server_id")
+        # Remove old tools for the target server(s)
+        if server_id:
+            prefix = f"mcp__{server_id}__"
+            self._tool_registry.unregister_prefix(prefix)
+        else:
+            for sid in list(self._mcp_manager._connections):
+                prefix = f"mcp__{sid}__"
+                self._tool_registry.unregister_prefix(prefix)
+        schemas = self._mcp_manager.sync_refresh_tools(server_id)
+        for schema in schemas:
+            namespaced_name = schema["name"]
+            self._tool_registry.register(
+                namespaced_name,
+                lambda args, _name=namespaced_name: self._mcp_manager.sync_call_tool(_name, args),
+                schema,
+            )
+        return {"refreshed": len(schemas), "tools": [s["name"] for s in schemas]}
+
+    def shutdown_mcp(self) -> None:
+        """Clean up all MCP server connections."""
+        self._mcp_manager.shutdown()
+
     def send_message(self, params: dict[str, Any]) -> dict[str, Any]:
         session = self._store.require_session(params["sessionId"])
+        goal = params["content"]
+
+        # --- Phase 0: MetaRouter scenario classification ---
+        routing = self._meta_router.route(goal)
+
         if params.get("background") is True:
-            plan = self._planner.plan(params["content"])
+            plan = self._planner.plan(goal)
             task = self._store.create_task(
                 session_id=session["id"],
                 task_type="edit",
-                goal=params["content"],
+                goal=goal,
                 plan=plan,
-                acceptance_criteria=self._default_acceptance_criteria(params["content"]),
+                acceptance_criteria=self._default_acceptance_criteria(goal),
                 out_of_scope=self._default_out_of_scope(),
             )
             runtime_task = {**task, "plan": plan}
@@ -305,24 +447,36 @@ class Orchestrator:
                 session_id=session["id"],
                 task_id=runtime_task["id"],
                 role="user",
-                content=params["content"],
+                content=goal,
             )
             self._start_background_message(
                 session_id=session["id"],
                 task=runtime_task,
-                goal=params["content"],
+                goal=goal,
                 context=None,
             )
             return {"task": runtime_task}
 
-        context = self._context_builder.build(session_id=session["id"], goal=params["content"])
-        plan = self._planner.plan(params["content"], context=context)
+        context = self._context_builder.build(session_id=session["id"], goal=goal, skill_id=routing.skill_id)
+        # Inject routing decision into context as a plain dict for JSON safety.
+        context["routing"] = {
+            "scenario": routing.scenario.value,
+            "strategy": routing.strategy.value,
+            "confidence": routing.confidence,
+            "max_steps": routing.max_steps,
+            "enable_reflection": routing.enable_reflection,
+            "enable_planning": routing.enable_planning,
+            "reasoning": routing.reasoning,
+            "skill_id": routing.skill_id,
+        }
+
+        plan = self._planner.plan(goal, context=context)
         task = self._store.create_task(
             session_id=session["id"],
             task_type="edit",
-            goal=params["content"],
+            goal=goal,
             plan=plan,
-            acceptance_criteria=self._default_acceptance_criteria(params["content"]),
+            acceptance_criteria=self._default_acceptance_criteria(goal),
             out_of_scope=self._default_out_of_scope(),
         )
         runtime_task = {**task, "plan": plan}
@@ -330,7 +484,7 @@ class Orchestrator:
             session_id=session["id"],
             task_id=runtime_task["id"],
             role="user",
-            content=params["content"],
+            content=goal,
         )
         context = self._context_with_task_focus(context, runtime_task)
 
@@ -343,6 +497,7 @@ class Orchestrator:
                 "plan": runtime_task["plan"],
                 "currentStep": runtime_task.get("currentStep"),
                 "context": self._event_context_summary(context),
+                "routing": context["routing"],
             },
         )
         self._publish(
@@ -355,7 +510,7 @@ class Orchestrator:
         return self._execute_message_task(
             session_id=session["id"],
             task=runtime_task,
-            goal=params["content"],
+            goal=goal,
             context=context,
         )
 
@@ -511,8 +666,21 @@ class Orchestrator:
         policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
         collaboration = CollaborationService(store, self._event_bus)
         subagent_service = SubagentService(store, collaboration)
+        from ..memory import MemoryManager, MemoryRetriever, MemoryStore
+        from ..context.scratchpad import Scratchpad
+        bg_memory_manager = MemoryManager(
+            store=MemoryStore(store),
+            retriever=MemoryRetriever(MemoryStore(store)),
+        )
+        bg_scratchpad = Scratchpad(store)
         tool_registry = ToolRegistry(
-            build_builtin_tools(policy_guard=policy_guard, store=store, subagent_service=subagent_service)
+            build_builtin_tools(
+                policy_guard=policy_guard,
+                store=store,
+                subagent_service=subagent_service,
+                memory_manager=bg_memory_manager,
+                scratchpad=bg_scratchpad,
+            )
         )
         return (
             Orchestrator(
@@ -520,6 +688,7 @@ class Orchestrator:
                 event_bus=self._event_bus,
                 tool_registry=tool_registry,
                 provider=ProviderAdapter(),
+                memory_manager=bg_memory_manager,
             ),
             store,
         )
@@ -573,7 +742,7 @@ class Orchestrator:
         ]
 
     def _context_with_task_focus(self, context: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
-        focused_context = deepcopy(context)
+        focused_context = {**context}
         task_focus = {
             "taskId": task.get("id"),
             "goal": task.get("goal"),
@@ -584,7 +753,7 @@ class Orchestrator:
         }
         focused_context["task_focus"] = task_focus
 
-        messages = deepcopy(focused_context.get("messages") or [])
+        messages = list(focused_context.get("messages") or [])
         focus_text = self._task_focus_text(task_focus)
         if messages and messages[-1].get("role") == "user":
             content = str(messages[-1].get("content") or "")
@@ -810,6 +979,7 @@ class Orchestrator:
             content=final_summary,
         )
         self._remember_task_result(session_id=session_id, task=runtime_task)
+        self._promote_scratchpad_to_memory(session_id)
         self._clear_pending_react_state(task["id"])
         self._record_task_metrics(session_id=session_id, task=runtime_task, tool_results=tool_results, task_status="completed")
         self._publish(
@@ -864,6 +1034,7 @@ class Orchestrator:
             content=summary,
         )
         self._remember_task_result(session_id=session_id, task=runtime_task)
+        self._promote_scratchpad_to_memory(session_id)
         self._clear_pending_react_state(task["id"])
         self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="failed")
         self._publish(
@@ -934,6 +1105,21 @@ class Orchestrator:
             "wasCancelled": task_status == "cancelled",
         })
 
+    def _promote_scratchpad_to_memory(self, session_id: str) -> None:
+        """Promote scratchpad entries to session memory after task completion."""
+        if self._memory_manager is None or self._scratchpad is None:
+            return
+        from ..memory.types import MemoryKind
+        entries = self._scratchpad.list_entries(session_id)
+        for entry in entries:
+            self._memory_manager.remember(
+                content=f"[{entry.key}] {entry.value}",
+                session_id=session_id,
+                kind=MemoryKind.SESSION,
+            )
+        if entries:
+            self._scratchpad.clear(session_id)
+
     def _remember_task_result(self, *, session_id: str, task: dict[str, Any]) -> None:
         if not hasattr(self._store, "update_session_summary"):
             return
@@ -964,6 +1150,18 @@ class Orchestrator:
                 max_chars=6000,
             )
             self._store.update_workspace_summary(workspace["id"], updated_workspace_summary)
+
+        # Store in MemoryManager for structured recall
+        if self._memory_manager is not None:
+            memory_content = self._task_memory_entry(task)
+            workspace_id = current_session.get("workspaceId")
+            from ..memory.types import MemoryKind
+            self._memory_manager.remember(
+                session_id=session_id,
+                workspace_id=workspace_id,
+                content=memory_content,
+                kind=MemoryKind.WORKING,
+            )
 
     def _task_memory_entry(self, task: dict[str, Any]) -> str:
         status = task.get("status") or "completed"
@@ -2035,6 +2233,20 @@ class Orchestrator:
             if steps >= max_steps:
                 raise RuntimeError(f"Reached maxTaskSteps ({max_steps}) before the provider returned a final answer.")
 
+            # Inject recalled memories into context on first step
+            if steps == 0 and self._memory_manager is not None:
+                workspace_id = context.get("workspace_id")
+                recalled = self._memory_manager.recall(
+                    workspace_id=workspace_id,
+                    session_id=session_id,
+                    query=goal,
+                    limit=5,
+                )
+                if recalled:
+                    mem_lines = [f"- {e.content[:200]}" for e in recalled]
+                    mem_hint = "[Relevant memories]\n" + "\n".join(mem_lines)
+                    messages.append({"role": "system", "content": mem_hint})
+
             provider_context = {
                 **context,
                 "messages": messages,
@@ -2114,6 +2326,29 @@ class Orchestrator:
 
                 tool_results.append(tool_result)
                 messages.append(self._tool_result_message(tool_call, tool_result))
+                # Compact messages if token budget is exceeded
+                if self._compactor is not None:
+                    from ..context.token_budget import estimate_tokens
+                    msg_tokens = sum(estimate_tokens(m.get("content", "")) for m in messages)
+                    if msg_tokens > 6000:
+                        compacted = self._compactor.compact(
+                            session_id=session_id,
+                            messages=messages,
+                            max_tokens=6000,
+                        )
+                        messages = compacted.kept_messages
+                    context["messages"] = messages
+                # Refresh volatile context sections (git status, directory
+                # listing) after state-mutating tools so the model sees the
+                # current workspace state on subsequent turns.
+                if self._context_builder.should_refresh(tool_spec["name"]):
+                    context = self._context_builder.refresh_context(
+                        context,
+                        tool_name=tool_spec["name"],
+                        tool_result=tool_result.get("result"),
+                    )
+                    # Keep the messages list in sync after refresh.
+                    context["messages"] = messages
                 if self._is_patch_validation_failure(tool_spec["name"], tool_result["result"]):
                     patch_repair_attempts += 1
                     max_attempts = self._max_patch_repair_attempts(context)
@@ -2514,13 +2749,13 @@ class Orchestrator:
     def _initial_react_messages(self, context: dict[str, Any], goal: str) -> list[dict[str, Any]]:
         messages = context.get("messages")
         if isinstance(messages, list) and messages:
-            return deepcopy(messages)
+            return list(messages)
         return [{"role": "user", "content": goal}]
 
     def _provider_tools(self, context: dict[str, Any]) -> list[dict[str, Any]]:
         openai_tools = context.get("openai_tools")
         if isinstance(openai_tools, list) and openai_tools:
-            return deepcopy(openai_tools)
+            return list(openai_tools)
         tools_by_name: dict[str, dict[str, Any]] = {}
         for schema in context.get("tools") or []:
             if isinstance(schema, dict) and isinstance(schema.get("name"), str):
@@ -2597,6 +2832,8 @@ class Orchestrator:
             "apply_patch",
             "git_status",
             "git_diff",
+            "write_file",
+            "code_search",
         }
         if tool_name in workspace_tools and "workspaceRoot" not in arguments and "workspace_root" not in arguments:
             arguments["workspaceRoot"] = context["workspace_root"]
@@ -2786,10 +3023,18 @@ class Orchestrator:
                 "arguments": tool_arguments,
             },
         )
-        if tool_spec["name"] == "task":
-            result = self._subagent_service.dispatch(tool_arguments)
-        else:
-            result = self._tool_registry.execute(tool_spec["name"], tool_arguments)
+        try:
+            if tool_spec["name"] == "task":
+                result = self._subagent_service.dispatch(tool_arguments)
+            else:
+                result = self._tool_registry.execute(tool_spec["name"], tool_arguments)
+        except Exception as exc:  # noqa: BLE001
+            result = {
+                "status": "failed",
+                "ok": False,
+                "error": str(exc),
+                "summary": f"Tool {tool_spec['name']} raised an exception: {exc}",
+            }
         if tool_spec["name"] == "run_command":
             command_log = result.get("commandLog") or {}
             command_id = command_log.get("id")
@@ -2933,7 +3178,7 @@ class Orchestrator:
                     "result": result,
                 },
             )
-            raise RuntimeError(self._tool_failure_summary(tool_spec, result))
+            return tool_result
 
         if tool_spec["name"] == "run_command":
             tool_result = {

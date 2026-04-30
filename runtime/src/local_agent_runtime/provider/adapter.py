@@ -558,7 +558,7 @@ class ProviderAdapter:
                 return float(env_timeout)
             except ValueError as exc:
                 raise ProviderAdapterError("Invalid provider timeout env: expected number") from exc
-        return 30.0
+        return 10.0
 
     def _normalize_mode(self, mode: str | None) -> str:
         return (mode or "").strip().lower()

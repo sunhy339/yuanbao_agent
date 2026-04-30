@@ -104,7 +104,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByLabelText("Runtime timeline")).not.toBeInTheDocument();
     expect(screen.getByText("Patch the session workspace")).toBeInTheDocument();
     expect(screen.getByText("Allow npm test")).toBeInTheDocument();
-    expect(screen.queryByText("Updated session layout")).not.toBeInTheDocument();
+    expect(screen.getByText("Updated session layout")).toBeInTheDocument();
     expect(screen.queryByText("Provider response")).not.toBeInTheDocument();
     expect(screen.getByText("apply_patch")).toBeInTheDocument();
     expect(screen.getByText("npm run typecheck")).toBeInTheDocument();
@@ -194,11 +194,12 @@ describe("SessionWorkspace", () => {
     await user.click(screen.getByRole("button", { name: /Bash npm test failed/ }));
 
     expect(screen.getByText("Command failed with exit 1.")).toBeInTheDocument();
-    expect(screen.getByText("查看原始数据")).toBeInTheDocument();
-    expect(screen.getByText(/"command":"npm test"/)).not.toBeVisible();
+    // Raw data should not be shown at all
+    expect(screen.queryByText("查看原始数据")).not.toBeInTheDocument();
+    expect(screen.queryByText(/"command":"npm test"/)).not.toBeInTheDocument();
   });
 
-  it("keeps raw tool JSON behind a secondary details control", async () => {
+  it("does not expose raw tool JSON to users (hidden by design)", async () => {
     const user = userEvent.setup();
     render(
       <SessionWorkspace
@@ -225,11 +226,8 @@ describe("SessionWorkspace", () => {
 
     expect(screen.getByText("Found 2 items: app, docs")).toBeInTheDocument();
     expect(screen.getAllByText("列出 .").length).toBeGreaterThan(0);
-    expect(screen.getByText(/node_modules/)).not.toBeVisible();
-
-    await user.click(screen.getByText("查看原始数据"));
-
-    expect(screen.getByText(/node_modules/)).toBeVisible();
+    // Raw data should not be visible to users
+    expect(screen.queryByText("查看原始数据")).not.toBeInTheDocument();
   });
 
   it("renders active task execution progress as compact readable cards", async () => {
@@ -302,9 +300,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText(/CLI help is available/)).toHaveTextContent("passed");
   });
 
-  it("keeps session memory visible but collapsed by default", async () => {
-    const user = userEvent.setup();
-
+  it("does not render session memory cards (hidden by design)", () => {
     render(
       <SessionWorkspace
         session={{
@@ -317,18 +313,12 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /Memory Session memory recorded/ })).toBeInTheDocument();
+    // Session memory is internal context and should not be visible
+    expect(screen.queryByRole("button", { name: /Session memory/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/add a focused project checklist/)).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /Memory Session memory recorded/ }));
-
-    expect(screen.getByText(/add a focused project checklist/)).toBeInTheDocument();
-    expect(screen.getByText(/Created the checklist/)).toBeInTheDocument();
   });
 
-  it("shows a compact context preview with focus memory and budget details", async () => {
-    const user = userEvent.setup();
-
+  it("does not render context preview cards (hidden by design)", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -358,19 +348,10 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /Context preview/ })).toBeInTheDocument();
-    expect(screen.getByText("Focus active")).toBeInTheDocument();
-    expect(screen.getByText("Project memory")).toBeInTheDocument();
-    expect(screen.getByText("6200/8000 tokens")).toBeInTheDocument();
-    expect(screen.queryByText(/Keep attention on large-project iteration/)).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /Context preview/ }));
-
-    expect(screen.getByText(/Keep attention on large-project iteration/)).toBeInTheDocument();
-    expect(screen.getByText(/task run UI V1/)).toBeInTheDocument();
-    expect(screen.getByText(/session_summary/)).toHaveTextContent("Trimmed");
-    expect(screen.getByText(/patch_diff:old/)).toHaveTextContent("Dropped");
-    expect(screen.getByText(/Inspect current context handoff/)).toBeInTheDocument();
+    // Context preview is internal system state and should not be visible
+    expect(screen.queryByRole("button", { name: /Context preview/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("Focus active")).not.toBeInTheDocument();
+    expect(screen.queryByText("Project memory")).not.toBeInTheDocument();
   });
 
   it("shows pending approval actions so commands do not wait invisibly", async () => {

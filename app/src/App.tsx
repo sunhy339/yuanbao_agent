@@ -49,6 +49,7 @@ import {
   openSystemTab,
 } from "./ui/workbench/tabModel";
 import type { SystemWorkspaceKind, WorkbenchTab, WorkbenchSession } from "./ui/workbench/types";
+import { ToastContainer, createToast, type ToastEntry } from "./ui/workbench/Toast";
 import { NewSessionWorkspace } from "./ui/workbench/workspaces/NewSessionWorkspace";
 import {
   ScheduledWorkspace,
@@ -1880,6 +1881,7 @@ export function App() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [chatMessages, setChatMessages] = useState<ChatMessageView[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [workspaceFocusBusy, setWorkspaceFocusBusy] = useState(false);
@@ -1905,6 +1907,19 @@ export function App() {
   const [selectedScheduledTaskId, setSelectedScheduledTaskId] = useState<string | null>(null);
   const [scheduledBusyTaskId, setScheduledBusyTaskId] = useState<string | null>(null);
   const [scheduledCreateBusy, setScheduledCreateBusy] = useState(false);
+
+  function addToast(kind: ToastEntry["kind"], message: string) {
+    setToasts((current) => [...current.slice(-4), createToast(kind, message)]);
+  }
+
+  function toastError(reason: unknown) {
+    addToast("error", reason instanceof Error ? reason.message : String(reason));
+  }
+
+  function dismissToast(id: string) {
+    setToasts((current) => current.filter((t) => t.id !== id));
+  }
+
   const [generalSettings, setGeneralSettings] = useState<SettingsGeneralConfig>({
     theme: "light",
     language: "zh",
@@ -1990,7 +2005,7 @@ export function App() {
       setChatMessages((current) => replaceSessionMessages(current, sessionId, result.messages));
     } catch (reason) {
       if (messageLoadRequestRef.current === requestId) {
-        setError(reason instanceof Error ? reason.message : String(reason));
+        toastError(reason);
       }
     }
   }
@@ -2071,7 +2086,7 @@ export function App() {
       })
       .catch((reason) => {
         if (!disposed) {
-          setError(reason instanceof Error ? reason.message : String(reason));
+          toastError(reason);
         }
       });
 
@@ -2534,6 +2549,48 @@ export function App() {
     });
   }
 
+  async function handleRenameSession(sessionId: string, newTitle: string) {
+    try {
+      const result = await runtimeClient.updateSession({ sessionId, title: newTitle });
+      setSessions((current) => upsertRecord(current, result.session));
+      setSession((current) =>
+        current && current.id === sessionId ? result.session : current,
+      );
+      setOpenTabs((current) => {
+        const tabId = `session:${sessionId}`;
+        return current.map((tab) =>
+          tab.id === tabId ? { ...tab, title: newTitle } : tab,
+        );
+      });
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function handleDeleteSession(sessionId: string) {
+    try {
+      await runtimeClient.deleteSession({ sessionId });
+      setSessions((current) => current.filter((s) => s.id !== sessionId));
+      setSession((current) => (current && current.id === sessionId ? null : current));
+      setOpenTabs((current) => {
+        const tabId = `session:${sessionId}`;
+        const remaining = current.filter((tab) => tab.id !== tabId);
+        if (remaining.length === current.length) return current;
+        const fallback = remaining.length > 0 ? remaining[remaining.length - 1].id : "system:new-session";
+        setActiveTabId(fallback);
+        if (fallback.startsWith("session:")) {
+          const sid = fallback.slice("session:".length);
+          selectSession(sessions.find((item) => item.id === sid) ?? null);
+        } else {
+          selectSession(null);
+        }
+        return remaining;
+      });
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   function selectTask(taskId: string) {
     const nextTask = taskHistory.find((item) => item.id === taskId);
     if (!nextTask) {
@@ -2713,7 +2770,7 @@ export function App() {
       setActiveTaskId(nextTask?.id ?? null);
       void loadSessionMessages(preferredSession.id);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setSessionListBusy(false);
     }
@@ -2845,7 +2902,7 @@ export function App() {
       setChatMessages([]);
       await refreshSessionHistory();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setWorkspaceBusy(false);
     }
@@ -2863,7 +2920,7 @@ export function App() {
       const result = await runtimeClient.clearWorkspaceMemory({ workspaceId: workspace.id });
       setWorkspace(result.workspace);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setWorkspaceMemoryBusy(false);
     }
@@ -2884,7 +2941,7 @@ export function App() {
       });
       setWorkspace(result.workspace);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setWorkspaceFocusBusy(false);
     }
@@ -2905,7 +2962,7 @@ export function App() {
       selectSession(result.session);
       handleOpenSessionTab(result.session);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setSessionBusy(false);
     }
@@ -2918,7 +2975,7 @@ export function App() {
     try {
       await persistSearchConfig();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setSearchConfigBusy(false);
     }
@@ -2935,7 +2992,7 @@ export function App() {
         await runProviderTest(undefined, normalized.provider.activeProfileId);
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setProviderConfigBusy(false);
     }
@@ -2948,7 +3005,7 @@ export function App() {
     try {
       await persistCommandPolicyConfig();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setCommandPolicyBusy(false);
     }
@@ -2961,7 +3018,7 @@ export function App() {
       const providerPatch = buildProviderPatchFromForm();
       await runProviderTest(providerPatch, activeProviderProfileId);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     }
   }
 
@@ -2971,7 +3028,7 @@ export function App() {
     try {
       await runProviderTest(undefined, profileId ?? activeProviderProfileId);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     }
   }
 
@@ -2980,7 +3037,6 @@ export function App() {
       return;
     }
 
-    setProviderTestBusy(true);
     setError(null);
 
     try {
@@ -3000,9 +3056,7 @@ export function App() {
         profile.id,
       );
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setProviderTestBusy(false);
+      toastError(reason);
     }
   }
 
@@ -3035,7 +3089,7 @@ export function App() {
       setProviderSettings(buildProviderSettingsForm(normalized));
       showProviderSavedFeedback(normalized, profile.id);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setProviderConfigBusy(false);
     }
@@ -3073,7 +3127,7 @@ export function App() {
       setProviderSettings(buildProviderSettingsForm(normalized));
       showProviderSavedFeedback(normalized, profile.id);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setProviderConfigBusy(false);
     }
@@ -3097,7 +3151,7 @@ export function App() {
       const normalized = normalizeRuntimeConfig(result.config);
       setConfig(normalized);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     }
   }
 
@@ -3126,7 +3180,7 @@ export function App() {
       setConfig(normalized);
       setGeneralSettings(buildSettingsGeneralConfig(normalized));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     }
   }
 
@@ -3157,7 +3211,7 @@ export function App() {
         setError(result.run.summary);
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setScheduledBusyTaskId(null);
     }
@@ -3180,7 +3234,7 @@ export function App() {
       await refreshScheduledRecords(taskId);
       setSelectedScheduledTaskId(taskId);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setScheduledBusyTaskId(null);
     }
@@ -3219,7 +3273,7 @@ export function App() {
       setActiveProviderProfileId(normalized.provider.activeProfileId ?? profile.id);
       setProviderSettings(buildProviderSettingsForm(normalized));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setProviderConfigBusy(false);
     }
@@ -3261,7 +3315,7 @@ export function App() {
       setActiveProviderProfileId(normalized.provider.activeProfileId ?? profileId);
       setProviderSettings(buildProviderSettingsForm(normalized));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setProviderConfigBusy(false);
     }
@@ -3296,7 +3350,7 @@ export function App() {
       setActiveProviderProfileId(normalized.provider.activeProfileId ?? nextActiveProfileId);
       setProviderSettings(buildProviderSettingsForm(normalized));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setProviderConfigBusy(false);
     }
@@ -3373,7 +3427,7 @@ export function App() {
         const failedAssistantMessageId = pendingAssistantMessageIdForCatch;
         setChatMessages((current) => removeChatMessage(current, failedAssistantMessageId));
       }
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setMessageBusy(false);
     }
@@ -3411,7 +3465,7 @@ export function App() {
       setTaskHistory((current) => upsertRecord(current, result.task));
       await loadTraceForTask(taskId);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setRefreshBusy(false);
     }
@@ -3480,7 +3534,7 @@ export function App() {
       }));
       await loadTraceForTask(result.commandLog.taskId);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setCommandJobBusyId((current) => (current === commandId ? null : current));
     }
@@ -3498,7 +3552,7 @@ export function App() {
       }));
       await loadTraceForTask(result.commandLog.taskId);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setCommandJobBusyId((current) => (current === commandId ? null : current));
     }
@@ -3518,7 +3572,7 @@ export function App() {
         },
       }));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setPatchBusyId((current) => (current === patchId ? null : current));
     }
@@ -3533,8 +3587,9 @@ export function App() {
         approvalId,
         decision,
       });
+      addToast("success", decision === "approved" ? "已批准" : "已拒绝");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setApprovalBusyId((current) => (current === approvalId ? null : current));
     }
@@ -3549,7 +3604,17 @@ export function App() {
     providerSettings.mode === "mock"
       ? "测试模式"
       : providerSettings.model || providerSettings.name || "未配置模型";
-  const cwdLabel = workspace?.rootPath ?? workspacePath ?? DEFAULT_WORKSPACE_PATH;
+  const sessionContextPreview = useMemo(
+    () =>
+      buildSessionContextPreview({
+        events,
+        traceEvents,
+        workspace,
+        activeTaskId,
+      }),
+    [activeTaskId, events, traceEvents, workspace],
+  );
+  const cwdLabel = sessionContextPreview?.workspaceRoot ?? workspace?.rootPath ?? workspacePath ?? DEFAULT_WORKSPACE_PATH;
   const hostStatusText = describeMode(hostStatus);
   const runtimeUnavailableReason =
     !loading && !runtimeReady
@@ -3700,16 +3765,6 @@ export function App() {
     },
     [activeTaskId, commandLogCacheById, events, traceEvents],
   );
-  const sessionContextPreview = useMemo(
-    () =>
-      buildSessionContextPreview({
-        events,
-        traceEvents,
-        workspace,
-        activeTaskId,
-      }),
-    [activeTaskId, events, traceEvents, workspace],
-  );
 
   function handleSelectScheduledTask(taskId: string) {
     setSelectedScheduledTaskId(taskId);
@@ -3733,8 +3788,9 @@ export function App() {
       });
       await refreshScheduledRecords(result.task.id);
       setSelectedScheduledTaskId(result.task.id);
+      addToast("success", "调度任务已创建");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      toastError(reason);
     } finally {
       setScheduledCreateBusy(false);
     }
@@ -3792,6 +3848,7 @@ export function App() {
               : null
           }
           messages={visibleChatMessages}
+          messagesLoading={sessionBusy}
           taskCount={sessionTaskCount}
           collaboration={sessionCollaboration}
           backgroundJobs={sessionBackgroundJobs}
@@ -3899,13 +3956,23 @@ export function App() {
       onActivateTab={handleActivateTab}
       onCloseTab={handleCloseTab}
       onCloseOtherTabs={handleCloseOtherTabs}
+      onRenameSession={handleRenameSession}
+      onDeleteSession={handleDeleteSession}
       onSubmitPrompt={handleSendMessage}
       disabled={loading || messageBusy || !runtimeReady}
+      sending={messageBusy}
+      loading={loading}
       providerLabel={providerLabel}
       cwdLabel={cwdLabel}
     >
-      {error ? <p className="error-banner compact">{error}</p> : null}
+      {error ? (
+        <div className="error-banner compact" role="alert">
+          <span>{error}</span>
+          <button type="button" className="error-banner-dismiss" aria-label="Dismiss error" onClick={() => setError(null)}>×</button>
+        </div>
+      ) : null}
       {workspaceContent}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </AppShell>
   );
 }

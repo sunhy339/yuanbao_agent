@@ -57,6 +57,8 @@ export type RpcMethod =
   | "session.create"
   | "session.get"
   | "session.list"
+  | "session.update"
+  | "session.delete"
   | "message.send"
   | "message.list"
   | "task.get"
@@ -97,6 +99,16 @@ export interface WorkspaceFocusUpdateParams {
 export interface SessionCreateParams {
   workspaceId: Identifier;
   title: string;
+}
+
+export interface SessionUpdateParams {
+  sessionId: Identifier;
+  title?: string;
+  status?: string;
+}
+
+export interface SessionDeleteParams {
+  sessionId: Identifier;
 }
 
 export interface MessageSendParams {
@@ -205,6 +217,14 @@ export interface SessionGetResult {
 
 export interface SessionListResult {
   sessions: SessionRecord[];
+}
+
+export interface SessionUpdateResult {
+  session: SessionRecord;
+}
+
+export interface SessionDeleteResult {
+  session: SessionRecord;
 }
 
 export interface MessageSendResult {

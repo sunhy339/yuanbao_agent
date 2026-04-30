@@ -111,6 +111,7 @@ export interface SessionWorkspaceMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   streaming?: boolean;
+  placeholder?: boolean;
   createdAt?: number;
   toolName?: string;
   status?: string;
@@ -256,6 +257,7 @@ export interface SessionWorkspaceProps {
   onRefreshTrace?(): void | Promise<void>;
   taskBusyAction?: "refresh" | "stop" | null;
   busyId?: string | null;
+  messagesLoading?: boolean;
 }
 
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -273,6 +275,11 @@ function formatTimestamp(timestamp?: number) {
   return dateTimeFormatter.format(new Date(timestamp));
 }
 
+interface DiffLine {
+  type: "add" | "remove" | "context" | "header";
+  content: string;
+}
+
 interface RuntimeTimelineItem {
   id: string;
   kind: "approval" | "patch" | "trace" | "tool" | "command" | "task" | "memory";
@@ -284,6 +291,7 @@ interface RuntimeTimelineItem {
   code?: string;
   rawDetail?: string;
   time?: number;
+  diffLines?: DiffLine[];
 }
 
 interface ToolRuntimePresentation {
@@ -358,6 +366,24 @@ function compactText(value: string | null | undefined, maxChars = 240) {
     return text;
   }
   return `${text.slice(0, Math.max(1, maxChars - 14)).trimEnd()} [truncated]`;
+}
+
+function parseUnifiedDiff(diffText: string): DiffLine[] {
+  const lines: DiffLine[] = [];
+  for (const raw of diffText.split("\n")) {
+    if (raw.startsWith("+++") || raw.startsWith("---")) {
+      lines.push({ type: "header", content: raw });
+    } else if (raw.startsWith("@@")) {
+      lines.push({ type: "header", content: raw });
+    } else if (raw.startsWith("+")) {
+      lines.push({ type: "add", content: raw.slice(1) });
+    } else if (raw.startsWith("-")) {
+      lines.push({ type: "remove", content: raw.slice(1) });
+    } else {
+      lines.push({ type: "context", content: raw.startsWith(" ") ? raw.slice(1) : raw });
+    }
+  }
+  return lines;
 }
 
 function stripSectionLabel(value: string, label: string) {
@@ -463,6 +489,8 @@ function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolR
   const inputRecord = parseRuntimeJsonRecord(toolCall.rawInput);
   const command = readRuntimeString(inputRecord, ["command", "cmd"]);
   const path = readRuntimeString(inputRecord, ["path", "file", "cwd", "root"]);
+  const url = readRuntimeString(inputRecord, ["url"]);
+  const query = readRuntimeString(inputRecord, ["query"]);
   const duration = formatDuration(toolCall.durationMs);
   const tokenCount = toolCall.tokenCount !== undefined ? `${toolCall.tokenCount} tokens` : null;
   const statusMeta = compactMeta([duration, tokenCount]);
@@ -488,6 +516,7 @@ function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolR
     };
   }
 
+  // --- path-based tools ---
   if (toolCall.toolName === "list_dir") {
     return {
       kind: "tool",
@@ -504,6 +533,90 @@ function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolR
       title: path ? `read_file ${path}` : "read_file",
       summary: resultSummary,
       meta: compactMeta([path ? `path: ${path}` : toolCall.input, ...statusMeta]),
+      code: toolCall.argsPreview,
+    };
+  }
+
+  if (toolCall.toolName === "write_file") {
+    return {
+      kind: "tool",
+      title: path ? `write_file ${path}` : "write_file",
+      summary: resultSummary,
+      meta: compactMeta([path ? `path: ${path}` : toolCall.input, ...statusMeta]),
+      code: toolCall.argsPreview,
+    };
+  }
+
+  if (toolCall.toolName === "search_files") {
+    return {
+      kind: "tool",
+      title: query ? `search_files "${query}"` : "search_files",
+      summary: resultSummary,
+      meta: compactMeta([path ? `root: ${path}` : null, ...statusMeta]),
+      code: toolCall.argsPreview,
+    };
+  }
+
+  if (toolCall.toolName === "code_search") {
+    return {
+      kind: "tool",
+      title: query ? `code_search "${query}"` : "code_search",
+      summary: resultSummary,
+      meta: compactMeta([path ? `root: ${path}` : null, ...statusMeta]),
+      code: toolCall.argsPreview,
+    };
+  }
+
+  // --- url-based tools ---
+  if (toolCall.toolName === "web_fetch") {
+    return {
+      kind: "tool",
+      title: url ? `web_fetch ${url}` : "web_fetch",
+      summary: resultSummary,
+      meta: compactMeta([url ?? toolCall.input, ...statusMeta]),
+      code: toolCall.argsPreview,
+    };
+  }
+
+  if (toolCall.toolName === "browser") {
+    return {
+      kind: "tool",
+      title: url ? `browser ${url}` : "browser",
+      summary: resultSummary,
+      meta: compactMeta([url ?? toolCall.input, ...statusMeta]),
+      code: toolCall.argsPreview,
+    };
+  }
+
+  // --- notebook ---
+  if (toolCall.toolName === "notebook") {
+    const action = readRuntimeString(inputRecord, ["action"]);
+    return {
+      kind: "tool",
+      title: path ? `notebook ${path}` : "notebook",
+      summary: resultSummary,
+      meta: compactMeta([action ? `action: ${action}` : null, path ? `path: ${path}` : null, ...statusMeta]),
+      code: toolCall.argsPreview,
+    };
+  }
+
+  // --- git tools ---
+  if (toolCall.toolName === "git_status") {
+    return {
+      kind: "tool",
+      title: "git status",
+      summary: resultSummary,
+      meta: statusMeta,
+      code: toolCall.argsPreview,
+    };
+  }
+
+  if (toolCall.toolName === "git_diff") {
+    return {
+      kind: "tool",
+      title: "git diff",
+      summary: resultSummary,
+      meta: statusMeta,
       code: toolCall.argsPreview,
     };
   }
@@ -550,7 +663,11 @@ function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveTask | n
   const commands = activeTask.commands ?? [];
   const verification = activeTask.verification ?? [];
 
-  if (activeTask.currentStep || activeTask.goal || acceptanceCriteria.length || outOfScope.length) {
+  // Skip task focus for very short goals (simple conversations like "你好", "1+1=?") —
+  // the boilerplate acceptance criteria / out-of-scope items add noise without value.
+  const isSimpleGoal = !activeTask.goal || activeTask.goal.trim().length < 15;
+
+  if (!isSimpleGoal && (activeTask.currentStep || activeTask.goal || acceptanceCriteria.length || outOfScope.length)) {
     items.push({
       id: `task-focus:${activeTask.id}`,
       kind: "task",
@@ -562,10 +679,14 @@ function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveTask | n
         outOfScope.length ? `${outOfScope.length} out of scope` : null,
       ]),
       code: compactMeta([
-        activeTask.goal ? `Goal: ${activeTask.goal}` : null,
-        acceptanceCriteria.length ? `Acceptance: ${acceptanceCriteria.join("; ")}` : null,
-        outOfScope.length ? `Out of scope: ${outOfScope.join("; ")}` : null,
-      ]).join("\n"),
+        activeTask.goal ? `📌 Goal:\n${activeTask.goal}` : null,
+        acceptanceCriteria.length
+          ? `✅ Acceptance criteria:\n${acceptanceCriteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
+          : null,
+        outOfScope.length
+          ? `🚫 Out of scope:\n${outOfScope.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
+          : null,
+      ]).join("\n\n"),
     });
   }
 
@@ -618,108 +739,14 @@ function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveTask | n
   return items;
 }
 
-function buildSessionMemoryRuntimeItems(session?: SessionWorkspaceSession | null): RuntimeTimelineItem[] {
-  const summary = typeof session?.summary === "string" ? session.summary.trim() : "";
-  if (!summary) {
-    return [];
-  }
-
-  const memoryLines = summary
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const memoryEntries = memoryLines.filter((line) => line.startsWith("- ")).length;
-
-  return [
-    {
-      id: `session-memory:${session?.id ?? "active"}`,
-      kind: "memory",
-      title: "Session memory",
-      status: "recorded",
-      summary: memoryEntries
-        ? `${memoryEntries} remembered item${memoryEntries === 1 ? "" : "s"}`
-        : "Session memory is available.",
-      meta: compactMeta([memoryEntries ? `${memoryEntries} items` : null]),
-      code: summary,
-    },
-  ];
+function buildSessionMemoryRuntimeItems(_session?: SessionWorkspaceSession | null): RuntimeTimelineItem[] {
+  // Session memory is internal context; hidden from user-facing UI.
+  return [];
 }
 
-function buildContextPreviewRuntimeItems(contextPreview?: SessionWorkspaceContextPreview): RuntimeTimelineItem[] {
-  if (!contextPreview) {
-    return [];
-  }
-
-  const projectFocus = stripSectionLabel(compactText(contextPreview.projectFocus, 900), "Project focus");
-  const projectMemory = stripSectionLabel(compactText(contextPreview.projectMemory, 1200), "Project memory");
-  const budgetStats = contextPreview.budgetStats ?? undefined;
-  const droppedSections = budgetStats?.droppedSections ?? [];
-  const trimmedSections = budgetStats?.trimmedSections ?? [];
-  const budgetLabel = formatTokenBudget(budgetStats);
-  const taskFocus = contextPreview.taskFocus;
-  const hasTaskFocus = Boolean(
-    taskFocus?.currentStep || taskFocus?.acceptanceCriteriaCount || taskFocus?.outOfScopeCount,
-  );
-
-  if (!projectFocus && !projectMemory && !budgetLabel && !hasTaskFocus) {
-    return [];
-  }
-
-  const meta = compactMeta([
-    projectFocus ? "Focus active" : null,
-    projectMemory ? "Project memory" : null,
-    budgetLabel,
-    contextPreview.toolCount !== undefined && contextPreview.toolCount !== null
-      ? `${contextPreview.toolCount} tools`
-      : null,
-    trimmedSections.length ? `${trimmedSections.length} trimmed` : null,
-    droppedSections.length ? `${droppedSections.length} dropped` : null,
-  ]);
-
-  const lines = compactMeta([
-    projectFocus ? `Project focus:\n${projectFocus}` : null,
-    projectMemory ? `Project memory:\n${projectMemory}` : null,
-    contextPreview.workspaceRoot ? `Workspace: ${contextPreview.workspaceRoot}` : null,
-    contextPreview.searchMode || contextPreview.searchQuery
-      ? `Search: ${compactMeta([contextPreview.searchMode ?? undefined, contextPreview.searchQuery ?? undefined]).join(" - ")}`
-      : null,
-    hasTaskFocus
-      ? `Task focus: ${compactMeta([
-          taskFocus?.currentStep ?? undefined,
-          taskFocus?.acceptanceCriteriaCount !== undefined && taskFocus?.acceptanceCriteriaCount !== null
-            ? `${taskFocus.acceptanceCriteriaCount} acceptance`
-            : null,
-          taskFocus?.outOfScopeCount !== undefined && taskFocus?.outOfScopeCount !== null
-            ? `${taskFocus.outOfScopeCount} out of scope`
-            : null,
-        ]).join(" - ")}`
-      : null,
-    budgetStats
-      ? `Budget: ${compactMeta([
-          budgetLabel,
-          budgetStats.messageTokens !== undefined && budgetStats.messageTokens !== null
-            ? `${budgetStats.messageTokens} message`
-            : null,
-          budgetStats.toolSchemaTokens !== undefined && budgetStats.toolSchemaTokens !== null
-            ? `${budgetStats.toolSchemaTokens} tool schema`
-            : null,
-        ]).join(" - ")}`
-      : null,
-    trimmedSections.length ? `Trimmed: ${trimmedSections.join(", ")}` : null,
-    droppedSections.length ? `Dropped: ${droppedSections.join(", ")}` : null,
-  ]);
-
-  return [
-    {
-      id: "context-preview",
-      kind: "memory",
-      title: "Context preview",
-      status: "ready",
-      summary: budgetLabel ? `Using ${budgetLabel}.` : "Context is available.",
-      meta,
-      code: lines.join("\n\n"),
-    },
-  ];
+function buildContextPreviewRuntimeItems(_contextPreview?: SessionWorkspaceContextPreview): RuntimeTimelineItem[] {
+  // Context preview is internal system state; hidden from user-facing UI.
+  return [];
 }
 
 function buildRuntimeItems({
@@ -727,6 +754,7 @@ function buildRuntimeItems({
   activeTask,
   contextPreview,
   approvals = [],
+  patches = [],
   toolCalls = [],
   backgroundJobs = [],
 }: Pick<
@@ -734,10 +762,36 @@ function buildRuntimeItems({
   "session" | "activeTask" | "contextPreview" | "approvals" | "patches" | "traces" | "toolCalls" | "backgroundJobs"
 >): RuntimeTimelineItem[] {
   const items: RuntimeTimelineItem[] = [
-    ...buildContextPreviewRuntimeItems(contextPreview),
-    ...buildSessionMemoryRuntimeItems(session),
     ...buildActiveTaskRuntimeItems(activeTask),
   ];
+
+  patches.forEach((patch) => {
+    const changeStats = compactMeta([
+      patch.additions !== undefined ? `+${patch.additions}` : null,
+      patch.deletions !== undefined ? `-${patch.deletions}` : null,
+    ]);
+    const diffLines = patch.diff ? parseUnifiedDiff(patch.diff) : undefined;
+    const fileSummaries = patch.files?.map(
+      (file) => `${file.path}${file.additions !== undefined ? ` (+${file.additions}/-${file.deletions ?? 0})` : ""}`,
+    );
+    items.push({
+      id: `patch:${patch.id}`,
+      kind: "patch",
+      sourceId: patch.id,
+      title: patch.summary || "Patch",
+      status: patch.status,
+      summary: patch.files && patch.files.length > 0
+        ? `${patch.files.length} file${patch.files.length === 1 ? "" : "s"}: ${compactList(patch.files.map((f) => f.path))}`
+        : undefined,
+      meta: compactMeta([
+        patch.filesChanged !== undefined ? `${patch.filesChanged} files` : null,
+        ...changeStats,
+      ]),
+      code: fileSummaries?.join("\n"),
+      diffLines,
+      time: patch.updatedAt,
+    });
+  });
 
   approvals.forEach((approval) => {
     items.push({
@@ -1070,12 +1124,19 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
           ) : null}
           {item.summary ? <p>{item.summary}</p> : null}
           {item.code ? <p className="runtime-event-code-summary">{item.code}</p> : null}
-          {item.rawDetail ? (
-            <details className="runtime-raw-detail">
-              <summary>查看原始数据</summary>
-              <pre>{item.rawDetail}</pre>
-            </details>
+          {item.diffLines && item.diffLines.length > 0 ? (
+            <div className="diff-view">
+              {item.diffLines.map((line, lineIndex) => (
+                <div key={lineIndex} className={`diff-line diff-line-${line.type}`}>
+                  <span className="diff-line-prefix">
+                    {line.type === "add" ? "+" : line.type === "remove" ? "-" : line.type === "header" ? "" : " "}
+                  </span>
+                  <span className="diff-line-content">{line.content}</span>
+                </div>
+              ))}
+            </div>
           ) : null}
+
         </div>
       ) : null}
     </article>
@@ -1083,9 +1144,10 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
 });
 
 const MessageBubble = memo(function MessageBubble({ message }: { message: SessionWorkspaceMessage }) {
+  const isThinking = message.streaming && message.placeholder;
   return (
     <article
-      className="message-bubble"
+      className={`message-bubble${isThinking ? " message-bubble-thinking" : ""}`}
       data-activity-kind="message"
       data-role={message.role}
       aria-label={`${message.role} message`}
@@ -1094,10 +1156,18 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Sessio
         <span>{getRoleLabel(message.role)}</span>
         {message.toolName ? <em>{message.toolName}</em> : null}
         {message.status ? <em>{message.status}</em> : null}
-        {message.streaming ? <em>Streaming</em> : null}
+        {message.streaming && !message.placeholder ? <em>Streaming</em> : null}
         {message.createdAt ? <time>{formatTimestamp(message.createdAt)}</time> : null}
       </div>
-      {message.role === "assistant" ? <MarkdownContent content={message.content} /> : <p>{message.content}</p>}
+      {isThinking ? (
+        <div className="thinking-dots" aria-label="Thinking">
+          <span /><span /><span />
+        </div>
+      ) : message.role === "assistant" ? (
+        <MarkdownContent content={message.content} />
+      ) : (
+        <p>{message.content}</p>
+      )}
     </article>
   );
 });
@@ -1171,6 +1241,7 @@ export function SessionWorkspace({
   backgroundJobs,
   onApprove,
   onReject,
+  messagesLoading,
 }: SessionWorkspaceProps) {
   if (!session) {
     return (
@@ -1212,7 +1283,11 @@ export function SessionWorkspace({
       </header>
 
       <section className="message-stream message-stream-chat-only" aria-label="Conversation messages">
-        {activityItems.length === 0 ? (
+        {messagesLoading && activityItems.length === 0 ? (
+          <div className="message-stream-loading" aria-label="Loading messages">
+            <div className="message-stream-loading-bar" />
+          </div>
+        ) : activityItems.length === 0 ? (
           <div className="message-stream-empty">
             <p className="session-kicker">Quiet thread</p>
             <h2>No messages yet</h2>

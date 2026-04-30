@@ -16,7 +16,7 @@ from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.services.command_background import get_background_command_event_bridge
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.store.sqlite_store import SQLiteStore
-from local_agent_runtime.tools.builtin import build_builtin_tools
+from local_agent_runtime.tools import build_builtin_tools
 from local_agent_runtime.tools.registry import ToolRegistry
 
 

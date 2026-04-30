@@ -4,13 +4,15 @@ import os
 import sys
 
 from .event_bus import EventBus
+from .memory import MemoryManager, MemoryRetriever, MemoryStore
 from .orchestrator.service import Orchestrator
 from .policy.guard import PolicyGuard
 from .provider.adapter import ProviderAdapter
+from .router import MetaRouter
 from .rpc.server import JsonRpcServer
 from .services import CollaborationService, SubagentService
 from .store.sqlite_store import SQLiteStore
-from .tools.builtin import build_builtin_tools
+from .tools import build_builtin_tools
 from .tools.registry import ToolRegistry
 
 
@@ -29,15 +31,30 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
     policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
     collaboration = CollaborationService(store, event_bus)
     subagent_service = SubagentService(store, collaboration)
-    tool_registry = ToolRegistry(
-        build_builtin_tools(policy_guard=policy_guard, store=store, subagent_service=subagent_service)
-    )
     provider = ProviderAdapter()
+    meta_router = MetaRouter(provider=provider)
+    memory_manager = MemoryManager(
+        store=MemoryStore(store),
+        retriever=MemoryRetriever(MemoryStore(store)),
+    )
+    from .context.scratchpad import Scratchpad
+    scratchpad = Scratchpad(store)
+    tool_registry = ToolRegistry(
+        build_builtin_tools(
+            policy_guard=policy_guard,
+            store=store,
+            subagent_service=subagent_service,
+            memory_manager=memory_manager,
+            scratchpad=scratchpad,
+        )
+    )
     orchestrator = Orchestrator(
         store=store,
         event_bus=event_bus,
         tool_registry=tool_registry,
         provider=provider,
+        meta_router=meta_router,
+        memory_manager=memory_manager,
     )
     return JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
 
@@ -45,7 +62,11 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
 def main() -> int:
     _configure_stdio()
     server = build_server(database_path=os.environ.get("LOCAL_AGENT_DB_PATH", ":memory:"))
-    server.serve(stdin=sys.stdin, stdout=sys.stdout)
+    server.initialize_mcp_servers()
+    try:
+        server.serve(stdin=sys.stdin, stdout=sys.stdout)
+    finally:
+        server.shutdown_mcp()
     return 0
 
 

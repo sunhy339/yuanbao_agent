@@ -184,11 +184,67 @@ struct RuntimeProcess {
 
 impl RuntimeManager {
     fn call(&self, app_handle: &AppHandle, method: &str, params: Value) -> Result<Value, String> {
-        let mut bridge = self
-            .bridge
-            .lock()
-            .map_err(|_| "Failed to acquire runtime bridge lock".to_string())?;
-        bridge.call(app_handle, method, params)
+        let (rx, request_id, pending) = {
+            let mut bridge = self
+                .bridge
+                .lock()
+                .map_err(|_| "Failed to acquire runtime bridge lock".to_string())?;
+            
+            bridge.ensure_started(app_handle)?;
+
+            let request_id = format!(
+                "req_{}",
+                bridge.next_request_id.fetch_add(1, Ordering::Relaxed)
+            );
+            let (tx, rx) = mpsc::channel();
+
+            let process = bridge
+                .process
+                .as_mut()
+                .ok_or_else(|| "Runtime process is not available".to_string())?;
+
+            process
+                .pending
+                .lock()
+                .map_err(|_| "Failed to lock pending response map".to_string())?
+                .insert(request_id.clone(), tx);
+
+            let payload = serde_json::to_string(&json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            }))
+            .map_err(|reason| format!("Failed to serialize RPC request: {reason}"))?;
+
+            if let Err(reason) = writeln!(process.stdin, "{payload}").and_then(|_| process.stdin.flush()) {
+                let _ = process
+                    .pending
+                    .lock()
+                    .map(|mut pending| pending.remove(&request_id));
+                return Err(format!("Failed to write RPC request to runtime: {reason}"));
+            }
+            
+            (rx, request_id, Arc::clone(&process.pending))
+        };
+
+        match rx.recv_timeout(RPC_TIMEOUT) {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(message)) => Err(message),
+            Err(_) => {
+                let _ = pending
+                    .lock()
+                    .map(|mut pending_guard| pending_guard.remove(&request_id));
+                Err("Timed out while waiting for the Python runtime".to_string())
+            }
+        }
+    }
+
+    async fn call_async(&self, app_handle: AppHandle, method: String, params: serde_json::Value) -> Result<serde_json::Value, String> {
+        let manager = self.clone();
+        tauri::async_runtime::spawn_blocking(move || manager.call(&app_handle, &method, params))
+            .await
+            .map_err(|reason| format!("Runtime async worker failed: {reason}"))?
     }
 
     fn runtime_running(&self) -> bool {
@@ -200,60 +256,6 @@ impl RuntimeManager {
 }
 
 impl RuntimeBridge {
-    fn call(
-        &mut self,
-        app_handle: &AppHandle,
-        method: &str,
-        params: Value,
-    ) -> Result<Value, String> {
-        self.ensure_started(app_handle)?;
-
-        let request_id = format!(
-            "req_{}",
-            self.next_request_id.fetch_add(1, Ordering::Relaxed)
-        );
-        let (tx, rx) = mpsc::channel();
-
-        let process = self
-            .process
-            .as_mut()
-            .ok_or_else(|| "Runtime process is not available".to_string())?;
-
-        process
-            .pending
-            .lock()
-            .map_err(|_| "Failed to lock pending response map".to_string())?
-            .insert(request_id.clone(), tx);
-
-        let payload = serde_json::to_string(&json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": method,
-            "params": params,
-        }))
-        .map_err(|reason| format!("Failed to serialize RPC request: {reason}"))?;
-
-        if let Err(reason) = writeln!(process.stdin, "{payload}").and_then(|_| process.stdin.flush()) {
-            let _ = process
-                .pending
-                .lock()
-                .map(|mut pending| pending.remove(&request_id));
-            return Err(format!("Failed to write RPC request to runtime: {reason}"));
-        }
-
-        match rx.recv_timeout(RPC_TIMEOUT) {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(message)) => Err(message),
-            Err(_) => {
-                let _ = process
-                    .pending
-                    .lock()
-                    .map(|mut pending| pending.remove(&request_id));
-                Err("Timed out while waiting for the Python runtime".to_string())
-            }
-        }
-    }
-
     fn ensure_started(&mut self, app_handle: &AppHandle) -> Result<(), String> {
         if self.process.is_some() {
             return Ok(());
@@ -421,59 +423,59 @@ fn host_status(state: State<'_, RuntimeManager>) -> Result<HostStatus, String> {
 }
 
 #[tauri::command]
-fn workspace_open(
+async fn workspace_open(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     path: String,
 ) -> Result<Value, String> {
-    state.call(&app_handle, "workspace.open", json!({ "path": path }))
+    state.call_async(app_handle, "workspace.open".to_string(), json!({ "path": path })).await
 }
 
 #[tauri::command]
-fn workspace_memory_clear(
+async fn workspace_memory_clear(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: WorkspaceMemoryClearPayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "workspace.memory.clear",
+    state.call_async(
+        app_handle,
+        "workspace.memory.clear".to_string(),
         json!({ "workspaceId": payload.workspace_id }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn workspace_focus_update(
+async fn workspace_focus_update(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: WorkspaceFocusUpdatePayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "workspace.focus.update",
+    state.call_async(
+        app_handle,
+        "workspace.focus.update".to_string(),
         json!({ "workspaceId": payload.workspace_id, "focus": payload.focus }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn session_create(
+async fn session_create(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: SessionCreatePayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "session.create",
+    state.call_async(
+        app_handle,
+        "session.create".to_string(),
         json!({
             "workspaceId": payload.workspace_id,
             "title": payload.title,
         }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn session_list(app_handle: AppHandle, state: State<'_, RuntimeManager>) -> Result<Value, String> {
-    state.call(&app_handle, "session.list", json!({}))
+async fn session_list(app_handle: AppHandle, state: State<'_, RuntimeManager>) -> Result<Value, String> {
+    state.call_async(app_handle, "session.list".to_string(), json!({})).await
 }
 
 #[tauri::command]
@@ -496,72 +498,72 @@ async fn message_send(
 }
 
 #[tauri::command]
-fn message_list(
+async fn message_list(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: MessageListPayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "message.list",
+    state.call_async(
+        app_handle,
+        "message.list".to_string(),
         json!({ "sessionId": payload.session_id, "limit": payload.limit }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn task_get(
+async fn task_get(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: TaskGetPayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "task.get",
+    state.call_async(
+        app_handle,
+        "task.get".to_string(),
         json!({ "taskId": payload.task_id }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn task_cancel(
+async fn task_cancel(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: TaskControlPayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "task.cancel",
+    state.call_async(
+        app_handle,
+        "task.cancel".to_string(),
         json!({ "taskId": payload.task_id }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn task_pause(
+async fn task_pause(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: TaskControlPayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "task.pause",
+    state.call_async(
+        app_handle,
+        "task.pause".to_string(),
         json!({ "taskId": payload.task_id }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn task_resume(
+async fn task_resume(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: TaskControlPayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "task.resume",
+    state.call_async(
+        app_handle,
+        "task.resume".to_string(),
         json!({ "taskId": payload.task_id }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn task_list(
+async fn task_list(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: Option<TaskListPayload>,
@@ -570,18 +572,18 @@ fn task_list(
         Some(session_id) => json!({ "sessionId": session_id }),
         None => json!({}),
     };
-    state.call(&app_handle, "task.list", params)
+    state.call_async(app_handle, "task.list".to_string(), params).await
 }
 
 #[tauri::command]
-fn schedule_create(
+async fn schedule_create(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: ScheduledTaskCreatePayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "schedule.create",
+    state.call_async(
+        app_handle,
+        "schedule.create".to_string(),
         json!({
             "name": payload.name,
             "prompt": payload.prompt,
@@ -589,23 +591,23 @@ fn schedule_create(
             "enabled": payload.enabled,
             "status": payload.status,
         }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn schedule_list(app_handle: AppHandle, state: State<'_, RuntimeManager>) -> Result<Value, String> {
-    state.call(&app_handle, "schedule.list", json!({}))
+async fn schedule_list(app_handle: AppHandle, state: State<'_, RuntimeManager>) -> Result<Value, String> {
+    state.call_async(app_handle, "schedule.list".to_string(), json!({})).await
 }
 
 #[tauri::command]
-fn schedule_update(
+async fn schedule_update(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: ScheduledTaskUpdatePayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "schedule.update",
+    state.call_async(
+        app_handle,
+        "schedule.update".to_string(),
         json!({
             "taskId": payload.task_id,
             "name": payload.name,
@@ -614,40 +616,40 @@ fn schedule_update(
             "enabled": payload.enabled,
             "status": payload.status,
         }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn schedule_toggle(
+async fn schedule_toggle(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: ScheduledTaskTogglePayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "schedule.toggle",
+    state.call_async(
+        app_handle,
+        "schedule.toggle".to_string(),
         json!({
             "taskId": payload.task_id,
             "enabled": payload.enabled,
         }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn schedule_run_now(
+async fn schedule_run_now(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: ScheduledTaskIdPayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "schedule.run_now",
+    state.call_async(
+        app_handle,
+        "schedule.run_now".to_string(),
         json!({ "taskId": payload.task_id }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn schedule_logs(
+async fn schedule_logs(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: Option<ScheduledTaskLogsPayload>,
@@ -659,7 +661,7 @@ fn schedule_logs(
         }),
         None => json!({}),
     };
-    state.call(&app_handle, "schedule.logs", params)
+    state.call_async(app_handle, "schedule.logs".to_string(), params).await
 }
 
 #[tauri::command]
@@ -680,100 +682,100 @@ async fn approval_submit(
 }
 
 #[tauri::command]
-fn config_get(app_handle: AppHandle, state: State<'_, RuntimeManager>) -> Result<Value, String> {
-    state.call(&app_handle, "config.get", json!({}))
+async fn config_get(app_handle: AppHandle, state: State<'_, RuntimeManager>) -> Result<Value, String> {
+    state.call_async(app_handle, "config.get".to_string(), json!({})).await
 }
 
 #[tauri::command]
-fn config_update(
+async fn config_update(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call(&app_handle, "config.update", payload)
+    state.call_async(app_handle, "config.update".to_string(), payload).await
 }
 
 #[tauri::command]
-fn provider_test(
+async fn provider_test(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call(&app_handle, "provider.test", payload)
+    state.call_async(app_handle, "provider.test".to_string(), payload).await
 }
 
 #[tauri::command]
-fn command_log_get(
+async fn command_log_get(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: CommandLogGetPayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "command_log.get",
+    state.call_async(
+        app_handle,
+        "command_log.get".to_string(),
         json!({ "commandId": payload.command_id }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn command_log_list(
+async fn command_log_list(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: Option<CommandLogListPayload>,
 ) -> Result<Value, String> {
     let payload = payload.unwrap_or_default();
-    state.call(
-        &app_handle,
-        "command_log.list",
+    state.call_async(
+        app_handle,
+        "command_log.list".to_string(),
         json!({
             "taskId": payload.task_id,
             "sessionId": payload.session_id,
             "status": payload.status,
             "limit": payload.limit,
         }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn command_cancel(
+async fn command_cancel(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: CommandCancelPayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "command.cancel",
+    state.call_async(
+        app_handle,
+        "command.cancel".to_string(),
         json!({ "commandId": payload.command_id }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn diff_get(
+async fn diff_get(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: DiffGetPayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "diff.get",
+    state.call_async(
+        app_handle,
+        "diff.get".to_string(),
         json!({ "patchId": payload.patch_id }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn trace_list(
+async fn trace_list(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
     payload: TraceListPayload,
 ) -> Result<Value, String> {
-    state.call(
-        &app_handle,
-        "trace.list",
+    state.call_async(
+        app_handle,
+        "trace.list".to_string(),
         json!({
             "taskId": payload.task_id,
             "limit": payload.limit,
         }),
-    )
+    ).await
 }
 
 #[tauri::command]

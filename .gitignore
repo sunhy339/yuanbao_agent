@@ -39,3 +39,8 @@ pnpm-debug.log*
 Thumbs.db
 .idea/
 .vscode/
+docs/
+.cc-connect/
+runtime_artifacts/
+bug/
+skill/

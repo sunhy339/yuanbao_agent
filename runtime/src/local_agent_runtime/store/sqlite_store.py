@@ -76,6 +76,12 @@ DEFAULT_CONFIG = {
             "allowedCwdRoots": [],
         }
     },
+    "reflection": {
+        "enabled": False,
+        "maxRetries": 2,
+        "confidenceThreshold": 0.7,
+        "evaluationPrompt": "",
+    },
     "ui": {
         "language": "zh-CN",
         "showRawEvents": False,
@@ -514,6 +520,7 @@ class SQLiteStore:
         changed_files: list[dict[str, Any]] | None = None,
         commands: list[dict[str, Any]] | None = None,
         verification: list[dict[str, Any]] | None = None,
+        reflection: dict[str, Any] | None = None,
         summary: str | None = None,
         result_summary: str | None = None,
         error_code: str | None = None,
@@ -547,6 +554,9 @@ class SQLiteStore:
         if verification is not None:
             assignments.append("verification_json = ?")
             values.append(json.dumps(verification, ensure_ascii=False))
+        if reflection is not None:
+            assignments.append("reflection_json = ?")
+            values.append(json.dumps(reflection, ensure_ascii=False))
         if summary is not None:
             assignments.append("summary = ?")
             values.append(summary)
@@ -1735,6 +1745,7 @@ class SQLiteStore:
             "changedFiles": self._json_list(row.get("changed_files_json")),
             "commands": self._json_list(row.get("commands_json")),
             "verification": self._json_list(row.get("verification_json")),
+            "reflection": self._json_dict(row.get("reflection_json")),
             "summary": row.get("summary"),
             "resultSummary": row["result_json"],
             "errorCode": row["error_code"],
@@ -1750,6 +1761,15 @@ class SQLiteStore:
         except (TypeError, json.JSONDecodeError):
             return []
         return parsed if isinstance(parsed, list) else []
+
+    def _json_dict(self, raw: Any) -> dict[str, Any] | None:
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
 
     def _current_step_from_plan(self, plan: list[dict[str, Any]]) -> str | None:
         for preferred_status in ("active", "pending"):
@@ -2501,6 +2521,7 @@ class SQLiteStore:
                 changed_files_json TEXT,
                 commands_json TEXT,
                 verification_json TEXT,
+                reflection_json TEXT,
                 summary TEXT,
                 result_json TEXT,
                 error_code TEXT,
@@ -2806,6 +2827,7 @@ class SQLiteStore:
             "changed_files_json": "TEXT DEFAULT '[]'",
             "commands_json": "TEXT DEFAULT '[]'",
             "verification_json": "TEXT DEFAULT '[]'",
+            "reflection_json": "TEXT",
             "summary": "TEXT",
         }
         for column, definition in expected.items():

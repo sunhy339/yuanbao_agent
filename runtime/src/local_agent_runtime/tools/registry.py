@@ -5,6 +5,8 @@ from copy import deepcopy
 from typing import Any
 
 from ..services.worker_environment import DEFAULT_CHILD_TOOL_ALLOWLIST
+from .memory import MEMORY_TOOL_SCHEMAS
+from .scratchpad_tool import SCRATCHPAD_TOOL_SCHEMAS
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -534,7 +536,271 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "Pass path for focused review of a single file or subtree.",
         ],
     },
+    {
+        "name": "write_file",
+        "description": (
+            "Create or replace a workspace file with the given content. Creates parent directories automatically "
+            "unless create_dirs is set to false."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "workspaceRoot": WORKSPACE_ROOT_PROPERTY,
+                "path": _string_property(
+                    "Workspace-relative file path to create or replace.",
+                    examples=["src/utils.py", "config/settings.json"],
+                ),
+                "content": {
+                    "type": "string",
+                    "description": "Complete file content to write.",
+                },
+                "encoding": {
+                    "type": "string",
+                    "description": "Text encoding for the file.",
+                    "default": "utf-8",
+                },
+                "create_dirs": {
+                    "type": "boolean",
+                    "description": "If true, create parent directories if they do not exist.",
+                    "default": True,
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "If true, allow overwriting existing files.",
+                    "default": True,
+                },
+            },
+            "required": ["workspaceRoot", "path", "content"],
+        },
+        "safety": [
+            "Dangerous: can create new files or overwrite existing workspace files.",
+            "Paths must stay inside workspaceRoot.",
+        ],
+        "hints": [
+            "Prefer apply_patch for small edits to existing files.",
+            "Use write_file for creating new files or full replacements.",
+        ],
+    },
+    {
+        "name": "web_fetch",
+        "description": (
+            "Fetch content from a URL using HTTP GET or POST. Returns the response body as text "
+            "with status code and content type metadata."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "url": _string_property(
+                    "HTTP or HTTPS URL to fetch.",
+                    examples=["https://api.example.com/data", "https://docs.python.org/3/"],
+                ),
+                "method": {
+                    "type": "string",
+                    "description": "HTTP method.",
+                    "enum": ["GET", "POST", "PUT", "DELETE", "HEAD"],
+                    "default": "GET",
+                },
+                "headers": {
+                    "type": "object",
+                    "description": "Optional HTTP headers.",
+                    "additionalProperties": {"type": "string"},
+                },
+                "body": {
+                    "description": "Optional request body; string or JSON-serializable object.",
+                    "oneOf": [{"type": "string"}, {"type": "object"}],
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Request timeout in seconds.",
+                    "minimum": 5,
+                    "maximum": 120,
+                    "default": 30,
+                },
+                "max_bytes": {
+                    "type": "integer",
+                    "description": "Maximum response bytes to read.",
+                    "minimum": 1024,
+                    "maximum": 2097152,
+                    "default": 524288,
+                },
+            },
+            "required": ["url"],
+        },
+        "safety": [
+            "Makes outbound network requests to the specified URL.",
+            "Does not send credentials or cookies.",
+            "Response size is capped by max_bytes.",
+        ],
+        "hints": [
+            "Use for fetching documentation, API responses, or public web content.",
+            "Set max_bytes lower for known small responses.",
+        ],
+    },
+    {
+        "name": "code_search",
+        "description": (
+            "AST-aware code search across the workspace. Supports finding definitions, references, symbols, "
+            "and text chunks. More precise than search_files for code navigation."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "workspaceRoot": WORKSPACE_ROOT_PROPERTY,
+                "query": _string_property(
+                    "Symbol name or text pattern to search for.",
+                    examples=["ToolRegistry", "handle_request", "MyComponent"],
+                ),
+                "mode": {
+                    "type": "string",
+                    "description": "Search mode: definition, reference, symbol, or chunk.",
+                    "enum": ["definition", "reference", "symbol", "chunk"],
+                    "default": "definition",
+                },
+                "path": _string_property(
+                    "Workspace-relative directory to scope the search.",
+                    default=".",
+                    examples=[".", "src", "runtime/src"],
+                ),
+                "glob": {
+                    "type": "array",
+                    "description": "File glob patterns to include.",
+                    "items": {"type": "string", "minLength": 1},
+                    "default": ["**/*.py", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.rs", "**/*.go"],
+                    "examples": [["**/*.py"], ["src/**/*.ts"]],
+                },
+                "ignore": {
+                    "type": "array",
+                    "description": "Additional ignore patterns.",
+                    "items": {"type": "string", "minLength": 1},
+                    "default": [],
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "description": "Maximum directory depth.",
+                    "minimum": 1,
+                    "maximum": 8,
+                    "default": 6,
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of results.",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 30,
+                },
+            },
+            "required": ["workspaceRoot", "query"],
+        },
+        "safety": [
+            "Read-only: does not modify files.",
+            "Search scope is constrained to workspaceRoot.",
+        ],
+        "hints": [
+            "Use mode='definition' to find class/function declarations.",
+            "Use mode='reference' to find where a symbol is used.",
+            "Use mode='symbol' for a combined definition + reference search.",
+        ],
+    },
+    {
+        "name": "notebook",
+        "description": (
+            "Read and execute Jupyter notebook (.ipynb) cells. List cells, read cell content and outputs, "
+            "or execute code cells in a subprocess."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "workspaceRoot": WORKSPACE_ROOT_PROPERTY,
+                "path": _string_property(
+                    "Workspace-relative path to the .ipynb file.",
+                    examples=["analysis.ipynb", "notebooks/experiment.ipynb"],
+                ),
+                "action": {
+                    "type": "string",
+                    "description": "Action to perform on the notebook.",
+                    "enum": ["list_cells", "get_cell", "execute_cell"],
+                    "default": "list_cells",
+                },
+                "cell_index": {
+                    "type": "integer",
+                    "description": "Cell index for get_cell or execute_cell actions.",
+                    "minimum": 0,
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Execution timeout in seconds for execute_cell.",
+                    "minimum": 5,
+                    "maximum": 300,
+                    "default": 60,
+                },
+            },
+            "required": ["workspaceRoot", "path"],
+        },
+        "safety": [
+            "execute_cell runs code in a subprocess — treat it like run_command.",
+            "Read-only actions (list_cells, get_cell) are safe.",
+        ],
+        "hints": [
+            "Use list_cells first to see the notebook structure.",
+            "Use get_cell to inspect a specific cell's source and outputs.",
+            "Use execute_cell only when you need to re-run a code cell.",
+        ],
+    },
+    {
+        "name": "browser",
+        "description": (
+            "Fetch a web page and extract its readable text content, or return the raw HTML. "
+            "Useful for reading documentation, articles, or API pages."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "url": _string_property(
+                    "HTTP or HTTPS URL to browse.",
+                    examples=["https://docs.python.org/3/", "https://example.com"],
+                ),
+                "action": {
+                    "type": "string",
+                    "description": "read extracts text, raw returns full HTML.",
+                    "enum": ["read", "raw"],
+                    "default": "read",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Request timeout in seconds.",
+                    "minimum": 5,
+                    "maximum": 120,
+                    "default": 30,
+                },
+                "max_bytes": {
+                    "type": "integer",
+                    "description": "Maximum response bytes to read.",
+                    "minimum": 4096,
+                    "maximum": 2097152,
+                    "default": 524288,
+                },
+            },
+            "required": ["url"],
+        },
+        "safety": [
+            "Makes outbound network requests.",
+            "Does not execute JavaScript — only fetches static HTML.",
+            "Response size is capped by max_bytes.",
+        ],
+        "hints": [
+            "Use action='read' for extracting article or documentation text.",
+            "Use action='raw' when you need the HTML structure.",
+        ],
+    },
 ]
+
+BUILTIN_TOOL_SCHEMAS.extend(MEMORY_TOOL_SCHEMAS)
+BUILTIN_TOOL_SCHEMAS.extend(SCRATCHPAD_TOOL_SCHEMAS)
 
 BUILTIN_TOOL_SCHEMAS_BY_NAME: dict[str, dict[str, Any]] = {
     schema["name"]: schema for schema in BUILTIN_TOOL_SCHEMAS
@@ -563,7 +829,13 @@ def to_openai_function_tools(tool_schemas: list[dict[str, Any]]) -> list[dict[st
 
 
 class ToolRegistry:
-    """Registers structured tools for the runtime."""
+    """Registers structured tools for the runtime.
+
+    Enhanced with:
+    - Parameter validation against JSON Schema ``required`` fields
+    - Unified error wrapping on tool exceptions
+    - ``has_tool()`` / ``list_tools()`` helpers
+    """
 
     def __init__(
         self,
@@ -573,16 +845,62 @@ class ToolRegistry:
         self._tools = tools or {}
         self._schemas = schemas or {}
 
+    # ── registration ────────────────────────────────────────────────
+
     def register(self, name: str, handler: ToolHandler, schema: dict[str, Any] | None = None) -> None:
         self._tools[name] = handler
         if schema is not None:
             self._schemas[name] = schema
 
+    def unregister(self, name: str) -> None:
+        self._tools.pop(name, None)
+        self._schemas.pop(name, None)
+
+    def unregister_prefix(self, prefix: str) -> int:
+        """Remove all tools whose name starts with *prefix*.  Returns count removed."""
+        names = [n for n in self._tools if n.startswith(prefix)]
+        for n in names:
+            self._tools.pop(n, None)
+            self._schemas.pop(n, None)
+        return len(names)
+
+    # ── query ───────────────────────────────────────────────────────
+
+    def has_tool(self, name: str) -> bool:
+        return name in self._tools
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        """Return lightweight tool descriptors for discovery."""
+        result: list[dict[str, Any]] = []
+        for name in self._tools:
+            schema = self._schema_for(name)
+            result.append(
+                {
+                    "name": name,
+                    "description": schema.get("description", ""),
+                    "safety": schema.get("safety", []),
+                }
+            )
+        return result
+
+    # ── execution ───────────────────────────────────────────────────
+
     def execute(self, name: str, params: dict[str, Any]) -> dict[str, Any]:
         handler = self._tools.get(name)
         if handler is None:
             raise ValueError(f"Unknown tool: {name}")
-        return handler(params)
+
+        self._validate_required(name, params)
+
+        try:
+            result = handler(params)
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "failed",
+                "error": str(exc),
+                "toolName": name,
+            }
+        return result
 
     @property
     def schemas(self) -> list[dict[str, Any]]:
@@ -608,3 +926,25 @@ class ToolRegistry:
             "safety": ["No safety metadata is registered for this custom tool."],
             "hints": [],
         }
+
+    def _validate_required(self, name: str, params: dict[str, Any]) -> None:
+        schema = self._schema_for(name)
+        input_schema = schema.get("input_schema") or {}
+        required = list(input_schema.get("required") or [])
+        # oneOf: at least one branch must be fully satisfied
+        one_of = input_schema.get("oneOf")
+        if one_of:
+            branch_ok = any(
+                all(field in params for field in branch.get("required", []))
+                for branch in one_of
+            )
+            if not branch_ok:
+                branch_names = [
+                    ", ".join(branch.get("required", [])) for branch in one_of
+                ]
+                raise ValueError(
+                    f"Missing required parameters for {name}: need one of ({'; '.join(branch_names)})"
+                )
+        missing = [field for field in required if field not in params]
+        if missing:
+            raise ValueError(f"Missing required parameters for {name}: {', '.join(missing)}")

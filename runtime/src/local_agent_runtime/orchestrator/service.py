@@ -26,6 +26,11 @@ from ..services.worker_runner import WorkerRunner
 from ..router import MetaRouter, RoutingDecision
 from ..skills.registry import SkillRegistry
 from ..mcp.client import McpClientManager, McpServerConfig
+from ..reflection.evaluator import ReflectionEvaluator
+from ..reflection.types import ReflectionConfig
+from ..planner.decomposer import TaskDecomposer
+from ..planner.dag_executor import DAGExecutor
+from ..planner.coverage import CoverageEvaluator
 from ..store.sqlite_store import SQLiteStore
 from ..tools import build_builtin_tools
 from ..tools.registry import BUILTIN_TOOL_SCHEMAS, ToolRegistry
@@ -65,7 +70,25 @@ class Orchestrator:
         self._worker_runner = WorkerRunner(self._collaboration_service)
         self._subagent_service = SubagentService(store, self._collaboration_service, runner=self._worker_runner)
         self._mcp_manager = McpClientManager(store)
+        self._reflector = self._build_reflector(store, provider)
+        self._decomposer = TaskDecomposer(provider=provider)
+        self._dag_executor = DAGExecutor(subagent_service=self._subagent_service)
+        self._coverage_evaluator = CoverageEvaluator()
         self._pending_react_tasks: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def _build_reflector(store: SQLiteStore, provider: ProviderAdapter) -> ReflectionEvaluator | None:
+        config = store.get_config({})["config"]
+        rc = config.get("reflection", {})
+        if not rc.get("enabled"):
+            return None
+        reflection_config = ReflectionConfig(
+            enabled=True,
+            max_retries=rc.get("maxRetries", 2),
+            confidence_threshold=rc.get("confidenceThreshold", 0.7),
+            evaluation_prompt=rc.get("evaluationPrompt", ""),
+        )
+        return ReflectionEvaluator(provider=provider, config=reflection_config)
 
     def open_workspace(self, params: dict[str, Any]) -> dict[str, Any]:
         workspace = self._store.upsert_workspace(path=params["path"])
@@ -522,6 +545,13 @@ class Orchestrator:
         goal: str,
         context: dict[str, Any],
     ) -> dict[str, Any]:
+        # --- Planning branch ---
+        routing = context.get("routing", {})
+        if routing.get("enable_planning"):
+            return self._execute_with_planning(
+                session_id=session_id, task=task, goal=goal, context=context,
+            )
+        # --- Standard ReAct path ---
         try:
             react_result = self._run_react_loop(
                 session_id=session_id,
@@ -579,6 +609,78 @@ class Orchestrator:
                     summary=str(exc),
                     error_code="LOOP_EXECUTION_FAILED",
                 )
+            }
+
+    def _execute_with_planning(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Planning mode: decompose goal → execute subtasks → synthesize."""
+        try:
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.planning.started",
+                payload={"goal": goal},
+            )
+
+            # 1. Decompose
+            plan_context = json.dumps(
+                context.get("tool_results", []), ensure_ascii=False,
+            )[:2000]
+            plan = self._decomposer.decompose(goal=goal, context=plan_context)
+
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.planning.decomposed",
+                payload={
+                    "subtaskCount": len(plan.subtasks),
+                    "executionOrder": plan.execution_order,
+                },
+            )
+
+            # 2. Execute subtasks
+            execution = self._dag_executor.execute(
+                plan,
+                session_id=session_id,
+                parent_task_id=task["id"],
+            )
+
+            # 3. Coverage evaluation
+            coverage = self._coverage_evaluator.evaluate(
+                goal, execution["subtasks"],
+            )
+
+            summary = execution["summary"]
+
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.planning.completed",
+                payload={
+                    "coverage": coverage,
+                    "success": execution["success"],
+                },
+            )
+
+            return {
+                "task": self._complete_task(
+                    session_id=session_id,
+                    task=task,
+                    summary=summary,
+                    context=context,
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "task": self._fail_task(
+                    session_id=session_id,
+                    task=task,
+                    summary=str(exc),
+                    error_code="PLANNING_EXECUTION_FAILED",
+                ),
             }
 
     def _start_background_message(
@@ -955,6 +1057,22 @@ class Orchestrator:
             tool_results=tool_results or [],
         )
         final_summary = self._merge_completion_summary(summary=summary, validation=validation)
+
+        # --- Reflection phase ---
+        reflection_data = None
+        reflection_result = self._reflect_on_result(
+            session_id=session_id,
+            task=task,
+            goal=task.get("goal", ""),
+            summary=final_summary,
+            context=context or {},
+        )
+        if reflection_result is not None:
+            reflection_data = self._reflector.to_dict(reflection_result)
+            if reflection_result.improved_summary:
+                final_summary = reflection_result.improved_summary
+        # --- End reflection ---
+
         task["plan"] = self._planner.advance(
             task.get("plan") or [],
             "summarize-findings",
@@ -966,6 +1084,7 @@ class Orchestrator:
             plan=task["plan"],
             summary=final_summary,
             result_summary=final_summary,
+            reflection=reflection_data,
         )
         runtime_task = {
             **completed_task,
@@ -999,12 +1118,59 @@ class Orchestrator:
                 "changedFiles": runtime_task.get("changedFiles") or [],
                 "commands": runtime_task.get("commands") or [],
                 "verification": runtime_task.get("verification") or [],
+                "reflection": reflection_data,
                 "summary": final_summary,
                 "resultSummary": final_summary,
                 "detail": final_summary,
             },
         )
         return runtime_task
+
+    def _reflect_on_result(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        summary: str,
+        context: dict[str, Any],
+    ) -> ReflectionResult | None:
+        """Conditionally trigger reflection: routing decision + global config enabled."""
+        if self._reflector is None:
+            return None
+        routing = context.get("routing", {})
+        if not routing.get("enable_reflection"):
+            return None
+
+        self._store.update_task_status(task["id"], "verifying")
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="task.reflection.started",
+            payload={"goal": goal},
+        )
+
+        tool_output = json.dumps(
+            context.get("tool_results", []), ensure_ascii=False,
+        )[:2000]
+
+        result = self._reflector.reflect(
+            goal=goal,
+            output=summary,
+            context=tool_output,
+        )
+
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="task.reflection.completed",
+            payload={
+                "accepted": result.accepted,
+                "finalScore": result.final_score,
+                "iterations": len(result.iterations),
+            },
+        )
+        return result
 
     def _fail_task(
         self,

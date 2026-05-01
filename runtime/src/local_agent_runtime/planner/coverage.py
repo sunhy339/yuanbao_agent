@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from .types import Subtask
 
@@ -59,7 +62,21 @@ class CoverageEvaluator:
             return 0.0
 
         covered = goal_keywords & subtask_keywords
-        return len(covered) / len(goal_keywords)
+        score = len(covered) / len(goal_keywords)
+        logger.debug("Coverage: %d/%d keywords covered (%.2f)", len(covered), len(goal_keywords), score)
+        return score
+
+    def find_gaps(self, goal: str, subtasks: list[Subtask]) -> list[str]:
+        """Return goal keywords not covered by any subtask."""
+        if not goal or not goal.strip():
+            return []
+        goal_keywords = self._extract_keywords(goal)
+        if not goal_keywords:
+            return []
+        combined_text = " ".join(f"{s.title} {s.description}" for s in subtasks)
+        subtask_keywords = self._extract_keywords(combined_text)
+        gaps = goal_keywords - subtask_keywords
+        return sorted(gaps)
 
     def _extract_keywords(self, text: str) -> set[str]:
         """Extract meaningful keywords from text.

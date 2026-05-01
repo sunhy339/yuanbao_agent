@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from ..services.subagent_service import SubagentService
 from .types import PlanResult, Subtask
@@ -22,6 +22,10 @@ class DAGExecutor:
         *,
         session_id: str,
         parent_task_id: str,
+        is_paused_fn: Callable[[], bool] | None = None,
+        completed_ids: set[str] | None = None,
+        failed_ids: set[str] | None = None,
+        prior_results: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Execute all sub-tasks in topological order.
 
@@ -29,21 +33,38 @@ class DAGExecutor:
 
         When a sub-task fails, its dependents are skipped but independent
         sub-tasks continue executing.
+
+        If *is_paused_fn* is provided and returns True after a sub-task
+        completes, execution is paused and a partial result is returned
+        with ``paused=True``.  On resume, pass *completed_ids* /
+        *failed_ids* / *prior_results* to skip already-completed work.
         """
-        completed: set[str] = set()
-        failed: set[str] = set()
-        results: dict[str, str] = {}
+        completed: set[str] = set(completed_ids or ())
+        failed: set[str] = set(failed_ids or ())
+        results: dict[str, str] = dict(prior_results or ())
 
         for subtask_id in plan.execution_order:
             subtask = self._find_subtask(plan.subtasks, subtask_id)
             if subtask is None:
                 continue
 
+            # Skip already-completed subtasks (resume scenario)
+            if subtask_id in completed:
+                subtask.status = "completed"
+                subtask.result = results.get(subtask_id, "Completed")
+                continue
+
+            # Skip already-failed subtasks (resume scenario)
+            if subtask_id in failed:
+                subtask.status = "failed"
+                subtask.result = results.get(subtask_id, "Failed")
+                continue
+
             # Check if any dependency failed
             if self._has_failed_dependency(subtask, failed):
                 subtask.status = "skipped"
                 failed.add(subtask.id)
-                results[subtask.id] = f"Skipped: dependency failed"
+                results[subtask.id] = "Skipped: dependency failed"
                 continue
 
             # Check all dependencies completed
@@ -72,6 +93,18 @@ class DAGExecutor:
                 subtask.result = str(exc)
                 failed.add(subtask.id)
                 results[subtask.id] = f"Failed: {exc}"
+
+            # Cooperative pause check after each sub-task
+            if is_paused_fn is not None and is_paused_fn():
+                return {
+                    "subtasks": plan.subtasks,
+                    "summary": "",
+                    "success": None,
+                    "completed": list(completed),
+                    "failed": list(failed),
+                    "paused": True,
+                    "results": dict(results),
+                }
 
         success = len(failed) == 0
         summary = self.synthesize_results(plan.subtasks)

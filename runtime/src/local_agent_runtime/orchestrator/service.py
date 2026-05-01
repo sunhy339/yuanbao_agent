@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ..context.builder import ContextBuilder
 from ..context.compactor import ContextCompactor
@@ -75,6 +78,7 @@ class Orchestrator:
         self._dag_executor = DAGExecutor(subagent_service=self._subagent_service)
         self._coverage_evaluator = CoverageEvaluator()
         self._pending_react_tasks: dict[str, dict[str, Any]] = {}
+        self._cleanup_orphan_tasks()
 
     @staticmethod
     def _build_reflector(store: SQLiteStore, provider: ProviderAdapter) -> ReflectionEvaluator | None:
@@ -366,8 +370,7 @@ class Orchestrator:
                         schema,
                     )
             except Exception as exc:  # noqa: BLE001
-                import logging
-                logging.getLogger(__name__).warning("Failed to connect MCP server %s: %s", server_row.get("id"), exc)
+                logger.warning("Failed to connect MCP server %s: %s", server_row.get("id"), exc)
 
     def mcp_server_list(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._store.list_mcp_servers(params)
@@ -387,8 +390,7 @@ class Orchestrator:
                         schema,
                     )
             except Exception as exc:  # noqa: BLE001
-                import logging
-                logging.getLogger(__name__).warning("Failed to connect MCP server %s: %s", server.get("id"), exc)
+                logger.warning("Failed to connect MCP server %s: %s", server.get("id"), exc)
         return result
 
     def mcp_server_update(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -492,6 +494,11 @@ class Orchestrator:
             "reasoning": routing.reasoning,
             "skill_id": routing.skill_id,
         }
+        logger.info(
+            "Routing decision: scenario=%s strategy=%s confidence=%.2f max_steps=%d skill=%s",
+            routing.scenario.value, routing.strategy.value,
+            routing.confidence, routing.max_steps, routing.skill_id,
+        )
 
         plan = self._planner.plan(goal, context=context)
         task = self._store.create_task(
@@ -547,8 +554,18 @@ class Orchestrator:
     ) -> dict[str, Any]:
         # --- Planning branch ---
         routing = context.get("routing", {})
+        strategy = routing.get("strategy", "react_standard")
+        logger.info("Executing strategy=%s for task=%s", strategy, task["id"])
         if routing.get("enable_planning"):
-            return self._execute_with_planning(
+            result = self._execute_with_planning(
+                session_id=session_id, task=task, goal=goal, context=context,
+            )
+            if result.get("status") == "paused":
+                return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
+            return result
+        # --- REACT_FAST: simplified path, skip minimal_loop and reflection ---
+        if strategy == "react_fast":
+            return self._execute_react_fast(
                 session_id=session_id, task=task, goal=goal, context=context,
             )
         # --- Standard ReAct path ---
@@ -560,7 +577,9 @@ class Orchestrator:
                 context=context,
             )
             if react_result["status"] == "waiting_approval":
-                return {"task": task}
+                return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
+            if react_result["status"] == "paused":
+                return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
             if react_result["status"] == "completed":
                 return {
                     "task": self._complete_task(
@@ -602,12 +621,65 @@ class Orchestrator:
                 )
             }
         except Exception as exc:  # noqa: BLE001
+            logger.error("React loop failed for task=%s: %s", task["id"], exc, exc_info=True)
             return {
                 "task": self._fail_task(
                     session_id=session_id,
                     task=task,
                     summary=str(exc),
                     error_code="LOOP_EXECUTION_FAILED",
+                )
+            }
+
+    def _execute_react_fast(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Fast ReAct path for simple queries. Skips minimal_loop and reflection."""
+        try:
+            react_result = self._run_react_loop(
+                session_id=session_id,
+                task=task,
+                goal=goal,
+                context=context,
+            )
+            if react_result["status"] == "waiting_approval":
+                return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
+            if react_result["status"] == "paused":
+                return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
+            summary = react_result.get("summary") or self._provider.summarize_findings(
+                goal=goal,
+                context=context,
+                tool_results=react_result.get("tool_results", []),
+            )
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="assistant.token",
+                payload={"delta": summary},
+            )
+            return {
+                "task": self._complete_task(
+                    session_id=session_id,
+                    task=task,
+                    summary=summary,
+                    context=context,
+                    tool_results=react_result.get("tool_results", []),
+                    skip_reflection=True,
+                )
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Fast react loop failed for task=%s: %s", task["id"], exc, exc_info=True)
+            return {
+                "task": self._fail_task(
+                    session_id=session_id,
+                    task=task,
+                    summary=str(exc),
+                    error_code="FAST_LOOP_FAILED",
                 )
             }
 
@@ -647,7 +719,32 @@ class Orchestrator:
                 plan,
                 session_id=session_id,
                 parent_task_id=task["id"],
+                is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
             )
+
+            # Handle DAG cooperative pause
+            if execution.get("paused"):
+                plan_data = {
+                    "subtasks": [
+                        {"id": s.id, "title": s.title, "description": s.description,
+                         "dependencies": s.dependencies, "status": s.status, "result": s.result}
+                        for s in plan.subtasks
+                    ],
+                    "dag": plan.dag,
+                    "execution_order": plan.execution_order,
+                }
+                if hasattr(self._store, "upsert_pending_dag_state"):
+                    self._store.upsert_pending_dag_state(
+                        task_id=task["id"],
+                        session_id=session_id,
+                        goal=goal,
+                        context=context,
+                        plan_json=json.dumps(plan_data, ensure_ascii=False),
+                        completed_ids=execution["completed"],
+                        failed_ids=execution["failed"],
+                        results=execution.get("results", {}),
+                    )
+                return {"status": "paused"}
 
             # 3. Coverage evaluation
             coverage = self._coverage_evaluator.evaluate(
@@ -674,6 +771,7 @@ class Orchestrator:
                 ),
             }
         except Exception as exc:  # noqa: BLE001
+            logger.error("Planning execution failed for task=%s: %s", task["id"], exc, exc_info=True)
             return {
                 "task": self._fail_task(
                     session_id=session_id,
@@ -748,6 +846,7 @@ class Orchestrator:
                 context=context,
             )
         except Exception as exc:  # noqa: BLE001
+            logger.error("Background message execution failed: %s", exc, exc_info=True)
             worker._fail_task(
                 session_id=session_id,
                 task=task,
@@ -986,6 +1085,7 @@ class Orchestrator:
                 "budget": budget.to_metadata(),
             }
         except Exception as exc:  # noqa: BLE001
+            logger.error("Worker task execution failed: %s", exc, exc_info=True)
             self._fail_task(
                 session_id=session["id"],
                 task=runtime_task,
@@ -1049,6 +1149,7 @@ class Orchestrator:
         *,
         context: dict[str, Any] | None = None,
         tool_results: list[dict[str, Any]] | None = None,
+        skip_reflection: bool = False,
     ) -> dict[str, Any]:
         validation = self._run_post_task_validation(
             session_id=session_id,
@@ -1060,7 +1161,7 @@ class Orchestrator:
 
         # --- Reflection phase ---
         reflection_data = None
-        reflection_result = self._reflect_on_result(
+        reflection_result = None if skip_reflection else self._reflect_on_result(
             session_id=session_id,
             task=task,
             goal=task.get("goal", ""),
@@ -1091,6 +1192,7 @@ class Orchestrator:
             "plan": task["plan"],
             "resultSummary": final_summary,
         }
+        logger.info("Task %s completed: summary_len=%d", task["id"], len(final_summary))
         self._store.create_message(
             session_id=session_id,
             task_id=runtime_task["id"],
@@ -1099,6 +1201,7 @@ class Orchestrator:
         )
         self._remember_task_result(session_id=session_id, task=runtime_task)
         self._promote_scratchpad_to_memory(session_id)
+        self._consolidate_working_memories(session_id)
         self._clear_pending_react_state(task["id"])
         self._record_task_metrics(session_id=session_id, task=runtime_task, tool_results=tool_results, task_status="completed")
         self._publish(
@@ -1154,10 +1257,27 @@ class Orchestrator:
             context.get("tool_results", []), ensure_ascii=False,
         )[:2000]
 
+        # Construct retry_fn so the reflection loop can re-generate improved output
+        def _retry_fn(feedback: str) -> str:
+            retry_prompt = (
+                f"你之前的回答存在以下问题:\n{feedback}\n\n"
+                f"原始目标: {goal}\n"
+                f"请基于以上反馈，重新生成一个改进版的回答。"
+            )
+            try:
+                retry_response = self._provider.generate(
+                    retry_prompt,
+                    {"messages": [{"role": "user", "content": retry_prompt}]},
+                )
+                return retry_response.get("message") or retry_response.get("final_answer") or summary
+            except Exception:  # noqa: BLE001
+                return summary
+
         result = self._reflector.reflect(
             goal=goal,
             output=summary,
             context=tool_output,
+            retry_fn=_retry_fn,
         )
 
         self._publish(
@@ -1179,6 +1299,7 @@ class Orchestrator:
         summary: str,
         error_code: str,
     ) -> dict[str, Any]:
+        logger.warning("Task %s failed: error_code=%s summary=%s", task["id"], error_code, summary[:200])
         task_plan = task.get("plan") or []
         failed_task = self._store.update_task(
             task_id=task["id"],
@@ -1285,6 +1406,17 @@ class Orchestrator:
             )
         if entries:
             self._scratchpad.clear(session_id)
+
+    def _consolidate_working_memories(self, session_id: str) -> None:
+        """Promote WORKING memories to SESSION after task completion."""
+        if self._memory_manager is None:
+            return
+        try:
+            count = self._memory_manager.consolidate(session_id)
+            if count > 0:
+                logger.info("Consolidated %d working memories for session %s", count, session_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("Memory consolidation failed for session %s", session_id, exc_info=True)
 
     def _remember_task_result(self, *, session_id: str, task: dict[str, Any]) -> None:
         if not hasattr(self._store, "update_session_summary"):
@@ -1988,8 +2120,34 @@ class Orchestrator:
         if task["status"] != "paused":
             return {"task": task}
 
+        # Check DAG paused state first
+        dag_state = self._load_pending_dag_state(task["id"])
+        if dag_state is not None:
+            running_task = self._store.update_task_status(task_id=task["id"], status="running")
+            self._publish(
+                session_id=running_task["sessionId"],
+                task=running_task,
+                event_type="task.resumed",
+                payload={"status": "running", "detail": "Resuming paused DAG execution."},
+            )
+            resumed_task = self._resume_dag_execution(task=running_task, state=dag_state)
+            return {"task": resumed_task}
+
         pending_state = self._load_pending_react_state(task["id"])
         if pending_state is not None:
+            # Cooperative pause: no pending tool call → resume ReAct loop directly
+            is_cooperative = not pending_state.get("pending_tool_call")
+            if is_cooperative:
+                running_task = self._store.update_task_status(task_id=task["id"], status="running")
+                self._publish(
+                    session_id=running_task["sessionId"],
+                    task=running_task,
+                    event_type="task.resumed",
+                    payload={"status": "running", "detail": "Resuming cooperative paused ReAct task."},
+                )
+                resumed_task = self._resume_cooperative_react(task=running_task, state=pending_state)
+                return {"task": resumed_task}
+
             approval = self._latest_approval_for_task(task["id"])
             if approval is not None and approval.get("decision") == "approved":
                 running_task = self._store.update_task_status(task_id=task["id"], status="running")
@@ -2033,6 +2191,157 @@ class Orchestrator:
             payload={"status": running_task["status"]},
         )
         return {"task": running_task}
+
+    def _resume_cooperative_react(self, task: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+        """Resume a cooperatively paused ReAct loop from its saved checkpoint."""
+        try:
+            react_result = self._run_react_loop(
+                session_id=state["session_id"],
+                task=task,
+                goal=state["goal"],
+                context=state["context"],
+                state=state,
+            )
+            if react_result["status"] == "paused":
+                return task  # paused again
+            if react_result["status"] == "waiting_approval":
+                return task
+            summary = react_result.get("summary") or self._provider.summarize_findings(
+                goal=state["goal"],
+                context=state["context"],
+                tool_results=react_result.get("tool_results", []),
+            )
+            return self._complete_task(
+                session_id=state["session_id"],
+                task=task,
+                summary=summary,
+                context=state["context"],
+                tool_results=react_result.get("tool_results", []),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Cooperative resume failed for task=%s: %s", task["id"], exc, exc_info=True)
+            return self._fail_task(
+                session_id=state["session_id"],
+                task=task,
+                summary=str(exc),
+                error_code="RESUME_FAILED",
+            )
+
+    # ------------------------------------------------------------------
+    # DAG pause/resume helpers
+    # ------------------------------------------------------------------
+
+    def _load_pending_dag_state(self, task_id: str) -> dict[str, Any] | None:
+        if hasattr(self._store, "get_pending_dag_state"):
+            return self._store.get_pending_dag_state(task_id)
+        return None
+
+    def _clear_pending_dag_state(self, task_id: str) -> None:
+        if hasattr(self._store, "delete_pending_dag_state"):
+            self._store.delete_pending_dag_state(task_id)
+
+    def _resume_dag_execution(self, task: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+        """Resume a paused DAG execution from its saved checkpoint."""
+        try:
+            from ..planner.types import PlanResult, Subtask as PlanSubtask
+
+            plan_data = state["plan"]
+            subtasks = [
+                PlanSubtask(
+                    id=s["id"], title=s["title"], description=s["description"],
+                    dependencies=s["dependencies"], status=s.get("status", "pending"),
+                    result=s.get("result"),
+                )
+                for s in plan_data["subtasks"]
+            ]
+            plan = PlanResult(
+                subtasks=subtasks,
+                dag=plan_data["dag"],
+                execution_order=plan_data["execution_order"],
+            )
+
+            execution = self._dag_executor.execute(
+                plan,
+                session_id=state["session_id"],
+                parent_task_id=task["id"],
+                is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
+                completed_ids=set(state["completed"]),
+                failed_ids=set(state["failed"]),
+                prior_results=state["results"],
+            )
+
+            if execution.get("paused"):
+                # Paused again — update persisted state
+                updated_plan_data = {
+                    "subtasks": [
+                        {"id": s.id, "title": s.title, "description": s.description,
+                         "dependencies": s.dependencies, "status": s.status, "result": s.result}
+                        for s in plan.subtasks
+                    ],
+                    "dag": plan.dag,
+                    "execution_order": plan.execution_order,
+                }
+                if hasattr(self._store, "upsert_pending_dag_state"):
+                    self._store.upsert_pending_dag_state(
+                        task_id=task["id"],
+                        session_id=state["session_id"],
+                        goal=state["goal"],
+                        context=state["context"],
+                        plan_json=json.dumps(updated_plan_data, ensure_ascii=False),
+                        completed_ids=execution["completed"],
+                        failed_ids=execution["failed"],
+                        results=execution.get("results", {}),
+                    )
+                return task
+
+            # Completed — clean up and finalize
+            self._clear_pending_dag_state(task["id"])
+
+            coverage = self._coverage_evaluator.evaluate(state["goal"], execution["subtasks"])
+            summary = execution["summary"]
+
+            self._publish(
+                session_id=state["session_id"], task=task,
+                event_type="task.planning.completed",
+                payload={"coverage": coverage, "success": execution["success"]},
+            )
+
+            return self._complete_task(
+                session_id=state["session_id"],
+                task=task,
+                summary=summary,
+                context=state["context"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("DAG resume failed for task=%s: %s", task["id"], exc, exc_info=True)
+            self._clear_pending_dag_state(task["id"])
+            return self._fail_task(
+                session_id=state["session_id"],
+                task=task,
+                summary=str(exc),
+                error_code="DAG_RESUME_FAILED",
+            )
+
+    def _cleanup_orphan_tasks(self) -> None:
+        """Reset tasks stuck in running/paused state from a crashed previous process."""
+        if not hasattr(self._store, "list_tasks_by_status"):
+            return
+        orphaned = self._store.list_tasks_by_status(["running", "paused"])
+        for task in orphaned:
+            self._store.update_task(
+                task_id=task["id"],
+                status="failed",
+                summary="Task interrupted by process restart",
+                error_code="ORPHAN_CLEANUP",
+            )
+            self._publish(
+                session_id=task.get("sessionId", ""),
+                task=task,
+                event_type="task.orphaned",
+                payload={"previousStatus": task["status"], "reason": "Process restart"},
+            )
+        if orphaned:
+            logger.info("Cleaned up %d orphan tasks", len(orphaned))
 
     def submit_approval(self, params: dict[str, Any]) -> dict[str, Any]:
         approval = self._store.resolve_approval(
@@ -2396,6 +2705,25 @@ class Orchestrator:
             )
 
         while True:
+            # Refresh task status to detect external pause
+            task = self._store.get_task({"taskId": task["id"]})["task"]
+            if task["status"] == "paused":
+                self._pending_react_tasks[task["id"]] = {
+                    "session_id": session_id,
+                    "goal": goal,
+                    "context": context,
+                    "messages": messages,
+                    "tool_results": tool_results,
+                    "steps": steps,
+                    "react_started": react_started,
+                    "patch_repair_attempts": patch_repair_attempts,
+                    "pending_tool_call": None,
+                    "pending_tool_spec": None,
+                    "remaining_tool_calls": [],
+                }
+                self._save_pending_react_state(task["id"], self._pending_react_tasks[task["id"]])
+                return {"status": "paused"}
+
             if steps >= max_steps:
                 raise RuntimeError(f"Reached maxTaskSteps ({max_steps}) before the provider returned a final answer.")
 
@@ -2526,6 +2854,25 @@ class Orchestrator:
                         )
                     continue
                 self._advance_after_tool(session_id=session_id, task=task, tool_spec=tool_spec)
+
+            # After all tool calls in this step, check for cooperative pause
+            task = self._store.get_task({"taskId": task["id"]})["task"]
+            if task["status"] == "paused":
+                self._pending_react_tasks[task["id"]] = {
+                    "session_id": session_id,
+                    "goal": goal,
+                    "context": context,
+                    "messages": messages,
+                    "tool_results": tool_results,
+                    "steps": steps,
+                    "react_started": react_started,
+                    "patch_repair_attempts": patch_repair_attempts,
+                    "pending_tool_call": None,
+                    "pending_tool_spec": None,
+                    "remaining_tool_calls": [],
+                }
+                self._save_pending_react_state(task["id"], self._pending_react_tasks[task["id"]])
+                return {"status": "paused"}
 
     def _request_provider_response(
         self,
@@ -2722,6 +3069,7 @@ class Orchestrator:
                 )
             return runtime_task
         except Exception as exc:  # noqa: BLE001
+            logger.error("Resume after approval failed for task=%s: %s", task["id"], exc, exc_info=True)
             return self._fail_task(
                 session_id=task["sessionId"],
                 task=runtime_task,
@@ -2932,6 +3280,16 @@ class Orchestrator:
         return list(tools_by_name.values())
 
     def _max_task_steps(self, context: dict[str, Any]) -> int:
+        # Prefer routing-level max_steps (scenario-aware) over global config
+        routing = context.get("routing")
+        if isinstance(routing, dict):
+            routing_steps = routing.get("max_steps")
+            if routing_steps is not None:
+                try:
+                    return max(1, int(routing_steps))
+                except (TypeError, ValueError):
+                    pass
+        # Fallback to global config
         config = context.get("config") or {}
         policy = config.get("policy") if isinstance(config, dict) else {}
         raw_value = policy.get("maxTaskSteps", 20) if isinstance(policy, dict) else 20

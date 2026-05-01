@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from pathlib import Path
 import re
 import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from local_agent_runtime.tools.registry import BUILTIN_TOOL_SCHEMAS, to_openai_function_tools
 
@@ -96,6 +99,15 @@ class ContextBuilder:
                 if t.get("name", "").startswith(("memory.", "scratchpad.")):
                     whitelist.add(t["name"])
             tools = [t for t in tools if t.get("name") in whitelist]
+
+            # Inject skill parameter constraints into provider config
+            if skill_preset.parameter_constraints:
+                provider_overrides = dict(config.get("provider", {})) if isinstance(config.get("provider"), dict) else {}
+                for k, v in skill_preset.parameter_constraints.items():
+                    if k not in provider_overrides:
+                        provider_overrides[k] = v
+                config = {**config, "provider": provider_overrides}
+                logger.debug("Skill %s: injected parameter_constraints %s", skill_id, skill_preset.parameter_constraints)
 
         tools_id = id(tools)
         if self._cached_tool_schemas_id == tools_id and self._cached_openai_tools is not None:

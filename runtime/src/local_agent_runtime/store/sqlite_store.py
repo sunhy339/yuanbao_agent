@@ -1450,6 +1450,92 @@ class SQLiteStore:
         self._conn.execute("DELETE FROM pending_react_tasks WHERE task_id = ?", (task_id,))
         self._conn.commit()
 
+    # ------------------------------------------------------------------
+    # Pending DAG state
+    # ------------------------------------------------------------------
+
+    def upsert_pending_dag_state(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        goal: str,
+        context: dict[str, Any],
+        plan_json: str,
+        completed_ids: list[str],
+        failed_ids: list[str],
+        results: dict[str, str],
+    ) -> dict[str, Any]:
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO pending_dag_tasks (
+                task_id, session_id, goal, context_json, plan_json,
+                completed_ids_json, failed_ids_json, results_json,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                goal = excluded.goal,
+                context_json = excluded.context_json,
+                plan_json = excluded.plan_json,
+                completed_ids_json = excluded.completed_ids_json,
+                failed_ids_json = excluded.failed_ids_json,
+                results_json = excluded.results_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                task_id,
+                session_id,
+                goal,
+                json.dumps(context, ensure_ascii=False),
+                plan_json,
+                json.dumps(completed_ids, ensure_ascii=False),
+                json.dumps(failed_ids, ensure_ascii=False),
+                json.dumps(results, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+        state = self.get_pending_dag_state(task_id)
+        if state is None:
+            raise ValueError(f"Pending DAG state not found after upsert: {task_id}")
+        return state
+
+    def get_pending_dag_state(self, task_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM pending_dag_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        return {
+            "task_id": d["task_id"],
+            "session_id": d["session_id"],
+            "goal": d["goal"],
+            "context": json.loads(d["context_json"]),
+            "plan": json.loads(d["plan_json"]),
+            "completed": json.loads(d["completed_ids_json"]),
+            "failed": json.loads(d["failed_ids_json"]),
+            "results": json.loads(d["results_json"]),
+        }
+
+    def delete_pending_dag_state(self, task_id: str) -> None:
+        self._conn.execute("DELETE FROM pending_dag_tasks WHERE task_id = ?", (task_id,))
+        self._conn.commit()
+
+    def list_tasks_by_status(self, statuses: list[str]) -> list[dict[str, Any]]:
+        """Return tasks matching any of the given statuses."""
+        placeholders = ",".join("?" for _ in statuses)
+        rows = self._conn.execute(
+            f"SELECT * FROM tasks WHERE status IN ({placeholders})",
+            tuple(statuses),
+        ).fetchall()
+        return [self._serialize_task(dict(r)) for r in rows]
+
     def get_patch(self, params: dict[str, Any]) -> dict[str, Any]:
         row = self._conn.execute(
             "SELECT * FROM patches WHERE id = ?",
@@ -2609,6 +2695,19 @@ class SQLiteStore:
                 remaining_tool_calls_json TEXT NOT NULL,
                 steps INTEGER NOT NULL,
                 react_started INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS pending_dag_tasks (
+                task_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                goal TEXT NOT NULL,
+                context_json TEXT NOT NULL,
+                plan_json TEXT NOT NULL,
+                completed_ids_json TEXT NOT NULL,
+                failed_ids_json TEXT NOT NULL,
+                results_json TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );

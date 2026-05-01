@@ -34,6 +34,7 @@ from ..reflection.types import ReflectionConfig
 from ..planner.decomposer import TaskDecomposer
 from ..planner.dag_executor import DAGExecutor
 from ..planner.coverage import CoverageEvaluator
+from ..orchestration import OrchestrationMode, SupervisorOrchestrator, SwarmOrchestrator
 from ..store.sqlite_store import SQLiteStore
 from ..tools import build_builtin_tools
 from ..tools.registry import BUILTIN_TOOL_SCHEMAS, ToolRegistry
@@ -77,6 +78,8 @@ class Orchestrator:
         self._decomposer = TaskDecomposer(provider=provider)
         self._dag_executor = DAGExecutor(subagent_service=self._subagent_service)
         self._coverage_evaluator = CoverageEvaluator()
+        self._supervisor = SupervisorOrchestrator(provider=provider, subagent_service=self._subagent_service)
+        self._swarm = SwarmOrchestrator(provider=provider, subagent_service=self._subagent_service)
         self._pending_react_tasks: dict[str, dict[str, Any]] = {}
         self._cleanup_orphan_tasks()
 
@@ -557,6 +560,15 @@ class Orchestrator:
         strategy = routing.get("strategy", "react_standard")
         logger.info("Executing strategy=%s for task=%s", strategy, task["id"])
         if routing.get("enable_planning"):
+            orch_mode = self._resolve_orchestration_mode(strategy)
+            if orch_mode == OrchestrationMode.SUPERVISOR:
+                return self._execute_with_supervisor(
+                    session_id=session_id, task=task, goal=goal, context=context,
+                )
+            if orch_mode == OrchestrationMode.SWARM:
+                return self._execute_with_swarm(
+                    session_id=session_id, task=task, goal=goal, context=context,
+                )
             result = self._execute_with_planning(
                 session_id=session_id, task=task, goal=goal, context=context,
             )
@@ -778,6 +790,114 @@ class Orchestrator:
                     task=task,
                     summary=str(exc),
                     error_code="PLANNING_EXECUTION_FAILED",
+                ),
+            }
+
+    def _resolve_orchestration_mode(self, strategy: str) -> OrchestrationMode:
+        """Map an ExecutionStrategy string to an OrchestrationMode."""
+        if strategy == "plan_supervise":
+            return OrchestrationMode.SUPERVISOR
+        if strategy == "plan_swarm":
+            return OrchestrationMode.SWARM
+        return OrchestrationMode.DAG
+
+    def _execute_with_supervisor(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Supervisor mode: decompose → execute with review → synthesize."""
+        try:
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.planning.started",
+                payload={"goal": goal, "mode": "supervisor"},
+            )
+
+            result = self._supervisor.execute(
+                goal, context,
+                session_id=session_id, task=task,
+                is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
+            )
+
+            if result.paused:
+                return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
+
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.planning.completed",
+                payload={"mode": "supervisor", "reviews": result.review_count},
+            )
+
+            return {
+                "task": self._complete_task(
+                    session_id=session_id,
+                    task=task,
+                    summary=result.summary,
+                    context=context,
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Supervisor execution failed for task=%s: %s", task["id"], exc, exc_info=True)
+            return {
+                "task": self._fail_task(
+                    session_id=session_id,
+                    task=task,
+                    summary=str(exc),
+                    error_code="SUPERVISOR_EXECUTION_FAILED",
+                ),
+            }
+
+    def _execute_with_swarm(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Swarm mode: decompose → execute with handoff → synthesize."""
+        try:
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.planning.started",
+                payload={"goal": goal, "mode": "swarm"},
+            )
+
+            result = self._swarm.execute(
+                goal, context,
+                session_id=session_id, task=task,
+                is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
+            )
+
+            if result.paused:
+                return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
+
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.planning.completed",
+                payload={"mode": "swarm", "handoffs": result.handoff_count},
+            )
+
+            return {
+                "task": self._complete_task(
+                    session_id=session_id,
+                    task=task,
+                    summary=result.summary,
+                    context=context,
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Swarm execution failed for task=%s: %s", task["id"], exc, exc_info=True)
+            return {
+                "task": self._fail_task(
+                    session_id=session_id,
+                    task=task,
+                    summary=str(exc),
+                    error_code="SWARM_EXECUTION_FAILED",
                 ),
             }
 

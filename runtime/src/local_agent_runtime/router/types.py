@@ -28,6 +28,7 @@ class ExecutionStrategy(str, Enum):
     SKILL_BASED = "skill_based"
     PLAN_THEN_EXECUTE = "plan_execute"
     PLAN_SUPERVISE = "plan_supervise"
+    PLAN_SWARM = "plan_swarm"
 
 
 @dataclass(slots=True)

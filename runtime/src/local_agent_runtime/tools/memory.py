@@ -113,14 +113,25 @@ MEMORY_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["content"],
         },
-        "safety": [
-            "Only stores text data in the local SQLite database.",
-            "Memory content is scoped to the current workspace/session.",
-        ],
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "memory",
+            "sandboxed": True,
+            "notes": [
+                "Only stores text data in the local SQLite database.",
+                "Memory content is scoped to the current workspace/session.",
+            ],
+        },
         "hints": [
             "Use for user preferences, project conventions, or important findings.",
             "Set kind='long_term' for facts that should persist indefinitely.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 1,
+            "estimated_duration_ms": 200,
+        },
     },
     {
         "name": "memory.recall",
@@ -160,13 +171,24 @@ MEMORY_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["query"],
         },
-        "safety": [
-            "Read-only: only retrieves existing memories.",
-            "Search is scoped to the current workspace.",
-        ],
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "memory",
+            "sandboxed": True,
+            "notes": [
+                "Read-only: only retrieves existing memories.",
+                "Search is scoped to the current workspace.",
+            ],
+        },
         "hints": [
             "Use at the start of a task to recall relevant context.",
             "Query with specific terms for better results.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 1,
+            "estimated_duration_ms": 200,
+        },
     },
 ]

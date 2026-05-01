@@ -81,13 +81,24 @@ SCRATCHPAD_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["key", "value"],
         },
-        "safety": [
-            "Stores text data in the local SQLite database, scoped to the current session.",
-        ],
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "memory",
+            "sandboxed": True,
+            "notes": [
+                "Stores text data in the local SQLite database, scoped to the current session.",
+            ],
+        },
         "hints": [
             "Use for intermediate reasoning state that you need across ReAct iterations.",
             "Key should be a short, descriptive identifier.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 1,
+            "estimated_duration_ms": 100,
+        },
     },
     {
         "name": "scratchpad.read",
@@ -112,11 +123,22 @@ SCRATCHPAD_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["key"],
         },
-        "safety": [
-            "Read-only: retrieves existing scratchpad entries.",
-        ],
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "memory",
+            "sandboxed": True,
+            "notes": [
+                "Read-only: retrieves existing scratchpad entries.",
+            ],
+        },
         "hints": [
             "Use to recover intermediate state from earlier in the session.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 1,
+            "estimated_duration_ms": 100,
+        },
     },
 ]

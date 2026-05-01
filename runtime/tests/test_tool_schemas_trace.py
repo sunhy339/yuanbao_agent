@@ -51,6 +51,21 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
         assert len(schema["description"]) > 40
         assert schema["hints"]
         assert schema["safety"]
+        assert isinstance(schema["safety"], dict), f"{name}: safety should be dict, got {type(schema['safety'])}"
+        assert "level" in schema["safety"]
+        assert "category" in schema["safety"]
+        assert "notes" in schema["safety"]
+        assert "requires_approval" in schema["safety"]
+        assert isinstance(schema["safety"]["notes"], list)
+        assert schema["safety"]["level"] in {"safe", "medium", "dangerous"}
+
+        # Metadata validation
+        assert "metadata" in schema, f"{name}: missing metadata field"
+        assert isinstance(schema["metadata"], dict)
+        assert "cost_per_use" in schema["metadata"]
+        assert "estimated_duration_ms" in schema["metadata"]
+        assert schema["metadata"]["cost_per_use"] >= 1
+        assert schema["metadata"]["estimated_duration_ms"] >= 0
 
         input_schema = schema["input_schema"]
         assert input_schema["type"] == "object"
@@ -102,12 +117,16 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
         assert json.loads(json.dumps(input_schema)) == input_schema
 
         if name in {"run_command", "apply_patch"}:
-            safety_text = " ".join(schema["safety"]).lower()
+            assert schema["safety"]["level"] == "dangerous"
+            assert schema["safety"]["requires_approval"] is True
+            safety_text = " ".join(schema["safety"]["notes"]).lower()
             assert "approval" in safety_text
             assert "destructive" in safety_text or "modify" in safety_text
 
         if name in {"write_file"}:
-            safety_text = " ".join(schema["safety"]).lower()
+            assert schema["safety"]["level"] == "dangerous"
+            assert schema["safety"]["requires_approval"] is True
+            safety_text = " ".join(schema["safety"]["notes"]).lower()
             assert "overwrite" in safety_text or "create" in safety_text
 
     registry = ToolRegistry({name: lambda _params: {} for name in EXPECTED_TOOL_NAMES})

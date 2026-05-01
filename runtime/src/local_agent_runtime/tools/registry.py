@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import deepcopy
+from enum import Enum
 from typing import Any
 
 from ..services.worker_environment import DEFAULT_CHILD_TOOL_ALLOWLIST
@@ -9,6 +10,28 @@ from .memory import MEMORY_TOOL_SCHEMAS
 from .scratchpad_tool import SCRATCHPAD_TOOL_SCHEMAS
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
+
+
+class ToolCategory(str, Enum):
+    """Semantic category for a registered tool."""
+
+    FILE_READ = "file_read"
+    FILE_WRITE = "file_write"
+    SEARCH = "search"
+    EXECUTION = "execution"
+    NETWORK = "network"
+    GIT = "git"
+    TASK = "task"
+    NOTEBOOK = "notebook"
+    MEMORY = "memory"
+
+
+class SafetyLevel(str, Enum):
+    """Risk classification for tool execution."""
+
+    SAFE = "safe"
+    MEDIUM = "medium"
+    DANGEROUS = "dangerous"
 
 
 def _string_property(description: str, *, default: str | None = None, examples: list[str] | None = None) -> dict[str, Any]:
@@ -88,14 +111,25 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["workspaceRoot"],
         },
-        "safety": [
-            "Read-only: does not modify files.",
-            "Paths are resolved relative to workspaceRoot and rejected if they escape the workspace.",
-        ],
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "file_read",
+            "sandboxed": True,
+            "notes": [
+                "Read-only: does not modify files.",
+                "Paths are resolved relative to workspaceRoot and rejected if they escape the workspace.",
+            ],
+        },
         "hints": [
             "Use path='.' with recursive=false for a quick top-level inventory.",
             "Set recursive=true and max_depth=2 or 3 when looking for likely source files.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 1,
+            "estimated_duration_ms": 500,
+        },
     },
     {
         "name": "search_files",
@@ -142,14 +176,25 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["workspaceRoot", "query"],
         },
-        "safety": [
-            "Read-only: does not modify files.",
-            "Large/binary files may be skipped or decoded with replacement by the runtime.",
-        ],
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "search",
+            "sandboxed": True,
+            "notes": [
+                "Read-only: does not modify files.",
+                "Large/binary files may be skipped or decoded with replacement by the runtime.",
+            ],
+        },
         "hints": [
             "Use mode='filename' when the user names a file or extension.",
             "Use max_results=8-20 for agent loops to keep context small.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 2,
+            "estimated_duration_ms": 2000,
+        },
     },
     {
         "name": "read_file",
@@ -188,14 +233,25 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["workspaceRoot", "path"],
         },
-        "safety": [
-            "Read-only: does not modify files.",
-            "Do not use this tool to inspect secrets or unrelated private files.",
-        ],
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "file_read",
+            "sandboxed": True,
+            "notes": [
+                "Read-only: does not modify files.",
+                "Do not use this tool to inspect secrets or unrelated private files.",
+            ],
+        },
         "hints": [
             "Read the smallest relevant file first.",
             "Set max_bytes for large generated files or logs.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 1,
+            "estimated_duration_ms": 500,
+        },
     },
     {
         "name": "task",
@@ -317,14 +373,25 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["prompt"],
         },
-        "safety": [
-            "Creates collaboration records and agent messages, but does not spawn a separate process in this slice.",
-            "The child task is executed through an in-process runner boundary with retry and timeout policy.",
-        ],
+        "safety": {
+            "level": "medium",
+            "requires_approval": False,
+            "category": "task",
+            "sandboxed": False,
+            "notes": [
+                "Creates collaboration records and agent messages, but does not spawn a separate process in this slice.",
+                "The child task is executed through an in-process runner boundary with retry and timeout policy.",
+            ],
+        },
         "hints": [
             "Use this when you want a structured child collaboration task instead of a shell command.",
             "Keep prompts short and action-oriented so the child task result stays focused.",
         ],
+        "metadata": {
+            "rate_limit": 10,
+            "cost_per_use": 10,
+            "estimated_duration_ms": 30000,
+        },
     },
     {
         "name": "run_command",
@@ -398,16 +465,27 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["workspaceRoot", "command"],
         },
-        "safety": [
-            "Dangerous: commands may modify files, execute code, access network, or delete data.",
-            "Requires approval under the default policy before execution.",
-            "Never use interactive commands, background daemons, destructive deletes, shutdowns, or formatting commands.",
-        ],
+        "safety": {
+            "level": "dangerous",
+            "requires_approval": True,
+            "category": "execution",
+            "sandboxed": False,
+            "notes": [
+                "Dangerous: commands may modify files, execute code, access network, or delete data.",
+                "Requires approval under the default policy before execution.",
+                "Never use interactive commands, background daemons, destructive deletes, shutdowns, or formatting commands.",
+            ],
+        },
         "hints": [
             "Prefer read-only commands first, such as tests, git status, or file listings.",
             "Use explicit timeouts for long-running test/build commands.",
             "Set background=true when the command should keep running while the runtime continues other work.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 5,
+            "estimated_duration_ms": 10000,
+        },
     },
     {
         "name": "apply_patch",
@@ -460,15 +538,26 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "required": ["workspaceRoot"],
             "oneOf": [{"required": ["patchText"]}, {"required": ["files"]}],
         },
-        "safety": [
-            "Dangerous: can modify workspace files and overwrite user changes if the patch is wrong.",
-            "Requires approval under the default policy before file changes are applied.",
-            "Patch paths must remain inside workspaceRoot.",
-        ],
+        "safety": {
+            "level": "dangerous",
+            "requires_approval": True,
+            "category": "file_write",
+            "sandboxed": True,
+            "notes": [
+                "Dangerous: can modify workspace files and overwrite user changes if the patch is wrong.",
+                "Requires approval under the default policy before file changes are applied.",
+                "Patch paths must remain inside workspaceRoot.",
+            ],
+        },
         "hints": [
             "Keep patches small and focused.",
             "Prefer unified diffs for targeted edits and files[] for new small files.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 3,
+            "estimated_duration_ms": 3000,
+        },
     },
     {
         "name": "git_status",
@@ -489,14 +578,25 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["workspaceRoot"],
         },
-        "safety": [
-            "Read-only: runs git status and does not modify repository state.",
-            "cwd is constrained to workspaceRoot.",
-        ],
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "git",
+            "sandboxed": True,
+            "notes": [
+                "Read-only: runs git status and does not modify repository state.",
+                "cwd is constrained to workspaceRoot.",
+            ],
+        },
         "hints": [
             "Use before editing when the user warns about parallel workers.",
             "Use cwd for monorepos with nested repositories.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 1,
+            "estimated_duration_ms": 1000,
+        },
     },
     {
         "name": "git_diff",
@@ -527,14 +627,25 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["workspaceRoot"],
         },
-        "safety": [
-            "Read-only: runs git diff and does not modify repository state.",
-            "Path filters are constrained to workspaceRoot.",
-        ],
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "git",
+            "sandboxed": True,
+            "notes": [
+                "Read-only: runs git diff and does not modify repository state.",
+                "Path filters are constrained to workspaceRoot.",
+            ],
+        },
         "hints": [
             "Use staged=true to review the index before commit.",
             "Pass path for focused review of a single file or subtree.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 1,
+            "estimated_duration_ms": 1000,
+        },
     },
     {
         "name": "write_file",
@@ -573,14 +684,25 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["workspaceRoot", "path", "content"],
         },
-        "safety": [
-            "Dangerous: can create new files or overwrite existing workspace files.",
-            "Paths must stay inside workspaceRoot.",
-        ],
+        "safety": {
+            "level": "dangerous",
+            "requires_approval": True,
+            "category": "file_write",
+            "sandboxed": True,
+            "notes": [
+                "Dangerous: can create new files or overwrite existing workspace files.",
+                "Paths must stay inside workspaceRoot.",
+            ],
+        },
         "hints": [
             "Prefer apply_patch for small edits to existing files.",
             "Use write_file for creating new files or full replacements.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 2,
+            "estimated_duration_ms": 1000,
+        },
     },
     {
         "name": "web_fetch",
@@ -628,15 +750,26 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["url"],
         },
-        "safety": [
-            "Makes outbound network requests to the specified URL.",
-            "Does not send credentials or cookies.",
-            "Response size is capped by max_bytes.",
-        ],
+        "safety": {
+            "level": "medium",
+            "requires_approval": False,
+            "category": "network",
+            "sandboxed": False,
+            "notes": [
+                "Makes outbound network requests to the specified URL.",
+                "Does not send credentials or cookies.",
+                "Response size is capped by max_bytes.",
+            ],
+        },
         "hints": [
             "Use for fetching documentation, API responses, or public web content.",
             "Set max_bytes lower for known small responses.",
         ],
+        "metadata": {
+            "rate_limit": 20,
+            "cost_per_use": 3,
+            "estimated_duration_ms": 5000,
+        },
     },
     {
         "name": "code_search",
@@ -694,15 +827,26 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["workspaceRoot", "query"],
         },
-        "safety": [
-            "Read-only: does not modify files.",
-            "Search scope is constrained to workspaceRoot.",
-        ],
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "search",
+            "sandboxed": True,
+            "notes": [
+                "Read-only: does not modify files.",
+                "Search scope is constrained to workspaceRoot.",
+            ],
+        },
         "hints": [
             "Use mode='definition' to find class/function declarations.",
             "Use mode='reference' to find where a symbol is used.",
             "Use mode='symbol' for a combined definition + reference search.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 3,
+            "estimated_duration_ms": 3000,
+        },
     },
     {
         "name": "notebook",
@@ -740,15 +884,26 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["workspaceRoot", "path"],
         },
-        "safety": [
-            "execute_cell runs code in a subprocess — treat it like run_command.",
-            "Read-only actions (list_cells, get_cell) are safe.",
-        ],
+        "safety": {
+            "level": "medium",
+            "requires_approval": False,
+            "category": "notebook",
+            "sandboxed": True,
+            "notes": [
+                "execute_cell runs code in a subprocess — treat it like run_command.",
+                "Read-only actions (list_cells, get_cell) are safe.",
+            ],
+        },
         "hints": [
             "Use list_cells first to see the notebook structure.",
             "Use get_cell to inspect a specific cell's source and outputs.",
             "Use execute_cell only when you need to re-run a code cell.",
         ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 5,
+            "estimated_duration_ms": 5000,
+        },
     },
     {
         "name": "browser",
@@ -787,15 +942,26 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["url"],
         },
-        "safety": [
-            "Makes outbound network requests.",
-            "Does not execute JavaScript — only fetches static HTML.",
-            "Response size is capped by max_bytes.",
-        ],
+        "safety": {
+            "level": "medium",
+            "requires_approval": False,
+            "category": "network",
+            "sandboxed": False,
+            "notes": [
+                "Makes outbound network requests.",
+                "Does not execute JavaScript — only fetches static HTML.",
+                "Response size is capped by max_bytes.",
+            ],
+        },
         "hints": [
             "Use action='read' for extracting article or documentation text.",
             "Use action='raw' when you need the HTML structure.",
         ],
+        "metadata": {
+            "rate_limit": 20,
+            "cost_per_use": 3,
+            "estimated_duration_ms": 5000,
+        },
     },
 ]
 
@@ -878,7 +1044,8 @@ class ToolRegistry:
                 {
                     "name": name,
                     "description": schema.get("description", ""),
-                    "safety": schema.get("safety", []),
+                    "safety": schema.get("safety", {}),
+                    "metadata": schema.get("metadata", {}),
                 }
             )
         return result
@@ -923,7 +1090,13 @@ class ToolRegistry:
                 "properties": {},
                 "required": [],
             },
-            "safety": ["No safety metadata is registered for this custom tool."],
+            "safety": {
+                "level": "medium",
+                "requires_approval": False,
+                "category": "task",
+                "sandboxed": False,
+                "notes": ["No safety metadata is registered for this custom tool."],
+            },
             "hints": [],
         }
 

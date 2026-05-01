@@ -48,10 +48,19 @@ class PolicyGuard:
 
     def requires_approval(self, tool_name: str, *, approval_mode: str | None = None) -> bool:
         mode = approval_mode or self._approval_mode
+        # Consult structured safety metadata from tool schemas
+        from ..tools.registry import BUILTIN_TOOL_SCHEMAS_BY_NAME
+        schema = BUILTIN_TOOL_SCHEMAS_BY_NAME.get(tool_name)
+        if schema:
+            safety = schema.get("safety", {})
+            if isinstance(safety, dict):
+                declared = safety.get("requires_approval", False)
+                if mode == "relaxed":
+                    return declared and tool_name in {"apply_patch", "write_file"}
+                return declared
+        # Fallback: hard-coded for custom tools without schemas
         if mode == "relaxed":
             return tool_name in {"apply_patch", "write_file"}
-        if mode == "strict":
-            return tool_name in {"apply_patch", "write_file", "run_command"}
         return tool_name in {"apply_patch", "write_file", "run_command"}
 
     def _command_patterns(self, config: dict[str, Any], *keys: str) -> list[str]:

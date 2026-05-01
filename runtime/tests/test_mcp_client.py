@@ -75,7 +75,7 @@ class TestSchemaConversion:
         assert schema["description"] == "[MCP:postgres] Run a SQL query"
         assert schema["input_schema"]["type"] == "object"
         assert "sql" in schema["input_schema"]["properties"]
-        assert "MCP external tool" in schema["safety"][0]
+        assert "MCP external tool" in schema["safety"]["notes"][0]
         assert "remote" in schema["hints"]
         assert "server:postgres" in schema["hints"]
         assert schema["_mcp_server_id"] == "postgres"

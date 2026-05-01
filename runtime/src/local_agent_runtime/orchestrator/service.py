@@ -38,6 +38,7 @@ from ..orchestration import OrchestrationMode, SupervisorOrchestrator, SwarmOrch
 from ..store.sqlite_store import SQLiteStore
 from ..tools import build_builtin_tools
 from ..tools.registry import BUILTIN_TOOL_SCHEMAS, ToolRegistry
+from ..observability.tracer import Tracer
 
 
 class Orchestrator:
@@ -81,6 +82,7 @@ class Orchestrator:
         self._supervisor = SupervisorOrchestrator(provider=provider, subagent_service=self._subagent_service)
         self._swarm = SwarmOrchestrator(provider=provider, subagent_service=self._subagent_service)
         self._pending_react_tasks: dict[str, dict[str, Any]] = {}
+        self._tracer = Tracer(store)
         self._cleanup_orphan_tasks()
 
     @staticmethod
@@ -2824,6 +2826,43 @@ class Orchestrator:
                 consumed=budget.tool_calls.consumed,
             )
 
+        root_span = self._tracer.start_span(
+            "react_loop",
+            attributes={"taskId": task["id"], "goal": goal[:200]},
+        )
+        self._active_trace_id = root_span.trace_id
+        self._active_parent_span_id = root_span.span_id
+
+        try:
+            return self._run_react_loop_inner(
+                session_id, task, goal, context, state, budget,
+                messages, tool_results, steps, max_steps, react_started, patch_repair_attempts,
+            )
+        except Exception:
+            self._tracer.end_span(root_span.span_id, status="error")
+            raise
+        finally:
+            if root_span.status != "error":
+                self._tracer.end_span(root_span.span_id, status="ok")
+            self._active_trace_id = None
+            self._active_parent_span_id = None
+
+    def _run_react_loop_inner(
+        self,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+        state: dict[str, Any] | None,
+        budget: WorkerBudget | None,
+        messages: list[dict[str, Any]],
+        tool_results: list[dict[str, Any]],
+        steps: int,
+        max_steps: int,
+        react_started: bool,
+        patch_repair_attempts: int,
+    ) -> dict[str, Any]:
+
         while True:
             # Refresh task status to detect external pause
             task = self._store.get_task({"taskId": task["id"]})["task"]
@@ -3005,7 +3044,17 @@ class Orchestrator:
     ) -> dict[str, Any]:
         if not self._should_stream_provider(provider_context):
             self._append_provider_trace(task=task, event_type="provider.request", payload=self._provider_trace_payload(provider_context))
-            response = self._provider.generate(goal, provider_context)
+            span = self._tracer.start_span(
+                "llm_generate",
+                trace_id=getattr(self, "_active_trace_id", None),
+                parent_span_id=getattr(self, "_active_parent_span_id", None),
+            )
+            try:
+                response = self._provider.generate(goal, provider_context)
+            except Exception:
+                self._tracer.end_span(span.span_id, status="error")
+                raise
+            self._tracer.end_span(span.span_id, status="ok")
             self._consume_budget_from_provider_response(
                 session_id=session_id,
                 task=task,
@@ -3667,11 +3716,18 @@ class Orchestrator:
                 "arguments": tool_arguments,
             },
         )
+        tool_span = self._tracer.start_span(
+            "tool_call",
+            trace_id=getattr(self, "_active_trace_id", None),
+            parent_span_id=getattr(self, "_active_parent_span_id", None),
+            attributes={"toolName": tool_spec["name"]},
+        )
         try:
             if tool_spec["name"] == "task":
                 result = self._subagent_service.dispatch(tool_arguments)
             else:
                 result = self._tool_registry.execute(tool_spec["name"], tool_arguments)
+            self._tracer.end_span(tool_span.span_id, status="ok")
         except Exception as exc:  # noqa: BLE001
             result = {
                 "status": "failed",
@@ -3679,6 +3735,7 @@ class Orchestrator:
                 "error": str(exc),
                 "summary": f"Tool {tool_spec['name']} raised an exception: {exc}",
             }
+            self._tracer.end_span(tool_span.span_id, status="error")
         if tool_spec["name"] == "run_command":
             command_log = result.get("commandLog") or {}
             command_id = command_log.get("id")

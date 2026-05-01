@@ -2894,6 +2894,28 @@ class SQLiteStore:
                 ON memory_entries (session_id);
             CREATE INDEX IF NOT EXISTS idx_memory_accessed
                 ON memory_entries (accessed_at);
+
+            CREATE TABLE IF NOT EXISTS trace_spans (
+                trace_id TEXT NOT NULL,
+                span_id TEXT PRIMARY KEY,
+                parent_span_id TEXT,
+                operation TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                finished_at INTEGER,
+                status TEXT NOT NULL DEFAULT 'in_progress',
+                attributes TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_spans_trace
+                ON trace_spans (trace_id);
+            CREATE INDEX IF NOT EXISTS idx_spans_parent
+                ON trace_spans (parent_span_id);
+
+            CREATE TABLE IF NOT EXISTS llm_cache (
+                prompt_hash TEXT PRIMARY KEY,
+                response TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            );
             """
         )
         self._conn.commit()

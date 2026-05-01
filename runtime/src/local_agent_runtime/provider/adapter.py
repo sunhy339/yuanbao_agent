@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from urllib.parse import urlsplit, urlunsplit
 from collections.abc import Iterator
@@ -32,10 +33,12 @@ class ProviderAdapter:
         http_post: HttpPost | None = None,
         http_stream: HttpStream | None = None,
         environ: dict[str, str] | None = None,
+        cache: Any | None = None,
     ) -> None:
         self._config = config or {}
         self._environ = environ if environ is not None else os.environ
         self._openai_client = OpenAICompatibleChatClient(http_post=http_post, http_stream=http_stream)
+        self._cache = cache
 
     def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
         if self._real_provider_enabled(context):
@@ -43,6 +46,15 @@ class ProviderAdapter:
             if not isinstance(messages, list) or not messages:
                 messages = [{"role": "user", "content": prompt}]
             tools = self._normalize_tools(context.get("openai_tools") or context.get("tools"))
+
+            # Cache lookup
+            if self._cache:
+                from .cache import LLMCache
+                cache_key = LLMCache.hash_prompt(messages, tools)
+                cached = self._cache.get(cache_key)
+                if cached is not None:
+                    return json.loads(cached)
+
             provider_response = self.chat(
                 messages=messages,
                 tools=tools,
@@ -61,6 +73,13 @@ class ProviderAdapter:
             if not assistant_message["tool_calls"]:
                 response["final"] = assistant_message["content"]
                 response["final_answer"] = assistant_message["content"]
+
+            # Cache write
+            if self._cache:
+                from .cache import LLMCache
+                cache_key = LLMCache.hash_prompt(messages, tools)
+                self._cache.put(cache_key, json.dumps(response))
+
             return response
 
         return {

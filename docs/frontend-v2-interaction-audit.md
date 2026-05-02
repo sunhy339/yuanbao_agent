@@ -132,8 +132,8 @@ P1 read-only or not-yet-defined areas:
 | Workspace | Save focus | Real | `app/src/App.tsx` | Calls `runtimeClient.updateWorkspaceFocus`. |
 | Workspace | Clear focus | Real | `app/src/App.tsx` | Calls same save path with empty focus. |
 | Workspace | Clear memory | Real | `app/src/App.tsx` | Calls `runtimeClient.clearWorkspaceMemory`. |
-| About | Open logs | Read-only | `SettingsWorkspace.tsx` | Disabled with note: opening local folders is pending a Tauri shell bridge. |
-| About | Open data folder | Read-only | `SettingsWorkspace.tsx` | Disabled with note: opening local folders is pending a Tauri shell bridge. |
+| About | Open logs | Real in desktop / Read-only in browser mock | `app/src/App.tsx`, `app/src-tauri/src/lib.rs` | Desktop uses `open_app_path` to create/open the app logs directory; browser mock keeps the control disabled. |
+| About | Open data folder | Real in desktop / Read-only in browser mock | `app/src/App.tsx`, `app/src-tauri/src/lib.rs` | Desktop uses `open_app_path` to create/open the app data directory; browser mock keeps the control disabled. |
 
 ## Agent Skills
 

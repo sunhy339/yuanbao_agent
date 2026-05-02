@@ -3280,6 +3280,16 @@ export function App() {
     }
   }
 
+  async function handleOpenAppPath(kind: "logs" | "data") {
+    setError(null);
+    try {
+      const result = await runtimeClient.openAppPath(kind);
+      addToast("success", `Opened ${kind === "logs" ? "logs" : "data folder"}: ${result.path}`);
+    } catch (reason) {
+      toastError(reason);
+    }
+  }
+
   async function refreshMcpServers() {
     setMcpLoading(true);
     setError(null);
@@ -3911,6 +3921,7 @@ export function App() {
   const activeTab = openTabs.find((tabItem) => tabItem.id === activeTabId) ?? openTabs[0] ?? getInitialTabs()[0];
   const activeSessionRecord = resolveSessionForTab(activeTab, sessions, session);
   const runtimeReady = Boolean(hostStatus && config);
+  const localPathActionsAvailable = runtimeClient.canOpenLocalAppPaths();
   const composerVisible = runtimeReady && (activeTab.kind === "new-session" || activeTab.kind === "session");
   const workspaceName = workspace?.name ?? workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? "yuanbao_agent";
   const providerLabel =
@@ -4345,6 +4356,8 @@ export function App() {
           dataPath: workspacePath,
           build: hostStatus?.runtimeRunning ? "runtime running" : "runtime idle",
         }}
+        onOpenLogs={localPathActionsAvailable ? () => void handleOpenAppPath("logs") : undefined}
+        onOpenDataDirectory={localPathActionsAvailable ? () => void handleOpenAppPath("data") : undefined}
       />
     );
   })();

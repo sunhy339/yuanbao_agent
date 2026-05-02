@@ -111,6 +111,12 @@ export interface CommandCancelResult {
   cancelled?: boolean;
 }
 
+export type AppPathKind = "logs" | "data";
+
+export interface AppPathOpenResult {
+  path: string;
+}
+
 interface MockState {
   config: RuntimeConfig;
   workspace: WorkspaceOpenResult["workspace"] | null;
@@ -1029,6 +1035,17 @@ export class RuntimeClient {
       return buildMockHostStatus();
     }
     return invokeOrReject<HostStatus>("host_status");
+  }
+
+  canOpenLocalAppPaths(): boolean {
+    return isTauriBridgeAvailable();
+  }
+
+  async openAppPath(kind: AppPathKind): Promise<AppPathOpenResult> {
+    if (shouldUseBrowserMock()) {
+      throw new Error(`${RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE} Command: open_app_path.`);
+    }
+    return invokeOrReject<AppPathOpenResult>("open_app_path", { kind });
   }
 
   async openWorkspace(path: string): Promise<WorkspaceOpenResult> {

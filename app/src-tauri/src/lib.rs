@@ -443,6 +443,27 @@ fn resolve_working_dir() -> Result<PathBuf, String> {
     })
 }
 
+fn open_path_in_file_manager(path: &PathBuf) -> Result<(), String> {
+    let mut command = if cfg!(target_os = "windows") {
+        let mut command = Command::new("explorer.exe");
+        command.arg(path);
+        command
+    } else if cfg!(target_os = "macos") {
+        let mut command = Command::new("open");
+        command.arg(path);
+        command
+    } else {
+        let mut command = Command::new("xdg-open");
+        command.arg(path);
+        command
+    };
+
+    command
+        .spawn()
+        .map_err(|reason| format!("Failed to open {}: {reason}", path.display()))?;
+    Ok(())
+}
+
 fn append_path_env(name: &str, first_path: &Path) -> Result<std::ffi::OsString, String> {
     let mut paths = vec![first_path.to_path_buf()];
     if let Some(existing) = env::var_os(name) {
@@ -822,6 +843,27 @@ async fn trace_list(
 }
 
 #[tauri::command]
+fn open_app_path(app_handle: AppHandle, kind: String) -> Result<Value, String> {
+    let data_dir = resolve_data_dir(&app_handle)?;
+    fs::create_dir_all(&data_dir)
+        .map_err(|reason| format!("Failed to create data directory: {reason}"))?;
+
+    let target = match kind.as_str() {
+        "data" => data_dir,
+        "logs" => {
+            let logs_dir = data_dir.join("logs");
+            fs::create_dir_all(&logs_dir)
+                .map_err(|reason| format!("Failed to create logs directory: {reason}"))?;
+            logs_dir
+        }
+        _ => return Err(format!("Unsupported app path kind: {kind}")),
+    };
+
+    open_path_in_file_manager(&target)?;
+    Ok(json!({ "path": target.display().to_string() }))
+}
+
+#[tauri::command]
 async fn skill_list(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -1036,6 +1078,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             command_cancel,
             diff_get,
             trace_list,
+            open_app_path,
             skill_list,
             skill_create,
             skill_update,

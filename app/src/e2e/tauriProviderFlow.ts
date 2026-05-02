@@ -422,6 +422,13 @@ async function runSessionRecoveryVerifyFlow(client: RuntimeClient, fixture: Taur
   if (!userMessage) {
     throw new Error(`Recovered messages are incomplete: ${persistedRoles.join(", ") || "none"}.`);
   }
+  const recoveredTasks = (await client.listTasks({ sessionId: recoveredSession.id })).tasks;
+  const recoveredTask = recoveredTasks[0];
+  if (!recoveredTask) {
+    throw new Error(
+      `Recovered session did not include a task: ${recoveredTasks.map((task) => `${task.id}:${task.status}`).join(", ") || "none"}.`,
+    );
+  }
 
   await waitFor("recovered session in sidebar", () => {
     const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".session-rail-item"));
@@ -436,12 +443,21 @@ async function runSessionRecoveryVerifyFlow(client: RuntimeClient, fixture: Taur
   await waitFor("recovered user message visible", () =>
     document.body.textContent?.includes(userMessage.content) ? true : null,
   );
+  await waitFor("recovered task state visible", () =>
+    document.body.textContent?.includes(recoveredTask.status)
+      ? true
+      : null,
+    30_000,
+  );
 
   await finish({
     ok: true,
     flow: "session-recovery-verify",
     phase: "complete",
     sessionId: recoveredSession.id,
+    taskId: recoveredTask.id,
+    taskStatus: recoveredTask.status,
+    taskSummary: recoveredTask.summary,
     persistedMessageRoles: persistedRoles,
     persistedMessageCount: persistedMessages.length,
     eventTypes: [],
@@ -450,6 +466,7 @@ async function runSessionRecoveryVerifyFlow(client: RuntimeClient, fixture: Taur
       "recovered session listed after desktop restart",
       "recovered session opens from sidebar",
       "persisted user message visible after restart",
+      "recovered task state visible in UI",
     ],
   });
 }

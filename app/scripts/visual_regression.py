@@ -20,12 +20,14 @@ THEME_VARIANTS = [
 
 VIEWPORTS = [
     {"id": "desktop", "width": 1440, "height": 1000, "is_mobile": False},
+    {"id": "narrow-desktop", "width": 1024, "height": 900, "is_mobile": False},
 ]
 
 PAGES = [
     {"id": "overview", "label": "Overview", "action": "overview"},
     {"id": "new-session", "label": "New Session", "action": "new-session"},
     {"id": "chat", "label": "Chat", "action": "chat"},
+    {"id": "chat-long", "label": "Chat Long Text", "action": "chat", "stress": "long-text"},
     {"id": "settings", "label": "Settings", "action": "settings"},
     {"id": "scheduled", "label": "Scheduled", "action": "scheduled"},
     {"id": "mcp", "label": "MCP", "action": "mcp"},
@@ -98,6 +100,34 @@ def open_page(page: Page, action: str) -> None:
         page.wait_for_timeout(1_000)
         return
     raise ValueError(f"Unknown action: {action}")
+
+
+def apply_stress(page: Page, stress: str | None) -> None:
+    if stress != "long-text":
+        return
+
+    page.evaluate(
+        """() => {
+          const longWord = "very-long-runtime-token-" + "abcdef1234567890".repeat(12);
+          const title = document.querySelector("#session-title");
+          if (title) {
+            title.textContent = "Recovered session with a deliberately long title " + longWord;
+          }
+          const bubble = document.querySelector(".message-bubble .markdown-content p");
+          if (bubble) {
+            bubble.textContent = [
+              "Long text stress:",
+              longWord,
+              "D:/py/yuanbao_agent/app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx".repeat(2),
+            ].join(" ");
+          }
+          const code = document.querySelector(".runtime-event-code-summary, .diff-line-content, pre");
+          if (code) {
+            code.textContent = "D:/py/yuanbao_agent/" + "nested-folder/".repeat(14) + "file-with-a-long-name.tsx";
+          }
+        }"""
+    )
+    page.wait_for_timeout(100)
 
 
 def collect_diagnostics(page: Page) -> dict:
@@ -250,6 +280,7 @@ def main() -> int:
                             wait_for_app(page)
                             force_theme(page, theme)
                             open_page(page, page_config["action"])
+                            apply_stress(page, page_config.get("stress"))
                             force_theme(page, theme)
                             diagnostics = collect_diagnostics(page)
                             screenshot_name = (

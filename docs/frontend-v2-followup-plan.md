@@ -192,12 +192,12 @@ Progress:
 
 Objective: make the core daily workflow easier to trust and inspect.
 
-- [ ] Review task state transitions under live runtime.
+- [x] Review task state transitions under live runtime.
 - [x] Confirm approval cards remain visible until resolved.
 - [x] Confirm patch diff loading handles missing/large diffs.
 - [x] Add copy controls where users naturally expect them: command output, trace detail, patch paths.
 - [x] Normalize raw/mock/provider copy in user-facing text.
-- [ ] Re-check long text and narrow desktop layout.
+- [x] Re-check long text and narrow desktop layout.
 
 Progress:
 
@@ -207,17 +207,19 @@ Progress:
 - Added regression coverage for resolved approval cards: resolved approvals remain visible in the activity stream and their approve/reject controls are disabled.
 - Ran `npm.cmd run e2e:desktop:recovery`; it verified a live Tauri/runtime session and running task persisted across desktop restart. Full provider task transition coverage still requires the real provider E2E credentials.
 - Replaced user-facing mock/provider wording with local/browser preview labels, removed the corrupted provider badge label, and added an App regression test that checks the overview no longer exposes raw mock copy.
+- Extended the desktop recovery E2E verify phase to assert the recovered task is returned by the live runtime and its current status is visible in the Session Workbench UI after restart.
+- Expanded visual regression to cover a 1024px narrow desktop viewport and a Chat Long Text stress page. The latest run captured 40 screenshots with 0 overflow, clipped-button, or nested-panel findings.
 
 ## Phase 7: Visual and Regression Gate
 
 Objective: keep the V2 shell stable as interactions become real.
 
-- [ ] Run `npm.cmd test`.
-- [ ] Run `npm.cmd run build`.
-- [ ] Run `npm.cmd run visual:regression` after UI/layout changes.
+- [x] Run `npm.cmd test`.
+- [x] Run `npm.cmd run build`.
+- [x] Run `npm.cmd run visual:regression` after UI/layout changes.
 - [ ] Run `npm.cmd run e2e:desktop:ui` when desktop shell or Tauri bridge changes.
 - [ ] Run `npm.cmd run e2e:desktop:mcp` when MCP bridge or UI management changes.
-- [ ] Run `npm.cmd run e2e:desktop:recovery` when session persistence or routing changes.
+- [x] Run `npm.cmd run e2e:desktop:recovery` when session persistence or routing changes.
 - [ ] Update `docs/frontend-v2-bug-list.md` for reopened or newly found issues.
 
 ## Commit Strategy

@@ -52,10 +52,15 @@
 }
 
 .mcp-hero-actions,
-.mcp-detail-actions {
+.mcp-detail-actions,
+.mcp-form-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.mcp-form-actions {
+  justify-content: flex-end;
 }
 
 .mcp-hero button:not(.yb-button),

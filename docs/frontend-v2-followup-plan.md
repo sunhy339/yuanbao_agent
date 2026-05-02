@@ -177,8 +177,14 @@ Objective: prove MCP management works with live runtime data.
 
 - [ ] Test list/create/update/delete/toggle/refresh tools against desktop runtime.
 - [ ] Make server errors persistent and visible without losing saved config.
-- [ ] Add or update tests for error cases.
-- [ ] Confirm shared RPC, Tauri bridge, runtime client, and runtime backend naming are aligned.
+- [x] Add or update tests for error cases.
+- [x] Confirm shared RPC, Tauri bridge, runtime client, and runtime backend naming are aligned.
+
+Progress:
+
+- Confirmed MCP list/create/update/delete RPC names are aligned across shared types, Tauri commands, runtime client, runtime RPC server, orchestrator, and SQLite store.
+- Added frontend edit/update support for existing MCP servers so the UI now reaches the existing `runtimeClient.updateMcpServer` path beyond enable/disable toggles.
+- Added MCP workspace tests covering create, edit/update, toggle, tool refresh, and delete callbacks.
 
 ## Phase 6: Session Workbench Polish
 

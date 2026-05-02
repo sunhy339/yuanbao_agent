@@ -103,6 +103,7 @@ P1 read-only or not-yet-defined areas:
 | --- | --- | --- | --- |
 | Refresh server list | Real | `app/src/App.tsx` | Calls `runtimeClient.listMcpServers`. |
 | Create server | Real | `app/src/App.tsx` | Calls `runtimeClient.createMcpServer`. Runtime backend completeness still needs live QA. |
+| Edit server | Real | `app/src/App.tsx` | Calls `runtimeClient.updateMcpServer` with the edited server draft. |
 | Enable/disable server | Real | `app/src/App.tsx` | Calls `runtimeClient.updateMcpServer`. |
 | Refresh tools | Real | `app/src/App.tsx` | Calls `runtimeClient.refreshMcpTools`. |
 | Delete server | Real | `app/src/App.tsx` | Calls `runtimeClient.deleteMcpServer`. |

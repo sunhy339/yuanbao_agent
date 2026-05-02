@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import type { McpServerRecord, McpServerTransport } from "@shared";
 import { Button, StatusBadge } from "../../../v2/components/ui";
 import "./mcp.css";
@@ -19,6 +19,7 @@ export interface McpWorkspaceProps {
   lastRefresh?: { refreshed: number; tools: string[] } | null;
   onRefreshServers: () => void | Promise<void>;
   onCreateServer: (draft: McpServerDraft) => void | Promise<void>;
+  onUpdateServer: (serverId: string, draft: McpServerDraft) => void | Promise<void>;
   onToggleServer: (serverId: string, enabled: boolean) => void | Promise<void>;
   onRefreshTools: (serverId?: string) => void | Promise<void>;
   onDeleteServer: (serverId: string) => void | Promise<void>;
@@ -44,6 +45,17 @@ function formatArgs(args?: string[]) {
   return args?.length ? args.join(" ") : "No args";
 }
 
+function draftFromServer(server: McpServerRecord): McpServerDraft {
+  return {
+    name: server.name,
+    transport: server.transport,
+    command: server.command ?? "",
+    args: server.args?.join("\n") ?? "",
+    url: server.url ?? "",
+    enabled: server.enabled,
+  };
+}
+
 export function McpWorkspace({
   servers,
   loading = false,
@@ -51,11 +63,14 @@ export function McpWorkspace({
   lastRefresh = null,
   onRefreshServers,
   onCreateServer,
+  onUpdateServer,
   onToggleServer,
   onRefreshTools,
   onDeleteServer,
 }: McpWorkspaceProps) {
   const [draft, setDraft] = useState<McpServerDraft>(initialDraft);
+  const [formMode, setFormMode] = useState<"create" | "edit">("create");
+  const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(servers[0]?.id ?? null);
   const enabledCount = useMemo(() => servers.filter((server) => server.enabled).length, [servers]);
   const stdioCount = useMemo(() => servers.filter((server) => server.transport === "stdio").length, [servers]);
@@ -66,9 +81,34 @@ export function McpWorkspace({
     if (!draft.name.trim()) {
       return;
     }
-    await onCreateServer(draft);
+    if (formMode === "edit" && editingServerId) {
+      await onUpdateServer(editingServerId, draft);
+    } else {
+      await onCreateServer(draft);
+    }
+    setFormMode("create");
+    setEditingServerId(null);
     setDraft(initialDraft);
   }
+
+  function startEditing(server: McpServerRecord) {
+    setExpandedId(server.id);
+    setEditingServerId(server.id);
+    setFormMode("edit");
+    setDraft(draftFromServer(server));
+  }
+
+  function resetForm() {
+    setFormMode("create");
+    setEditingServerId(null);
+    setDraft(initialDraft);
+  }
+
+  useEffect(() => {
+    if (editingServerId && !servers.some((server) => server.id === editingServerId)) {
+      resetForm();
+    }
+  }, [editingServerId, servers]);
 
   return (
     <main className="mcp-workspace" aria-labelledby="mcp-title">
@@ -129,15 +169,23 @@ export function McpWorkspace({
         <form className="mcp-panel mcp-create-panel" onSubmit={handleSubmit}>
           <div className="mcp-panel-header">
             <div>
-              <p className="mcp-kicker">New Endpoint</p>
-              <h2>Add MCP server</h2>
+              <p className="mcp-kicker">{formMode === "edit" ? "Edit Endpoint" : "New Endpoint"}</p>
+              <h2>{formMode === "edit" ? "Edit MCP server" : "Add MCP server"}</h2>
             </div>
+            {formMode === "edit" ? (
+              <Button type="button" variant="ghost" size="sm" onClick={resetForm} disabled={loading}>
+                Cancel
+              </Button>
+            ) : null}
           </div>
           <label>
             <span>Name</span>
             <input
               value={draft.name}
-              onChange={(event) => setDraft((current) => ({ ...current, name: event.currentTarget.value }))}
+              onChange={(event) => {
+                const { value } = event.currentTarget;
+                setDraft((current) => ({ ...current, name: value }));
+              }}
               placeholder="filesystem"
               required
             />
@@ -146,9 +194,10 @@ export function McpWorkspace({
             <span>Transport</span>
             <select
               value={draft.transport}
-              onChange={(event) =>
-                setDraft((current) => ({ ...current, transport: event.currentTarget.value as McpServerTransport }))
-              }
+              onChange={(event) => {
+                const value = event.currentTarget.value as McpServerTransport;
+                setDraft((current) => ({ ...current, transport: value }));
+              }}
             >
               <option value="stdio">stdio</option>
               <option value="sse">sse</option>
@@ -161,7 +210,10 @@ export function McpWorkspace({
                 <span>Command</span>
                 <input
                   value={draft.command}
-                  onChange={(event) => setDraft((current) => ({ ...current, command: event.currentTarget.value }))}
+                  onChange={(event) => {
+                    const { value } = event.currentTarget;
+                    setDraft((current) => ({ ...current, command: value }));
+                  }}
                   placeholder="npx @modelcontextprotocol/server-filesystem"
                 />
               </label>
@@ -169,7 +221,10 @@ export function McpWorkspace({
                 <span>Args</span>
                 <textarea
                   value={draft.args}
-                  onChange={(event) => setDraft((current) => ({ ...current, args: event.currentTarget.value }))}
+                  onChange={(event) => {
+                    const { value } = event.currentTarget;
+                    setDraft((current) => ({ ...current, args: value }));
+                  }}
                   placeholder="D:\\py\\yuanbao_agent"
                   rows={3}
                 />
@@ -180,7 +235,10 @@ export function McpWorkspace({
               <span>URL</span>
               <input
                 value={draft.url}
-                onChange={(event) => setDraft((current) => ({ ...current, url: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const { value } = event.currentTarget;
+                  setDraft((current) => ({ ...current, url: value }));
+                }}
                 placeholder="http://127.0.0.1:8787/sse"
               />
             </label>
@@ -189,13 +247,18 @@ export function McpWorkspace({
             <input
               type="checkbox"
               checked={draft.enabled}
-              onChange={(event) => setDraft((current) => ({ ...current, enabled: event.currentTarget.checked }))}
+              onChange={(event) => {
+                const { checked } = event.currentTarget;
+                setDraft((current) => ({ ...current, enabled: checked }));
+              }}
             />
             <span>Enable after creation</span>
           </label>
-          <Button type="submit" className="mcp-primary-action" disabled={loading || !draft.name.trim()} loading={loading} variant="primary">
-            Create server
-          </Button>
+          <div className="mcp-form-actions">
+            <Button type="submit" className="mcp-primary-action" disabled={loading || !draft.name.trim()} loading={loading} variant="primary">
+              {formMode === "edit" ? "Save server" : "Create server"}
+            </Button>
+          </div>
         </form>
 
         <section className="mcp-panel">
@@ -268,6 +331,15 @@ export function McpWorkspace({
                 </div>
               </dl>
               <div className="mcp-detail-actions">
+                <Button
+                  type="button"
+                  onClick={() => startEditing(selectedServer)}
+                  disabled={busyServerId === selectedServer.id || loading}
+                  size="sm"
+                  variant="secondary"
+                >
+                  Edit
+                </Button>
                 <Button
                   type="button"
                   onClick={() => void onToggleServer(selectedServer.id, !selectedServer.enabled)}

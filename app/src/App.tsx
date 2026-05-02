@@ -3433,6 +3433,30 @@ export function App() {
     }
   }
 
+  async function handleUpdateMcpServer(serverId: string, draft: McpServerDraft) {
+    setMcpBusyServerId(serverId);
+    setError(null);
+    try {
+      const result = await runtimeClient.updateMcpServer({
+        serverId,
+        name: draft.name,
+        transport: draft.transport,
+        command: draft.transport === "stdio" ? draft.command.trim() : undefined,
+        args: draft.transport === "stdio" ? parseMcpArgs(draft.args) : [],
+        url: draft.transport === "stdio" ? undefined : draft.url.trim(),
+        enabled: draft.enabled,
+      });
+      setMcpServers((current) =>
+        current.map((server) => (server.id === result.server.id ? result.server : server)),
+      );
+      addToast("success", "MCP server updated");
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setMcpBusyServerId(null);
+    }
+  }
+
   async function handleToggleMcpServer(serverId: string, enabled: boolean) {
     setMcpBusyServerId(serverId);
     setError(null);
@@ -4385,6 +4409,7 @@ export function App() {
           lastRefresh={mcpLastRefresh}
           onRefreshServers={refreshMcpServers}
           onCreateServer={handleCreateMcpServer}
+          onUpdateServer={handleUpdateMcpServer}
           onToggleServer={handleToggleMcpServer}
           onRefreshTools={handleRefreshMcpTools}
           onDeleteServer={handleDeleteMcpServer}

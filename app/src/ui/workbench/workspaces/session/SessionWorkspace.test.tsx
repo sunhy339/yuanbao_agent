@@ -289,6 +289,68 @@ describe("SessionWorkspace", () => {
     );
   });
 
+  it("shows a clear patch diff state when the runtime has not returned diff text", async () => {
+    const user = userEvent.setup();
+    const onLoadPatch = vi.fn();
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Review patch", createdAt: 1 }]}
+        patches={[
+          {
+            id: "patch_1",
+            summary: "Update settings copy",
+            status: "recorded",
+            filesChanged: 1,
+            files: [{ path: "app/src/App.tsx", status: "changed", additions: 4, deletions: 1 }],
+          },
+        ]}
+        onLoadPatch={onLoadPatch}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open diff" }));
+
+    expect(onLoadPatch).toHaveBeenCalledWith("patch_1");
+    expect(screen.getByRole("status")).toHaveTextContent("Diff is not available yet");
+  });
+
+  it("truncates large patch diffs before rendering", async () => {
+    const user = userEvent.setup();
+    const largeDiff = [
+      "--- a/app/src/App.tsx",
+      "+++ b/app/src/App.tsx",
+      "@@ -1,1 +1,620 @@",
+      ...Array.from({ length: 620 }, (_, index) => `+added line ${index + 1}`),
+    ].join("\n");
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Review large patch", createdAt: 1 }]}
+        patches={[
+          {
+            id: "patch_1",
+            summary: "Update generated report",
+            status: "recorded",
+            filesChanged: 1,
+            files: [{ path: "app/src/generated/report.ts", status: "changed", additions: 620, deletions: 0 }],
+            diff: largeDiff,
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open diff" }));
+
+    expect(screen.getByText("[Diff truncated: showing first 500 of 623 lines]")).toBeInTheDocument();
+    expect(screen.getByText("added line 1")).toBeInTheDocument();
+    expect(screen.queryByText("added line 620")).not.toBeInTheDocument();
+  });
+
   it("does not expose raw tool JSON to users (hidden by design)", async () => {
     const user = userEvent.setup();
     render(

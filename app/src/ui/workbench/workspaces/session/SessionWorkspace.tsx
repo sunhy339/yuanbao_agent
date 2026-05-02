@@ -377,9 +377,12 @@ function compactText(value: string | null | undefined, maxChars = 240) {
   return `${text.slice(0, Math.max(1, maxChars - 14)).trimEnd()} [truncated]`;
 }
 
+const MAX_RENDERED_DIFF_LINES = 500;
+
 function parseUnifiedDiff(diffText: string): DiffLine[] {
   const lines: DiffLine[] = [];
-  for (const raw of diffText.split("\n")) {
+  const rawLines = diffText.split("\n");
+  for (const raw of rawLines.slice(0, MAX_RENDERED_DIFF_LINES)) {
     if (raw.startsWith("+++") || raw.startsWith("---")) {
       lines.push({ type: "header", content: raw });
     } else if (raw.startsWith("@@")) {
@@ -391,6 +394,12 @@ function parseUnifiedDiff(diffText: string): DiffLine[] {
     } else {
       lines.push({ type: "context", content: raw.startsWith(" ") ? raw.slice(1) : raw });
     }
+  }
+  if (rawLines.length > MAX_RENDERED_DIFF_LINES) {
+    lines.push({
+      type: "header",
+      content: `[Diff truncated: showing first ${MAX_RENDERED_DIFF_LINES} of ${rawLines.length} lines]`,
+    });
   }
   return lines;
 }
@@ -1295,20 +1304,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
             setExpanded(true);
           }}
         />
-        {expanded && item.diffLines && item.diffLines.length > 0 ? (
-          <div className="runtime-event-detail">
-            <div className="diff-view">
-              {item.diffLines.map((line, lineIndex) => (
-                <div key={lineIndex} className={`diff-line diff-line-${line.type}`}>
-                  <span className="diff-line-prefix">
-                    {line.type === "add" ? "+" : line.type === "remove" ? "-" : line.type === "header" ? "" : " "}
-                  </span>
-                  <span className="diff-line-content">{line.content}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
+        <PatchDiffDetail expanded={expanded} diffLines={item.diffLines} isBusy={isBusy} />
       </div>
     );
   }
@@ -1550,24 +1546,56 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
               ))}
             </div>
           ) : null}
-          {item.diffLines && item.diffLines.length > 0 ? (
-            <div className="diff-view">
-              {item.diffLines.map((line, lineIndex) => (
-                <div key={lineIndex} className={`diff-line diff-line-${line.type}`}>
-                  <span className="diff-line-prefix">
-                    {line.type === "add" ? "+" : line.type === "remove" ? "-" : line.type === "header" ? "" : " "}
-                  </span>
-                  <span className="diff-line-content">{line.content}</span>
-                </div>
-              ))}
-            </div>
-          ) : null}
+          {item.kind === "patch" ? <PatchDiffBody diffLines={item.diffLines} isBusy={isBusy} /> : null}
 
         </div>
       ) : null}
     </article>
   );
 });
+
+function PatchDiffDetail({
+  expanded,
+  diffLines,
+  isBusy,
+}: {
+  expanded: boolean;
+  diffLines?: DiffLine[];
+  isBusy: boolean;
+}) {
+  if (!expanded) {
+    return null;
+  }
+
+  return (
+    <div className="runtime-event-detail">
+      <PatchDiffBody diffLines={diffLines} isBusy={isBusy} />
+    </div>
+  );
+}
+
+function PatchDiffBody({ diffLines, isBusy }: { diffLines?: DiffLine[]; isBusy: boolean }) {
+  if (!diffLines || diffLines.length === 0) {
+    return (
+      <p className="runtime-diff-empty" role="status">
+        {isBusy ? "Diff is loading." : "Diff is not available yet. Try loading it again after the runtime finishes writing the patch."}
+      </p>
+    );
+  }
+
+  return (
+    <div className="diff-view">
+      {diffLines.map((line, lineIndex) => (
+        <div key={lineIndex} className={`diff-line diff-line-${line.type}`}>
+          <span className="diff-line-prefix">
+            {line.type === "add" ? "+" : line.type === "remove" ? "-" : line.type === "header" ? "" : " "}
+          </span>
+          <span className="diff-line-content">{line.content}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 const MessageBubble = memo(function MessageBubble({ message }: { message: SessionWorkspaceMessage }) {
   const isThinking = message.streaming && message.placeholder;

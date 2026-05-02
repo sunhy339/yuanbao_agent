@@ -194,7 +194,7 @@ Objective: make the core daily workflow easier to trust and inspect.
 
 - [ ] Review task state transitions under live runtime.
 - [ ] Confirm approval cards remain visible until resolved.
-- [ ] Confirm patch diff loading handles missing/large diffs.
+- [x] Confirm patch diff loading handles missing/large diffs.
 - [x] Add copy controls where users naturally expect them: command output, trace detail, patch paths.
 - [ ] Normalize raw/mock/provider copy in user-facing text.
 - [ ] Re-check long text and narrow desktop layout.
@@ -203,6 +203,7 @@ Progress:
 
 - Added command output and trace detail copy controls in the Session Workbench.
 - Unified patch path copy through the App-level clipboard helper so copy actions have visible success/error feedback.
+- Added explicit empty/loading states for patch diff expansion and capped rendered diff output to keep very large patches readable.
 
 ## Phase 7: Visual and Regression Gate
 

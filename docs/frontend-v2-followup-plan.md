@@ -193,7 +193,7 @@ Progress:
 Objective: make the core daily workflow easier to trust and inspect.
 
 - [ ] Review task state transitions under live runtime.
-- [ ] Confirm approval cards remain visible until resolved.
+- [x] Confirm approval cards remain visible until resolved.
 - [x] Confirm patch diff loading handles missing/large diffs.
 - [x] Add copy controls where users naturally expect them: command output, trace detail, patch paths.
 - [ ] Normalize raw/mock/provider copy in user-facing text.
@@ -204,6 +204,8 @@ Progress:
 - Added command output and trace detail copy controls in the Session Workbench.
 - Unified patch path copy through the App-level clipboard helper so copy actions have visible success/error feedback.
 - Added explicit empty/loading states for patch diff expansion and capped rendered diff output to keep very large patches readable.
+- Added regression coverage for resolved approval cards: resolved approvals remain visible in the activity stream and their approve/reject controls are disabled.
+- Ran `npm.cmd run e2e:desktop:recovery`; it verified a live Tauri/runtime session and running task persisted across desktop restart. Full provider task transition coverage still requires the real provider E2E credentials.
 
 ## Phase 7: Visual and Regression Gate
 

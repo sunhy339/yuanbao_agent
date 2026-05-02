@@ -537,4 +537,34 @@ describe("SessionWorkspace", () => {
     expect(onApprove).toHaveBeenCalledWith("approval_1");
     expect(onReject).toHaveBeenCalledWith("approval_1");
   });
+
+  it("keeps resolved approval cards visible without repeat action buttons", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_1",
+          status: "completed",
+          goal: "Apply the accepted patch",
+        }}
+        messages={[{ id: "m1", role: "assistant", content: "Patch approval resolved.", createdAt: 1 }]}
+        approvals={[
+          {
+            id: "approval_1",
+            title: "apply_patch",
+            status: "approved",
+            kind: "apply_patch",
+            summary: "Updated the session runtime panel.",
+            command: "apply_patch",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByText("apply_patch").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("approved").length).toBeGreaterThan(0);
+    expect(screen.getByText("Updated the session runtime panel.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
+  });
 });

@@ -431,11 +431,11 @@ function getProviderHealthView(
   const summary =
     (result ? getProviderErrorSummary(result) : undefined) ??
     profile?.lastErrorSummary ??
-    "No health check has been recorded for this profile yet.";
+    "该配置还没有记录过健康检查。";
 
   return {
     checkedAtText: formatTimestamp(result?.lastCheckedAt ?? profile?.lastCheckedAt),
-    statusText: status ?? "not recorded",
+    statusText: status ?? "not_recorded",
     summaryText: summary,
     badgeClass: getProviderHealthBadge(status),
   };
@@ -524,7 +524,7 @@ function normalizeSkillForSettings(skill: SkillPresetRecord): SettingsSkillConfi
     name: skill.name,
     description:
       skill.description ||
-      (toolWhitelist.length ? `Tools: ${toolWhitelist.join(", ")}` : "Runtime skill preset"),
+      (toolWhitelist.length ? `工具：${toolWhitelist.join(", ")}` : "运行时技能预设"),
     path: skill.category ? `category:${skill.category}` : undefined,
     systemPrompt,
     toolWhitelist,
@@ -755,7 +755,7 @@ function buildProviderProfileFromPayload(
   return {
     ...existingProfile,
     id: profileId,
-    name: payload.name.trim() || existingProfile?.name || "Provider profile",
+    name: payload.name.trim() || existingProfile?.name || "供应商配置",
     mode: "openai-compatible",
     baseUrl: jsonConfig.endpoint || payload.endpoint.trim() || existingProfile?.baseUrl || DEFAULT_PROVIDER_BASE_URL,
     apiFormat: jsonConfig.apiFormat || payload.apiFormat || existingProfile?.apiFormat || DEFAULT_PROVIDER_API_FORMAT,
@@ -802,17 +802,17 @@ function buildComputerUseStatus(): string {
     typeof navigator.clipboard?.writeText === "function";
   const desktopBridgeAvailable = runtimeClient.canOpenLocalAppPaths();
   const ready = [
-    clipboardAvailable ? "clipboard" : null,
-    desktopBridgeAvailable ? "desktop shell bridge" : null,
-    "sensitive confirmations",
+    clipboardAvailable ? "剪贴板" : null,
+    desktopBridgeAvailable ? "桌面 shell 桥接" : null,
+    "敏感动作确认",
   ].filter(Boolean);
   const pending = [
-    "screen observation",
-    "browser automation",
-    "system shortcuts",
+    "屏幕观察",
+    "浏览器自动化",
+    "系统快捷键",
   ];
 
-  return `Checked ${new Date().toLocaleTimeString("en-US", { hour12: false })}: ${ready.join(", ")} ready; ${pending.join(", ")} permission probes are not wired yet.`;
+  return `${new Date().toLocaleTimeString("zh-CN", { hour12: false })} 已检查：${ready.join("、")} 可用；${pending.join("、")} 的权限探测尚未接入。`;
 }
 
 function clampAppearanceNumber(
@@ -873,8 +873,8 @@ function scheduledRecordToWorkspaceTask(record: ScheduledTaskRecord): ScheduledT
     title: record.name,
     description: record.prompt,
     status: record.enabled ? record.status : "disabled",
-    scheduleText: record.schedule || "No schedule",
-    lastRunText: record.lastRunAt ? `Last run: ${formatTimestamp(record.lastRunAt)}` : "Never run",
+    scheduleText: record.schedule || "未设置计划",
+    lastRunText: record.lastRunAt ? `上次运行：${formatTimestamp(record.lastRunAt)}` : "尚未运行",
   };
 }
 
@@ -1101,7 +1101,7 @@ function toolNumber(record: Record<string, unknown> | null, keys: string[]): num
 
 function compactToolList(values: string[], limit = 5): string {
   const visible = values.filter(Boolean).slice(0, limit);
-  const suffix = values.length > limit ? ` +${values.length - limit} more` : "";
+  const suffix = values.length > limit ? `，另有 ${values.length - limit} 项` : "";
   return visible.length ? `${visible.join(", ")}${suffix}` : "";
 }
 
@@ -1112,20 +1112,20 @@ function firstUsefulLine(value?: string): string | undefined {
     .find(Boolean);
 }
 
-function summarizeToolArguments(toolName: string, value: unknown, fallback = "No arguments recorded"): string {
+function summarizeToolArguments(toolName: string, value: unknown, fallback = "未记录参数"): string {
   const parsed = parseToolValue(value);
   const record = asRecord(parsed);
   const path = toolString(record, ["path", "file", "cwd", "root"]);
 
   if (toolName === "list_dir") {
-    return `List ${path ?? "."}`;
+    return `列出 ${path ?? "."}`;
   }
   if (toolName === "read_file") {
-    return `Read ${path ?? "file"}`;
+    return `读取 ${path ?? "文件"}`;
   }
   if (toolName === "search_files") {
     const query = toolString(record, ["query", "pattern", "glob"]);
-    return query ? `Search ${query}${path ? ` @ ${path}` : ""}` : `Search${path ? ` ${path}` : ""}`;
+    return query ? `搜索 ${query}${path ? ` @ ${path}` : ""}` : `搜索${path ? ` ${path}` : ""}`;
   }
   if (toolName === "apply_patch") {
     const filesValue = record?.files;
@@ -1135,19 +1135,19 @@ function summarizeToolArguments(toolName: string, value: unknown, fallback = "No
       : Array.isArray(changedPathsValue)
         ? changedPathsValue.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
         : [];
-    return files.length ? `Modify ${compactToolList(files)}` : "Apply patch";
+    return files.length ? `修改 ${compactToolList(files)}` : "应用补丁";
   }
   if (toolName === "run_command") {
     const command = toolString(record, ["command", "cmd"]);
-    return command ? `Run ${command}` : "Run command";
+    return command ? `运行 ${command}` : "运行命令";
   }
 
   return summarizeValue(value, fallback, 120);
 }
 
-function summarizeToolResult(toolName: string, resultValue: unknown, errorValue: unknown, fallback = "Waiting for result"): string {
+function summarizeToolResult(toolName: string, resultValue: unknown, errorValue: unknown, fallback = "等待结果") {
   if (errorValue !== undefined && errorValue !== null && summarizeValue(errorValue, "", 160)) {
-    return `Failed: ${summarizeValue(errorValue, "", 160)}`;
+    return `失败：${summarizeValue(errorValue, "", 160)}`;
   }
 
   const parsed = parseToolValue(resultValue);
@@ -1157,7 +1157,7 @@ function summarizeToolResult(toolName: string, resultValue: unknown, errorValue:
     const itemsValue = record?.items ?? parsed;
     const items = Array.isArray(itemsValue) ? itemsValue : [];
     if (!items.length) {
-      return resultValue === undefined ? fallback : "No items found";
+      return resultValue === undefined ? fallback : "没有找到条目";
     }
     const names = items
       .map((item) => {
@@ -1169,14 +1169,14 @@ function summarizeToolResult(toolName: string, resultValue: unknown, errorValue:
       .filter((item): item is string => Boolean(item));
     const dirCount = items.filter((item) => toolString(asRecord(item), ["type"]) === "directory").length;
     const fileCount = items.filter((item) => toolString(asRecord(item), ["type"]) === "file").length;
-    return `Found ${items.length} items (${dirCount} dirs, ${fileCount} files): ${compactToolList(names)}`;
+    return `找到 ${items.length} 项（${dirCount} 个目录，${fileCount} 个文件）：${compactToolList(names)}`;
   }
 
   if (toolName === "read_file") {
     const bytes = toolNumber(record, ["bytesRead", "bytes", "size"]);
     const content = toolString(record, ["content", "text"]);
     const preview = firstUsefulLine(content);
-    return `Read complete${bytes !== undefined ? `, ${bytes} bytes` : ""}${preview ? `: ${truncateText(preview, 80)}` : ""}`;
+    return `读取完成${bytes !== undefined ? `，${bytes} 字节` : ""}${preview ? `：${truncateText(preview, 80)}` : ""}`;
   }
 
   if (toolName === "apply_patch") {
@@ -1186,15 +1186,15 @@ function summarizeToolResult(toolName: string, resultValue: unknown, errorValue:
       : [];
     const error = toolString(record, ["error"]);
     if (error) {
-      return `Patch failed: ${truncateText(error, 140)}`;
+      return `补丁失败：${truncateText(error, 140)}`;
     }
-    return paths.length ? `Patch complete: ${compactToolList(paths)}` : summarizeValue(resultValue, "Patch complete", 140);
+    return paths.length ? `补丁完成：${compactToolList(paths)}` : summarizeValue(resultValue, "补丁完成", 140);
   }
 
   if (toolName === "run_command") {
     const exitCode = toolNumber(record, ["exitCode", "code"]);
     const output = firstUsefulLine(toolString(record, ["stdout", "stderr", "output"]));
-    return `Command ${exitCode === undefined ? "complete" : `exited ${exitCode}`}${output ? `: ${truncateText(output, 100)}` : ""}`;
+    return `命令${exitCode === undefined ? "完成" : `退出码 ${exitCode}`}${output ? `：${truncateText(output, 100)}` : ""}`;
   }
 
   return summarizeValue(resultValue, fallback, 160);
@@ -1824,10 +1824,10 @@ function buildSessionBackgroundJobs(
       isBackground: readRecordBoolean(payload, "background") ?? current?.isBackground,
       summary:
         status === "running"
-          ? "Command is still running."
+          ? "命令仍在运行。"
           : status === "completed"
-            ? `Command completed${typeof readRecordNumber(payload, "exitCode") === "number" ? ` with exit ${readRecordNumber(payload, "exitCode")}` : "."}`
-            : `Command ${status}${typeof readRecordNumber(payload, "exitCode") === "number" ? ` with exit ${readRecordNumber(payload, "exitCode")}` : "."}`,
+            ? `命令已完成${typeof readRecordNumber(payload, "exitCode") === "number" ? `，退出码 ${readRecordNumber(payload, "exitCode")}` : "。"}`
+            : `命令状态：${formatStatusLabel(status)}${typeof readRecordNumber(payload, "exitCode") === "number" ? `，退出码 ${readRecordNumber(payload, "exitCode")}` : "。"}`,
     };
     jobs.set(id, next);
   };
@@ -1894,10 +1894,10 @@ function commandLogToSessionBackgroundJob(log: CommandLogRecord): SessionWorkspa
     isBackground: false,
     summary:
       log.status === "running"
-        ? "Command is still running."
+        ? "命令仍在运行。"
         : log.status === "completed"
-          ? `Command completed${typeof log.exitCode === "number" ? ` with exit ${log.exitCode}` : "."}`
-          : `Command ${log.status}${typeof log.exitCode === "number" ? ` with exit ${log.exitCode}` : "."}`,
+          ? `命令已完成${typeof log.exitCode === "number" ? `，退出码 ${log.exitCode}` : "。"}`
+          : `命令状态：${formatStatusLabel(log.status)}${typeof log.exitCode === "number" ? `，退出码 ${log.exitCode}` : "。"}`
   };
 }
 
@@ -2071,7 +2071,7 @@ export function App() {
     clipboardAccess: true,
     systemKeyCombos: false,
     sensitiveActionConfirm: true,
-    status: "Not checked",
+    status: "",
   });
   const [openTabs, setOpenTabs] = useState<WorkbenchTab[]>(() => getInitialTabs());
   const [activeTabId, setActiveTabId] = useState<WorkbenchTab["id"]>("system:overview");
@@ -2419,7 +2419,7 @@ export function App() {
         toolCallId,
         toolName,
         status,
-        argsSummary: summarizeToolArguments(toolName, argumentValue, current?.argsSummary ?? "No arguments recorded"),
+        argsSummary: summarizeToolArguments(toolName, argumentValue, current?.argsSummary ?? "未记录参数"),
         resultSummary,
         errorSummary: errorSummary || current?.errorSummary,
         argsRaw: formatRawValue(argumentValue) ?? current?.argsRaw,
@@ -2763,28 +2763,28 @@ export function App() {
     const model = providerSettings.model.trim();
     const baseUrl = providerSettings.baseUrl.trim();
     const apiKeyEnvVarName = providerSettings.apiKeyEnvVarName.trim() || DEFAULT_PROVIDER_API_KEY_ENV_VAR;
-    const profileName = providerSettings.name.trim() || "Provider profile";
+    const profileName = providerSettings.name.trim() || "供应商配置";
 
     if (!model) {
-      throw new Error("Provider model is required.");
+      throw new Error("必须填写供应商模型。");
     }
     if (providerSettings.mode === "openai-compatible" && !baseUrl) {
-      throw new Error("Base URL is required for OpenAI-compatible mode.");
+      throw new Error("OpenAI 兼容模式必须填写 Base URL。");
     }
 
-    const temperature = parseProviderNumber(providerSettings.temperature, "Temperature", {
+    const temperature = parseProviderNumber(providerSettings.temperature, "温度", {
       min: 0,
       max: 2,
     });
-    const maxTokens = parseProviderNumber(providerSettings.maxTokens, "Max tokens", {
+    const maxTokens = parseProviderNumber(providerSettings.maxTokens, "最大输出 tokens", {
       integer: true,
       min: 1,
     });
-    const maxContextTokens = parseProviderNumber(providerSettings.maxContextTokens, "Max context tokens", {
+    const maxContextTokens = parseProviderNumber(providerSettings.maxContextTokens, "最大上下文 tokens", {
       integer: true,
       min: 1,
     });
-    const timeout = parseProviderNumber(providerSettings.timeout, "Timeout", {
+    const timeout = parseProviderNumber(providerSettings.timeout, "超时时间", {
       min: 1,
     });
 
@@ -2851,9 +2851,9 @@ export function App() {
     setProviderFeedback({
       providerId: activeProfile?.id ?? fallbackProfileId,
       tone: "success",
-      title: "Saved and activated",
-      message: `${activeProfile?.name ?? "Provider"} is now the active provider.`,
-      detail: `Model: ${activeProfile?.model ?? provider.model ?? DEFAULT_PROVIDER_MODEL}`,
+      title: "已保存并启用",
+      message: `${activeProfile?.name ?? "供应商"} 已设为当前供应商。`,
+      detail: `模型：${activeProfile?.model ?? provider.model ?? DEFAULT_PROVIDER_MODEL}`,
     });
   }
 
@@ -2861,14 +2861,14 @@ export function App() {
     setProviderFeedback({
       providerId: result.profileId ?? profileId,
       tone: result.ok ? "success" : "danger",
-      title: result.ok ? "Test passed" : "Test failed",
+      title: result.ok ? "测试通过" : "测试失败",
       message: result.ok
-        ? `Runtime can reach ${result.model ?? DEFAULT_PROVIDER_MODEL}.`
+        ? `运行时可连接 ${result.model ?? DEFAULT_PROVIDER_MODEL}。`
         : result.lastErrorSummary ?? result.message,
       detail: result.ok
         ? result.lastStatus ?? result.status
         : result.checkedEnvVarName
-          ? `Check env var: ${result.checkedEnvVarName}`
+          ? `检查环境变量：${result.checkedEnvVarName}`
           : undefined,
     });
   }
@@ -3110,7 +3110,7 @@ export function App() {
 
     try {
       await persistSearchConfig();
-      addToast("success", "Search settings saved");
+      addToast("success", "搜索设置已保存");
     } catch (reason) {
       toastError(reason);
     } finally {
@@ -3127,7 +3127,7 @@ export function App() {
       const normalized = await persistProviderConfig();
       if (normalized) {
         await runProviderTest(undefined, normalized.provider.activeProfileId);
-        addToast("success", "Provider settings saved");
+        addToast("success", "模型供应商设置已保存");
       }
     } catch (reason) {
       toastError(reason);
@@ -3142,7 +3142,7 @@ export function App() {
 
     try {
       await persistCommandPolicyConfig();
-      addToast("success", "Command policy saved");
+      addToast("success", "命令策略已保存");
     } catch (reason) {
       toastError(reason);
     } finally {
@@ -3289,7 +3289,7 @@ export function App() {
       });
       const normalized = normalizeRuntimeConfig(result.config);
       setConfig(normalized);
-      addToast("success", "Permission mode saved");
+      addToast("success", "权限模式已保存");
     } catch (reason) {
       toastError(reason);
     }
@@ -3325,7 +3325,7 @@ export function App() {
       const normalized = normalizeRuntimeConfig(result.config);
       setConfig(normalized);
       setGeneralSettings(buildSettingsGeneralConfig(normalized));
-      addToast("success", "Appearance settings saved");
+      addToast("success", "外观设置已保存");
     } catch (reason) {
       toastError(reason);
     }
@@ -3336,7 +3336,7 @@ export function App() {
     try {
       const result = await runtimeClient.listSkills();
       setSkills(result.skills);
-      addToast("success", "Skills refreshed");
+      addToast("success", "技能已刷新");
     } catch (reason) {
       toastError(reason);
     }
@@ -3348,7 +3348,7 @@ export function App() {
     try {
       const result = await runtimeClient.createSkill(buildSkillPayload(draft));
       setSkills((current) => [result.skill, ...current.filter((skill) => skill.id !== result.skill.id)]);
-      addToast("success", `Skill created: ${result.skill.name}`);
+      addToast("success", `技能已创建：${result.skill.name}`);
     } catch (reason) {
       toastError(reason);
     } finally {
@@ -3367,7 +3367,7 @@ export function App() {
       setSkills((current) =>
         current.map((skill) => skill.id === result.skill.id ? result.skill : skill),
       );
-      addToast("success", `Skill updated: ${result.skill.name}`);
+      addToast("success", `技能已更新：${result.skill.name}`);
     } catch (reason) {
       toastError(reason);
     } finally {
@@ -3381,7 +3381,7 @@ export function App() {
     try {
       await runtimeClient.deleteSkill({ skillId });
       setSkills((current) => current.filter((skill) => skill.id !== skillId));
-      addToast("success", "Skill deleted");
+      addToast("success", "技能已删除");
     } catch (reason) {
       toastError(reason);
     } finally {
@@ -3393,7 +3393,7 @@ export function App() {
     setError(null);
     try {
       const result = await runtimeClient.openAppPath(kind);
-      addToast("success", `Opened ${kind === "logs" ? "logs" : "data folder"}: ${result.path}`);
+      addToast("success", `已打开${kind === "logs" ? "日志" : "数据目录"}：${result.path}`);
     } catch (reason) {
       toastError(reason);
     }
@@ -3402,7 +3402,7 @@ export function App() {
   async function handleCopyRuntimeText(label: string, text: string) {
     try {
       await navigator.clipboard?.writeText(text);
-      addToast("success", `${label} copied`);
+      addToast("success", `${label}已复制`);
     } catch (reason) {
       toastError(reason);
     }
@@ -3414,7 +3414,7 @@ export function App() {
       ...current,
       status,
     }));
-    addToast("info", "Computer Use capabilities checked");
+    addToast("info", "电脑操作能力已检查");
   }
 
   async function refreshMcpServers() {
@@ -3449,7 +3449,7 @@ export function App() {
         ...current.filter((server) => server.id !== result.server.id),
       ]);
       setMcpError(null);
-      addToast("success", "MCP server created");
+      addToast("success", "MCP 服务器已创建");
     } catch (reason) {
       setMcpError(getErrorMessage(reason));
       toastError(reason);
@@ -3476,7 +3476,7 @@ export function App() {
         current.map((server) => (server.id === result.server.id ? result.server : server)),
       );
       setMcpError(null);
-      addToast("success", "MCP server updated");
+      addToast("success", "MCP 服务器已更新");
     } catch (reason) {
       setMcpError(getErrorMessage(reason));
       toastError(reason);
@@ -3495,7 +3495,7 @@ export function App() {
         current.map((server) => (server.id === result.server.id ? result.server : server)),
       );
       setMcpError(null);
-      addToast("success", enabled ? "MCP server enabled" : "MCP server disabled");
+      addToast("success", enabled ? "MCP 服务器已启用" : "MCP 服务器已停用");
     } catch (reason) {
       setMcpError(getErrorMessage(reason));
       toastError(reason);
@@ -3512,7 +3512,7 @@ export function App() {
       setMcpLastRefresh(result);
       await refreshMcpServers();
       setMcpError(null);
-      addToast("success", `Refreshed ${result.refreshed} MCP tools`);
+      addToast("success", `已刷新 ${result.refreshed} 个 MCP 工具`);
     } catch (reason) {
       setMcpError(getErrorMessage(reason));
       toastError(reason);
@@ -3528,7 +3528,7 @@ export function App() {
       await runtimeClient.deleteMcpServer({ serverId });
       setMcpServers((current) => current.filter((server) => server.id !== serverId));
       setMcpError(null);
-      addToast("success", "MCP server deleted");
+      addToast("success", "MCP 服务器已删除");
     } catch (reason) {
       setMcpError(getErrorMessage(reason));
       toastError(reason);
@@ -3606,7 +3606,7 @@ export function App() {
       const profileId = `profile_${Date.now()}`;
       const profile = {
         ...buildProviderProfileFromForm(profileId),
-        name: `Profile ${(config.provider.profiles?.length ?? 0) + 1}`,
+        name: `配置 ${(config.provider.profiles?.length ?? 0) + 1}`,
       };
       const result = await runtimeClient.updateConfig({
         config: {
@@ -3647,7 +3647,7 @@ export function App() {
       const profile: ProviderProfile = {
         ...source,
         id: profileId,
-        name: `${source.name || "Provider profile"} Copy`,
+        name: `${source.name || "供应商配置"} 副本`,
       };
       delete profile.lastCheckedAt;
       delete profile.lastStatus;
@@ -3796,28 +3796,28 @@ export function App() {
 
   function formatMcpSummary(servers: McpServerRecord[]): string {
     if (servers.length === 0) {
-      return "No MCP servers configured. Use the **MCP** tab in the sidebar to add one.";
+      return "暂无 MCP 服务器。可以在侧边栏的 **MCP** 页签中添加。";
     }
     const lines = servers.map((s) => {
-      const status = s.enabled ? "on" : "off";
+      const status = s.enabled ? "已启用" : "已停用";
       const transport = s.transport ?? "stdio";
       const detail = s.url ?? s.command ?? "";
       return `- **${s.name}** (${status}) — ${transport}${detail ? `: ${detail}` : ""}`;
     });
     const enabled = servers.filter((s) => s.enabled).length;
-    return `**MCP Servers** (${enabled}/${servers.length} enabled)\n\n${lines.join("\n")}\n\n_Use \`/mcp refresh\` to re-discover tools._`;
+    return `**MCP 服务器**（${enabled}/${servers.length} 已启用）\n\n${lines.join("\n")}\n\n_使用 \`/mcp refresh\` 重新发现工具。_`;
   }
 
   function formatSkillsSummary(skillList: SkillPresetRecord[]): string {
     if (skillList.length === 0) {
-      return "No skill presets found. Use the **Skills** tab in the sidebar to create one.";
+      return "暂无技能预设。可以在侧边栏的 **技能** 页签中创建。";
     }
     const lines = skillList.map((s) => {
-      const builtin = s.isBuiltin || s.is_builtin ? " [builtin]" : "";
+      const builtin = s.isBuiltin || s.is_builtin ? " [内置]" : "";
       const cat = s.category ? ` (${s.category})` : "";
       return `- **${s.name}**${cat}${builtin} — ${(s.description || "").slice(0, 80)}`;
     });
-    return `**Skills** (${skillList.length} presets)\n\n${lines.join("\n")}`;
+    return `**技能**（${skillList.length} 个预设）\n\n${lines.join("\n")}`;
   }
 
   /** Handle a locally-recognized slash command. */
@@ -3829,26 +3829,26 @@ export function App() {
         const lines = SLASH_COMMANDS.map(
           (c) => `**${c.name}**${c.argsHint ? ` ${c.argsHint}` : ""} - ${c.description}`,
         );
-        const helpText = `**Available commands:**\n\n${lines.join("\n")}`;
+        const helpText = `**可用命令：**\n\n${lines.join("\n")}`;
         addSystemMessage(helpText);
         break;
       }
       case "clear":
         setChatMessages([]);
-        addToast("success", "Chat cleared");
+        addToast("success", "聊天已清空");
         break;
       case "compact":
         addSystemMessage(
-          "Context compaction is not yet implemented. The runtime will support summarizing long conversations in a future update.",
+          "上下文压缩尚未实现。后续运行时会支持对长会话进行摘要。",
         );
         break;
       case "status": {
         const statusLines: string[] = [];
-        statusLines.push(`**Runtime:** ${hostStatusText}`);
+        statusLines.push(`**运行时：** ${hostStatusText}`);
         if (hostStatus?.runtimeRunning) {
-          statusLines.push(`**Transport:** ${hostStatus.runtimeTransport}`);
+          statusLines.push(`**传输：** ${hostStatus.runtimeTransport}`);
         }
-        statusLines.push(`**Model:** ${getProviderDisplayLabel(providerSettings)}`);
+        statusLines.push(`**模型：** ${getProviderDisplayLabel(providerSettings)}`);
         statusLines.push(`**会话：** ${session ? session.title : "无"}`);
         statusLines.push(`**消息：** ${chatMessages.length}`);
         if (task) {
@@ -3870,7 +3870,7 @@ export function App() {
       case "config": {
         const configLines: string[] = [
           `**模式：** ${formatRuntimeModeLabel(providerSettings.mode)}`,
-          `**Base URL:** ${providerSettings.baseUrl || "(default)"}`,
+          `**Base URL：** ${providerSettings.baseUrl || "默认"}`,
           `**模型：** ${providerSettings.model || "(default)"}`,
           `**温度：** ${providerSettings.temperature}`,
           `**最大输出 tokens：** ${providerSettings.maxTokens}`,
@@ -3893,7 +3893,7 @@ export function App() {
       }
       case "skills": {
         if (cmd.args === "refresh") {
-          addSystemMessage("Refreshing skills...");
+        addSystemMessage("正在刷新技能...");
           refreshSkills();
         } else {
           addSystemMessage(formatSkillsSummary(skills));
@@ -4075,7 +4075,7 @@ export function App() {
         approvalId,
         decision,
       });
-      addToast("success", decision === "approved" ? "Approved" : "Rejected");
+      addToast("success", decision === "approved" ? "已批准" : "已拒绝");
     } catch (reason) {
       toastError(reason);
     } finally {
@@ -4139,14 +4139,14 @@ export function App() {
       return {
         id: profile.id,
         name: profile.name,
-        endpoint: profile.baseUrl ?? "No endpoint configured",
+        endpoint: profile.baseUrl ?? "未配置接口地址",
         apiFormat: profile.apiFormat as SettingsProvider["apiFormat"],
         note:
           profile.mode === "mock"
-            ? "Local preview; no remote model calls"
+            ? "本地预览；不会调用远程模型"
             : profile.apiKeyEnvVarName
-              ? `Env var: ${profile.apiKeyEnvVarName}`
-              : "API key required",
+              ? `环境变量：${profile.apiKeyEnvVarName}`
+              : "需要 API 密钥",
         models: models.length ? models : undefined,
         modelMapping: {
           main: profile.model ?? "",
@@ -4154,7 +4154,7 @@ export function App() {
           sonnet: profile.model ?? profile.defaultModel ?? "",
           opus: profile.fallbackModel ?? "",
         },
-        apiKeyMasked: profile.apiKey ? "Key entered" : profile.apiKeyEnvVarName,
+        apiKeyMasked: profile.apiKey ? "已输入密钥" : profile.apiKeyEnvVarName,
         lastTest: buildSettingsProviderLastTest(
           profile,
           providerTestResult,
@@ -4162,8 +4162,8 @@ export function App() {
         ),
         status:
           profile.id === providerConfig.activeProfileId
-            ? "Active"
-            : profile.lastStatus ?? "Configured",
+            ? "active"
+            : profile.lastStatus ?? "configured",
       };
     });
   }, [config, providerTestResult]);
@@ -4297,7 +4297,7 @@ export function App() {
       });
       await refreshScheduledRecords(result.task.id);
       setSelectedScheduledTaskId(result.task.id);
-      addToast("success", "Scheduled task created");
+      addToast("success", "定时任务已创建");
     } catch (reason) {
       toastError(reason);
     } finally {
@@ -4402,7 +4402,7 @@ export function App() {
           onReject={(approvalId) => handleApprovalSubmit(approvalId, "rejected")}
           onLoadPatch={handleLoadPatchDiff}
           onCopyPatchPath={(_patchId, path) => {
-            void handleCopyRuntimeText("Patch path", path);
+            void handleCopyRuntimeText("补丁路径", path);
           }}
           onCopyRuntimeText={handleCopyRuntimeText}
           onRefreshCommandJob={handleRefreshCommandJob}

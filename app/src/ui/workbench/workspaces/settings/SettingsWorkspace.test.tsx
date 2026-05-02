@@ -164,7 +164,7 @@ describe("SettingsWorkspace", () => {
       "OPENAI_API_KEY=sk-from-shell\nOPENAI_BASE_URL=https://api.env.example/v1\nOPENAI_MODEL=env-model",
     );
 
-    expect(within(dialog).getByText("Detected env var: OPENAI_API_KEY")).toBeInTheDocument();
+    expect(within(dialog).getByText("检测到环境变量：OPENAI_API_KEY")).toBeInTheDocument();
 
     await user.click(dialog.querySelector('button[type="submit"]') as HTMLElement);
 
@@ -216,10 +216,9 @@ describe("SettingsWorkspace", () => {
       />,
     );
 
-    expect(screen.getAllByText("Last test: missing_env").length).toBeGreaterThan(0);
-    expect(screen.getByText("Failure reason")).toBeInTheDocument();
+    expect(screen.getAllByText(/最近测试：/).length).toBeGreaterThan(0);
+    expect(screen.getByText("失败原因")).toBeInTheDocument();
     expect(screen.getAllByText("OPENAI_API_KEY is not set.").length).toBeGreaterThan(0);
-    expect(screen.getByText("Last test: ok")).toBeInTheDocument();
     expect(screen.getByText("primary-chat / stop")).toBeInTheDocument();
   });
 
@@ -253,10 +252,10 @@ describe("SettingsWorkspace", () => {
       />,
     );
 
-    expect(screen.getByText("ACTIVE")).toBeInTheDocument();
-    expect(screen.getByText("Active provider")).toBeInTheDocument();
-    expect(screen.getByText("Current model")).toBeInTheDocument();
-    expect(screen.getByText("Test passed")).toBeInTheDocument();
+    expect(screen.getByText("当前")).toBeInTheDocument();
+    expect(screen.getByText("当前供应商")).toBeInTheDocument();
+    expect(screen.getByText("当前模型")).toBeInTheDocument();
+    expect(screen.getByText("测试通过")).toBeInTheDocument();
     expect(screen.getByText("Saved and activated")).toBeInTheDocument();
     expect(screen.getByText("Primary Provider is now the active provider.")).toBeInTheDocument();
   });
@@ -403,7 +402,7 @@ describe("SettingsWorkspace", () => {
     await user.click(navButtons[5] as HTMLElement);
 
     expect(screen.getByText("Docs")).toBeInTheDocument();
-    expect(screen.getByText("Available")).toBeInTheDocument();
+    expect(screen.getByText("可用")).toBeInTheDocument();
     expect(container.querySelector('input[type="checkbox"]')).not.toBeInTheDocument();
   });
 
@@ -414,24 +413,24 @@ describe("SettingsWorkspace", () => {
 
     await user.click(navButtons[3] as HTMLElement);
     expect(screen.getByRole("button", { name: "Test IM connection" })).toBeDisabled();
-    expect(screen.getByText("Runtime IM bridge testing is not available in this desktop build.")).toBeInTheDocument();
+    expect(screen.getByText("当前桌面版本尚未接入运行时消息桥接测试。")).toBeInTheDocument();
 
     await user.click(navButtons[4] as HTMLElement);
     expect(screen.getByRole("button", { name: "Add agent" })).toBeDisabled();
-    expect(screen.getByText("Agent profiles are read-only until runtime agent management is defined.")).toBeInTheDocument();
+    expect(screen.getByText("运行时智能体管理定义完成前，智能体配置暂时只读。")).toBeInTheDocument();
 
     await user.click(navButtons[5] as HTMLElement);
     expect(screen.getByRole("button", { name: "Open folder" })).toBeDisabled();
-    expect(screen.getByText("Folder opening is pending a desktop shell bridge; refresh still uses the runtime skill registry.")).toBeInTheDocument();
+    expect(screen.getByText("打开目录还在等待桌面 shell 桥接；刷新仍会使用运行时技能注册表。")).toBeInTheDocument();
 
     await user.click(navButtons[6] as HTMLElement);
     expect(screen.getByRole("button", { name: "Recheck" })).toBeDisabled();
-    expect(screen.getByText("Desktop permission recheck is not implemented yet.")).toBeInTheDocument();
+    expect(screen.getByText("桌面权限重新检查尚未实现。")).toBeInTheDocument();
 
     await user.click(navButtons[7] as HTMLElement);
     expect(screen.getByRole("button", { name: "Open logs" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Open data folder" })).toBeDisabled();
-    expect(screen.getByText("Opening local folders is pending a Tauri shell bridge; paths are shown above for manual inspection.")).toBeInTheDocument();
+    expect(screen.getByText("打开本地目录还在等待 Tauri shell 桥接；上方路径可用于手动检查。")).toBeInTheDocument();
   });
 
   it("shows project memory state and clears it from settings", async () => {
@@ -446,7 +445,7 @@ describe("SettingsWorkspace", () => {
     const navButtons = container.querySelectorAll(".settings-nav button");
 
     await user.click(navButtons[7] as HTMLElement);
-    expect(screen.getByText("Project memory")).toBeInTheDocument();
+    expect(screen.getByText("项目记忆")).toBeInTheDocument();
     expect(screen.getByText(/roadmap aligned/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Clear project memory" }));

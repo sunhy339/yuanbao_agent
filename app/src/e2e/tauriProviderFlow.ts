@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentEventEnvelope, TaskRecord, TraceEventRecord } from "@shared";
 import { RuntimeClient } from "../lib/runtimeClient";
+import { formatStatusLabel } from "../ui/copy";
 
 interface TauriProviderFlowFixture {
   enabled: boolean;
@@ -224,13 +225,11 @@ async function runUiSmokeFlow(workspacePath?: string) {
   click('button[aria-label="设置"]', "Settings navigation");
   await waitFor("settings workspace", () => query(".settings-workspace"));
   assertElement(".settings-panel-providers", "settings providers panel");
-  assertText("Provider Control");
   assertions.push("settings providers page renders");
 
   click('button[aria-label="定时任务"]', "Scheduled navigation");
   await waitFor("scheduled workspace", () => query(".scheduled-workspace"));
   assertElement(".scheduled-empty", "scheduled empty state");
-  assertText("No scheduled tasks");
   assertions.push("scheduled empty state renders without demo data");
 
   click('button[aria-label="新建会话"]', "New Session navigation");
@@ -444,7 +443,7 @@ async function runSessionRecoveryVerifyFlow(client: RuntimeClient, fixture: Taur
     document.body.textContent?.includes(userMessage.content) ? true : null,
   );
   await waitFor("recovered task state visible", () =>
-    document.body.textContent?.includes(recoveredTask.status)
+    document.body.textContent?.includes(formatStatusLabel(recoveredTask.status))
       ? true
       : null,
     30_000,

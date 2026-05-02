@@ -281,7 +281,9 @@ def _run_patch_approval_smoke(runtime: SimpleNamespace, workspace_root: Path) ->
 
     final_task = _result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
     assert final_task["status"] == "completed"
-    assert final_task["resultSummary"] == "Patch applied after approval."
+    assert final_task["resultSummary"].startswith("Patch applied after approval.")
+    assert "Changed: Update todo.txt." in final_task["resultSummary"]
+    assert "Validated with git status, and git diff." in final_task["resultSummary"]
     assert target_file.read_text(encoding="utf-8") == "status: new\n"
     _assert_trace_covers_e2e(runtime, task["id"])
     return final_task

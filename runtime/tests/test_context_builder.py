@@ -299,6 +299,7 @@ def test_context_builder_reserves_tool_schema_tokens_when_trimming_messages(
 def test_context_builder_trims_low_priority_history_large_results_and_diff(
     store: SQLiteStore,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -333,6 +334,11 @@ def test_context_builder_trims_low_priority_history_large_results_and_diff(
         summary="Large diff patch",
         diff_text="\n".join(f"+line {index} {'x' * 80}" for index in range(200)),
         files_changed=1,
+    )
+    monkeypatch.setattr(
+        ContextBuilder,
+        "_git_summary",
+        lambda self, workspace_root: "Git status summary:\n- working tree appears clean.",
     )
 
     context = ContextBuilder(store, tool_schemas=[]).build(

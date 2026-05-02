@@ -947,7 +947,10 @@ async fn mcp_tools_refresh(
 #[tauri::command]
 fn e2e_fixture() -> Result<Value, String> {
     let flow = env::var("YUANBAO_TAURI_E2E").unwrap_or_default();
-    if flow == "ui-smoke" || flow == "session-recovery-seed" || flow == "session-recovery-verify" {
+    if flow == "ui-smoke"
+        || flow == "mcp-live"
+        || flow == "session-recovery-seed"
+        || flow == "session-recovery-verify" {
         let repo_root = repo_root()?;
         let workspace_path = env::var("YUANBAO_TAURI_E2E_WORKSPACE")
             .unwrap_or_else(|_| repo_root.display().to_string());
@@ -1008,6 +1011,7 @@ fn e2e_fixture() -> Result<Value, String> {
 fn e2e_finish(app_handle: AppHandle, payload: Value) -> Result<(), String> {
     let flow = env::var("YUANBAO_TAURI_E2E").unwrap_or_default();
     if flow != "provider-flow"
+        && flow != "mcp-live"
         && flow != "ui-smoke"
         && flow != "session-recovery-seed"
         && flow != "session-recovery-verify" {

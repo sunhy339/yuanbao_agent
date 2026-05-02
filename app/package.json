@@ -14,6 +14,7 @@
     "e2e:real": "node e2e/tauri-provider-flow.mjs",
     "e2e:desktop:real": "node e2e/tauri-provider-flow.mjs",
     "e2e:desktop:ui": "node e2e/tauri-ui-smoke.mjs",
+    "e2e:desktop:mcp": "node e2e/tauri-mcp-live.mjs",
     "e2e:desktop:recovery": "node e2e/tauri-session-recovery.mjs",
     "visual:regression": "python scripts/visual_regression.py",
     "desktop:real:manual": "node e2e/tauri-manual-real.mjs",

@@ -20,7 +20,7 @@ interface TauriProviderFlowFixture {
 
 interface TauriProviderFlowResult {
   ok: boolean;
-  flow: "provider-flow" | "ui-smoke" | "session-recovery-seed" | "session-recovery-verify";
+  flow: "provider-flow" | "ui-smoke" | "mcp-live" | "session-recovery-seed" | "session-recovery-verify";
   phase: string;
   provider?: {
     ok?: boolean;
@@ -253,6 +253,7 @@ async function runUiSmokeFlow(workspacePath?: string) {
 function flowFromFixture(fixture: TauriProviderFlowFixture): TauriProviderFlowResult["flow"] {
   if (
     fixture.flow === "ui-smoke" ||
+    fixture.flow === "mcp-live" ||
     fixture.flow === "session-recovery-seed" ||
     fixture.flow === "session-recovery-verify"
   ) {
@@ -318,6 +319,87 @@ async function runSessionRecoverySeedFlow(client: RuntimeClient, fixture: TauriP
   } finally {
     unsubscribe();
   }
+}
+
+async function runMcpLiveFlow(client: RuntimeClient) {
+  const assertions: string[] = [];
+  const serverId = `e2e-mcp-${Date.now()}`;
+
+  await waitFor("workbench shell", () => query(WORKBENCH_SHELL_SELECTOR));
+  click('button[aria-label="MCP Center"]', "MCP Center navigation");
+  await waitFor("MCP workspace", () => query(".mcp-workspace"));
+  assertions.push("MCP workspace opened in desktop shell");
+
+  const initialList = await client.listMcpServers();
+  assertions.push(`initial MCP server count: ${initialList.servers.length}`);
+
+  const created = await client.createMcpServer({
+    id: serverId,
+    name: "E2E MCP disabled",
+    transport: "stdio",
+    command: "e2e-mcp-disabled",
+    args: ["--disabled"],
+    enabled: false,
+  });
+  if (created.server.id !== serverId || created.server.enabled !== false) {
+    throw new Error("Created MCP server did not round-trip expected id/enabled state.");
+  }
+  assertions.push("created disabled MCP server through desktop runtime");
+
+  const listedAfterCreate = await client.listMcpServers();
+  if (!listedAfterCreate.servers.some((server) => server.id === serverId)) {
+    throw new Error("Created MCP server was not returned by listMcpServers.");
+  }
+  assertions.push("listed created MCP server through desktop runtime");
+
+  const updated = await client.updateMcpServer({
+    serverId,
+    name: "E2E MCP updated",
+    command: "e2e-mcp-updated",
+    args: ["--updated"],
+    enabled: false,
+  });
+  if (updated.server.name !== "E2E MCP updated" || updated.server.command !== "e2e-mcp-updated") {
+    throw new Error("Updated MCP server did not return edited fields.");
+  }
+  assertions.push("updated MCP server config through desktop runtime");
+
+  const enabled = await client.updateMcpServer({ serverId, enabled: true });
+  if (!enabled.server.enabled) {
+    throw new Error("MCP server did not toggle enabled.");
+  }
+  assertions.push("enabled MCP server through desktop runtime");
+
+  const refresh = await client.refreshMcpTools({ serverId });
+  if (!Array.isArray(refresh.tools)) {
+    throw new Error("MCP tool refresh did not return a tools array.");
+  }
+  assertions.push(`refreshed MCP tools through desktop runtime: ${refresh.refreshed}`);
+
+  const disabled = await client.updateMcpServer({ serverId, enabled: false });
+  if (disabled.server.enabled) {
+    throw new Error("MCP server did not toggle disabled.");
+  }
+  assertions.push("disabled MCP server through desktop runtime");
+
+  const deleted = await client.deleteMcpServer({ serverId });
+  if (!deleted.deleted || deleted.serverId !== serverId) {
+    throw new Error("MCP delete returned an unexpected payload.");
+  }
+  const listedAfterDelete = await client.listMcpServers();
+  if (listedAfterDelete.servers.some((server) => server.id === serverId)) {
+    throw new Error("Deleted MCP server still appears in listMcpServers.");
+  }
+  assertions.push("deleted MCP server through desktop runtime");
+
+  await finish({
+    ok: true,
+    flow: "mcp-live",
+    phase: "complete",
+    eventTypes: [],
+    traceTypes: [],
+    uiAssertions: assertions,
+  });
 }
 
 async function runSessionRecoveryVerifyFlow(client: RuntimeClient, fixture: TauriProviderFlowFixture) {
@@ -401,6 +483,12 @@ export async function maybeRunTauriProviderFlowE2e() {
     if (fixture.flow === "ui-smoke") {
       phase = "ui-smoke";
       await runUiSmokeFlow(fixture.workspacePath);
+      return;
+    }
+
+    if (fixture.flow === "mcp-live") {
+      phase = "mcp-live";
+      await runMcpLiveFlow(client);
       return;
     }
 

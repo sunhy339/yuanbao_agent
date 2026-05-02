@@ -175,7 +175,7 @@ Progress:
 
 Objective: prove MCP management works with live runtime data.
 
-- [ ] Test list/create/update/delete/toggle/refresh tools against desktop runtime.
+- [x] Test list/create/update/delete/toggle/refresh tools against desktop runtime.
 - [x] Make server errors persistent and visible without losing saved config.
 - [x] Add or update tests for error cases.
 - [x] Confirm shared RPC, Tauri bridge, runtime client, and runtime backend naming are aligned.
@@ -186,6 +186,7 @@ Progress:
 - Added frontend edit/update support for existing MCP servers so the UI now reaches the existing `runtimeClient.updateMcpServer` path beyond enable/disable toggles.
 - Added MCP workspace tests covering create, edit/update, toggle, tool refresh, and delete callbacks.
 - Added persistent MCP error banner state in the workspace. Failed create/update keeps the user's draft intact for correction.
+- Added and ran `npm.cmd run e2e:desktop:mcp`, which starts the Tauri desktop client with a temporary database and verifies MCP list/create/update/enable/refresh/disable/delete against the live runtime bridge.
 
 ## Phase 6: Session Workbench Polish
 
@@ -206,6 +207,7 @@ Objective: keep the V2 shell stable as interactions become real.
 - [ ] Run `npm.cmd run build`.
 - [ ] Run `npm.cmd run visual:regression` after UI/layout changes.
 - [ ] Run `npm.cmd run e2e:desktop:ui` when desktop shell or Tauri bridge changes.
+- [ ] Run `npm.cmd run e2e:desktop:mcp` when MCP bridge or UI management changes.
 - [ ] Run `npm.cmd run e2e:desktop:recovery` when session persistence or routing changes.
 - [ ] Update `docs/frontend-v2-bug-list.md` for reopened or newly found issues.
 

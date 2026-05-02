@@ -88,6 +88,7 @@ import {
   type SettingsProviderTestResult,
   type SettingsSkillConfig,
 } from "./ui/workbench/workspaces/settings/SettingsWorkspace";
+import { formatRuntimeModeLabel, formatStatusLabel } from "./ui/copy";
 
 const runtimeClient = new RuntimeClient();
 const DEFAULT_SEARCH_GLOB_TEXT = "";
@@ -391,10 +392,10 @@ function getProviderRuntimeNotice(
     result?.checkedEnvVarName ?? (settings.apiKeyEnvVarName || DEFAULT_PROVIDER_API_KEY_ENV_VAR);
 
   if (settings.mode === "mock" || result?.status === "mocked") {
-    return "Current provider is local preview. Tasks sent now use deterministic local behavior, not a remote model.";
+    return "当前模型供应商处于本地预览模式。现在发送的任务会使用确定性的本地行为，不会调用远程模型。";
   }
   if (result?.status === "missing_env" || result?.status === "not_configured") {
-    return `Current provider cannot reach a real model because ${envVarName} is missing. Set the env var and test again before sending real-model tasks.`;
+    return `当前模型供应商缺少 ${envVarName}，无法连接真实模型。请设置环境变量并重新测试后再发送真实模型任务。`;
   }
 
   return null;
@@ -1926,41 +1927,40 @@ function mergeSessionBackgroundJobs(
 
 function describeMode(hostStatus: HostStatus | null): string {
   if (!hostStatus) {
-    return "Detecting runtime";
+    return "正在检测运行时";
   }
 
-  return hostStatus.runtimeRunning ? "Connected to local runtime" : "Browser preview mode";
+  return hostStatus.runtimeRunning ? "本地运行时已连接" : "浏览器预览模式";
 }
 
 function getProviderDisplayLabel(settings: ProviderSettingsForm): string {
   if (settings.mode === "mock") {
-    return "Local preview model";
+    return "本地预览模型";
   }
-  return settings.model || settings.name || "No model configured";
+  return settings.model || settings.name || "未配置模型";
 }
 
 function RuntimeUnavailableWorkspace({ errorMessage }: { errorMessage: string }) {
   return (
     <main className="runtime-unavailable-workspace" aria-labelledby="runtime-unavailable-title">
       <section className="runtime-unavailable-card">
-        <p className="runtime-unavailable-kicker">Runtime required</p>
-        <h1 id="runtime-unavailable-title">Desktop runtime unavailable</h1>
+        <p className="runtime-unavailable-kicker">需要运行时</p>
+        <h1 id="runtime-unavailable-title">桌面运行时不可用</h1>
         <p className="runtime-unavailable-copy">
-          This UI is not connected to the Tauri desktop runtime, so provider setup, chat, tool calls,
-          and task execution are blocked.
+          当前 UI 未连接到 Tauri 桌面运行时，因此模型供应商配置、聊天、工具调用和任务执行都会被阻止。
         </p>
         <div className="runtime-unavailable-actions">
           <div>
-            <strong>Run the real desktop app</strong>
+            <strong>启动真实桌面应用</strong>
             <code>npm run tauri:dev</code>
           </div>
           <div>
-            <strong>Preview-only browser mode</strong>
+            <strong>仅预览浏览器模式</strong>
             <code>VITE_YUANBAO_ENABLE_BROWSER_MOCK=1 npm run dev</code>
           </div>
         </div>
         <div className="runtime-unavailable-detail" role="status">
-          <strong>Current failure</strong>
+          <strong>当前失败原因</strong>
           <pre>{errorMessage}</pre>
         </div>
       </section>
@@ -3849,10 +3849,10 @@ export function App() {
           statusLines.push(`**Transport:** ${hostStatus.runtimeTransport}`);
         }
         statusLines.push(`**Model:** ${getProviderDisplayLabel(providerSettings)}`);
-        statusLines.push(`**Session:** ${session ? session.title : "none"}`);
-        statusLines.push(`**Messages:** ${chatMessages.length}`);
+        statusLines.push(`**会话：** ${session ? session.title : "无"}`);
+        statusLines.push(`**消息：** ${chatMessages.length}`);
         if (task) {
-          statusLines.push(`**Task:** ${task.id} - ${task.status}`);
+          statusLines.push(`**任务：** ${task.id} - ${formatStatusLabel(task.status)}`);
         }
         addSystemMessage(statusLines.join("\n"));
         break;
@@ -3860,29 +3860,29 @@ export function App() {
       case "model":
         if (cmd.args) {
           setProviderSettings((current) => ({ ...current, model: cmd.args }));
-          addToast("success", `Model set to: ${cmd.args}`);
+          addToast("success", `模型已切换为：${cmd.args}`);
         } else {
           addSystemMessage(
-            `**Current model:** ${getProviderDisplayLabel(providerSettings)}`,
+            `**当前模型：** ${getProviderDisplayLabel(providerSettings)}`,
           );
         }
         break;
       case "config": {
         const configLines: string[] = [
-          `**Mode:** ${providerSettings.mode === "mock" ? "local preview" : providerSettings.mode}`,
+          `**模式：** ${formatRuntimeModeLabel(providerSettings.mode)}`,
           `**Base URL:** ${providerSettings.baseUrl || "(default)"}`,
-          `**Model:** ${providerSettings.model || "(default)"}`,
-          `**Temperature:** ${providerSettings.temperature}`,
-          `**Max tokens:** ${providerSettings.maxTokens}`,
-          `**Max context:** ${providerSettings.maxContextTokens}`,
-          `**Timeout:** ${providerSettings.timeout}s`,
+          `**模型：** ${providerSettings.model || "(default)"}`,
+          `**温度：** ${providerSettings.temperature}`,
+          `**最大输出 tokens：** ${providerSettings.maxTokens}`,
+          `**最大上下文：** ${providerSettings.maxContextTokens}`,
+          `**超时：** ${providerSettings.timeout}s`,
         ];
         addSystemMessage(configLines.join("\n"));
         break;
       }
       case "mcp": {
         if (cmd.args === "refresh") {
-          addSystemMessage("Refreshing MCP tools...");
+          addSystemMessage("正在刷新 MCP 工具...");
           handleRefreshMcpTools().then(() => {
             addSystemMessage(formatMcpSummary(mcpServers));
           });
@@ -4109,21 +4109,21 @@ export function App() {
     : "offline" as const;
   const runtimeStatusLabel =
     overviewRuntimeStatus === "ready"
-      ? "Runtime ready"
+      ? "运行时就绪"
       : overviewRuntimeStatus === "degraded"
-        ? "Runtime preview"
-        : "Runtime offline";
+        ? "运行时预览"
+        : "运行时离线";
   const enabledMcpServers = mcpServers.filter((server) => server.enabled).length;
   const mcpStatusLabel = `${enabledMcpServers}/${mcpServers.length || 0} MCP`;
   const pendingApprovalCount = approvalCards.filter((approval) => approval.status === "pending").length;
-  const approvalStatusLabel = `${pendingApprovalCount} approvals`;
+  const approvalStatusLabel = `${pendingApprovalCount} 个审批`;
   const contextStats = sessionContextPreview?.budgetStats;
   const contextStatusLabel = contextStats?.maxContextTokens
-    ? `${formatCompactCount(contextStats.estimatedTokens ?? contextStats.estimatedInputTokens)}/${formatCompactCount(contextStats.maxContextTokens)} ctx`
-    : `${formatCompactCount(contextStats?.estimatedTokens ?? contextStats?.estimatedInputTokens)} ctx`;
+    ? `${formatCompactCount(contextStats.estimatedTokens ?? contextStats.estimatedInputTokens)}/${formatCompactCount(contextStats.maxContextTokens)} 上下文`
+    : `${formatCompactCount(contextStats?.estimatedTokens ?? contextStats?.estimatedInputTokens)} 上下文`;
   const runtimeUnavailableReason =
     !loading && !runtimeReady
-      ? error ?? "Runtime handshake did not complete. The frontend cannot execute tasks on its own."
+      ? error ?? "运行时握手未完成。前端无法独立执行任务。"
       : null;
   const settingsProviders = useMemo<SettingsProvider[] | undefined>(() => {
     if (!config) {

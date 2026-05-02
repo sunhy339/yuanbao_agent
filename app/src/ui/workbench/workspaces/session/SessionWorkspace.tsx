@@ -7,6 +7,7 @@ import {
   ToolTraceCard,
 } from "../../../v2/components/runtime";
 import { Button, Panel, StatusBadge } from "../../../v2/components/ui";
+import { formatStatusLabel } from "../../../copy";
 import "./session.css";
 
 export interface SessionWorkspaceSession {
@@ -330,15 +331,15 @@ type ConversationActivityItem =
 function getRoleLabel(role: SessionWorkspaceMessage["role"]) {
   switch (role) {
     case "assistant":
-      return "Assistant";
+      return "助手";
     case "system":
-      return "System";
+      return "系统";
     case "tool":
-      return "Tool";
+      return "工具";
     case "user":
-      return "User";
+      return "用户";
     default:
-      return "Message";
+      return "消息";
   }
 }
 
@@ -374,7 +375,7 @@ function compactText(value: string | null | undefined, maxChars = 240) {
   if (text.length <= maxChars) {
     return text;
   }
-  return `${text.slice(0, Math.max(1, maxChars - 14)).trimEnd()} [truncated]`;
+  return `${text.slice(0, Math.max(1, maxChars - 14)).trimEnd()} [已截断]`;
 }
 
 const MAX_RENDERED_DIFF_LINES = 500;
@@ -398,7 +399,7 @@ function parseUnifiedDiff(diffText: string): DiffLine[] {
   if (rawLines.length > MAX_RENDERED_DIFF_LINES) {
     lines.push({
       type: "header",
-      content: `[Diff truncated: showing first ${MAX_RENDERED_DIFF_LINES} of ${rawLines.length} lines]`,
+      content: `[差异已截断：仅显示 ${rawLines.length} 行中的前 ${MAX_RENDERED_DIFF_LINES} 行]`,
     });
   }
   return lines;
@@ -517,7 +518,7 @@ function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolR
   if (toolCall.toolName === "run_command") {
     return {
       kind: "command",
-      title: command ?? toolCall.argsPreview ?? "Command",
+      title: command ?? toolCall.argsPreview ?? "命令",
       summary: resultSummary,
       meta: compactMeta([command ? "shell" : null, ...statusMeta]),
       code: command && toolCall.argsPreview && toolCall.argsPreview !== command ? toolCall.argsPreview : undefined,
@@ -689,12 +690,12 @@ function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveTask | n
     items.push({
       id: `task-focus:${activeTask.id}`,
       kind: "task",
-      title: "Task focus",
+      title: "任务重点",
       status: activeTask.status,
       summary: activeTask.currentStep || activeTask.goal,
       meta: compactMeta([
-        acceptanceCriteria.length ? `${acceptanceCriteria.length} acceptance` : null,
-        outOfScope.length ? `${outOfScope.length} out of scope` : null,
+        acceptanceCriteria.length ? `${acceptanceCriteria.length} 条验收标准` : null,
+        outOfScope.length ? `${outOfScope.length} 条不在范围内` : null,
       ]),
       code: compactMeta([
         activeTask.goal ? `📌 Goal:\n${activeTask.goal}` : null,
@@ -712,12 +713,12 @@ function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveTask | n
     items.push({
       id: `task-files:${activeTask.id}`,
       kind: "task",
-      title: "Changed files",
+      title: "变更文件",
       status: "recorded",
-      summary: `${changedFiles.length} file${changedFiles.length === 1 ? "" : "s"}: ${compactList(
+      summary: `${changedFiles.length} 个文件：${compactList(
         changedFiles.map((file) => file.path),
       )}`,
-      meta: compactMeta([`${changedFiles.length} files`]),
+      meta: compactMeta([`${changedFiles.length} 个文件`]),
       code: changedFiles.map(formatTaskFileChange).join("\n"),
     });
   }
@@ -730,10 +731,10 @@ function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveTask | n
     items.push({
       id: `task-commands:${activeTask.id}`,
       kind: "command",
-      title: "Command runs",
+      title: "命令执行",
       status,
-      summary: `${commands.length} command${commands.length === 1 ? "" : "s"} tracked`,
-      meta: compactMeta([`${commands.length} commands`]),
+      summary: `已跟踪 ${commands.length} 条命令`,
+      meta: compactMeta([`${commands.length} 条命令`]),
       code: commands.map(formatTaskCommand).join("\n"),
     });
   }
@@ -746,10 +747,10 @@ function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveTask | n
     items.push({
       id: `task-verification:${activeTask.id}`,
       kind: "task",
-      title: "Verification",
+      title: "验证",
       status,
-      summary: `${verification.length} verification check${verification.length === 1 ? "" : "s"} ${status}`,
-      meta: compactMeta([`${verification.length} checks`]),
+      summary: `${verification.length} 个验证检查：${formatStatusLabel(status)}`,
+      meta: compactMeta([`${verification.length} 个检查`]),
       code: verification.map(formatTaskVerification).join("\n"),
     });
   }
@@ -827,7 +828,7 @@ function formatTraceSummary(trace: SessionWorkspaceTrace) {
   if (trace.status && ["failed", "error", "warning", "cancelled"].includes(trace.status.toLowerCase())) {
     return `${formatTraceTitle(trace)} ${trace.status}`;
   }
-  return "Runtime diagnostic event";
+  return "运行时诊断事件";
 }
 
 function buildTraceDetail(trace: SessionWorkspaceTrace) {
@@ -868,7 +869,7 @@ function buildRuntimeItems({
       id: `patch:${patch.id}`,
       kind: "patch",
       sourceId: patch.id,
-      title: patch.summary || "Patch",
+      title: patch.summary || "改动",
       status: patch.status,
       summary: patch.files && patch.files.length > 0
         ? `${patch.files.length} file${patch.files.length === 1 ? "" : "s"}: ${compactList(patch.files.map((f) => f.path))}`
@@ -956,22 +957,22 @@ function buildRuntimeItems({
 
 function getRuntimeKindLabel(kind: RuntimeTimelineItem["kind"]) {
   if (kind === "command") {
-    return "Bash";
+    return "命令";
   }
   if (kind === "approval") {
-    return "Approval";
+    return "审批";
   }
   if (kind === "tool") {
-    return "Tool";
+    return "工具";
   }
   if (kind === "patch") {
-    return "Patch";
+    return "改动";
   }
   if (kind === "task") {
-    return "Task";
+    return "任务";
   }
   if (kind === "memory") {
-    return "Memory";
+    return "记忆";
   }
   return kind;
 }
@@ -1032,7 +1033,7 @@ function parsePatchFileSummaries(code?: string) {
 }
 
 function buildCommandOutput(item: RuntimeTimelineItem) {
-  return compactMeta([item.summary, item.code]).join("\n\n") || "No output captured.";
+  return compactMeta([item.summary, item.code]).join("\n\n") || "暂无输出。";
 }
 
 function normalizeMarkdownContent(content: string) {
@@ -1326,11 +1327,12 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
               <Button
                 size="xs"
                 variant="secondary"
+                aria-label="Copy output"
                 onClick={() => {
-                  void onCopyRuntimeText?.("Command output", commandOutput);
+                  void onCopyRuntimeText?.("命令输出", commandOutput);
                 }}
               >
-                Copy output
+                复制输出
               </Button>
             ) : null}
             {canRefreshCommand ? (
@@ -1342,7 +1344,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
                   void onRefreshCommandJob?.(item.sourceId ?? "");
                 }}
               >
-                Refresh
+                刷新
               </Button>
             ) : null}
             {canStopCommand ? (
@@ -1354,7 +1356,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
                   void onStopCommandJob?.(item.sourceId ?? "");
                 }}
               >
-                Stop
+                停止
               </Button>
             ) : null}
           </div>
@@ -1400,7 +1402,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
             <strong>{item.title}</strong>
             {item.summary ? <small>{compactText(item.summary, 160)}</small> : null}
           </span>
-          {item.status ? <StatusBadge label={item.status} tone={getStatusTone(item.status)} compact /> : null}
+          {item.status ? <StatusBadge label={formatStatusLabel(item.status)} tone={getStatusTone(item.status)} compact /> : null}
           <i aria-hidden="true">{expanded ? "^" : "v"}</i>
         </button>
         {item.meta?.length ? (
@@ -1417,11 +1419,12 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
                 <Button
                   size="xs"
                   variant="secondary"
+                  aria-label="Copy detail"
                   onClick={() => {
-                    void onCopyRuntimeText?.("Trace detail", item.code ?? "");
+                    void onCopyRuntimeText?.("诊断详情", item.code ?? "");
                   }}
                 >
-                  Copy detail
+                  复制详情
                 </Button>
               </div>
             ) : null}
@@ -1443,7 +1446,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
       >
         <span>{kindLabel}</span>
         <strong>{item.title}</strong>
-        {item.status ? <StatusBadge label={item.status} tone={getStatusTone(item.status)} /> : null}
+        {item.status ? <StatusBadge label={formatStatusLabel(item.status)} tone={getStatusTone(item.status)} /> : null}
         <i aria-hidden="true">{expanded ? "⌃" : "⌄"}</i>
       </button>
       {item.meta?.length && !expanded ? (
@@ -1465,7 +1468,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
             }}
             type="button"
           >
-            Approve
+            批准
           </button>
           <button
             aria-label={`Reject ${item.title}`}
@@ -1474,7 +1477,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
             }}
             type="button"
           >
-            Reject
+            拒绝
           </button>
         </div>
       ) : null}
@@ -1490,7 +1493,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
                 setExpanded(true);
               }}
             >
-              Load diff
+              加载差异
             </Button>
           ) : null}
           {canRefreshCommand ? (
@@ -1502,7 +1505,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
                 void onRefreshCommandJob?.(item.sourceId ?? "");
               }}
             >
-              Refresh
+              刷新
             </Button>
           ) : null}
           {canStopCommand ? (
@@ -1514,7 +1517,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
                 void onStopCommandJob?.(item.sourceId ?? "");
               }}
             >
-              Stop
+              停止
             </Button>
           ) : null}
         </div>
@@ -1531,7 +1534,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
           {item.summary ? <p>{item.summary}</p> : null}
           {item.code ? <p className="runtime-event-code-summary">{item.code}</p> : null}
           {patchPaths.length && item.sourceId && onCopyPatchPath ? (
-            <div className="runtime-patch-files" aria-label="Patch files">
+            <div className="runtime-patch-files" aria-label="改动文件">
               {patchPaths.map((path) => (
                 <button
                   key={path}
@@ -1541,7 +1544,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
                   }}
                 >
                   <span>{path}</span>
-                  <strong>Copy path</strong>
+                  <strong>复制路径</strong>
                 </button>
               ))}
             </div>
@@ -1578,7 +1581,7 @@ function PatchDiffBody({ diffLines, isBusy }: { diffLines?: DiffLine[]; isBusy: 
   if (!diffLines || diffLines.length === 0) {
     return (
       <p className="runtime-diff-empty" role="status">
-        {isBusy ? "Diff is loading." : "Diff is not available yet. Try loading it again after the runtime finishes writing the patch."}
+        {isBusy ? "差异正在加载。" : "差异暂不可用。请在运行时写入改动后再试一次。"}
       </p>
     );
   }
@@ -1604,17 +1607,17 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Sessio
       className={`message-bubble${isThinking ? " message-bubble-thinking" : ""}`}
       data-activity-kind="message"
       data-role={message.role}
-      aria-label={`${message.role} message`}
+      aria-label={`${getRoleLabel(message.role)}消息`}
     >
       <div className="message-bubble-head">
         <span>{getRoleLabel(message.role)}</span>
         {message.toolName ? <em>{message.toolName}</em> : null}
-        {message.status ? <em>{message.status}</em> : null}
-        {message.streaming && !message.placeholder ? <em>Streaming</em> : null}
+        {message.status ? <em>{formatStatusLabel(message.status)}</em> : null}
+        {message.streaming && !message.placeholder ? <em>流式输出</em> : null}
         {message.createdAt ? <time>{formatTimestamp(message.createdAt)}</time> : null}
       </div>
       {isThinking ? (
-        <div className="thinking-dots" aria-label="Thinking">
+        <div className="thinking-dots" aria-label="思考中">
           <span /><span /><span />
         </div>
       ) : message.role === "assistant" ? (
@@ -1683,7 +1686,7 @@ const ConversationActivity = memo(function ConversationActivity({
   busyId?: string | null;
 }) {
   return (
-    <div className="conversation-activity" aria-label="Conversation activity">
+    <div className="conversation-activity" aria-label="会话活动">
       {items.map((item) =>
         item.kind === "message" ? (
           <MessageBubble message={item.message} key={item.id} />
@@ -1737,9 +1740,9 @@ export function SessionWorkspace({
       <main className="session-workspace session-workspace-empty" aria-labelledby="session-empty-title">
         <section className="session-empty-card">
           <span className="session-empty-rule" aria-hidden="true" />
-          <p className="session-kicker">Conversation desk</p>
-          <h1 id="session-empty-title">Open or create a session</h1>
-          <p>Choose a session from the rail or start a new one to begin chatting here.</p>
+          <p className="session-kicker">会话工作台</p>
+          <h1 id="session-empty-title">打开或创建会话</h1>
+          <p>从侧栏选择一个会话，或新建会话后开始对话。</p>
         </section>
       </main>
     );
@@ -1775,26 +1778,26 @@ export function SessionWorkspace({
   const runtimeLanes = [
     {
       id: "commands",
-      eyebrow: "Execution",
-      title: "Command lane",
-      emptyTitle: "No commands running",
-      emptyText: "Shell jobs appear here with stop and refresh controls.",
+      eyebrow: "执行",
+      title: "命令通道",
+      emptyTitle: "暂无运行中的命令",
+      emptyText: "Shell 任务会显示在这里，并提供停止和刷新控制。",
       items: runtimeItems.filter((item) => item.kind === "command" || item.kind === "tool"),
     },
     {
       id: "patches",
-      eyebrow: "Patch",
-      title: "Patch queue",
-      emptyTitle: "No patch loaded",
-      emptyText: "Generated diffs stay here before entering the stream.",
+      eyebrow: "改动",
+      title: "改动队列",
+      emptyTitle: "暂无改动",
+      emptyText: "生成的差异会先显示在这里，再进入活动流。",
       items: runtimeItems.filter((item) => item.kind === "patch"),
     },
     {
       id: "trace",
-      eyebrow: "Diagnostics",
-      title: "Important signals",
-      emptyTitle: "Diagnostics are quiet",
-      emptyText: "Failures, routing decisions, and actionable signals appear here.",
+      eyebrow: "诊断",
+      title: "重要信号",
+      emptyTitle: "暂无诊断",
+      emptyText: "失败、路由决策和可操作信号会显示在这里。",
       items: runtimeItems.filter((item) => item.kind === "trace" || item.kind === "approval" || item.kind === "task"),
     },
   ];
@@ -1805,17 +1808,17 @@ export function SessionWorkspace({
         <section className="session-conversation-column">
           <header className="session-chat-header">
             <div className="session-chat-title-block">
-              <p className="session-kicker">Conversation</p>
+              <p className="session-kicker">会话</p>
               <h1 id="session-title">{session.title}</h1>
-              <div className="session-chip-row" aria-label="Session context">
-                <StatusBadge label={session.status ?? "active"} tone={getStatusTone(session.status)} />
-                {activeTask?.status ? <StatusBadge label={activeTask.status} tone={getStatusTone(activeTask.status)} pulse={isTaskControllable(activeTask.status)} /> : null}
-                {taskCount !== undefined ? <span>{taskCount} task{taskCount === 1 ? "" : "s"}</span> : null}
+              <div className="session-chip-row" aria-label="会话上下文">
+                <StatusBadge label={formatStatusLabel(session.status ?? "active")} tone={getStatusTone(session.status)} />
+                {activeTask?.status ? <StatusBadge label={formatStatusLabel(activeTask.status)} tone={getStatusTone(activeTask.status)} pulse={isTaskControllable(activeTask.status)} /> : null}
+                {taskCount !== undefined ? <span>{taskCount} 个任务</span> : null}
                 {composerContext?.model ? <span>{composerContext.model}</span> : null}
-                {composerContext?.permissionMode ? <span>approval: {composerContext.permissionMode}</span> : null}
+                {composerContext?.permissionMode ? <span>审批：{composerContext.permissionMode}</span> : null}
               </div>
             </div>
-            <div className="session-chat-actions" aria-label="Session actions">
+            <div className="session-chat-actions" aria-label="会话操作">
               <Button
                 size="sm"
                 variant="secondary"
@@ -1825,7 +1828,7 @@ export function SessionWorkspace({
                   void onRefreshTask?.();
                 }}
               >
-                Refresh task
+                刷新任务
               </Button>
               <Button
                 size="sm"
@@ -1836,7 +1839,7 @@ export function SessionWorkspace({
                   void onRefreshTrace?.();
                 }}
               >
-                Refresh diagnostics
+                刷新诊断
               </Button>
               <Button
                 size="sm"
@@ -1849,29 +1852,29 @@ export function SessionWorkspace({
                   }
                 }}
               >
-                Stop task
+                停止任务
               </Button>
             </div>
           </header>
 
-          <section className="session-console" aria-label="Runtime console">
+          <section className="session-console" aria-label="运行时控制台">
             <header className="session-console-heading">
               <div>
-                <p className="session-kicker">Activity stream</p>
-                <h2>Messages and operations</h2>
+                <p className="session-kicker">活动流</p>
+                <h2>消息与操作</h2>
               </div>
-              <span>{activityItems.length} event{activityItems.length === 1 ? "" : "s"}</span>
+              <span>{activityItems.length} 个事件</span>
             </header>
-            <div className="message-stream message-stream-chat-only" aria-label="Conversation messages">
+            <div className="message-stream message-stream-chat-only" aria-label="会话消息">
               {messagesLoading && activityItems.length === 0 ? (
-                <div className="message-stream-loading" aria-label="Loading messages">
+                <div className="message-stream-loading" aria-label="加载消息">
                   <div className="message-stream-loading-bar" />
                 </div>
               ) : activityItems.length === 0 ? (
                 <div className="message-stream-empty">
-                  <p className="session-kicker">Quiet thread</p>
-                  <h2>No messages yet</h2>
-                  <p>Send the first message from the composer below.</p>
+                  <p className="session-kicker">安静线程</p>
+                  <h2>还没有消息</h2>
+                  <p>从下方输入区发送第一条消息。</p>
                 </div>
               ) : (
                 <ConversationActivity
@@ -1890,41 +1893,41 @@ export function SessionWorkspace({
           </section>
         </section>
 
-        <aside className="session-runtime-column" aria-label="Runtime intelligence">
-          <section className="session-runtime-dashboard" aria-label="Runtime dashboard">
+        <aside className="session-runtime-column" aria-label="运行时智能状态">
+          <section className="session-runtime-dashboard" aria-label="运行时仪表盘">
             <div>
-              <p className="session-kicker">Task state</p>
-              <strong>{activeTaskStatus}</strong>
-              <span>{activeTask?.currentStep ?? activeTask?.goal ?? "Ready for the next instruction"}</span>
+              <p className="session-kicker">任务状态</p>
+              <strong>{formatStatusLabel(activeTaskStatus)}</strong>
+              <span>{activeTask?.currentStep ?? activeTask?.goal ?? "等待下一条指令"}</span>
             </div>
             <dl>
               <div>
-                <dt>Messages</dt>
+                <dt>消息</dt>
                 <dd>{messages.length}</dd>
               </div>
               <div>
-                <dt>Commands</dt>
+                <dt>命令</dt>
                 <dd>{commandCount}</dd>
               </div>
               <div>
-                <dt>Patches</dt>
+                <dt>改动</dt>
                 <dd>{patchCount}</dd>
               </div>
               <div>
-                <dt>Approvals</dt>
+                <dt>审批</dt>
                 <dd>{pendingApprovals}</dd>
               </div>
               <div>
-                <dt>Signals</dt>
+                <dt>信号</dt>
                 <dd>{diagnosticCount}</dd>
               </div>
             </dl>
           </section>
 
           {activeTask?.currentStep || activeTask?.goal ? (
-            <Panel className="session-task-panel" eyebrow="Runtime Focus" title={activeTask?.currentStep ?? "Ready for the next task"}>
+            <Panel className="session-task-panel" eyebrow="运行时重点" title={activeTask?.currentStep ?? "等待下一个任务"}>
               <div className="session-task-panel-grid">
-                <p>{activeTask?.goal ?? session.summary ?? "No active task is running in this session."}</p>
+                <p>{activeTask?.goal ?? session.summary ?? "当前会话没有正在运行的任务。"}</p>
                 {composerContext?.cwd ? <code>{composerContext.cwd}</code> : null}
               </div>
             </Panel>
@@ -1935,11 +1938,11 @@ export function SessionWorkspace({
               usedTokens={contextUsedTokens}
               reservedTokens={contextBudgetStats?.toolSchemaTokens ?? 0}
               maxTokens={contextMaxTokens}
-              label="Session context"
+              label="会话上下文"
             />
           ) : null}
 
-          <section className="session-runtime-lanes" aria-label="Execution lanes">
+          <section className="session-runtime-lanes" aria-label="执行通道">
             {runtimeLanes.map((lane) => (
               <article className="session-runtime-lane" data-lane={lane.id} key={lane.id}>
                 <header>
@@ -1954,10 +1957,10 @@ export function SessionWorkspace({
                     {lane.items.slice(0, 3).map((item) => (
                       <li key={item.id}>
                         <div>
-                          <strong>{getRuntimeKindLabel(item.kind)} event</strong>
-                          <span>{item.meta?.slice(0, 2).join(" - ") || "Details are available in the activity stream"}</span>
+                          <strong>{getRuntimeKindLabel(item.kind)}事件</strong>
+                          <span>{item.meta?.slice(0, 2).join(" - ") || "详情可在活动流中查看"}</span>
                         </div>
-                        {item.status ? <StatusBadge label={item.status} tone={getStatusTone(item.status)} compact /> : null}
+                        {item.status ? <StatusBadge label={formatStatusLabel(item.status)} tone={getStatusTone(item.status)} compact /> : null}
                       </li>
                     ))}
                   </ul>

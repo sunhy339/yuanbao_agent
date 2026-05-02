@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { formatStatusLabel } from "../../../copy";
 import type { UiTone } from "../../types";
 import { Button, StatusBadge } from "../ui";
 import "./runtime.css";
@@ -24,7 +25,7 @@ function formatDate(value?: string | number) {
   if (!value) return undefined;
   const date = typeof value === "number" ? new Date(value) : new Date(value);
   if (Number.isNaN(date.getTime())) return undefined;
-  return date.toLocaleString("en-US", { hour12: false });
+  return date.toLocaleString("zh-CN", { hour12: false });
 }
 
 function clampRatio(value: number) {
@@ -76,7 +77,7 @@ export function ContextBudgetBar({
   usedTokens,
   maxTokens,
   reservedTokens = 0,
-  label = "Context budget",
+  label = "上下文预算",
   warningThreshold = 0.72,
   dangerThreshold = 0.88,
 }: ContextBudgetBarProps) {
@@ -91,11 +92,11 @@ export function ContextBudgetBar({
           <p className="yb-runtime-kicker">{label}</p>
           <strong>{Math.round(usedRatio * 100)}%</strong>
         </div>
-        <StatusBadge label={tone} tone={tone} compact />
+        <StatusBadge label={formatStatusLabel(tone)} tone={tone} compact />
       </header>
       <div
         className="yb-context-budget-track"
-        aria-label={`${label}: ${formatCount(usedTokens)} of ${formatCount(maxTokens)} tokens used`}
+        aria-label={`${label}: 已使用 ${formatCount(usedTokens)} / ${formatCount(maxTokens)} tokens`}
         role="meter"
         aria-valuemin={0}
         aria-valuemax={maxTokens}
@@ -105,9 +106,9 @@ export function ContextBudgetBar({
         {reservedTokens > 0 ? <i style={{ width: `${reservedRatio * 100}%` }} /> : null}
       </div>
       <footer>
-        <span>{formatCount(usedTokens)} used</span>
-        {reservedTokens > 0 ? <span>{formatCount(reservedTokens)} reserved</span> : null}
-        <span>{formatCount(maxTokens)} max</span>
+        <span>已用 {formatCount(usedTokens)}</span>
+        {reservedTokens > 0 ? <span>预留 {formatCount(reservedTokens)}</span> : null}
+        <span>上限 {formatCount(maxTokens)}</span>
       </footer>
     </article>
   );
@@ -135,30 +136,30 @@ export function RoutingDecisionCard({ decision, onInspect }: RoutingDecisionCard
     <article className="yb-routing-card">
       <header>
         <div>
-          <p className="yb-runtime-kicker">Routing</p>
+          <p className="yb-runtime-kicker">路由</p>
           <h3>{decision.model ?? decision.providerMode}</h3>
         </div>
-        <StatusBadge label={decision.useBackground ? "background" : "inline"} tone={decision.useBackground ? "primary" : "neutral"} compact />
+        <StatusBadge label={decision.useBackground ? "后台" : "前台"} tone={decision.useBackground ? "primary" : "neutral"} compact />
       </header>
       <p>{decision.reason}</p>
       <dl>
         <div>
-          <dt>Provider</dt>
+          <dt>供应商</dt>
           <dd>{decision.providerMode}</dd>
         </div>
         <div>
-          <dt>Confidence</dt>
+          <dt>置信度</dt>
           <dd>{confidence !== undefined ? `${confidence}%` : "--"}</dd>
         </div>
         <div>
-          <dt>Created</dt>
+          <dt>创建时间</dt>
           <dd>{formatDate(decision.createdAt) ?? "--"}</dd>
         </div>
       </dl>
       {decision.fallbackReason ? <small>{decision.fallbackReason}</small> : null}
       {onInspect ? (
         <footer>
-          <Button size="sm" variant="ghost" onClick={onInspect}>Inspect</Button>
+          <Button size="sm" variant="ghost" onClick={onInspect}>查看</Button>
         </footer>
       ) : null}
     </article>
@@ -208,7 +209,7 @@ export function ToolTraceCard({
     <article className="yb-tool-trace" data-status={toolCall.status}>
       <button type="button" className="yb-tool-trace-head" aria-expanded={isExpanded} onClick={toggle}>
         <span>{title}</span>
-        <StatusBadge label={toolCall.status} tone={toneFromStatus(toolCall.status)} compact />
+        <StatusBadge label={formatStatusLabel(toolCall.status)} tone={toneFromStatus(toolCall.status)} compact />
         <i>{toolCall.latencyMs !== undefined ? `${toolCall.latencyMs}ms` : formatDate(toolCall.startedAt) ?? ""}</i>
       </button>
       {toolCall.outputPreview || toolCall.error ? <p>{toolCall.error ?? toolCall.outputPreview}</p> : null}
@@ -217,8 +218,8 @@ export function ToolTraceCard({
           {toolCall.inputPreview ? (
             <section>
               <header>
-                <strong>Input</strong>
-                {onCopyInput ? <Button size="xs" variant="ghost" onClick={onCopyInput}>Copy</Button> : null}
+                <strong>输入</strong>
+                {onCopyInput ? <Button size="xs" variant="ghost" onClick={onCopyInput}>复制</Button> : null}
               </header>
               <pre>{toolCall.inputPreview}</pre>
             </section>
@@ -226,8 +227,8 @@ export function ToolTraceCard({
           {toolCall.outputPreview || toolCall.error ? (
             <section>
               <header>
-                <strong>{toolCall.error ? "Error" : "Output"}</strong>
-                {onCopyOutput ? <Button size="xs" variant="ghost" onClick={onCopyOutput}>Copy</Button> : null}
+                <strong>{toolCall.error ? "错误" : "输出"}</strong>
+                {onCopyOutput ? <Button size="xs" variant="ghost" onClick={onCopyOutput}>复制</Button> : null}
               </header>
               <pre>{toolCall.error ?? toolCall.outputPreview}</pre>
             </section>
@@ -266,38 +267,38 @@ export function ApprovalCard({ approval, busy = false, onApprove, onReject, onVi
     <article className="yb-approval-card" data-risk={approval.risk ?? "low"}>
       <header>
         <div>
-          <p className="yb-runtime-kicker">{approval.kind ?? "Approval"}</p>
+          <p className="yb-runtime-kicker">{approval.kind ?? "审批"}</p>
           <h3>{approval.title}</h3>
         </div>
-        <StatusBadge label={approval.risk ?? "low risk"} tone={riskTone} compact />
+        <StatusBadge label={formatStatusLabel(approval.risk ? `${approval.risk} risk` : "low risk")} tone={riskTone} compact />
       </header>
       {approval.summary ? <p>{approval.summary}</p> : null}
       <dl>
         {approval.command ? (
           <div>
-            <dt>Command</dt>
+            <dt>命令</dt>
             <dd>{approval.command}</dd>
           </div>
         ) : null}
         {approval.cwd ? (
           <div>
-            <dt>CWD</dt>
+            <dt>工作目录</dt>
             <dd>{approval.cwd}</dd>
           </div>
         ) : null}
         <div>
-          <dt>Status</dt>
-          <dd>{approval.status}</dd>
+          <dt>状态</dt>
+          <dd>{formatStatusLabel(approval.status)}</dd>
         </div>
       </dl>
       <footer>
-        <Button size="sm" variant="primary" loading={busy} disabled={!pending} disabledReason="Only pending approvals can be approved" onClick={() => onApprove(approval.id)}>
-          Approve
+        <Button size="sm" variant="primary" aria-label="Approve" loading={busy} disabled={!pending} disabledReason="只有待处理审批可以批准" onClick={() => onApprove(approval.id)}>
+          批准
         </Button>
-        <Button size="sm" variant="danger" loading={busy} disabled={!pending} disabledReason="Only pending approvals can be rejected" onClick={() => onReject(approval.id)}>
-          Reject
+        <Button size="sm" variant="danger" aria-label="Reject" loading={busy} disabled={!pending} disabledReason="只有待处理审批可以拒绝" onClick={() => onReject(approval.id)}>
+          拒绝
         </Button>
-        {onViewDetails ? <Button size="sm" variant="ghost" onClick={() => onViewDetails(approval.id)}>Details</Button> : null}
+        {onViewDetails ? <Button size="sm" variant="ghost" onClick={() => onViewDetails(approval.id)}>详情</Button> : null}
       </footer>
     </article>
   );
@@ -325,22 +326,22 @@ export function PatchPlanCard({ patch, changedFiles = [], onOpenDiff, onApply, o
     <article className="yb-patch-plan">
       <header>
         <div>
-          <p className="yb-runtime-kicker">Patch plan</p>
+          <p className="yb-runtime-kicker">改动计划</p>
           <h3>{patch.summary}</h3>
         </div>
-        <StatusBadge label={patch.status} tone={toneFromStatus(patch.status)} compact />
+        <StatusBadge label={formatStatusLabel(patch.status)} tone={toneFromStatus(patch.status)} compact />
       </header>
       <dl>
         <div>
-          <dt>Files</dt>
+          <dt>文件</dt>
           <dd>{patch.filesChanged ?? changedFiles.length}</dd>
         </div>
         <div>
-          <dt>Add</dt>
+          <dt>新增</dt>
           <dd>+{patch.additions ?? 0}</dd>
         </div>
         <div>
-          <dt>Del</dt>
+          <dt>删除</dt>
           <dd>-{patch.deletions ?? 0}</dd>
         </div>
       </dl>
@@ -349,15 +350,15 @@ export function PatchPlanCard({ patch, changedFiles = [], onOpenDiff, onApply, o
           {changedFiles.slice(0, 4).map((file) => (
             <li key={file.path}>
               <span>{file.path}</span>
-              <small>{file.status ?? "changed"} {file.additions !== undefined ? `+${file.additions}` : ""} {file.deletions !== undefined ? `-${file.deletions}` : ""}</small>
+              <small>{formatStatusLabel(file.status ?? "changed")} {file.additions !== undefined ? `+${file.additions}` : ""} {file.deletions !== undefined ? `-${file.deletions}` : ""}</small>
             </li>
           ))}
         </ul>
       ) : null}
       <footer>
-        <Button size="sm" variant="secondary" onClick={() => onOpenDiff(patch.id)}>Open diff</Button>
-        {onApply ? <Button size="sm" variant="primary" onClick={() => onApply(patch.id)}>Apply</Button> : null}
-        {onReject ? <Button size="sm" variant="danger" onClick={() => onReject(patch.id)}>Reject</Button> : null}
+        <Button size="sm" variant="secondary" aria-label="Open diff" onClick={() => onOpenDiff(patch.id)}>查看差异</Button>
+        {onApply ? <Button size="sm" variant="primary" onClick={() => onApply(patch.id)}>应用</Button> : null}
+        {onReject ? <Button size="sm" variant="danger" onClick={() => onReject(patch.id)}>拒绝</Button> : null}
       </footer>
     </article>
   );
@@ -382,16 +383,16 @@ export interface CommandOutputPanelProps {
 }
 
 export function CommandOutputPanel({ command, maxHeight = 220, onCopy }: CommandOutputPanelProps) {
-  const output = command.stderr || command.stdout || "No output captured.";
+  const output = command.stderr || command.stdout || "暂无输出。";
 
   return (
     <article className="yb-command-output">
       <header>
         <div>
-          <p className="yb-runtime-kicker">Command</p>
+          <p className="yb-runtime-kicker">命令</p>
           <h3>{command.command}</h3>
         </div>
-        <StatusBadge label={command.status} tone={toneFromStatus(command.status)} compact />
+        <StatusBadge label={formatStatusLabel(command.status)} tone={toneFromStatus(command.status)} compact />
       </header>
       <div className="yb-command-output-meta">
         {command.cwd ? <span>{command.cwd}</span> : null}
@@ -401,7 +402,7 @@ export function CommandOutputPanel({ command, maxHeight = 220, onCopy }: Command
       <pre style={{ maxHeight }}>{output}</pre>
       {onCopy ? (
         <footer>
-          <Button size="sm" variant="ghost" onClick={onCopy}>Copy output</Button>
+          <Button size="sm" variant="ghost" aria-label="Copy output" onClick={onCopy}>复制输出</Button>
         </footer>
       ) : null}
     </article>

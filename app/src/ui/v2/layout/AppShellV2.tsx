@@ -5,12 +5,13 @@ import { GlobalSidebar } from "../../workbench/GlobalSidebar";
 import { WorkspaceFrame } from "../../workbench/WorkspaceFrame";
 import { WorkspaceTabs } from "../../workbench/WorkspaceTabs";
 import type { SystemWorkspaceKind, WorkbenchSession, WorkbenchTab } from "../../workbench/types";
+import { formatSystemWorkspaceLabel } from "../../copy";
 import { Button, StatusBadge } from "../components/ui";
 import "./app-shell-v2.css";
 
 function LoadingSkeletonV2() {
   return (
-    <div className="yb-shell-loading" aria-label="Loading">
+    <div className="yb-shell-loading" aria-label="正在加载">
       <span />
       <span />
       <span />
@@ -92,25 +93,25 @@ export function AppShellV2({
           onRenameSession={onRenameSession}
           onDeleteSession={onDeleteSession}
         />
-        <section className="yb-app-main" aria-label="Workbench desk">
-          <header className="yb-topbar" aria-label="Runtime status">
+        <section className="yb-app-main" aria-label="工作台">
+          <header className="yb-topbar" aria-label="运行时状态">
             <div className="yb-topbar-title">
-              <p className="yb-kicker">Yuanbao Workbench V2</p>
+              <p className="yb-kicker">Yuanbao 工作台 V2</p>
               <h1>{workspaceName}</h1>
             </div>
             <div className="yb-topbar-status">
               <StatusBadge label={providerLabel} tone={disabled ? "info" : "success"} pulse={!disabled} />
-              <StatusBadge label={runtimeLabel ?? `${activeTaskSessions} active`} tone={disabled ? "danger" : "success"} pulse={!disabled} />
+              <StatusBadge label={runtimeLabel ?? `${activeTaskSessions} 个活跃任务`} tone={disabled ? "danger" : "success"} pulse={!disabled} />
               <StatusBadge label={mcpLabel ?? "MCP"} tone="info" />
-              <StatusBadge label={approvalLabel ?? "Approval"} tone="warning" />
-              <StatusBadge label={contextLabel ?? "Context"} tone="primary" />
-              <StatusBadge label={activeSystemTab} tone="primary" />
+              <StatusBadge label={approvalLabel ?? "审批"} tone="warning" />
+              <StatusBadge label={contextLabel ?? "上下文"} tone="primary" />
+              <StatusBadge label={formatSystemWorkspaceLabel(activeSystemTab)} tone="primary" />
             </div>
             <div className="yb-topbar-actions">
               <Button variant="ghost" size="sm" aria-label="Open MCP Center" onClick={() => onOpenSystemTab("mcp")}>MCP</Button>
-              <Button variant="ghost" size="sm" aria-label="Open Agent Skills" onClick={() => onOpenSystemTab("skills")}>Skills</Button>
-              <Button variant="ghost" size="sm" aria-label="Open Appearance" onClick={() => onOpenSystemTab("appearance")}>Appearance</Button>
-              <Button variant="ghost" size="sm" aria-label="Open Settings" onClick={() => onOpenSystemTab("settings")}>Settings</Button>
+              <Button variant="ghost" size="sm" aria-label="Open Agent Skills" onClick={() => onOpenSystemTab("skills")}>技能</Button>
+              <Button variant="ghost" size="sm" aria-label="Open Appearance" onClick={() => onOpenSystemTab("appearance")}>外观</Button>
+              <Button variant="ghost" size="sm" aria-label="Open Settings" onClick={() => onOpenSystemTab("settings")}>设置</Button>
             </div>
           </header>
 

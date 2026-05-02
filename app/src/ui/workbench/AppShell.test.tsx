@@ -72,7 +72,7 @@ describe("AppShell", () => {
     expect(screen.getByLabelText("Desktop titlebar")).toHaveTextContent("Yuanbao Agent");
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByLabelText("workspace content")).toBeInTheDocument();
-    expect(screen.getByLabelText("Task prompt")).toBeInTheDocument();
+    expect(screen.getByLabelText("任务指令")).toBeInTheDocument();
   });
 
   it("hides composer when composerVisible is false", () => {

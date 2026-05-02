@@ -21,8 +21,8 @@ describe("SessionWorkspace", () => {
   it("renders a calm empty state when no session is selected", () => {
     render(<SessionWorkspace session={null} activeTask={null} messages={[]} />);
 
-    expect(screen.getByRole("heading", { name: "Open or create a session" })).toBeInTheDocument();
-    expect(screen.getByText(/begin chatting here/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "打开或创建会话" })).toBeInTheDocument();
+    expect(screen.getByText(/新建会话后开始对话/)).toBeInTheDocument();
   });
 
   it("renders only the conversation area for an active session", () => {
@@ -108,7 +108,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText("Provider response")).not.toBeInTheDocument();
     expect(screen.getByText("apply_patch")).toBeInTheDocument();
     expect(screen.getByText("npm run typecheck")).toBeInTheDocument();
-    expect(screen.getByLabelText("Conversation activity")).toBeInTheDocument();
+    expect(screen.getByLabelText("会话活动")).toBeInTheDocument();
     const activityText = Array.from(container.querySelectorAll("[data-activity-kind]")).map((item) =>
       item.textContent ?? "",
     );
@@ -126,8 +126,8 @@ describe("SessionWorkspace", () => {
   it("renders a message empty state inside the conversation area", () => {
     render(<SessionWorkspace session={session} activeTask={null} messages={[]} />);
 
-    expect(screen.getByRole("heading", { name: "No messages yet" })).toBeInTheDocument();
-    expect(screen.getByText(/send the first message from the composer below/i)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "还没有消息" })).toBeInTheDocument();
+    expect(screen.getByText(/发送第一条消息/)).toBeInTheDocument();
   });
 
   it("renders assistant markdown as structured content", () => {
@@ -276,7 +276,7 @@ describe("SessionWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Copy output" }));
     expect(onCopyRuntimeText).toHaveBeenCalledWith(
-      "Command output",
+      "命令输出",
       expect.stringContaining("Command failed with exit 1."),
     );
 
@@ -284,7 +284,7 @@ describe("SessionWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Copy detail" }));
 
     expect(onCopyRuntimeText).toHaveBeenCalledWith(
-      "Trace detail",
+      "诊断详情",
       expect.stringContaining("Command process exited unexpectedly."),
     );
   });
@@ -314,7 +314,7 @@ describe("SessionWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "Open diff" }));
 
     expect(onLoadPatch).toHaveBeenCalledWith("patch_1");
-    expect(screen.getByRole("status")).toHaveTextContent("Diff is not available yet");
+    expect(screen.getByRole("status")).toHaveTextContent("差异暂不可用");
   });
 
   it("truncates large patch diffs before rendering", async () => {
@@ -346,7 +346,7 @@ describe("SessionWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Open diff" }));
 
-    expect(screen.getByText("[Diff truncated: showing first 500 of 623 lines]")).toBeInTheDocument();
+    expect(screen.getByText("[差异已截断：仅显示 623 行中的前 500 行]")).toBeInTheDocument();
     expect(screen.getByText("added line 1")).toBeInTheDocument();
     expect(screen.queryByText("added line 620")).not.toBeInTheDocument();
   });
@@ -431,25 +431,25 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /Task Task focus verifying/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Task Changed files recorded/ })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Command runs" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Task Verification passed/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /任务 任务重点 verifying/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /任务 变更文件 recorded/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "命令执行" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /任务 验证 passed/ })).toBeInTheDocument();
     expect(screen.queryByText(/sessionId/)).not.toBeInTheDocument();
     expect(screen.queryByText(/taskId/)).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Task Task focus verifying/ }));
+    await user.click(screen.getByRole("button", { name: /任务 任务重点 verifying/ }));
     expect(screen.getAllByText("Run the generated CLI against a sample image").length).toBeGreaterThan(0);
     expect(screen.getByText(/Acceptance/)).toHaveTextContent("Script exists");
 
-    await user.click(screen.getByRole("button", { name: /Task Changed files recorded/ }));
+    await user.click(screen.getByRole("button", { name: /任务 变更文件 recorded/ }));
     expect(screen.getAllByText(/tools\/bead_art_generator.py/).length).toBeGreaterThan(0);
     expect(screen.getByText(/\+148/)).toBeInTheDocument();
 
     expect(screen.getByText(/python tools\/bead_art_generator.py --help/)).toBeInTheDocument();
     expect(screen.getByText(/exit 0/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Task Verification passed/ }));
+    await user.click(screen.getByRole("button", { name: /任务 验证 passed/ }));
     expect(screen.getByText(/CLI help is available/)).toHaveTextContent("passed");
   });
 
@@ -562,7 +562,7 @@ describe("SessionWorkspace", () => {
     );
 
     expect(screen.getAllByText("apply_patch").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("approved").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("已批准").length).toBeGreaterThan(0);
     expect(screen.getByText("Updated the session runtime panel.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();

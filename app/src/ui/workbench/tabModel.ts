@@ -1,14 +1,15 @@
 import type { SystemWorkspaceKind, WorkbenchTab, WorkbenchTabResult, WorkbenchSession } from "./types";
+import { SYSTEM_WORKSPACE_LABELS } from "../copy";
 
 const SYSTEM_TITLES: Record<SystemWorkspaceKind, string> = {
-  overview: "Overview",
-  "new-session": "New Session",
-  scheduled: "Scheduled",
-  mcp: "MCP Center",
-  skills: "Agent Skills",
-  appearance: "Appearance",
-  playground: "Playground",
-  settings: "Settings",
+  overview: SYSTEM_WORKSPACE_LABELS.overview,
+  "new-session": SYSTEM_WORKSPACE_LABELS["new-session"],
+  scheduled: SYSTEM_WORKSPACE_LABELS.scheduled,
+  mcp: SYSTEM_WORKSPACE_LABELS.mcp,
+  skills: SYSTEM_WORKSPACE_LABELS.skills,
+  appearance: SYSTEM_WORKSPACE_LABELS.appearance,
+  playground: SYSTEM_WORKSPACE_LABELS.playground,
+  settings: SYSTEM_WORKSPACE_LABELS.settings,
 };
 
 export function getInitialTabs(): WorkbenchTab[] {
@@ -42,7 +43,7 @@ export function openSessionTab(
       {
         id,
         kind: "session",
-        title: session.title.trim() || "Untitled Session",
+        title: session.title.trim() || "未命名会话",
         sessionId: session.id,
         closable: true,
       },

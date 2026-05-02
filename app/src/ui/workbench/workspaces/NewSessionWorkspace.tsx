@@ -25,26 +25,26 @@ export interface NewSessionWorkspaceProps {
 const sessionTemplates = [
   {
     id: "code-change",
-    title: "Code change",
-    description: "Implement a scoped patch, run checks, and summarize files changed.",
+    title: "代码改动",
+    description: "完成范围明确的改动，运行检查，并总结变更文件。",
   },
   {
     id: "debug",
-    title: "Debug run",
-    description: "Inspect failing behavior, collect evidence, then fix with verification.",
+    title: "问题排查",
+    description: "定位失败行为、收集证据，然后修复并验证。",
   },
   {
     id: "planning",
-    title: "Plan breakdown",
-    description: "Turn a larger product goal into sequenced agent-ready work.",
+    title: "拆解计划",
+    description: "把较大的产品目标拆成可交给智能体执行的步骤。",
   },
 ];
 
 export function NewSessionWorkspace({
   workspacePath,
   hostStatusText,
-  sessionTitle = "New Yuanbao Session",
-  modelLabel = "Model not configured",
+  sessionTitle = "新的元宝会话",
+  modelLabel = "未配置模型",
   modelOptions = [],
   selectedModelId,
   workspaceBusy = false,
@@ -62,20 +62,20 @@ export function NewSessionWorkspace({
   const startupChecks = [
     {
       id: "runtime",
-      label: "Runtime host",
+      label: "运行时主机",
       status: hostStatusText,
       tone: "success" as const,
     },
     {
       id: "provider",
-      label: "Provider profile",
-      status: modelOptions.length ? modelLabel : "Configure in Settings",
+      label: "模型供应商",
+      status: modelOptions.length ? modelLabel : "请先在设置中配置",
       tone: modelOptions.length ? ("info" as const) : ("warning" as const),
     },
     {
       id: "workspace",
-      label: "Workspace root",
-      status: workspacePath.trim() ? "ready" : "missing",
+      label: "工作区根目录",
+      status: workspacePath.trim() ? "就绪" : "缺失",
       tone: workspacePath.trim() ? ("success" as const) : ("warning" as const),
     },
   ];
@@ -85,7 +85,7 @@ export function NewSessionWorkspace({
       const selected = await open({
         directory: true,
         multiple: false,
-        title: "Select workspace folder",
+        title: "选择工作区文件夹",
       });
       if (selected) {
         onWorkspacePathChange?.(selected);
@@ -97,21 +97,21 @@ export function NewSessionWorkspace({
 
   return (
     <main className="new-session-workspace" aria-labelledby="new-session-title">
-      <section className="new-session-hero" aria-label="New session desk">
+      <section className="new-session-hero" aria-label="新建会话">
         <div className="new-session-left-rail">
           <div className="new-session-copy-block">
             <p className="new-session-kicker">Yuanbao Agent</p>
-            <h1 id="new-session-title">Workspace Launcher</h1>
+            <h1 id="new-session-title">工作区启动器</h1>
             <p className="new-session-copy">
-              Select a workspace, confirm the runtime profile, and launch a session with the command bar ready.
+              选择工作区，确认运行时配置，然后启动一个可直接输入指令的会话。
             </p>
-            <div className="new-session-signal-row" aria-label="Session status">
+            <div className="new-session-signal-row" aria-label="会话状态">
               <StatusBadge label={hostStatusText} tone="success" pulse />
               <StatusBadge label={modelLabel} tone={modelOptions.length ? "info" : "warning"} />
             </div>
           </div>
 
-          <Panel className="new-session-check-panel" eyebrow="Startup Checks" title="Readiness">
+          <Panel className="new-session-check-panel" eyebrow="启动检查" title="准备状态">
             <div className="new-session-check-list">
               {startupChecks.map((check) => (
                 <div key={check.id} className="new-session-check-row">
@@ -125,9 +125,9 @@ export function NewSessionWorkspace({
 
         <div className="new-session-control-stack">
           <Panel
-            eyebrow="Launch Control"
-            title="Session setup"
-            description="Prepare the workspace lane before sending work to the agent."
+            eyebrow="启动控制"
+            title="会话配置"
+            description="先准备好工作区通道，再把任务交给智能体执行。"
           >
             <form
               className="new-session-form"
@@ -138,8 +138,8 @@ export function NewSessionWorkspace({
             >
               <TextField
                 aria-label="Session title"
-                label="Session title"
-                helperText="Used for the sidebar and tab title."
+                label="会话标题"
+                helperText="用于侧边栏和标签标题。"
                 value={sessionTitle}
                 onChange={(value) => onSessionTitleChange?.(value)}
                 disabled={!onSessionTitleChange || sessionBusy}
@@ -147,8 +147,8 @@ export function NewSessionWorkspace({
 
               <SelectField
                 aria-label="Select model"
-                label="Active model"
-                helperText={modelOptions.length ? "Switches the active provider profile." : "Configure providers in Settings first."}
+                label="当前模型"
+                helperText={modelOptions.length ? "切换当前模型供应商配置。" : "请先在设置中配置模型供应商。"}
                 value={resolvedModelId}
                 options={modelSelectOptions}
                 disabled={!modelOptions.length || !onSelectModel || sessionBusy}
@@ -158,8 +158,8 @@ export function NewSessionWorkspace({
               <div className="new-session-workspace-row">
                 <TextField
                   aria-label="Workspace folder"
-                  label="Workspace folder"
-                  helperText="Commands, patches, and searches will use this root."
+                  label="工作区文件夹"
+                  helperText="命令、改动和搜索都会使用这个根目录。"
                   value={workspacePath}
                   onChange={(value) => onWorkspacePathChange?.(value)}
                   disabled={workspaceBusy || sessionBusy}
@@ -168,22 +168,24 @@ export function NewSessionWorkspace({
                   <Button
                     type="button"
                     variant="secondary"
+                    aria-label="Browse"
                     disabled={workspaceBusy || sessionBusy}
                     onClick={handleBrowseFolder}
-                    title="Browse folder"
+                    title="浏览文件夹"
                   >
-                    Browse
+                    浏览
                   </Button>
                   <Button
                     type="button"
                     variant="secondary"
+                    aria-label="Apply workspace"
                     loading={workspaceBusy}
                     disabled={!onOpenWorkspace || sessionBusy || !workspacePath.trim()}
                     onClick={() => {
                       void onOpenWorkspace?.();
                     }}
                   >
-                    Apply workspace
+                    应用工作区
                   </Button>
                 </div>
               </div>
@@ -192,18 +194,19 @@ export function NewSessionWorkspace({
                 <Button
                   type="submit"
                   variant="primary"
+                  aria-label="Create session"
                   size="lg"
                   loading={sessionBusy}
                   disabled={!onCreateSession || !sessionTitle.trim()}
                 >
-                  Create session
+                  创建会话
                 </Button>
-                <p>Or write directly in the bottom command bar to create and run in one step.</p>
+                <p>也可以直接在底部输入区写指令，系统会自动创建会话并开始执行。</p>
               </div>
             </form>
           </Panel>
 
-          <Panel className="new-session-template-panel" eyebrow="Session Templates" title="Start mode">
+          <Panel className="new-session-template-panel" eyebrow="会话模板" title="启动方式">
             <div className="new-session-template-grid">
               {sessionTemplates.map((template) => (
                 <button

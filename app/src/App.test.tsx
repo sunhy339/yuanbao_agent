@@ -151,8 +151,8 @@ describe("App session message recovery", () => {
   it("shows readable local preview provider copy instead of raw mock labels", async () => {
     render(<App />);
 
-    expect(await screen.findAllByText("Local preview model")).not.toHaveLength(0);
-    expect(screen.getByText("Runtime preview")).toBeInTheDocument();
+    expect(await screen.findAllByText("本地预览模型")).not.toHaveLength(0);
+    expect(screen.getByText("运行时预览")).toBeInTheDocument();
     expect(screen.queryByText(/mock/i)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/\uFFFD/);
   });

@@ -23,15 +23,15 @@ describe("NewSessionWorkspace", () => {
       />,
     );
 
-    assert.match(html, /Workspace Launcher/);
-    assert.match(html, /Select a workspace, confirm the runtime profile/);
+    assert.match(html, /工作区启动器/);
+    assert.match(html, /选择工作区，确认运行时配置/);
     assert.match(html, /D:\\py\\yuanbao_agent/);
     assert.match(html, /Runtime host online/);
     assert.match(html, /MiniMax-M2\.7-highspeed/);
-    assert.match(html, /Create session/);
-    assert.match(html, /Apply workspace/);
-    assert.match(html, /Startup Checks/);
-    assert.match(html, /Session Templates/);
+    assert.match(html, /创建会话/);
+    assert.match(html, /应用工作区/);
+    assert.match(html, /启动检查/);
+    assert.match(html, /会话模板/);
     assert.doesNotMatch(html, /Runtime preview/);
     assert.doesNotMatch(html, /Command readiness/);
   });

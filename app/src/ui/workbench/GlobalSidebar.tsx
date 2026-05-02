@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { formatStatusLabel } from "../copy";
 import type { SystemWorkspaceKind, WorkbenchSession } from "./types";
 
 interface GlobalSidebarProps {
@@ -36,7 +37,7 @@ export function GlobalSidebar({
     const query = searchText.trim().toLowerCase();
     if (!query) return sessions;
     return sessions.filter((session) =>
-      (session.title || "Untitled Session").toLowerCase().includes(query),
+      (session.title || "未命名会话").toLowerCase().includes(query),
     );
   }, [sessions, searchText]);
 
@@ -74,13 +75,13 @@ export function GlobalSidebar({
 
   function handleConfirmDelete(session: WorkbenchSession) {
     setContextMenu(null);
-    if (window.confirm(`Delete session "${session.title || "Untitled Session"}"?`)) {
+    if (window.confirm(`删除会话“${session.title || "未命名会话"}”？`)) {
       onDeleteSession(session.id);
     }
   }
 
   return (
-    <aside className="workbench-sidebar" aria-label="Global navigation">
+    <aside className="workbench-sidebar" aria-label="全局导航">
       <div className="sidebar-brand">
         <span className="brand-seal" aria-hidden="true">
           Y
@@ -91,29 +92,29 @@ export function GlobalSidebar({
         </div>
       </div>
 
-      <nav className="sidebar-primary" aria-label="Workbench">
+      <nav className="sidebar-primary" aria-label="工作台">
         <button type="button" aria-label="Overview" onClick={() => onOpenSystemTab("overview")}>
-          <span>Overview</span>
-          <small>Command center</small>
+          <span>总览</span>
+          <small>控制中心</small>
         </button>
         <button type="button" aria-label="New Session" onClick={() => onOpenSystemTab("new-session")}>
-          <span>New Session</span>
-          <small>New session</small>
+          <span>新建会话</span>
+          <small>开始任务</small>
         </button>
       </nav>
 
-      <section className="sidebar-session-section" aria-label="Session navigation">
+      <section className="sidebar-session-section" aria-label="会话导航">
         <div className="sidebar-section-heading">
-          <h2 id="sidebar-sessions-title">Sessions</h2>
-          <span>Sessions</span>
+          <h2 id="sidebar-sessions-title">会话</h2>
+          <span>会话列表</span>
         </div>
 
         <label className="sidebar-search">
-          <span>Search</span>
+          <span>搜索</span>
           <input
             type="search"
             aria-label="Search sessions"
-            placeholder="Search sessions"
+            placeholder="搜索会话"
             value={searchText}
             onChange={(event) => setSearchText(event.target.value)}
           />
@@ -150,15 +151,15 @@ export function GlobalSidebar({
                   }}
                 >
                   <span className="session-dot" data-status={session.status} aria-hidden="true" />
-                  <span className="session-title">{session.title || "Untitled Session"}</span>
-                  <span className="session-meta">{session.status}</span>
+                  <span className="session-title">{session.title || "未命名会话"}</span>
+                  <span className="session-meta">{formatStatusLabel(session.status)}</span>
                 </button>
               ),
             )
           ) : sessions.length > 0 ? (
-            <p className="sidebar-empty">No matching sessions.</p>
+            <p className="sidebar-empty">没有匹配的会话。</p>
           ) : (
-            <p className="sidebar-empty">No sessions yet.</p>
+            <p className="sidebar-empty">还没有会话。</p>
           )}
         </div>
       </section>
@@ -167,7 +168,7 @@ export function GlobalSidebar({
         <div
           className="workspace-tab-menu sidebar-context-menu"
           role="menu"
-          aria-label={`${contextMenu.session.title || "Session"} actions`}
+          aria-label={`${contextMenu.session.title || "会话"} 操作`}
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
@@ -175,42 +176,42 @@ export function GlobalSidebar({
             role="menuitem"
             onClick={() => handleStartRename(contextMenu.session)}
           >
-            Rename
+            重命名
           </button>
           <button
             type="button"
             role="menuitem"
             onClick={() => handleConfirmDelete(contextMenu.session)}
           >
-            Delete session
+            删除会话
           </button>
         </div>
       ) : null}
 
       <div className="sidebar-footer">
         <button type="button" aria-label="Scheduled" onClick={() => onOpenSystemTab("scheduled")}>
-          <span>Scheduled</span>
-          <small>Scheduled</small>
+          <span>定时任务</span>
+          <small>计划</small>
         </button>
         <button type="button" aria-label="MCP Center" onClick={() => onOpenSystemTab("mcp")}>
           <span>MCP</span>
-          <small>Tools</small>
+          <small>工具</small>
         </button>
         <button type="button" aria-label="Agent Skills" onClick={() => onOpenSystemTab("skills")}>
-          <span>Skills</span>
-          <small>Agents</small>
+          <span>技能</span>
+          <small>智能体</small>
         </button>
         <button type="button" aria-label="Appearance" onClick={() => onOpenSystemTab("appearance")}>
-          <span>Appearance</span>
-          <small>Theme</small>
+          <span>外观</span>
+          <small>主题</small>
         </button>
         <button type="button" aria-label="Component Playground" onClick={() => onOpenSystemTab("playground")}>
-          <span>Playground</span>
-          <small>UI states</small>
+          <span>组件预览</span>
+          <small>UI 状态</small>
         </button>
         <button type="button" aria-label="Settings" onClick={() => onOpenSystemTab("settings")}>
-          <span>Settings</span>
-          <small>Settings</small>
+          <span>设置</span>
+          <small>配置</small>
         </button>
       </div>
     </aside>

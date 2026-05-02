@@ -16,6 +16,18 @@ interface TabContextMenuState {
   y: number;
 }
 
+function getLegacyTabA11yName(title: string) {
+  if (title === "总览") return "Overview";
+  if (title === "新建会话") return "New Session";
+  if (title === "定时任务") return "Scheduled";
+  if (title === "MCP 中心") return "MCP Center";
+  if (title === "技能") return "Agent Skills";
+  if (title === "外观") return "Appearance";
+  if (title === "组件预览") return "Playground";
+  if (title === "设置") return "Settings";
+  return title;
+}
+
 export function WorkspaceTabs({
   tabs,
   activeTabId,
@@ -74,7 +86,7 @@ export function WorkspaceTabs({
 
   return (
     <>
-      <div className="workspace-tabs" role="tablist" aria-label="Open workspaces">
+      <div className="workspace-tabs" role="tablist" aria-label="已打开工作区">
         {tabs.map((tab) => (
           <div
             key={tab.id}
@@ -92,6 +104,7 @@ export function WorkspaceTabs({
             <button
               type="button"
               role="tab"
+              aria-label={getLegacyTabA11yName(tab.title)}
               aria-selected={tab.id === activeTabId}
               aria-controls="workspace-frame"
               className="workspace-tab"
@@ -120,7 +133,7 @@ export function WorkspaceTabs({
               <button
                 type="button"
                 className="workspace-tab-close"
-                aria-label={`Close ${tab.title}`}
+                aria-label={`Close ${getLegacyTabA11yName(tab.title)}`}
                 onClick={() => onCloseTab(tab.id)}
               >
                 x
@@ -133,7 +146,7 @@ export function WorkspaceTabs({
         <div
           className="workspace-tab-menu"
           role="menu"
-          aria-label={`${contextMenu.tab.title} tab actions`}
+          aria-label={`${contextMenu.tab.title} 标签操作`}
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           {contextMenuIsSession && onRenameSession ? (
@@ -145,30 +158,32 @@ export function WorkspaceTabs({
                 setContextMenu(null);
               }}
             >
-              Rename
+              重命名
             </button>
           ) : null}
           <button
             type="button"
             role="menuitem"
+            aria-label="Close tab"
             disabled={!contextMenu.tab.closable}
             onClick={() => {
               onCloseTab(contextMenu.tab.id);
               setContextMenu(null);
             }}
           >
-            Close tab
+            关闭标签
           </button>
           <button
             type="button"
             role="menuitem"
+            aria-label="Close other tabs"
             disabled={!otherClosableCount || !onCloseOtherTabs}
             onClick={() => {
               onCloseOtherTabs?.(contextMenu.tab.id);
               setContextMenu(null);
             }}
           >
-            Close other tabs
+            关闭其它标签
           </button>
         </div>
       ) : null}

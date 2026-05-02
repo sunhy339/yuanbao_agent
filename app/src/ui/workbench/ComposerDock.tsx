@@ -12,10 +12,10 @@ interface ComposerDockProps {
   hidden?: boolean;
 }
 
-const COMMAND_LABEL = "New instruction";
-const COMMAND_PLACEHOLDER = "Describe the next step for the local agent...";
-const SUBMIT_LABEL = "Send";
-const SENDING_LABEL = "Sending...";
+const COMMAND_LABEL = "新指令";
+const COMMAND_PLACEHOLDER = "描述下一步要让本地智能体完成的事情...";
+const SUBMIT_LABEL = "发送";
+const SENDING_LABEL = "发送中...";
 
 export function ComposerDock({
   promptValue,
@@ -63,7 +63,7 @@ export function ComposerDock({
         onSubmitPrompt();
       }}
     >
-      <div className="composer-meta" aria-label="Composer context">
+      <div className="composer-meta" aria-label="输入区上下文">
         <span>{providerLabel}</span>
         <span>{cwdLabel}</span>
       </div>
@@ -71,7 +71,7 @@ export function ComposerDock({
         <span>{COMMAND_LABEL}</span>
         <textarea
           ref={textareaRef}
-          aria-label="Task prompt"
+          aria-label="任务指令"
           value={promptValue}
           onChange={(event) => {
             onPromptChange(event.target.value);

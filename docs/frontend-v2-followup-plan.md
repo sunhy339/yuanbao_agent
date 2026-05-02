@@ -158,8 +158,8 @@ Objective: turn the Skills/Agents surfaces into real configuration only where ba
 - [x] Align frontend with runtime skill registry capabilities.
 - [x] Add inspect skill prompt/details if runtime exposes it.
 - [x] Add create/edit/delete custom skill only after persistence and validation are available.
-- [ ] Add enable/disable only if runtime supports per-skill activation semantics.
-- [ ] Define agent profile schema before exposing add/toggle agent controls.
+- [x] Add enable/disable only if runtime supports per-skill activation semantics.
+- [x] Define agent profile schema before exposing add/toggle agent controls.
 - [x] Add tests covering read-only vs editable modes.
 
 Progress:
@@ -168,6 +168,8 @@ Progress:
 - Added a read-only skill inspector in the Agent Skills workspace so users can check the prompt and tool allowlist exposed by the runtime registry.
 - Added create/edit/delete controls for custom presets only, wired through `runtimeClient.createSkill`, `runtimeClient.updateSkill`, and `runtimeClient.deleteSkill`.
 - Kept built-in presets read-only and kept enable/disable controls hidden until runtime activation semantics are fully defined.
+- Verified that current runtime skill persistence has no per-skill `enabled` or `active` semantics; the UI should continue to treat listed skills as available presets rather than independently toggleable records.
+- Defined the agent profile schema proposal in `docs/frontend-v2-agent-profile-schema.md`; Settings agent add/toggle controls remain hidden until the shared RPC and runtime persistence exist.
 
 ## Phase 5: MCP Live QA and Hardening
 

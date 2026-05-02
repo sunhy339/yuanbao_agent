@@ -123,8 +123,8 @@ P1 read-only or not-yet-defined areas:
 | General/Appearance | Language/reasoning/preflight | Real | `app/src/App.tsx` | Calls `runtimeClient.updateConfig`. |
 | IM | Edit IM form | Local | `SettingsWorkspace.tsx` | Stored in React state only. |
 | IM | Test IM connection | Read-only | `SettingsWorkspace.tsx` | Disabled with note: runtime IM testing is not available in this desktop build. |
-| Agents | Add agent | Read-only | `SettingsWorkspace.tsx` | Button disabled because no handler is passed. |
-| Agents | Toggle agent | Read-only | `SettingsWorkspace.tsx` | Checkbox disabled because no handler is passed. |
+| Agents | Add agent | Read-only | `SettingsWorkspace.tsx`, `docs/frontend-v2-agent-profile-schema.md` | Button disabled until shared agent profile RPC/persistence is implemented. |
+| Agents | Toggle agent | Read-only | `SettingsWorkspace.tsx`, `docs/frontend-v2-agent-profile-schema.md` | Checkbox disabled until `enabled` has runtime routing semantics. |
 | Skills | Refresh skills | Real | `app/src/App.tsx` | Calls `runtimeClient.listSkills`. |
 | Skills | Open skills folder | Read-only | `SettingsWorkspace.tsx` | Disabled because no handler is passed. |
 | Computer Use | Edit config | Local | `app/src/App.tsx` | React state only. |

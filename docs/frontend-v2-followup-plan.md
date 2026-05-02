@@ -109,7 +109,7 @@ Objective: users should not see controls that imply unsupported behavior.
 - [x] Replace placeholder-only actions with disabled controls plus explicit disabled reason, or remove them from primary surfaces.
 - [x] Convert intentionally read-only skill/agent areas into clear read-only views.
 - [x] Ensure all disabled actions use consistent UI treatment.
-- [ ] Add component tests for any placeholder removal.
+- [x] Add component tests for any placeholder removal.
 
 Expected early candidates:
 

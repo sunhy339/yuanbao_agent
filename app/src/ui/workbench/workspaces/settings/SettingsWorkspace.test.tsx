@@ -407,6 +407,33 @@ describe("SettingsWorkspace", () => {
     expect(container.querySelector('input[type="checkbox"]')).not.toBeInTheDocument();
   });
 
+  it("marks unsupported utility actions as disabled with visible reasons", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<SettingsWorkspace />);
+    const navButtons = container.querySelectorAll(".settings-nav button");
+
+    await user.click(navButtons[3] as HTMLElement);
+    expect(screen.getByRole("button", { name: "Test IM connection" })).toBeDisabled();
+    expect(screen.getByText("Runtime IM bridge testing is not available in this desktop build.")).toBeInTheDocument();
+
+    await user.click(navButtons[4] as HTMLElement);
+    expect(screen.getByRole("button", { name: "Add agent" })).toBeDisabled();
+    expect(screen.getByText("Agent profiles are read-only until runtime agent management is defined.")).toBeInTheDocument();
+
+    await user.click(navButtons[5] as HTMLElement);
+    expect(screen.getByRole("button", { name: "Open folder" })).toBeDisabled();
+    expect(screen.getByText("Folder opening is pending a desktop shell bridge; refresh still uses the runtime skill registry.")).toBeInTheDocument();
+
+    await user.click(navButtons[6] as HTMLElement);
+    expect(screen.getByRole("button", { name: "Recheck" })).toBeDisabled();
+    expect(screen.getByText("Desktop permission recheck is not implemented yet.")).toBeInTheDocument();
+
+    await user.click(navButtons[7] as HTMLElement);
+    expect(screen.getByRole("button", { name: "Open logs" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Open data folder" })).toBeDisabled();
+    expect(screen.getByText("Opening local folders is pending a Tauri shell bridge; paths are shown above for manual inspection.")).toBeInTheDocument();
+  });
+
   it("shows project memory state and clears it from settings", async () => {
     const user = userEvent.setup();
     const onClearWorkspaceMemory = vi.fn();

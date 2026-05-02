@@ -115,6 +115,9 @@ export interface SettingsSkillConfig {
   name: string;
   description?: string;
   path?: string;
+  systemPrompt?: string;
+  toolWhitelist?: string[];
+  isBuiltin?: boolean;
   enabled: boolean;
   updateAvailable?: boolean;
 }

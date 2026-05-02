@@ -23,6 +23,7 @@ const runtimeMocks = vi.hoisted(() => ({
   listMcpServers: vi.fn(),
   listMessages: vi.fn(),
   subscribeEvents: vi.fn(),
+  canOpenLocalAppPaths: vi.fn(),
 }));
 
 vi.mock("./lib/runtimeClient", () => ({
@@ -120,6 +121,7 @@ function setupRuntimeMocks() {
     }),
   );
   runtimeMocks.subscribeEvents.mockResolvedValue(vi.fn());
+  runtimeMocks.canOpenLocalAppPaths.mockReturnValue(false);
 }
 
 beforeEach(() => {

@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from "react";
 import type { SettingsSkillConfig } from "../settings/SettingsWorkspace";
 import { Button, StatusBadge } from "../../../v2/components/ui";
 import type { McpServerRecord } from "@shared";
@@ -44,6 +45,10 @@ function formatSkillCategory(path?: string): string {
   return "local";
 }
 
+function formatToolList(skill: SettingsSkillConfig): string[] {
+  return skill.toolWhitelist?.length ? skill.toolWhitelist : ["No tool allowlist published"];
+}
+
 export function SkillsWorkspace({
   skills,
   mcpServers,
@@ -53,9 +58,20 @@ export function SkillsWorkspace({
   onOpenMcp,
   onOpenSettings,
 }: SkillsWorkspaceProps) {
+  const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const enabledSkills = skills.filter((skill) => skill.enabled).length;
   const enabledServers = mcpServers.filter((server) => server.enabled).length;
   const availableTools = mcpToolCount;
+  const selectedSkill = useMemo(
+    () => skills.find((skill) => skill.id === selectedSkillId) ?? null,
+    [selectedSkillId, skills],
+  );
+
+  useEffect(() => {
+    if (selectedSkillId && !skills.some((skill) => skill.id === selectedSkillId)) {
+      setSelectedSkillId(null);
+    }
+  }, [selectedSkillId, skills]);
 
   return (
     <main className="skills-workspace" aria-labelledby="skills-title">
@@ -155,7 +171,16 @@ export function SkillsWorkspace({
                 </div>
                 <div className="skills-skill-meta">
                   <StatusBadge label={skill.enabled ? "available" : "unavailable"} tone={skill.enabled ? "success" : "neutral"} compact />
+                  <StatusBadge label={skill.isBuiltin ? "built-in" : "custom"} tone={skill.isBuiltin ? "primary" : "neutral"} compact />
                   <span>{formatSkillCategory(skill.path)}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    pressed={selectedSkillId === skill.id}
+                    onClick={() => setSelectedSkillId((current) => current === skill.id ? null : skill.id)}
+                  >
+                    Inspect
+                  </Button>
                 </div>
               </article>
             ))}
@@ -166,6 +191,39 @@ export function SkillsWorkspace({
             <span>Use Refresh skills after adding presets to the local skill registry.</span>
           </div>
         )}
+        {selectedSkill ? (
+          <aside className="skills-inspector" aria-label={`${selectedSkill.name} skill details`}>
+            <header>
+              <div>
+                <p className="yb-kicker">Inspect</p>
+                <h3>{selectedSkill.name}</h3>
+              </div>
+              <StatusBadge label={selectedSkill.isBuiltin ? "built-in preset" : "custom preset"} tone={selectedSkill.isBuiltin ? "primary" : "neutral"} compact />
+            </header>
+            <dl>
+              <div>
+                <dt>Category</dt>
+                <dd>{formatSkillCategory(selectedSkill.path)}</dd>
+              </div>
+              <div>
+                <dt>Activation</dt>
+                <dd>{selectedSkill.enabled ? "available in runtime registry" : "not available"}</dd>
+              </div>
+            </dl>
+            <section>
+              <h4>Prompt</h4>
+              <pre>{selectedSkill.systemPrompt?.trim() || "No prompt text published by the runtime for this preset."}</pre>
+            </section>
+            <section>
+              <h4>Tool allowlist</h4>
+              <div className="skills-tool-list">
+                {formatToolList(selectedSkill).map((tool) => (
+                  <span key={tool}>{tool}</span>
+                ))}
+              </div>
+            </section>
+          </aside>
+        ) : null}
       </section>
     </main>
   );

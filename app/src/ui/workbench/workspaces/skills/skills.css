@@ -9,7 +9,8 @@
 .skills-action-row,
 .skills-agent-board,
 .skills-runtime-panel,
-.skills-library {
+.skills-library,
+.skills-inspector {
   position: relative;
   overflow: hidden;
   border: 1px solid var(--yb-line);
@@ -23,7 +24,8 @@
 .skills-command-strip::before,
 .skills-agent-board::before,
 .skills-runtime-panel::before,
-.skills-library::before {
+.skills-library::before,
+.skills-inspector::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -71,7 +73,9 @@
 .skills-runtime-panel li,
 .skills-skill-row,
 .skills-agent-card,
-.skills-empty {
+.skills-empty,
+.skills-inspector dl div,
+.skills-tool-list span {
   border: 1px solid rgba(125, 211, 252, 0.16);
   border-radius: var(--yb-radius-lg);
   background: rgba(3, 7, 18, 0.38);
@@ -85,7 +89,8 @@
 }
 
 .skills-command-strip dt,
-.skills-skill-meta span {
+.skills-skill-meta > span,
+.skills-inspector dt {
   color: var(--yb-muted);
   font-family: var(--yb-font-mono);
   font-size: 10px;
@@ -120,12 +125,14 @@
 
 .skills-agent-board,
 .skills-runtime-panel,
-.skills-library {
+.skills-library,
+.skills-inspector {
   padding: 14px;
 }
 
 .skills-agent-board > header,
-.skills-library > header {
+.skills-library > header,
+.skills-inspector > header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -135,7 +142,8 @@
 
 .skills-agent-board h2,
 .skills-runtime-panel h2,
-.skills-library h2 {
+.skills-library h2,
+.skills-inspector h3 {
   margin: 4px 0 0;
   color: var(--yb-ink);
   font-size: 22px;
@@ -206,8 +214,8 @@
 
 .skills-skill-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, auto);
+  gap: 14px;
   align-items: center;
   padding: 11px 12px;
 }
@@ -235,6 +243,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .skills-empty {
@@ -245,6 +255,71 @@
   text-align: center;
 }
 
+.skills-inspector {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.skills-inspector dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.skills-inspector dl div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 10px;
+}
+
+.skills-inspector dd {
+  margin: 0;
+  color: var(--yb-ink);
+  overflow-wrap: anywhere;
+}
+
+.skills-inspector section {
+  display: grid;
+  gap: 7px;
+}
+
+.skills-inspector h4 {
+  margin: 0;
+  color: var(--yb-ink);
+  font-size: 13px;
+}
+
+.skills-inspector pre {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid rgba(125, 211, 252, 0.16);
+  border-radius: var(--yb-radius-lg);
+  padding: 11px;
+  color: var(--yb-ink);
+  background: rgba(2, 6, 23, 0.48);
+  font-family: var(--yb-font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.skills-tool-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.skills-tool-list span {
+  padding: 6px 8px;
+  color: var(--yb-ink);
+  font-family: var(--yb-font-mono);
+  font-size: 11px;
+}
+
 @media (max-width: 1180px) {
   .skills-command-strip,
   .skills-grid,
@@ -253,11 +328,25 @@
   }
 }
 
+@media (max-width: 760px) {
+  .skills-command-strip dl,
+  .skills-skill-row,
+  .skills-inspector dl {
+    grid-template-columns: 1fr;
+  }
+
+  .skills-skill-meta {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
+
 .yb-v2[data-theme="light"] .skills-command-strip,
 .yb-v2[data-theme="light"] .skills-runtime-panel,
 .yb-v2[data-theme="light"] .skills-agent-card,
 .yb-v2[data-theme="light"] .skills-skill-matrix,
-.yb-v2[data-theme="light"] .skills-empty {
+.yb-v2[data-theme="light"] .skills-empty,
+.yb-v2[data-theme="light"] .skills-inspector {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.84), transparent 46%),
     rgba(255, 255, 255, 0.78);
@@ -273,7 +362,10 @@
 
 .yb-v2[data-theme="light"] .skills-runtime-panel li,
 .yb-v2[data-theme="light"] .skills-skill-row,
-.yb-v2[data-theme="light"] .skills-agent-card dl {
+.yb-v2[data-theme="light"] .skills-agent-card dl,
+.yb-v2[data-theme="light"] .skills-inspector dl div,
+.yb-v2[data-theme="light"] .skills-tool-list span,
+.yb-v2[data-theme="light"] .skills-inspector pre {
   background: rgba(241, 245, 249, 0.78);
 }
 

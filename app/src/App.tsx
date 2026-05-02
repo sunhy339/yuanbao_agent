@@ -513,6 +513,8 @@ function buildDefaultProviderProfile(): ProviderProfile {
 
 function normalizeSkillForSettings(skill: SkillPresetRecord): SettingsSkillConfig {
   const toolWhitelist = skill.toolWhitelist ?? skill.tool_whitelist ?? [];
+  const systemPrompt = skill.systemPrompt ?? skill.system_prompt;
+  const isBuiltin = Boolean(skill.isBuiltin ?? skill.is_builtin);
   return {
     id: skill.id,
     name: skill.name,
@@ -520,6 +522,9 @@ function normalizeSkillForSettings(skill: SkillPresetRecord): SettingsSkillConfi
       skill.description ||
       (toolWhitelist.length ? `Tools: ${toolWhitelist.join(", ")}` : "Runtime skill preset"),
     path: skill.category ? `category:${skill.category}` : undefined,
+    systemPrompt,
+    toolWhitelist,
+    isBuiltin,
     enabled: true,
     updateAvailable: false,
   };

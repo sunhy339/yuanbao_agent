@@ -134,7 +134,7 @@ Objective: make high-value desktop utility actions actually work.
 - [x] Implement Tauri-side folder opening for logs/data directory, or explicitly remove the buttons from Settings.
 - [x] Decide and implement Computer Use permission recheck behavior, or mark Computer Use as read-only configuration.
 - [x] Add user-facing success/error to settings persistence paths that currently change state silently.
-- [ ] Verify behavior in the Tauri desktop client, not only browser mock mode.
+- [x] Verify behavior in the Tauri desktop client, not only browser mock mode.
 
 Progress:
 
@@ -146,10 +146,10 @@ Progress:
 
 Verification:
 
-- [ ] `npm.cmd test`
-- [ ] `npm.cmd run build`
+- [x] `npm.cmd test`
+- [x] `npm.cmd run build`
 - [x] Targeted Rust check if Tauri bridge changes are made.
-- [ ] Targeted desktop smoke test if Tauri bridge changes are made.
+- [x] Targeted desktop smoke test if Tauri bridge changes are made.
 
 ## Phase 4: Skill and Agent Management
 

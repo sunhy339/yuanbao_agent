@@ -407,6 +407,17 @@
   border-top: 1px solid rgba(15, 23, 42, 0.08);
 }
 
+.settings-action-note {
+  flex-basis: 100%;
+  color: var(--settings-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.settings-panel-note {
+  margin: 0 0 14px;
+}
+
 .settings-choice-card input,
 .settings-toggle-card input,
 .settings-row-card input,

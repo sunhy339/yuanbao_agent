@@ -1145,6 +1145,7 @@ function IMPanel({ value, onChange, onTestIM }: { value: SettingsIMConfig; onCha
         <div className="settings-inline-actions">
           <span>Signing secret: {value.signingSecretSet ? "Configured" : "Not configured"}</span>
           <button type="button" className="settings-secondary-action" onClick={onTestIM} disabled={!onTestIM}>Test IM connection</button>
+          {!onTestIM ? <small className="settings-action-note">Runtime IM bridge testing is not available in this desktop build.</small> : null}
         </div>
       </div>
     </div>
@@ -1174,8 +1175,11 @@ function AgentsPanel({ agents, onAgentToggle, onAddAgent }: { agents: SettingsAg
           <h2>Agents</h2>
           <p>Manage resident agents, working directories, and default permission policies.</p>
         </div>
-        <button type="button" className="settings-primary-action" onClick={onAddAgent} disabled={!onAddAgent}>Add agent</button>
+        <button type="button" className="settings-primary-action" onClick={onAddAgent} disabled={!onAddAgent} title={!onAddAgent ? "Agent profile management is not available yet." : undefined}>Add agent</button>
       </header>
+      {!onAddAgent || !onAgentToggle ? (
+        <p className="settings-action-note settings-panel-note">Agent profiles are read-only until runtime agent management is defined.</p>
+      ) : null}
       <ListOrEmpty emptyTitle="No agents" emptyText="Resident agents will appear here after runtime integration.">
         {agents.map((agent) => (
           <label key={agent.id} className="settings-row-card">
@@ -1203,10 +1207,11 @@ function SkillsPanel({ skills, onRefreshSkills, onOpenSkillsFolder }: { skills: 
           <p>Skills extend the local agent with focused workflows. Installed presets are available to the runtime from ~/.codex/skills/.</p>
         </div>
         <div className="settings-header-actions">
-          <button type="button" className="settings-secondary-action" onClick={onOpenSkillsFolder} disabled={!onOpenSkillsFolder}>Open folder</button>
+          <button type="button" className="settings-secondary-action" onClick={onOpenSkillsFolder} disabled={!onOpenSkillsFolder} title={!onOpenSkillsFolder ? "Opening the skills folder is not wired yet." : undefined}>Open folder</button>
           <button type="button" className="settings-primary-action" onClick={onRefreshSkills} disabled={!onRefreshSkills}>Refresh skills</button>
         </div>
       </header>
+      {!onOpenSkillsFolder ? <p className="settings-action-note settings-panel-note">Folder opening is pending a desktop shell bridge; refresh still uses the runtime skill registry.</p> : null}
       <ListOrEmpty emptyTitle="No installed skills" emptyText="Add skills in ~/.codex/skills/ to make them available here.">
         {skills.map((skill) => (
           <article key={skill.id} className="settings-row-card settings-skill-card">
@@ -1256,6 +1261,7 @@ function ComputerUsePanel({ value, onChange, onRecheckComputerUse }: { value: Se
         <div className="settings-inline-actions">
           <span>Status: {value.status ?? "Not checked"}</span>
           <button type="button" className="settings-secondary-action" onClick={onRecheckComputerUse} disabled={!onRecheckComputerUse}>Recheck</button>
+          {!onRecheckComputerUse ? <small className="settings-action-note">Desktop permission recheck is not implemented yet.</small> : null}
         </div>
       </div>
     </div>
@@ -1319,9 +1325,12 @@ function AboutPanel({
         ))}
       </dl>
       <div className="settings-provider-actions">
-        <button type="button" className="settings-secondary-action" onClick={onOpenLogs} disabled={!onOpenLogs}>Open logs</button>
-        <button type="button" className="settings-secondary-action" onClick={onOpenDataDirectory} disabled={!onOpenDataDirectory}>Open data folder</button>
+        <button type="button" className="settings-secondary-action" onClick={onOpenLogs} disabled={!onOpenLogs} title={!onOpenLogs ? "Opening logs requires a desktop shell bridge." : undefined}>Open logs</button>
+        <button type="button" className="settings-secondary-action" onClick={onOpenDataDirectory} disabled={!onOpenDataDirectory} title={!onOpenDataDirectory ? "Opening the data folder requires a desktop shell bridge." : undefined}>Open data folder</button>
       </div>
+      {!onOpenLogs || !onOpenDataDirectory ? (
+        <p className="settings-action-note settings-panel-note">Opening local folders is pending a Tauri shell bridge; paths are shown above for manual inspection.</p>
+      ) : null}
       <section className="settings-memory-card" aria-label="Project focus">
         <div>
           <p className="settings-kicker">Context</p>

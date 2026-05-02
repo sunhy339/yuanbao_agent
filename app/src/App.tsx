@@ -4329,14 +4329,10 @@ export function App() {
         onGeneralChange={handleGeneralSettingsChange}
         im={imSettings}
         onIMChange={setIMSettings}
-        onTestIM={() => setError("IM bridge connection testing is not enabled in this desktop build. The form is saved as a local draft.")}
         skills={settingsSkills}
         onRefreshSkills={refreshSkills}
         computerUse={computerUseSettings}
         onComputerUseChange={setComputerUseSettings}
-        onRecheckComputerUse={() =>
-          setComputerUseSettings((current) => ({ ...current, status: "Desktop permission check is not available in this build" }))
-        }
         workspaceFocus={workspace?.focus}
         workspaceFocusBusy={workspaceFocusBusy}
         onSaveWorkspaceFocus={workspace ? handleSaveWorkspaceFocus : undefined}
@@ -4349,8 +4345,6 @@ export function App() {
           dataPath: workspacePath,
           build: hostStatus?.runtimeRunning ? "runtime running" : "runtime idle",
         }}
-        onOpenLogs={() => setError("Opening the logs folder requires a Tauri shell bridge that is not enabled in this build.")}
-        onOpenDataDirectory={() => setError("Opening the data folder requires a Tauri shell bridge that is not enabled in this build.")}
       />
     );
   })();

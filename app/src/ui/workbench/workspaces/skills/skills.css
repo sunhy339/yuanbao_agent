@@ -10,7 +10,8 @@
 .skills-agent-board,
 .skills-runtime-panel,
 .skills-library,
-.skills-inspector {
+.skills-inspector,
+.skills-editor {
   position: relative;
   overflow: hidden;
   border: 1px solid var(--yb-line);
@@ -25,7 +26,8 @@
 .skills-agent-board::before,
 .skills-runtime-panel::before,
 .skills-library::before,
-.skills-inspector::before {
+.skills-inspector::before,
+.skills-editor::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -126,13 +128,15 @@
 .skills-agent-board,
 .skills-runtime-panel,
 .skills-library,
-.skills-inspector {
+.skills-inspector,
+.skills-editor {
   padding: 14px;
 }
 
 .skills-agent-board > header,
 .skills-library > header,
-.skills-inspector > header {
+.skills-inspector > header,
+.skills-editor > header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -143,7 +147,8 @@
 .skills-agent-board h2,
 .skills-runtime-panel h2,
 .skills-library h2,
-.skills-inspector h3 {
+.skills-inspector h3,
+.skills-editor h2 {
   margin: 4px 0 0;
   color: var(--yb-ink);
   font-size: 22px;
@@ -261,6 +266,68 @@
   margin-top: 10px;
 }
 
+.skills-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.skills-editor-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.skills-editor-form label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--yb-ink-soft);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.skills-editor-form input,
+.skills-editor-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: var(--yb-radius-lg);
+  padding: 10px 11px;
+  color: var(--yb-ink);
+  background: rgba(2, 6, 23, 0.42);
+  font: inherit;
+}
+
+.skills-editor-form textarea {
+  resize: vertical;
+}
+
+.skills-editor-form input:focus,
+.skills-editor-form textarea:focus {
+  outline: 2px solid rgba(103, 232, 249, 0.24);
+  border-color: rgba(103, 232, 249, 0.48);
+}
+
+.skills-editor-wide,
+.skills-editor-actions {
+  grid-column: 1 / -1;
+}
+
+.skills-editor-actions,
+.skills-inspector-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.skills-readonly-note {
+  margin: 0;
+  color: var(--yb-muted);
+  line-height: 1.45;
+}
+
 .skills-inspector dl {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -331,7 +398,8 @@
 @media (max-width: 760px) {
   .skills-command-strip dl,
   .skills-skill-row,
-  .skills-inspector dl {
+  .skills-inspector dl,
+  .skills-editor-form {
     grid-template-columns: 1fr;
   }
 
@@ -346,7 +414,8 @@
 .yb-v2[data-theme="light"] .skills-agent-card,
 .yb-v2[data-theme="light"] .skills-skill-matrix,
 .yb-v2[data-theme="light"] .skills-empty,
-.yb-v2[data-theme="light"] .skills-inspector {
+.yb-v2[data-theme="light"] .skills-inspector,
+.yb-v2[data-theme="light"] .skills-editor {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.84), transparent 46%),
     rgba(255, 255, 255, 0.78);
@@ -365,7 +434,9 @@
 .yb-v2[data-theme="light"] .skills-agent-card dl,
 .yb-v2[data-theme="light"] .skills-inspector dl div,
 .yb-v2[data-theme="light"] .skills-tool-list span,
-.yb-v2[data-theme="light"] .skills-inspector pre {
+.yb-v2[data-theme="light"] .skills-inspector pre,
+.yb-v2[data-theme="light"] .skills-editor-form input,
+.yb-v2[data-theme="light"] .skills-editor-form textarea {
   background: rgba(241, 245, 249, 0.78);
 }
 

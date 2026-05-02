@@ -143,7 +143,8 @@ P1 read-only or not-yet-defined areas:
 | Open MCP | Real | `app/src/App.tsx`, `SkillsWorkspace.tsx` | Opens MCP workspace. |
 | Open Settings | Real | `app/src/App.tsx`, `SkillsWorkspace.tsx` | Opens Settings workspace. |
 | Skill preset inspection | Real | `App.tsx`, `SkillsWorkspace.tsx` | Preserves runtime prompt/tool metadata and shows it in a read-only inspector. |
-| Skill preset management | Read-only | `SkillsWorkspace.tsx` | Current UI intentionally avoids unsupported toggles/custom-skill actions. |
+| Custom skill create/edit/delete | Real | `App.tsx`, `SkillsWorkspace.tsx`, `runtimeClient.ts` | Custom presets are wired to runtime skill persistence; built-in presets remain read-only. |
+| Skill enable/disable | Read-only | `SkillsWorkspace.tsx` | Hidden until runtime defines per-skill activation semantics. |
 
 ## Appearance
 

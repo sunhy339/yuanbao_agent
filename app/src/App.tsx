@@ -66,7 +66,10 @@ import {
 } from "./ui/workbench/workspaces/mcp/McpWorkspace";
 import { AppearanceWorkspace } from "./ui/workbench/workspaces/appearance/AppearanceWorkspace";
 import { ComponentPlaygroundWorkspace } from "./ui/workbench/workspaces/playground/ComponentPlaygroundWorkspace";
-import { SkillsWorkspace } from "./ui/workbench/workspaces/skills/SkillsWorkspace";
+import {
+  SkillsWorkspace,
+  type SkillDraft,
+} from "./ui/workbench/workspaces/skills/SkillsWorkspace";
 import { WorkbenchOverviewPage } from "./ui/v2/pages/WorkbenchOverviewPage";
 import {
   SessionWorkspace,
@@ -535,6 +538,23 @@ function parseMcpArgs(value: string): string[] {
     .split(/\r?\n|,/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseSkillToolWhitelist(value: string): string[] {
+  return value
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function buildSkillPayload(draft: SkillDraft) {
+  return {
+    name: draft.name.trim(),
+    description: draft.description.trim(),
+    system_prompt: draft.systemPrompt.trim(),
+    tool_whitelist: parseSkillToolWhitelist(draft.toolWhitelist),
+    category: draft.category.trim() || "custom",
+  };
 }
 
 function getModelFromProviderPayload(payload: SettingsProviderPayload): string {
@@ -1996,6 +2016,7 @@ export function App() {
   const [scheduledBusyTaskId, setScheduledBusyTaskId] = useState<string | null>(null);
   const [scheduledCreateBusy, setScheduledCreateBusy] = useState(false);
   const [skills, setSkills] = useState<SkillPresetRecord[]>([]);
+  const [skillBusyId, setSkillBusyId] = useState<string | null>(null);
   const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
   const [mcpBusyServerId, setMcpBusyServerId] = useState<string | null>(null);
   const [mcpLoading, setMcpLoading] = useState(false);
@@ -3309,6 +3330,53 @@ export function App() {
     }
   }
 
+  async function handleCreateSkill(draft: SkillDraft) {
+    setSkillBusyId("create");
+    setError(null);
+    try {
+      const result = await runtimeClient.createSkill(buildSkillPayload(draft));
+      setSkills((current) => [result.skill, ...current.filter((skill) => skill.id !== result.skill.id)]);
+      addToast("success", `Skill created: ${result.skill.name}`);
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setSkillBusyId(null);
+    }
+  }
+
+  async function handleUpdateSkill(skillId: string, draft: SkillDraft) {
+    setSkillBusyId(skillId);
+    setError(null);
+    try {
+      const result = await runtimeClient.updateSkill({
+        skillId,
+        ...buildSkillPayload(draft),
+      });
+      setSkills((current) =>
+        current.map((skill) => skill.id === result.skill.id ? result.skill : skill),
+      );
+      addToast("success", `Skill updated: ${result.skill.name}`);
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setSkillBusyId(null);
+    }
+  }
+
+  async function handleDeleteSkill(skillId: string) {
+    setSkillBusyId(skillId);
+    setError(null);
+    try {
+      await runtimeClient.deleteSkill({ skillId });
+      setSkills((current) => current.filter((skill) => skill.id !== skillId));
+      addToast("success", "Skill deleted");
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setSkillBusyId(null);
+    }
+  }
+
   async function handleOpenAppPath(kind: "logs" | "data") {
     setError(null);
     try {
@@ -4331,9 +4399,13 @@ export function App() {
           mcpServers={mcpServers}
           mcpToolCount={mcpLastRefresh?.tools.length ?? 0}
           providerLabel={providerLabel}
+          busySkillId={skillBusyId}
           onRefreshSkills={refreshSkills}
           onOpenMcp={() => handleOpenSystemTab("mcp")}
           onOpenSettings={() => handleOpenSystemTab("settings")}
+          onCreateSkill={handleCreateSkill}
+          onUpdateSkill={handleUpdateSkill}
+          onDeleteSkill={handleDeleteSkill}
         />
       );
     }

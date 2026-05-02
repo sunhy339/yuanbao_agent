@@ -64,4 +64,66 @@ describe("SkillsWorkspace", () => {
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: /Add skill/i })).not.toBeInTheDocument();
   });
+
+  it("creates, edits, and deletes custom skill presets through callbacks", async () => {
+    const user = userEvent.setup();
+    const onCreateSkill = vi.fn().mockResolvedValue(undefined);
+    const onUpdateSkill = vi.fn().mockResolvedValue(undefined);
+    const onDeleteSkill = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SkillsWorkspace
+        providerLabel="local"
+        mcpServers={[]}
+        skills={[
+          {
+            id: "custom-reviewer",
+            name: "Custom Reviewer",
+            description: "Checks implementation plans",
+            path: "category:custom",
+            systemPrompt: "Review the proposed change.",
+            toolWhitelist: ["read_file"],
+            isBuiltin: false,
+            enabled: true,
+          },
+        ]}
+        onCreateSkill={onCreateSkill}
+        onUpdateSkill={onUpdateSkill}
+        onDeleteSkill={onDeleteSkill}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "New custom skill" }));
+    await user.type(screen.getByLabelText("Name"), "Research Reviewer");
+    await user.clear(screen.getByLabelText("Category"));
+    await user.type(screen.getByLabelText("Category"), "research");
+    await user.type(screen.getByLabelText("System prompt"), "Check every claim against sources.");
+    await user.type(screen.getByLabelText("Tool allowlist"), "web_search\nread_file");
+    await user.click(screen.getByRole("button", { name: "Create skill" }));
+
+    expect(onCreateSkill).toHaveBeenCalledWith({
+      name: "Research Reviewer",
+      description: "",
+      systemPrompt: "Check every claim against sources.",
+      toolWhitelist: "web_search\nread_file",
+      category: "research",
+    });
+
+    await user.click(screen.getByRole("button", { name: "Inspect" }));
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.clear(screen.getByLabelText("Name"));
+    await user.type(screen.getByLabelText("Name"), "Custom Reviewer Updated");
+    await user.click(screen.getByRole("button", { name: "Save skill" }));
+
+    expect(onUpdateSkill).toHaveBeenCalledWith(
+      "custom-reviewer",
+      expect.objectContaining({
+        name: "Custom Reviewer Updated",
+        systemPrompt: "Review the proposed change.",
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(onDeleteSkill).toHaveBeenCalledWith("custom-reviewer");
+  });
 });

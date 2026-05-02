@@ -1,18 +1,38 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import type { SettingsSkillConfig } from "../settings/SettingsWorkspace";
 import { Button, StatusBadge } from "../../../v2/components/ui";
 import type { McpServerRecord } from "@shared";
 import "./skills.css";
+
+export interface SkillDraft {
+  name: string;
+  description: string;
+  systemPrompt: string;
+  toolWhitelist: string;
+  category: string;
+}
 
 export interface SkillsWorkspaceProps {
   skills: SettingsSkillConfig[];
   mcpServers: McpServerRecord[];
   mcpToolCount?: number;
   providerLabel: string;
+  busySkillId?: string | null;
   onRefreshSkills?: () => void | Promise<void>;
   onOpenMcp?: () => void;
   onOpenSettings?: () => void;
+  onCreateSkill?: (draft: SkillDraft) => void | Promise<void>;
+  onUpdateSkill?: (skillId: string, draft: SkillDraft) => void | Promise<void>;
+  onDeleteSkill?: (skillId: string) => void | Promise<void>;
 }
+
+const emptySkillDraft: SkillDraft = {
+  name: "",
+  description: "",
+  systemPrompt: "",
+  toolWhitelist: "",
+  category: "custom",
+};
 
 const agentLanes = [
   {
@@ -49,16 +69,32 @@ function formatToolList(skill: SettingsSkillConfig): string[] {
   return skill.toolWhitelist?.length ? skill.toolWhitelist : ["No tool allowlist published"];
 }
 
+function draftFromSkill(skill: SettingsSkillConfig): SkillDraft {
+  return {
+    name: skill.name,
+    description: skill.description ?? "",
+    systemPrompt: skill.systemPrompt ?? "",
+    toolWhitelist: skill.toolWhitelist?.join("\n") ?? "",
+    category: formatSkillCategory(skill.path),
+  };
+}
+
 export function SkillsWorkspace({
   skills,
   mcpServers,
   mcpToolCount = 0,
   providerLabel,
+  busySkillId = null,
   onRefreshSkills,
   onOpenMcp,
   onOpenSettings,
+  onCreateSkill,
+  onUpdateSkill,
+  onDeleteSkill,
 }: SkillsWorkspaceProps) {
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
+  const [editorMode, setEditorMode] = useState<"create" | "edit" | null>(null);
+  const [draft, setDraft] = useState<SkillDraft>(emptySkillDraft);
   const enabledSkills = skills.filter((skill) => skill.enabled).length;
   const enabledServers = mcpServers.filter((server) => server.enabled).length;
   const availableTools = mcpToolCount;
@@ -70,8 +106,41 @@ export function SkillsWorkspace({
   useEffect(() => {
     if (selectedSkillId && !skills.some((skill) => skill.id === selectedSkillId)) {
       setSelectedSkillId(null);
+      setEditorMode(null);
     }
   }, [selectedSkillId, skills]);
+
+  async function handleSkillSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!draft.name.trim()) {
+      return;
+    }
+    if (editorMode === "edit" && selectedSkill && onUpdateSkill) {
+      await onUpdateSkill(selectedSkill.id, draft);
+      setEditorMode(null);
+      return;
+    }
+    if (editorMode === "create" && onCreateSkill) {
+      await onCreateSkill(draft);
+      setDraft(emptySkillDraft);
+      setEditorMode(null);
+    }
+  }
+
+  function openCreateEditor() {
+    setSelectedSkillId(null);
+    setDraft(emptySkillDraft);
+    setEditorMode("create");
+  }
+
+  function openEditEditor(skill: SettingsSkillConfig) {
+    setSelectedSkillId(skill.id);
+    setDraft(draftFromSkill(skill));
+    setEditorMode("edit");
+  }
+
+  const selectedSkillIsCustom = Boolean(selectedSkill && !selectedSkill.isBuiltin);
+  const editorBusy = busySkillId === "create" || Boolean(editorMode === "edit" && selectedSkill && busySkillId === selectedSkill.id);
 
   return (
     <main className="skills-workspace" aria-labelledby="skills-title">
@@ -111,7 +180,91 @@ export function SkillsWorkspace({
         <Button variant="ghost" onClick={onOpenSettings} disabled={!onOpenSettings} disabledReason="Settings are not available">
           Runtime settings
         </Button>
+        <Button
+          variant="secondary"
+          onClick={openCreateEditor}
+          disabled={!onCreateSkill}
+          disabledReason="Custom skill persistence is not available"
+        >
+          New custom skill
+        </Button>
       </section>
+
+      {editorMode ? (
+        <section className="skills-editor" aria-label={editorMode === "create" ? "Create custom skill" : "Edit custom skill"}>
+          <header>
+            <div>
+              <p className="yb-kicker">{editorMode === "create" ? "Custom preset" : "Edit preset"}</p>
+              <h2>{editorMode === "create" ? "New custom skill" : `Edit ${selectedSkill?.name ?? "skill"}`}</h2>
+            </div>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setEditorMode(null);
+                setDraft(emptySkillDraft);
+              }}
+              disabled={editorBusy}
+            >
+              Cancel
+            </Button>
+          </header>
+          <form className="skills-editor-form" onSubmit={(event) => void handleSkillSubmit(event)}>
+            <label>
+              <span>Name</span>
+              <input
+                value={draft.name}
+                onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
+                placeholder="Research reviewer"
+                required
+              />
+            </label>
+            <label>
+              <span>Category</span>
+              <input
+                value={draft.category}
+                onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))}
+                placeholder="custom"
+              />
+            </label>
+            <label className="skills-editor-wide">
+              <span>Description</span>
+              <input
+                value={draft.description}
+                onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
+                placeholder="Summarizes source material and checks claims."
+              />
+            </label>
+            <label className="skills-editor-wide">
+              <span>System prompt</span>
+              <textarea
+                value={draft.systemPrompt}
+                onChange={(event) => setDraft((current) => ({ ...current, systemPrompt: event.target.value }))}
+                rows={5}
+                placeholder="Describe how the agent should behave when this skill is selected."
+              />
+            </label>
+            <label className="skills-editor-wide">
+              <span>Tool allowlist</span>
+              <textarea
+                value={draft.toolWhitelist}
+                onChange={(event) => setDraft((current) => ({ ...current, toolWhitelist: event.target.value }))}
+                rows={3}
+                placeholder="One tool per line or comma-separated"
+              />
+            </label>
+            <div className="skills-editor-actions">
+              <Button
+                variant="primary"
+                type="submit"
+                disabled={!draft.name.trim() || editorBusy}
+                loading={editorBusy}
+              >
+                {editorMode === "create" ? "Create skill" : "Save skill"}
+              </Button>
+            </div>
+          </form>
+        </section>
+      ) : null}
 
       <section className="skills-grid">
         <div className="skills-agent-board" aria-label="Agent lanes">
@@ -198,8 +351,35 @@ export function SkillsWorkspace({
                 <p className="yb-kicker">Inspect</p>
                 <h3>{selectedSkill.name}</h3>
               </div>
-              <StatusBadge label={selectedSkill.isBuiltin ? "built-in preset" : "custom preset"} tone={selectedSkill.isBuiltin ? "primary" : "neutral"} compact />
+              <div className="skills-inspector-actions">
+                <StatusBadge label={selectedSkill.isBuiltin ? "built-in preset" : "custom preset"} tone={selectedSkill.isBuiltin ? "primary" : "neutral"} compact />
+                {selectedSkillIsCustom ? (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => openEditEditor(selectedSkill)}
+                      disabled={!onUpdateSkill || busySkillId === selectedSkill.id}
+                      loading={busySkillId === selectedSkill.id}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      onClick={() => void onDeleteSkill?.(selectedSkill.id)}
+                      disabled={!onDeleteSkill || busySkillId === selectedSkill.id}
+                      loading={busySkillId === selectedSkill.id}
+                    >
+                      Delete
+                    </Button>
+                  </>
+                ) : null}
+              </div>
             </header>
+            {!selectedSkillIsCustom ? (
+              <p className="skills-readonly-note">Built-in presets are read-only; create a custom skill when you need editable behavior.</p>
+            ) : null}
             <dl>
               <div>
                 <dt>Category</dt>

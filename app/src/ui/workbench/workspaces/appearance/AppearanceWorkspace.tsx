@@ -11,48 +11,52 @@ export interface AppearanceWorkspaceProps {
 }
 
 const themeOptions: Array<{ id: SettingsGeneralConfig["theme"]; label: string; note: string }> = [
-  { id: "dark", label: "Dark", note: "Primary desktop workbench theme" },
-  { id: "light", label: "Light", note: "Review and daytime operator mode" },
-  { id: "system", label: "System", note: "Follow OS preference" },
+  { id: "dark", label: "深色", note: "主要桌面工作台主题" },
+  { id: "light", label: "浅色", note: "适合审阅和白天操作" },
+  { id: "system", label: "跟随系统", note: "遵循操作系统偏好" },
 ];
 
 const languageOptions: Array<{ id: SettingsGeneralConfig["language"]; label: string }> = [
-  { id: "en", label: "English" },
-  { id: "zh", label: "Chinese" },
-  { id: "auto", label: "Auto" },
+  { id: "en", label: "英文" },
+  { id: "zh", label: "中文" },
+  { id: "auto", label: "自动" },
 ];
 
 const densityOptions: Array<{ id: SettingsGeneralConfig["density"]; label: string }> = [
-  { id: "comfortable", label: "Comfort" },
-  { id: "compact", label: "Compact" },
+  { id: "comfortable", label: "舒适" },
+  { id: "compact", label: "紧凑" },
 ];
 
 const radiusOptions: Array<{ id: SettingsGeneralConfig["radius"]; label: string }> = [
-  { id: "sm", label: "Small" },
-  { id: "md", label: "Medium" },
-  { id: "lg", label: "Large" },
+  { id: "sm", label: "小" },
+  { id: "md", label: "中" },
+  { id: "lg", label: "大" },
 ];
 
 const motionOptions: Array<{ id: SettingsGeneralConfig["motion"]; label: string }> = [
-  { id: "reduced", label: "Reduced" },
-  { id: "subtle", label: "Subtle" },
-  { id: "expressive", label: "Expressive" },
+  { id: "reduced", label: "减少" },
+  { id: "subtle", label: "轻微" },
+  { id: "expressive", label: "丰富" },
 ];
 
 const accentOptions: Array<{ id: SettingsGeneralConfig["accentColor"]; label: string }> = [
-  { id: "cyan", label: "Cyan" },
-  { id: "violet", label: "Violet" },
-  { id: "green", label: "Green" },
-  { id: "amber", label: "Amber" },
-  { id: "rose", label: "Rose" },
+  { id: "cyan", label: "青色" },
+  { id: "violet", label: "紫色" },
+  { id: "green", label: "绿色" },
+  { id: "amber", label: "琥珀" },
+  { id: "rose", label: "玫瑰" },
 ];
 
 const reasoningOptions: Array<{ id: SettingsGeneralConfig["reasoningEffort"]; label: string }> = [
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-  { id: "max", label: "Max" },
+  { id: "low", label: "低" },
+  { id: "medium", label: "中" },
+  { id: "high", label: "高" },
+  { id: "max", label: "最大" },
 ];
+
+function optionLabel<T extends string>(options: Array<{ id: T; label: string }>, value: T) {
+  return options.find((option) => option.id === value)?.label ?? value;
+}
 
 export function AppearanceWorkspace({
   value,
@@ -69,43 +73,43 @@ export function AppearanceWorkspace({
     <main className="appearance-workspace" aria-labelledby="appearance-title">
       <section className="appearance-command-strip">
         <div>
-          <p className="yb-kicker">Desk Control</p>
-          <h1 id="appearance-title">Appearance</h1>
-          <p>Tune the visible workbench theme, language bias, and runtime preflight posture.</p>
+          <p className="yb-kicker">桌面控制</p>
+          <h1 id="appearance-title">外观</h1>
+          <p>调整工作台主题、语言偏好和运行时预检姿态。</p>
         </div>
         <dl>
           <div>
-            <dt>Theme</dt>
-            <dd>{value.theme}</dd>
+            <dt>主题</dt>
+            <dd>{optionLabel(themeOptions, value.theme)}</dd>
           </div>
           <div>
-            <dt>Density</dt>
-            <dd>{value.density}</dd>
+            <dt>密度</dt>
+            <dd>{optionLabel(densityOptions, value.density)}</dd>
           </div>
           <div>
-            <dt>Accent</dt>
-            <dd>{value.accentColor}</dd>
+            <dt>强调色</dt>
+            <dd>{optionLabel(accentOptions, value.accentColor)}</dd>
           </div>
           <div>
-            <dt>Language</dt>
-            <dd>{value.language}</dd>
+            <dt>语言</dt>
+            <dd>{optionLabel(languageOptions, value.language)}</dd>
           </div>
           <div>
-            <dt>Reasoning</dt>
-            <dd>{value.reasoningEffort}</dd>
+            <dt>推理</dt>
+            <dd>{optionLabel(reasoningOptions, value.reasoningEffort)}</dd>
           </div>
         </dl>
       </section>
 
       <section className="appearance-grid">
-        <section className="appearance-control-panel" aria-label="Appearance controls">
+        <section className="appearance-control-panel" aria-label="外观控制">
           <header>
             <div>
-              <p className="yb-kicker">Theme</p>
-              <h2>Workbench skin</h2>
+              <p className="yb-kicker">主题</p>
+              <h2>工作台皮肤</h2>
             </div>
-            <Button variant="ghost" onClick={onOpenSettings} disabled={!onOpenSettings} disabledReason="Settings are not available">
-              Open settings
+            <Button variant="ghost" onClick={onOpenSettings} disabled={!onOpenSettings} disabledReason="设置不可用">
+              打开设置
             </Button>
           </header>
 
@@ -127,10 +131,10 @@ export function AppearanceWorkspace({
 
           <div className="appearance-control-block">
             <div>
-              <p className="yb-kicker">Density</p>
-              <h3>Information pace</h3>
+              <p className="yb-kicker">密度</p>
+              <h3>信息节奏</h3>
             </div>
-            <div className="appearance-segmented" role="group" aria-label="Density">
+            <div className="appearance-segmented" role="group" aria-label="密度">
               {densityOptions.map((option) => (
                 <button
                   key={option.id}
@@ -146,10 +150,10 @@ export function AppearanceWorkspace({
 
           <div className="appearance-control-block">
             <div>
-              <p className="yb-kicker">Radius</p>
-              <h3>Panel geometry</h3>
+              <p className="yb-kicker">圆角</p>
+              <h3>面板几何</h3>
             </div>
-            <div className="appearance-segmented" role="group" aria-label="Radius">
+            <div className="appearance-segmented" role="group" aria-label="圆角">
               {radiusOptions.map((option) => (
                 <button
                   key={option.id}
@@ -165,10 +169,10 @@ export function AppearanceWorkspace({
 
           <div className="appearance-control-block">
             <div>
-              <p className="yb-kicker">Motion</p>
-              <h3>Interaction feedback</h3>
+              <p className="yb-kicker">动效</p>
+              <h3>交互反馈</h3>
             </div>
-            <div className="appearance-segmented" role="group" aria-label="Motion">
+            <div className="appearance-segmented" role="group" aria-label="动效">
               {motionOptions.map((option) => (
                 <button
                   key={option.id}
@@ -184,10 +188,10 @@ export function AppearanceWorkspace({
 
           <div className="appearance-control-block">
             <div>
-              <p className="yb-kicker">Accent</p>
-              <h3>Status colorway</h3>
+              <p className="yb-kicker">强调色</p>
+              <h3>状态配色</h3>
             </div>
-            <div className="appearance-swatch-row" role="group" aria-label="Accent">
+            <div className="appearance-swatch-row" role="group" aria-label="强调色">
               {accentOptions.map((option) => (
                 <button
                   key={option.id}
@@ -205,7 +209,7 @@ export function AppearanceWorkspace({
 
           <div className="appearance-slider-grid">
             <label>
-              <span>Transparency {Math.round(value.transparency * 100)}%</span>
+              <span>透明度 {Math.round(value.transparency * 100)}%</span>
               <input
                 type="range"
                 min="0.58"
@@ -216,7 +220,7 @@ export function AppearanceWorkspace({
               />
             </label>
             <label>
-              <span>Font scale {Math.round(value.fontScale * 100)}%</span>
+              <span>字体缩放 {Math.round(value.fontScale * 100)}%</span>
               <input
                 type="range"
                 min="0.92"
@@ -230,10 +234,10 @@ export function AppearanceWorkspace({
 
           <div className="appearance-control-block">
             <div>
-              <p className="yb-kicker">Language</p>
-              <h3>Interface copy</h3>
+              <p className="yb-kicker">语言</p>
+              <h3>界面文案</h3>
             </div>
-            <div className="appearance-segmented" role="group" aria-label="Language">
+            <div className="appearance-segmented" role="group" aria-label="语言">
               {languageOptions.map((option) => (
                 <button
                   key={option.id}
@@ -249,10 +253,10 @@ export function AppearanceWorkspace({
 
           <div className="appearance-control-block">
             <div>
-              <p className="yb-kicker">Reasoning</p>
-              <h3>Default effort</h3>
+              <p className="yb-kicker">推理</p>
+              <h3>默认强度</h3>
             </div>
-            <div className="appearance-segmented" role="group" aria-label="Reasoning effort">
+            <div className="appearance-segmented" role="group" aria-label="推理强度">
               {reasoningOptions.map((option) => (
                 <button
                   key={option.id}
@@ -273,13 +277,13 @@ export function AppearanceWorkspace({
               onChange={(event) => apply({ ...value, webFetchPreflight: event.target.checked })}
             />
             <span aria-hidden="true" />
-            <strong>Web preflight before external context</strong>
-            <small>Keep this enabled when tasks rely on current documentation or fast-changing APIs.</small>
+            <strong>外部上下文前进行网页预检</strong>
+            <small>当任务依赖最新文档或快速变化的 API 时，建议保持启用。</small>
           </label>
         </section>
 
-        <aside className="appearance-preview-panel" aria-label="Theme preview">
-          <p className="yb-kicker">Preview</p>
+        <aside className="appearance-preview-panel" aria-label="主题预览">
+          <p className="yb-kicker">预览</p>
           <h2>{workspaceName}</h2>
           <div className="appearance-preview-window" data-preview-theme={value.theme}>
             <header>
@@ -288,25 +292,25 @@ export function AppearanceWorkspace({
             </header>
             <div className="appearance-preview-body">
               <div>
-                <span>Runtime</span>
-                <strong>Ready</strong>
+                <span>运行时</span>
+                <strong>就绪</strong>
               </div>
               <div>
-                <span>Queue</span>
-                <strong>Clear</strong>
+                <span>队列</span>
+                <strong>空闲</strong>
               </div>
               <div>
-                <span>Trace</span>
-                <strong>Standby</strong>
+                <span>追踪</span>
+                <strong>待命</strong>
               </div>
             </div>
             <footer>
-              <span>Command lane</span>
-              <Button size="sm" variant="primary" disabled disabledReason="Preview only">Send</Button>
+              <span>命令通道</span>
+              <Button size="sm" variant="primary" disabled disabledReason="仅预览">发送</Button>
             </footer>
           </div>
           <p className="appearance-preview-note">
-            The live shell follows this setting immediately; deeper runtime persistence is handled by the Settings save path.
+            当前外壳会立即跟随这些设置；更深层的运行时持久化由设置页保存路径处理。
           </p>
         </aside>
       </section>

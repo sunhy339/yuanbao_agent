@@ -59,29 +59,29 @@ describe("ScheduledWorkspace", () => {
   it("renders task metrics from provided tasks", () => {
     const html = renderToStaticMarkup(<ScheduledWorkspace tasks={tasks} />);
 
-    expect(html).toMatch(/Scheduled Tasks/);
-    expect(html).toMatch(/Total[\s\S]*3/);
-    expect(html).toMatch(/Active[\s\S]*1/);
-    expect(html).toMatch(/Paused[\s\S]*1/);
+    expect(html).toMatch(/定时任务/);
+    expect(html).toMatch(/总数[\s\S]*3/);
+    expect(html).toMatch(/运行中[\s\S]*1/);
+    expect(html).toMatch(/已暂停[\s\S]*1/);
   });
 
   it("renders the workbench regions used by the scheduled task page", () => {
     render(<ScheduledWorkspace tasks={tasks} logsByTaskId={logsByTaskId} />);
 
-    expect(screen.getByRole("region", { name: "Schedule command strip" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Scheduled tasks" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Execution log" })).toBeInTheDocument();
-    expect(screen.getByText("Runtime schedule")).toBeInTheDocument();
-    expect(screen.getByText("Run tail")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "定时任务命令区" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "定时任务列表" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "执行日志" })).toBeInTheDocument();
+    expect(screen.getByText("运行时计划")).toBeInTheDocument();
+    expect(screen.getByText("运行尾部")).toBeInTheDocument();
   });
 
   it("renders a real empty state when no tasks are provided", () => {
     render(<ScheduledWorkspace />);
 
-    expect(screen.getByText("No scheduled tasks")).toBeInTheDocument();
+    expect(screen.getByText("暂无定时任务")).toBeInTheDocument();
     expect(screen.queryByText("Morning sync")).not.toBeInTheDocument();
-    expect(screen.getByText(/0 items/)).toBeInTheDocument();
-    expect(screen.getByText("Select a task to see recent execution logs.")).toBeInTheDocument();
+    expect(screen.getByText(/0 项/)).toBeInTheDocument();
+    expect(screen.getByText("选择一个任务以查看最近执行日志。")).toBeInTheDocument();
   });
 
   it("renders scheduled task list item details", () => {
@@ -91,7 +91,7 @@ describe("ScheduledWorkspace", () => {
     expect(html).toMatch(/Collect yesterday&#x27;s notes\./);
     expect(html).toMatch(/Every day 08:30/);
     expect(html).toMatch(/Last run: today 08:30/);
-    expect(html).toMatch(/active/);
+    expect(html).toMatch(/运行中/);
   });
 
   it("selects a task and notifies the host", async () => {
@@ -105,10 +105,10 @@ describe("ScheduledWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /Select task Archive records/ }));
+    await user.click(screen.getByRole("button", { name: /选择任务 Archive records/ }));
 
     expect(onSelectTask).toHaveBeenCalledWith("archive");
-    expect(screen.getByRole("button", { name: /Select task Archive records/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /选择任务 Archive records/ })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -169,9 +169,9 @@ describe("ScheduledWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Run task Morning sync" }));
-    await user.click(screen.getByRole("button", { name: "Disable task Morning sync" }));
-    await user.click(screen.getByRole("button", { name: "Enable task Archive records" }));
+    await user.click(screen.getByRole("button", { name: "运行任务 Morning sync" }));
+    await user.click(screen.getByRole("button", { name: "暂停任务 Morning sync" }));
+    await user.click(screen.getByRole("button", { name: "启用任务 Archive records" }));
 
     expect(onCreateTask).not.toHaveBeenCalled();
     expect(onRunTask).toHaveBeenCalledWith("morning");
@@ -184,20 +184,20 @@ describe("ScheduledWorkspace", () => {
     const onCreateTask = vi.fn();
     render(<ScheduledWorkspace onCreateTask={onCreateTask} workspacePath="D:\\py\\yuanbao_agent" />);
 
-    await user.click(screen.getByRole("button", { name: "Create scheduled task" }));
+    await user.click(screen.getByRole("button", { name: "创建定时任务" }));
 
-    expect(screen.getByRole("dialog", { name: "Create scheduled task" })).toBeInTheDocument();
-    expect(screen.getByText("Local scheduled tasks run when the runtime host is awake.")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "创建定时任务" })).toBeInTheDocument();
+    expect(screen.getByText("本地定时任务会在运行时宿主唤醒时执行。")).toBeInTheDocument();
     expect(screen.getAllByText(/yuanbao_agent/)).toHaveLength(2);
 
-    await user.type(screen.getByLabelText("Name"), "daily-code-review");
-    await user.type(screen.getByLabelText("Description"), "Review yesterday's commits");
+    await user.type(screen.getByLabelText("名称"), "daily-code-review");
+    await user.type(screen.getByLabelText("描述"), "Review yesterday's commits");
     await user.type(
-      screen.getByLabelText("Prompt"),
+      screen.getByLabelText("提示词"),
       "Check the repository status and summarize anything that needs attention.",
     );
-    await user.selectOptions(screen.getByLabelText("Frequency"), "every 24 hours");
-    await user.click(screen.getByRole("button", { name: "Create task" }));
+    await user.selectOptions(screen.getByLabelText("频率"), "every 24 hours");
+    await user.click(screen.getByRole("button", { name: "创建任务" }));
 
     expect(onCreateTask).toHaveBeenCalledWith({
       name: "daily-code-review",
@@ -219,8 +219,8 @@ describe("ScheduledWorkspace", () => {
     );
 
     const row = screen.getByRole("listitem", { name: /Morning sync/ });
-    expect(within(row).getByRole("button", { name: "Run task Morning sync" })).toBeDisabled();
-    expect(within(row).getByRole("button", { name: "Disable task Morning sync" })).toBeDisabled();
-    expect(within(row).getByText("Working")).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "运行任务 Morning sync" })).toBeDisabled();
+    expect(within(row).getByRole("button", { name: "暂停任务 Morning sync" })).toBeDisabled();
+    expect(within(row).getByText("处理中")).toBeInTheDocument();
   });
 });

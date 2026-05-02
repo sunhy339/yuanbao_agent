@@ -16,11 +16,11 @@ export interface ComponentPlaygroundWorkspaceProps {
 }
 
 const componentStates = [
-  { label: "Default", tone: "neutral" as const },
-  { label: "Primary", tone: "primary" as const },
-  { label: "Success", tone: "success" as const },
-  { label: "Warning", tone: "warning" as const },
-  { label: "Danger", tone: "danger" as const },
+  { label: "默认", tone: "neutral" as const },
+  { label: "主色", tone: "primary" as const },
+  { label: "成功", tone: "success" as const },
+  { label: "警告", tone: "warning" as const },
+  { label: "危险", tone: "danger" as const },
 ];
 
 export function ComponentPlaygroundWorkspace({
@@ -31,33 +31,33 @@ export function ComponentPlaygroundWorkspace({
     <main className="playground-workspace" aria-labelledby="playground-title">
       <section className="playground-command-strip">
         <div>
-          <p className="yb-kicker">Component Lab</p>
-          <h1 id="playground-title">Component Playground</h1>
-          <p>Preview reusable V2 controls, density, empty states, and runtime cards in the active workbench shell.</p>
+          <p className="yb-kicker">组件实验室</p>
+          <h1 id="playground-title">组件预览</h1>
+          <p>在当前工作台外壳中预览可复用的 V2 控件、密度、空状态和运行时卡片。</p>
         </div>
         <div className="playground-actions">
-          <Button variant="primary" onClick={onOpenAppearance} disabled={!onOpenAppearance} disabledReason="Appearance is not available">
-            Appearance
+          <Button variant="primary" onClick={onOpenAppearance} disabled={!onOpenAppearance} disabledReason="外观页不可用">
+            外观
           </Button>
-          <Button variant="secondary" onClick={onOpenSkills} disabled={!onOpenSkills} disabledReason="Skills are not available">
-            Agent Skills
+          <Button variant="secondary" onClick={onOpenSkills} disabled={!onOpenSkills} disabledReason="技能页不可用">
+            智能体技能
           </Button>
         </div>
       </section>
 
       <section className="playground-grid">
-        <Panel title="Buttons" eyebrow="Controls" description="Primary, secondary, ghost, danger, disabled, and loading surfaces.">
+        <Panel title="按钮" eyebrow="控件" description="主按钮、次按钮、幽灵按钮、危险按钮、禁用态和加载态。">
           <div className="playground-button-row">
-            <Button variant="primary">Primary</Button>
-            <Button variant="secondary">Secondary</Button>
-            <Button variant="ghost">Ghost</Button>
-            <Button variant="danger">Danger</Button>
-            <Button disabled disabledReason="Disabled state preview">Disabled</Button>
-            <Button loading>Loading</Button>
+            <Button variant="primary">主按钮</Button>
+            <Button variant="secondary">次按钮</Button>
+            <Button variant="ghost">幽灵按钮</Button>
+            <Button variant="danger">危险</Button>
+            <Button disabled disabledReason="禁用态预览">禁用</Button>
+            <Button loading>加载中</Button>
           </div>
         </Panel>
 
-        <Panel title="Status" eyebrow="Signals" description="Compact runtime labels for topbar, cards, and side panels.">
+        <Panel title="状态" eyebrow="信号" description="用于顶栏、卡片和侧边面板的紧凑运行时标签。">
           <div className="playground-status-grid">
             {componentStates.map((state) => (
               <StatusBadge key={state.label} label={state.label} tone={state.tone} pulse={state.tone === "success"} />
@@ -65,43 +65,43 @@ export function ComponentPlaygroundWorkspace({
           </div>
         </Panel>
 
-        <Panel title="Metric Cards" eyebrow="Telemetry" description="Stable card dimensions for dense operational dashboards.">
+        <Panel title="指标卡片" eyebrow="遥测" description="为高密度运维看板提供稳定卡片尺寸。">
           <div className="playground-metrics">
             <div>
-              <span>Runtime</span>
-              <strong>Ready</strong>
-              <small>Local agent connected</small>
+              <span>运行时</span>
+              <strong>就绪</strong>
+              <small>本地智能体已连接</small>
             </div>
             <div>
-              <span>Approvals</span>
+              <span>审批</span>
               <strong>0</strong>
-              <small>No pending risk gates</small>
+              <small>没有待处理风险门禁</small>
             </div>
             <div>
-              <span>Trace</span>
+              <span>追踪</span>
               <strong>42</strong>
-              <small>Recent events indexed</small>
+              <small>最近事件已索引</small>
             </div>
           </div>
         </Panel>
 
-        <Panel title="Empty State" eyebrow="Fallback" description="No-data layouts should stay useful without looking unfinished.">
+        <Panel title="空状态" eyebrow="兜底" description="无数据布局也应保持可用，而不是显得半成品。">
           <div className="playground-empty">
-            <strong>No records loaded</strong>
-            <span>Connect runtime data or switch to a populated session to inspect live states.</span>
+            <strong>未加载记录</strong>
+            <span>连接运行时数据，或切换到已有内容的会话以检查实时状态。</span>
           </div>
         </Panel>
 
-        <Panel title="Runtime Card" eyebrow="Composition" description="Representative event card used by session, scheduled, and MCP pages.">
+        <Panel title="运行时卡片" eyebrow="组合" description="会话、定时任务和 MCP 页面使用的代表性事件卡片。">
           <div className="playground-runtime-stack">
-            <RuntimeSignalCard title="Runtime" value="Ready" tone="success" description="Local agent connected" />
+            <RuntimeSignalCard title="运行时" value="就绪" tone="success" description="本地智能体已连接" />
             <ContextBudgetBar usedTokens={38240} reservedTokens={6000} maxTokens={64000} />
             <RoutingDecisionCard
               decision={{
                 providerMode: "auto",
                 model: "gpt-5.4",
                 useBackground: true,
-                reason: "Long-running coding task with tool execution and verification.",
+                reason: "包含工具执行和验证的长时间编码任务。",
                 confidence: 0.86,
                 createdAt: Date.now(),
               }}
@@ -109,7 +109,7 @@ export function ComponentPlaygroundWorkspace({
           </div>
         </Panel>
 
-        <Panel title="Tool Trace" eyebrow="Runtime" description="Expandable tool call with input, output, latency, and copy hooks.">
+        <Panel title="工具追踪" eyebrow="运行时" description="可展开的工具调用，包含输入、输出、延迟和复制入口。">
           <ToolTraceCard
             toolCall={{
               id: "tool-1",
@@ -118,21 +118,21 @@ export function ComponentPlaygroundWorkspace({
               status: "success",
               latencyMs: 118,
               inputPreview: '{ "path": "D:/py/yuanbao_agent/app/src" }',
-              outputPreview: "18 entries returned; no stderr output.",
+              outputPreview: "返回 18 个条目；没有 stderr 输出。",
               startedAt: Date.now(),
             }}
           />
         </Panel>
 
-        <Panel title="Approval" eyebrow="Risk Gate" description="Approval actions stay visible and disabled when no longer pending.">
+        <Panel title="审批" eyebrow="风险门禁" description="审批动作保持可见；不再待处理时进入禁用态。">
           <ApprovalCard
             approval={{
               id: "approval-1",
-              title: "Run build verification",
+              title: "运行构建验证",
               kind: "command",
               status: "pending",
               risk: "medium",
-              summary: "Allow npm.cmd run build in the app workspace.",
+              summary: "允许在 app 工作区运行 npm.cmd run build。",
               command: "npm.cmd run build",
               cwd: "D:/py/yuanbao_agent/app",
             }}
@@ -141,12 +141,12 @@ export function ComponentPlaygroundWorkspace({
           />
         </Panel>
 
-        <Panel title="Patch + Command" eyebrow="Execution" description="Patch summaries and command output share the V2 runtime language.">
+        <Panel title="补丁 + 命令" eyebrow="执行" description="补丁摘要和命令输出共享 V2 运行时表达。">
           <div className="playground-runtime-stack">
             <PatchPlanCard
               patch={{
                 id: "patch-1",
-                summary: "Introduce runtime component primitives",
+                summary: "引入运行时组件基础件",
                 status: "ready",
                 filesChanged: 3,
                 additions: 218,

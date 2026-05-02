@@ -30,13 +30,13 @@ describe("SkillsWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Inspect" }));
+    await user.click(screen.getByRole("button", { name: "检查" }));
 
-    expect(screen.getByLabelText("Docs skill details")).toBeInTheDocument();
+    expect(screen.getByLabelText("Docs 技能详情")).toBeInTheDocument();
     expect(screen.getByText("Use document-safe editing workflows.")).toBeInTheDocument();
     expect(screen.getByText("read_docx")).toBeInTheDocument();
     expect(screen.getByText("write_docx")).toBeInTheDocument();
-    expect(screen.getAllByText("built-in").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("内置").length).toBeGreaterThan(0);
   });
 
   it("keeps skill management actions limited to wired runtime actions", async () => {
@@ -55,14 +55,14 @@ describe("SkillsWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Refresh skills" }));
-    await user.click(screen.getByRole("button", { name: "Manage MCP" }));
-    await user.click(screen.getByRole("button", { name: "Runtime settings" }));
+    await user.click(screen.getByRole("button", { name: "刷新技能" }));
+    await user.click(screen.getByRole("button", { name: "管理 MCP" }));
+    await user.click(screen.getByRole("button", { name: "运行时设置" }));
 
     expect(onRefreshSkills).toHaveBeenCalledTimes(1);
     expect(onOpenMcp).toHaveBeenCalledTimes(1);
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole("button", { name: /Add skill/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /添加技能/ })).not.toBeInTheDocument();
   });
 
   it("creates, edits, and deletes custom skill presets through callbacks", async () => {
@@ -92,13 +92,13 @@ describe("SkillsWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "New custom skill" }));
-    await user.type(screen.getByLabelText("Name"), "Research Reviewer");
-    await user.clear(screen.getByLabelText("Category"));
-    await user.type(screen.getByLabelText("Category"), "research");
-    await user.type(screen.getByLabelText("System prompt"), "Check every claim against sources.");
-    await user.type(screen.getByLabelText("Tool allowlist"), "web_search\nread_file");
-    await user.click(screen.getByRole("button", { name: "Create skill" }));
+    await user.click(screen.getByRole("button", { name: "新建自定义技能" }));
+    await user.type(screen.getByLabelText("名称"), "Research Reviewer");
+    await user.clear(screen.getByLabelText("分类"));
+    await user.type(screen.getByLabelText("分类"), "research");
+    await user.type(screen.getByLabelText("系统提示词"), "Check every claim against sources.");
+    await user.type(screen.getByLabelText("工具 allowlist"), "web_search\nread_file");
+    await user.click(screen.getByRole("button", { name: "创建技能" }));
 
     expect(onCreateSkill).toHaveBeenCalledWith({
       name: "Research Reviewer",
@@ -108,11 +108,11 @@ describe("SkillsWorkspace", () => {
       category: "research",
     });
 
-    await user.click(screen.getByRole("button", { name: "Inspect" }));
-    await user.click(screen.getByRole("button", { name: "Edit" }));
-    await user.clear(screen.getByLabelText("Name"));
-    await user.type(screen.getByLabelText("Name"), "Custom Reviewer Updated");
-    await user.click(screen.getByRole("button", { name: "Save skill" }));
+    await user.click(screen.getByRole("button", { name: "检查" }));
+    await user.click(screen.getByRole("button", { name: "编辑" }));
+    await user.clear(screen.getByLabelText("名称"));
+    await user.type(screen.getByLabelText("名称"), "Custom Reviewer Updated");
+    await user.click(screen.getByRole("button", { name: "保存技能" }));
 
     expect(onUpdateSkill).toHaveBeenCalledWith(
       "custom-reviewer",
@@ -122,7 +122,7 @@ describe("SkillsWorkspace", () => {
       }),
     );
 
-    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "删除" }));
 
     expect(onDeleteSkill).toHaveBeenCalledWith("custom-reviewer");
   });

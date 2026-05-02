@@ -38,13 +38,13 @@ const initialDraft: McpServerDraft = {
 
 function formatTimestamp(value?: number) {
   if (!value) {
-    return "Never";
+    return "从未";
   }
-  return new Date(value).toLocaleString("en-US", { hour12: false });
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 
 function formatArgs(args?: string[]) {
-  return args?.length ? args.join(" ") : "No args";
+  return args?.length ? args.join(" ") : "无参数";
 }
 
 function draftFromServer(server: McpServerRecord): McpServerDraft {
@@ -122,60 +122,59 @@ export function McpWorkspace({
     <main className="mcp-workspace" aria-labelledby="mcp-title">
       <section className="mcp-hero">
         <div>
-          <p className="mcp-kicker">Capability Center</p>
-          <h1 id="mcp-title">MCP Control Plane</h1>
+          <p className="mcp-kicker">能力中心</p>
+          <h1 id="mcp-title">MCP 控制台</h1>
           <p>
-            Manage Model Context Protocol servers exposed by the local runtime.
-            Servers created here are persisted by the backend and can register
-            tools into the agent runtime.
+            管理本地运行时暴露的 Model Context Protocol 服务器。这里创建的服务器会由后端持久化，
+            并可将工具注册到智能体运行时。
           </p>
-          <div className="mcp-hero-telemetry" aria-label="MCP runtime telemetry">
+          <div className="mcp-hero-telemetry" aria-label="MCP 运行时遥测">
             <span>
               <strong>{enabledCount}</strong>
-              enabled lanes
+              已启用通道
             </span>
             <span>
               <strong>{formatTimestamp(lastRefresh?.refreshed)}</strong>
-              last refresh
+              上次刷新
             </span>
             <span>
-              <strong>{selectedServer?.name ?? "none"}</strong>
-              inspected endpoint
+              <strong>{selectedServer?.name ?? "无"}</strong>
+              当前检查端点
             </span>
           </div>
         </div>
         <div className="mcp-hero-actions">
           <Button type="button" onClick={() => void onRefreshServers()} loading={loading} variant="secondary">
-            {loading ? "Refreshing..." : "Refresh servers"}
+            {loading ? "刷新中..." : "刷新服务器"}
           </Button>
           <Button type="button" onClick={() => void onRefreshTools()} disabled={loading || !servers.length} variant="primary">
-            Refresh all tools
+            刷新全部工具
           </Button>
         </div>
       </section>
 
       {errorMessage ? (
-        <section className="mcp-error-banner" role="alert" aria-label="MCP error">
+        <section className="mcp-error-banner" role="alert" aria-label="MCP 错误">
           <div>
-            <strong>MCP action failed</strong>
+            <strong>MCP 操作失败</strong>
             <span>{errorMessage}</span>
           </div>
           {onDismissError ? (
             <Button type="button" variant="ghost" size="sm" onClick={onDismissError}>
-              Dismiss
+              关闭
             </Button>
           ) : null}
         </section>
       ) : null}
 
-      <section className="mcp-metrics" aria-label="MCP summary">
+      <section className="mcp-metrics" aria-label="MCP 概览">
         <div>
           <span>{servers.length}</span>
-          <small>Servers</small>
+          <small>服务器</small>
         </div>
         <div>
           <span>{enabledCount}</span>
-          <small>Enabled</small>
+          <small>已启用</small>
         </div>
         <div>
           <span>{stdioCount}</span>
@@ -183,7 +182,7 @@ export function McpWorkspace({
         </div>
         <div>
           <span>{lastRefresh?.refreshed ?? 0}</span>
-          <small>Tools refreshed</small>
+          <small>已刷新工具</small>
         </div>
       </section>
 
@@ -191,17 +190,17 @@ export function McpWorkspace({
         <form className="mcp-panel mcp-create-panel" onSubmit={handleSubmit}>
           <div className="mcp-panel-header">
             <div>
-              <p className="mcp-kicker">{formMode === "edit" ? "Edit Endpoint" : "New Endpoint"}</p>
-              <h2>{formMode === "edit" ? "Edit MCP server" : "Add MCP server"}</h2>
+              <p className="mcp-kicker">{formMode === "edit" ? "编辑端点" : "新建端点"}</p>
+              <h2>{formMode === "edit" ? "编辑 MCP 服务器" : "添加 MCP 服务器"}</h2>
             </div>
             {formMode === "edit" ? (
               <Button type="button" variant="ghost" size="sm" onClick={resetForm} disabled={loading}>
-                Cancel
+                取消
               </Button>
             ) : null}
           </div>
           <label>
-            <span>Name</span>
+            <span>名称</span>
             <input
               value={draft.name}
               onChange={(event) => {
@@ -213,7 +212,7 @@ export function McpWorkspace({
             />
           </label>
           <label>
-            <span>Transport</span>
+            <span>传输方式</span>
             <select
               value={draft.transport}
               onChange={(event) => {
@@ -229,7 +228,7 @@ export function McpWorkspace({
           {draft.transport === "stdio" ? (
             <>
               <label>
-                <span>Command</span>
+                <span>命令</span>
                 <input
                   value={draft.command}
                   onChange={(event) => {
@@ -240,7 +239,7 @@ export function McpWorkspace({
                 />
               </label>
               <label>
-                <span>Args</span>
+                <span>参数</span>
                 <textarea
                   value={draft.args}
                   onChange={(event) => {
@@ -274,11 +273,11 @@ export function McpWorkspace({
                 setDraft((current) => ({ ...current, enabled: checked }));
               }}
             />
-            <span>Enable after creation</span>
+            <span>创建后启用</span>
           </label>
           <div className="mcp-form-actions">
             <Button type="submit" className="mcp-primary-action" disabled={loading || !draft.name.trim()} loading={loading} variant="primary">
-              {formMode === "edit" ? "Save server" : "Create server"}
+              {formMode === "edit" ? "保存服务器" : "创建服务器"}
             </Button>
           </div>
         </form>
@@ -286,8 +285,8 @@ export function McpWorkspace({
         <section className="mcp-panel">
           <div className="mcp-panel-header">
             <div>
-              <p className="mcp-kicker">Servers</p>
-              <h2>Runtime registry</h2>
+              <p className="mcp-kicker">服务器</p>
+              <h2>运行时注册表</h2>
             </div>
           </div>
           <div className="mcp-server-list">
@@ -304,13 +303,13 @@ export function McpWorkspace({
                     <strong>{server.name}</strong>
                     <small>{server.transport}</small>
                   </span>
-                  <StatusBadge label={server.enabled ? "enabled" : "disabled"} tone={server.enabled ? "success" : "neutral"} compact />
+                  <StatusBadge label={server.enabled ? "已启用" : "已停用"} tone={server.enabled ? "success" : "neutral"} compact />
                 </button>
               ))
             ) : (
               <div className="mcp-empty-state">
-                <strong>No MCP servers yet</strong>
-                <small>Create a stdio/http endpoint to expose external tools to the agent.</small>
+                <strong>暂无 MCP 服务器</strong>
+                <small>创建 stdio/http 端点后，可将外部工具暴露给智能体。</small>
               </div>
             )}
           </div>
@@ -319,16 +318,16 @@ export function McpWorkspace({
         <section className="mcp-panel mcp-detail-panel">
           <div className="mcp-panel-header">
             <div>
-              <p className="mcp-kicker">Inspector</p>
-              <h2>{selectedServer?.name ?? "No server selected"}</h2>
+              <p className="mcp-kicker">检查器</p>
+              <h2>{selectedServer?.name ?? "未选择服务器"}</h2>
             </div>
           </div>
           {selectedServer ? (
             <>
               <div className="mcp-inspector-band" data-enabled={selectedServer.enabled}>
                 <span className="mcp-status-dot" data-enabled={selectedServer.enabled} aria-hidden="true" />
-                <strong>{selectedServer.enabled ? "Endpoint online" : "Endpoint paused"}</strong>
-                <small>{selectedServer.transport} transport</small>
+                <strong>{selectedServer.enabled ? "端点在线" : "端点已暂停"}</strong>
+                <small>{selectedServer.transport} 传输</small>
               </div>
               <dl className="mcp-definition-list">
                 <div>
@@ -336,19 +335,19 @@ export function McpWorkspace({
                   <dd>{selectedServer.id}</dd>
                 </div>
                 <div>
-                  <dt>Transport</dt>
+                  <dt>传输方式</dt>
                   <dd>{selectedServer.transport}</dd>
                 </div>
                 <div>
-                  <dt>Command</dt>
-                  <dd>{selectedServer.command || selectedServer.url || "Not configured"}</dd>
+                  <dt>命令</dt>
+                  <dd>{selectedServer.command || selectedServer.url || "未配置"}</dd>
                 </div>
                 <div>
-                  <dt>Args</dt>
+                  <dt>参数</dt>
                   <dd>{formatArgs(selectedServer.args)}</dd>
                 </div>
                 <div>
-                  <dt>Updated</dt>
+                  <dt>更新时间</dt>
                   <dd>{formatTimestamp(selectedServer.updatedAt)}</dd>
                 </div>
               </dl>
@@ -360,7 +359,7 @@ export function McpWorkspace({
                   size="sm"
                   variant="secondary"
                 >
-                  Edit
+                  编辑
                 </Button>
                 <Button
                   type="button"
@@ -370,7 +369,7 @@ export function McpWorkspace({
                   size="sm"
                   variant={selectedServer.enabled ? "secondary" : "primary"}
                 >
-                  {selectedServer.enabled ? "Disable" : "Enable"}
+                  {selectedServer.enabled ? "停用" : "启用"}
                 </Button>
                 <Button
                   type="button"
@@ -380,7 +379,7 @@ export function McpWorkspace({
                   size="sm"
                   variant="secondary"
                 >
-                  Refresh tools
+                  刷新工具
                 </Button>
                 <Button
                   type="button"
@@ -391,12 +390,12 @@ export function McpWorkspace({
                   size="sm"
                   variant="danger"
                 >
-                  Delete
+                  删除
                 </Button>
               </div>
               {lastRefresh?.tools.length ? (
                 <div className="mcp-tool-preview">
-                  <strong>Last refreshed tools</strong>
+                  <strong>上次刷新的工具</strong>
                   <ul>
                     {lastRefresh.tools.slice(0, 8).map((tool) => (
                       <li key={tool}>{tool}</li>
@@ -407,8 +406,8 @@ export function McpWorkspace({
             </>
           ) : (
             <div className="mcp-empty-state">
-              <strong>Select a server</strong>
-              <small>The backend registry is ready; add a server to inspect and refresh tools.</small>
+              <strong>选择一个服务器</strong>
+              <small>后端注册表已就绪；添加服务器后即可检查并刷新工具。</small>
             </div>
           )}
         </section>

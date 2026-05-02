@@ -39,10 +39,10 @@ describe("McpWorkspace", () => {
       />,
     );
 
-    await user.type(screen.getByLabelText("Name"), "search");
-    await user.selectOptions(screen.getByLabelText("Transport"), "http");
+    await user.type(screen.getByLabelText("名称"), "search");
+    await user.selectOptions(screen.getByLabelText("传输方式"), "http");
     await user.type(screen.getByLabelText("URL"), "http://127.0.0.1:8787/sse");
-    await user.click(screen.getByRole("button", { name: "Create server" }));
+    await user.click(screen.getByRole("button", { name: "创建服务器" }));
 
     expect(actions.onCreateServer).toHaveBeenCalledWith({
       name: "search",
@@ -53,10 +53,10 @@ describe("McpWorkspace", () => {
       enabled: true,
     });
 
-    await user.click(screen.getByRole("button", { name: "Edit" }));
-    await user.clear(screen.getByLabelText("Name"));
-    await user.type(screen.getByLabelText("Name"), "filesystem local");
-    await user.click(screen.getByRole("button", { name: "Save server" }));
+    await user.click(screen.getByRole("button", { name: "编辑" }));
+    await user.clear(screen.getByLabelText("名称"));
+    await user.type(screen.getByLabelText("名称"), "filesystem local");
+    await user.click(screen.getByRole("button", { name: "保存服务器" }));
 
     expect(actions.onUpdateServer).toHaveBeenCalledWith(
       "srv_files",
@@ -88,9 +88,9 @@ describe("McpWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Disable" }));
-    await user.click(screen.getByRole("button", { name: "Refresh tools" }));
-    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "停用" }));
+    await user.click(screen.getByRole("button", { name: "刷新工具" }));
+    await user.click(screen.getByRole("button", { name: "删除" }));
 
     expect(actions.onToggleServer).toHaveBeenCalledWith("srv_files", false);
     expect(actions.onRefreshTools).toHaveBeenCalledWith("srv_files");
@@ -112,13 +112,13 @@ describe("McpWorkspace", () => {
       />,
     );
 
-    await user.type(screen.getByLabelText("Name"), "broken server");
-    await user.click(screen.getByRole("button", { name: "Create server" }));
+    await user.type(screen.getByLabelText("名称"), "broken server");
+    await user.click(screen.getByRole("button", { name: "创建服务器" }));
 
-    expect(screen.getByRole("alert", { name: "MCP error" })).toHaveTextContent("Command is required");
-    expect(screen.getByLabelText("Name")).toHaveValue("broken server");
+    expect(screen.getByRole("alert", { name: "MCP 错误" })).toHaveTextContent("Command is required");
+    expect(screen.getByLabelText("名称")).toHaveValue("broken server");
 
-    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    await user.click(screen.getByRole("button", { name: "关闭" }));
 
     expect(onDismissError).toHaveBeenCalledTimes(1);
   });

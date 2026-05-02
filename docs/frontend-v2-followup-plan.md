@@ -217,10 +217,16 @@ Objective: keep the V2 shell stable as interactions become real.
 - [x] Run `npm.cmd test`.
 - [x] Run `npm.cmd run build`.
 - [x] Run `npm.cmd run visual:regression` after UI/layout changes.
-- [ ] Run `npm.cmd run e2e:desktop:ui` when desktop shell or Tauri bridge changes.
-- [ ] Run `npm.cmd run e2e:desktop:mcp` when MCP bridge or UI management changes.
+- [x] Run `npm.cmd run e2e:desktop:ui` when desktop shell or Tauri bridge changes.
+- [x] Run `npm.cmd run e2e:desktop:mcp` when MCP bridge or UI management changes.
 - [x] Run `npm.cmd run e2e:desktop:recovery` when session persistence or routing changes.
-- [ ] Update `docs/frontend-v2-bug-list.md` for reopened or newly found issues.
+- [x] Update `docs/frontend-v2-bug-list.md` for reopened or newly found issues.
+
+Final gate notes:
+
+- `npm.cmd run e2e:desktop:ui` passed with overview, new session, settings, scheduled, and navigation assertions.
+- `npm.cmd run e2e:desktop:mcp` passed after rerunning it by itself; the first attempt overlapped with `e2e:desktop:ui` and only failed because both Tauri dev servers tried to bind port 1420.
+- No reopened bugs or new frontend V2 bugs were found in the final gate pass.
 
 ## Commit Strategy
 

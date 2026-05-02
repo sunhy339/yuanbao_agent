@@ -17,12 +17,14 @@ export interface McpWorkspaceProps {
   loading?: boolean;
   busyServerId?: string | null;
   lastRefresh?: { refreshed: number; tools: string[] } | null;
+  errorMessage?: string | null;
   onRefreshServers: () => void | Promise<void>;
   onCreateServer: (draft: McpServerDraft) => void | Promise<void>;
   onUpdateServer: (serverId: string, draft: McpServerDraft) => void | Promise<void>;
   onToggleServer: (serverId: string, enabled: boolean) => void | Promise<void>;
   onRefreshTools: (serverId?: string) => void | Promise<void>;
   onDeleteServer: (serverId: string) => void | Promise<void>;
+  onDismissError?: () => void;
 }
 
 const initialDraft: McpServerDraft = {
@@ -61,12 +63,14 @@ export function McpWorkspace({
   loading = false,
   busyServerId = null,
   lastRefresh = null,
+  errorMessage = null,
   onRefreshServers,
   onCreateServer,
   onUpdateServer,
   onToggleServer,
   onRefreshTools,
   onDeleteServer,
+  onDismissError,
 }: McpWorkspaceProps) {
   const [draft, setDraft] = useState<McpServerDraft>(initialDraft);
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
@@ -81,14 +85,18 @@ export function McpWorkspace({
     if (!draft.name.trim()) {
       return;
     }
-    if (formMode === "edit" && editingServerId) {
-      await onUpdateServer(editingServerId, draft);
-    } else {
-      await onCreateServer(draft);
+    try {
+      if (formMode === "edit" && editingServerId) {
+        await onUpdateServer(editingServerId, draft);
+      } else {
+        await onCreateServer(draft);
+      }
+      setFormMode("create");
+      setEditingServerId(null);
+      setDraft(initialDraft);
+    } catch {
+      // Parent owns persistent error state; keep the draft intact for correction.
     }
-    setFormMode("create");
-    setEditingServerId(null);
-    setDraft(initialDraft);
   }
 
   function startEditing(server: McpServerRecord) {
@@ -145,6 +153,20 @@ export function McpWorkspace({
           </Button>
         </div>
       </section>
+
+      {errorMessage ? (
+        <section className="mcp-error-banner" role="alert" aria-label="MCP error">
+          <div>
+            <strong>MCP action failed</strong>
+            <span>{errorMessage}</span>
+          </div>
+          {onDismissError ? (
+            <Button type="button" variant="ghost" size="sm" onClick={onDismissError}>
+              Dismiss
+            </Button>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="mcp-metrics" aria-label="MCP summary">
         <div>

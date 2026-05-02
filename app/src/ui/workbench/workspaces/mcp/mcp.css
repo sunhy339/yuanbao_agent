@@ -6,7 +6,8 @@
 
 .mcp-hero,
 .mcp-panel,
-.mcp-metrics > div {
+.mcp-metrics > div,
+.mcp-error-banner {
   border: 1px solid var(--yb-line);
   background: var(--yb-surface);
   box-shadow: var(--yb-shadow-tight);
@@ -20,6 +21,35 @@
   justify-content: space-between;
   padding: 28px;
   border-radius: var(--yb-radius-xl);
+}
+
+.mcp-error-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 14px 0 0;
+  border-color: rgba(251, 113, 133, 0.36);
+  border-radius: var(--yb-radius-lg);
+  padding: 12px 14px;
+  background:
+    linear-gradient(90deg, rgba(190, 18, 60, 0.18), transparent 72%),
+    rgba(15, 23, 42, 0.72);
+}
+
+.mcp-error-banner div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mcp-error-banner strong {
+  color: #fecdd3;
+}
+
+.mcp-error-banner span {
+  color: var(--yb-muted);
+  overflow-wrap: anywhere;
 }
 
 .mcp-kicker {
@@ -95,6 +125,16 @@
   border-color: rgba(251, 113, 133, 0.35);
   color: #fecdd3;
   background: rgba(190, 18, 60, 0.2);
+}
+
+.yb-v2[data-theme="light"] .mcp-error-banner {
+  background:
+    linear-gradient(90deg, rgba(244, 63, 94, 0.1), transparent 72%),
+    rgba(255, 255, 255, 0.82);
+}
+
+.yb-v2[data-theme="light"] .mcp-error-banner strong {
+  color: #9f1239;
 }
 
 .mcp-metrics {

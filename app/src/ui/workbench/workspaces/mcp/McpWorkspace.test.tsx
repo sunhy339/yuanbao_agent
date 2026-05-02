@@ -96,4 +96,30 @@ describe("McpWorkspace", () => {
     expect(actions.onRefreshTools).toHaveBeenCalledWith("srv_files");
     expect(actions.onDeleteServer).toHaveBeenCalledWith("srv_files");
   });
+
+  it("shows persistent errors and keeps the draft when create fails", async () => {
+    const user = userEvent.setup();
+    const actions = handlers();
+    actions.onCreateServer.mockRejectedValue(new Error("Command is required"));
+    const onDismissError = vi.fn();
+
+    render(
+      <McpWorkspace
+        servers={[]}
+        errorMessage="Command is required"
+        onDismissError={onDismissError}
+        {...actions}
+      />,
+    );
+
+    await user.type(screen.getByLabelText("Name"), "broken server");
+    await user.click(screen.getByRole("button", { name: "Create server" }));
+
+    expect(screen.getByRole("alert", { name: "MCP error" })).toHaveTextContent("Command is required");
+    expect(screen.getByLabelText("Name")).toHaveValue("broken server");
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+
+    expect(onDismissError).toHaveBeenCalledTimes(1);
+  });
 });

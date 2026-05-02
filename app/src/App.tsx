@@ -2021,13 +2021,18 @@ export function App() {
   const [mcpBusyServerId, setMcpBusyServerId] = useState<string | null>(null);
   const [mcpLoading, setMcpLoading] = useState(false);
   const [mcpLastRefresh, setMcpLastRefresh] = useState<{ refreshed: number; tools: string[] } | null>(null);
+  const [mcpError, setMcpError] = useState<string | null>(null);
 
   function addToast(kind: ToastEntry["kind"], message: string) {
     setToasts((current) => [...current.slice(-4), createToast(kind, message)]);
   }
 
+  function getErrorMessage(reason: unknown): string {
+    return reason instanceof Error ? reason.message : String(reason);
+  }
+
   function toastError(reason: unknown) {
-    addToast("error", reason instanceof Error ? reason.message : String(reason));
+    addToast("error", getErrorMessage(reason));
   }
 
   function dismissToast(id: string) {
@@ -3402,7 +3407,9 @@ export function App() {
     try {
       const result = await runtimeClient.listMcpServers();
       setMcpServers(result.servers);
+      setMcpError(null);
     } catch (reason) {
+      setMcpError(getErrorMessage(reason));
       toastError(reason);
     } finally {
       setMcpLoading(false);
@@ -3425,9 +3432,12 @@ export function App() {
         result.server,
         ...current.filter((server) => server.id !== result.server.id),
       ]);
+      setMcpError(null);
       addToast("success", "MCP server created");
     } catch (reason) {
+      setMcpError(getErrorMessage(reason));
       toastError(reason);
+      throw reason;
     } finally {
       setMcpLoading(false);
     }
@@ -3449,9 +3459,12 @@ export function App() {
       setMcpServers((current) =>
         current.map((server) => (server.id === result.server.id ? result.server : server)),
       );
+      setMcpError(null);
       addToast("success", "MCP server updated");
     } catch (reason) {
+      setMcpError(getErrorMessage(reason));
       toastError(reason);
+      throw reason;
     } finally {
       setMcpBusyServerId(null);
     }
@@ -3465,8 +3478,10 @@ export function App() {
       setMcpServers((current) =>
         current.map((server) => (server.id === result.server.id ? result.server : server)),
       );
+      setMcpError(null);
       addToast("success", enabled ? "MCP server enabled" : "MCP server disabled");
     } catch (reason) {
+      setMcpError(getErrorMessage(reason));
       toastError(reason);
     } finally {
       setMcpBusyServerId(null);
@@ -3480,8 +3495,10 @@ export function App() {
       const result = await runtimeClient.refreshMcpTools(serverId ? { serverId } : {});
       setMcpLastRefresh(result);
       await refreshMcpServers();
+      setMcpError(null);
       addToast("success", `Refreshed ${result.refreshed} MCP tools`);
     } catch (reason) {
+      setMcpError(getErrorMessage(reason));
       toastError(reason);
     } finally {
       setMcpBusyServerId(null);
@@ -3494,8 +3511,10 @@ export function App() {
     try {
       await runtimeClient.deleteMcpServer({ serverId });
       setMcpServers((current) => current.filter((server) => server.id !== serverId));
+      setMcpError(null);
       addToast("success", "MCP server deleted");
     } catch (reason) {
+      setMcpError(getErrorMessage(reason));
       toastError(reason);
     } finally {
       setMcpBusyServerId(null);
@@ -4407,12 +4426,14 @@ export function App() {
           loading={mcpLoading}
           busyServerId={mcpBusyServerId}
           lastRefresh={mcpLastRefresh}
+          errorMessage={mcpError}
           onRefreshServers={refreshMcpServers}
           onCreateServer={handleCreateMcpServer}
           onUpdateServer={handleUpdateMcpServer}
           onToggleServer={handleToggleMcpServer}
           onRefreshTools={handleRefreshMcpTools}
           onDeleteServer={handleDeleteMcpServer}
+          onDismissError={() => setMcpError(null)}
         />
       );
     }

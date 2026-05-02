@@ -107,7 +107,7 @@ P1 read-only or not-yet-defined areas:
 | Enable/disable server | Real | `app/src/App.tsx` | Calls `runtimeClient.updateMcpServer`. |
 | Refresh tools | Real | `app/src/App.tsx` | Calls `runtimeClient.refreshMcpTools`. |
 | Delete server | Real | `app/src/App.tsx` | Calls `runtimeClient.deleteMcpServer`. |
-| Diagnostics visibility | Unknown | `McpWorkspace.tsx` | UI exists; live error persistence needs QA. |
+| Diagnostics visibility | Real | `App.tsx`, `McpWorkspace.tsx` | MCP failures persist in a visible banner and can be dismissed without losing the current form draft. |
 
 ## Settings
 

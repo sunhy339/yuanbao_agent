@@ -258,6 +258,7 @@ export interface SessionWorkspaceProps {
   onReject?(approvalId: string): void | Promise<void>;
   onLoadPatch?(patchId: string): void | Promise<void>;
   onCopyPatchPath?(patchId: string, path: string): void | Promise<void>;
+  onCopyRuntimeText?(label: string, text: string): void | Promise<void>;
   onRefreshCommandJob?(commandId: string): void | Promise<void>;
   onStopCommandJob?(commandId: string): void | Promise<void>;
   onRefreshTask?(): void | Promise<void>;
@@ -1219,6 +1220,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
   onReject,
   onLoadPatch,
   onCopyPatchPath,
+  onCopyRuntimeText,
   onRefreshCommandJob,
   onStopCommandJob,
   busyId,
@@ -1228,6 +1230,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
   onReject?(approvalId: string): void | Promise<void>;
   onLoadPatch?(patchId: string): void | Promise<void>;
   onCopyPatchPath?(patchId: string, path: string): void | Promise<void>;
+  onCopyRuntimeText?(label: string, text: string): void | Promise<void>;
   onRefreshCommandJob?(commandId: string): void | Promise<void>;
   onStopCommandJob?(commandId: string): void | Promise<void>;
   busyId?: string | null;
@@ -1244,7 +1247,10 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
     item.kind === "command" &&
     Boolean(item.sourceId && onStopCommandJob && ["running", "started"].includes(item.status ?? ""));
   const isBusy = item.sourceId ? busyId === item.sourceId : false;
-  const hasCommandActions = canRefreshCommand || canStopCommand;
+  const commandOutput = item.kind === "command" ? buildCommandOutput(item) : "";
+  const canCopyCommandOutput = Boolean(item.kind === "command" && onCopyRuntimeText && commandOutput.trim());
+  const canCopyTraceDetail = Boolean(item.kind === "trace" && onCopyRuntimeText && item.code?.trim());
+  const hasCommandActions = canRefreshCommand || canStopCommand || canCopyCommandOutput;
 
   if (item.kind === "approval" && item.sourceId) {
     return (
@@ -1315,11 +1321,22 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
             id: item.sourceId ?? item.id,
             command: item.title,
             status: item.status ?? "recorded",
-            stdout: buildCommandOutput(item),
+            stdout: commandOutput,
           }}
         />
         {hasCommandActions ? (
           <div className="runtime-event-actions">
+            {canCopyCommandOutput ? (
+              <Button
+                size="xs"
+                variant="secondary"
+                onClick={() => {
+                  void onCopyRuntimeText?.("Command output", commandOutput);
+                }}
+              >
+                Copy output
+              </Button>
+            ) : null}
             {canRefreshCommand ? (
               <Button
                 size="xs"
@@ -1399,6 +1416,19 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
         ) : null}
         {expanded && item.code ? (
           <div className="runtime-trace-row-detail">
+            {canCopyTraceDetail ? (
+              <div className="runtime-trace-row-actions">
+                <Button
+                  size="xs"
+                  variant="secondary"
+                  onClick={() => {
+                    void onCopyRuntimeText?.("Trace detail", item.code ?? "");
+                  }}
+                >
+                  Copy detail
+                </Button>
+              </div>
+            ) : null}
             <pre>{item.code}</pre>
           </div>
         ) : null}
@@ -1609,6 +1639,7 @@ const ConversationActivity = memo(function ConversationActivity({
   onReject,
   onLoadPatch,
   onCopyPatchPath,
+  onCopyRuntimeText,
   onRefreshCommandJob,
   onStopCommandJob,
   busyId,
@@ -1618,6 +1649,7 @@ const ConversationActivity = memo(function ConversationActivity({
   onReject?(approvalId: string): void | Promise<void>;
   onLoadPatch?(patchId: string): void | Promise<void>;
   onCopyPatchPath?(patchId: string, path: string): void | Promise<void>;
+  onCopyRuntimeText?(label: string, text: string): void | Promise<void>;
   onRefreshCommandJob?(commandId: string): void | Promise<void>;
   onStopCommandJob?(commandId: string): void | Promise<void>;
   busyId?: string | null;
@@ -1635,6 +1667,7 @@ const ConversationActivity = memo(function ConversationActivity({
             onReject={onReject}
             onLoadPatch={onLoadPatch}
             onCopyPatchPath={onCopyPatchPath}
+            onCopyRuntimeText={onCopyRuntimeText}
             onRefreshCommandJob={onRefreshCommandJob}
             onStopCommandJob={onStopCommandJob}
             busyId={busyId}
@@ -1659,6 +1692,7 @@ export function SessionWorkspace({
   onReject,
   onLoadPatch,
   onCopyPatchPath,
+  onCopyRuntimeText,
   onRefreshCommandJob,
   onStopCommandJob,
   onRefreshTask,
@@ -1818,6 +1852,7 @@ export function SessionWorkspace({
                   onReject={onReject}
                   onLoadPatch={onLoadPatch}
                   onCopyPatchPath={onCopyPatchPath}
+                  onCopyRuntimeText={onCopyRuntimeText}
                   onRefreshCommandJob={onRefreshCommandJob}
                   onStopCommandJob={onStopCommandJob}
                   busyId={busyId}

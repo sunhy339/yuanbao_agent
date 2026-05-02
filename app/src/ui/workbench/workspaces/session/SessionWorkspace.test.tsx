@@ -242,6 +242,53 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText(/"command":"npm test"/)).not.toBeInTheDocument();
   });
 
+  it("copies command output and trace detail through explicit controls", async () => {
+    const user = userEvent.setup();
+    const onCopyRuntimeText = vi.fn();
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Run diagnostics", createdAt: 1 }]}
+        toolCalls={[
+          {
+            id: "tool_1",
+            toolName: "run_command",
+            status: "failed",
+            resultSummary: "Command failed with exit 1.",
+            rawInput: '{"command":"npm test","cwd":"app"}',
+            time: 2,
+          },
+        ]}
+        traces={[
+          {
+            id: "trace_error",
+            type: "runtime.error",
+            source: "runtime",
+            status: "failed",
+            stderr: "Command process exited unexpectedly.",
+          },
+        ]}
+        onCopyRuntimeText={onCopyRuntimeText}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Copy output" }));
+    expect(onCopyRuntimeText).toHaveBeenCalledWith(
+      "Command output",
+      expect.stringContaining("Command failed with exit 1."),
+    );
+
+    await user.click(screen.getByRole("button", { name: /trace Runtime Error failed/i }));
+    await user.click(screen.getByRole("button", { name: "Copy detail" }));
+
+    expect(onCopyRuntimeText).toHaveBeenCalledWith(
+      "Trace detail",
+      expect.stringContaining("Command process exited unexpectedly."),
+    );
+  });
+
   it("does not expose raw tool JSON to users (hidden by design)", async () => {
     const user = userEvent.setup();
     render(

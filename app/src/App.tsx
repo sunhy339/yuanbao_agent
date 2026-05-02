@@ -3392,6 +3392,15 @@ export function App() {
     }
   }
 
+  async function handleCopyRuntimeText(label: string, text: string) {
+    try {
+      await navigator.clipboard?.writeText(text);
+      addToast("success", `${label} copied`);
+    } catch (reason) {
+      toastError(reason);
+    }
+  }
+
   function handleRecheckComputerUse() {
     const status = buildComputerUseStatus();
     setComputerUseSettings((current) => ({
@@ -4389,8 +4398,9 @@ export function App() {
           onReject={(approvalId) => handleApprovalSubmit(approvalId, "rejected")}
           onLoadPatch={handleLoadPatchDiff}
           onCopyPatchPath={(_patchId, path) => {
-            void navigator.clipboard?.writeText(path);
+            void handleCopyRuntimeText("Patch path", path);
           }}
+          onCopyRuntimeText={handleCopyRuntimeText}
           onRefreshCommandJob={handleRefreshCommandJob}
           onStopCommandJob={handleStopCommandJob}
           onRefreshTask={handleRefreshTask}

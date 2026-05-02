@@ -1310,7 +1310,7 @@ def test_graceful_shutdown_rejects_new_tasks(runtime_harness: Any, tmp_path: Pat
         {"sessionId": session["id"], "content": "hello"},
     )
     assert "error" in response
-    assert "shutting down" in response["error"]["message"].lower()
+    assert "服务正在关闭" in response["error"]["message"]
 
 
 def test_graceful_shutdown_cancels_running_tasks(runtime_harness: Any, tmp_path: Path) -> None:

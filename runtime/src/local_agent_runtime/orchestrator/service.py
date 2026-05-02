@@ -557,7 +557,7 @@ class Orchestrator:
 
     def send_message(self, params: dict[str, Any]) -> dict[str, Any]:
         if self._shutting_down:
-            raise RuntimeError("Server is shutting down, new tasks are not accepted")
+            raise RuntimeError("服务正在关闭，暂不接受新任务")
         session = self._store.require_session(params["sessionId"])
         goal = params["content"]
 
@@ -913,7 +913,7 @@ class Orchestrator:
                 self._publish(
                     session_id=session_id, task=task,
                     event_type="task.waiting_approval",
-                    payload={"status": "waiting_approval", "detail": "Plan requires approval before execution."},
+                    payload={"status": "waiting_approval", "detail": "执行前需要先审批计划。"},
                 )
                 self._tracer.end_span(plan_span.span_id, status="ok", attributes={"status": "waiting_plan_approval"})
                 return {"status": "waiting_approval"}
@@ -1108,7 +1108,7 @@ class Orchestrator:
         self._publish(
             session_id=session_id, task=task,
             event_type="task.waiting_approval",
-            payload={"status": "waiting_approval", "detail": "Plan requires approval before execution."},
+            payload={"status": "waiting_approval", "detail": "执行前需要先审批计划。"},
         )
         self._tracer.end_span(span.span_id, status="ok", attributes={"status": "waiting_plan_approval"})
         return {"status": "waiting_approval"}
@@ -2885,7 +2885,7 @@ class Orchestrator:
             self._store.update_task(
                 task_id=task["id"],
                 status="failed",
-                summary="Task interrupted by process restart",
+                summary="任务因进程重启而中断",
                 error_code="ORPHAN_CLEANUP",
             )
             self._publish(
@@ -4421,9 +4421,9 @@ class Orchestrator:
                 event_type="task.waiting_approval",
                 payload={
                     "status": "waiting_approval",
-                    "detail": "Patch requires approval before execution."
+                    "detail": "执行前需要先审批补丁。"
                     if tool_spec["name"] == "apply_patch"
-                    else "Command requires approval before execution.",
+                    else "执行前需要先审批命令。",
                 },
             )
             tool_result = {

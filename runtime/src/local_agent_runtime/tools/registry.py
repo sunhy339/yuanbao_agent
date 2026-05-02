@@ -1080,7 +1080,7 @@ class ToolRegistry:
             if not self.check_rate_limit(name, session_id):
                 limit = self._schema_for(name).get("metadata", {}).get("rate_limit")
                 raise ToolRateLimitError(
-                    f"Tool '{name}' rate limit ({limit}) exceeded for session {session_id}"
+                    f"工具 '{name}' 在会话 {session_id} 中已超过调用次数限制（{limit}）"
                 )
             self._call_counts.setdefault(session_id, {})[name] = \
                 self._call_counts.get(session_id, {}).get(name, 0) + 1

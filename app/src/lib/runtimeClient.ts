@@ -1630,7 +1630,7 @@ export class RuntimeClient {
     const result = await withTimeout(
       invokePayloadOrReject<ProviderTestResult>("provider_test", payload),
       12_000,
-      "供应商测试超时。请检查 API key、Base URL 和网络连接。",
+          "供应商测试超时。请检查 API 密钥、基础 URL 和网络连接。",
     );
     rememberProviderTestResult(result);
     return result;

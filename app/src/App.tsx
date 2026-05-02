@@ -2769,18 +2769,18 @@ export function App() {
       throw new Error("必须填写供应商模型。");
     }
     if (providerSettings.mode === "openai-compatible" && !baseUrl) {
-      throw new Error("OpenAI 兼容模式必须填写 Base URL。");
+      throw new Error("OpenAI 兼容模式必须填写基础 URL。");
     }
 
     const temperature = parseProviderNumber(providerSettings.temperature, "温度", {
       min: 0,
       max: 2,
     });
-    const maxTokens = parseProviderNumber(providerSettings.maxTokens, "最大输出 tokens", {
+    const maxTokens = parseProviderNumber(providerSettings.maxTokens, "最大输出令牌", {
       integer: true,
       min: 1,
     });
-    const maxContextTokens = parseProviderNumber(providerSettings.maxContextTokens, "最大上下文 tokens", {
+    const maxContextTokens = parseProviderNumber(providerSettings.maxContextTokens, "最大上下文令牌", {
       integer: true,
       min: 1,
     });
@@ -3870,10 +3870,10 @@ export function App() {
       case "config": {
         const configLines: string[] = [
           `**模式：** ${formatRuntimeModeLabel(providerSettings.mode)}`,
-          `**Base URL：** ${providerSettings.baseUrl || "默认"}`,
-          `**模型：** ${providerSettings.model || "(default)"}`,
+          `**基础 URL：** ${providerSettings.baseUrl || "默认"}`,
+          `**模型：** ${providerSettings.model || "(默认)"}`,
           `**温度：** ${providerSettings.temperature}`,
-          `**最大输出 tokens：** ${providerSettings.maxTokens}`,
+          `**最大输出令牌：** ${providerSettings.maxTokens}`,
           `**最大上下文：** ${providerSettings.maxContextTokens}`,
           `**超时：** ${providerSettings.timeout}s`,
         ];

@@ -474,7 +474,7 @@ function buildProviderJson(draft: ProviderFormDraft) {
   return JSON.stringify(
     {
       env: {
-        LOCAL_AGENT_PROVIDER_BASE_URL: draft.endpoint || "(供应商 Base URL)",
+        LOCAL_AGENT_PROVIDER_BASE_URL: draft.endpoint || "(供应商基础 URL)",
         LOCAL_AGENT_PROVIDER_API_FORMAT: draft.apiFormat,
         LOCAL_AGENT_PROVIDER_MODEL: draft.mainModel || "(模型 ID)",
         LOCAL_AGENT_PROVIDER_API_KEY: draft.apiKey ? "(已在表单中提供)" : "(在运行时环境中设置)",

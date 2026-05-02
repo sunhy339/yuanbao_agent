@@ -338,6 +338,15 @@ export interface McpToolRefreshResult {
   tools: string[];
 }
 
+export interface SkillUsageRecord {
+  id: Identifier;
+  taskId: Identifier;
+  sessionId: Identifier;
+  skillId: Identifier;
+  triggeredAt: number;
+  triggeredBy?: string;
+}
+
 export interface SkillPresetRecord {
   id: Identifier;
   name: string;

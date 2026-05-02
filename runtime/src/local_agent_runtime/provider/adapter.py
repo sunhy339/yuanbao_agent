@@ -50,7 +50,8 @@ class ProviderAdapter:
             # Cache lookup
             if self._cache:
                 from .cache import LLMCache
-                cache_key = LLMCache.hash_prompt(messages, tools)
+                model = context.get("model") if context else None
+                cache_key = LLMCache.hash_prompt(messages, tools, model=model)
                 cached = self._cache.get(cache_key)
                 if cached is not None:
                     return json.loads(cached)
@@ -77,7 +78,8 @@ class ProviderAdapter:
             # Cache write
             if self._cache:
                 from .cache import LLMCache
-                cache_key = LLMCache.hash_prompt(messages, tools)
+                model = context.get("model") if context else None
+                cache_key = LLMCache.hash_prompt(messages, tools, model=model)
                 self._cache.put(cache_key, json.dumps(response))
 
             return response

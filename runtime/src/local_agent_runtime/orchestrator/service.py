@@ -21,7 +21,7 @@ from ..policy.guard import PolicyGuard
 from ..provider.adapter import ProviderAdapter
 from ..provider.cache import LLMCache
 from ..services.collaboration_service import CollaborationService
-from ..services.command_background import cancel_background_commands
+from ..services.command_background import cancel_background_command, cancel_background_commands, get_background_command_service
 from ..services.session_service import SessionService
 from ..services.subagent_service import SubagentService
 from ..services.worker_budget import WorkerBudget, WorkerBudgetExceededError
@@ -87,6 +87,7 @@ class Orchestrator:
         self._swarm = SwarmOrchestrator(provider=provider, subagent_service=self._subagent_service)
         self._pending_react_tasks: dict[str, dict[str, Any]] = {}
         self._tracer = Tracer(store)
+        self._shutting_down = False
         self._cleanup_orphan_tasks()
 
     @staticmethod
@@ -360,6 +361,17 @@ class Orchestrator:
     def skill_delete(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._store.delete_skill(params)
 
+    def skill_usage(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._store.list_skill_usage(params)
+
+    def _record_skill_usage(
+        self, *, task_id: str, session_id: str, skill_id: str | None,
+    ) -> None:
+        if skill_id and hasattr(self._store, "record_skill_usage"):
+            self._store.record_skill_usage(
+                task_id=task_id, session_id=session_id, skill_id=skill_id,
+            )
+
     # ------------------------------------------------------------------
     # MCP Server management
     # ------------------------------------------------------------------
@@ -492,7 +504,60 @@ class Orchestrator:
         """Clean up all MCP server connections."""
         self._mcp_manager.shutdown()
 
+    def graceful_shutdown(self, timeout: float = 10.0) -> None:
+        """Gracefully shut down the orchestrator.
+
+        1. Reject new tasks.
+        2. Wait for running tasks to reach a pause point.
+        3. Cancel tasks that didn't stop in time.
+        4. Cancel all background commands.
+        5. Shut down MCP connections.
+        """
+        import time as _time
+
+        self._shutting_down = True
+        logger.info("Graceful shutdown initiated — rejecting new tasks")
+
+        # Wait for in-flight tasks to finish or pause.
+        deadline = _time.monotonic() + timeout
+        while _time.monotonic() < deadline:
+            if not hasattr(self._store, "list_tasks_by_status"):
+                break
+            running = self._store.list_tasks_by_status(["running"])
+            if not running:
+                break
+            logger.debug(
+                "Waiting for %d running tasks to complete...", len(running),
+            )
+            _time.sleep(0.1)
+
+        # Cancel any tasks still running after the deadline.
+        if hasattr(self._store, "list_tasks_by_status"):
+            for task in self._store.list_tasks_by_status(["running"]):
+                logger.info("Force-cancelling task %s after shutdown timeout", task["id"])
+                try:
+                    self.cancel_task({"taskId": task["id"]})
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # Cancel all background commands.
+        try:
+            db_path = getattr(self._store, "database_path", ":memory:")
+            service = get_background_command_service(db_path)
+            for cmd_id in service.active_command_ids():
+                try:
+                    service.cancel_command(cmd_id)
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+
+        self.shutdown_mcp()
+        logger.info("Graceful shutdown complete")
+
     def send_message(self, params: dict[str, Any]) -> dict[str, Any]:
+        if self._shutting_down:
+            raise RuntimeError("Server is shutting down, new tasks are not accepted")
         session = self._store.require_session(params["sessionId"])
         goal = params["content"]
 
@@ -537,6 +602,11 @@ class Orchestrator:
                 routing=routing_dict,
                 skill_id=routing.skill_id,
             )
+            self._record_skill_usage(
+                task_id=runtime_task["id"],
+                session_id=session["id"],
+                skill_id=routing.skill_id,
+            )
             return {"task": runtime_task}
 
         context = self._context_builder.build(session_id=session["id"], goal=goal, skill_id=routing.skill_id)
@@ -566,6 +636,12 @@ class Orchestrator:
             content=goal,
         )
         context = self._context_with_task_focus(context, runtime_task)
+
+        self._record_skill_usage(
+            task_id=runtime_task["id"],
+            session_id=session["id"],
+            skill_id=routing.skill_id,
+        )
 
         self._publish(
             session_id=session["id"],
@@ -608,17 +684,23 @@ class Orchestrator:
         if routing.get("enable_planning"):
             orch_mode = self._resolve_orchestration_mode(strategy)
             if orch_mode == OrchestrationMode.SUPERVISOR:
-                return self._execute_with_supervisor(
+                result = self._execute_with_supervisor(
                     session_id=session_id, task=task, goal=goal, context=context,
                 )
+                if result.get("status") in ("paused", "waiting_approval"):
+                    return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
+                return result
             if orch_mode == OrchestrationMode.SWARM:
-                return self._execute_with_swarm(
+                result = self._execute_with_swarm(
                     session_id=session_id, task=task, goal=goal, context=context,
                 )
+                if result.get("status") in ("paused", "waiting_approval"):
+                    return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
+                return result
             result = self._execute_with_planning(
                 session_id=session_id, task=task, goal=goal, context=context,
             )
-            if result.get("status") == "paused":
+            if result.get("status") in ("paused", "waiting_approval"):
                 return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
             return result
         # --- REACT_FAST: simplified path, skip minimal_loop and reflection ---
@@ -777,12 +859,72 @@ class Orchestrator:
                 },
             )
 
+            # 1b. Plan approval gate (strict mode)
+            config = self._store.get_config({})["config"]
+            approval_mode = config.get("policy", {}).get("approvalMode", "on_write_or_command")
+            if approval_mode == "strict":
+                plan_summary = [f"- {s.id}: {s.title}" for s in plan.subtasks]
+                approval = self._store.create_approval(
+                    task_id=task["id"],
+                    kind="plan",
+                    request={
+                        "goal": goal,
+                        "subtaskCount": len(plan.subtasks),
+                        "subtasks": plan_summary,
+                        "executionOrder": plan.execution_order,
+                    },
+                )
+                plan_data = {
+                    "subtasks": [
+                        {"id": s.id, "title": s.title, "description": s.description,
+                         "dependencies": s.dependencies, "status": s.status, "result": s.result}
+                        for s in plan.subtasks
+                    ],
+                    "dag": plan.dag,
+                    "execution_order": plan.execution_order,
+                }
+                if hasattr(self._store, "upsert_pending_dag_state"):
+                    self._store.upsert_pending_dag_state(
+                        task_id=task["id"],
+                        session_id=session_id,
+                        goal=goal,
+                        context=context,
+                        plan_json=json.dumps(plan_data, ensure_ascii=False),
+                        completed_ids=[],
+                        failed_ids=[],
+                        results={},
+                    )
+                self._store.update_task_status(task_id=task["id"], status="waiting_approval")
+                self._publish(
+                    session_id=session_id, task=task,
+                    event_type="approval.requested",
+                    payload={
+                        "approvalId": approval["id"],
+                        "taskId": task["id"],
+                        "kind": "plan",
+                        "request": {
+                            "goal": goal,
+                            "subtaskCount": len(plan.subtasks),
+                            "subtasks": plan_summary,
+                            "executionOrder": plan.execution_order,
+                        },
+                    },
+                )
+                self._publish(
+                    session_id=session_id, task=task,
+                    event_type="task.waiting_approval",
+                    payload={"status": "waiting_approval", "detail": "Plan requires approval before execution."},
+                )
+                self._tracer.end_span(plan_span.span_id, status="ok", attributes={"status": "waiting_plan_approval"})
+                return {"status": "waiting_approval"}
+
             # 2. Execute subtasks
             execution = self._dag_executor.execute(
                 plan,
                 session_id=session_id,
                 parent_task_id=task["id"],
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
+                tracer=self._tracer,
             )
 
             # Handle DAG cooperative pause
@@ -896,6 +1038,81 @@ class Orchestrator:
             return OrchestrationMode.SWARM
         return OrchestrationMode.DAG
 
+    def _check_plan_approval(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+        orchestration_mode: str,
+        plan: Any,
+        span: Any,
+    ) -> dict[str, Any] | None:
+        """Check if plan approval is required. Returns response dict if waiting, None if okay to proceed."""
+        config = self._store.get_config({})["config"]
+        approval_mode = config.get("policy", {}).get("approvalMode", "on_write_or_command")
+        if approval_mode != "strict":
+            return None
+
+        plan_summary = [f"- {s.id}: {s.title}" for s in plan.subtasks]
+        approval = self._store.create_approval(
+            task_id=task["id"],
+            kind="plan",
+            request={
+                "goal": goal,
+                "subtaskCount": len(plan.subtasks),
+                "subtasks": plan_summary,
+                "executionOrder": plan.execution_order,
+                "orchestrationMode": orchestration_mode,
+            },
+        )
+        plan_data = {
+            "subtasks": [
+                {"id": s.id, "title": s.title, "description": s.description,
+                 "dependencies": s.dependencies, "status": s.status, "result": s.result}
+                for s in plan.subtasks
+            ],
+            "dag": plan.dag,
+            "execution_order": plan.execution_order,
+        }
+        context_with_mode = {**context, "orchestration_mode": orchestration_mode}
+        if hasattr(self._store, "upsert_pending_dag_state"):
+            self._store.upsert_pending_dag_state(
+                task_id=task["id"],
+                session_id=session_id,
+                goal=goal,
+                context=context_with_mode,
+                plan_json=json.dumps(plan_data, ensure_ascii=False),
+                completed_ids=[],
+                failed_ids=[],
+                results={},
+            )
+        self._store.update_task_status(task_id=task["id"], status="waiting_approval")
+        self._publish(
+            session_id=session_id, task=task,
+            event_type="approval.requested",
+            payload={
+                "approvalId": approval["id"],
+                "taskId": task["id"],
+                "kind": "plan",
+                "request": {
+                    "goal": goal,
+                    "subtaskCount": len(plan.subtasks),
+                    "subtasks": plan_summary,
+                    "executionOrder": plan.execution_order,
+                    "orchestrationMode": orchestration_mode,
+                },
+            },
+        )
+        self._publish(
+            session_id=session_id, task=task,
+            event_type="task.waiting_approval",
+            payload={"status": "waiting_approval", "detail": "Plan requires approval before execution."},
+        )
+        self._tracer.end_span(span.span_id, status="ok", attributes={"status": "waiting_plan_approval"})
+        return {"status": "waiting_approval"}
+
     def _execute_with_supervisor(
         self,
         *,
@@ -905,12 +1122,38 @@ class Orchestrator:
         context: dict[str, Any],
     ) -> dict[str, Any]:
         """Supervisor mode: decompose → execute with review → synthesize."""
+        span = self._tracer.start_span(
+            "supervisor_execute",
+            trace_id=task.get("id", ""),
+            attributes={"goal": goal[:200]},
+        )
         try:
             self._publish(
                 session_id=session_id, task=task,
                 event_type="task.planning.started",
                 payload={"goal": goal, "mode": "supervisor"},
             )
+
+            # Plan approval gate (strict mode)
+            plan_context = json.dumps(
+                context.get("tool_results", []), ensure_ascii=False,
+            )[:2000]
+            plan = self._decomposer.decompose(goal=goal, context=plan_context)
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.planning.decomposed",
+                payload={
+                    "subtaskCount": len(plan.subtasks),
+                    "executionOrder": plan.execution_order,
+                    "mode": "supervisor",
+                },
+            )
+            approval_response = self._check_plan_approval(
+                session_id=session_id, task=task, goal=goal, context=context,
+                orchestration_mode="supervisor", plan=plan, span=span,
+            )
+            if approval_response is not None:
+                return approval_response
 
             result = self._supervisor.execute(
                 goal, context,
@@ -919,6 +1162,7 @@ class Orchestrator:
             )
 
             if result.paused:
+                self._tracer.end_span(span.span_id, status="ok", attributes={"paused": True})
                 return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
 
             self._publish(
@@ -927,6 +1171,7 @@ class Orchestrator:
                 payload={"mode": "supervisor", "reviews": result.review_count},
             )
 
+            self._tracer.end_span(span.span_id, status="ok", attributes={"reviews": result.review_count})
             return {
                 "task": self._complete_task(
                     session_id=session_id,
@@ -937,6 +1182,7 @@ class Orchestrator:
             }
         except Exception as exc:  # noqa: BLE001
             logger.error("Supervisor execution failed for task=%s: %s", task["id"], exc, exc_info=True)
+            self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
             return {
                 "task": self._fail_task(
                     session_id=session_id,
@@ -955,12 +1201,38 @@ class Orchestrator:
         context: dict[str, Any],
     ) -> dict[str, Any]:
         """Swarm mode: decompose → execute with handoff → synthesize."""
+        span = self._tracer.start_span(
+            "swarm_execute",
+            trace_id=task.get("id", ""),
+            attributes={"goal": goal[:200]},
+        )
         try:
             self._publish(
                 session_id=session_id, task=task,
                 event_type="task.planning.started",
                 payload={"goal": goal, "mode": "swarm"},
             )
+
+            # Plan approval gate (strict mode)
+            plan_context = json.dumps(
+                context.get("tool_results", []), ensure_ascii=False,
+            )[:2000]
+            plan = self._decomposer.decompose(goal=goal, context=plan_context)
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.planning.decomposed",
+                payload={
+                    "subtaskCount": len(plan.subtasks),
+                    "executionOrder": plan.execution_order,
+                    "mode": "swarm",
+                },
+            )
+            approval_response = self._check_plan_approval(
+                session_id=session_id, task=task, goal=goal, context=context,
+                orchestration_mode="swarm", plan=plan, span=span,
+            )
+            if approval_response is not None:
+                return approval_response
 
             result = self._swarm.execute(
                 goal, context,
@@ -969,6 +1241,7 @@ class Orchestrator:
             )
 
             if result.paused:
+                self._tracer.end_span(span.span_id, status="ok", attributes={"paused": True})
                 return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
 
             self._publish(
@@ -977,6 +1250,7 @@ class Orchestrator:
                 payload={"mode": "swarm", "handoffs": result.handoff_count},
             )
 
+            self._tracer.end_span(span.span_id, status="ok", attributes={"handoffs": result.handoff_count})
             return {
                 "task": self._complete_task(
                     session_id=session_id,
@@ -987,6 +1261,7 @@ class Orchestrator:
             }
         except Exception as exc:  # noqa: BLE001
             logger.error("Swarm execution failed for task=%s: %s", task["id"], exc, exc_info=True)
+            self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
             return {
                 "task": self._fail_task(
                     session_id=session_id,
@@ -1231,6 +1506,11 @@ class Orchestrator:
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt is required")
 
+        span = self._tracer.start_span(
+            "child_task",
+            attributes={"prompt": prompt[:200]},
+        )
+
         session = self._store.require_session(session_id)
         budget = WorkerBudget.from_metadata(params.get("budget"), params)
         context = self._context_builder.build(session_id=session["id"], goal=prompt.strip())
@@ -1269,6 +1549,7 @@ class Orchestrator:
                 budget=budget,
             )
             if react_result["status"] == "waiting_approval":
+                self._tracer.end_span(span.span_id, status="ok", attributes={"status": "waiting_approval"})
                 return self._waiting_child_task_response(
                     task=runtime_task,
                     summary="Child worker is waiting for parent approval.",
@@ -1282,6 +1563,7 @@ class Orchestrator:
                     context=context,
                     tool_results=react_result.get("tool_results", []),
                 )
+                self._tracer.end_span(span.span_id, status="ok")
                 return {
                     "status": "completed",
                     "task": completed_task,
@@ -1297,6 +1579,7 @@ class Orchestrator:
                 budget=budget,
             )
             if runtime_task["status"] == "waiting_approval":
+                self._tracer.end_span(span.span_id, status="ok", attributes={"status": "waiting_approval"})
                 return self._waiting_child_task_response(
                     task=runtime_task,
                     summary="Child worker is waiting for parent approval.",
@@ -1314,6 +1597,7 @@ class Orchestrator:
                 context=context,
                 tool_results=tool_results,
             )
+            self._tracer.end_span(span.span_id, status="ok")
             return {
                 "status": "completed",
                 "task": completed_task,
@@ -1322,6 +1606,7 @@ class Orchestrator:
             }
         except Exception as exc:  # noqa: BLE001
             logger.error("Worker task execution failed: %s", exc, exc_info=True)
+            self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
             self._fail_task(
                 session_id=session["id"],
                 task=runtime_task,
@@ -2359,6 +2644,7 @@ class Orchestrator:
         task = self._store.get_task({"taskId": params["taskId"]})["task"]
         if task["status"] not in {"running", "waiting_approval"}:
             return {"task": task}
+        span = self._tracer.start_span("task_pause", trace_id=task.get("id", ""))
         paused_task = self._store.update_task(task_id=task["id"], status="paused")
         self._publish(
             session_id=paused_task["sessionId"],
@@ -2366,12 +2652,15 @@ class Orchestrator:
             event_type="task.paused",
             payload={"status": paused_task["status"], "previousStatus": task["status"]},
         )
+        self._tracer.end_span(span.span_id, status="ok")
         return {"task": paused_task}
 
     def resume_task(self, params: dict[str, Any]) -> dict[str, Any]:
         task = self._store.get_task({"taskId": params["taskId"]})["task"]
         if task["status"] != "paused":
             return {"task": task}
+
+        span = self._tracer.start_span("task_resume", trace_id=task.get("id", ""))
 
         # Check DAG paused state first
         dag_state = self._load_pending_dag_state(task["id"])
@@ -2384,6 +2673,7 @@ class Orchestrator:
                 payload={"status": "running", "detail": "Resuming paused DAG execution."},
             )
             resumed_task = self._resume_dag_execution(task=running_task, state=dag_state)
+            self._tracer.end_span(span.span_id, status="ok", attributes={"path": "dag"})
             return {"task": resumed_task}
 
         pending_state = self._load_pending_react_state(task["id"])
@@ -2399,6 +2689,7 @@ class Orchestrator:
                     payload={"status": "running", "detail": "Resuming cooperative paused ReAct task."},
                 )
                 resumed_task = self._resume_cooperative_react(task=running_task, state=pending_state)
+                self._tracer.end_span(span.span_id, status="ok", attributes={"path": "react_cooperative"})
                 return {"task": resumed_task}
 
             approval = self._latest_approval_for_task(task["id"])
@@ -2411,6 +2702,7 @@ class Orchestrator:
                     payload={"status": "running", "detail": "Resuming approved pending ReAct task."},
                 )
                 resumed_task = self._resume_react_after_approval(task=running_task, approval=approval)
+                self._tracer.end_span(span.span_id, status="ok", attributes={"path": "react_approved"})
                 return {"task": resumed_task}
             if approval is not None and approval.get("decision") == "rejected":
                 self._publish(
@@ -2425,6 +2717,7 @@ class Orchestrator:
                     summary="Approval was rejected by the user.",
                     error_code="APPROVAL_REJECTED",
                 )
+                self._tracer.end_span(span.span_id, status="ok", attributes={"path": "react_rejected"})
                 return {"task": failed_task}
 
             waiting_task = self._store.update_task_status(task_id=task["id"], status="waiting_approval")
@@ -2434,6 +2727,7 @@ class Orchestrator:
                 event_type="task.resumed",
                 payload={"status": "waiting_approval", "detail": "Pending ReAct task is waiting for approval."},
             )
+            self._tracer.end_span(span.span_id, status="ok", attributes={"path": "react_pending_approval"})
             return {"task": waiting_task}
 
         running_task = self._store.update_task_status(task_id=task["id"], status="running")
@@ -2443,6 +2737,7 @@ class Orchestrator:
             event_type="task.resumed",
             payload={"status": running_task["status"]},
         )
+        self._tracer.end_span(span.span_id, status="ok", attributes={"path": "fallback"})
         return {"task": running_task}
 
     def _resume_cooperative_react(self, task: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
@@ -2521,6 +2816,7 @@ class Orchestrator:
                 completed_ids=set(state["completed"]),
                 failed_ids=set(state["failed"]),
                 prior_results=state["results"],
+                tracer=self._tracer,
             )
 
             if execution.get("paused"):
@@ -2576,10 +2872,15 @@ class Orchestrator:
             )
 
     def _cleanup_orphan_tasks(self) -> None:
-        """Reset tasks stuck in running/paused state from a crashed previous process."""
+        """Reset tasks stuck in running state from a crashed previous process.
+
+        Paused tasks are preserved — they hold persisted state that allows
+        resumption after a process restart.
+        """
         if not hasattr(self._store, "list_tasks_by_status"):
             return
-        orphaned = self._store.list_tasks_by_status(["running", "paused"])
+        # Only clean up running tasks; paused tasks retain their persisted state
+        orphaned = self._store.list_tasks_by_status(["running"])
         for task in orphaned:
             self._store.update_task(
                 task_id=task["id"],
@@ -2678,10 +2979,19 @@ class Orchestrator:
                 )
                 self._finalize_child_collaboration_after_approval(approval=approval, runtime_task=failed_task)
             return {"approval": approval}
+        if approval["decision"] == "approved" and approval["kind"] == "plan":
+            task = self._resume_approved_plan(task=task, approval=approval)
         if approval["decision"] == "approved" and approval["kind"] == "run_command":
             task = self._resume_approved_command(task=task, approval=approval)
         if approval["decision"] == "approved" and approval["kind"] == "apply_patch":
             task = self._resume_approved_patch(task=task, approval=approval)
+        if approval["decision"] == "rejected" and approval["kind"] == "plan":
+            task = self._fail_task(
+                session_id=task["sessionId"],
+                task=task,
+                summary="Plan was rejected by the user.",
+                error_code="PLAN_REJECTED",
+            )
         return {"approval": approval}
 
     def _should_resume_child_approval_in_process(self, params: dict[str, Any], child_task: dict[str, Any]) -> bool:
@@ -2689,6 +2999,109 @@ class Orchestrator:
             return False
         metadata = child_task.get("metadata") if isinstance(child_task.get("metadata"), dict) else {}
         return metadata.get("executionMode") == "process-rpc"
+
+    def _resume_approved_plan(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
+        """Resume plan execution after approval, dispatching by orchestration mode."""
+        state = self._load_pending_dag_state(task["id"])
+        if state is None:
+            logger.warning("No pending DAG state for approved plan task=%s", task["id"])
+            return task
+        mode = state.get("context", {}).get("orchestration_mode", "dag")
+        if mode == "supervisor":
+            return self._resume_supervisor_execution(task, state)
+        if mode == "swarm":
+            return self._resume_swarm_execution(task, state)
+        return self._resume_dag_execution(task, state)
+
+    def _resume_supervisor_execution(self, task: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+        """Resume supervisor execution after plan approval."""
+        session_id = state["session_id"]
+        try:
+            result = self._supervisor.execute(
+                state["goal"], state["context"],
+                session_id=session_id, task=task,
+                is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
+                completed_ids=set(state["completed"]),
+                failed_ids=set(state["failed"]),
+                prior_results=state["results"],
+            )
+
+            if result.paused:
+                if hasattr(self._store, "upsert_pending_dag_state"):
+                    self._store.upsert_pending_dag_state(
+                        task_id=task["id"],
+                        session_id=session_id,
+                        goal=state["goal"],
+                        context=state["context"],
+                        plan_json=json.dumps({"subtasks": [], "dag": {}, "execution_order": []}, ensure_ascii=False),
+                        completed_ids=list(state["completed"]),
+                        failed_ids=list(state["failed"]),
+                        results=state["results"],
+                    )
+                return task
+
+            self._clear_pending_dag_state(task["id"])
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.planning.completed",
+                payload={"mode": "supervisor", "reviews": result.review_count},
+            )
+            return self._complete_task(
+                session_id=session_id, task=task,
+                summary=result.summary, context=state["context"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Supervisor resume failed for task=%s: %s", task["id"], exc, exc_info=True)
+            self._clear_pending_dag_state(task["id"])
+            return self._fail_task(
+                session_id=session_id, task=task,
+                summary=str(exc), error_code="SUPERVISOR_RESUME_FAILED",
+            )
+
+    def _resume_swarm_execution(self, task: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+        """Resume swarm execution after plan approval."""
+        session_id = state["session_id"]
+        try:
+            result = self._swarm.execute(
+                state["goal"], state["context"],
+                session_id=session_id, task=task,
+                is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
+                completed_ids=set(state["completed"]),
+                failed_ids=set(state["failed"]),
+                prior_results=state["results"],
+            )
+
+            if result.paused:
+                if hasattr(self._store, "upsert_pending_dag_state"):
+                    self._store.upsert_pending_dag_state(
+                        task_id=task["id"],
+                        session_id=session_id,
+                        goal=state["goal"],
+                        context=state["context"],
+                        plan_json=json.dumps({"subtasks": [], "dag": {}, "execution_order": []}, ensure_ascii=False),
+                        completed_ids=list(state["completed"]),
+                        failed_ids=list(state["failed"]),
+                        results=state["results"],
+                    )
+                return task
+
+            self._clear_pending_dag_state(task["id"])
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.planning.completed",
+                payload={"mode": "swarm", "handoffs": result.handoff_count},
+            )
+            return self._complete_task(
+                session_id=session_id, task=task,
+                summary=result.summary, context=state["context"],
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Swarm resume failed for task=%s: %s", task["id"], exc, exc_info=True)
+            self._clear_pending_dag_state(task["id"])
+            return self._fail_task(
+                session_id=session_id, task=task,
+                summary=str(exc), error_code="SWARM_RESUME_FAILED",
+            )
 
     def _resume_approved_command(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
         request = json.loads(approval.get("requestJson") or "{}")

@@ -127,6 +127,11 @@ class BackgroundCommandService:
         state.cancel()
         return True
 
+    def active_command_ids(self) -> list[str]:
+        """Return IDs of all currently running background commands."""
+        with self._lock:
+            return list(self._running.keys())
+
     def _run(self, state: _RunningBackgroundCommand) -> None:
         request = state.request
         store = SQLiteStore(request.database_path)

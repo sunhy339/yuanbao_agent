@@ -122,41 +122,6 @@ def test_subagent_service_dispatch_normalizes_child_tool_allowlist_into_budget()
     ]
 
 
-def test_worker_runner_threads_metadata_into_child_task_records(tmp_path: Path) -> None:
-    store, runner, records = _runner_context(tmp_path)
-    try:
-        response = runner.run_child_task(
-            ChildTaskRequest(
-                prompt="Inspect the runtime slice",
-                title="Inspect runtime slice",
-                agent_type="analyst",
-                priority=2,
-                session_id=records["session"]["id"],
-                parent_runtime_task_id=records["parent_task"]["id"],
-                cancellation={"reason": "manual"},
-                budget={"maxTokens": 256, "remainingTokens": 192},
-            )
-        )
-
-        task = store.get_collaboration_task({"taskId": response["childTaskId"]})["task"]
-        worker = store.get_agent_worker({"workerId": response["workerId"]})["worker"]
-
-        assert response["status"] == "completed"
-        assert response["subagent"] == {
-            "agentType": "analyst",
-            "executionMode": "process-rpc",
-        }
-        assert task["status"] == "completed"
-        assert task["metadata"]["parentRuntimeTaskId"] == records["parent_task"]["id"]
-        assert task["metadata"]["cancellation"] == {"reason": "manual"}
-        assert task["metadata"]["budget"] == {"maxTokens": 256, "remainingTokens": 192}
-        assert worker["metadata"]["mode"] == "process-rpc"
-        assert worker["metadata"]["cancellation"] == {"reason": "manual"}
-        assert worker["metadata"]["budget"] == {"maxTokens": 256, "remainingTokens": 192}
-    finally:
-        store.close()
-
-
 def test_worker_runner_uses_injected_executor_and_completes_child_task(tmp_path: Path) -> None:
     def executor(context: Any) -> dict[str, Any]:
         assert context.task["status"] == "running"

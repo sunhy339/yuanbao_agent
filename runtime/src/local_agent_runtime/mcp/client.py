@@ -102,15 +102,22 @@ class McpServerConfig:
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> McpServerConfig:
+        def _parse_json_field(value: Any, default: Any) -> Any:
+            if value is None:
+                return default
+            if isinstance(value, str):
+                return json.loads(value)
+            return value  # already parsed (e.g. by _serialize_mcp_server)
+
         return cls(
             id=row["id"],
             name=row["name"],
             transport=row.get("transport", "stdio"),
             command=row.get("command"),
-            args=json.loads(row["args"]) if row.get("args") else [],
+            args=_parse_json_field(row.get("args"), []),
             url=row.get("url"),
-            headers=json.loads(row["headers"]) if row.get("headers") else None,
-            env=json.loads(row["env"]) if row.get("env") else None,
+            headers=_parse_json_field(row.get("headers"), None),
+            env=_parse_json_field(row.get("env"), None),
         )
 
 

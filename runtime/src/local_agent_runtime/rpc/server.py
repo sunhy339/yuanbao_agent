@@ -7,7 +7,7 @@ from typing import Any, Callable, TextIO
 
 from ..models import RpcEnvelope
 from ..services.collaboration_service import CollaborationService
-from ..services.command_background import cancel_background_command, get_background_command_event_bridge
+from ..services.command_background import cancel_background_command, get_background_command_event_bridge, get_background_command_service
 from ..services.schedule_service import ScheduleService
 from ..store.sqlite_store import SQLiteStore
 
@@ -55,6 +55,10 @@ class JsonRpcServer:
             "command_log.get": self._store.get_command_log,
             "command_log.list": self._store.list_command_logs,
             "command.cancel": self._cancel_command,
+            "command.status": self._command_status,
+            "command.list": self._command_list,
+            "stats.summary": self._store.get_stats_summary,
+            "stats.trace": self._store.get_trace_spans,
             "trace.list": self._store.list_trace_events,
             "schedule.create": self._schedule.create,
             "schedule.list": self._schedule.list,
@@ -83,6 +87,7 @@ class JsonRpcServer:
             "skill.create": self._orchestrator.skill_create,
             "skill.update": self._orchestrator.skill_update,
             "skill.delete": self._orchestrator.skill_delete,
+            "skill.usage": self._orchestrator.skill_usage,
             "mcp.server.list": self._orchestrator.mcp_server_list,
             "mcp.server.create": self._orchestrator.mcp_server_create,
             "mcp.server.update": self._orchestrator.mcp_server_update,
@@ -115,6 +120,9 @@ class JsonRpcServer:
 
     def shutdown_mcp(self) -> None:
         self._orchestrator.shutdown_mcp()
+
+    def graceful_shutdown(self, timeout: float = 10.0) -> None:
+        self._orchestrator.graceful_shutdown(timeout=timeout)
 
     def handle_line(self, line: str) -> dict[str, Any]:
         envelope = RpcEnvelope(**json.loads(line))
@@ -197,6 +205,27 @@ class JsonRpcServer:
         else:
             command_log = self._store.get_command_log({"commandId": command_id})["commandLog"]
         return {"commandLog": command_log, "cancelled": cancelled}
+
+    def _command_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Query current status of a background command."""
+        command_id = params.get("commandId") or params.get("command_id")
+        if not isinstance(command_id, str) or not command_id.strip():
+            raise ValueError("commandId is required")
+        command_id = command_id.strip()
+
+        db_path = getattr(self._store, "database_path", ":memory:")
+        service = get_background_command_service(db_path)
+        is_running = command_id in service.active_command_ids()
+
+        command_log = self._store.get_command_log({"commandId": command_id})["commandLog"]
+        return {"commandLog": command_log, "isRunning": is_running}
+
+    def _command_list(self, _params: dict[str, Any]) -> dict[str, Any]:
+        """List all currently running background commands."""
+        db_path = getattr(self._store, "database_path", ":memory:")
+        service = get_background_command_service(db_path)
+        running_ids = service.active_command_ids()
+        return {"runningCommandIds": running_ids, "count": len(running_ids)}
 
     def _write_event_payload(self, payload: dict[str, Any]) -> None:
         if self._writer is None:

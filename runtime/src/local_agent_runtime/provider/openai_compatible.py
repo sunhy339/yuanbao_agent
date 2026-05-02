@@ -278,7 +278,7 @@ class OpenAICompatibleChatClient:
             "Accept": "application/json",
         }
         try:
-            return self._http_post(url=url, headers=headers, body=body, timeout=max(settings.timeout, 30.0))
+            return self._http_post(url=url, headers=headers, body=body, timeout=settings.timeout)
         except ProviderAdapterError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -292,7 +292,7 @@ class OpenAICompatibleChatClient:
             "Accept": "text/event-stream",
         }
         try:
-            return self._http_stream(url=url, headers=headers, body=body, timeout=max(settings.timeout, 30.0))
+            return self._http_stream(url=url, headers=headers, body=body, timeout=settings.timeout)
         except ProviderAdapterError:
             raise
         except Exception as exc:  # noqa: BLE001

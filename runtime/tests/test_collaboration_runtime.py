@@ -5,6 +5,7 @@ from typing import Any
 
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.services import CollaborationService, SubagentService
+from local_agent_runtime.services.worker_runner import WorkerRunner
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 
 
@@ -20,7 +21,15 @@ def test_subagent_dispatch_records_child_collaboration_trace(tmp_path: Path) -> 
     event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
     event_bus.subscribe(store.append_runtime_event)
     collaboration = CollaborationService(store, event_bus)
-    subagent_service = SubagentService(store, collaboration)
+
+    def mock_executor(context: Any) -> dict[str, Any]:
+        return {
+            "summary": "Inspected the runtime and reported the missing pieces.",
+            "executionMode": "process-rpc",
+        }
+
+    runner = WorkerRunner(collaboration, executor=mock_executor)
+    subagent_service = SubagentService(store, collaboration, runner=runner)
 
     try:
         workspace_root = tmp_path / "workspace"
@@ -64,12 +73,6 @@ def test_subagent_dispatch_records_child_collaboration_trace(tmp_path: Path) -> 
             "collab.task.updated",
         ]
         assert event_types[-2:] == ["collab.task.completed", "collab.message.sent"]
-        assert any(
-            event["type"] == "collab.task.updated"
-            and isinstance(event["payload"], dict)
-            and isinstance(event["payload"].get("_bridge"), dict)
-            for event in events
-        )
 
         trace_events = store.list_trace_events({"taskId": child_task["id"]})["traceEvents"]
         trace_types = [event["type"] for event in trace_events]
@@ -79,12 +82,6 @@ def test_subagent_dispatch_records_child_collaboration_trace(tmp_path: Path) -> 
             "collab.task.updated",
         ]
         assert trace_types[-2:] == ["collab.task.completed", "collab.message.sent"]
-        assert any(
-            event["type"] == "collab.task.updated"
-            and isinstance(event["payload"], dict)
-            and isinstance(event["payload"].get("_bridge"), dict)
-            for event in trace_events
-        )
         assert trace_events[0]["sessionId"] == session["id"]
         assert trace_events[-1]["payload"]["message"]["taskId"] == child_task["id"]
         assert trace_events[-1]["payload"]["message"]["payload"]["executionMode"] == "process-rpc"

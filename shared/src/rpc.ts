@@ -14,6 +14,7 @@ import type {
   ScheduledTaskRunRecord,
   SessionRecord,
   SkillPresetRecord,
+  SkillUsageRecord,
   TaskRecord,
   TraceEventRecord,
   WorkspaceRef,
@@ -93,7 +94,14 @@ export type RpcMethod =
   | "mcp.server.create"
   | "mcp.server.update"
   | "mcp.server.delete"
-  | "mcp.tools.refresh";
+  | "mcp.tools.refresh"
+  | "skill.usage"
+  | "command.status"
+  | "command.list"
+  | "command.cancel"
+  | "stats.summary"
+  | "stats.trace"
+  | "worker.run_child_task";
 
 export interface WorkspaceOpenParams {
   path: string;
@@ -457,3 +465,68 @@ export interface McpServerDeleteResult {
 }
 
 export type McpToolsRefreshRpcResult = McpToolRefreshResult;
+
+// --- Skill Usage ---
+
+export interface SkillUsageParams {
+  skillId?: Identifier;
+  taskId?: Identifier;
+  sessionId?: Identifier;
+  limit?: number;
+  offset?: number;
+}
+
+export interface SkillUsageResult {
+  usage: SkillUsageRecord[];
+  total: number;
+}
+
+// --- Command Status / List ---
+
+export interface CommandStatusParams {
+  commandId: Identifier;
+}
+
+export interface CommandStatusResult {
+  commandLog: CommandLogRecord;
+  isRunning: boolean;
+}
+
+export interface CommandListResult {
+  runningCommandIds: Identifier[];
+  count: number;
+}
+
+// --- Stats ---
+
+export interface StatsSummaryParams {
+  sessionId?: Identifier;
+  limit?: number;
+}
+
+export interface StatsSummaryResult {
+  workerHealth?: Record<string, unknown>;
+  toolCallStats?: Record<string, number>;
+  errorDistribution?: Record<string, number>;
+}
+
+export interface StatsTraceParams {
+  traceId: Identifier;
+}
+
+export interface StatsTraceResult {
+  spans: TraceEventRecord[];
+}
+
+// --- Worker Child Task ---
+
+export interface WorkerRunChildTaskParams {
+  parentTaskId: Identifier;
+  sessionId: Identifier;
+  prompt: string;
+  toolWhitelist?: string[];
+}
+
+export interface WorkerRunChildTaskResult {
+  task: TaskRecord;
+}

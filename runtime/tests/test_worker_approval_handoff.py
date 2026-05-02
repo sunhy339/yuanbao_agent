@@ -351,20 +351,9 @@ def test_parent_approval_submit_resumes_waiting_process_child_and_completes_coll
     workspace_root.mkdir(parents=True, exist_ok=True)
     workspace = store.upsert_workspace(str(workspace_root))
     session = store.create_session(workspace_id=workspace["id"], title="child approval resume")
-    parent_task = store.create_task(session_id=session["id"], task_type="chat", goal="delegate", plan=[])
 
-    approval_request = {"command": "Write-Output child-approved", "cwd": "."}
-    transport = _WaitingApprovalTransport(
-        store=store,
-        workspace_root=workspace_root,
-        approval_request=approval_request,
-    )
-    monkeypatch.setattr(
-        worker_runner_module.WorkerProcessTransport,
-        "for_python_module",
-        classmethod(lambda cls, *args, **kwargs: transport),
-    )
-
+    # Create Orchestrator BEFORE parent_task to prevent _cleanup_orphan_tasks
+    # from marking the freshly-created running task as failed.
     orchestrator = Orchestrator(
         store=store,
         event_bus=event_bus,
@@ -378,6 +367,20 @@ def test_parent_approval_submit_resumes_waiting_process_child_and_completes_coll
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("parent Orchestrator performed local child approval resume")
         ),
+    )
+
+    parent_task = store.create_task(session_id=session["id"], task_type="chat", goal="delegate", plan=[])
+
+    approval_request = {"command": "Write-Output child-approved", "cwd": "."}
+    transport = _WaitingApprovalTransport(
+        store=store,
+        workspace_root=workspace_root,
+        approval_request=approval_request,
+    )
+    monkeypatch.setattr(
+        worker_runner_module.WorkerProcessTransport,
+        "for_python_module",
+        classmethod(lambda cls, *args, **kwargs: transport),
     )
 
     try:
@@ -443,21 +446,6 @@ def test_parent_approval_submit_fails_child_collaboration_when_resume_fails(
     workspace_root.mkdir(parents=True, exist_ok=True)
     workspace = store.upsert_workspace(str(workspace_root))
     session = store.create_session(workspace_id=workspace["id"], title="child approval resume failure")
-    parent_task = store.create_task(session_id=session["id"], task_type="chat", goal="delegate", plan=[])
-
-    approval_request = {"command": "Write-Output child-fails", "cwd": "."}
-    transport = _WaitingApprovalTransport(
-        store=store,
-        workspace_root=workspace_root,
-        approval_request=approval_request,
-        resume_status="failed",
-        resume_summary="child command failed after approval",
-    )
-    monkeypatch.setattr(
-        worker_runner_module.WorkerProcessTransport,
-        "for_python_module",
-        classmethod(lambda cls, *args, **kwargs: transport),
-    )
 
     orchestrator = Orchestrator(
         store=store,
@@ -472,6 +460,22 @@ def test_parent_approval_submit_fails_child_collaboration_when_resume_fails(
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("parent Orchestrator performed local child approval resume")
         ),
+    )
+
+    parent_task = store.create_task(session_id=session["id"], task_type="chat", goal="delegate", plan=[])
+
+    approval_request = {"command": "Write-Output child-fails", "cwd": "."}
+    transport = _WaitingApprovalTransport(
+        store=store,
+        workspace_root=workspace_root,
+        approval_request=approval_request,
+        resume_status="failed",
+        resume_summary="child command failed after approval",
+    )
+    monkeypatch.setattr(
+        worker_runner_module.WorkerProcessTransport,
+        "for_python_module",
+        classmethod(lambda cls, *args, **kwargs: transport),
     )
 
     try:
@@ -523,6 +527,22 @@ def test_parent_approval_submit_persists_child_resume_transport_error(
     workspace_root.mkdir(parents=True, exist_ok=True)
     workspace = store.upsert_workspace(str(workspace_root))
     session = store.create_session(workspace_id=workspace["id"], title="child approval resume rpc error")
+
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=ToolRegistry({}),
+        provider=_FinalProvider("This final answer should not be used."),
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    monkeypatch.setattr(
+        orchestrator,
+        "_resume_react_after_approval",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("parent Orchestrator performed local child approval resume")
+        ),
+    )
+
     parent_task = store.create_task(session_id=session["id"], task_type="chat", goal="delegate", plan=[])
 
     transport = _WaitingApprovalTransport(
@@ -539,21 +559,6 @@ def test_parent_approval_submit_persists_child_resume_transport_error(
         worker_runner_module.WorkerProcessTransport,
         "for_python_module",
         classmethod(lambda cls, *args, **kwargs: transport),
-    )
-
-    orchestrator = Orchestrator(
-        store=store,
-        event_bus=event_bus,
-        tool_registry=ToolRegistry({}),
-        provider=_FinalProvider("This final answer should not be used."),
-    )
-    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
-    monkeypatch.setattr(
-        orchestrator,
-        "_resume_react_after_approval",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("parent Orchestrator performed local child approval resume")
-        ),
     )
 
     try:

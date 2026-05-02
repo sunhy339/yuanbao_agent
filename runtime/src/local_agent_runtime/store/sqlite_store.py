@@ -86,6 +86,12 @@ DEFAULT_CONFIG = {
         "language": "zh-CN",
         "showRawEvents": False,
         "theme": "light",
+        "density": "comfortable",
+        "radius": "md",
+        "motion": "subtle",
+        "accentColor": "cyan",
+        "transparency": 0.78,
+        "fontScale": 1,
         "reasoningEffort": "max",
         "webFetchPreflight": True,
     },
@@ -466,6 +472,7 @@ class SQLiteStore:
         acceptance_criteria: list[str] | None = None,
         out_of_scope: list[str] | None = None,
         current_step: str | None = None,
+        routing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         task_id = self.new_id("task")
         now = self.now()
@@ -475,9 +482,9 @@ class SQLiteStore:
             INSERT INTO tasks (
                 id, session_id, type, status, goal, acceptance_criteria_json, out_of_scope_json,
                 current_step, plan_json, changed_files_json, commands_json, verification_json,
-                summary, result_json, error_code, created_at, updated_at
+                reflection_json, routing_json, summary, result_json, error_code, created_at, updated_at
             )
-            VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, '[]', '[]', '[]', NULL, NULL, NULL, ?, ?)
+            VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, '[]', '[]', '[]', NULL, ?, NULL, NULL, NULL, ?, ?)
             """,
             (
                 task_id,
@@ -488,6 +495,7 @@ class SQLiteStore:
                 json.dumps(out_of_scope or [], ensure_ascii=False),
                 current_step,
                 json.dumps(plan, ensure_ascii=False),
+                json.dumps(routing, ensure_ascii=False) if routing else None,
                 now,
                 now,
             ),
@@ -1170,6 +1178,74 @@ class SQLiteStore:
             (task_id, limit),
         ).fetchall()
         return {"traceEvents": [self._serialize_trace_event(dict(row)) for row in rows]}
+
+    # ── trace spans ────────────────────────────────────────────────────
+
+    def get_trace_spans(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Return all spans for a given trace_id."""
+        trace_id = params.get("traceId") or params.get("trace_id")
+        if not trace_id:
+            raise ValueError("traceId is required")
+        rows = self._conn.execute(
+            """
+            SELECT * FROM trace_spans
+            WHERE trace_id = ?
+            ORDER BY started_at ASC
+            """,
+            (trace_id,),
+        ).fetchall()
+        spans = [dict(row) for row in rows]
+        # Parse JSON attributes
+        for span in spans:
+            for key in ("attributes", "result_attributes"):
+                val = span.get(key)
+                if isinstance(val, str):
+                    try:
+                        span[key] = json.loads(val)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+        return {"traceId": trace_id, "spans": spans}
+
+    def get_stats_summary(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Return aggregated observability stats."""
+        limit = int(params.get("limit", 100))
+
+        # Recent tool calls from spans
+        tool_rows = self._conn.execute(
+            """
+            SELECT attributes FROM trace_spans
+            WHERE operation = 'tool_call'
+            ORDER BY started_at DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        tool_calls = []
+        for row in tool_rows:
+            try:
+                attrs = json.loads(row["attributes"]) if isinstance(row["attributes"], str) else row["attributes"]
+                tool_calls.append(attrs)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Error distribution from trace_events
+        error_rows = self._conn.execute(
+            """
+            SELECT event_type, COUNT(*) as cnt
+            FROM trace_events
+            WHERE event_type LIKE '%error%' OR event_type LIKE '%fail%'
+            GROUP BY event_type
+            ORDER BY cnt DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        error_distribution = {row["event_type"]: row["cnt"] for row in error_rows}
+
+        return {
+            "toolCalls": tool_calls,
+            "toolCallCount": len(tool_calls),
+            "errorDistribution": error_distribution,
+        }
 
     def resolve_approval(self, approval_id: str, decision: str) -> dict[str, Any]:
         now = self.now()
@@ -2443,6 +2519,50 @@ class SQLiteStore:
                     result[json_field] = [] if json_field == "tool_whitelist" else {}
         return result
 
+    # ── skill_usage audit ────────────────────────────────────────────
+
+    def record_skill_usage(
+        self, *, task_id: str, session_id: str, skill_id: str, triggered_by: str = "routing",
+    ) -> dict[str, Any]:
+        usage_id = str(uuid.uuid4())
+        now = self.now()
+        self._conn.execute(
+            "INSERT INTO skill_usage (id, task_id, session_id, skill_id, triggered_at, triggered_by) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (usage_id, task_id, session_id, skill_id, now, triggered_by),
+        )
+        self._conn.commit()
+        return {
+            "id": usage_id, "taskId": task_id, "sessionId": session_id,
+            "skillId": skill_id, "triggeredAt": now, "triggeredBy": triggered_by,
+        }
+
+    def list_skill_usage(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Query skill usage history. Supports filtering by skillId, taskId, sessionId."""
+        clauses: list[str] = []
+        values: list[Any] = []
+        for key, col in [("skillId", "skill_id"), ("taskId", "task_id"), ("sessionId", "session_id")]:
+            val = params.get(key)
+            if val is not None:
+                clauses.append(f"{col} = ?")
+                values.append(val)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        limit = min(int(params.get("limit", 100)), 500)
+        offset = int(params.get("offset", 0))
+        rows = self._conn.execute(
+            f"SELECT * FROM skill_usage{where} ORDER BY triggered_at DESC LIMIT ? OFFSET ?",
+            (*values, limit, offset),
+        ).fetchall()
+        total = self._conn.execute(
+            f"SELECT COUNT(*) FROM skill_usage{where}", values,
+        ).fetchone()[0]
+        return {
+            "usage": [dict(r) for r in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
     # ── mcp_servers CRUD ────────────────────────────────────────────
 
     def get_mcp_server(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -2608,6 +2728,7 @@ class SQLiteStore:
                 commands_json TEXT,
                 verification_json TEXT,
                 reflection_json TEXT,
+                routing_json TEXT,
                 summary TEXT,
                 result_json TEXT,
                 error_code TEXT,
@@ -2916,6 +3037,20 @@ class SQLiteStore:
                 created_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS skill_usage (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                skill_id TEXT NOT NULL,
+                triggered_at INTEGER NOT NULL,
+                triggered_by TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_skill_usage_skill_id
+                ON skill_usage (skill_id);
+            CREATE INDEX IF NOT EXISTS idx_skill_usage_task_id
+                ON skill_usage (task_id);
             """
         )
         self._conn.commit()
@@ -2949,6 +3084,7 @@ class SQLiteStore:
             "commands_json": "TEXT DEFAULT '[]'",
             "verification_json": "TEXT DEFAULT '[]'",
             "reflection_json": "TEXT",
+            "routing_json": "TEXT",
             "summary": "TEXT",
         }
         for column, definition in expected.items():

@@ -61,6 +61,18 @@ SCENARIO_STRATEGY_MAP: dict[Scenario, dict[str, Any]] = {
         "enable_reflection": True,
         "enable_planning": True,
     },
+    Scenario.SUPERVISED_TASK: {
+        "strategy": ExecutionStrategy.PLAN_SUPERVISE,
+        "max_steps": 40,
+        "enable_reflection": True,
+        "enable_planning": True,
+    },
+    Scenario.SWARM_TASK: {
+        "strategy": ExecutionStrategy.PLAN_SWARM,
+        "max_steps": 50,
+        "enable_reflection": True,
+        "enable_planning": True,
+    },
     Scenario.FREE_FORM: {
         "strategy": ExecutionStrategy.REACT_STANDARD,
         "max_steps": 20,
@@ -79,6 +91,8 @@ _ROUTE_RULES: list[tuple[Scenario, list[str], float]] = [
     (Scenario.TEST_WRITE, ["测试", "test", "spec", "单元测试", "集成测试", "test case", "test case"], 0.85),
     (Scenario.DOC_WRITE, ["文档", "doc", "readme", "注释", "说明", "文档化"], 0.85),
     (Scenario.MULTI_STEP_TASK, ["重构", "refactor", "迁移", "migrate", "整体", "所有模块", "多个文件", "全部重写"], 0.80),
+    (Scenario.SUPERVISED_TASK, ["监督", "审核执行", "supervised", "review plan", "监督执行", "审核计划"], 0.80),
+    (Scenario.SWARM_TASK, ["协作", "多agent", "swarm", "collaborate", "协同", "多个智能体", "群体协作"], 0.80),
     (Scenario.CODE_SEARCH, ["搜索", "查找", "找", "在哪", "search", "find", "where", "locate"], 0.80),
     (Scenario.CODE_EDIT, ["修改", "改", "更新", "添加", "删除", "新增", "实现", "写一个", "创建", "新增"], 0.70),
     (Scenario.SIMPLE_QUERY, ["是什么", "怎么", "如何", "解释", "what is", "how to", "explain", "是什么意思", "介绍一下"], 0.75),

@@ -12,6 +12,10 @@ from .scratchpad_tool import SCRATCHPAD_TOOL_SCHEMAS
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
 
+class ToolRateLimitError(Exception):
+    """Raised when a tool's per-session rate limit is exceeded."""
+
+
 class ToolCategory(str, Enum):
     """Semantic category for a registered tool."""
 
@@ -1010,6 +1014,7 @@ class ToolRegistry:
     ) -> None:
         self._tools = tools or {}
         self._schemas = schemas or {}
+        self._call_counts: dict[str, dict[str, int]] = {}
 
     # ── registration ────────────────────────────────────────────────
 
@@ -1052,10 +1057,33 @@ class ToolRegistry:
 
     # ── execution ───────────────────────────────────────────────────
 
-    def execute(self, name: str, params: dict[str, Any]) -> dict[str, Any]:
+    def check_rate_limit(self, name: str, session_id: str) -> bool:
+        """Return True if the tool call is within rate limits for the session."""
+        schema = self._schema_for(name)
+        limit = schema.get("metadata", {}).get("rate_limit")
+        if limit is None:
+            return True
+        count = self._call_counts.get(session_id, {}).get(name, 0)
+        return count < limit
+
+    def reset_session(self, session_id: str) -> None:
+        """Clear per-session call counts."""
+        self._call_counts.pop(session_id, None)
+
+    def execute(self, name: str, params: dict[str, Any], *, session_id: str | None = None) -> dict[str, Any]:
         handler = self._tools.get(name)
         if handler is None:
             raise ValueError(f"Unknown tool: {name}")
+
+        # Rate limit enforcement
+        if session_id:
+            if not self.check_rate_limit(name, session_id):
+                limit = self._schema_for(name).get("metadata", {}).get("rate_limit")
+                raise ToolRateLimitError(
+                    f"Tool '{name}' rate limit ({limit}) exceeded for session {session_id}"
+                )
+            self._call_counts.setdefault(session_id, {})[name] = \
+                self._call_counts.get(session_id, {}).get(name, 0) + 1
 
         self._validate_required(name, params)
 

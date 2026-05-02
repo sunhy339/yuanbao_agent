@@ -16,6 +16,8 @@ class Scenario(str, Enum):
     TEST_WRITE = "test_write"
     DOC_WRITE = "doc_write"
     MULTI_STEP_TASK = "multi_step_task"
+    SUPERVISED_TASK = "supervised_task"
+    SWARM_TASK = "swarm_task"
     FREE_FORM = "free_form"
 
 

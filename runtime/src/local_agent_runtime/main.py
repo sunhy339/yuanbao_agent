@@ -66,7 +66,7 @@ def main() -> int:
     try:
         server.serve(stdin=sys.stdin, stdout=sys.stdout)
     finally:
-        server.shutdown_mcp()
+        server.graceful_shutdown()
     return 0
 
 

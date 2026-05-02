@@ -5,6 +5,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 
+from ..observability.tracer import Tracer
 from ..services.subagent_service import SubagentService
 from .types import PlanResult, Subtask
 
@@ -36,6 +37,7 @@ class DAGExecutor:
         completed_ids: set[str] | None = None,
         failed_ids: set[str] | None = None,
         prior_results: dict[str, str] | None = None,
+        tracer: Tracer | None = None,
     ) -> dict[str, Any]:
         """Execute all sub-tasks, parallelising independent tasks per level.
 
@@ -56,6 +58,14 @@ class DAGExecutor:
 
         levels = self._group_by_level(plan)
         logger.info("DAG execution: %d levels, %d total subtasks", len(levels), len(plan.subtasks))
+
+        dag_span = None
+        if tracer is not None:
+            dag_span = tracer.start_span(
+                "dag_execute",
+                trace_id=parent_task_id,
+                attributes={"levels": len(levels), "subtasks": len(plan.subtasks)},
+            )
 
         for level_idx, level in enumerate(levels):
             # Filter level to only runnable tasks (skip completed/failed/dependency-failed)
@@ -91,7 +101,7 @@ class DAGExecutor:
             if len(runnable) == 1:
                 self._execute_subtask(
                     plan, runnable[0], completed, failed, results,
-                    session_id, parent_task_id, lock,
+                    session_id, parent_task_id, lock, tracer,
                 )
             else:
                 logger.info("Level %d: executing %d subtasks in parallel", level_idx, len(runnable))
@@ -100,7 +110,7 @@ class DAGExecutor:
                         pool.submit(
                             self._execute_subtask,
                             plan, sid, completed, failed, results,
-                            session_id, parent_task_id, lock,
+                            session_id, parent_task_id, lock, tracer,
                         ): sid
                         for sid in runnable
                     }
@@ -111,6 +121,8 @@ class DAGExecutor:
 
             # Cooperative pause check after each level
             if is_paused_fn is not None and is_paused_fn():
+                if dag_span is not None:
+                    tracer.end_span(dag_span.span_id, status="ok", attributes={"paused": True})
                 return {
                     "subtasks": plan.subtasks,
                     "summary": "",
@@ -123,6 +135,9 @@ class DAGExecutor:
 
         success = len(failed) == 0
         summary = self.synthesize_results(plan.subtasks)
+        if dag_span is not None:
+            tracer.end_span(dag_span.span_id, status="ok" if success else "error",
+                            attributes={"completed": len(completed), "failed": len(failed)})
         return {
             "subtasks": plan.subtasks,
             "summary": summary,
@@ -161,11 +176,20 @@ class DAGExecutor:
         session_id: str,
         parent_task_id: str,
         lock: threading.Lock,
+        tracer: Tracer | None = None,
     ) -> None:
         """Execute a single subtask and update shared state."""
         subtask = self._find_subtask(plan.subtasks, subtask_id)
         if subtask is None:
             return
+
+        span = None
+        if tracer is not None:
+            span = tracer.start_span(
+                "dag_subtask",
+                trace_id=parent_task_id,
+                attributes={"subtask_id": subtask_id, "title": subtask.title},
+            )
 
         subtask.status = "running"
         try:
@@ -181,6 +205,8 @@ class DAGExecutor:
                 subtask.result = dispatch_result.get("summary") or "Completed"
                 completed.add(subtask.id)
                 results[subtask.id] = subtask.result
+            if span is not None:
+                tracer.end_span(span.span_id, status="ok")
         except Exception as exc:  # noqa: BLE001
             logger.warning("Subtask %s failed: %s", subtask_id, exc)
             with lock:
@@ -188,6 +214,8 @@ class DAGExecutor:
                 subtask.result = str(exc)
                 failed.add(subtask.id)
                 results[subtask.id] = f"Failed: {exc}"
+            if span is not None:
+                tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
 
     def _group_by_level(self, plan: PlanResult) -> list[list[str]]:
         """Group execution_order into dependency levels for parallel execution.

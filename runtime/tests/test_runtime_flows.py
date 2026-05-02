@@ -328,9 +328,9 @@ def test_background_message_send_returns_before_context_build_completes(
     )
     original_build = ContextBuilder.build
 
-    def slow_build(self: ContextBuilder, session_id: str, goal: str) -> dict[str, object]:
+    def slow_build(self: ContextBuilder, session_id: str, goal: str, **kwargs: Any) -> dict[str, object]:
         time.sleep(0.5)
-        return original_build(self, session_id, goal)
+        return original_build(self, session_id, goal, **kwargs)
 
     monkeypatch.setattr(ContextBuilder, "build", slow_build)
 
@@ -917,3 +917,526 @@ def test_failed_tool_surfaces_clear_task_summary(runtime_harness: Any, monkeypat
     )["result"]["messages"]
     assert [message["role"] for message in messages] == ["user", "assistant"]
     assert "Command failed with status failed" in messages[1]["content"]
+
+
+def test_plan_approval_strict_mode(runtime_harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """In strict approval mode, plan decomposition requires user approval before DAG execution."""
+    from local_agent_runtime.planner.types import PlanResult, Subtask
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+    # Set approval mode to strict
+    config = runtime_harness.store.get_config({})["config"]
+    config["policy"]["approvalMode"] = "strict"
+    runtime_harness.store.update_config({"config": config})
+
+    # Patch decomposer to return a fixed plan (mock provider can't handle planning)
+    fake_plan = PlanResult(
+        subtasks=[
+            Subtask(id="sub-0", title="Analyze", description="Analyze code"),
+            Subtask(id="sub-1", title="Refactor", description="Refactor code", dependencies=["sub-0"]),
+        ],
+        dag={"sub-0": [], "sub-1": ["sub-0"]},
+        execution_order=["sub-0", "sub-1"],
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._decomposer,
+        "decompose",
+        lambda **_kwargs: fake_plan,
+    )
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Plan approval test"},
+        ),
+        "session",
+    )
+
+    # "重构" triggers MULTI_STEP_TASK → enable_planning=True → _execute_with_planning
+    send_response = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "重构 app.py 的代码结构"},
+    )
+    task = _call_result(send_response, "task")
+
+    # Task should be waiting for plan approval
+    assert task["status"] == "waiting_approval"
+
+    # Find the plan approval event
+    approval_events = [
+        event for event in runtime_harness.events
+        if event["type"] == "approval.requested" and event["payload"].get("kind") == "plan"
+    ]
+    assert len(approval_events) == 1
+    approval_id = approval_events[0]["payload"]["approvalId"]
+
+    # Verify the approval request contains plan details
+    request_payload = approval_events[0]["payload"]["request"]
+    assert "subtaskCount" in request_payload
+    assert request_payload["subtaskCount"] == 2
+
+    # Reject the plan
+    runtime_harness.call(
+        "approval.submit",
+        {"approvalId": approval_id, "decision": "rejected"},
+    )
+
+    final_task = _call_result(
+        runtime_harness.call("task.get", {"taskId": task["id"]}),
+        "task",
+    )
+    assert final_task["status"] == "failed"
+
+
+def test_plan_approval_approved_resumes_dag(runtime_harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When a plan is approved in strict mode, DAG execution proceeds normally."""
+    from local_agent_runtime.planner.types import PlanResult, Subtask
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+    # Set approval mode to strict
+    config = runtime_harness.store.get_config({})["config"]
+    config["policy"]["approvalMode"] = "strict"
+    runtime_harness.store.update_config({"config": config})
+
+    # Patch decomposer to return a fixed plan
+    fake_plan = PlanResult(
+        subtasks=[
+            Subtask(id="sub-0", title="Analyze", description="Analyze code"),
+            Subtask(id="sub-1", title="Refactor", description="Refactor code", dependencies=["sub-0"]),
+        ],
+        dag={"sub-0": [], "sub-1": ["sub-0"]},
+        execution_order=["sub-0", "sub-1"],
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._decomposer,
+        "decompose",
+        lambda **_kwargs: fake_plan,
+    )
+
+    # Patch DAG executor to return success immediately (mock the full subagent pipeline)
+    def fake_execute(*_args, **_kwargs):
+        return {
+            "success": True,
+            "completed": ["sub-0", "sub-1"],
+            "failed": [],
+            "results": {"sub-0": "Analyzed", "sub-1": "Refactored"},
+            "subtasks": [
+                Subtask(id="sub-0", title="Analyze", description="Analyze code", status="completed", result="Analyzed"),
+                Subtask(id="sub-1", title="Refactor", description="Refactor code", status="completed", result="Refactored"),
+            ],
+            "summary": "Plan executed successfully",
+        }
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._dag_executor,
+        "execute",
+        fake_execute,
+    )
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Plan approval approve"},
+        ),
+        "session",
+    )
+
+    send_response = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "重构 app.py 的代码结构"},
+    )
+    task = _call_result(send_response, "task")
+    assert task["status"] == "waiting_approval"
+
+    approval_events = [
+        event for event in runtime_harness.events
+        if event["type"] == "approval.requested" and event["payload"].get("kind") == "plan"
+    ]
+    assert len(approval_events) == 1
+    approval_id = approval_events[0]["payload"]["approvalId"]
+
+    # Approve the plan
+    runtime_harness.call(
+        "approval.submit",
+        {"approvalId": approval_id, "decision": "approved"},
+    )
+
+    # After approval, task should complete since DAG executor is mocked
+    final_task = _call_result(
+        runtime_harness.call("task.get", {"taskId": task["id"]}),
+        "task",
+    )
+    assert final_task["status"] == "completed"
+
+
+def test_supervisor_plan_approval_reject(runtime_harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """In strict mode, supervisor plan requires approval; rejection fails the task."""
+    from local_agent_runtime.orchestration.types import OrchestrationResult
+    from local_agent_runtime.planner.types import PlanResult, Subtask
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+    config = runtime_harness.store.get_config({})["config"]
+    config["policy"]["approvalMode"] = "strict"
+    runtime_harness.store.update_config({"config": config})
+
+    fake_plan = PlanResult(
+        subtasks=[
+            Subtask(id="sub-0", title="Analyze", description="Analyze code"),
+            Subtask(id="sub-1", title="Refactor", description="Refactor code", dependencies=["sub-0"]),
+        ],
+        dag={"sub-0": [], "sub-1": ["sub-0"]},
+        execution_order=["sub-0", "sub-1"],
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._decomposer,
+        "decompose",
+        lambda **_kwargs: fake_plan,
+    )
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Supervisor plan approval"},
+        ),
+        "session",
+    )
+
+    # "监督" triggers SUPERVISED_TASK → plan_supervise → _execute_with_supervisor
+    send_response = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "监督执行这个任务的优化"},
+    )
+    task = _call_result(send_response, "task")
+    assert task["status"] == "waiting_approval"
+
+    approval_events = [
+        event for event in runtime_harness.events
+        if event["type"] == "approval.requested" and event["payload"].get("kind") == "plan"
+    ]
+    assert len(approval_events) == 1
+    assert approval_events[0]["payload"]["request"].get("orchestrationMode") == "supervisor"
+    approval_id = approval_events[0]["payload"]["approvalId"]
+
+    runtime_harness.call(
+        "approval.submit",
+        {"approvalId": approval_id, "decision": "rejected"},
+    )
+
+    final_task = _call_result(
+        runtime_harness.call("task.get", {"taskId": task["id"]}),
+        "task",
+    )
+    assert final_task["status"] == "failed"
+
+
+def test_supervisor_plan_approval_approved_resumes(runtime_harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When a supervisor plan is approved, execution proceeds normally."""
+    from local_agent_runtime.orchestration.types import OrchestrationResult
+    from local_agent_runtime.planner.types import PlanResult, Subtask
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+    config = runtime_harness.store.get_config({})["config"]
+    config["policy"]["approvalMode"] = "strict"
+    runtime_harness.store.update_config({"config": config})
+
+    fake_plan = PlanResult(
+        subtasks=[
+            Subtask(id="sub-0", title="Analyze", description="Analyze code"),
+        ],
+        dag={"sub-0": []},
+        execution_order=["sub-0"],
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._decomposer,
+        "decompose",
+        lambda **_kwargs: fake_plan,
+    )
+
+    # Mock supervisor.execute to return success
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._supervisor,
+        "execute",
+        lambda *args, **_kwargs: OrchestrationResult(
+            success=True, summary="Supervisor completed", review_count=1, subtask_results=[], paused=False,
+        ),
+    )
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Supervisor plan approve"},
+        ),
+        "session",
+    )
+
+    send_response = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "监督执行这个任务"},
+    )
+    task = _call_result(send_response, "task")
+    assert task["status"] == "waiting_approval"
+
+    approval_events = [
+        event for event in runtime_harness.events
+        if event["type"] == "approval.requested" and event["payload"].get("kind") == "plan"
+    ]
+    assert len(approval_events) == 1
+    approval_id = approval_events[0]["payload"]["approvalId"]
+
+    runtime_harness.call(
+        "approval.submit",
+        {"approvalId": approval_id, "decision": "approved"},
+    )
+
+    final_task = _call_result(
+        runtime_harness.call("task.get", {"taskId": task["id"]}),
+        "task",
+    )
+    assert final_task["status"] == "completed"
+
+
+def test_swarm_plan_approval_reject(runtime_harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """In strict mode, swarm plan requires approval; rejection fails the task."""
+    from local_agent_runtime.planner.types import PlanResult, Subtask
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "app.py").write_text("print('hello')\n", encoding="utf-8")
+
+    config = runtime_harness.store.get_config({})["config"]
+    config["policy"]["approvalMode"] = "strict"
+    runtime_harness.store.update_config({"config": config})
+
+    fake_plan = PlanResult(
+        subtasks=[
+            Subtask(id="sub-0", title="Analyze", description="Analyze code"),
+        ],
+        dag={"sub-0": []},
+        execution_order=["sub-0"],
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._decomposer,
+        "decompose",
+        lambda **_kwargs: fake_plan,
+    )
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Swarm plan approval"},
+        ),
+        "session",
+    )
+
+    # "swarm" triggers SWARM_TASK → plan_swarm → _execute_with_swarm
+    send_response = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "swarm 协作完成这个任务"},
+    )
+    task = _call_result(send_response, "task")
+    assert task["status"] == "waiting_approval"
+
+    approval_events = [
+        event for event in runtime_harness.events
+        if event["type"] == "approval.requested" and event["payload"].get("kind") == "plan"
+    ]
+    assert len(approval_events) == 1
+    assert approval_events[0]["payload"]["request"].get("orchestrationMode") == "swarm"
+    approval_id = approval_events[0]["payload"]["approvalId"]
+
+    runtime_harness.call(
+        "approval.submit",
+        {"approvalId": approval_id, "decision": "rejected"},
+    )
+
+    final_task = _call_result(
+        runtime_harness.call("task.get", {"taskId": task["id"]}),
+        "task",
+    )
+    assert final_task["status"] == "failed"
+
+
+def test_graceful_shutdown_rejects_new_tasks(runtime_harness: Any, tmp_path: Path) -> None:
+    """After graceful_shutdown is called, send_message should reject new tasks."""
+    runtime_harness.server.graceful_shutdown(timeout=0.1)
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Shutdown test"},
+        ),
+        "session",
+    )
+
+    response = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "hello"},
+    )
+    assert "error" in response
+    assert "shutting down" in response["error"]["message"].lower()
+
+
+def test_graceful_shutdown_cancels_running_tasks(runtime_harness: Any, tmp_path: Path) -> None:
+    """Running tasks should be cancelled when graceful_shutdown times out."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Shutdown cancel"},
+        ),
+        "session",
+    )
+
+    # Create a task (completed by mock provider), then set back to running
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "simple task"},
+        ),
+        "task",
+    )
+    runtime_harness.store.update_task(task_id=task["id"], status="running")
+
+    runtime_harness.server.graceful_shutdown(timeout=0.1)
+
+    final_task = _call_result(
+        runtime_harness.call("task.get", {"taskId": task["id"]}),
+        "task",
+    )
+    assert final_task["status"] == "cancelled"
+
+
+def test_skill_usage_is_recorded_when_skill_triggered(runtime_harness: Any, tmp_path: Path) -> None:
+    """When a message triggers a skill-based scenario, usage should be recorded."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Skill usage test"},
+        ),
+        "session",
+    )
+
+    # "review" keyword triggers CODE_REVIEW scenario with skill_id="code_reviewer"
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "review the code"},
+        ),
+        "task",
+    )
+
+    # Query skill usage
+    usage_resp = runtime_harness.call("skill.usage", {"skillId": "code_reviewer"})
+    assert "result" in usage_resp
+    usage_list = usage_resp["result"]["usage"]
+    assert len(usage_list) >= 1
+    entry = usage_list[0]
+    assert entry["skill_id"] == "code_reviewer"
+    assert entry["task_id"] == task["id"]
+    assert entry["session_id"] == session["id"]
+    assert entry["triggered_by"] == "routing"
+
+
+def test_skill_usage_empty_for_no_skill(runtime_harness: Any, tmp_path: Path) -> None:
+    """When a message doesn't trigger any skill, no usage should be recorded."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "No skill test"},
+        ),
+        "session",
+    )
+
+    # "hello" won't match any skill-based scenario
+    runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "hello"},
+    )
+
+    usage_resp = runtime_harness.call("skill.usage", {})
+    assert usage_resp["result"]["total"] == 0
+
+
+def test_session_summary_generated_after_task_completion(runtime_harness: Any, tmp_path: Path) -> None:
+    """Session summary should be populated via _remember_task_result after completion."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Summary test"},
+        ),
+        "session",
+    )
+
+    # Complete a task
+    runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "needle"},
+    )
+
+    # Check session summary was updated with Task memory marker
+    updated_session = _call_result(
+        runtime_harness.call("session.get", {"sessionId": session["id"]}),
+        "session",
+    )
+    assert updated_session.get("summary") is not None
+    assert "Task memory:" in updated_session["summary"]

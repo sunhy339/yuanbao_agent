@@ -19,6 +19,7 @@ from ..models import RuntimeEvent
 from ..planner.service import Planner
 from ..policy.guard import PolicyGuard
 from ..provider.adapter import ProviderAdapter
+from ..provider.cache import LLMCache
 from ..services.collaboration_service import CollaborationService
 from ..services.command_background import cancel_background_commands
 from ..services.session_service import SessionService
@@ -75,6 +76,9 @@ class Orchestrator:
         self._worker_runner = WorkerRunner(self._collaboration_service)
         self._subagent_service = SubagentService(store, self._collaboration_service, runner=self._worker_runner)
         self._mcp_manager = McpClientManager(store)
+        self._cache = LLMCache(store)
+        if isinstance(provider, ProviderAdapter):
+            provider._cache = self._cache
         self._reflector = self._build_reflector(store, provider)
         self._decomposer = TaskDecomposer(provider=provider)
         self._dag_executor = DAGExecutor(subagent_service=self._subagent_service)
@@ -364,6 +368,10 @@ class Orchestrator:
         """Connect to all enabled MCP servers and register their tools."""
         result = self._store.list_mcp_servers({"enabledOnly": True})
         for server_row in result["servers"]:
+            span = self._tracer.start_span(
+                "mcp_connect",
+                attributes={"server_id": server_row.get("id", ""), "phase": "init"},
+            )
             try:
                 config = McpServerConfig.from_row(server_row)
                 schemas = self._mcp_manager.sync_connect_server(config)
@@ -374,7 +382,9 @@ class Orchestrator:
                         lambda args, _name=namespaced_name: self._mcp_manager.sync_call_tool(_name, args),
                         schema,
                     )
+                self._tracer.end_span(span.span_id, status="ok", attributes={"tool_count": len(schemas)})
             except Exception as exc:  # noqa: BLE001
+                self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
                 logger.warning("Failed to connect MCP server %s: %s", server_row.get("id"), exc)
 
     def mcp_server_list(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -384,6 +394,10 @@ class Orchestrator:
         result = self._store.create_mcp_server(params)
         server = result["server"]
         if server.get("enabled", True):
+            span = self._tracer.start_span(
+                "mcp_connect",
+                attributes={"server_id": server.get("id", ""), "phase": "create"},
+            )
             try:
                 config = McpServerConfig.from_row(server)
                 schemas = self._mcp_manager.sync_connect_server(config)
@@ -394,12 +408,18 @@ class Orchestrator:
                         lambda args, _name=namespaced_name: self._mcp_manager.sync_call_tool(_name, args),
                         schema,
                     )
+                self._tracer.end_span(span.span_id, status="ok", attributes={"tool_count": len(schemas)})
             except Exception as exc:  # noqa: BLE001
+                self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
                 logger.warning("Failed to connect MCP server %s: %s", server.get("id"), exc)
         return result
 
     def mcp_server_update(self, params: dict[str, Any]) -> dict[str, Any]:
         server_id = params.get("serverId") or params.get("server_id")
+        span = self._tracer.start_span(
+            "mcp_update",
+            attributes={"server_id": server_id or ""},
+        )
         # Disconnect old tools if server was connected
         if server_id and self._mcp_manager.is_connected(server_id):
             prefix = f"mcp__{server_id}__"
@@ -418,21 +438,33 @@ class Orchestrator:
                         lambda args, _name=namespaced_name: self._mcp_manager.sync_call_tool(_name, args),
                         schema,
                     )
+                self._tracer.end_span(span.span_id, status="ok", attributes={"tool_count": len(schemas)})
             except Exception as exc:  # noqa: BLE001
-                import logging
-                logging.getLogger(__name__).warning("Failed to reconnect MCP server %s: %s", server.get("id"), exc)
+                self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
+                logger.warning("Failed to reconnect MCP server %s: %s", server.get("id"), exc)
+        else:
+            self._tracer.end_span(span.span_id, status="ok")
         return result
 
     def mcp_server_delete(self, params: dict[str, Any]) -> dict[str, Any]:
         server_id = params.get("serverId") or params.get("server_id")
         if server_id:
+            span = self._tracer.start_span(
+                "mcp_disconnect",
+                attributes={"server_id": server_id, "phase": "delete"},
+            )
             prefix = f"mcp__{server_id}__"
             self._tool_registry.unregister_prefix(prefix)
             self._mcp_manager.sync_disconnect_server(server_id)
+            self._tracer.end_span(span.span_id, status="ok")
         return self._store.delete_mcp_server(params)
 
     def mcp_tools_refresh(self, params: dict[str, Any]) -> dict[str, Any]:
         server_id = params.get("serverId") or params.get("server_id")
+        span = self._tracer.start_span(
+            "mcp_refresh",
+            attributes={"server_id": server_id or "all"},
+        )
         # Remove old tools for the target server(s)
         if server_id:
             prefix = f"mcp__{server_id}__"
@@ -441,14 +473,19 @@ class Orchestrator:
             for sid in list(self._mcp_manager._connections):
                 prefix = f"mcp__{sid}__"
                 self._tool_registry.unregister_prefix(prefix)
-        schemas = self._mcp_manager.sync_refresh_tools(server_id)
-        for schema in schemas:
-            namespaced_name = schema["name"]
-            self._tool_registry.register(
-                namespaced_name,
-                lambda args, _name=namespaced_name: self._mcp_manager.sync_call_tool(_name, args),
-                schema,
-            )
+        try:
+            schemas = self._mcp_manager.sync_refresh_tools(server_id)
+            for schema in schemas:
+                namespaced_name = schema["name"]
+                self._tool_registry.register(
+                    namespaced_name,
+                    lambda args, _name=namespaced_name: self._mcp_manager.sync_call_tool(_name, args),
+                    schema,
+                )
+            self._tracer.end_span(span.span_id, status="ok", attributes={"tool_count": len(schemas)})
+        except Exception as exc:  # noqa: BLE001
+            self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
+            raise
         return {"refreshed": len(schemas), "tools": [s["name"] for s in schemas]}
 
     def shutdown_mcp(self) -> None:
@@ -461,8 +498,20 @@ class Orchestrator:
 
         # --- Phase 0: MetaRouter scenario classification ---
         routing = self._meta_router.route(goal)
+        routing_dict = {
+            "scenario": routing.scenario.value,
+            "strategy": routing.strategy.value,
+            "confidence": routing.confidence,
+            "max_steps": routing.max_steps,
+            "enable_reflection": routing.enable_reflection,
+            "enable_planning": routing.enable_planning,
+            "reasoning": routing.reasoning,
+            "skill_id": routing.skill_id,
+        }
 
         if params.get("background") is True:
+            # Pass routing info to the background worker without blocking on
+            # context build — the worker will build context with routing data.
             plan = self._planner.plan(goal)
             task = self._store.create_task(
                 session_id=session["id"],
@@ -471,6 +520,7 @@ class Orchestrator:
                 plan=plan,
                 acceptance_criteria=self._default_acceptance_criteria(goal),
                 out_of_scope=self._default_out_of_scope(),
+                routing=routing_dict,
             )
             runtime_task = {**task, "plan": plan}
             self._store.create_message(
@@ -484,21 +534,14 @@ class Orchestrator:
                 task=runtime_task,
                 goal=goal,
                 context=None,
+                routing=routing_dict,
+                skill_id=routing.skill_id,
             )
             return {"task": runtime_task}
 
         context = self._context_builder.build(session_id=session["id"], goal=goal, skill_id=routing.skill_id)
         # Inject routing decision into context as a plain dict for JSON safety.
-        context["routing"] = {
-            "scenario": routing.scenario.value,
-            "strategy": routing.strategy.value,
-            "confidence": routing.confidence,
-            "max_steps": routing.max_steps,
-            "enable_reflection": routing.enable_reflection,
-            "enable_planning": routing.enable_planning,
-            "reasoning": routing.reasoning,
-            "skill_id": routing.skill_id,
-        }
+        context["routing"] = routing_dict
         logger.info(
             "Routing decision: scenario=%s strategy=%s confidence=%.2f max_steps=%d skill=%s",
             routing.scenario.value, routing.strategy.value,
@@ -513,6 +556,7 @@ class Orchestrator:
             plan=plan,
             acceptance_criteria=self._default_acceptance_criteria(goal),
             out_of_scope=self._default_out_of_scope(),
+            routing=routing_dict,
         )
         runtime_task = {**task, "plan": plan}
         self._store.create_message(
@@ -706,6 +750,11 @@ class Orchestrator:
         context: dict[str, Any],
     ) -> dict[str, Any]:
         """Planning mode: decompose goal → execute subtasks → synthesize."""
+        plan_span = self._tracer.start_span(
+            "planning",
+            trace_id=getattr(self, "_active_trace_id", None),
+            attributes={"goal": goal[:200]},
+        )
         try:
             self._publish(
                 session_id=session_id, task=task,
@@ -765,6 +814,44 @@ class Orchestrator:
                 goal, execution["subtasks"],
             )
 
+            # 4. Auto-supplement if coverage is insufficient
+            routing = context.get("routing", {})
+            threshold = routing.get("coverage_threshold", 0.7)
+            if coverage < threshold:
+                gaps = self._coverage_evaluator.find_gaps(goal, execution["subtasks"])
+                if gaps:
+                    from ..planner.types import Subtask as PlanSubtask
+                    supplement = PlanSubtask(
+                        id="supplement-0",
+                        title="Address uncovered aspects",
+                        description=(
+                            f"The original goal has uncovered aspects related to: "
+                            f"{', '.join(gaps)}. Please address these."
+                        ),
+                        dependencies=[
+                            s.id for s in execution["subtasks"] if s.status == "completed"
+                        ],
+                    )
+                    try:
+                        dispatch_result = self._subagent_service.dispatch({
+                            "prompt": supplement.description,
+                            "title": supplement.title,
+                            "sessionId": session_id,
+                            "taskId": task["id"],
+                            "agentType": "planner",
+                        })
+                        supplement.status = "completed"
+                        supplement.result = dispatch_result.get("summary") or "Completed"
+                        execution["subtasks"].append(supplement)
+                        # Re-evaluate coverage after supplement
+                        coverage = self._coverage_evaluator.evaluate(goal, execution["subtasks"])
+                        logger.info(
+                            "Supplement subtask executed, coverage: %.2f → %.2f",
+                            coverage, coverage,
+                        )
+                    except Exception as supp_exc:  # noqa: BLE001
+                        logger.warning("Supplement subtask failed: %s", supp_exc)
+
             summary = execution["summary"]
 
             self._publish(
@@ -774,6 +861,11 @@ class Orchestrator:
                     "coverage": coverage,
                     "success": execution["success"],
                 },
+            )
+
+            self._tracer.end_span(
+                plan_span.span_id, status="ok",
+                attributes={"subtaskCount": len(execution["subtasks"]), "coverage": coverage},
             )
 
             return {
@@ -786,6 +878,7 @@ class Orchestrator:
             }
         except Exception as exc:  # noqa: BLE001
             logger.error("Planning execution failed for task=%s: %s", task["id"], exc, exc_info=True)
+            self._tracer.end_span(plan_span.span_id, status="error")
             return {
                 "task": self._fail_task(
                     session_id=session_id,
@@ -910,6 +1003,8 @@ class Orchestrator:
         task: dict[str, Any],
         goal: str,
         context: dict[str, Any] | None,
+        routing: dict[str, Any] | None = None,
+        skill_id: str | None = None,
     ) -> None:
         worker = threading.Thread(
             target=self._run_background_message,
@@ -918,6 +1013,8 @@ class Orchestrator:
                 "task": deepcopy(task),
                 "goal": goal,
                 "context": deepcopy(context) if context is not None else None,
+                "routing": deepcopy(routing) if routing is not None else None,
+                "skill_id": skill_id,
             },
             name=f"message-task-{task['id']}",
             daemon=True,
@@ -931,13 +1028,19 @@ class Orchestrator:
         task: dict[str, Any],
         goal: str,
         context: dict[str, Any] | None,
+        routing: dict[str, Any] | None = None,
+        skill_id: str | None = None,
     ) -> None:
         background_store: SQLiteStore | None = None
         worker = self
         try:
             worker, background_store = self._background_worker_orchestrator()
             if context is None:
-                context = worker._context_builder.build(session_id=session_id, goal=goal)
+                context = worker._context_builder.build(
+                    session_id=session_id, goal=goal, skill_id=skill_id,
+                )
+                if routing is not None:
+                    context["routing"] = routing
                 plan = worker._planner.plan(goal, context=context)
                 task = worker._store.update_task(task_id=task["id"], plan=plan)
                 task = {**task, "plan": plan}
@@ -961,6 +1064,17 @@ class Orchestrator:
                 )
             else:
                 context = worker._context_with_task_focus(context, task)
+                worker._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="task.started",
+                    payload={
+                        "status": task["status"],
+                        "plan": task["plan"],
+                        "currentStep": task.get("currentStep"),
+                        "context": worker._event_context_summary(context),
+                    },
+                )
             worker._execute_message_task(
                 session_id=session_id,
                 task=task,
@@ -1375,6 +1489,12 @@ class Orchestrator:
             payload={"goal": goal},
         )
 
+        refl_span = self._tracer.start_span(
+            "reflection",
+            trace_id=getattr(self, "_active_trace_id", None),
+            attributes={"taskId": task["id"]},
+        )
+
         tool_output = json.dumps(
             context.get("tool_results", []), ensure_ascii=False,
         )[:2000]
@@ -1411,6 +1531,10 @@ class Orchestrator:
                 "finalScore": result.final_score,
                 "iterations": len(result.iterations),
             },
+        )
+        self._tracer.end_span(
+            refl_span.span_id, status="ok",
+            attributes={"accepted": result.accepted, "iterations": len(result.iterations)},
         )
         return result
 
@@ -1533,12 +1657,19 @@ class Orchestrator:
         """Promote WORKING memories to SESSION after task completion."""
         if self._memory_manager is None:
             return
+        span = self._tracer.start_span(
+            "memory_consolidate",
+            trace_id=getattr(self, "_active_trace_id", None),
+            attributes={"sessionId": session_id},
+        )
         try:
             count = self._memory_manager.consolidate(session_id)
             if count > 0:
                 logger.info("Consolidated %d working memories for session %s", count, session_id)
+            self._tracer.end_span(span.span_id, status="ok", attributes={"count": count})
         except Exception:  # noqa: BLE001
             logger.debug("Memory consolidation failed for session %s", session_id, exc_info=True)
+            self._tracer.end_span(span.span_id, status="error")
 
     def _remember_task_result(self, *, session_id: str, task: dict[str, Any]) -> None:
         if not hasattr(self._store, "update_session_summary"):
@@ -2589,9 +2720,56 @@ class Orchestrator:
             )
             command_result = tool_result.get("result", {})
             command_log = command_result.get("commandLog", {})
+            cmd_status = command_result.get("status")
+            exit_code = command_result.get("exitCode")
+
+            if cmd_status == "failed":
+                summary = f"Command failed with status {cmd_status} and exit code {exit_code}."
+                runtime_task["plan"] = self._planner.advance(
+                    runtime_task["plan"],
+                    "run-command",
+                    final_status="failed",
+                )
+                runtime_task["plan"] = self._planner.advance(
+                    runtime_task["plan"],
+                    "summarize-findings",
+                    final_status="failed",
+                )
+                failed_task = self._store.update_task(
+                    task_id=task["id"],
+                    status="failed",
+                    plan=runtime_task["plan"],
+                    result_summary=summary,
+                    error_code="COMMAND_EXECUTION_FAILED",
+                )
+                runtime_task = {
+                    **failed_task,
+                    "plan": runtime_task["plan"],
+                    "resultSummary": summary,
+                }
+                self._store.create_message(
+                    session_id=task["sessionId"],
+                    task_id=runtime_task["id"],
+                    role="assistant",
+                    content=summary,
+                )
+                self._publish(
+                    session_id=task["sessionId"],
+                    task=runtime_task,
+                    event_type="task.failed",
+                    payload={
+                        "status": "failed",
+                        "plan": runtime_task["plan"],
+                        "detail": summary,
+                        "error_code": "COMMAND_EXECUTION_FAILED",
+                        "commandLogId": command_log.get("id"),
+                    },
+                )
+                return runtime_task
+
             summary = (
-                f"Approved command finished with status {command_result.get('status')} "
-                f"and exit code {command_result.get('exitCode')}."
+                f"Approved command finished with status {cmd_status} "
+                f"and exit code {exit_code}."
             )
             completed_task = self._store.update_task(
                 task_id=task["id"],
@@ -2889,16 +3067,26 @@ class Orchestrator:
             # Inject recalled memories into context on first step
             if steps == 0 and self._memory_manager is not None:
                 workspace_id = context.get("workspace_id")
-                recalled = self._memory_manager.recall(
-                    workspace_id=workspace_id,
-                    session_id=session_id,
-                    query=goal,
-                    limit=5,
+                mem_span = self._tracer.start_span(
+                    "memory_recall",
+                    trace_id=getattr(self, "_active_trace_id", None),
+                    parent_span_id=getattr(self, "_active_parent_span_id", None),
+                    attributes={"query": goal[:200]},
                 )
-                if recalled:
-                    mem_lines = [f"- {e.content[:200]}" for e in recalled]
-                    mem_hint = "[Relevant memories]\n" + "\n".join(mem_lines)
-                    messages.append({"role": "system", "content": mem_hint})
+                try:
+                    recalled = self._memory_manager.recall(
+                        workspace_id=workspace_id,
+                        session_id=session_id,
+                        query=goal,
+                        limit=5,
+                    )
+                    if recalled:
+                        mem_lines = [f"- {e.content[:200]}" for e in recalled]
+                        mem_hint = "[Relevant memories]\n" + "\n".join(mem_lines)
+                        messages.append({"role": "system", "content": mem_hint})
+                    self._tracer.end_span(mem_span.span_id, status="ok", attributes={"count": len(recalled) if recalled else 0})
+                except Exception:  # noqa: BLE001
+                    self._tracer.end_span(mem_span.span_id, status="error")
 
             provider_context = {
                 **context,
@@ -3436,13 +3624,17 @@ class Orchestrator:
         return [{"role": "user", "content": goal}]
 
     def _provider_tools(self, context: dict[str, Any]) -> list[dict[str, Any]]:
-        openai_tools = context.get("openai_tools")
-        if isinstance(openai_tools, list) and openai_tools:
-            return list(openai_tools)
         tools_by_name: dict[str, dict[str, Any]] = {}
+        # 1. Start with context-level tools (built by ContextBuilder)
+        openai_tools = context.get("openai_tools")
+        if isinstance(openai_tools, list):
+            for schema in openai_tools:
+                if isinstance(schema, dict) and isinstance(schema.get("name"), str):
+                    tools_by_name[schema["name"]] = schema
         for schema in context.get("tools") or []:
             if isinstance(schema, dict) and isinstance(schema.get("name"), str):
-                tools_by_name[schema["name"]] = schema
+                tools_by_name.setdefault(schema["name"], schema)
+        # 2. Always merge MCP / dynamically registered tools
         for schema in self._tool_registry.schemas:
             if isinstance(schema, dict) and isinstance(schema.get("name"), str):
                 tools_by_name.setdefault(schema["name"], schema)
@@ -3726,7 +3918,7 @@ class Orchestrator:
             if tool_spec["name"] == "task":
                 result = self._subagent_service.dispatch(tool_arguments)
             else:
-                result = self._tool_registry.execute(tool_spec["name"], tool_arguments)
+                result = self._tool_registry.execute(tool_spec["name"], tool_arguments, session_id=session_id)
             self._tracer.end_span(tool_span.span_id, status="ok")
         except Exception as exc:  # noqa: BLE001
             result = {

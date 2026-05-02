@@ -311,7 +311,7 @@ class McpClientManager:
     # ── shutdown ────────────────────────────────────────────────────
 
     def shutdown(self) -> None:
-        """Disconnect all servers and stop the event loop."""
+        """Disconnect all servers and stop the event loop cleanly."""
         if self._loop is None:
             return
         # Disconnect all servers synchronously
@@ -320,9 +320,30 @@ class McpClientManager:
                 self._run_async(self.disconnect_server(sid))
             except Exception:  # noqa: BLE001
                 pass
+        # Cancel all remaining tasks and await their cleanup to avoid
+        # "RuntimeWarning: coroutine was never awaited" warnings.
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._cancel_and_await_tasks(), self._loop,
+            )
+            future.result(timeout=5)
+        except Exception:  # noqa: BLE001
+            pass
         # Stop loop
         self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
         self._loop = None
+
+    async def _cancel_and_await_tasks(self) -> None:
+        """Cancel all outstanding tasks and wait for them to finish."""
+        if self._loop is None:
+            return
+        tasks = [t for t in asyncio.all_tasks(self._loop) if t is not asyncio.current_task()]
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        # Wait for cancelled tasks to suppress RuntimeWarning
+        await asyncio.gather(*tasks, return_exceptions=True)

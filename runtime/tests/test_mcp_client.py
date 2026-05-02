@@ -571,21 +571,29 @@ class TestMcpClientManagerShutdown:
             mgr._connections[sid] = conn
             mgr._tool_map[f"mcp__{sid}__query"] = (sid, "query")
 
-        # Mock _run_async to avoid real async
-        mgr._run_async = MagicMock()
+        # Mock _run_async to avoid real async — close coroutines to suppress warnings
+        def _mock_run_async(coro):
+            coro.close()
+        mgr._run_async = MagicMock(side_effect=_mock_run_async)
         loop_mock = MagicMock()
         mgr._loop = loop_mock
         thread = MagicMock()
         mgr._thread = thread
 
-        mgr.shutdown()
+        # Patch asyncio.run_coroutine_threadsafe used by new shutdown path
+        with patch("asyncio.run_coroutine_threadsafe") as mock_rcts:
+            mock_rcts.return_value.result.return_value = None
+            mgr.shutdown()
 
-        # Should have attempted disconnect for each server
-        assert mgr._run_async.call_count == 2
-        loop_mock.call_soon_threadsafe.assert_called_once_with(loop_mock.stop)
-        thread.join.assert_called_once_with(timeout=5)
-        assert mgr._loop is None
-        assert mgr._thread is None
+            # Should have attempted disconnect for each server
+            assert mgr._run_async.call_count == 2
+            # New shutdown uses run_coroutine_threadsafe for cancel, then loop.stop
+            calls = loop_mock.call_soon_threadsafe.call_args_list
+            assert len(calls) == 1
+            assert calls[0].args[0] == loop_mock.stop
+            thread.join.assert_called_once_with(timeout=5)
+            assert mgr._loop is None
+            assert mgr._thread is None
         store.close()
 
 

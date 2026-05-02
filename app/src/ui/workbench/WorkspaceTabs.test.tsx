@@ -11,8 +11,20 @@ afterEach(() => {
 
 const tabs: WorkbenchTab[] = [
   { id: "system:new-session", kind: "new-session", title: "New Session", closable: true },
-  { id: "session:sess_1", kind: "session", title: "Repair failing tests", sessionId: "sess_1", closable: true },
-  { id: "session:sess_2", kind: "session", title: "Check Claude CLI", sessionId: "sess_2", closable: true },
+  {
+    id: "session:sess_1",
+    kind: "session",
+    title: "Repair failing tests",
+    sessionId: "sess_1",
+    closable: true,
+  },
+  {
+    id: "session:sess_2",
+    kind: "session",
+    title: "Check Claude CLI",
+    sessionId: "sess_2",
+    closable: true,
+  },
 ];
 
 describe("WorkspaceTabs", () => {
@@ -32,12 +44,12 @@ describe("WorkspaceTabs", () => {
     );
 
     fireEvent.contextMenu(screen.getByRole("tab", { name: "Repair failing tests" }));
-    await user.click(screen.getByRole("menuitem", { name: "关闭其他对话" }));
+    await user.click(screen.getByRole("menuitem", { name: "Close other tabs" }));
 
     expect(onCloseOtherTabs).toHaveBeenCalledWith("session:sess_1");
 
     fireEvent.contextMenu(screen.getByRole("tab", { name: "Check Claude CLI" }));
-    await user.click(screen.getByRole("menuitem", { name: "关闭此对话" }));
+    await user.click(screen.getByRole("menuitem", { name: "Close tab" }));
 
     expect(onCloseTab).toHaveBeenCalledWith("session:sess_2");
   });

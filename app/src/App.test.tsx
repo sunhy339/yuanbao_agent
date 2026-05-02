@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -19,6 +19,8 @@ const runtimeMocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
   listTasks: vi.fn(),
   listScheduledTasks: vi.fn(),
+  listSkills: vi.fn(),
+  listMcpServers: vi.fn(),
   listMessages: vi.fn(),
   subscribeEvents: vi.fn(),
 }));
@@ -110,6 +112,8 @@ function setupRuntimeMocks() {
   runtimeMocks.listScheduledTasks.mockResolvedValue({
     tasks: [],
   } satisfies ScheduledTaskListResult);
+  runtimeMocks.listSkills.mockResolvedValue({ skills: [] });
+  runtimeMocks.listMcpServers.mockResolvedValue({ servers: [] });
   runtimeMocks.listMessages.mockImplementation(
     async ({ sessionId }: { sessionId: string }): Promise<MessageListResult> => ({
       messages: messagesBySession[sessionId] ?? [],
@@ -139,18 +143,19 @@ describe("App session message recovery", () => {
         limit: 500,
       });
     });
-    expect(screen.getByRole("tab", { name: "New Session" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
   });
 
   it("loads persisted messages when selecting and switching sessions", async () => {
     const user = userEvent.setup();
     render(<App />);
+    const sessionRail = await screen.findByLabelText("Sessions");
 
-    await user.click(await screen.findByRole("button", { name: /Alpha Session/ }));
+    await user.click(await within(sessionRail).findByRole("button", { name: /Alpha Session/ }));
     expect(await screen.findByText("Alpha persisted request")).toBeInTheDocument();
     expect(screen.getByText("Alpha persisted answer")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Beta Session/ }));
+    await user.click(within(sessionRail).getByRole("button", { name: /Beta Session/ }));
     expect(await screen.findByText("Beta persisted request")).toBeInTheDocument();
     expect(screen.getByText("Beta persisted answer")).toBeInTheDocument();
     expect(screen.queryByText("Alpha persisted request")).not.toBeInTheDocument();
@@ -166,11 +171,12 @@ describe("App session message recovery", () => {
   it("reloads persisted messages when activating already-open session tabs", async () => {
     const user = userEvent.setup();
     render(<App />);
+    const sessionRail = await screen.findByLabelText("Sessions");
 
-    await user.click(await screen.findByRole("button", { name: /Alpha Session/ }));
+    await user.click(await within(sessionRail).findByRole("button", { name: /Alpha Session/ }));
     expect(await screen.findByText("Alpha persisted request")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Beta Session/ }));
+    await user.click(within(sessionRail).getByRole("button", { name: /Beta Session/ }));
     expect(await screen.findByText("Beta persisted request")).toBeInTheDocument();
     runtimeMocks.listMessages.mockClear();
 

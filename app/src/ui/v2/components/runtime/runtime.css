@@ -1,0 +1,362 @@
+.yb-runtime-kicker {
+  margin: 0;
+  color: var(--yb-primary);
+  font-family: var(--yb-font-mono);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.yb-runtime-signal,
+.yb-context-budget,
+.yb-routing-card,
+.yb-tool-trace,
+.yb-approval-card,
+.yb-patch-plan,
+.yb-command-output {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--yb-line);
+  border-radius: var(--yb-radius-lg);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 42%),
+    var(--yb-surface);
+  box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.yb-runtime-signal {
+  display: grid;
+  gap: 8px;
+  min-height: 104px;
+  padding: 13px;
+}
+
+.yb-runtime-signal::before,
+.yb-routing-card::before,
+.yb-approval-card::before,
+.yb-patch-plan::before,
+.yb-command-output::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, var(--yb-primary), transparent 38%) top left / 58% 1px no-repeat,
+    linear-gradient(180deg, var(--yb-accent), transparent 44%) top left / 1px 54% no-repeat;
+  opacity: 0.32;
+}
+
+.yb-runtime-signal > *,
+.yb-routing-card > *,
+.yb-approval-card > *,
+.yb-patch-plan > *,
+.yb-command-output > * {
+  position: relative;
+  z-index: 1;
+}
+
+.yb-runtime-signal > div {
+  display: grid;
+  gap: 5px;
+}
+
+.yb-runtime-signal span,
+.yb-context-budget footer,
+.yb-command-output-meta,
+.yb-patch-plan li small {
+  color: var(--yb-muted);
+  font-family: var(--yb-font-mono);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.yb-runtime-signal strong {
+  color: var(--yb-ink);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.yb-runtime-signal p,
+.yb-routing-card p,
+.yb-approval-card p,
+.yb-tool-trace p {
+  margin: 0;
+  color: var(--yb-muted);
+  line-height: 1.45;
+}
+
+.yb-context-budget {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.yb-context-budget header,
+.yb-routing-card header,
+.yb-approval-card header,
+.yb-patch-plan header,
+.yb-command-output header {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.yb-context-budget header strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--yb-ink);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.yb-context-budget-track {
+  position: relative;
+  overflow: hidden;
+  height: 12px;
+  border: 1px solid var(--yb-line);
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.34);
+}
+
+.yb-context-budget-track span,
+.yb-context-budget-track i {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  border-radius: inherit;
+}
+
+.yb-context-budget-track span {
+  background: linear-gradient(90deg, var(--yb-primary), var(--yb-accent));
+}
+
+.yb-context-budget-track i {
+  left: auto;
+  right: 0;
+  background: rgba(245, 158, 11, 0.32);
+}
+
+.yb-context-budget footer,
+.yb-command-output-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.yb-routing-card,
+.yb-approval-card,
+.yb-patch-plan,
+.yb-command-output {
+  display: grid;
+  gap: 12px;
+  padding: 13px;
+}
+
+.yb-routing-card h3,
+.yb-approval-card h3,
+.yb-patch-plan h3,
+.yb-command-output h3 {
+  margin: 4px 0 0;
+  color: var(--yb-ink);
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.yb-routing-card dl,
+.yb-approval-card dl,
+.yb-patch-plan dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.yb-routing-card dl div,
+.yb-approval-card dl div,
+.yb-patch-plan dl div {
+  min-width: 0;
+  border: 1px solid var(--yb-line);
+  border-radius: var(--yb-radius-md);
+  padding: 8px;
+  background: rgba(2, 6, 23, 0.26);
+}
+
+.yb-routing-card dt,
+.yb-approval-card dt,
+.yb-patch-plan dt {
+  color: var(--yb-muted);
+  font-family: var(--yb-font-mono);
+  font-size: 10px;
+  font-weight: 820;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.yb-routing-card dd,
+.yb-approval-card dd,
+.yb-patch-plan dd {
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: var(--yb-ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yb-routing-card small {
+  color: var(--yb-warning);
+}
+
+.yb-tool-trace {
+  display: grid;
+}
+
+.yb-tool-trace-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  padding: 10px 12px;
+  color: var(--yb-ink);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.yb-tool-trace-head:hover {
+  background: rgba(34, 211, 238, 0.08);
+}
+
+.yb-tool-trace-head span {
+  overflow: hidden;
+  font-weight: 780;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yb-tool-trace-head i {
+  color: var(--yb-muted);
+  font-family: var(--yb-font-mono);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.yb-tool-trace > p {
+  padding: 0 12px 12px;
+}
+
+.yb-tool-trace-detail {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.yb-tool-trace-detail section {
+  display: grid;
+  gap: 8px;
+}
+
+.yb-tool-trace-detail header,
+.yb-patch-plan footer,
+.yb-approval-card footer,
+.yb-command-output footer,
+.yb-runtime-signal footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.yb-tool-trace-detail pre,
+.yb-command-output pre {
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--yb-line);
+  border-radius: var(--yb-radius-md);
+  padding: 10px;
+  color: #dbeafe;
+  background: rgba(2, 6, 23, 0.72);
+  font: 12px/1.55 var(--yb-font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.yb-approval-card[data-risk="high"] {
+  border-color: rgba(251, 113, 133, 0.38);
+}
+
+.yb-approval-card[data-risk="medium"] {
+  border-color: rgba(245, 158, 11, 0.34);
+}
+
+.yb-patch-plan ul {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.yb-patch-plan li {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--yb-line);
+  border-radius: var(--yb-radius-md);
+  padding: 8px;
+  background: rgba(2, 6, 23, 0.24);
+}
+
+.yb-patch-plan li span {
+  overflow: hidden;
+  color: var(--yb-ink);
+  font-family: var(--yb-font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yb-command-output h3 {
+  max-width: 52ch;
+  overflow: hidden;
+  font-family: var(--yb-font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1180px) {
+  .yb-routing-card dl,
+  .yb-approval-card dl,
+  .yb-patch-plan dl {
+    grid-template-columns: 1fr;
+  }
+}
+
+.yb-v2[data-theme="light"] .yb-runtime-signal,
+.yb-v2[data-theme="light"] .yb-routing-card,
+.yb-v2[data-theme="light"] .yb-tool-trace,
+.yb-v2[data-theme="light"] .yb-approval-card,
+.yb-v2[data-theme="light"] .yb-patch-plan,
+.yb-v2[data-theme="light"] .yb-command-output {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), transparent 48%),
+    var(--yb-surface);
+  box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.yb-v2[data-theme="light"] .yb-context-budget-track,
+.yb-v2[data-theme="light"] .yb-routing-card dd,
+.yb-v2[data-theme="light"] .yb-patch-plan li {
+  background: rgba(241, 245, 249, 0.82);
+}
+
+.yb-v2[data-theme="light"] .yb-tool-trace-detail pre,
+.yb-v2[data-theme="light"] .yb-command-output pre {
+  color: #0f172a;
+  background: rgba(248, 250, 252, 0.92);
+}

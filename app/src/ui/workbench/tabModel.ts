@@ -1,13 +1,18 @@
 import type { SystemWorkspaceKind, WorkbenchTab, WorkbenchTabResult, WorkbenchSession } from "./types";
 
 const SYSTEM_TITLES: Record<SystemWorkspaceKind, string> = {
+  overview: "Overview",
   "new-session": "New Session",
   scheduled: "Scheduled",
+  mcp: "MCP Center",
+  skills: "Agent Skills",
+  appearance: "Appearance",
+  playground: "Playground",
   settings: "Settings",
 };
 
 export function getInitialTabs(): WorkbenchTab[] {
-  return [{ id: "system:new-session", kind: "new-session", title: SYSTEM_TITLES["new-session"], closable: true }];
+  return [{ id: "system:overview", kind: "overview", title: SYSTEM_TITLES.overview, closable: true }];
 }
 
 export function openSystemTab(tabs: WorkbenchTab[], kind: SystemWorkspaceKind): WorkbenchTabResult {

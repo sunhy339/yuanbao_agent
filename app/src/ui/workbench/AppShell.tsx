@@ -1,21 +1,14 @@
 import type { ReactNode } from "react";
-import { ComposerDock } from "./ComposerDock";
-import { DesktopTitlebar } from "./DesktopTitlebar";
-import { GlobalSidebar } from "./GlobalSidebar";
-import { WorkspaceFrame } from "./WorkspaceFrame";
-import { WorkspaceTabs } from "./WorkspaceTabs";
+import { AppShellV2 } from "../v2/layout/AppShellV2";
+import {
+  ThemeProvider,
+  type AccentColor,
+  type DensityMode,
+  type MotionMode,
+  type RadiusMode,
+  type ThemeMode,
+} from "../v2/theme/ThemeProvider";
 import type { SystemWorkspaceKind, WorkbenchSession, WorkbenchTab } from "./types";
-
-function LoadingSkeleton() {
-  return (
-    <div className="loading-skeleton" aria-label="Loading">
-      <div className="skeleton-bar skeleton-bar-wide" />
-      <div className="skeleton-bar skeleton-bar-medium" />
-      <div className="skeleton-bar skeleton-bar-narrow" />
-      <div className="skeleton-bar skeleton-bar-medium" />
-    </div>
-  );
-}
 
 interface AppShellProps {
   tabs: WorkbenchTab[];
@@ -38,7 +31,18 @@ interface AppShellProps {
   sending?: boolean;
   providerLabel: string;
   cwdLabel: string;
+  runtimeLabel?: string;
+  mcpLabel?: string;
+  approvalLabel?: string;
+  contextLabel?: string;
   loading?: boolean;
+  theme?: ThemeMode;
+  density?: DensityMode;
+  radius?: RadiusMode;
+  motion?: MotionMode;
+  accentColor?: AccentColor;
+  transparency?: number;
+  fontScale?: number;
   children: ReactNode;
 }
 
@@ -63,44 +67,59 @@ export function AppShell({
   sending,
   providerLabel,
   cwdLabel,
+  runtimeLabel,
+  mcpLabel,
+  approvalLabel,
+  contextLabel,
   loading,
+  theme = "dark",
+  density = "comfortable",
+  radius = "md",
+  motion = "subtle",
+  accentColor = "cyan",
+  transparency,
+  fontScale,
   children,
 }: AppShellProps) {
   return (
-    <div className="workbench-shell">
-      <DesktopTitlebar />
-      <div className="workbench-body">
-        <GlobalSidebar
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          workspaceName={workspaceName}
-          onOpenSystemTab={onOpenSystemTab}
-          onOpenSessionTab={onOpenSessionTab}
-          onRenameSession={onRenameSession}
-          onDeleteSession={onDeleteSession}
-        />
-        <section className="workbench-main" aria-label="Workbench desk">
-          <WorkspaceTabs
-            tabs={tabs}
-            activeTabId={activeTabId}
-            onActivateTab={onActivateTab}
-            onCloseTab={onCloseTab}
-            onCloseOtherTabs={onCloseOtherTabs}
-            onRenameSession={onRenameSession}
-          />
-          <WorkspaceFrame composerVisible={composerVisible}>{loading ? <LoadingSkeleton /> : children}</WorkspaceFrame>
-          <ComposerDock
-            promptValue={promptValue}
-            onPromptChange={onPromptChange}
-            onSubmitPrompt={onSubmitPrompt}
-            disabled={disabled}
-            sending={sending}
-            providerLabel={providerLabel}
-            cwdLabel={cwdLabel}
-            hidden={!composerVisible}
-          />
-        </section>
-      </div>
-    </div>
+    <ThemeProvider
+      theme={theme}
+      density={density}
+      radius={radius}
+      motion={motion}
+      accentColor={accentColor}
+      transparency={transparency}
+      fontScale={fontScale}
+    >
+      <AppShellV2
+        tabs={tabs}
+        activeTabId={activeTabId}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        workspaceName={workspaceName}
+        composerVisible={composerVisible}
+        promptValue={promptValue}
+        onPromptChange={onPromptChange}
+        onOpenSystemTab={onOpenSystemTab}
+        onOpenSessionTab={onOpenSessionTab}
+        onActivateTab={onActivateTab}
+        onCloseTab={onCloseTab}
+        onCloseOtherTabs={onCloseOtherTabs}
+        onRenameSession={onRenameSession}
+        onDeleteSession={onDeleteSession}
+        onSubmitPrompt={onSubmitPrompt}
+        disabled={disabled}
+        sending={sending}
+        providerLabel={providerLabel}
+        cwdLabel={cwdLabel}
+        loading={loading}
+        runtimeLabel={runtimeLabel}
+        mcpLabel={mcpLabel}
+        approvalLabel={approvalLabel}
+        contextLabel={contextLabel}
+      >
+        {children}
+      </AppShellV2>
+    </ThemeProvider>
   );
 }

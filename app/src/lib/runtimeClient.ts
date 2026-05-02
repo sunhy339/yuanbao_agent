@@ -22,6 +22,16 @@ import type {
   MessageSendParams,
   MessageSendResult,
   MessageRecord,
+  McpServerCreateParams,
+  McpServerDeleteParams,
+  McpServerDeleteResult,
+  McpServerListParams,
+  McpServerListResult,
+  McpServerRecord,
+  McpServerResult,
+  McpServerUpdateParams,
+  McpToolsRefreshParams,
+  McpToolsRefreshRpcResult,
   PatchRecord,
   ProviderTestParams,
   ProviderTestResult,
@@ -44,6 +54,14 @@ import type {
   SessionUpdateParams,
   SessionUpdateResult,
   SessionRecord,
+  SkillCreateParams,
+  SkillDeleteParams,
+  SkillDeleteResult,
+  SkillListParams,
+  SkillListResult,
+  SkillPresetRecord,
+  SkillResult,
+  SkillUpdateParams,
   TaskCancelParams,
   TaskControlResult,
   TaskGetResult,
@@ -104,6 +122,8 @@ interface MockState {
   traces: TraceEventRecord[];
   scheduledTasks: Record<string, ScheduledTaskRecord>;
   scheduledRuns: ScheduledTaskRunRecord[];
+  skills: Record<string, SkillPresetRecord>;
+  mcpServers: Record<string, McpServerRecord>;
 }
 
 const mockState: MockState = {
@@ -117,6 +137,8 @@ const mockState: MockState = {
   traces: [],
   scheduledTasks: {},
   scheduledRuns: [],
+  skills: {},
+  mcpServers: {},
 };
 
 export interface HostStatus {
@@ -271,6 +293,75 @@ function buildMockRuntimeConfig(): RuntimeConfig {
       glob: [],
       ignore: config.workspace.ignore,
     },
+  };
+}
+
+function normalizeBoolean(value: unknown): boolean {
+  return value === true || value === 1 || value === "1";
+}
+
+function normalizeSkillRecord(raw: SkillPresetRecord): SkillPresetRecord {
+  return {
+    ...raw,
+    systemPrompt: raw.systemPrompt ?? raw.system_prompt,
+    toolWhitelist: raw.toolWhitelist ?? raw.tool_whitelist ?? [],
+    parameterConstraints: raw.parameterConstraints ?? raw.parameter_constraints ?? {},
+    isBuiltin: raw.isBuiltin ?? normalizeBoolean(raw.is_builtin),
+    createdAt: raw.createdAt ?? raw.created_at,
+    updatedAt: raw.updatedAt ?? raw.updated_at,
+  };
+}
+
+function normalizeMcpServerRecord(raw: McpServerRecord): McpServerRecord {
+  return {
+    ...raw,
+    enabled: normalizeBoolean(raw.enabled),
+    args: raw.args ?? [],
+    headers: raw.headers ?? {},
+    env: raw.env ?? {},
+    createdAt: raw.createdAt ?? raw.created_at,
+    updatedAt: raw.updatedAt ?? raw.updated_at,
+  };
+}
+
+function sortSkills(skills: SkillPresetRecord[]): SkillPresetRecord[] {
+  return [...skills].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
+}
+
+function sortMcpServers(servers: McpServerRecord[]): McpServerRecord[] {
+  return [...servers].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
+}
+
+function buildMockSkill(payload: SkillCreateParams): SkillPresetRecord {
+  const now = Date.now();
+  return {
+    id: payload.skillId ?? payload.id ?? `skill_${now}_${Math.random().toString(16).slice(2, 8)}`,
+    name: payload.name.trim(),
+    description: payload.description ?? "",
+    systemPrompt: payload.systemPrompt ?? payload.system_prompt ?? "",
+    toolWhitelist: payload.toolWhitelist ?? payload.tool_whitelist ?? [],
+    parameterConstraints: payload.parameterConstraints ?? payload.parameter_constraints ?? {},
+    category: payload.category ?? "custom",
+    isBuiltin: false,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function buildMockMcpServer(payload: McpServerCreateParams): McpServerRecord {
+  const now = Date.now();
+  return {
+    id: payload.serverId ?? payload.id ?? `mcp_${now}_${Math.random().toString(16).slice(2, 8)}`,
+    name: payload.name.trim(),
+    transport: payload.transport ?? "stdio",
+    command: payload.command ?? "",
+    args: payload.args ?? [],
+    url: payload.url ?? "",
+    headers: payload.headers ?? {},
+    env: payload.env ?? {},
+    enabled: payload.enabled ?? true,
+    createdAt: now,
+    updatedAt: now,
   };
 }
 
@@ -954,6 +1045,7 @@ export class RuntimeClient {
       mockState.traces = [];
       mockState.scheduledTasks = {};
       mockState.scheduledRuns = [];
+      mockState.mcpServers = {};
       mockState.config = mergeRuntimeConfig(mockState.config, {
         workspace: {
           ignore: mockState.config.workspace.ignore,
@@ -973,6 +1065,7 @@ export class RuntimeClient {
     mockState.traces = [];
     mockState.scheduledTasks = {};
     mockState.scheduledRuns = [];
+    mockState.mcpServers = {};
     mockState.config = mergeRuntimeConfig(mockState.config, {
       workspace: {
         ignore: mockState.config.workspace.ignore,
@@ -1551,6 +1644,151 @@ export class RuntimeClient {
       return { metrics: [] };
     }
     return invokePayloadOrReject<{ metrics: unknown[] }>("metrics_list", payload ?? {});
+  }
+
+  async listSkills(payload: SkillListParams = {}): Promise<SkillListResult> {
+    if (shouldUseBrowserMock()) {
+      return {
+        skills: sortSkills(
+          Object.values(mockState.skills)
+            .map(normalizeSkillRecord)
+            .filter((skill) => !payload.category || skill.category === payload.category),
+        ),
+      };
+    }
+
+    const result = await invokePayloadOrReject<SkillListResult>("skill_list", payload);
+    const skills = sortSkills(result.skills.map(normalizeSkillRecord));
+    mockState.skills = Object.fromEntries(skills.map((skill) => [skill.id, skill]));
+    return { skills };
+  }
+
+  async createSkill(payload: SkillCreateParams): Promise<SkillResult> {
+    if (shouldUseBrowserMock()) {
+      const skill = buildMockSkill(payload);
+      mockState.skills[skill.id] = skill;
+      return { skill };
+    }
+
+    const result = await invokePayloadOrReject<SkillResult>("skill_create", payload);
+    const skill = normalizeSkillRecord(result.skill);
+    mockState.skills[skill.id] = skill;
+    return { skill };
+  }
+
+  async updateSkill(payload: SkillUpdateParams): Promise<SkillResult> {
+    if (shouldUseBrowserMock()) {
+      const current = mockState.skills[payload.skillId];
+      if (!current) {
+        throw new Error(`Skill not found: ${payload.skillId}`);
+      }
+      const skill = normalizeSkillRecord({
+        ...current,
+        ...payload,
+        id: current.id,
+        systemPrompt: payload.systemPrompt ?? payload.system_prompt ?? current.systemPrompt,
+        toolWhitelist: payload.toolWhitelist ?? payload.tool_whitelist ?? current.toolWhitelist,
+        parameterConstraints:
+          payload.parameterConstraints ?? payload.parameter_constraints ?? current.parameterConstraints,
+        updatedAt: Date.now(),
+      });
+      mockState.skills[skill.id] = skill;
+      return { skill };
+    }
+
+    const result = await invokePayloadOrReject<SkillResult>("skill_update", payload);
+    const skill = normalizeSkillRecord(result.skill);
+    mockState.skills[skill.id] = skill;
+    return { skill };
+  }
+
+  async deleteSkill(payload: SkillDeleteParams): Promise<SkillDeleteResult> {
+    if (shouldUseBrowserMock()) {
+      delete mockState.skills[payload.skillId];
+      return { deleted: true, skillId: payload.skillId };
+    }
+
+    const result = await invokePayloadOrReject<SkillDeleteResult>("skill_delete", payload);
+    delete mockState.skills[payload.skillId];
+    return result;
+  }
+
+  async listMcpServers(payload: McpServerListParams = {}): Promise<McpServerListResult> {
+    if (shouldUseBrowserMock()) {
+      return {
+        servers: sortMcpServers(
+          Object.values(mockState.mcpServers)
+            .map(normalizeMcpServerRecord)
+            .filter((server) => !payload.enabledOnly || server.enabled),
+        ),
+      };
+    }
+
+    const result = await invokePayloadOrReject<McpServerListResult>("mcp_server_list", payload);
+    const servers = sortMcpServers(result.servers.map(normalizeMcpServerRecord));
+    mockState.mcpServers = Object.fromEntries(servers.map((server) => [server.id, server]));
+    return { servers };
+  }
+
+  async createMcpServer(payload: McpServerCreateParams): Promise<McpServerResult> {
+    if (shouldUseBrowserMock()) {
+      const server = buildMockMcpServer(payload);
+      mockState.mcpServers[server.id] = server;
+      return { server };
+    }
+
+    const result = await invokePayloadOrReject<McpServerResult>("mcp_server_create", payload);
+    const server = normalizeMcpServerRecord(result.server);
+    mockState.mcpServers[server.id] = server;
+    return { server };
+  }
+
+  async updateMcpServer(payload: McpServerUpdateParams): Promise<McpServerResult> {
+    if (shouldUseBrowserMock()) {
+      const current = mockState.mcpServers[payload.serverId];
+      if (!current) {
+        throw new Error(`MCP server not found: ${payload.serverId}`);
+      }
+      const server = normalizeMcpServerRecord({
+        ...current,
+        ...payload,
+        id: current.id,
+        updatedAt: Date.now(),
+      });
+      mockState.mcpServers[server.id] = server;
+      return { server };
+    }
+
+    const result = await invokePayloadOrReject<McpServerResult>("mcp_server_update", payload);
+    const server = normalizeMcpServerRecord(result.server);
+    mockState.mcpServers[server.id] = server;
+    return { server };
+  }
+
+  async deleteMcpServer(payload: McpServerDeleteParams): Promise<McpServerDeleteResult> {
+    if (shouldUseBrowserMock()) {
+      delete mockState.mcpServers[payload.serverId];
+      return { deleted: true, serverId: payload.serverId };
+    }
+
+    const result = await invokePayloadOrReject<McpServerDeleteResult>("mcp_server_delete", payload);
+    delete mockState.mcpServers[payload.serverId];
+    return result;
+  }
+
+  async refreshMcpTools(payload: McpToolsRefreshParams = {}): Promise<McpToolsRefreshRpcResult> {
+    if (shouldUseBrowserMock()) {
+      const serverIds = payload.serverId ? [payload.serverId] : Object.keys(mockState.mcpServers);
+      return {
+        refreshed: serverIds.length,
+        tools: serverIds.flatMap((serverId) => [
+          `mcp__${serverId}__inspect`,
+          `mcp__${serverId}__run`,
+        ]),
+      };
+    }
+
+    return invokePayloadOrReject<McpToolsRefreshRpcResult>("mcp_tools_refresh", payload);
   }
 
   async subscribeEvents(handler: (event: AgentEventEnvelope) => void): Promise<() => void> {

@@ -1,0 +1,284 @@
+.skills-workspace {
+  display: grid;
+  gap: 12px;
+  min-height: 100%;
+  color: var(--yb-ink);
+}
+
+.skills-command-strip,
+.skills-action-row,
+.skills-agent-board,
+.skills-runtime-panel,
+.skills-library {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--yb-line);
+  border-radius: var(--yb-radius-lg);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 40%),
+    rgba(7, 13, 27, 0.68);
+  box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.skills-command-strip::before,
+.skills-agent-board::before,
+.skills-runtime-panel::before,
+.skills-library::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(34, 211, 238, 0.56), transparent 36%) top left / 52% 1px no-repeat,
+    linear-gradient(180deg, rgba(167, 243, 208, 0.26), transparent 38%) top left / 1px 48% no-repeat;
+  opacity: 0.48;
+}
+
+.skills-command-strip {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(440px, auto);
+  gap: 16px;
+  align-items: stretch;
+  padding: 18px 20px;
+  background:
+    linear-gradient(110deg, rgba(34, 211, 238, 0.16), transparent 44%),
+    linear-gradient(300deg, rgba(139, 92, 246, 0.1), transparent 44%),
+    rgba(7, 13, 27, 0.72);
+}
+
+.skills-command-strip h1 {
+  margin: 6px 0 0;
+  color: var(--yb-ink);
+  font-size: clamp(32px, 3.4vw, 48px);
+  line-height: 0.95;
+}
+
+.skills-command-strip p:not(.yb-kicker) {
+  max-width: 72ch;
+  margin: 9px 0 0;
+  color: var(--yb-muted);
+  line-height: 1.48;
+}
+
+.skills-command-strip dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(84px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.skills-command-strip dl div,
+.skills-runtime-panel li,
+.skills-skill-row,
+.skills-agent-card,
+.skills-empty {
+  border: 1px solid rgba(125, 211, 252, 0.16);
+  border-radius: var(--yb-radius-lg);
+  background: rgba(3, 7, 18, 0.38);
+}
+
+.skills-command-strip dl div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.skills-command-strip dt,
+.skills-skill-meta span {
+  color: var(--yb-muted);
+  font-family: var(--yb-font-mono);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.skills-command-strip dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--yb-ink);
+  font-family: var(--yb-font-mono);
+  font-size: 20px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skills-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+}
+
+.skills-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.34fr);
+  gap: 12px;
+}
+
+.skills-agent-board,
+.skills-runtime-panel,
+.skills-library {
+  padding: 14px;
+}
+
+.skills-agent-board > header,
+.skills-library > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.skills-agent-board h2,
+.skills-runtime-panel h2,
+.skills-library h2 {
+  margin: 4px 0 0;
+  color: var(--yb-ink);
+  font-size: 22px;
+}
+
+.skills-agent-lanes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.skills-agent-card {
+  display: grid;
+  gap: 10px;
+  min-height: 162px;
+  padding: 13px;
+}
+
+.skills-agent-card > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.skills-agent-mark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid rgba(34, 211, 238, 0.28);
+  border-radius: 999px;
+  color: #03191f;
+  background: linear-gradient(135deg, #67e8f9, #22d3ee 62%, #a7f3d0);
+  font-weight: 850;
+}
+
+.skills-agent-card h3,
+.skills-skill-row strong,
+.skills-runtime-panel strong,
+.skills-empty strong {
+  margin: 0;
+  color: var(--yb-ink);
+}
+
+.skills-agent-card p,
+.skills-skill-row span,
+.skills-runtime-panel span,
+.skills-empty span {
+  color: var(--yb-muted);
+  line-height: 1.45;
+}
+
+.skills-runtime-panel ul,
+.skills-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.skills-runtime-panel li {
+  display: grid;
+  gap: 5px;
+  padding: 11px;
+}
+
+.skills-skill-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 11px 12px;
+}
+
+.skills-skill-row[data-enabled="true"] {
+  border-color: rgba(34, 211, 238, 0.38);
+  background:
+    linear-gradient(90deg, rgba(8, 145, 178, 0.18), transparent 72%),
+    rgba(3, 7, 18, 0.42);
+}
+
+.skills-skill-row > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.skills-skill-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skills-skill-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.skills-empty {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  padding: 22px;
+  text-align: center;
+}
+
+@media (max-width: 1180px) {
+  .skills-command-strip,
+  .skills-grid,
+  .skills-agent-lanes {
+    grid-template-columns: 1fr;
+  }
+}
+
+.yb-v2[data-theme="light"] .skills-command-strip,
+.yb-v2[data-theme="light"] .skills-runtime-panel,
+.yb-v2[data-theme="light"] .skills-agent-card,
+.yb-v2[data-theme="light"] .skills-skill-matrix,
+.yb-v2[data-theme="light"] .skills-empty {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), transparent 46%),
+    rgba(255, 255, 255, 0.78);
+  box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
+.yb-v2[data-theme="light"] .skills-command-strip {
+  background:
+    linear-gradient(110deg, rgba(6, 182, 212, 0.12), transparent 44%),
+    linear-gradient(300deg, rgba(139, 92, 246, 0.07), transparent 44%),
+    rgba(255, 255, 255, 0.82);
+}
+
+.yb-v2[data-theme="light"] .skills-runtime-panel li,
+.yb-v2[data-theme="light"] .skills-skill-row,
+.yb-v2[data-theme="light"] .skills-agent-card dl {
+  background: rgba(241, 245, 249, 0.78);
+}
+
+.yb-v2[data-theme="light"] .skills-skill-row[data-enabled="true"] {
+  background:
+    linear-gradient(90deg, rgba(6, 182, 212, 0.14), transparent 72%),
+    rgba(241, 245, 249, 0.86);
+}

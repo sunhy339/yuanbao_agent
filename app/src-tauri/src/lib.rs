@@ -15,7 +15,7 @@ use std::{
     thread,
     time::Duration,
 };
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 const EVENT_CHANNEL: &str = "agent://event";
 const RPC_TIMEOUT: Duration = Duration::from_secs(240);
@@ -261,15 +261,15 @@ impl RuntimeBridge {
             return Ok(());
         }
 
-        let repo_root = repo_root()?;
-        let runtime_src = repo_root.join("runtime").join("src");
+        let data_dir = resolve_data_dir(app_handle)?;
+        fs::create_dir_all(&data_dir)
+            .map_err(|reason| format!("Failed to create data directory: {reason}"))?;
+
+        let runtime_src = resolve_runtime_src()?;
         let database_path = env::var_os("LOCAL_AGENT_DB_PATH")
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                repo_root
-                    .join("runtime")
-                    .join(".local-agent-runtime.sqlite3")
-            });
+            .unwrap_or_else(|| data_dir.join("data.db"));
+        let working_dir = resolve_working_dir()?;
         let python_executable =
             env::var("LOCAL_AGENT_PYTHON").unwrap_or_else(|_| "python".to_string());
 
@@ -277,7 +277,7 @@ impl RuntimeBridge {
         command
             .arg("-m")
             .arg("local_agent_runtime.main")
-            .current_dir(&repo_root)
+            .current_dir(&working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -403,6 +403,46 @@ fn repo_root() -> Result<PathBuf, String> {
         })
 }
 
+/// Resolve the data directory for database storage.
+///
+/// In packaged mode (no valid repo root), uses the OS-standard app data dir
+/// provided by Tauri (e.g. `%APPDATA%\<app>` on Windows).
+/// In dev mode, falls back to `repo_root()/runtime/.local-agent-runtime.sqlite3`
+/// only if the repo root is available.
+fn resolve_data_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    match app_handle.path().app_data_dir() {
+        Ok(dir) => Ok(dir),
+        Err(reason) => {
+            // Fallback: try repo_root for dev mode
+            repo_root().map(|root| root.join("runtime")).map_err(|_| {
+                format!("Failed to resolve data directory: {reason}")
+            })
+        }
+    }
+}
+
+/// Resolve the runtime source directory for PYTHONPATH.
+///
+/// In dev mode uses `repo_root()/runtime/src`.
+/// In packaged mode the Python package is installed, so PYTHONPATH can be empty.
+fn resolve_runtime_src() -> Result<PathBuf, String> {
+    match repo_root() {
+        Ok(root) => Ok(root.join("runtime").join("src")),
+        Err(_) => Ok(PathBuf::new()),
+    }
+}
+
+/// Resolve the working directory for the Python process.
+///
+/// In dev mode uses `repo_root()`.
+/// In packaged mode uses the app data directory.
+fn resolve_working_dir() -> Result<PathBuf, String> {
+    repo_root().or_else(|_| {
+        // Packaged mode: use a temp-like dir as working dir
+        env::current_dir().map_err(|e| format!("Failed to resolve working dir: {e}"))
+    })
+}
+
 fn append_path_env(name: &str, first_path: &Path) -> Result<std::ffi::OsString, String> {
     let mut paths = vec![first_path.to_path_buf()];
     if let Some(existing) = env::var_os(name) {
@@ -413,11 +453,14 @@ fn append_path_env(name: &str, first_path: &Path) -> Result<std::ffi::OsString, 
 
 #[tauri::command]
 fn host_status(state: State<'_, RuntimeManager>) -> Result<HostStatus, String> {
+    let root = repo_root()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "(packaged)".to_string());
     Ok(HostStatus {
         runtime_transport: "json-rpc-stdio",
         event_channel: EVENT_CHANNEL,
         runtime_running: state.runtime_running(),
-        repo_root: repo_root()?.display().to_string(),
+        repo_root: root,
         python_module: "local_agent_runtime.main",
     })
 }
@@ -779,6 +822,87 @@ async fn trace_list(
 }
 
 #[tauri::command]
+async fn skill_list(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Option<Value>,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "skill.list".to_string(), payload.unwrap_or_else(|| json!({}))).await
+}
+
+#[tauri::command]
+async fn skill_create(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "skill.create".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn skill_update(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "skill.update".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn skill_delete(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "skill.delete".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn mcp_server_list(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Option<Value>,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "mcp.server.list".to_string(), payload.unwrap_or_else(|| json!({}))).await
+}
+
+#[tauri::command]
+async fn mcp_server_create(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "mcp.server.create".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn mcp_server_update(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "mcp.server.update".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn mcp_server_delete(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "mcp.server.delete".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn mcp_tools_refresh(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Option<Value>,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "mcp.tools.refresh".to_string(), payload.unwrap_or_else(|| json!({}))).await
+}
+
+#[tauri::command]
 fn e2e_fixture() -> Result<Value, String> {
     let flow = env::var("YUANBAO_TAURI_E2E").unwrap_or_default();
     if flow == "ui-smoke" || flow == "session-recovery-seed" || flow == "session-recovery-verify" {
@@ -912,6 +1036,15 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             command_cancel,
             diff_get,
             trace_list,
+            skill_list,
+            skill_create,
+            skill_update,
+            skill_delete,
+            mcp_server_list,
+            mcp_server_create,
+            mcp_server_update,
+            mcp_server_delete,
+            mcp_tools_refresh,
             e2e_fixture,
             e2e_finish
         ])

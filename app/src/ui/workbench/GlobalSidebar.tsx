@@ -74,7 +74,7 @@ export function GlobalSidebar({
 
   function handleConfirmDelete(session: WorkbenchSession) {
     setContextMenu(null);
-    if (window.confirm(`确定删除会话「${session.title || "Untitled Session"}」吗？`)) {
+    if (window.confirm(`Delete session "${session.title || "Untitled Session"}"?`)) {
       onDeleteSession(session.id);
     }
   }
@@ -92,20 +92,24 @@ export function GlobalSidebar({
       </div>
 
       <nav className="sidebar-primary" aria-label="Workbench">
+        <button type="button" aria-label="Overview" onClick={() => onOpenSystemTab("overview")}>
+          <span>Overview</span>
+          <small>Command center</small>
+        </button>
         <button type="button" aria-label="New Session" onClick={() => onOpenSystemTab("new-session")}>
-          <span>新会话</span>
+          <span>New Session</span>
           <small>New session</small>
         </button>
       </nav>
 
-      <section className="sidebar-session-section" aria-labelledby="sidebar-sessions-title">
+      <section className="sidebar-session-section" aria-label="Session navigation">
         <div className="sidebar-section-heading">
-          <h2 id="sidebar-sessions-title">会话</h2>
+          <h2 id="sidebar-sessions-title">Sessions</h2>
           <span>Sessions</span>
         </div>
 
         <label className="sidebar-search">
-          <span>搜索</span>
+          <span>Search</span>
           <input
             type="search"
             aria-label="Search sessions"
@@ -152,9 +156,9 @@ export function GlobalSidebar({
               ),
             )
           ) : sessions.length > 0 ? (
-            <p className="sidebar-empty">未找到匹配会话。</p>
+            <p className="sidebar-empty">No matching sessions.</p>
           ) : (
-            <p className="sidebar-empty">暂无会话记录。</p>
+            <p className="sidebar-empty">No sessions yet.</p>
           )}
         </div>
       </section>
@@ -171,25 +175,41 @@ export function GlobalSidebar({
             role="menuitem"
             onClick={() => handleStartRename(contextMenu.session)}
           >
-            重命名
+            Rename
           </button>
           <button
             type="button"
             role="menuitem"
             onClick={() => handleConfirmDelete(contextMenu.session)}
           >
-            删除会话
+            Delete session
           </button>
         </div>
       ) : null}
 
       <div className="sidebar-footer">
         <button type="button" aria-label="Scheduled" onClick={() => onOpenSystemTab("scheduled")}>
-          <span>调度</span>
+          <span>Scheduled</span>
           <small>Scheduled</small>
         </button>
+        <button type="button" aria-label="MCP Center" onClick={() => onOpenSystemTab("mcp")}>
+          <span>MCP</span>
+          <small>Tools</small>
+        </button>
+        <button type="button" aria-label="Agent Skills" onClick={() => onOpenSystemTab("skills")}>
+          <span>Skills</span>
+          <small>Agents</small>
+        </button>
+        <button type="button" aria-label="Appearance" onClick={() => onOpenSystemTab("appearance")}>
+          <span>Appearance</span>
+          <small>Theme</small>
+        </button>
+        <button type="button" aria-label="Component Playground" onClick={() => onOpenSystemTab("playground")}>
+          <span>Playground</span>
+          <small>UI states</small>
+        </button>
         <button type="button" aria-label="Settings" onClick={() => onOpenSystemTab("settings")}>
-          <span>设置</span>
+          <span>Settings</span>
           <small>Settings</small>
         </button>
       </div>

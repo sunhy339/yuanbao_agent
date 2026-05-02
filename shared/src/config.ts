@@ -76,6 +76,12 @@ export interface UiConfig {
   language: string;
   showRawEvents: boolean;
   theme?: "light" | "dark" | "system";
+  density?: "comfortable" | "compact";
+  radius?: "sm" | "md" | "lg";
+  motion?: "reduced" | "subtle" | "expressive";
+  accentColor?: "cyan" | "violet" | "green" | "amber" | "rose";
+  transparency?: number;
+  fontScale?: number;
   reasoningEffort?: "low" | "medium" | "high" | "max";
   webFetchPreflight?: boolean;
 }
@@ -157,6 +163,12 @@ export const defaultAppConfig: AppConfig = {
     language: "zh-CN",
     showRawEvents: false,
     theme: "light",
+    density: "comfortable",
+    radius: "md",
+    motion: "subtle",
+    accentColor: "cyan",
+    transparency: 0.78,
+    fontScale: 1,
     reasoningEffort: "max",
     webFetchPreflight: true,
   },

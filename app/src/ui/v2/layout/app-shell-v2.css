@@ -1,0 +1,431 @@
+.yb-app-shell {
+  position: relative;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: 30px minmax(0, 1fr);
+  color: var(--yb-ink);
+  background:
+    linear-gradient(135deg, rgba(34, 211, 238, 0.14), transparent 28%),
+    linear-gradient(315deg, rgba(167, 243, 208, 0.1), transparent 30%),
+    linear-gradient(180deg, #050812 0%, var(--yb-bg) 52%, #070b16 100%);
+  font-family: var(--yb-font-ui);
+}
+
+.yb-app-shell::before {
+  content: "";
+  position: absolute;
+  inset: 30px 0 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(125, 211, 252, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(125, 211, 252, 0.055) 1px, transparent 1px),
+    linear-gradient(135deg, transparent 0 47%, rgba(167, 243, 208, 0.08) 48% 52%, transparent 53% 100%);
+  background-size: 38px 38px, 38px 38px, 280px 280px;
+  mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.34), rgba(0, 0, 0, 0.88));
+}
+
+.yb-app-shell button,
+.yb-app-shell input,
+.yb-app-shell textarea,
+.yb-app-shell select {
+  font: inherit;
+}
+
+.yb-app-shell :where(button, input, textarea, select, a, [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--yb-primary) 72%, white);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.14);
+}
+
+.yb-app-body {
+  position: relative;
+  z-index: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 226px minmax(0, 1fr);
+  gap: 0;
+}
+
+.yb-app-main {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 10px 10px;
+}
+
+.yb-topbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 42px;
+  border: 1px solid var(--yb-line);
+  border-radius: var(--yb-radius-lg);
+  padding: 6px 10px;
+  background:
+    linear-gradient(90deg, rgba(34, 211, 238, 0.08), transparent 34%),
+    rgba(6, 11, 22, 0.88);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  backdrop-filter: blur(18px) saturate(1.12);
+}
+
+.yb-topbar-title {
+  min-width: 0;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.yb-topbar-title h1 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--yb-ink);
+  font-size: 14px;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.yb-topbar-status,
+.yb-topbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.yb-workspace-chrome {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 6px;
+}
+
+.yb-app-shell .desktop-titlebar {
+  border-bottom-color: rgba(148, 163, 184, 0.16);
+  background: rgba(2, 6, 23, 0.78);
+  color: var(--yb-ink);
+}
+
+.yb-app-shell .desktop-titlebar-brand,
+.yb-app-shell .desktop-titlebar-controls button {
+  color: var(--yb-ink-soft);
+}
+
+.yb-app-shell .workbench-sidebar {
+  border-right: 1px solid rgba(125, 211, 252, 0.16);
+  background:
+    linear-gradient(180deg, rgba(6, 12, 25, 0.96), rgba(8, 13, 27, 0.82)),
+    linear-gradient(90deg, rgba(34, 211, 238, 0.12), transparent 44%);
+  color: var(--yb-ink);
+  backdrop-filter: blur(24px) saturate(1.18);
+}
+
+.yb-app-shell .sidebar-brand {
+  border-bottom-color: var(--yb-line);
+}
+
+.yb-app-shell .sidebar-brand strong,
+.yb-app-shell .sidebar-section-heading h2,
+.yb-app-shell .session-title {
+  color: var(--yb-ink);
+}
+
+.yb-app-shell .sidebar-brand span,
+.yb-app-shell .sidebar-section-heading span,
+.yb-app-shell .sidebar-search,
+.yb-app-shell .session-meta,
+.yb-app-shell .sidebar-empty {
+  color: var(--yb-muted);
+}
+
+.yb-app-shell .brand-seal {
+  border-color: rgba(34, 211, 238, 0.35);
+  background:
+    radial-gradient(circle at 28% 20%, rgba(255, 255, 255, 0.62), transparent 34%),
+    linear-gradient(135deg, #22d3ee, #6366f1);
+  color: #020617;
+  box-shadow: 0 0 28px rgba(34, 211, 238, 0.24);
+}
+
+.yb-app-shell .sidebar-primary button,
+.yb-app-shell .sidebar-footer button,
+.yb-app-shell .sidebar-session-section,
+.yb-app-shell .sidebar-search input,
+.yb-app-shell .session-rail-item[data-active="true"],
+.yb-app-shell .session-rail-item:hover {
+  border-color: var(--yb-line);
+  background: rgba(9, 16, 31, 0.64);
+  color: var(--yb-ink);
+  box-shadow: none;
+}
+
+.yb-app-shell .sidebar-primary button,
+.yb-app-shell .sidebar-footer button {
+  min-height: 42px;
+  border-radius: 8px;
+  padding-block: 7px;
+}
+
+.yb-app-shell .sidebar-primary button:hover,
+.yb-app-shell .sidebar-footer button:hover {
+  border-color: rgba(34, 211, 238, 0.4);
+  background: linear-gradient(90deg, rgba(8, 145, 178, 0.28), rgba(15, 23, 42, 0.62));
+}
+
+.yb-app-shell .sidebar-primary button small,
+.yb-app-shell .sidebar-footer button small,
+.yb-app-shell .sidebar-search input::placeholder {
+  color: var(--yb-muted);
+}
+
+.yb-app-shell .workspace-tab-wrap {
+  border-color: var(--yb-line);
+  border-radius: 8px;
+  background: rgba(8, 14, 28, 0.72);
+  backdrop-filter: blur(14px);
+}
+
+.yb-app-shell .workspace-tab-wrap[data-active="true"] {
+  border-color: rgba(34, 211, 238, 0.42);
+  background: var(--yb-surface-strong);
+  box-shadow: var(--yb-shadow-tight);
+}
+
+.yb-app-shell .workspace-tab-wrap[data-active="true"]::after {
+  background: var(--yb-primary);
+  box-shadow: 0 0 18px rgba(34, 211, 238, 0.5);
+}
+
+.yb-app-shell .workspace-tab,
+.yb-app-shell .workspace-tab-close {
+  color: var(--yb-ink-soft);
+}
+
+.yb-app-shell .workspace-frame {
+  border-color: var(--yb-line);
+  border-radius: var(--yb-radius-lg);
+  background:
+    linear-gradient(180deg, rgba(14, 23, 42, 0.94), rgba(7, 11, 22, 0.98)),
+    var(--yb-surface-strong);
+  box-shadow: var(--yb-shadow-tight), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+.yb-app-shell .workspace-frame::before {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.yb-app-shell .workspace-scroll {
+  padding: 10px;
+  background:
+    linear-gradient(rgba(125, 211, 252, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(125, 211, 252, 0.035) 1px, transparent 1px);
+  background-size: 42px 42px;
+}
+
+.yb-app-shell .composer-dock {
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  border-color: rgba(34, 211, 238, 0.22);
+  border-radius: var(--yb-radius-lg);
+  background: rgba(15, 23, 42, 0.9);
+  color: var(--yb-ink);
+  box-shadow: 0 18px 46px rgba(2, 6, 23, 0.38);
+  backdrop-filter: blur(20px) saturate(1.14);
+}
+
+.yb-app-shell .composer-input span,
+.yb-app-shell .composer-meta {
+  color: var(--yb-muted);
+}
+
+.yb-app-shell .composer-meta span,
+.yb-app-shell .composer-input textarea {
+  border-color: var(--yb-line);
+  background: rgba(2, 6, 23, 0.34);
+  color: var(--yb-ink);
+}
+
+.yb-app-shell .composer-run {
+  border-color: rgba(34, 211, 238, 0.4);
+  background: var(--yb-primary);
+  color: #042f35;
+  box-shadow: 0 16px 36px rgba(34, 211, 238, 0.18);
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell {
+  background:
+    linear-gradient(135deg, rgba(6, 182, 212, 0.12), transparent 30%),
+    linear-gradient(315deg, rgba(34, 197, 94, 0.08), transparent 34%),
+    linear-gradient(180deg, #f8fbff 0%, var(--yb-bg) 56%, #e8f0f8 100%);
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell::before {
+  background-image:
+    linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    linear-gradient(135deg, transparent 0 47%, rgba(6, 182, 212, 0.08) 48% 52%, transparent 53% 100%);
+  mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.72));
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .desktop-titlebar {
+  border-bottom-color: rgba(15, 23, 42, 0.1);
+  background: rgba(248, 251, 255, 0.86);
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .workbench-sidebar {
+  border-right-color: rgba(15, 23, 42, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(239, 246, 255, 0.84)),
+    linear-gradient(90deg, rgba(6, 182, 212, 0.1), transparent 48%);
+}
+
+.yb-v2[data-theme="light"] .yb-topbar {
+  background:
+    linear-gradient(90deg, rgba(6, 182, 212, 0.1), transparent 36%),
+    rgba(255, 255, 255, 0.84);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .sidebar-primary button,
+.yb-v2[data-theme="light"] .yb-app-shell .sidebar-footer button,
+.yb-v2[data-theme="light"] .yb-app-shell .sidebar-session-section,
+.yb-v2[data-theme="light"] .yb-app-shell .sidebar-search input,
+.yb-v2[data-theme="light"] .yb-app-shell .session-rail-item[data-active="true"],
+.yb-v2[data-theme="light"] .yb-app-shell .session-rail-item:hover,
+.yb-v2[data-theme="light"] .yb-app-shell .workspace-tab-wrap {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .sidebar-primary button:hover,
+.yb-v2[data-theme="light"] .yb-app-shell .sidebar-footer button:hover {
+  background: linear-gradient(90deg, rgba(6, 182, 212, 0.14), rgba(255, 255, 255, 0.78));
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .workspace-frame {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(246, 249, 253, 0.98)),
+    var(--yb-surface-strong);
+  box-shadow: var(--yb-shadow-tight), inset 0 0 0 1px rgba(255, 255, 255, 0.62);
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .workspace-scroll {
+  background:
+    linear-gradient(rgba(15, 23, 42, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.025) 1px, transparent 1px);
+  background-size: 42px 42px;
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .composer-dock {
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.14);
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .composer-meta span,
+.yb-v2[data-theme="light"] .yb-app-shell .composer-input textarea {
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.yb-v2[data-density="compact"] .yb-app-body {
+  grid-template-columns: 202px minmax(0, 1fr);
+}
+
+.yb-v2[data-density="compact"] .yb-app-main {
+  gap: 6px;
+  padding: 6px 8px 8px;
+}
+
+.yb-v2[data-density="compact"] .yb-topbar {
+  min-height: 36px;
+  padding: 4px 8px;
+}
+
+.yb-v2[data-density="compact"] .yb-topbar-title h1 {
+  font-size: 13px;
+}
+
+.yb-v2[data-density="compact"] .yb-app-shell .sidebar-primary button,
+.yb-v2[data-density="compact"] .yb-app-shell .sidebar-footer button {
+  min-height: 36px;
+  padding-block: 5px;
+}
+
+.yb-v2[data-density="compact"] .yb-app-shell .workspace-scroll {
+  padding: 8px;
+}
+
+.yb-shell-loading {
+  display: grid;
+  gap: 14px;
+  padding: 30px;
+}
+
+.yb-shell-loading span {
+  height: 14px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0.16), rgba(226, 232, 240, 0.26), rgba(148, 163, 184, 0.16));
+  background-size: 200% 100%;
+  animation: yb-shell-shimmer 1.4s ease-in-out infinite;
+}
+
+.yb-shell-loading span:nth-child(1) { width: 76%; }
+.yb-shell-loading span:nth-child(2) { width: 54%; }
+.yb-shell-loading span:nth-child(3) { width: 62%; }
+.yb-shell-loading span:nth-child(4) { width: 38%; }
+
+@keyframes yb-shell-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (max-width: 980px) {
+  .yb-app-body {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .yb-app-main {
+    overflow: visible;
+  }
+
+  .yb-topbar {
+    grid-template-columns: 1fr;
+  }
+
+  .yb-topbar-status,
+  .yb-topbar-actions {
+    justify-content: flex-start;
+  }
+
+  .yb-app-shell .composer-dock {
+    left: 14px;
+  }
+}
+
+@media (max-width: 640px) {
+  .yb-app-main {
+    padding: 8px;
+  }
+
+  .yb-topbar {
+    border-radius: var(--yb-radius-lg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .yb-shell-loading span {
+    animation: none;
+  }
+}

@@ -1,0 +1,230 @@
+.yb-v2 {
+  --yb-bg: #050812;
+  --yb-bg-raised: #0a1020;
+  --yb-surface: rgb(11 18 33 / var(--yb-transparency, 0.78));
+  --yb-surface-strong: rgba(9, 15, 29, 0.96);
+  --yb-surface-soft: rgb(21 33 54 / var(--yb-transparency, 0.7));
+  --yb-line: rgba(125, 211, 252, 0.18);
+  --yb-line-strong: rgba(103, 232, 249, 0.36);
+  --yb-ink: #f8fafc;
+  --yb-ink-soft: #d9eefc;
+  --yb-muted: #9fb0c7;
+  --yb-muted-soft: #607089;
+  --yb-primary: #22d3ee;
+  --yb-primary-strong: #06b6d4;
+  --yb-accent: #a7f3d0;
+  --yb-violet: #8b5cf6;
+  --yb-success: #22c55e;
+  --yb-warning: #f59e0b;
+  --yb-danger: #fb7185;
+  --yb-info: #60a5fa;
+  --yb-shadow: 0 24px 90px rgba(0, 0, 0, 0.42);
+  --yb-shadow-tight: 0 14px 42px rgba(0, 0, 0, 0.32);
+  --yb-radius-sm: 6px;
+  --yb-radius-md: 8px;
+  --yb-radius-lg: 10px;
+  --yb-radius-xl: 12px;
+  --yb-font-ui: var(--wb-font-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif);
+  --yb-font-mono: var(--wb-font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
+  --yb-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  color: var(--yb-ink);
+  color-scheme: dark;
+  font-size: calc(16px * var(--yb-font-scale, 1));
+}
+
+.yb-v2[data-theme="light"] {
+  --yb-bg: #eef4fb;
+  --yb-bg-raised: #ffffff;
+  --yb-surface: rgb(255 255 255 / var(--yb-transparency, 0.82));
+  --yb-surface-strong: rgba(255, 255, 255, 0.96);
+  --yb-surface-soft: rgb(241 245 249 / var(--yb-transparency, 0.78));
+  --yb-line: rgba(15, 23, 42, 0.1);
+  --yb-line-strong: rgba(15, 23, 42, 0.18);
+  --yb-ink: #0f172a;
+  --yb-ink-soft: #334155;
+  --yb-muted: #64748b;
+  --yb-muted-soft: #94a3b8;
+  --yb-shadow: 0 24px 80px rgba(15, 23, 42, 0.12);
+  --yb-shadow-tight: 0 12px 34px rgba(15, 23, 42, 0.08);
+  color-scheme: light;
+}
+
+.yb-v2[data-accent="violet"] {
+  --yb-primary: #8b5cf6;
+  --yb-primary-strong: #7c3aed;
+  --yb-accent: #c4b5fd;
+  --yb-line: rgba(139, 92, 246, 0.2);
+  --yb-line-strong: rgba(139, 92, 246, 0.42);
+}
+
+.yb-v2[data-accent="green"] {
+  --yb-primary: #22c55e;
+  --yb-primary-strong: #16a34a;
+  --yb-accent: #a7f3d0;
+  --yb-line: rgba(34, 197, 94, 0.18);
+  --yb-line-strong: rgba(34, 197, 94, 0.38);
+}
+
+.yb-v2[data-accent="amber"] {
+  --yb-primary: #f59e0b;
+  --yb-primary-strong: #d97706;
+  --yb-accent: #fde68a;
+  --yb-line: rgba(245, 158, 11, 0.2);
+  --yb-line-strong: rgba(245, 158, 11, 0.42);
+}
+
+.yb-v2[data-accent="rose"] {
+  --yb-primary: #fb7185;
+  --yb-primary-strong: #f43f5e;
+  --yb-accent: #fecdd3;
+  --yb-line: rgba(251, 113, 133, 0.2);
+  --yb-line-strong: rgba(251, 113, 133, 0.4);
+}
+
+.yb-v2[data-radius="sm"] {
+  --yb-radius-sm: 4px;
+  --yb-radius-md: 6px;
+  --yb-radius-lg: 8px;
+  --yb-radius-xl: 10px;
+}
+
+.yb-v2[data-radius="lg"] {
+  --yb-radius-sm: 8px;
+  --yb-radius-md: 10px;
+  --yb-radius-lg: 12px;
+  --yb-radius-xl: 14px;
+}
+
+.yb-v2[data-motion="reduced"] *,
+.yb-v2[data-motion="reduced"] *::before,
+.yb-v2[data-motion="reduced"] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+  transition-duration: 0.001ms !important;
+}
+
+.yb-v2,
+.yb-v2 :where(
+  .workspace-scroll,
+  .workspace-tabs,
+  .session-rail,
+  .session-console,
+  .message-stream,
+  .session-runtime-column,
+  .diff-view,
+  .yb-tool-trace-detail pre,
+  .yb-command-output pre,
+  .settings-modal,
+  .scheduled-dialog,
+  .scheduled-execution-console,
+  .composer-dock,
+  textarea
+) {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--yb-muted) 48%, transparent) color-mix(in srgb, var(--yb-surface-soft) 58%, transparent);
+}
+
+.yb-v2 :where(
+  .workspace-scroll,
+  .workspace-tabs,
+  .session-rail,
+  .session-console,
+  .message-stream,
+  .session-runtime-column,
+  .diff-view,
+  .yb-tool-trace-detail pre,
+  .yb-command-output pre,
+  .settings-modal,
+  .scheduled-dialog,
+  .scheduled-execution-console,
+  .composer-dock,
+  textarea
+)::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.yb-v2 :where(
+  .workspace-scroll,
+  .workspace-tabs,
+  .session-rail,
+  .session-console,
+  .message-stream,
+  .session-runtime-column,
+  .diff-view,
+  .yb-tool-trace-detail pre,
+  .yb-command-output pre,
+  .settings-modal,
+  .scheduled-dialog,
+  .scheduled-execution-console,
+  .composer-dock,
+  textarea
+)::-webkit-scrollbar-button {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+.yb-v2 :where(
+  .workspace-scroll,
+  .workspace-tabs,
+  .session-rail,
+  .session-console,
+  .message-stream,
+  .session-runtime-column,
+  .diff-view,
+  .yb-tool-trace-detail pre,
+  .yb-command-output pre,
+  .settings-modal,
+  .scheduled-dialog,
+  .scheduled-execution-console,
+  .composer-dock,
+  textarea
+)::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--yb-surface-soft) 58%, transparent);
+}
+
+.yb-v2 :where(
+  .workspace-scroll,
+  .workspace-tabs,
+  .session-rail,
+  .session-console,
+  .message-stream,
+  .session-runtime-column,
+  .diff-view,
+  .yb-tool-trace-detail pre,
+  .yb-command-output pre,
+  .settings-modal,
+  .scheduled-dialog,
+  .scheduled-execution-console,
+  .composer-dock,
+  textarea
+)::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--yb-muted) 48%, transparent);
+  background-clip: padding-box;
+}
+
+.yb-v2 :where(
+  .workspace-scroll,
+  .workspace-tabs,
+  .session-rail,
+  .session-console,
+  .message-stream,
+  .session-runtime-column,
+  .diff-view,
+  .yb-tool-trace-detail pre,
+  .yb-command-output pre,
+  .settings-modal,
+  .scheduled-dialog,
+  .scheduled-execution-console,
+  .composer-dock,
+  textarea
+)::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--yb-ink-soft) 56%, transparent);
+  background-clip: padding-box;
+}

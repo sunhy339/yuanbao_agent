@@ -34,8 +34,12 @@ export function WorkspaceTabs({
 
   useEffect(() => {
     if (!contextMenu) return;
-    function handleClick() { setContextMenu(null); }
-    function handleKey(event: KeyboardEvent) { if (event.key === "Escape") setContextMenu(null); }
+    function handleClick() {
+      setContextMenu(null);
+    }
+    function handleKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setContextMenu(null);
+    }
     document.addEventListener("click", handleClick);
     document.addEventListener("keydown", handleKey);
     return () => {
@@ -53,7 +57,6 @@ export function WorkspaceTabs({
 
   function handleStartRename() {
     if (!contextMenu?.tab.id.startsWith("session:") || !onRenameSession) return;
-    const sessionId = contextMenu.tab.id.slice("session:".length);
     setContextMenu(null);
     setRenamingTabId(contextMenu.tab.id);
     setRenameValue(contextMenu.tab.title);
@@ -120,7 +123,7 @@ export function WorkspaceTabs({
                 aria-label={`Close ${tab.title}`}
                 onClick={() => onCloseTab(tab.id)}
               >
-                {"×"}
+                x
               </button>
             ) : null}
           </div>
@@ -142,7 +145,7 @@ export function WorkspaceTabs({
                 setContextMenu(null);
               }}
             >
-              重命名
+              Rename
             </button>
           ) : null}
           <button
@@ -154,7 +157,7 @@ export function WorkspaceTabs({
               setContextMenu(null);
             }}
           >
-            关闭此对话
+            Close tab
           </button>
           <button
             type="button"
@@ -165,7 +168,7 @@ export function WorkspaceTabs({
               setContextMenu(null);
             }}
           >
-            关闭其他对话
+            Close other tabs
           </button>
         </div>
       ) : null}

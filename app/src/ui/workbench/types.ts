@@ -1,6 +1,14 @@
 import type { SessionRecord } from "@shared";
 
-export type SystemWorkspaceKind = "new-session" | "scheduled" | "settings";
+export type SystemWorkspaceKind =
+  | "overview"
+  | "new-session"
+  | "scheduled"
+  | "mcp"
+  | "skills"
+  | "appearance"
+  | "playground"
+  | "settings";
 
 export type WorkbenchTab =
   | {

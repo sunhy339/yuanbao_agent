@@ -1,4 +1,12 @@
 import { memo, useMemo, useState, type ReactNode } from "react";
+import {
+  ApprovalCard,
+  CommandOutputPanel,
+  ContextBudgetBar,
+  PatchPlanCard,
+  ToolTraceCard,
+} from "../../../v2/components/runtime";
+import { Button, Panel, StatusBadge } from "../../../v2/components/ui";
 import "./session.css";
 
 export interface SessionWorkspaceSession {
@@ -749,12 +757,84 @@ function buildContextPreviewRuntimeItems(_contextPreview?: SessionWorkspaceConte
   return [];
 }
 
+const hiddenTraceTypes = new Set([
+  "assistant.token",
+  "provider.request",
+  "provider.response",
+  "task.started",
+  "task.orphaned",
+]);
+
+const hiddenTracePrefixes = ["tool.", "command.", "patch.", "approval."];
+
+const visibleTraceTypes = new Set([
+  "routing.decision",
+  "runtime.error",
+  "provider.error",
+  "mcp.error",
+  "context.trimmed",
+  "task.failed",
+  "task.cancelled",
+]);
+
+function isRawJsonLike(value?: string) {
+  const trimmed = value?.trim();
+  return Boolean(trimmed && ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))));
+}
+
+function isUserVisibleTrace(trace: SessionWorkspaceTrace) {
+  const type = trace.type.toLowerCase();
+  const status = trace.status?.toLowerCase();
+  if (hiddenTraceTypes.has(type) || hiddenTracePrefixes.some((prefix) => type.startsWith(prefix))) {
+    return false;
+  }
+  if (visibleTraceTypes.has(type) || type.endsWith(".failed") || type.endsWith(".error")) {
+    return true;
+  }
+  return Boolean(status && ["failed", "error", "warning", "cancelled"].includes(status));
+}
+
+function formatTraceTitle(trace: SessionWorkspaceTrace) {
+  if (trace.title && trace.title !== trace.type) {
+    return trace.title;
+  }
+  return trace.type
+    .split(".")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function formatTraceSummary(trace: SessionWorkspaceTrace) {
+  if (trace.summary && !isRawJsonLike(trace.summary)) {
+    return trace.summary;
+  }
+  if (trace.stderr) {
+    return compactText(trace.stderr, 180);
+  }
+  if (trace.detail && !isRawJsonLike(trace.detail)) {
+    return compactText(trace.detail, 180);
+  }
+  if (trace.status && ["failed", "error", "warning", "cancelled"].includes(trace.status.toLowerCase())) {
+    return `${formatTraceTitle(trace)} ${trace.status}`;
+  }
+  return "Runtime diagnostic event";
+}
+
+function buildTraceDetail(trace: SessionWorkspaceTrace) {
+  return compactMeta([
+    trace.stderr ? `Error\n${compactText(trace.stderr, 800)}` : null,
+    trace.stdout && !isRawJsonLike(trace.stdout) ? `Output\n${compactText(trace.stdout, 800)}` : null,
+    trace.detail && !isRawJsonLike(trace.detail) ? `Detail\n${compactText(trace.detail, 800)}` : null,
+  ]).join("\n\n");
+}
+
 function buildRuntimeItems({
   session,
   activeTask,
   contextPreview,
   approvals = [],
   patches = [],
+  traces = [],
   toolCalls = [],
   backgroundJobs = [],
 }: Pick<
@@ -790,6 +870,26 @@ function buildRuntimeItems({
       code: fileSummaries?.join("\n"),
       diffLines,
       time: patch.updatedAt,
+    });
+  });
+
+  traces.filter(isUserVisibleTrace).forEach((trace) => {
+    const outputDetail = buildTraceDetail(trace);
+    items.push({
+      id: `trace:${trace.id}`,
+      kind: "trace",
+      sourceId: trace.id,
+      title: formatTraceTitle(trace),
+      status: trace.status,
+      summary: formatTraceSummary(trace),
+      meta: compactMeta([
+        trace.type,
+        trace.source,
+        formatDuration(trace.durationMs),
+        trace.tokenCount !== undefined ? `${trace.tokenCount} tokens` : null,
+      ]),
+      code: outputDetail || undefined,
+      time: trace.time,
     });
   });
 
@@ -864,6 +964,65 @@ function getRuntimeKindLabel(kind: RuntimeTimelineItem["kind"]) {
     return "Memory";
   }
   return kind;
+}
+
+function getStatusTone(status?: string): "neutral" | "primary" | "success" | "warning" | "danger" | "info" {
+  if (!status) {
+    return "neutral";
+  }
+  if (["completed", "succeeded", "approved", "applied", "passed"].includes(status)) {
+    return "success";
+  }
+  if (["running", "started", "planning", "verifying"].includes(status)) {
+    return "info";
+  }
+  if (["pending", "queued", "waiting_approval"].includes(status)) {
+    return "warning";
+  }
+  if (["failed", "error", "cancelled", "rejected"].includes(status)) {
+    return "danger";
+  }
+  return "neutral";
+}
+
+function isTaskControllable(status?: string) {
+  return Boolean(status && ["running", "planning", "verifying", "waiting_approval", "queued"].includes(status));
+}
+
+function parsePatchPath(line: string) {
+  return line
+    .replace(/\s+\(\+\d+\/-\d+\).*$/, "")
+    .replace(/^(added|modified|deleted|changed)\s+/i, "")
+    .trim();
+}
+
+function parsePatchFileSummary(line: string) {
+  const path = parsePatchPath(line);
+  if (!path) {
+    return null;
+  }
+  const additions = /\+(\d+)/.exec(line)?.[1];
+  const deletions = /-(\d+)/.exec(line)?.[1];
+  return {
+    path,
+    status: line.includes("added") ? "added" : line.includes("deleted") ? "deleted" : "changed",
+    additions: additions ? Number(additions) : undefined,
+    deletions: deletions ? Number(deletions) : undefined,
+  };
+}
+
+function parsePatchFileSummaries(code?: string) {
+  if (!code) {
+    return [];
+  }
+  return code
+    .split("\n")
+    .map(parsePatchFileSummary)
+    .filter((entry): entry is NonNullable<ReturnType<typeof parsePatchFileSummary>> => Boolean(entry));
+}
+
+function buildCommandOutput(item: RuntimeTimelineItem) {
+  return compactMeta([item.summary, item.code]).join("\n\n") || "No output captured.";
 }
 
 function normalizeMarkdownContent(content: string) {
@@ -1058,14 +1217,194 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
   item,
   onApprove,
   onReject,
+  onLoadPatch,
+  onCopyPatchPath,
+  onRefreshCommandJob,
+  onStopCommandJob,
+  busyId,
 }: {
   item: RuntimeTimelineItem;
   onApprove?(approvalId: string): void | Promise<void>;
   onReject?(approvalId: string): void | Promise<void>;
+  onLoadPatch?(patchId: string): void | Promise<void>;
+  onCopyPatchPath?(patchId: string, path: string): void | Promise<void>;
+  onRefreshCommandJob?(commandId: string): void | Promise<void>;
+  onStopCommandJob?(commandId: string): void | Promise<void>;
+  busyId?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const kindLabel = getRuntimeKindLabel(item.kind);
   const canResolveApproval = item.kind === "approval" && item.status === "pending" && item.sourceId;
+  const canLoadPatch = item.kind === "patch" && Boolean(item.sourceId && onLoadPatch);
+  const patchPaths = item.kind === "patch" && item.sourceId && item.code
+    ? item.code.split("\n").map(parsePatchPath).filter(Boolean)
+    : [];
+  const canRefreshCommand = item.kind === "command" && Boolean(item.sourceId && onRefreshCommandJob);
+  const canStopCommand =
+    item.kind === "command" &&
+    Boolean(item.sourceId && onStopCommandJob && ["running", "started"].includes(item.status ?? ""));
+  const isBusy = item.sourceId ? busyId === item.sourceId : false;
+  const hasCommandActions = canRefreshCommand || canStopCommand;
+
+  if (item.kind === "approval" && item.sourceId) {
+    return (
+      <div className="runtime-event-card runtime-event-v2-card" data-activity-kind="runtime" data-kind={item.kind}>
+        <ApprovalCard
+          approval={{
+            id: item.sourceId,
+            title: item.title,
+            kind: item.meta?.[0],
+            status: item.status ?? "pending",
+            summary: item.summary,
+            risk: item.meta?.some((entry) => entry.includes("high")) ? "high" : item.meta?.some((entry) => entry.includes("medium")) ? "medium" : "low",
+            command: item.code,
+            cwd: item.meta?.find((entry) => /^[A-Z]:|^\//.test(entry)),
+            requestedAt: item.time,
+          }}
+          busy={isBusy}
+          onApprove={(approvalId) => {
+            void onApprove?.(approvalId);
+          }}
+          onReject={(approvalId) => {
+            void onReject?.(approvalId);
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (item.kind === "patch" && item.sourceId) {
+    return (
+      <div className="runtime-event-card runtime-event-v2-card" data-activity-kind="runtime" data-kind={item.kind}>
+        <PatchPlanCard
+          patch={{
+            id: item.sourceId,
+            summary: item.title,
+            status: item.status ?? "recorded",
+            filesChanged: parsePatchFileSummaries(item.code).length || undefined,
+          }}
+          changedFiles={parsePatchFileSummaries(item.code)}
+          onOpenDiff={(patchId) => {
+            void onLoadPatch?.(patchId);
+            setExpanded(true);
+          }}
+        />
+        {expanded && item.diffLines && item.diffLines.length > 0 ? (
+          <div className="runtime-event-detail">
+            <div className="diff-view">
+              {item.diffLines.map((line, lineIndex) => (
+                <div key={lineIndex} className={`diff-line diff-line-${line.type}`}>
+                  <span className="diff-line-prefix">
+                    {line.type === "add" ? "+" : line.type === "remove" ? "-" : line.type === "header" ? "" : " "}
+                  </span>
+                  <span className="diff-line-content">{line.content}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (item.kind === "command") {
+    return (
+      <div className="runtime-event-card runtime-event-v2-card" data-activity-kind="runtime" data-kind={item.kind}>
+        <CommandOutputPanel
+          command={{
+            id: item.sourceId ?? item.id,
+            command: item.title,
+            status: item.status ?? "recorded",
+            stdout: buildCommandOutput(item),
+          }}
+        />
+        {hasCommandActions ? (
+          <div className="runtime-event-actions">
+            {canRefreshCommand ? (
+              <Button
+                size="xs"
+                variant="secondary"
+                loading={isBusy}
+                onClick={() => {
+                  void onRefreshCommandJob?.(item.sourceId ?? "");
+                }}
+              >
+                Refresh
+              </Button>
+            ) : null}
+            {canStopCommand ? (
+              <Button
+                size="xs"
+                variant="danger"
+                loading={isBusy}
+                onClick={() => {
+                  void onStopCommandJob?.(item.sourceId ?? "");
+                }}
+              >
+                Stop
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (item.kind === "tool") {
+    return (
+      <div className="runtime-event-card runtime-event-v2-card" data-activity-kind="runtime" data-kind={item.kind}>
+        <ToolTraceCard
+          toolCall={{
+            id: item.sourceId ?? item.id,
+            toolName: item.title,
+            status: item.status ?? "recorded",
+            inputPreview: item.code,
+            outputPreview: item.summary,
+            startedAt: item.time,
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (item.kind === "trace") {
+    return (
+      <article
+        className="runtime-event-card runtime-trace-row"
+        data-activity-kind="runtime"
+        data-kind={item.kind}
+        data-status={item.status ?? "recorded"}
+      >
+        <button
+          aria-label={`${kindLabel} ${item.title}${item.status ? ` ${item.status}` : ""}`}
+          aria-expanded={expanded}
+          className="runtime-trace-row-summary"
+          onClick={() => setExpanded((current) => !current)}
+          type="button"
+        >
+          <span className="runtime-trace-dot" aria-hidden="true" />
+          <span className="runtime-trace-row-copy">
+            <strong>{item.title}</strong>
+            {item.summary ? <small>{compactText(item.summary, 160)}</small> : null}
+          </span>
+          {item.status ? <StatusBadge label={item.status} tone={getStatusTone(item.status)} compact /> : null}
+          <i aria-hidden="true">{expanded ? "^" : "v"}</i>
+        </button>
+        {item.meta?.length ? (
+          <div className="runtime-trace-row-meta">
+            {item.meta.slice(0, expanded ? 5 : 3).map((entry) => (
+              <span key={entry}>{entry}</span>
+            ))}
+          </div>
+        ) : null}
+        {expanded && item.code ? (
+          <div className="runtime-trace-row-detail">
+            <pre>{item.code}</pre>
+          </div>
+        ) : null}
+      </article>
+    );
+  }
 
   return (
     <article className="runtime-event-card" data-activity-kind="runtime" data-kind={item.kind}>
@@ -1078,7 +1417,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
       >
         <span>{kindLabel}</span>
         <strong>{item.title}</strong>
-        {item.status ? <em>{item.status}</em> : null}
+        {item.status ? <StatusBadge label={item.status} tone={getStatusTone(item.status)} /> : null}
         <i aria-hidden="true">{expanded ? "⌃" : "⌄"}</i>
       </button>
       {item.meta?.length && !expanded ? (
@@ -1094,23 +1433,64 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
       {canResolveApproval ? (
         <div className="runtime-event-actions">
           <button
-            aria-label={`批准 ${item.title}`}
+            aria-label={`Approve ${item.title}`}
             onClick={() => {
               void onApprove?.(item.sourceId ?? "");
             }}
             type="button"
           >
-            批准
+            Approve
           </button>
           <button
-            aria-label={`拒绝 ${item.title}`}
+            aria-label={`Reject ${item.title}`}
             onClick={() => {
               void onReject?.(item.sourceId ?? "");
             }}
             type="button"
           >
-            拒绝
+            Reject
           </button>
+        </div>
+      ) : null}
+      {canLoadPatch || canRefreshCommand || canStopCommand ? (
+        <div className="runtime-event-actions">
+          {canLoadPatch ? (
+            <Button
+              size="xs"
+              variant="secondary"
+              loading={isBusy}
+              onClick={() => {
+                void onLoadPatch?.(item.sourceId ?? "");
+                setExpanded(true);
+              }}
+            >
+              Load diff
+            </Button>
+          ) : null}
+          {canRefreshCommand ? (
+            <Button
+              size="xs"
+              variant="secondary"
+              loading={isBusy}
+              onClick={() => {
+                void onRefreshCommandJob?.(item.sourceId ?? "");
+              }}
+            >
+              Refresh
+            </Button>
+          ) : null}
+          {canStopCommand ? (
+            <Button
+              size="xs"
+              variant="danger"
+              loading={isBusy}
+              onClick={() => {
+                void onStopCommandJob?.(item.sourceId ?? "");
+              }}
+            >
+              Stop
+            </Button>
+          ) : null}
         </div>
       ) : null}
       {expanded ? (
@@ -1124,6 +1504,22 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
           ) : null}
           {item.summary ? <p>{item.summary}</p> : null}
           {item.code ? <p className="runtime-event-code-summary">{item.code}</p> : null}
+          {patchPaths.length && item.sourceId && onCopyPatchPath ? (
+            <div className="runtime-patch-files" aria-label="Patch files">
+              {patchPaths.map((path) => (
+                <button
+                  key={path}
+                  type="button"
+                  onClick={() => {
+                    void onCopyPatchPath(item.sourceId ?? "", path);
+                  }}
+                >
+                  <span>{path}</span>
+                  <strong>Copy path</strong>
+                </button>
+              ))}
+            </div>
+          ) : null}
           {item.diffLines && item.diffLines.length > 0 ? (
             <div className="diff-view">
               {item.diffLines.map((line, lineIndex) => (
@@ -1211,10 +1607,20 @@ const ConversationActivity = memo(function ConversationActivity({
   items,
   onApprove,
   onReject,
+  onLoadPatch,
+  onCopyPatchPath,
+  onRefreshCommandJob,
+  onStopCommandJob,
+  busyId,
 }: {
   items: ConversationActivityItem[];
   onApprove?(approvalId: string): void | Promise<void>;
   onReject?(approvalId: string): void | Promise<void>;
+  onLoadPatch?(patchId: string): void | Promise<void>;
+  onCopyPatchPath?(patchId: string, path: string): void | Promise<void>;
+  onRefreshCommandJob?(commandId: string): void | Promise<void>;
+  onStopCommandJob?(commandId: string): void | Promise<void>;
+  busyId?: string | null;
 }) {
   return (
     <div className="conversation-activity" aria-label="Conversation activity">
@@ -1222,7 +1628,17 @@ const ConversationActivity = memo(function ConversationActivity({
         item.kind === "message" ? (
           <MessageBubble message={item.message} key={item.id} />
         ) : (
-          <RuntimeEventCard item={item.runtime} key={item.id} onApprove={onApprove} onReject={onReject} />
+          <RuntimeEventCard
+            item={item.runtime}
+            key={item.id}
+            onApprove={onApprove}
+            onReject={onReject}
+            onLoadPatch={onLoadPatch}
+            onCopyPatchPath={onCopyPatchPath}
+            onRefreshCommandJob={onRefreshCommandJob}
+            onStopCommandJob={onStopCommandJob}
+            busyId={busyId}
+          />
         ),
       )}
     </div>
@@ -1241,7 +1657,18 @@ export function SessionWorkspace({
   backgroundJobs,
   onApprove,
   onReject,
+  onLoadPatch,
+  onCopyPatchPath,
+  onRefreshCommandJob,
+  onStopCommandJob,
+  onRefreshTask,
+  onStopTask,
+  onRefreshTrace,
+  taskBusyAction,
+  busyId,
   messagesLoading,
+  taskCount,
+  composerContext,
 }: SessionWorkspaceProps) {
   if (!session) {
     return (
@@ -1274,28 +1701,213 @@ export function SessionWorkspace({
     () => buildConversationActivity(messages, runtimeItems),
     [messages, runtimeItems],
   );
+  const pendingApprovals = approvals?.filter((approval) => approval.status === "pending").length ?? 0;
+  const patchCount = patches?.length ?? 0;
+  const commandCount = runtimeItems.filter((item) => item.kind === "command").length;
+  const diagnosticCount = runtimeItems.filter((item) => item.kind === "trace").length;
+  const activeTaskStatus = activeTask?.status ?? "idle";
+  const contextBudgetStats = contextPreview?.budgetStats;
+  const contextUsedTokens =
+    contextBudgetStats?.estimatedInputTokens ?? contextBudgetStats?.estimatedTokens ?? contextBudgetStats?.messageTokens;
+  const contextMaxTokens = contextBudgetStats?.maxContextTokens;
+  const runtimeLanes = [
+    {
+      id: "commands",
+      eyebrow: "Execution",
+      title: "Command lane",
+      emptyTitle: "No commands running",
+      emptyText: "Shell jobs appear here with stop and refresh controls.",
+      items: runtimeItems.filter((item) => item.kind === "command" || item.kind === "tool"),
+    },
+    {
+      id: "patches",
+      eyebrow: "Patch",
+      title: "Patch queue",
+      emptyTitle: "No patch loaded",
+      emptyText: "Generated diffs stay here before entering the stream.",
+      items: runtimeItems.filter((item) => item.kind === "patch"),
+    },
+    {
+      id: "trace",
+      eyebrow: "Diagnostics",
+      title: "Important signals",
+      emptyTitle: "Diagnostics are quiet",
+      emptyText: "Failures, routing decisions, and actionable signals appear here.",
+      items: runtimeItems.filter((item) => item.kind === "trace" || item.kind === "approval" || item.kind === "task"),
+    },
+  ];
 
   return (
     <main className="session-workspace session-workspace-chat-only" aria-labelledby="session-title">
-      <header className="session-chat-header">
-        <p className="session-kicker">Conversation</p>
-        <h1 id="session-title">{session.title}</h1>
-      </header>
+      <section className="session-workbench-grid">
+        <section className="session-conversation-column">
+          <header className="session-chat-header">
+            <div className="session-chat-title-block">
+              <p className="session-kicker">Conversation</p>
+              <h1 id="session-title">{session.title}</h1>
+              <div className="session-chip-row" aria-label="Session context">
+                <StatusBadge label={session.status ?? "active"} tone={getStatusTone(session.status)} />
+                {activeTask?.status ? <StatusBadge label={activeTask.status} tone={getStatusTone(activeTask.status)} pulse={isTaskControllable(activeTask.status)} /> : null}
+                {taskCount !== undefined ? <span>{taskCount} task{taskCount === 1 ? "" : "s"}</span> : null}
+                {composerContext?.model ? <span>{composerContext.model}</span> : null}
+                {composerContext?.permissionMode ? <span>approval: {composerContext.permissionMode}</span> : null}
+              </div>
+            </div>
+            <div className="session-chat-actions" aria-label="Session actions">
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={taskBusyAction === "refresh"}
+                disabled={!activeTask || !onRefreshTask}
+                onClick={() => {
+                  void onRefreshTask?.();
+                }}
+              >
+                Refresh task
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={!onRefreshTrace}
+                loading={busyId === "trace"}
+                onClick={() => {
+                  void onRefreshTrace?.();
+                }}
+              >
+                Refresh diagnostics
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                loading={taskBusyAction === "stop"}
+                disabled={!activeTask || !isTaskControllable(activeTask.status) || !onStopTask}
+                onClick={() => {
+                  if (activeTask) {
+                    void onStopTask?.(activeTask.id);
+                  }
+                }}
+              >
+                Stop task
+              </Button>
+            </div>
+          </header>
 
-      <section className="message-stream message-stream-chat-only" aria-label="Conversation messages">
-        {messagesLoading && activityItems.length === 0 ? (
-          <div className="message-stream-loading" aria-label="Loading messages">
-            <div className="message-stream-loading-bar" />
-          </div>
-        ) : activityItems.length === 0 ? (
-          <div className="message-stream-empty">
-            <p className="session-kicker">Quiet thread</p>
-            <h2>No messages yet</h2>
-            <p>Send the first message from the composer below.</p>
-          </div>
-        ) : (
-          <ConversationActivity items={activityItems} onApprove={onApprove} onReject={onReject} />
-        )}
+          <section className="session-console" aria-label="Runtime console">
+            <header className="session-console-heading">
+              <div>
+                <p className="session-kicker">Activity stream</p>
+                <h2>Messages and operations</h2>
+              </div>
+              <span>{activityItems.length} event{activityItems.length === 1 ? "" : "s"}</span>
+            </header>
+            <div className="message-stream message-stream-chat-only" aria-label="Conversation messages">
+              {messagesLoading && activityItems.length === 0 ? (
+                <div className="message-stream-loading" aria-label="Loading messages">
+                  <div className="message-stream-loading-bar" />
+                </div>
+              ) : activityItems.length === 0 ? (
+                <div className="message-stream-empty">
+                  <p className="session-kicker">Quiet thread</p>
+                  <h2>No messages yet</h2>
+                  <p>Send the first message from the composer below.</p>
+                </div>
+              ) : (
+                <ConversationActivity
+                  items={activityItems}
+                  onApprove={onApprove}
+                  onReject={onReject}
+                  onLoadPatch={onLoadPatch}
+                  onCopyPatchPath={onCopyPatchPath}
+                  onRefreshCommandJob={onRefreshCommandJob}
+                  onStopCommandJob={onStopCommandJob}
+                  busyId={busyId}
+                />
+              )}
+            </div>
+          </section>
+        </section>
+
+        <aside className="session-runtime-column" aria-label="Runtime intelligence">
+          <section className="session-runtime-dashboard" aria-label="Runtime dashboard">
+            <div>
+              <p className="session-kicker">Task state</p>
+              <strong>{activeTaskStatus}</strong>
+              <span>{activeTask?.currentStep ?? activeTask?.goal ?? "Ready for the next instruction"}</span>
+            </div>
+            <dl>
+              <div>
+                <dt>Messages</dt>
+                <dd>{messages.length}</dd>
+              </div>
+              <div>
+                <dt>Commands</dt>
+                <dd>{commandCount}</dd>
+              </div>
+              <div>
+                <dt>Patches</dt>
+                <dd>{patchCount}</dd>
+              </div>
+              <div>
+                <dt>Approvals</dt>
+                <dd>{pendingApprovals}</dd>
+              </div>
+              <div>
+                <dt>Signals</dt>
+                <dd>{diagnosticCount}</dd>
+              </div>
+            </dl>
+          </section>
+
+          {activeTask?.currentStep || activeTask?.goal ? (
+            <Panel className="session-task-panel" eyebrow="Runtime Focus" title={activeTask?.currentStep ?? "Ready for the next task"}>
+              <div className="session-task-panel-grid">
+                <p>{activeTask?.goal ?? session.summary ?? "No active task is running in this session."}</p>
+                {composerContext?.cwd ? <code>{composerContext.cwd}</code> : null}
+              </div>
+            </Panel>
+          ) : null}
+
+          {typeof contextUsedTokens === "number" && typeof contextMaxTokens === "number" ? (
+            <ContextBudgetBar
+              usedTokens={contextUsedTokens}
+              reservedTokens={contextBudgetStats?.toolSchemaTokens ?? 0}
+              maxTokens={contextMaxTokens}
+              label="Session context"
+            />
+          ) : null}
+
+          <section className="session-runtime-lanes" aria-label="Execution lanes">
+            {runtimeLanes.map((lane) => (
+              <article className="session-runtime-lane" data-lane={lane.id} key={lane.id}>
+                <header>
+                  <div>
+                    <p className="session-kicker">{lane.eyebrow}</p>
+                    <h3>{lane.title}</h3>
+                  </div>
+                  <span>{lane.items.length}</span>
+                </header>
+                {lane.items.length > 0 ? (
+                  <ul>
+                    {lane.items.slice(0, 3).map((item) => (
+                      <li key={item.id}>
+                        <div>
+                          <strong>{getRuntimeKindLabel(item.kind)} event</strong>
+                          <span>{item.meta?.slice(0, 2).join(" - ") || "Details are available in the activity stream"}</span>
+                        </div>
+                        {item.status ? <StatusBadge label={item.status} tone={getStatusTone(item.status)} compact /> : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="session-runtime-lane-empty">
+                    <strong>{lane.emptyTitle}</strong>
+                    <span>{lane.emptyText}</span>
+                  </div>
+                )}
+              </article>
+            ))}
+          </section>
+        </aside>
       </section>
     </main>
   );

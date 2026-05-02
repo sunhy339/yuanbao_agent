@@ -314,3 +314,45 @@ export interface TaskMetricRecord {
   approvalRejectedCount: number;
   wasCancelled: boolean;
 }
+
+export type McpServerTransport = "stdio" | "sse" | "http" | string;
+
+export interface McpServerRecord {
+  id: Identifier;
+  name: string;
+  transport: McpServerTransport;
+  command?: string | null;
+  args?: string[];
+  url?: string | null;
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
+  enabled: boolean;
+  createdAt?: number;
+  updatedAt?: number;
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface McpToolRefreshResult {
+  refreshed: number;
+  tools: string[];
+}
+
+export interface SkillPresetRecord {
+  id: Identifier;
+  name: string;
+  description?: string;
+  systemPrompt?: string;
+  system_prompt?: string;
+  toolWhitelist?: string[];
+  tool_whitelist?: string[];
+  parameterConstraints?: Record<string, unknown>;
+  parameter_constraints?: Record<string, unknown>;
+  category?: string;
+  isBuiltin?: boolean;
+  is_builtin?: number | boolean;
+  createdAt?: number;
+  updatedAt?: number;
+  created_at?: number;
+  updated_at?: number;
+}

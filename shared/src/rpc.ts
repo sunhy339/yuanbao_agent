@@ -8,9 +8,12 @@ import type {
   MessageRecord,
   PatchRecord,
   ProviderMode,
+  McpServerRecord,
+  McpToolRefreshResult,
   ScheduledTaskRecord,
   ScheduledTaskRunRecord,
   SessionRecord,
+  SkillPresetRecord,
   TaskRecord,
   TraceEventRecord,
   WorkspaceRef,
@@ -81,7 +84,16 @@ export type RpcMethod =
   | "task.list"
   | "log.export"
   | "errors.list"
-  | "metrics.list";
+  | "metrics.list"
+  | "skill.list"
+  | "skill.create"
+  | "skill.update"
+  | "skill.delete"
+  | "mcp.server.list"
+  | "mcp.server.create"
+  | "mcp.server.update"
+  | "mcp.server.delete"
+  | "mcp.tools.refresh";
 
 export interface WorkspaceOpenParams {
   path: string;
@@ -362,3 +374,86 @@ export interface MetricsListParams {
 export interface MetricsListResult {
   metrics: import("./domain").TaskMetricRecord[];
 }
+
+export interface SkillListParams {
+  category?: string;
+}
+
+export interface SkillCreateParams {
+  id?: Identifier;
+  skillId?: Identifier;
+  name: string;
+  description?: string;
+  system_prompt?: string;
+  systemPrompt?: string;
+  tool_whitelist?: string[];
+  toolWhitelist?: string[];
+  parameter_constraints?: Record<string, unknown>;
+  parameterConstraints?: Record<string, unknown>;
+  category?: string;
+}
+
+export interface SkillUpdateParams extends Partial<SkillCreateParams> {
+  skillId: Identifier;
+}
+
+export interface SkillDeleteParams {
+  skillId: Identifier;
+}
+
+export interface SkillListResult {
+  skills: SkillPresetRecord[];
+}
+
+export interface SkillResult {
+  skill: SkillPresetRecord;
+}
+
+export interface SkillDeleteResult {
+  deleted: boolean;
+  skillId: Identifier;
+}
+
+export interface McpServerListParams {
+  enabledOnly?: boolean;
+}
+
+export interface McpServerCreateParams {
+  id?: Identifier;
+  serverId?: Identifier;
+  name: string;
+  transport?: McpServerRecord["transport"];
+  command?: string | null;
+  args?: string[];
+  url?: string | null;
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
+  enabled?: boolean;
+}
+
+export interface McpServerUpdateParams extends Partial<McpServerCreateParams> {
+  serverId: Identifier;
+}
+
+export interface McpServerDeleteParams {
+  serverId: Identifier;
+}
+
+export interface McpToolsRefreshParams {
+  serverId?: Identifier;
+}
+
+export interface McpServerListResult {
+  servers: McpServerRecord[];
+}
+
+export interface McpServerResult {
+  server: McpServerRecord;
+}
+
+export interface McpServerDeleteResult {
+  deleted: boolean;
+  serverId: Identifier;
+}
+
+export type McpToolsRefreshRpcResult = McpToolRefreshResult;

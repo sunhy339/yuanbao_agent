@@ -1,104 +1,126 @@
 .scheduled-workspace {
-  --scheduled-bg: var(--wb-surface, #ffffff);
-  --scheduled-muted-bg: var(--wb-surface-muted, #f8fafc);
-  --scheduled-border: var(--wb-line, rgba(15, 23, 42, 0.1));
-  --scheduled-border-soft: rgba(15, 23, 42, 0.08);
-  --scheduled-ink: var(--wb-ink, #111827);
-  --scheduled-muted: var(--wb-muted, #64748b);
-  --scheduled-soft: var(--wb-muted-soft, #94a3b8);
-  --scheduled-primary: var(--wb-primary, #2563eb);
-  --scheduled-primary-hover: var(--wb-primary-hover, #1d4ed8);
-  --scheduled-green: var(--wb-green, #16a34a);
-  --scheduled-red: var(--wb-red, #dc2626);
+  --scheduled-bg: rgba(7, 13, 27, 0.82);
+  --scheduled-muted-bg: rgba(3, 7, 18, 0.38);
+  --scheduled-border: rgba(125, 211, 252, 0.18);
+  --scheduled-border-strong: rgba(103, 232, 249, 0.36);
+  --scheduled-ink: var(--yb-ink);
+  --scheduled-muted: var(--yb-muted);
+  --scheduled-primary: var(--yb-primary);
+  --scheduled-green: var(--yb-success);
+  --scheduled-red: var(--yb-danger);
 
+  display: grid;
+  gap: 12px;
   min-height: 100%;
-  padding: clamp(20px, 3vw, 34px);
   color: var(--scheduled-ink);
-  background: var(--scheduled-bg);
-  font-family: var(--wb-font-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif);
+  font-family: var(--yb-font-ui);
 }
 
-.scheduled-overview,
-.scheduled-ledger {
-  width: min(1180px, 100%);
-  margin-right: auto;
-  margin-left: auto;
-}
-
-.scheduled-overview {
-  margin-bottom: 16px;
-  padding: 22px;
+.scheduled-command-strip,
+.scheduled-metrics > div,
+.scheduled-task-panel,
+.scheduled-runtime-panel,
+.scheduled-execution-lane,
+.scheduled-log-panel,
+.scheduled-log-entry {
+  position: relative;
+  overflow: hidden;
   border: 1px solid var(--scheduled-border);
-  border-radius: 10px;
+  border-radius: var(--yb-radius-lg);
   background:
-    radial-gradient(circle at 0% 0%, rgba(37, 99, 235, 0.08), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 42%),
     var(--scheduled-bg);
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.07);
+  box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.045);
 }
 
-.scheduled-heading {
+.scheduled-command-strip::before,
+.scheduled-metrics > div::before,
+.scheduled-task-panel::before,
+.scheduled-runtime-panel::before,
+.scheduled-execution-lane::before,
+.scheduled-log-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, rgba(34, 211, 238, 0.6), transparent 36%) top left / 52% 1px no-repeat,
+    linear-gradient(180deg, rgba(167, 243, 208, 0.24), transparent 38%) top left / 1px 48% no-repeat;
+  opacity: 0.5;
+}
+
+.scheduled-command-strip {
   display: flex;
+  gap: 16px;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 18px;
+  min-height: 96px;
+  padding: 16px 18px;
+  background:
+    linear-gradient(115deg, rgba(34, 211, 238, 0.14), transparent 42%),
+    linear-gradient(300deg, rgba(139, 92, 246, 0.08), transparent 44%),
+    rgba(7, 13, 27, 0.86);
 }
 
-.scheduled-kicker,
-.scheduled-panel-heading p {
-  margin: 0 0 7px;
-  color: var(--scheduled-muted);
-  font-family: var(--wb-font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
+.scheduled-title-block,
+.scheduled-command-actions,
+.scheduled-panel-heading,
+.scheduled-task-list,
+.scheduled-execution-console,
+.scheduled-log-list,
+.scheduled-empty,
+.scheduled-log-empty {
+  position: relative;
+  z-index: 1;
+}
+
+.scheduled-kicker {
+  margin: 0 0 6px;
+  color: var(--scheduled-primary);
+  font-family: var(--yb-font-mono);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
-.scheduled-heading h1 {
+.scheduled-command-strip h1 {
   margin: 0;
   color: var(--scheduled-ink);
-  font-size: clamp(30px, 4vw, 46px);
-  line-height: 1.05;
+  font-size: clamp(28px, 3vw, 46px);
+  line-height: 0.95;
 }
 
-.scheduled-copy {
-  max-width: 620px;
-  margin: 10px 0 0;
+.scheduled-command-strip p {
+  max-width: 720px;
+  margin: 8px 0 0;
   color: var(--scheduled-muted);
-  font-size: 15px;
-  line-height: 1.65;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
-.scheduled-create-button {
-  flex: 0 0 auto;
-  min-height: 38px;
-  padding: 8px 14px;
-  border: 1px solid rgba(37, 99, 235, 0.18);
-  border-radius: 8px;
-  color: #ffffff;
-  background: var(--scheduled-primary);
-  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.18);
-  font: inherit;
-  font-weight: 760;
-  cursor: pointer;
+.scheduled-command-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 240px;
 }
 
-.scheduled-create-button:hover:not(:disabled) {
-  background: var(--scheduled-primary-hover);
-}
-
-.scheduled-create-button:disabled,
-.scheduled-task-actions button:disabled {
-  cursor: wait;
-  opacity: 0.58;
-}
-
-.scheduled-overview-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(250px, 0.34fr);
-  gap: 12px;
-  align-items: stretch;
-  margin-top: 20px;
+.scheduled-command-actions > span {
+  max-width: 320px;
+  overflow: hidden;
+  border: 1px solid rgba(125, 211, 252, 0.16);
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: var(--scheduled-muted);
+  background: rgba(3, 7, 18, 0.42);
+  font-family: var(--yb-font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .scheduled-metrics {
@@ -108,239 +130,194 @@
   margin: 0;
 }
 
-.scheduled-metrics div,
-.scheduled-notice,
-.scheduled-task-panel,
-.scheduled-log-panel,
-.scheduled-log-entry {
-  border: 1px solid var(--scheduled-border);
-  border-radius: 10px;
-  background: var(--scheduled-bg);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-}
-
-.scheduled-metrics div {
-  padding: 13px 14px;
-  background: var(--scheduled-muted-bg);
+.scheduled-metrics > div {
+  display: grid;
+  gap: 5px;
+  min-height: 70px;
+  padding: 12px 14px;
 }
 
 .scheduled-metrics dt {
   color: var(--scheduled-muted);
-  font-size: 12px;
-  font-weight: 760;
+  font-family: var(--yb-font-mono);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .scheduled-metrics dd {
-  margin: 7px 0 0;
+  margin: 0;
   color: var(--scheduled-ink);
-  font-size: 28px;
-  font-weight: 780;
+  font-family: var(--yb-font-mono);
+  font-size: 26px;
+  font-weight: 850;
   line-height: 1;
 }
 
-.scheduled-notice {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 13px 14px;
-  background: #eff6ff;
-}
-
-.scheduled-notice span {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 auto;
-  margin-top: 6px;
-  border-radius: 50%;
-  background: var(--scheduled-primary);
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
-}
-
-.scheduled-notice p {
-  margin: 0;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.scheduled-ledger {
+.scheduled-workbench-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.18fr) minmax(320px, 0.82fr);
-  gap: 16px;
+  grid-template-columns: minmax(0, 1.24fr) minmax(340px, 0.76fr);
+  gap: 12px;
+  align-items: start;
 }
 
 .scheduled-task-panel,
+.scheduled-runtime-panel,
 .scheduled-log-panel {
   min-width: 0;
-  padding: 18px;
+  padding: 14px;
+}
+
+.scheduled-runtime-panel {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
 }
 
 .scheduled-panel-heading {
   display: flex;
-  align-items: end;
+  align-items: flex-end;
   justify-content: space-between;
-  gap: 14px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--scheduled-border-soft);
+  gap: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid rgba(125, 211, 252, 0.14);
+  padding-bottom: 10px;
 }
 
 .scheduled-panel-heading h2 {
   margin: 0;
   color: var(--scheduled-ink);
   font-size: 20px;
+  line-height: 1.1;
 }
 
 .scheduled-panel-heading > span {
+  min-width: 0;
   overflow: hidden;
   color: var(--scheduled-muted);
-  font-size: 13px;
-  font-weight: 700;
+  font-family: var(--yb-font-mono);
+  font-size: 11px;
+  font-weight: 800;
   text-overflow: ellipsis;
+  text-transform: uppercase;
   white-space: nowrap;
 }
 
 .scheduled-task-list,
 .scheduled-log-list {
-  list-style: none;
+  display: grid;
+  gap: 8px;
   margin: 0;
   padding: 0;
+  list-style: none;
 }
 
 .scheduled-task-item {
-  position: relative;
   display: grid;
-  grid-template-columns: minmax(190px, 0.86fr) minmax(320px, 1.14fr);
-  gap: 14px;
-  padding: 15px 0;
-  border-bottom: 1px solid var(--scheduled-border-soft);
+  grid-template-columns: minmax(220px, 1fr) minmax(360px, 1.15fr);
+  gap: 12px;
+  align-items: stretch;
+  border: 1px solid rgba(125, 211, 252, 0.14);
+  border-radius: var(--yb-radius-lg);
+  padding: 10px;
+  background: rgba(3, 7, 18, 0.35);
 }
 
-.scheduled-task-item:last-child {
-  border-bottom: 0;
-}
-
-.scheduled-task-item[data-selected="true"]::before {
-  content: "";
-  position: absolute;
-  top: 15px;
-  bottom: 15px;
-  left: -18px;
-  width: 3px;
-  border-radius: 99px;
-  background: var(--scheduled-primary);
-}
-
-.scheduled-task-main {
-  min-width: 0;
-}
-
-.scheduled-task-stamp {
-  display: inline-flex;
-  min-height: 22px;
-  align-items: center;
-  margin-bottom: 8px;
-  padding: 2px 8px;
-  border: 1px solid rgba(100, 116, 139, 0.18);
-  border-radius: 999px;
-  color: #475569;
-  background: var(--scheduled-muted-bg);
-  font-size: 12px;
-  font-weight: 760;
-}
-
-.scheduled-task-stamp[data-status="active"],
-.scheduled-status[data-status="active"] {
-  color: #15803d;
-}
-
-.scheduled-task-stamp[data-status="failed"],
-.scheduled-status[data-status="failed"] {
-  color: #b91c1c;
-}
-
-.scheduled-task-stamp[data-status="disabled"],
-.scheduled-status[data-status="disabled"] {
-  color: var(--scheduled-muted);
-}
-
-.scheduled-task-stamp[data-status="completed"],
-.scheduled-status[data-status="completed"] {
-  color: var(--scheduled-primary);
+.scheduled-task-item[data-selected="true"] {
+  border-color: rgba(34, 211, 238, 0.62);
+  background:
+    linear-gradient(90deg, rgba(8, 145, 178, 0.2), transparent 58%),
+    rgba(3, 7, 18, 0.42);
+  box-shadow: inset 3px 0 0 var(--scheduled-primary);
 }
 
 .scheduled-task-select {
-  display: block;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
   width: 100%;
-  padding: 0;
+  min-height: 58px;
   border: 0;
+  padding: 0;
   color: inherit;
   background: transparent;
+  cursor: pointer;
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
 
-.scheduled-task-main h3,
-.scheduled-empty h3 {
-  margin: 0;
-  overflow-wrap: anywhere;
-  color: var(--scheduled-ink);
-  font-size: 16px;
-  line-height: 1.35;
-}
-
-.scheduled-task-select:hover h3,
-.scheduled-task-select:focus-visible h3 {
+.scheduled-task-select:hover strong,
+.scheduled-task-select:focus-visible strong {
   color: var(--scheduled-primary);
 }
 
-.scheduled-task-select:focus-visible,
-.scheduled-task-actions button:focus-visible,
-.scheduled-create-button:focus-visible {
-  outline: 2px solid rgba(37, 99, 235, 0.56);
-  outline-offset: 3px;
+.scheduled-task-index {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 8px;
+  color: var(--scheduled-primary);
+  background: rgba(3, 7, 18, 0.48);
+  font-family: var(--yb-font-mono);
+  font-size: 11px;
+  font-weight: 850;
 }
 
-.scheduled-task-main p,
-.scheduled-empty p {
-  margin: 6px 0 0;
+.scheduled-task-select strong {
+  display: block;
+  overflow: hidden;
+  color: var(--scheduled-ink);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduled-task-select em {
+  display: -webkit-box;
+  overflow: hidden;
+  margin-top: 4px;
   color: var(--scheduled-muted);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .scheduled-task-meta {
   display: grid;
-  grid-template-columns: minmax(94px, 0.85fr) minmax(120px, 1fr) minmax(132px, 1fr);
+  grid-template-columns: auto minmax(110px, 1fr) minmax(110px, 1fr);
   gap: 8px;
-  align-content: start;
-  color: var(--scheduled-muted);
-  font-size: 13px;
+  align-items: center;
 }
 
-.scheduled-meta-cell {
+.scheduled-task-meta > span:not(.yb-status-badge) {
   min-width: 0;
-  padding: 9px 10px;
-  border: 1px solid var(--scheduled-border-soft);
+  border: 1px solid rgba(125, 211, 252, 0.14);
   border-radius: 8px;
-  background: var(--scheduled-muted-bg);
+  padding: 8px 9px;
+  background: rgba(3, 7, 18, 0.34);
 }
 
-.scheduled-meta-cell > span {
+.scheduled-task-meta small {
   display: block;
-  margin-bottom: 4px;
-  color: var(--scheduled-soft);
-  font-size: 11px;
-  font-weight: 760;
+  color: var(--scheduled-muted);
+  font-family: var(--yb-font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
 }
 
-.scheduled-meta-cell strong {
+.scheduled-task-meta strong {
   display: block;
   overflow: hidden;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 760;
-  line-height: 1.35;
+  margin-top: 3px;
+  color: var(--scheduled-ink);
+  font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -354,75 +331,93 @@
   justify-content: flex-end;
 }
 
-.scheduled-task-actions button {
-  min-height: 30px;
-  padding: 5px 10px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  border-radius: 7px;
-  color: #334155;
-  background: var(--scheduled-bg);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 760;
-  cursor: pointer;
-}
-
-.scheduled-task-actions button:hover:not(:disabled) {
-  border-color: rgba(37, 99, 235, 0.2);
-  color: var(--scheduled-primary);
-  background: #eff6ff;
-}
-
 .scheduled-task-busy {
   color: var(--scheduled-muted);
-  font-size: 12px;
-  font-weight: 760;
+  font-family: var(--yb-font-mono);
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .scheduled-empty,
 .scheduled-log-empty {
-  margin-top: 14px;
-  padding: 22px;
-  border: 1px dashed rgba(100, 116, 139, 0.28);
-  border-radius: 10px;
-  background: var(--scheduled-muted-bg);
+  border: 1px dashed rgba(125, 211, 252, 0.2);
+  border-radius: var(--yb-radius-lg);
+  padding: 18px;
   color: var(--scheduled-muted);
+  background: rgba(3, 7, 18, 0.32);
+}
+
+.scheduled-empty h3 {
+  margin: 0 0 6px;
+  color: var(--scheduled-ink);
+  font-size: 16px;
+}
+
+.scheduled-empty p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.scheduled-execution-console {
+  display: grid;
+  gap: 8px;
+}
+
+.scheduled-execution-lane {
+  min-height: 94px;
+  padding: 12px;
+}
+
+.scheduled-execution-lane header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.scheduled-execution-lane h3 {
+  overflow: hidden;
+  margin: 0;
+  color: var(--scheduled-ink);
+  font-size: 14px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduled-execution-lane > span {
+  position: relative;
+  z-index: 1;
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--scheduled-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .scheduled-log-list {
   position: relative;
-  display: grid;
-  gap: 0;
-  margin-top: 12px;
-}
-
-.scheduled-log-list::before {
-  content: "";
-  position: absolute;
-  top: 9px;
-  bottom: 9px;
-  left: 7px;
-  width: 1px;
-  background: rgba(100, 116, 139, 0.18);
 }
 
 .scheduled-log-row {
-  position: relative;
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  gap: 10px;
-  padding: 9px 0;
+  grid-template-columns: 15px minmax(0, 1fr);
+  gap: 9px;
 }
 
 .scheduled-log-marker {
-  z-index: 1;
-  width: 15px;
-  height: 15px;
-  margin-top: 4px;
-  border: 3px solid var(--scheduled-bg);
+  width: 11px;
+  height: 11px;
+  margin-top: 12px;
   border-radius: 50%;
   background: var(--scheduled-muted);
-  box-shadow: 0 0 0 1px rgba(100, 116, 139, 0.24);
+  box-shadow: 0 0 0 4px rgba(100, 116, 139, 0.12);
 }
 
 .scheduled-log-marker[data-result="completed"] {
@@ -434,44 +429,33 @@
 }
 
 .scheduled-log-entry {
-  min-width: 0;
-  padding: 10px 11px;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.5;
+  padding: 9px 10px;
+  font-size: 12px;
 }
 
 .scheduled-log-head {
   display: flex;
-  min-width: 0;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 3px;
 }
 
 .scheduled-log-head time {
-  min-width: 0;
-  overflow: hidden;
   color: var(--scheduled-muted);
-  font-size: 12px;
-  font-weight: 760;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-family: var(--yb-font-mono);
+  font-size: 11px;
 }
 
 .scheduled-log-head strong {
-  flex: 0 0 auto;
-  font-size: 12px;
-  font-weight: 760;
+  color: var(--scheduled-primary);
+  font-size: 11px;
+  text-transform: uppercase;
 }
 
-.scheduled-log-head strong[data-result="completed"] {
-  color: #15803d;
-}
-
-.scheduled-log-head strong[data-result="failed"] {
-  color: #b91c1c;
+.scheduled-log-entry > span {
+  color: var(--scheduled-muted);
+  line-height: 1.45;
 }
 
 .scheduled-dialog-backdrop {
@@ -481,18 +465,20 @@
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(15, 23, 42, 0.42);
+  background: rgba(2, 6, 23, 0.72);
 }
 
 .scheduled-dialog {
-  width: min(700px, 100%);
-  max-height: min(92vh, 860px);
+  width: min(680px, 100%);
+  max-height: min(92vh, 840px);
   overflow: auto;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  border-radius: 12px;
-  padding: 24px 30px;
-  background: var(--scheduled-bg);
-  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  border-radius: var(--yb-radius-xl);
+  padding: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 38%),
+    rgba(7, 13, 27, 0.96);
+  box-shadow: var(--yb-shadow);
 }
 
 .scheduled-dialog-heading {
@@ -505,38 +491,37 @@
 .scheduled-dialog-heading h2 {
   margin: 0;
   color: var(--scheduled-ink);
-  font-size: 24px;
+  font-size: 22px;
 }
 
 .scheduled-dialog-heading button {
-  width: 34px;
-  height: 34px;
-  border: 0;
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(125, 211, 252, 0.18);
   border-radius: 8px;
-  color: #5f4b43;
-  background: transparent;
-  font: inherit;
-  font-size: 30px;
-  line-height: 1;
+  color: var(--scheduled-muted);
+  background: rgba(3, 7, 18, 0.42);
   cursor: pointer;
+  font: inherit;
 }
 
 .scheduled-dialog-note,
 .scheduled-dialog-summary {
-  margin: 18px 0;
+  margin: 14px 0;
+  border: 1px solid rgba(125, 211, 252, 0.14);
   border-radius: 8px;
-  padding: 13px 16px;
-  background: var(--scheduled-muted-bg);
-  color: #5f4b43;
-  font-size: 14px;
+  padding: 10px 12px;
+  background: rgba(3, 7, 18, 0.36);
+  color: var(--scheduled-muted);
+  font-size: 13px;
 }
 
 .scheduled-field {
   display: grid;
-  gap: 8px;
-  margin-top: 14px;
+  gap: 7px;
+  margin-top: 12px;
   color: var(--scheduled-ink);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 760;
 }
 
@@ -545,88 +530,82 @@
 .scheduled-field select {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid rgba(148, 100, 84, 0.34);
+  border: 1px solid rgba(125, 211, 252, 0.2);
   border-radius: 8px;
-  padding: 12px 14px;
+  padding: 10px 11px;
   color: var(--scheduled-ink);
-  background: #fffefc;
+  background: rgba(3, 7, 18, 0.44);
   font: inherit;
-  font-weight: 600;
 }
 
 .scheduled-field textarea {
   resize: vertical;
-  line-height: 1.55;
+  line-height: 1.5;
 }
 
-.scheduled-dialog-context {
+.scheduled-dialog-context,
+.scheduled-checkbox {
   display: flex;
-  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
-  margin-top: 14px;
-  border: 1px solid rgba(148, 100, 84, 0.26);
+  margin-top: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.16);
   border-radius: 8px;
-  padding: 11px 14px;
-  color: #5f4b43;
-  background: #fffefc;
+  padding: 10px 11px;
+  background: rgba(3, 7, 18, 0.38);
 }
 
 .scheduled-dialog-context span {
   color: var(--scheduled-muted);
-  font-size: 13px;
-  font-weight: 760;
+  font-family: var(--yb-font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
 }
 
 .scheduled-dialog-context strong {
   min-width: 0;
   overflow: hidden;
-  font-size: 14px;
+  color: var(--scheduled-ink);
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .scheduled-checkbox {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  margin-top: 14px;
-  border: 1px solid var(--scheduled-border);
-  border-radius: 8px;
-  padding: 12px 14px;
-  color: #334155;
-  font-size: 14px;
-  font-weight: 700;
+  color: var(--scheduled-ink);
+  font-size: 13px;
+  font-weight: 720;
 }
 
 .scheduled-checkbox input {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
+  accent-color: #22d3ee;
 }
 
 .scheduled-dialog-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
-  margin-top: 22px;
+  gap: 9px;
+  margin-top: 18px;
 }
 
 .scheduled-dialog-actions button {
-  min-height: 38px;
-  border: 1px solid rgba(148, 100, 84, 0.34);
+  min-height: 32px;
+  border: 1px solid rgba(125, 211, 252, 0.2);
   border-radius: 8px;
-  padding: 8px 16px;
-  background: #fffefc;
+  padding: 7px 13px;
+  background: rgba(3, 7, 18, 0.42);
   color: var(--scheduled-ink);
+  cursor: pointer;
   font: inherit;
   font-weight: 760;
-  cursor: pointer;
 }
 
 .scheduled-dialog-actions button[type="submit"] {
   border-color: transparent;
-  color: #ffffff;
-  background: #c89b8e;
+  color: #042f35;
+  background: var(--scheduled-primary);
 }
 
 .scheduled-dialog-actions button:disabled {
@@ -634,10 +613,32 @@
   opacity: 0.55;
 }
 
-@media (max-width: 980px) {
-  .scheduled-overview-row,
-  .scheduled-ledger,
+@media (max-width: 1120px) {
+  .scheduled-workbench-grid,
   .scheduled-task-item {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .scheduled-command-strip {
+    display: grid;
+  }
+
+  .scheduled-command-actions {
+    justify-content: flex-start;
+    min-width: 0;
+  }
+
+  .scheduled-metrics,
+  .scheduled-task-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .scheduled-metrics,
+  .scheduled-task-meta {
     grid-template-columns: 1fr;
   }
 
@@ -646,34 +647,47 @@
   }
 }
 
-@media (max-width: 680px) {
-  .scheduled-workspace {
-    padding: 16px;
-  }
-
-  .scheduled-heading {
-    display: grid;
-  }
-
-  .scheduled-create-button {
-    justify-self: start;
-  }
-
-  .scheduled-metrics,
-  .scheduled-task-meta {
-    grid-template-columns: 1fr 1fr;
-  }
+.yb-v2[data-theme="light"] .scheduled-workspace {
+  --scheduled-bg: rgba(255, 255, 255, 0.84);
+  --scheduled-muted-bg: rgba(241, 245, 249, 0.76);
+  --scheduled-border: rgba(15, 23, 42, 0.1);
+  --scheduled-border-strong: rgba(15, 23, 42, 0.18);
 }
 
-@media (max-width: 480px) {
-  .scheduled-overview,
-  .scheduled-task-panel,
-  .scheduled-log-panel {
-    border-radius: 10px;
-  }
+.yb-v2[data-theme="light"] .scheduled-command-strip,
+.yb-v2[data-theme="light"] .scheduled-metrics > div,
+.yb-v2[data-theme="light"] .scheduled-task-panel,
+.yb-v2[data-theme="light"] .scheduled-runtime-panel,
+.yb-v2[data-theme="light"] .scheduled-execution-lane,
+.yb-v2[data-theme="light"] .scheduled-log-panel,
+.yb-v2[data-theme="light"] .scheduled-log-entry,
+.yb-v2[data-theme="light"] .scheduled-dialog {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), transparent 46%),
+    rgba(255, 255, 255, 0.78);
+  box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
 
-  .scheduled-metrics,
-  .scheduled-task-meta {
-    grid-template-columns: 1fr;
-  }
+.yb-v2[data-theme="light"] .scheduled-command-strip {
+  background:
+    linear-gradient(115deg, rgba(6, 182, 212, 0.12), transparent 42%),
+    linear-gradient(300deg, rgba(139, 92, 246, 0.06), transparent 44%),
+    rgba(255, 255, 255, 0.82);
+}
+
+.yb-v2[data-theme="light"] .scheduled-task-item,
+.yb-v2[data-theme="light"] .scheduled-execution-row,
+.yb-v2[data-theme="light"] .scheduled-empty,
+.yb-v2[data-theme="light"] .scheduled-log-empty,
+.yb-v2[data-theme="light"] .scheduled-dialog-context,
+.yb-v2[data-theme="light"] .scheduled-dialog label input,
+.yb-v2[data-theme="light"] .scheduled-dialog label textarea,
+.yb-v2[data-theme="light"] .scheduled-dialog-actions button {
+  background: rgba(241, 245, 249, 0.78);
+}
+
+.yb-v2[data-theme="light"] .scheduled-execution-console,
+.yb-v2[data-theme="light"] .scheduled-log-body {
+  color: #0f172a;
+  background: rgba(248, 250, 252, 0.92);
 }

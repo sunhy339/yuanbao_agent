@@ -321,6 +321,12 @@ describe("SettingsWorkspace", () => {
       <SettingsWorkspace
         general={{
           theme: "light",
+          density: "comfortable",
+          radius: "md",
+          motion: "subtle",
+          accentColor: "cyan",
+          transparency: 0.78,
+          fontScale: 1,
           language: "zh",
           reasoningEffort: "medium",
           webFetchPreflight: true,
@@ -335,6 +341,12 @@ describe("SettingsWorkspace", () => {
 
     expect(onGeneralChange).toHaveBeenCalledWith({
       theme: "dark",
+      density: "comfortable",
+      radius: "md",
+      motion: "subtle",
+      accentColor: "cyan",
+      transparency: 0.78,
+      fontScale: 1,
       language: "zh",
       reasoningEffort: "medium",
       webFetchPreflight: true,
@@ -346,6 +358,12 @@ describe("SettingsWorkspace", () => {
 
     expect(onGeneralChange).toHaveBeenCalledWith({
       theme: "dark",
+      density: "comfortable",
+      radius: "md",
+      motion: "subtle",
+      accentColor: "cyan",
+      transparency: 0.78,
+      fontScale: 1,
       language: "zh",
       reasoningEffort: "medium",
       webFetchPreflight: false,
@@ -365,6 +383,30 @@ describe("SettingsWorkspace", () => {
     expect(onOpenSkillsFolder).toHaveBeenCalled();
   });
 
+  it("renders installed skills as read-only runtime presets", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <SettingsWorkspace
+        skills={[
+          {
+            id: "docs",
+            name: "Docs",
+            description: "Document workflows",
+            path: "category:productivity",
+            enabled: true,
+          },
+        ]}
+      />,
+    );
+    const navButtons = container.querySelectorAll(".settings-nav button");
+
+    await user.click(navButtons[5] as HTMLElement);
+
+    expect(screen.getByText("Docs")).toBeInTheDocument();
+    expect(screen.getByText("Available")).toBeInTheDocument();
+    expect(container.querySelector('input[type="checkbox"]')).not.toBeInTheDocument();
+  });
+
   it("shows project memory state and clears it from settings", async () => {
     const user = userEvent.setup();
     const onClearWorkspaceMemory = vi.fn();
@@ -380,7 +422,7 @@ describe("SettingsWorkspace", () => {
     expect(screen.getByText("Project memory")).toBeInTheDocument();
     expect(screen.getByText(/roadmap aligned/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "清空项目记忆" }));
+    await user.click(screen.getByRole("button", { name: "Clear project memory" }));
 
     expect(onClearWorkspaceMemory).toHaveBeenCalledTimes(1);
   });
@@ -400,15 +442,15 @@ describe("SettingsWorkspace", () => {
     const navButtons = container.querySelectorAll(".settings-nav button");
 
     await user.click(navButtons[7] as HTMLElement);
-    const focusInput = screen.getByRole("textbox", { name: "固定焦点" }) as HTMLTextAreaElement;
+    const focusInput = screen.getByRole("textbox", { name: "Pinned focus" }) as HTMLTextAreaElement;
     await user.clear(focusInput);
     await user.type(focusInput, "Keep context focused on large projects.");
-    await user.click(screen.getByRole("button", { name: "保存项目焦点" }));
+    await user.click(screen.getByRole("button", { name: "Save project focus" }));
 
     expect(onSaveWorkspaceFocus).toHaveBeenCalledWith("Keep context focused on large projects.");
     expect(onClearWorkspaceMemory).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "清空项目焦点" }));
+    await user.click(screen.getByRole("button", { name: "Clear project focus" }));
 
     expect(onSaveWorkspaceFocus).toHaveBeenLastCalledWith("");
   });

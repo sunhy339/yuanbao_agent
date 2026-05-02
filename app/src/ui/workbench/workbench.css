@@ -647,7 +647,7 @@
   display: inline-flex;
   align-items: center;
   position: relative;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
   max-width: 220px;
   border: 1px solid rgba(15, 23, 42, 0.1);
@@ -685,10 +685,11 @@
   display: block;
   min-width: 0;
   max-width: 100%;
-  min-height: 32px;
+  min-height: 36px;
   overflow: hidden;
-  padding: 7px 30px 7px 12px;
+  padding: 8px 34px 8px 12px;
   font-weight: 650;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -700,14 +701,14 @@
 .workspace-tab-close {
   position: absolute;
   top: 50%;
-  right: 5px;
+  right: 6px;
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   transform: translateY(-50%);
-  border-radius: 6px;
+  border-radius: 7px;
   color: var(--wb-muted-soft);
   font-size: 16px;
   line-height: 1;
@@ -811,6 +812,7 @@
 
 .workspace-frame[data-composer-visible="true"] .workspace-scroll {
   padding-bottom: calc(var(--wb-composer-reserve) + env(safe-area-inset-bottom, 0px));
+  scroll-padding-bottom: calc(var(--wb-composer-reserve) + 24px + env(safe-area-inset-bottom, 0px));
 }
 
 .runtime-unavailable-workspace {
@@ -919,6 +921,7 @@
 .composer-input {
   display: grid;
   gap: 6px;
+  position: relative;
 }
 
 .composer-input span {
@@ -942,6 +945,56 @@
 
 .composer-input textarea::placeholder {
   color: var(--wb-muted-soft);
+}
+
+/* ── slash command autocomplete popup ────────────────────────────── */
+
+.slash-popup {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--wb-surface);
+  border: 1px solid var(--wb-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 50;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.slash-popup-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--wb-text);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+
+.slash-popup-active,
+.slash-popup-item:hover {
+  background: var(--wb-hover);
+}
+
+.slash-popup-name {
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--wb-primary);
+}
+
+.slash-popup-desc {
+  color: var(--wb-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .composer-run {
@@ -1118,6 +1171,7 @@
 
   .workspace-frame[data-composer-visible="true"] .workspace-scroll {
     padding-bottom: calc(var(--wb-composer-reserve-mobile) + env(safe-area-inset-bottom, 0px));
+    scroll-padding-bottom: calc(var(--wb-composer-reserve-mobile) + 28px + env(safe-area-inset-bottom, 0px));
   }
 }
 

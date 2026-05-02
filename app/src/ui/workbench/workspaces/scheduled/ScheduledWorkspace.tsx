@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
+import { Button, StatusBadge } from "../../../v2/components/ui";
 import "./scheduled.css";
 
 export type ScheduledTaskStatus = "active" | "disabled" | "failed" | "completed";
@@ -43,10 +44,17 @@ export interface ScheduledWorkspaceProps {
 }
 
 const statusLabel: Record<ScheduledTaskStatus, string> = {
-  active: "运行中",
-  disabled: "已停用",
-  failed: "异常",
-  completed: "已完成",
+  active: "Active",
+  disabled: "Paused",
+  failed: "Failed",
+  completed: "Completed",
+};
+
+const statusTone: Record<ScheduledTaskStatus | ExecutionLog["result"], "success" | "neutral" | "danger" | "info"> = {
+  active: "success",
+  disabled: "neutral",
+  failed: "danger",
+  completed: "info",
 };
 
 const defaultDraft: ScheduledTaskDraft = {
@@ -93,14 +101,47 @@ export function ScheduledWorkspace({
   const [localSelectedTaskId, setLocalSelectedTaskId] = useState<string | null>(null);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [draft, setDraft] = useState<ScheduledTaskDraft>(defaultDraft);
+
   const resolvedSelectedTaskId = selectedTaskId ?? localSelectedTaskId ?? tasks[0]?.id ?? null;
   const selectedTask = tasks.find((task) => task.id === resolvedSelectedTaskId) ?? tasks[0];
   const selectedLogs = buildLogsForTask(selectedTask, logs, logsByTaskId);
-  const totalCount = tasks.length;
-  const activeCount = tasks.filter((task) => task.status === "active").length;
-  const disabledCount = tasks.filter((task) => task.status === "disabled").length;
-  const failedCount = tasks.filter((task) => task.status === "failed").length;
+  const latestLog = selectedLogs[0];
+
+  const metrics = useMemo(
+    () => [
+      { label: "Total", value: tasks.length },
+      { label: "Active", value: tasks.filter((task) => task.status === "active").length },
+      { label: "Paused", value: tasks.filter((task) => task.status === "disabled").length },
+      { label: "Failed", value: tasks.filter((task) => task.status === "failed").length },
+    ],
+    [tasks],
+  );
+
+  const activeTask = tasks.find((task) => task.status === "active") ?? selectedTask;
   const createDisabled = createBusy || !draft.name.trim() || !draft.prompt.trim();
+  const executionLanes = [
+    {
+      id: "queue",
+      eyebrow: "Queue",
+      title: activeTask?.title ?? "No active task",
+      meta: activeTask?.scheduleText ?? "Scheduled jobs will wait here.",
+      status: activeTask?.status,
+    },
+    {
+      id: "selected",
+      eyebrow: "Inspector",
+      title: selectedTask?.title ?? "Select a task",
+      meta: selectedTask?.description || selectedTask?.lastRunText || "Choose a row to inspect run history.",
+      status: selectedTask?.status,
+    },
+    {
+      id: "last-run",
+      eyebrow: "Last run",
+      title: latestLog?.result ?? "Idle",
+      meta: latestLog ? `${latestLog.time} - ${latestLog.message}` : "No execution log for the selected task.",
+      status: latestLog?.result,
+    },
+  ];
 
   function updateDraft<K extends keyof ScheduledTaskDraft>(key: K, value: ScheduledTaskDraft[K]) {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -117,78 +158,62 @@ export function ScheduledWorkspace({
       return;
     }
 
-    const payload: ScheduledTaskDraft = {
+    await onCreateTask?.({
       name: draft.name.trim(),
       description: draft.description.trim(),
       prompt: draft.prompt.trim(),
       schedule: draft.schedule,
       enabled: draft.enabled,
-    };
-    await onCreateTask?.(payload);
+    });
     closeCreateDialog();
   }
 
   return (
     <main className="scheduled-workspace" aria-labelledby="scheduled-title">
-      <section className="scheduled-overview" aria-label="调度总览">
-        <div className="scheduled-heading">
-          <div>
-            <p className="scheduled-kicker">Scheduled</p>
-            <h1 id="scheduled-title">调度任务</h1>
-            <p className="scheduled-copy">
-              管理本地后台任务的计划、状态和最近执行记录。调度任务只在桌面应用运行时触发。
-            </p>
-          </div>
-          <button
+      <section className="scheduled-command-strip" aria-label="Schedule command strip">
+        <div className="scheduled-title-block">
+          <p className="scheduled-kicker">Automation deck</p>
+          <h1 id="scheduled-title">Scheduled Tasks</h1>
+          <p>Monitor recurring local agent jobs, inspect recent runs, and create a new scheduled prompt without leaving the workbench.</p>
+        </div>
+        <div className="scheduled-command-actions">
+          <span>{workspacePath ?? "No workspace selected"}</span>
+          <Button
             aria-label="Create scheduled task"
-            className="scheduled-create-button"
+            disabled={createBusy}
+            loading={createBusy}
             onClick={() => setCreateDialogOpen(true)}
             type="button"
+            variant="primary"
           >
-            新建任务
-          </button>
-        </div>
-
-        <div className="scheduled-overview-row">
-          <dl className="scheduled-metrics" aria-label="调度任务统计">
-            <div>
-              <dt>总计</dt>
-              <dd>{totalCount}</dd>
-            </div>
-            <div>
-              <dt>运行中</dt>
-              <dd>{activeCount}</dd>
-            </div>
-            <div>
-              <dt>已停用</dt>
-              <dd>{disabledCount}</dd>
-            </div>
-            <div>
-              <dt>异常</dt>
-              <dd>{failedCount}</dd>
-            </div>
-          </dl>
-          <aside className="scheduled-notice" role="note">
-            <span aria-hidden="true" />
-            <p>关闭桌面应用后，计划任务不会在后台静默执行。需要常驻运行时，请保持应用打开。</p>
-          </aside>
+            New task
+          </Button>
         </div>
       </section>
 
-      <section className="scheduled-ledger" aria-label="调度任务与执行日志">
-        <section className="scheduled-task-panel" aria-label="任务列表">
+      <section className="scheduled-metrics" aria-label="Schedule metrics">
+        {metrics.map((metric) => (
+          <div key={metric.label}>
+            <dt>{metric.label}</dt>
+            <dd>{metric.value}</dd>
+          </div>
+        ))}
+      </section>
+
+      <section className="scheduled-workbench-grid">
+        <section className="scheduled-task-panel" aria-label="Scheduled tasks">
           <div className="scheduled-panel-heading">
             <div>
-              <p>Tasks</p>
-              <h2>任务列表</h2>
+              <p className="scheduled-kicker">Task ledger</p>
+              <h2>Runtime schedule</h2>
             </div>
-            <span>{totalCount} 项</span>
+            <span>{tasks.length} item{tasks.length === 1 ? "" : "s"}</span>
           </div>
 
           {tasks.length === 0 ? (
             <div className="scheduled-empty" role="status">
-              <h3>暂无调度任务</h3>
-              <p>新建任务后，这里会显示计划时间、启停状态和最近运行结果。</p>
+              <h3>No scheduled tasks</h3>
+              <p>Create a task to run a recurring prompt against this workspace.</p>
             </div>
           ) : (
             <ul className="scheduled-task-list">
@@ -200,9 +225,6 @@ export function ScheduledWorkspace({
                   key={task.id}
                 >
                   <div className="scheduled-task-main">
-                    <span className="scheduled-task-stamp" data-status={task.status}>
-                      {statusLabel[task.status]}
-                    </span>
                     <button
                       aria-label={`Select task ${task.title}`}
                       aria-pressed={selectedTask?.id === task.id}
@@ -213,47 +235,50 @@ export function ScheduledWorkspace({
                       }}
                       type="button"
                     >
-                      <h3>{task.title}</h3>
+                      <span className="scheduled-task-index">{task.id.slice(0, 2).toUpperCase()}</span>
+                      <span>
+                        <strong>{task.title}</strong>
+                        {task.description ? <em>{task.description}</em> : null}
+                      </span>
                     </button>
-                    {task.description ? <p>{task.description}</p> : null}
                   </div>
                   <div className="scheduled-task-meta">
-                    <span className="scheduled-meta-cell scheduled-meta-status">
-                      <span>状态</span>
-                      <strong className="scheduled-status" data-status={task.status}>
-                        {statusLabel[task.status]} / {task.status}
-                      </strong>
+                    <StatusBadge label={statusLabel[task.status]} tone={statusTone[task.status]} compact />
+                    <span>
+                      <small>Schedule</small>
+                      <strong>{task.scheduleText ?? "Manual"}</strong>
                     </span>
-                    <span className="scheduled-meta-cell">
-                      <span>下次/周期</span>
-                      <strong>{task.scheduleText ?? "未设置计划"}</strong>
-                    </span>
-                    <span className="scheduled-meta-cell">
-                      <span>最近执行</span>
-                      <strong>{task.lastRunText ?? "尚未运行"}</strong>
+                    <span>
+                      <small>Last run</small>
+                      <strong>{task.lastRunText ?? "Not run"}</strong>
                     </span>
                     <div className="scheduled-task-actions" aria-label={`${task.title} actions`}>
-                      <button
+                      <Button
                         aria-label={`Run task ${task.title}`}
                         disabled={busyTaskId === task.id}
+                        loading={busyTaskId === task.id}
                         onClick={() => {
                           void onRunTask?.(task.id);
                         }}
+                        size="xs"
                         type="button"
+                        variant="secondary"
                       >
-                        运行
-                      </button>
-                      <button
+                        Run
+                      </Button>
+                      <Button
                         aria-label={`${task.status === "disabled" ? "Enable" : "Disable"} task ${task.title}`}
                         disabled={busyTaskId === task.id}
                         onClick={() => {
                           void onToggleTask?.(task.id);
                         }}
+                        size="xs"
                         type="button"
+                        variant={task.status === "disabled" ? "primary" : "secondary"}
                       >
-                        {task.status === "disabled" ? "启用" : "停用"}
-                      </button>
-                      {busyTaskId === task.id ? <span className="scheduled-task-busy">处理中</span> : null}
+                        {task.status === "disabled" ? "Enable" : "Pause"}
+                      </Button>
+                      {busyTaskId === task.id ? <span className="scheduled-task-busy">Working</span> : null}
                     </div>
                   </div>
                 </li>
@@ -262,35 +287,53 @@ export function ScheduledWorkspace({
           )}
         </section>
 
-        <section className="scheduled-log-panel" aria-label="执行日志">
-          <div className="scheduled-panel-heading">
-            <div>
-              <p>Logs</p>
-              <h2>执行日志</h2>
-            </div>
-            <span>{selectedTask?.title ?? "未选择任务"}</span>
-          </div>
-
-          {selectedLogs.length === 0 ? (
-            <div className="scheduled-log-empty">选择任务后会显示最近执行日志。</div>
-          ) : (
-            <ol className="scheduled-log-list">
-              {selectedLogs.map((log) => (
-                <li className="scheduled-log-row" key={log.id}>
-                  <div className="scheduled-log-marker" data-result={log.result} aria-hidden="true" />
-                  <div className="scheduled-log-entry">
-                    <div className="scheduled-log-head">
-                      <time>{log.time}</time>
-                      <strong data-result={log.result}>{log.result === "completed" ? "完成" : "失败"}</strong>
-                    </div>
-                    <span>{log.message}</span>
+        <aside className="scheduled-runtime-panel" aria-label="Schedule runtime">
+          <section className="scheduled-execution-console" aria-label="Execution lanes">
+            {executionLanes.map((lane) => (
+              <article className="scheduled-execution-lane" data-lane={lane.id} key={lane.id}>
+                <header>
+                  <div>
+                    <p className="scheduled-kicker">{lane.eyebrow}</p>
+                    <h3>{lane.title}</h3>
                   </div>
-                </li>
-              ))}
-            </ol>
-          )}
-        </section>
+                  {lane.status ? <StatusBadge label={lane.status} tone={statusTone[lane.status]} compact /> : null}
+                </header>
+                <span>{lane.meta}</span>
+              </article>
+            ))}
+          </section>
+
+          <section className="scheduled-log-panel" aria-label="Execution log">
+            <div className="scheduled-panel-heading">
+              <div>
+                <p className="scheduled-kicker">Run tail</p>
+                <h2>Execution log</h2>
+              </div>
+              <span>{selectedTask?.title ?? "No task selected"}</span>
+            </div>
+
+            {selectedLogs.length === 0 ? (
+              <div className="scheduled-log-empty">Select a task to see recent execution logs.</div>
+            ) : (
+              <ol className="scheduled-log-list">
+                {selectedLogs.map((log) => (
+                  <li className="scheduled-log-row" key={log.id}>
+                    <div className="scheduled-log-marker" data-result={log.result} aria-hidden="true" />
+                    <div className="scheduled-log-entry">
+                      <div className="scheduled-log-head">
+                        <time>{log.time}</time>
+                        <strong data-result={log.result}>{log.result}</strong>
+                      </div>
+                      <span>{log.message}</span>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+        </aside>
       </section>
+
       {createDialogOpen ? (
         <div className="scheduled-dialog-backdrop">
           <form
@@ -302,18 +345,18 @@ export function ScheduledWorkspace({
             role="dialog"
           >
             <div className="scheduled-dialog-heading">
-              <h2 id="scheduled-create-title">新建定时任务</h2>
-              <button aria-label="关闭" onClick={closeCreateDialog} type="button">
-                ×
+              <h2 id="scheduled-create-title">Create scheduled task</h2>
+              <button aria-label="Close dialog" onClick={closeCreateDialog} type="button">
+                x
               </button>
             </div>
 
-            <p className="scheduled-dialog-note">本地任务仅在电脑唤醒时运行。</p>
+            <p className="scheduled-dialog-note">Local scheduled tasks run when the runtime host is awake.</p>
 
             <label className="scheduled-field">
-              <span>名称</span>
+              <span>Name</span>
               <input
-                aria-label="名称"
+                aria-label="Name"
                 onChange={(event) => updateDraft("name", event.currentTarget.value)}
                 placeholder="daily-code-review"
                 value={draft.name}
@@ -321,42 +364,42 @@ export function ScheduledWorkspace({
             </label>
 
             <label className="scheduled-field">
-              <span>描述</span>
+              <span>Description</span>
               <input
-                aria-label="描述"
+                aria-label="Description"
                 onChange={(event) => updateDraft("description", event.currentTarget.value)}
-                placeholder="审查昨天的提交并标记可疑之处"
+                placeholder="Review yesterday's commits"
                 value={draft.description}
               />
             </label>
 
             <label className="scheduled-field">
-              <span>任务内容</span>
+              <span>Prompt</span>
               <textarea
-                aria-label="任务内容"
+                aria-label="Prompt"
                 onChange={(event) => updateDraft("prompt", event.currentTarget.value)}
-                placeholder="查看过去 24 小时的提交。总结变更内容，标记有风险的模式或缺失的测试。"
+                placeholder="Check the repository status and summarize anything that needs attention."
                 rows={5}
                 value={draft.prompt}
               />
             </label>
 
             <div className="scheduled-dialog-context">
-              <span>访问权限</span>
-              <strong>{workspacePath ?? "当前工作区"}</strong>
+              <span>Workspace</span>
+              <strong>{workspacePath ?? "No workspace selected"}</strong>
             </div>
 
             <label className="scheduled-field">
-              <span>频率</span>
+              <span>Frequency</span>
               <select
-                aria-label="频率"
+                aria-label="Frequency"
                 onChange={(event) => updateDraft("schedule", event.currentTarget.value)}
                 value={draft.schedule}
               >
-                <option value="every 24 hours">每天</option>
-                <option value="every 12 hours">每 12 小时</option>
-                <option value="every 4 hours">每 4 小时</option>
-                <option value="every 30 minutes">每 30 分钟</option>
+                <option value="every 24 hours">Every day</option>
+                <option value="every 12 hours">Every 12 hours</option>
+                <option value="every 4 hours">Every 4 hours</option>
+                <option value="every 30 minutes">Every 30 minutes</option>
               </select>
             </label>
 
@@ -366,19 +409,17 @@ export function ScheduledWorkspace({
                 onChange={(event) => updateDraft("enabled", event.currentTarget.checked)}
                 type="checkbox"
               />
-              <span>创建后启用</span>
+              <span>Enable after creation</span>
             </label>
 
-            <p className="scheduled-dialog-summary">
-              {draft.schedule === "every 24 hours" ? "每天执行" : `${draft.schedule} 执行`}
-            </p>
+            <p className="scheduled-dialog-summary">{draft.schedule} execution cadence</p>
 
             <div className="scheduled-dialog-actions">
               <button onClick={closeCreateDialog} type="button">
-                取消
+                Cancel
               </button>
               <button disabled={createDisabled} type="submit">
-                {createBusy ? "创建中" : "创建任务"}
+                {createBusy ? "Creating..." : "Create task"}
               </button>
             </div>
           </form>

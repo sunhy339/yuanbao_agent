@@ -102,7 +102,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText("Runtime resumed session state.")).toBeInTheDocument();
     expect(screen.getByText("shell_command")).toBeInTheDocument();
     expect(screen.queryByLabelText("Runtime timeline")).not.toBeInTheDocument();
-    expect(screen.getByText("Patch the session workspace")).toBeInTheDocument();
+    expect(screen.getAllByText("Patch the session workspace").length).toBeGreaterThan(0);
     expect(screen.getByText("Allow npm test")).toBeInTheDocument();
     expect(screen.getByText("Updated session layout")).toBeInTheDocument();
     expect(screen.queryByText("Provider response")).not.toBeInTheDocument();
@@ -120,7 +120,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByRole("heading", { name: "Active task" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Runtime shelf" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Collaboration" })).not.toBeInTheDocument();
-    expect(screen.queryByText("MiniMax-M2.7-highspeed")).not.toBeInTheDocument();
+    expect(screen.getByText("MiniMax-M2.7-highspeed")).toBeInTheDocument();
   });
 
   it("renders a message empty state inside the conversation area", () => {
@@ -166,8 +166,54 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByLabelText("Runtime timeline")).not.toBeInTheDocument();
   });
 
-  it("renders runtime cards collapsed by default and expands details on demand", async () => {
-    const user = userEvent.setup();
+  it("hides low-level trace noise while keeping important diagnostics readable", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Run task", createdAt: 1 }]}
+        traces={[
+          {
+            id: "trace_token",
+            type: "assistant.token",
+            source: "assistant",
+            detail: '{"delta":"hello","step":1}',
+          },
+          {
+            id: "trace_provider",
+            type: "provider.request",
+            source: "provider",
+            detail: '{"baseUrl":"https://example.invalid","messages":[{"role":"user"}]}',
+          },
+          {
+            id: "trace_task_started",
+            type: "task.started",
+            source: "task",
+            detail: '{"context":{"estimatedInputTokens":7792}}',
+          },
+          {
+            id: "trace_error",
+            type: "runtime.error",
+            source: "runtime",
+            status: "failed",
+            detail: '{"internal":"hidden"}',
+            stderr: "Command process exited unexpectedly.",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.queryByText("assistant.token")).not.toBeInTheDocument();
+    expect(screen.queryByText("provider.request")).not.toBeInTheDocument();
+    expect(screen.queryByText("task.started")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /trace Runtime Error failed/i })).toBeInTheDocument();
+    expect(screen.getByText("Command process exited unexpectedly.")).toBeInTheDocument();
+    expect(screen.queryByText(/baseUrl/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/estimatedInputTokens/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/"internal":"hidden"/)).not.toBeInTheDocument();
+  });
+
+  it("renders command runtime cards without exposing raw details", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -187,13 +233,10 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /Bash npm test failed/ })).toBeInTheDocument();
-    expect(screen.getByText("Command failed with exit 1.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "npm test" })).toBeInTheDocument();
+    expect(screen.getByText(/Command failed with exit 1/)).toBeInTheDocument();
     expect(screen.queryByText(/"command":"npm test"/)).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Bash npm test failed/ }));
-
-    expect(screen.getByText("Command failed with exit 1.")).toBeInTheDocument();
     // Raw data should not be shown at all
     expect(screen.queryByText("查看原始数据")).not.toBeInTheDocument();
     expect(screen.queryByText(/"command":"npm test"/)).not.toBeInTheDocument();
@@ -222,9 +265,9 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /Tool list_dir \. completed/ }));
+    await user.click(screen.getByRole("button", { name: /list_dir/ }));
 
-    expect(screen.getByText("Found 2 items: app, docs")).toBeInTheDocument();
+    expect(screen.getAllByText("Found 2 items: app, docs").length).toBeGreaterThan(0);
     expect(screen.getAllByText("列出 .").length).toBeGreaterThan(0);
     // Raw data should not be visible to users
     expect(screen.queryByText("查看原始数据")).not.toBeInTheDocument();
@@ -281,20 +324,21 @@ describe("SessionWorkspace", () => {
 
     expect(screen.getByRole("button", { name: /Task Task focus verifying/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Task Changed files recorded/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Bash Command runs completed/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Command runs" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Task Verification passed/ })).toBeInTheDocument();
     expect(screen.queryByText(/sessionId/)).not.toBeInTheDocument();
     expect(screen.queryByText(/taskId/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Task Task focus verifying/ }));
-    expect(screen.getByText("Run the generated CLI against a sample image")).toBeInTheDocument();
+    expect(screen.getAllByText("Run the generated CLI against a sample image").length).toBeGreaterThan(0);
     expect(screen.getByText(/Acceptance/)).toHaveTextContent("Script exists");
 
     await user.click(screen.getByRole("button", { name: /Task Changed files recorded/ }));
-    expect(screen.getAllByText(/tools\/bead_art_generator.py/).at(-1)).toHaveTextContent("+148");
+    expect(screen.getAllByText(/tools\/bead_art_generator.py/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/\+148/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Bash Command runs completed/ }));
-    expect(screen.getByText(/python tools\/bead_art_generator.py --help/)).toHaveTextContent("exit 0");
+    expect(screen.getByText(/python tools\/bead_art_generator.py --help/)).toBeInTheDocument();
+    expect(screen.getByText(/exit 0/)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Task Verification passed/ }));
     expect(screen.getByText(/CLI help is available/)).toHaveTextContent("passed");
@@ -378,8 +422,8 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "批准 apply_patch" }));
-    await user.click(screen.getByRole("button", { name: "拒绝 apply_patch" }));
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await user.click(screen.getByRole("button", { name: "Reject" }));
 
     expect(onApprove).toHaveBeenCalledWith("approval_1");
     expect(onReject).toHaveBeenCalledWith("approval_1");

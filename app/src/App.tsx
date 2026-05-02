@@ -6,6 +6,7 @@ import type {
   AppConfig,
   AssistantTokenPayload,
   CommandLogRecord,
+  McpServerRecord,
   PatchRecord,
   PatchProposedPayload,
   ProviderMode,
@@ -15,6 +16,7 @@ import type {
   ScheduledTaskRunRecord,
   SessionRecord,
   SessionUpdatedPayload,
+  SkillPresetRecord,
   TaskRecord,
   TaskContextPreviewPayload,
   TaskUpdatedPayload,
@@ -39,6 +41,7 @@ import {
   DEFAULT_SESSION_TITLE,
   DEFAULT_WORKSPACE_PATH,
 } from "./state/mockData";
+import { dispatchSlashCommand, SLASH_COMMANDS } from "./state/slashCommands";
 import { AppShell } from "./ui/workbench/AppShell";
 import { getSidebarActiveSessionId, resolveSessionForTab } from "./ui/workbench/sessionRouting";
 import {
@@ -58,6 +61,14 @@ import {
   type ScheduledTaskDraft,
 } from "./ui/workbench/workspaces/scheduled/ScheduledWorkspace";
 import {
+  McpWorkspace,
+  type McpServerDraft,
+} from "./ui/workbench/workspaces/mcp/McpWorkspace";
+import { AppearanceWorkspace } from "./ui/workbench/workspaces/appearance/AppearanceWorkspace";
+import { ComponentPlaygroundWorkspace } from "./ui/workbench/workspaces/playground/ComponentPlaygroundWorkspace";
+import { SkillsWorkspace } from "./ui/workbench/workspaces/skills/SkillsWorkspace";
+import { WorkbenchOverviewPage } from "./ui/v2/pages/WorkbenchOverviewPage";
+import {
   SessionWorkspace,
   type SessionWorkspaceBackgroundJob,
   type SessionWorkspaceCollaboration,
@@ -72,6 +83,7 @@ import {
   type SettingsProviderFeedback,
   type SettingsProviderPayload,
   type SettingsProviderTestResult,
+  type SettingsSkillConfig,
 } from "./ui/workbench/workspaces/settings/SettingsWorkspace";
 
 const runtimeClient = new RuntimeClient();
@@ -148,6 +160,19 @@ function formatDuration(durationMs?: number): string {
   }
 
   return `${(durationMs / 1000).toFixed(1)} s`;
+}
+
+function formatCompactCount(value?: number | null): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "--";
+  }
+  if (value >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(1)}m`;
+  }
+  if (value >= 1_000) {
+    return `${Math.round(value / 100) / 10}k`;
+  }
+  return String(Math.max(0, Math.round(value)));
 }
 
 function normalizeRuntimeConfig(config: AppConfig | RuntimeConfig): RuntimeConfig {
@@ -486,6 +511,27 @@ function buildDefaultProviderProfile(): ProviderProfile {
   };
 }
 
+function normalizeSkillForSettings(skill: SkillPresetRecord): SettingsSkillConfig {
+  const toolWhitelist = skill.toolWhitelist ?? skill.tool_whitelist ?? [];
+  return {
+    id: skill.id,
+    name: skill.name,
+    description:
+      skill.description ||
+      (toolWhitelist.length ? `Tools: ${toolWhitelist.join(", ")}` : "Runtime skill preset"),
+    path: skill.category ? `category:${skill.category}` : undefined,
+    enabled: true,
+    updateAvailable: false,
+  };
+}
+
+function parseMcpArgs(value: string): string[] {
+  return value
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function getModelFromProviderPayload(payload: SettingsProviderPayload): string {
   const jsonConfig = readProviderJsonConfig(payload);
   if (jsonConfig.model) {
@@ -712,10 +758,28 @@ function buildSettingsGeneralConfig(config: RuntimeConfig): SettingsGeneralConfi
       : "auto";
   return {
     theme: ui.theme ?? "light",
+    density: ui.density ?? "comfortable",
+    radius: ui.radius ?? "md",
+    motion: ui.motion ?? "subtle",
+    accentColor: ui.accentColor ?? "cyan",
+    transparency: clampAppearanceNumber(ui.transparency, 0.58, 0.96, 0.78),
+    fontScale: clampAppearanceNumber(ui.fontScale, 0.92, 1.12, 1),
     language,
     reasoningEffort: ui.reasoningEffort ?? "max",
     webFetchPreflight: ui.webFetchPreflight ?? true,
   };
+}
+
+function clampAppearanceNumber(
+  value: number | undefined,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, value));
 }
 
 function settingsLanguageToConfig(language: SettingsGeneralConfig["language"]): string {
@@ -764,8 +828,8 @@ function scheduledRecordToWorkspaceTask(record: ScheduledTaskRecord): ScheduledT
     title: record.name,
     description: record.prompt,
     status: record.enabled ? record.status : "disabled",
-    scheduleText: record.schedule || "未设置计划",
-    lastRunText: record.lastRunAt ? `上次运行：${formatTimestamp(record.lastRunAt)}` : "尚未运行",
+    scheduleText: record.schedule || "No schedule",
+    lastRunText: record.lastRunAt ? `Last run: ${formatTimestamp(record.lastRunAt)}` : "Never run",
   };
 }
 
@@ -992,8 +1056,8 @@ function toolNumber(record: Record<string, unknown> | null, keys: string[]): num
 
 function compactToolList(values: string[], limit = 5): string {
   const visible = values.filter(Boolean).slice(0, limit);
-  const suffix = values.length > limit ? ` 等 ${values.length} 项` : "";
-  return visible.length ? `${visible.join("、")}${suffix}` : "";
+  const suffix = values.length > limit ? ` +${values.length - limit} more` : "";
+  return visible.length ? `${visible.join(", ")}${suffix}` : "";
 }
 
 function firstUsefulLine(value?: string): string | undefined {
@@ -1003,20 +1067,20 @@ function firstUsefulLine(value?: string): string | undefined {
     .find(Boolean);
 }
 
-function summarizeToolArguments(toolName: string, value: unknown, fallback = "未记录参数"): string {
+function summarizeToolArguments(toolName: string, value: unknown, fallback = "No arguments recorded"): string {
   const parsed = parseToolValue(value);
   const record = asRecord(parsed);
   const path = toolString(record, ["path", "file", "cwd", "root"]);
 
   if (toolName === "list_dir") {
-    return `列出 ${path ?? "."}`;
+    return `List ${path ?? "."}`;
   }
   if (toolName === "read_file") {
-    return `读取 ${path ?? "文件"}`;
+    return `Read ${path ?? "file"}`;
   }
   if (toolName === "search_files") {
     const query = toolString(record, ["query", "pattern", "glob"]);
-    return query ? `搜索 ${query}${path ? ` @ ${path}` : ""}` : `搜索${path ? ` ${path}` : ""}`;
+    return query ? `Search ${query}${path ? ` @ ${path}` : ""}` : `Search${path ? ` ${path}` : ""}`;
   }
   if (toolName === "apply_patch") {
     const filesValue = record?.files;
@@ -1026,19 +1090,19 @@ function summarizeToolArguments(toolName: string, value: unknown, fallback = "�
       : Array.isArray(changedPathsValue)
         ? changedPathsValue.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
         : [];
-    return files.length ? `修改 ${compactToolList(files)}` : "应用补丁";
+    return files.length ? `Modify ${compactToolList(files)}` : "Apply patch";
   }
   if (toolName === "run_command") {
     const command = toolString(record, ["command", "cmd"]);
-    return command ? `执行 ${command}` : "执行命令";
+    return command ? `Run ${command}` : "Run command";
   }
 
   return summarizeValue(value, fallback, 120);
 }
 
-function summarizeToolResult(toolName: string, resultValue: unknown, errorValue: unknown, fallback = "等待结果"): string {
+function summarizeToolResult(toolName: string, resultValue: unknown, errorValue: unknown, fallback = "Waiting for result"): string {
   if (errorValue !== undefined && errorValue !== null && summarizeValue(errorValue, "", 160)) {
-    return `失败：${summarizeValue(errorValue, "", 160)}`;
+    return `Failed: ${summarizeValue(errorValue, "", 160)}`;
   }
 
   const parsed = parseToolValue(resultValue);
@@ -1048,7 +1112,7 @@ function summarizeToolResult(toolName: string, resultValue: unknown, errorValue:
     const itemsValue = record?.items ?? parsed;
     const items = Array.isArray(itemsValue) ? itemsValue : [];
     if (!items.length) {
-      return resultValue === undefined ? fallback : "没有找到项目";
+      return resultValue === undefined ? fallback : "No items found";
     }
     const names = items
       .map((item) => {
@@ -1060,14 +1124,14 @@ function summarizeToolResult(toolName: string, resultValue: unknown, errorValue:
       .filter((item): item is string => Boolean(item));
     const dirCount = items.filter((item) => toolString(asRecord(item), ["type"]) === "directory").length;
     const fileCount = items.filter((item) => toolString(asRecord(item), ["type"]) === "file").length;
-    return `找到 ${items.length} 项（${dirCount} 个目录，${fileCount} 个文件）：${compactToolList(names)}`;
+    return `Found ${items.length} items (${dirCount} dirs, ${fileCount} files): ${compactToolList(names)}`;
   }
 
   if (toolName === "read_file") {
     const bytes = toolNumber(record, ["bytesRead", "bytes", "size"]);
     const content = toolString(record, ["content", "text"]);
     const preview = firstUsefulLine(content);
-    return `读取完成${bytes !== undefined ? `，${bytes} 字节` : ""}${preview ? `：${truncateText(preview, 80)}` : ""}`;
+    return `Read complete${bytes !== undefined ? `, ${bytes} bytes` : ""}${preview ? `: ${truncateText(preview, 80)}` : ""}`;
   }
 
   if (toolName === "apply_patch") {
@@ -1077,15 +1141,15 @@ function summarizeToolResult(toolName: string, resultValue: unknown, errorValue:
       : [];
     const error = toolString(record, ["error"]);
     if (error) {
-      return `补丁失败：${truncateText(error, 140)}`;
+      return `Patch failed: ${truncateText(error, 140)}`;
     }
-    return paths.length ? `补丁完成：${compactToolList(paths)}` : summarizeValue(resultValue, "补丁完成", 140);
+    return paths.length ? `Patch complete: ${compactToolList(paths)}` : summarizeValue(resultValue, "Patch complete", 140);
   }
 
   if (toolName === "run_command") {
     const exitCode = toolNumber(record, ["exitCode", "code"]);
     const output = firstUsefulLine(toolString(record, ["stdout", "stderr", "output"]));
-    return `命令${exitCode === undefined ? "完成" : `退出 ${exitCode}`}${output ? `：${truncateText(output, 100)}` : ""}`;
+    return `Command ${exitCode === undefined ? "complete" : `exited ${exitCode}`}${output ? `: ${truncateText(output, 100)}` : ""}`;
   }
 
   return summarizeValue(resultValue, fallback, 160);
@@ -1907,6 +1971,11 @@ export function App() {
   const [selectedScheduledTaskId, setSelectedScheduledTaskId] = useState<string | null>(null);
   const [scheduledBusyTaskId, setScheduledBusyTaskId] = useState<string | null>(null);
   const [scheduledCreateBusy, setScheduledCreateBusy] = useState(false);
+  const [skills, setSkills] = useState<SkillPresetRecord[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
+  const [mcpBusyServerId, setMcpBusyServerId] = useState<string | null>(null);
+  const [mcpLoading, setMcpLoading] = useState(false);
+  const [mcpLastRefresh, setMcpLastRefresh] = useState<{ refreshed: number; tools: string[] } | null>(null);
 
   function addToast(kind: ToastEntry["kind"], message: string) {
     setToasts((current) => [...current.slice(-4), createToast(kind, message)]);
@@ -1921,8 +1990,14 @@ export function App() {
   }
 
   const [generalSettings, setGeneralSettings] = useState<SettingsGeneralConfig>({
-    theme: "light",
-    language: "zh",
+    theme: "dark",
+    density: "comfortable",
+    radius: "md",
+    motion: "subtle",
+    accentColor: "cyan",
+    transparency: 0.78,
+    fontScale: 1,
+    language: "en",
     reasoningEffort: "max",
     webFetchPreflight: true,
   });
@@ -1939,10 +2014,10 @@ export function App() {
     clipboardAccess: true,
     systemKeyCombos: false,
     sensitiveActionConfirm: true,
-    status: "未检查",
+    status: "Not checked",
   });
   const [openTabs, setOpenTabs] = useState<WorkbenchTab[]>(() => getInitialTabs());
-  const [activeTabId, setActiveTabId] = useState<WorkbenchTab["id"]>("system:new-session");
+  const [activeTabId, setActiveTabId] = useState<WorkbenchTab["id"]>("system:overview");
   const pendingAssistantTokenEventsRef = useRef<AgentEventEnvelope[]>([]);
   const assistantTokenFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messageLoadRequestRef = useRef(0);
@@ -2019,8 +2094,10 @@ export function App() {
       runtimeClient.listSessions(),
       runtimeClient.listTasks(),
       runtimeClient.listScheduledTasks(),
+      runtimeClient.listSkills().catch(() => ({ skills: [] as SkillPresetRecord[] })),
+      runtimeClient.listMcpServers().catch(() => ({ servers: [] as McpServerRecord[] })),
     ])
-      .then(([nextHostStatus, nextConfig, nextSessions, nextTasks, nextScheduledTasks]) => {
+      .then(([nextHostStatus, nextConfig, nextSessions, nextTasks, nextScheduledTasks, nextSkills, nextMcpServers]) => {
         if (disposed) {
           return;
         }
@@ -2046,6 +2123,8 @@ export function App() {
         void loadSessionMessages(initialSession?.id);
         setScheduledRecords(nextScheduledTasks.tasks);
         setSelectedScheduledTaskId(nextScheduledTasks.tasks[0]?.id ?? null);
+        setSkills(nextSkills.skills);
+        setMcpServers(nextMcpServers.servers);
 
         if (nextConfig.config.workspace.rootPath) {
           setWorkspacePath(nextConfig.config.workspace.rootPath);
@@ -2283,7 +2362,7 @@ export function App() {
         toolCallId,
         toolName,
         status,
-        argsSummary: summarizeToolArguments(toolName, argumentValue, current?.argsSummary ?? "未记录参数"),
+        argsSummary: summarizeToolArguments(toolName, argumentValue, current?.argsSummary ?? "No arguments recorded"),
         resultSummary,
         errorSummary: errorSummary || current?.errorSummary,
         argsRaw: formatRawValue(argumentValue) ?? current?.argsRaw,
@@ -3171,6 +3250,12 @@ export function App() {
             ...config.ui,
             language: settingsLanguageToConfig(next.language),
             theme: next.theme,
+            density: next.density,
+            radius: next.radius,
+            motion: next.motion,
+            accentColor: next.accentColor,
+            transparency: next.transparency,
+            fontScale: next.fontScale,
             reasoningEffort: next.reasoningEffort,
             webFetchPreflight: next.webFetchPreflight,
           },
@@ -3181,6 +3266,99 @@ export function App() {
       setGeneralSettings(buildSettingsGeneralConfig(normalized));
     } catch (reason) {
       toastError(reason);
+    }
+  }
+
+  async function refreshSkills() {
+    setError(null);
+    try {
+      const result = await runtimeClient.listSkills();
+      setSkills(result.skills);
+      addToast("success", "Skills refreshed");
+    } catch (reason) {
+      toastError(reason);
+    }
+  }
+
+  async function refreshMcpServers() {
+    setMcpLoading(true);
+    setError(null);
+    try {
+      const result = await runtimeClient.listMcpServers();
+      setMcpServers(result.servers);
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setMcpLoading(false);
+    }
+  }
+
+  async function handleCreateMcpServer(draft: McpServerDraft) {
+    setMcpLoading(true);
+    setError(null);
+    try {
+      const result = await runtimeClient.createMcpServer({
+        name: draft.name,
+        transport: draft.transport,
+        command: draft.transport === "stdio" ? draft.command.trim() : undefined,
+        args: draft.transport === "stdio" ? parseMcpArgs(draft.args) : [],
+        url: draft.transport === "stdio" ? undefined : draft.url.trim(),
+        enabled: draft.enabled,
+      });
+      setMcpServers((current) => [
+        result.server,
+        ...current.filter((server) => server.id !== result.server.id),
+      ]);
+      addToast("success", "MCP server created");
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setMcpLoading(false);
+    }
+  }
+
+  async function handleToggleMcpServer(serverId: string, enabled: boolean) {
+    setMcpBusyServerId(serverId);
+    setError(null);
+    try {
+      const result = await runtimeClient.updateMcpServer({ serverId, enabled });
+      setMcpServers((current) =>
+        current.map((server) => (server.id === result.server.id ? result.server : server)),
+      );
+      addToast("success", enabled ? "MCP server enabled" : "MCP server disabled");
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setMcpBusyServerId(null);
+    }
+  }
+
+  async function handleRefreshMcpTools(serverId?: string) {
+    setMcpBusyServerId(serverId ?? "__all__");
+    setError(null);
+    try {
+      const result = await runtimeClient.refreshMcpTools(serverId ? { serverId } : {});
+      setMcpLastRefresh(result);
+      await refreshMcpServers();
+      addToast("success", `Refreshed ${result.refreshed} MCP tools`);
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setMcpBusyServerId(null);
+    }
+  }
+
+  async function handleDeleteMcpServer(serverId: string) {
+    setMcpBusyServerId(serverId);
+    setError(null);
+    try {
+      await runtimeClient.deleteMcpServer({ serverId });
+      setMcpServers((current) => current.filter((server) => server.id !== serverId));
+      addToast("success", "MCP server deleted");
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setMcpBusyServerId(null);
     }
   }
 
@@ -3362,6 +3540,14 @@ export function App() {
       return;
     }
 
+    // Slash command dispatch.
+    const slashResult = dispatchSlashCommand(prompt);
+    if (slashResult) {
+      setPrompt("");
+      handleSlashCommand(slashResult);
+      return;
+    }
+
     setMessageBusy(true);
     setError(null);
     let pendingAssistantMessageIdForCatch: string | null = null;
@@ -3431,6 +3617,133 @@ export function App() {
     } finally {
       setMessageBusy(false);
     }
+  }
+
+  function formatMcpSummary(servers: McpServerRecord[]): string {
+    if (servers.length === 0) {
+      return "No MCP servers configured. Use the **MCP** tab in the sidebar to add one.";
+    }
+    const lines = servers.map((s) => {
+      const status = s.enabled ? "on" : "off";
+      const transport = s.transport ?? "stdio";
+      const detail = s.url ?? s.command ?? "";
+      return `- **${s.name}** (${status}) — ${transport}${detail ? `: ${detail}` : ""}`;
+    });
+    const enabled = servers.filter((s) => s.enabled).length;
+    return `**MCP Servers** (${enabled}/${servers.length} enabled)\n\n${lines.join("\n")}\n\n_Use \`/mcp refresh\` to re-discover tools._`;
+  }
+
+  function formatSkillsSummary(skillList: SkillPresetRecord[]): string {
+    if (skillList.length === 0) {
+      return "No skill presets found. Use the **Skills** tab in the sidebar to create one.";
+    }
+    const lines = skillList.map((s) => {
+      const builtin = s.isBuiltin || s.is_builtin ? " [builtin]" : "";
+      const cat = s.category ? ` (${s.category})` : "";
+      return `- **${s.name}**${cat}${builtin} — ${(s.description || "").slice(0, 80)}`;
+    });
+    return `**Skills** (${skillList.length} presets)\n\n${lines.join("\n")}`;
+  }
+
+  /** Handle a locally-recognized slash command. */
+  function handleSlashCommand(cmd: ReturnType<typeof dispatchSlashCommand>) {
+    if (!cmd) return;
+
+    switch (cmd.kind) {
+      case "help": {
+        const lines = SLASH_COMMANDS.map(
+          (c) => `**${c.name}**${c.argsHint ? ` ${c.argsHint}` : ""} - ${c.description}`,
+        );
+        const helpText = `**Available commands:**\n\n${lines.join("\n")}`;
+        addSystemMessage(helpText);
+        break;
+      }
+      case "clear":
+        setChatMessages([]);
+        addToast("success", "Chat cleared");
+        break;
+      case "compact":
+        addSystemMessage(
+          "Context compaction is not yet implemented. The runtime will support summarizing long conversations in a future update.",
+        );
+        break;
+      case "status": {
+        const statusLines: string[] = [];
+        statusLines.push(`**Runtime:** ${hostStatusText}`);
+        if (hostStatus?.runtimeRunning) {
+          statusLines.push(`**Transport:** ${hostStatus.runtimeTransport}`);
+        }
+        statusLines.push(`**Model:** ${providerSettings.mode === "mock" ? "mock" : providerSettings.model || "not set"}`);
+        statusLines.push(`**Session:** ${session ? session.title : "none"}`);
+        statusLines.push(`**Messages:** ${chatMessages.length}`);
+        if (task) {
+          statusLines.push(`**Task:** ${task.id} - ${task.status}`);
+        }
+        addSystemMessage(statusLines.join("\n"));
+        break;
+      }
+      case "model":
+        if (cmd.args) {
+          setProviderSettings((current) => ({ ...current, model: cmd.args }));
+          addToast("success", `Model set to: ${cmd.args}`);
+        } else {
+          addSystemMessage(
+            `**Current model:** ${providerSettings.mode === "mock" ? "mock" : providerSettings.model || "not set"}`,
+          );
+        }
+        break;
+      case "config": {
+        const configLines: string[] = [
+          `**Mode:** ${providerSettings.mode}`,
+          `**Base URL:** ${providerSettings.baseUrl || "(default)"}`,
+          `**Model:** ${providerSettings.model || "(default)"}`,
+          `**Temperature:** ${providerSettings.temperature}`,
+          `**Max tokens:** ${providerSettings.maxTokens}`,
+          `**Max context:** ${providerSettings.maxContextTokens}`,
+          `**Timeout:** ${providerSettings.timeout}s`,
+        ];
+        addSystemMessage(configLines.join("\n"));
+        break;
+      }
+      case "mcp": {
+        if (cmd.args === "refresh") {
+          addSystemMessage("Refreshing MCP tools...");
+          handleRefreshMcpTools().then(() => {
+            addSystemMessage(formatMcpSummary(mcpServers));
+          });
+        } else {
+          addSystemMessage(formatMcpSummary(mcpServers));
+        }
+        break;
+      }
+      case "skills": {
+        if (cmd.args === "refresh") {
+          addSystemMessage("Refreshing skills...");
+          refreshSkills();
+        } else {
+          addSystemMessage(formatSkillsSummary(skills));
+        }
+        break;
+      }
+    }
+  }
+
+  /** Append a system-level info message (rendered as an assistant bubble). */
+  function addSystemMessage(markdown: string) {
+    const now = Date.now();
+    const systemMessageId = `system_${now}`;
+    setChatMessages((current) => [
+      ...current,
+      {
+        id: systemMessageId,
+        sessionId: session?.id ?? "",
+        taskId: "system",
+        role: "assistant" as const,
+        content: markdown,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
   }
 
   async function ensureSessionForSend(): Promise<SessionRecord> {
@@ -3587,7 +3900,7 @@ export function App() {
         approvalId,
         decision,
       });
-      addToast("success", decision === "approved" ? "已批准" : "已拒绝");
+      addToast("success", decision === "approved" ? "Approved" : "Rejected");
     } catch (reason) {
       toastError(reason);
     } finally {
@@ -3603,7 +3916,7 @@ export function App() {
   const providerLabel =
     providerSettings.mode === "mock"
       ? "测试模式"
-      : providerSettings.model || providerSettings.name || "未配置模型";
+      : providerSettings.model || providerSettings.name || "No model configured";
   const sessionContextPreview = useMemo(
     () =>
       buildSessionContextPreview({
@@ -3616,6 +3929,25 @@ export function App() {
   );
   const cwdLabel = sessionContextPreview?.workspaceRoot ?? workspace?.rootPath ?? workspacePath ?? DEFAULT_WORKSPACE_PATH;
   const hostStatusText = describeMode(hostStatus);
+  const overviewRuntimeStatus = runtimeReady
+    ? providerSettings.mode === "mock"
+      ? "degraded" as const
+      : "ready" as const
+    : "offline" as const;
+  const runtimeStatusLabel =
+    overviewRuntimeStatus === "ready"
+      ? "Runtime ready"
+      : overviewRuntimeStatus === "degraded"
+        ? "Runtime mock"
+        : "Runtime offline";
+  const enabledMcpServers = mcpServers.filter((server) => server.enabled).length;
+  const mcpStatusLabel = `${enabledMcpServers}/${mcpServers.length || 0} MCP`;
+  const pendingApprovalCount = approvalCards.filter((approval) => approval.status === "pending").length;
+  const approvalStatusLabel = `${pendingApprovalCount} approvals`;
+  const contextStats = sessionContextPreview?.budgetStats;
+  const contextStatusLabel = contextStats?.maxContextTokens
+    ? `${formatCompactCount(contextStats.estimatedTokens ?? contextStats.estimatedInputTokens)}/${formatCompactCount(contextStats.maxContextTokens)} ctx`
+    : `${formatCompactCount(contextStats?.estimatedTokens ?? contextStats?.estimatedInputTokens)} ctx`;
   const runtimeUnavailableReason =
     !loading && !runtimeReady
       ? error ?? "Runtime handshake did not complete. The frontend cannot execute tasks on its own."
@@ -3634,14 +3966,14 @@ export function App() {
       return {
         id: profile.id,
         name: profile.name,
-        endpoint: profile.baseUrl ?? "未配置接口",
+        endpoint: profile.baseUrl ?? "No endpoint configured",
         apiFormat: profile.apiFormat as SettingsProvider["apiFormat"],
         note:
           profile.mode === "mock"
-            ? "测试模式，不会调用真实模型"
+            ? "Mock mode; no real model calls"
             : profile.apiKeyEnvVarName
-              ? `环境变量：${profile.apiKeyEnvVarName}`
-              : "需要配置 API 密钥",
+              ? `Env var: ${profile.apiKeyEnvVarName}`
+              : "API key required",
         models: models.length ? models : undefined,
         modelMapping: {
           main: profile.model ?? "",
@@ -3649,7 +3981,7 @@ export function App() {
           sonnet: profile.model ?? profile.defaultModel ?? "",
           opus: profile.fallbackModel ?? "",
         },
-        apiKeyMasked: profile.apiKey ? "已输入密钥" : profile.apiKeyEnvVarName,
+        apiKeyMasked: profile.apiKey ? "Key entered" : profile.apiKeyEnvVarName,
         lastTest: buildSettingsProviderLastTest(
           profile,
           providerTestResult,
@@ -3657,8 +3989,8 @@ export function App() {
         ),
         status:
           profile.id === providerConfig.activeProfileId
-            ? "已激活"
-            : profile.lastStatus ?? "已配置",
+            ? "Active"
+            : profile.lastStatus ?? "Configured",
       };
     });
   }, [config, providerTestResult]);
@@ -3672,6 +4004,10 @@ export function App() {
   const scheduledTasks = useMemo<ScheduledTask[]>(
     () => scheduledRecords.map(scheduledRecordToWorkspaceTask),
     [scheduledRecords],
+  );
+  const settingsSkills = useMemo<SettingsSkillConfig[]>(
+    () => skills.map(normalizeSkillForSettings),
+    [skills],
   );
   const scheduledLogsByTaskId = useMemo<Record<string, ExecutionLog[]>>(() => {
     return Object.fromEntries(
@@ -3788,7 +4124,7 @@ export function App() {
       });
       await refreshScheduledRecords(result.task.id);
       setSelectedScheduledTaskId(result.task.id);
-      addToast("success", "调度任务已创建");
+      addToast("success", "Scheduled task created");
     } catch (reason) {
       toastError(reason);
     } finally {
@@ -3801,11 +4137,33 @@ export function App() {
       return <RuntimeUnavailableWorkspace errorMessage={runtimeUnavailableReason ?? "Runtime unavailable."} />;
     }
 
+    if (activeTab.kind === "overview") {
+      return (
+        <WorkbenchOverviewPage
+          workspace={workspace}
+          workspacePath={workspacePath}
+          providerLabel={providerLabel}
+          runtimeStatus={overviewRuntimeStatus}
+          sessions={sessions}
+          tasks={taskHistory}
+          scheduledTasks={scheduledRecords}
+          mcpServers={mcpServers}
+          skills={skills}
+          onOpenNewSession={() => handleOpenSystemTab("new-session")}
+          onOpenSession={handleOpenSessionTab}
+          onOpenScheduled={() => handleOpenSystemTab("scheduled")}
+          onOpenMcp={() => handleOpenSystemTab("mcp")}
+          onOpenSettings={() => handleOpenSystemTab("settings")}
+        />
+      );
+    }
+
     if (activeTab.kind === "new-session") {
       return (
         <NewSessionWorkspace
           workspacePath={workspacePath}
           hostStatusText={hostStatusText}
+          sessionTitle={sessionTitle}
           modelLabel={providerLabel}
           modelOptions={(settingsProviders ?? []).map((provider) => ({
             id: provider.id,
@@ -3813,9 +4171,12 @@ export function App() {
           }))}
           selectedModelId={activeProviderProfileId}
           workspaceBusy={workspaceBusy}
+          sessionBusy={sessionBusy}
           onSelectModel={selectProviderProfile}
+          onSessionTitleChange={setSessionTitle}
           onWorkspacePathChange={setWorkspacePath}
           onOpenWorkspace={handleOpenWorkspace}
+          onCreateSession={handleCreateSession}
         />
       );
     }
@@ -3898,6 +4259,57 @@ export function App() {
       );
     }
 
+    if (activeTab.kind === "mcp") {
+      return (
+        <McpWorkspace
+          servers={mcpServers}
+          loading={mcpLoading}
+          busyServerId={mcpBusyServerId}
+          lastRefresh={mcpLastRefresh}
+          onRefreshServers={refreshMcpServers}
+          onCreateServer={handleCreateMcpServer}
+          onToggleServer={handleToggleMcpServer}
+          onRefreshTools={handleRefreshMcpTools}
+          onDeleteServer={handleDeleteMcpServer}
+        />
+      );
+    }
+
+    if (activeTab.kind === "skills") {
+      return (
+        <SkillsWorkspace
+          skills={settingsSkills}
+          mcpServers={mcpServers}
+          mcpToolCount={mcpLastRefresh?.tools.length ?? 0}
+          providerLabel={providerLabel}
+          onRefreshSkills={refreshSkills}
+          onOpenMcp={() => handleOpenSystemTab("mcp")}
+          onOpenSettings={() => handleOpenSystemTab("settings")}
+        />
+      );
+    }
+
+    if (activeTab.kind === "appearance") {
+      return (
+        <AppearanceWorkspace
+          value={generalSettings}
+          workspaceName={workspaceName}
+          providerLabel={providerLabel}
+          onChange={handleGeneralSettingsChange}
+          onOpenSettings={() => handleOpenSystemTab("settings")}
+        />
+      );
+    }
+
+    if (activeTab.kind === "playground") {
+      return (
+        <ComponentPlaygroundWorkspace
+          onOpenAppearance={() => handleOpenSystemTab("appearance")}
+          onOpenSkills={() => handleOpenSystemTab("skills")}
+        />
+      );
+    }
+
     return (
       <SettingsWorkspace
         providers={settingsProviders}
@@ -3917,11 +4329,13 @@ export function App() {
         onGeneralChange={handleGeneralSettingsChange}
         im={imSettings}
         onIMChange={setIMSettings}
-        onTestIM={() => setError("IM 接入后端尚未接入；当前仅保存界面草稿。")}
+        onTestIM={() => setError("IM bridge connection testing is not enabled in this desktop build. The form is saved as a local draft.")}
+        skills={settingsSkills}
+        onRefreshSkills={refreshSkills}
         computerUse={computerUseSettings}
         onComputerUseChange={setComputerUseSettings}
         onRecheckComputerUse={() =>
-          setComputerUseSettings((current) => ({ ...current, status: "桌面权限检查待接入" }))
+          setComputerUseSettings((current) => ({ ...current, status: "Desktop permission check is not available in this build" }))
         }
         workspaceFocus={workspace?.focus}
         workspaceFocusBusy={workspaceFocusBusy}
@@ -3935,8 +4349,8 @@ export function App() {
           dataPath: workspacePath,
           build: hostStatus?.runtimeRunning ? "runtime running" : "runtime idle",
         }}
-        onOpenLogs={() => setError("日志目录打开能力待接入 Tauri shell。")}
-        onOpenDataDirectory={() => setError("数据目录打开能力待接入 Tauri shell。")}
+        onOpenLogs={() => setError("Opening the logs folder requires a Tauri shell bridge that is not enabled in this build.")}
+        onOpenDataDirectory={() => setError("Opening the data folder requires a Tauri shell bridge that is not enabled in this build.")}
       />
     );
   })();
@@ -3964,6 +4378,17 @@ export function App() {
       loading={loading}
       providerLabel={providerLabel}
       cwdLabel={cwdLabel}
+      runtimeLabel={runtimeStatusLabel}
+      mcpLabel={mcpStatusLabel}
+      approvalLabel={approvalStatusLabel}
+      contextLabel={contextStatusLabel}
+      theme={generalSettings.theme}
+      density={generalSettings.density}
+      radius={generalSettings.radius}
+      motion={generalSettings.motion}
+      accentColor={generalSettings.accentColor}
+      transparency={generalSettings.transparency}
+      fontScale={generalSettings.fontScale}
     >
       {error ? (
         <div className="error-banner compact" role="alert">

@@ -14,6 +14,10 @@ type SettingsSection =
 type ProviderPresetId = "deepseek" | "zhipu" | "kimi" | "minimax" | "custom";
 type ProviderApiFormat = "openai-chat" | "openai-responses" | "anthropic-messages";
 type ThemeMode = "light" | "dark" | "system";
+type DensityMode = "comfortable" | "compact";
+type RadiusMode = "sm" | "md" | "lg";
+type MotionMode = "reduced" | "subtle" | "expressive";
+type AccentColor = "cyan" | "violet" | "green" | "amber" | "rose";
 type LanguageMode = "zh" | "en" | "auto";
 type ReasoningEffort = "low" | "medium" | "high" | "max";
 
@@ -78,6 +82,12 @@ export interface SettingsProviderPayload {
 
 export interface SettingsGeneralConfig {
   theme: ThemeMode;
+  density: DensityMode;
+  radius: RadiusMode;
+  motion: MotionMode;
+  accentColor: AccentColor;
+  transparency: number;
+  fontScale: number;
   language: LanguageMode;
   reasoningEffort: ReasoningEffort;
   webFetchPreflight: boolean;
@@ -150,7 +160,6 @@ export interface SettingsWorkspaceProps {
   onAgentToggle?: (agentId: string, enabled: boolean) => void;
   onAddAgent?: () => void;
   skills?: SettingsSkillConfig[];
-  onSkillToggle?: (skillId: string, enabled: boolean) => void;
   onRefreshSkills?: () => void | Promise<void>;
   onOpenSkillsFolder?: () => void;
   computerUse?: SettingsComputerUseConfig;
@@ -168,24 +177,24 @@ export interface SettingsWorkspaceProps {
 }
 
 const sections: Array<{ id: SettingsSection; label: string; eyebrow: string }> = [
-  { id: "providers", label: "服务商", eyebrow: "API" },
-  { id: "permissions", label: "权限", eyebrow: "Mode" },
-  { id: "general", label: "通用", eyebrow: "Desk" },
-  { id: "im", label: "IM 接入", eyebrow: "Bridge" },
+  { id: "providers", label: "Providers", eyebrow: "API" },
+  { id: "permissions", label: "Permissions", eyebrow: "Mode" },
+  { id: "general", label: "Appearance", eyebrow: "Desk" },
+  { id: "im", label: "IM Bridge", eyebrow: "Bridge" },
   { id: "agents", label: "Agents", eyebrow: "Roster" },
-  { id: "skills", label: "技能", eyebrow: "Library" },
+  { id: "skills", label: "Skills", eyebrow: "Library" },
   { id: "computer", label: "Computer Use", eyebrow: "Control" },
-  { id: "about", label: "关于", eyebrow: "Build" },
+  { id: "about", label: "About", eyebrow: "Build" },
 ];
 
 const fallbackProviders: SettingsProvider[] = [
   {
     id: "default",
-    name: "未配置服务商",
-    endpoint: "未配置接口",
-    note: "请添加 OpenAI 兼容服务商后再运行真实任务",
-    models: ["未配置模型"],
-    status: "待配置",
+    name: "Default Provider",
+    endpoint: "Not configured",
+    note: "Connect an OpenAI-compatible provider before running production tasks.",
+    models: ["No model configured"],
+    status: "not_configured",
     preset: "custom",
   },
 ];
@@ -267,29 +276,35 @@ const providerApiKeyEnvKeys = [
 const permissionModes = [
   {
     id: "ask",
-    title: "询问权限",
-    text: "执行工具前先询问，适合陌生项目和高风险目录。",
+    title: "Ask for approval",
+    text: "Request confirmation before commands, edits, network access, or sensitive tool calls.",
   },
   {
     id: "edits",
-    title: "接受编辑",
-    text: "自动批准文件编辑，命令和高风险操作仍按规则确认。",
+    title: "Allow workspace edits",
+    text: "Let the agent edit files inside the workspace while still asking for higher-risk actions.",
   },
   {
     id: "plan",
-    title: "计划模式",
-    text: "只分析和规划，不直接执行写入或命令。",
+    title: "Plan first",
+    text: "Keep work in a reviewable planning mode before implementation begins.",
   },
   {
     id: "skip",
-    title: "跳过全部",
-    text: "跳过所有权限检查，仅适合完全可信的本地任务。",
+    title: "Autonomous",
+    text: "Reduce approval prompts for trusted local work. Keep this mode for controlled environments.",
   },
 ];
 
 const fallbackGeneral: SettingsGeneralConfig = {
-  theme: "light",
-  language: "zh",
+  theme: "dark",
+  density: "comfortable",
+  radius: "md",
+  motion: "subtle",
+  accentColor: "cyan",
+  transparency: 0.78,
+  fontScale: 1,
+  language: "auto",
   reasoningEffort: "max",
   webFetchPreflight: true,
 };
@@ -308,7 +323,7 @@ const fallbackComputerUse: SettingsComputerUseConfig = {
   clipboardAccess: true,
   systemKeyCombos: false,
   sensitiveActionConfirm: true,
-  status: "未检查",
+  status: "Ready",
 };
 
 interface ProviderFormDraft {
@@ -426,13 +441,13 @@ function toProviderPayload(draft: ProviderFormDraft): SettingsProviderPayload {
 
 function formatProviderModels(provider?: SettingsProvider) {
   if (!provider) {
-    return "未配置模型";
+    return "No model configured";
   }
   const mapping = provider.modelMapping;
   if (mapping?.main || mapping?.sonnet || mapping?.opus) {
     return [mapping.main, mapping.haiku, mapping.sonnet, mapping.opus].filter(Boolean).join(" / ");
   }
-  return provider.models?.join(" / ") || "未配置模型";
+  return provider.models?.join(" / ") || "No model configured";
 }
 
 function formatProviderSuccessDetail(result: SettingsProviderTestResult) {
@@ -489,7 +504,6 @@ export function SettingsWorkspace({
   onAgentToggle,
   onAddAgent,
   skills = [],
-  onSkillToggle,
   onRefreshSkills,
   onOpenSkillsFolder,
   computerUse,
@@ -544,10 +558,14 @@ export function SettingsWorkspace({
   }, [computerUse]);
 
   const activeProvider = providers.find((provider) => provider.id === selectedProviderId) ?? providers[0];
+  const activeSection = sections.find((item) => item.id === section) ?? sections[0];
+  const readyProviders = providers.filter((provider) => provider.id === activeProviderId || provider.lastTest?.ok).length;
+  const enabledAgents = agents.filter((agent) => agent.enabled).length;
+  const enabledSkills = skills.filter((skill) => skill.enabled).length;
 
   return (
     <main className="settings-workspace" aria-labelledby="settings-title">
-      <aside className="settings-rail" aria-label="设置分区">
+      <aside className="settings-rail" aria-label="Settings sections">
         <nav className="settings-nav">
           {sections.map((item) => (
             <button
@@ -568,16 +586,41 @@ export function SettingsWorkspace({
           className={section === "about" ? "settings-about-link is-active" : "settings-about-link"}
           onClick={() => setSection("about")}
           aria-current={section === "about" ? "page" : undefined}
-          aria-label="关于"
+          aria-label="About"
         >
           <span aria-hidden="true">i</span>
-          关于
+          About
         </button>
       </aside>
 
       <section className="settings-pane" aria-live="polite">
         <div className="settings-content-panel">
-          <h1 id="settings-title" className="settings-page-title">设置</h1>
+          <h1 id="settings-title" className="settings-page-title">Settings</h1>
+          <section className="settings-command-strip" aria-label="Settings command strip">
+            <div>
+              <p className="settings-kicker">{activeSection.eyebrow} Control</p>
+              <h2>{activeSection.label}</h2>
+              <span>{section === "providers" ? activeProvider?.name ?? "No provider selected" : "Desktop runtime configuration"}</span>
+            </div>
+            <dl>
+              <div>
+                <dt>Providers</dt>
+                <dd>{readyProviders}/{providers.length}</dd>
+              </div>
+              <div>
+                <dt>Agents</dt>
+                <dd>{enabledAgents}/{agents.length}</dd>
+              </div>
+              <div>
+                <dt>Skills</dt>
+                <dd>{enabledSkills}/{skills.length}</dd>
+              </div>
+              <div>
+                <dt>Permission</dt>
+                <dd>{selectedPermissionMode}</dd>
+              </div>
+            </dl>
+          </section>
           {section === "providers" ? (
             <ProvidersPanel
               providers={providers}
@@ -629,7 +672,6 @@ export function SettingsWorkspace({
           {section === "skills" ? (
             <SkillsPanel
               skills={skills}
-              onSkillToggle={onSkillToggle}
               onRefreshSkills={onRefreshSkills}
               onOpenSkillsFolder={onOpenSkillsFolder}
             />
@@ -708,16 +750,16 @@ function ProvidersPanel({
       <header className="settings-panel-header">
         <div>
           <p className="settings-kicker">Providers</p>
-          <h2>服务商</h2>
-          <p>管理 API 服务商、模型映射和连接状态。真实任务会使用当前激活的服务商。</p>
+          <h2>Provider Control</h2>
+          <p>Manage API endpoints, model mapping, connection checks, and the active runtime provider.</p>
         </div>
-        <button className="settings-primary-action" type="button" onClick={onAddProvider} aria-label="添加服务商">
-          + 添加服务商
+        <button className="settings-primary-action" type="button" onClick={onAddProvider} aria-label="Add provider">
+          Add provider
         </button>
       </header>
 
       <div className="settings-provider-grid">
-        <div className="settings-provider-list" aria-label="服务商列表">
+        <div className="settings-provider-list" aria-label="Provider list">
           {providers.map((provider) => (
             <button
               key={provider.id}
@@ -725,7 +767,7 @@ function ProvidersPanel({
               className={provider.id === selectedProviderId ? "settings-provider-item is-active" : "settings-provider-item"}
               onClick={() => onSelectProvider(provider.id)}
               aria-current={provider.id === selectedProviderId ? "page" : undefined}
-              aria-label={`选择服务商 ${provider.name}`}
+              aria-label={`Select provider ${provider.name}`}
             >
               <span className="settings-provider-dot" aria-hidden="true" />
               <span className="settings-provider-copy">
@@ -749,10 +791,10 @@ function ProvidersPanel({
           ))}
         </div>
 
-        <article className="settings-provider-detail" aria-label="当前服务商详情">
+        <article className="settings-provider-detail" aria-label="Selected provider details">
           <div>
             <p className="settings-kicker">Selected Provider</p>
-            <h3>{activeProvider?.name ?? "未选择服务商"}</h3>
+            <h3>{activeProvider?.name ?? "No provider selected"}</h3>
           </div>
           {activeProvider ? (
             <ProviderStateSummary
@@ -767,26 +809,26 @@ function ProvidersPanel({
           ) : null}
           <dl>
             <div>
-              <dt>接口地址</dt>
-              <dd>{activeProvider?.endpoint ?? "未配置"}</dd>
+              <dt>Endpoint</dt>
+              <dd>{activeProvider?.endpoint ?? "Not configured"}</dd>
             </div>
             <div>
-              <dt>模型映射</dt>
+              <dt>Model mapping</dt>
               <dd>{formatProviderModels(activeProvider)}</dd>
             </div>
             <div>
-              <dt>密钥状态</dt>
-              <dd>{activeProvider?.apiKeyMasked ?? "由运行时环境变量提供，不在界面明文展示"}</dd>
+              <dt>Key state</dt>
+              <dd>{activeProvider?.apiKeyMasked ?? "Provided by runtime environment variables."}</dd>
             </div>
             {activeProvider?.lastTest ? <ProviderTestSummaryRows result={activeProvider.lastTest} /> : null}
           </dl>
           <div className="settings-provider-actions">
-            <button type="button" className="settings-secondary-action" onClick={onEditProvider}>编辑</button>
+            <button type="button" className="settings-secondary-action" onClick={onEditProvider}>Edit</button>
             <button type="button" className="settings-secondary-action" onClick={onTestProvider} disabled={providerTestBusy}>
-              {providerTestBusy ? "测试中..." : "测试连接"}
+              {providerTestBusy ? "Testing..." : "Test connection"}
             </button>
             <button type="button" className="settings-primary-action" onClick={onSaveProvider} disabled={providerBusy}>
-              {providerBusy ? "保存中..." : "保存"}
+              {providerBusy ? "Saving..." : "Save"}
             </button>
           </div>
         </article>
@@ -877,11 +919,11 @@ function PermissionsPanel({ selectedMode, onSelectMode }: { selectedMode: string
       <header className="settings-panel-header settings-panel-header-plain">
         <div>
           <p className="settings-kicker">Permission Mode</p>
-          <h2>权限模式</h2>
-          <p>控制工具执行权限的处理方式。高风险操作仍应保留明确确认。</p>
+          <h2>Permission Mode</h2>
+          <p>Choose how the runtime asks for approval before edits, commands, and higher-risk actions.</p>
         </div>
       </header>
-      <div className="settings-card-stack" role="radiogroup" aria-label="权限模式">
+      <div className="settings-card-stack" role="radiogroup" aria-label="Permission mode">
         {permissionModes.map((mode) => (
           <label key={mode.id} className={selectedMode === mode.id ? "settings-choice-card is-selected" : "settings-choice-card"}>
             <input type="radio" name="permission-mode" checked={selectedMode === mode.id} onChange={() => onSelectMode(mode.id)} />
@@ -934,42 +976,111 @@ function GeneralPanel({ value, onChange }: { value: SettingsGeneralConfig; onCha
       <header className="settings-panel-header settings-panel-header-plain">
         <div>
           <p className="settings-kicker">General</p>
-          <h2>通用</h2>
-          <p>配置主题、语言、推理强度和 WebFetch 预检策略。</p>
+          <h2>Appearance</h2>
+          <p>Set theme, density, accent, motion, language, reasoning effort, and web preflight behavior for the workbench.</p>
         </div>
       </header>
       <div className="settings-form-stack">
         <SegmentedControl
-          label="配色主题"
+          label="Theme"
           name="theme"
           value={value.theme}
           options={[
-            { value: "light", label: "亮色" },
-            { value: "dark", label: "暗色" },
-            { value: "system", label: "跟随系统" },
+            { value: "light", label: "Light" },
+            { value: "dark", label: "Dark" },
+            { value: "system", label: "System" },
           ]}
           onChange={(theme) => onChange({ ...value, theme: theme as ThemeMode })}
         />
         <SegmentedControl
-          label="语言"
+          label="Density"
+          name="density"
+          value={value.density}
+          options={[
+            { value: "comfortable", label: "Comfort" },
+            { value: "compact", label: "Compact" },
+          ]}
+          onChange={(density) => onChange({ ...value, density: density as DensityMode })}
+        />
+        <SegmentedControl
+          label="Radius"
+          name="radius"
+          value={value.radius}
+          options={[
+            { value: "sm", label: "Small" },
+            { value: "md", label: "Medium" },
+            { value: "lg", label: "Large" },
+          ]}
+          onChange={(radius) => onChange({ ...value, radius: radius as RadiusMode })}
+        />
+        <SegmentedControl
+          label="Motion"
+          name="motion"
+          value={value.motion}
+          options={[
+            { value: "reduced", label: "Reduced" },
+            { value: "subtle", label: "Subtle" },
+            { value: "expressive", label: "Expressive" },
+          ]}
+          onChange={(motion) => onChange({ ...value, motion: motion as MotionMode })}
+        />
+        <SegmentedControl
+          label="Accent"
+          name="accent"
+          value={value.accentColor}
+          options={[
+            { value: "cyan", label: "Cyan" },
+            { value: "violet", label: "Violet" },
+            { value: "green", label: "Green" },
+            { value: "amber", label: "Amber" },
+            { value: "rose", label: "Rose" },
+          ]}
+          onChange={(accentColor) => onChange({ ...value, accentColor: accentColor as AccentColor })}
+        />
+        <label className="settings-field" htmlFor="appearance-transparency">
+          <span>Transparency {Math.round(value.transparency * 100)}%</span>
+          <input
+            id="appearance-transparency"
+            type="range"
+            min="0.58"
+            max="0.96"
+            step="0.02"
+            value={value.transparency}
+            onChange={(event) => onChange({ ...value, transparency: Number(event.currentTarget.value) })}
+          />
+        </label>
+        <label className="settings-field" htmlFor="appearance-font-scale">
+          <span>Font scale {Math.round(value.fontScale * 100)}%</span>
+          <input
+            id="appearance-font-scale"
+            type="range"
+            min="0.92"
+            max="1.12"
+            step="0.02"
+            value={value.fontScale}
+            onChange={(event) => onChange({ ...value, fontScale: Number(event.currentTarget.value) })}
+          />
+        </label>
+        <SegmentedControl
+          label="Language"
           name="language"
           value={value.language}
           options={[
             { value: "en", label: "English" },
-            { value: "zh", label: "中文" },
-            { value: "auto", label: "自动" },
+            { value: "zh", label: "Chinese" },
+            { value: "auto", label: "Auto" },
           ]}
           onChange={(language) => onChange({ ...value, language: language as LanguageMode })}
         />
         <SegmentedControl
-          label="推理强度"
+          label="Reasoning effort"
           name="reasoning"
           value={value.reasoningEffort}
           options={[
-            { value: "low", label: "低" },
-            { value: "medium", label: "中" },
-            { value: "high", label: "高" },
-            { value: "max", label: "最大" },
+            { value: "low", label: "Low" },
+            { value: "medium", label: "Medium" },
+            { value: "high", label: "High" },
+            { value: "max", label: "Max" },
           ]}
           onChange={(reasoningEffort) => onChange({ ...value, reasoningEffort: reasoningEffort as ReasoningEffort })}
         />
@@ -981,8 +1092,8 @@ function GeneralPanel({ value, onChange }: { value: SettingsGeneralConfig; onCha
             onChange={(event) => onChange({ ...value, webFetchPreflight: event.currentTarget.checked })}
           />
           <span>
-            <strong>跳过 WebFetch 域名预检</strong>
-            <small>仅在你明确需要恢复上游默认安全预检时，才建议关闭这个选项。</small>
+            <strong>Skip WebFetch domain preflight</strong>
+            <small>Keep enabled for local runtime compatibility unless the upstream safety check is required.</small>
           </span>
         </label>
       </div>
@@ -996,44 +1107,44 @@ function IMPanel({ value, onChange, onTestIM }: { value: SettingsIMConfig; onCha
       <header className="settings-panel-header settings-panel-header-plain">
         <div>
           <p className="settings-kicker">IM Bridge</p>
-          <h2>IM 接入</h2>
-          <p>连接飞书、企业微信或自建网关，让会话进入消息渠道。</p>
+          <h2>IM Bridge</h2>
+          <p>Connect Feishu, WeCom, or a custom webhook so conversations can enter external message channels.</p>
         </div>
       </header>
       <div className="settings-form-stack">
         <label className="settings-toggle-card" htmlFor="im-enabled">
           <input id="im-enabled" type="checkbox" checked={value.enabled} onChange={(event) => onChange({ ...value, enabled: event.currentTarget.checked })} />
           <span>
-            <strong>启用 IM 网关</strong>
-            <small>关闭时保留配置，但不接收外部消息。</small>
+            <strong>Enable IM gateway</strong>
+            <small>Keep the configuration but stop receiving external messages when disabled.</small>
           </span>
         </label>
         <label className="settings-field" htmlFor="im-provider">
-          <span>渠道</span>
+          <span>Channel</span>
           <select id="im-provider" value={value.provider} onChange={(event) => onChange({ ...value, provider: event.currentTarget.value })}>
-            <option value="feishu">飞书</option>
-            <option value="wecom">企业微信</option>
-            <option value="custom">自建网关</option>
+            <option value="feishu">Feishu</option>
+            <option value="wecom">WeCom</option>
+            <option value="custom">Custom gateway</option>
           </select>
         </label>
         <label className="settings-field" htmlFor="im-webhook">
-          <span>Webhook 地址</span>
+          <span>Webhook URL</span>
           <input id="im-webhook" type="url" value={value.webhookUrl} placeholder="https://example.com/im/webhook" onChange={(event) => onChange({ ...value, webhookUrl: event.currentTarget.value })} />
         </label>
         <SegmentedControl
-          label="默认回复策略"
+          label="Default reply mode"
           name="im-reply-mode"
           value={value.defaultReplyMode}
           options={[
-            { value: "manual", label: "人工确认" },
-            { value: "auto", label: "自动回复" },
-            { value: "silent", label: "静默记录" },
+            { value: "manual", label: "Manual" },
+            { value: "auto", label: "Auto reply" },
+            { value: "silent", label: "Silent log" },
           ]}
           onChange={(defaultReplyMode) => onChange({ ...value, defaultReplyMode: defaultReplyMode as SettingsIMConfig["defaultReplyMode"] })}
         />
         <div className="settings-inline-actions">
-          <span>签名密钥：{value.signingSecretSet ? "已配置" : "未配置"}</span>
-          <button type="button" className="settings-secondary-action" onClick={onTestIM}>测试 IM 连接</button>
+          <span>Signing secret: {value.signingSecretSet ? "Configured" : "Not configured"}</span>
+          <button type="button" className="settings-secondary-action" onClick={onTestIM} disabled={!onTestIM}>Test IM connection</button>
         </div>
       </div>
     </div>
@@ -1061,20 +1172,20 @@ function AgentsPanel({ agents, onAgentToggle, onAddAgent }: { agents: SettingsAg
         <div>
           <p className="settings-kicker">Agent Roster</p>
           <h2>Agents</h2>
-          <p>管理常驻代理、工作目录和默认授权策略。</p>
+          <p>Manage resident agents, working directories, and default permission policies.</p>
         </div>
-        <button type="button" className="settings-primary-action" onClick={onAddAgent}>+ 添加 Agent</button>
+        <button type="button" className="settings-primary-action" onClick={onAddAgent} disabled={!onAddAgent}>Add agent</button>
       </header>
-      <ListOrEmpty emptyTitle="暂无 Agent" emptyText="接入运行时后可显示常驻代理。">
+      <ListOrEmpty emptyTitle="No agents" emptyText="Resident agents will appear here after runtime integration.">
         {agents.map((agent) => (
           <label key={agent.id} className="settings-row-card">
-            <input type="checkbox" checked={agent.enabled} onChange={(event) => onAgentToggle?.(agent.id, event.currentTarget.checked)} />
+            <input type="checkbox" checked={agent.enabled} disabled={!onAgentToggle} onChange={(event) => onAgentToggle?.(agent.id, event.currentTarget.checked)} />
             <span>
               <strong>{agent.name}</strong>
-              <small>{agent.description ?? "未填写说明"}</small>
-              <small>{agent.cwd ?? "未绑定工作目录"}</small>
+              <small>{agent.description ?? "No description"}</small>
+              <small>{agent.cwd ?? "No working directory"}</small>
             </span>
-            <em>{agent.permissionMode ?? "继承权限"}</em>
+            <em>{agent.permissionMode ?? "Inherited"}</em>
           </label>
         ))}
       </ListOrEmpty>
@@ -1082,31 +1193,32 @@ function AgentsPanel({ agents, onAgentToggle, onAddAgent }: { agents: SettingsAg
   );
 }
 
-function SkillsPanel({ skills, onSkillToggle, onRefreshSkills, onOpenSkillsFolder }: { skills: SettingsSkillConfig[]; onSkillToggle?: (skillId: string, enabled: boolean) => void; onRefreshSkills?: () => void | Promise<void>; onOpenSkillsFolder?: () => void }) {
+function SkillsPanel({ skills, onRefreshSkills, onOpenSkillsFolder }: { skills: SettingsSkillConfig[]; onRefreshSkills?: () => void | Promise<void>; onOpenSkillsFolder?: () => void }) {
   return (
     <div className="settings-panel">
       <header className="settings-panel-header">
         <div>
           <p className="settings-kicker">Skill Library</p>
-          <h2>技能</h2>
-          <p>技能扩展代理能力。在 ~/.codex/skills/ 中管理技能。</p>
+          <h2>Skills</h2>
+          <p>Skills extend the local agent with focused workflows. Installed presets are available to the runtime from ~/.codex/skills/.</p>
         </div>
         <div className="settings-header-actions">
-          <button type="button" className="settings-secondary-action" onClick={onOpenSkillsFolder}>打开目录</button>
-          <button type="button" className="settings-primary-action" onClick={onRefreshSkills}>刷新技能</button>
+          <button type="button" className="settings-secondary-action" onClick={onOpenSkillsFolder} disabled={!onOpenSkillsFolder}>Open folder</button>
+          <button type="button" className="settings-primary-action" onClick={onRefreshSkills} disabled={!onRefreshSkills}>Refresh skills</button>
         </div>
       </header>
-      <ListOrEmpty emptyTitle="暂无已安装技能" emptyText="在 ~/.codex/skills/ 中添加技能即可开始。">
+      <ListOrEmpty emptyTitle="No installed skills" emptyText="Add skills in ~/.codex/skills/ to make them available here.">
         {skills.map((skill) => (
-          <label key={skill.id} className="settings-row-card">
-            <input type="checkbox" checked={skill.enabled} onChange={(event) => onSkillToggle?.(skill.id, event.currentTarget.checked)} />
+          <article key={skill.id} className="settings-row-card settings-skill-card">
+            <span className="settings-skill-marker" aria-hidden="true" />
             <span>
               <strong>{skill.name}</strong>
-              <small>{skill.description ?? "未填写说明"}</small>
-              <small>{skill.path ?? "未提供路径"}</small>
+              <small>{skill.description ?? "No description"}</small>
+              <small>{skill.path ?? "No path"}</small>
             </span>
-            {skill.updateAvailable ? <em>可更新</em> : null}
-          </label>
+            <em>{skill.enabled ? "Available" : "Unavailable"}</em>
+            {skill.updateAvailable ? <em>Update available</em> : null}
+          </article>
         ))}
       </ListOrEmpty>
     </div>
@@ -1115,11 +1227,11 @@ function SkillsPanel({ skills, onSkillToggle, onRefreshSkills, onOpenSkillsFolde
 
 function ComputerUsePanel({ value, onChange, onRecheckComputerUse }: { value: SettingsComputerUseConfig; onChange: (next: SettingsComputerUseConfig) => void; onRecheckComputerUse?: () => void | Promise<void> }) {
   const toggles: Array<{ key: keyof SettingsComputerUseConfig; label: string; text: string }> = [
-    { key: "screenshot", label: "截图观察", text: "允许读取屏幕快照用于任务判断。" },
-    { key: "browserAutomation", label: "浏览器自动化", text: "允许打开并控制浏览器。" },
-    { key: "clipboardAccess", label: "剪贴板访问", text: "允许读取和写入剪贴板。" },
-    { key: "systemKeyCombos", label: "系统快捷键", text: "允许发送系统组合键。" },
-    { key: "sensitiveActionConfirm", label: "敏感操作确认", text: "删除、支付、发送等动作前强制确认。" },
+    { key: "screenshot", label: "Screen observation", text: "Allow screenshots for visual task context." },
+    { key: "browserAutomation", label: "Browser automation", text: "Allow opening and controlling browser sessions." },
+    { key: "clipboardAccess", label: "Clipboard access", text: "Allow reading and writing the clipboard." },
+    { key: "systemKeyCombos", label: "System shortcuts", text: "Allow system-level keyboard combinations." },
+    { key: "sensitiveActionConfirm", label: "Sensitive action confirmation", text: "Require confirmation before destructive or external actions." },
   ];
 
   return (
@@ -1128,7 +1240,7 @@ function ComputerUsePanel({ value, onChange, onRecheckComputerUse }: { value: Se
         <div>
           <p className="settings-kicker">Computer Use</p>
           <h2>Computer Use</h2>
-          <p>允许代理截图、点击、输入和控制电脑。真实权限检查由运行时接入。</p>
+          <p>Control local desktop capabilities such as screenshots, browser automation, clipboard access, and high-risk confirmations.</p>
         </div>
       </header>
       <div className="settings-form-stack">
@@ -1142,8 +1254,8 @@ function ComputerUsePanel({ value, onChange, onRecheckComputerUse }: { value: Se
           </label>
         ))}
         <div className="settings-inline-actions">
-          <span>当前状态：{value.status ?? "未检查"}</span>
-          <button type="button" className="settings-secondary-action" onClick={onRecheckComputerUse}>重新检查</button>
+          <span>Status: {value.status ?? "Not checked"}</span>
+          <button type="button" className="settings-secondary-action" onClick={onRecheckComputerUse} disabled={!onRecheckComputerUse}>Recheck</button>
         </div>
       </div>
     </div>
@@ -1172,10 +1284,10 @@ function AboutPanel({
   onOpenDataDirectory?: () => void;
 }) {
   const rows = [
-    ["版本", about?.version ?? "0.1.0"],
-    ["运行时", about?.runtime ?? "Tauri + React"],
-    ["数据目录", about?.dataPath ?? "未连接运行时"],
-    ["构建", about?.build ?? "development"],
+    ["Version", about?.version ?? "0.1.0"],
+    ["Runtime", about?.runtime ?? "Tauri + React"],
+    ["Data path", about?.dataPath ?? "Not connected"],
+    ["Build", about?.build ?? "development"],
   ];
   const memoryPreview = workspaceMemorySummary
     ?.split(/\r?\n/)
@@ -1194,8 +1306,8 @@ function AboutPanel({
       <header className="settings-panel-header settings-panel-header-plain">
         <div>
           <p className="settings-kicker">About</p>
-          <h2>关于</h2>
-          <p>本地智能代理桌面，面向多会话编排、调度任务和可控工具执行。</p>
+          <h2>About</h2>
+          <p>Local agent workbench for multi-session orchestration, scheduled tasks, and controlled tool execution.</p>
         </div>
       </header>
       <dl className="settings-definition-list">
@@ -1207,22 +1319,22 @@ function AboutPanel({
         ))}
       </dl>
       <div className="settings-provider-actions">
-        <button type="button" className="settings-secondary-action" onClick={onOpenLogs}>打开日志</button>
-        <button type="button" className="settings-secondary-action" onClick={onOpenDataDirectory}>打开数据目录</button>
+        <button type="button" className="settings-secondary-action" onClick={onOpenLogs} disabled={!onOpenLogs}>Open logs</button>
+        <button type="button" className="settings-secondary-action" onClick={onOpenDataDirectory} disabled={!onOpenDataDirectory}>Open data folder</button>
       </div>
       <section className="settings-memory-card" aria-label="Project focus">
         <div>
           <p className="settings-kicker">Context</p>
           <h3>Project focus</h3>
-          <p>固定写入每个新任务上下文的项目目标、边界和偏好。</p>
+          <p>Pin project goals, boundaries, and preferences into new task context.</p>
         </div>
         <label className="settings-field" htmlFor="project-focus">
-          <span>固定焦点</span>
+          <span>Pinned focus</span>
           <textarea
             id="project-focus"
             value={focusDraft}
             rows={4}
-            placeholder="例如：优先实现稳定的本地编码代理，保持任务焦点，不做无关重构。"
+            placeholder="Example: prioritize durable local coding-agent workflows and avoid unrelated refactors."
             onChange={(event) => setFocusDraft(event.currentTarget.value)}
           />
         </label>
@@ -1233,7 +1345,7 @@ function AboutPanel({
             onClick={() => void onSaveWorkspaceFocus?.(focusDraft)}
             disabled={workspaceFocusBusy || !onSaveWorkspaceFocus}
           >
-            {workspaceFocusBusy ? "保存中..." : "保存项目焦点"}
+            {workspaceFocusBusy ? "Saving..." : "Save project focus"}
           </button>
           <button
             type="button"
@@ -1244,7 +1356,7 @@ function AboutPanel({
             }}
             disabled={workspaceFocusBusy || !onSaveWorkspaceFocus || !focusDraft.trim()}
           >
-            清空项目焦点
+            Clear project focus
           </button>
         </div>
       </section>
@@ -1252,7 +1364,7 @@ function AboutPanel({
         <div>
           <p className="settings-kicker">Context</p>
           <h3>Project memory</h3>
-          <p>跨会话保留的项目结论会进入下一次模型上下文。</p>
+          <p>Persisted project notes can be added to future model context.</p>
         </div>
         <pre>{memoryPreview || "No project memory stored."}</pre>
         <button
@@ -1261,7 +1373,7 @@ function AboutPanel({
           onClick={() => void onClearWorkspaceMemory?.()}
           disabled={workspaceMemoryBusy || !workspaceMemorySummary?.trim() || !onClearWorkspaceMemory}
         >
-          {workspaceMemoryBusy ? "清空中..." : "清空项目记忆"}
+          {workspaceMemoryBusy ? "Clearing..." : "Clear project memory"}
         </button>
       </section>
     </div>
@@ -1290,7 +1402,7 @@ function ProviderModal({
   const [draft, setDraft] = useState(() => createProviderDraft(provider));
   const [testResult, setTestResult] = useState<SettingsProviderTestResult | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
-  const title = mode === "edit" ? "编辑服务商" : "添加服务商";
+  const title = mode === "edit" ? "Edit provider" : "Add provider";
   const parsedConfig = parseProviderConfigText(draft.jsonConfig);
   const detectedApiKeyEnvVarName =
     !draft.apiKey.trim() || !isDirectApiKey(draft.apiKey)
@@ -1352,7 +1464,7 @@ function ProviderModal({
             <p className="settings-kicker">Provider</p>
             <h2 id="provider-modal-title">{title}</h2>
           </div>
-          <button type="button" className="settings-icon-button" onClick={onClose} aria-label="关闭">×</button>
+          <button type="button" className="settings-icon-button" onClick={onClose} aria-label="Close">x</button>
         </header>
 
         <div className="settings-provider-form">
@@ -1370,15 +1482,15 @@ function ProviderModal({
           </div>
 
           <label className="settings-field" htmlFor="provider-name">
-            <span>名称 *</span>
+            <span>Name *</span>
             <input id="provider-name" value={draft.name} onChange={(event) => updateDraft({ name: event.currentTarget.value })} required />
           </label>
           <label className="settings-field" htmlFor="provider-note">
-            <span>备注</span>
-            <input id="provider-note" value={draft.note} onChange={(event) => updateDraft({ note: event.currentTarget.value })} placeholder="可选备注..." />
+            <span>Note</span>
+            <input id="provider-note" value={draft.note} onChange={(event) => updateDraft({ note: event.currentTarget.value })} placeholder="Optional note..." />
           </label>
           <label className="settings-field" htmlFor="provider-endpoint">
-            <span>接口地址</span>
+            <span>Endpoint</span>
             <input id="provider-endpoint" value={draft.endpoint} onChange={(event) => updateDraft({ endpoint: event.currentTarget.value })} placeholder="https://api.example.com/v1" />
           </label>
           <label className="settings-field" htmlFor="provider-api-format">
@@ -1390,32 +1502,32 @@ function ProviderModal({
             </select>
           </label>
           <label className="settings-field" htmlFor="provider-api-key">
-            <span>API 密钥</span>
+            <span>API key</span>
             <input id="provider-api-key" type="password" value={draft.apiKey} onChange={(event) => updateDraft({ apiKey: event.currentTarget.value })} placeholder="sk-..." />
           </label>
 
           <fieldset className="settings-model-grid">
-            <legend>模型映射</legend>
+            <legend>Model mapping</legend>
             <label className="settings-field" htmlFor="provider-main-model">
-              <span>主模型 *</span>
+              <span>Main model *</span>
               <input id="provider-main-model" value={draft.mainModel} onChange={(event) => updateDraft({ mainModel: event.currentTarget.value })} required />
             </label>
             <label className="settings-field" htmlFor="provider-haiku-model">
-              <span>Haiku 模型</span>
+              <span>Haiku model</span>
               <input id="provider-haiku-model" value={draft.haikuModel} onChange={(event) => updateDraft({ haikuModel: event.currentTarget.value })} />
             </label>
             <label className="settings-field" htmlFor="provider-sonnet-model">
-              <span>Sonnet 模型</span>
+              <span>Sonnet model</span>
               <input id="provider-sonnet-model" value={draft.sonnetModel} onChange={(event) => updateDraft({ sonnetModel: event.currentTarget.value })} />
             </label>
             <label className="settings-field" htmlFor="provider-opus-model">
-              <span>Opus 模型</span>
+              <span>Opus model</span>
               <input id="provider-opus-model" value={draft.opusModel} onChange={(event) => updateDraft({ opusModel: event.currentTarget.value })} />
             </label>
           </fieldset>
 
           <label className="settings-field" htmlFor="provider-json">
-            <span>设置 JSON / 环境变量</span>
+            <span>Settings JSON / env vars</span>
             <textarea id="provider-json" value={draft.jsonConfig} onChange={(event) => updateDraft({ jsonConfig: event.currentTarget.value })} rows={8} placeholder={buildProviderJson(draft)} />
           </label>
 
@@ -1427,9 +1539,9 @@ function ProviderModal({
         </div>
 
         <footer className="settings-modal-footer">
-          <button type="button" className="settings-secondary-action" onClick={onClose}>取消</button>
-          <button type="button" className="settings-secondary-action" onClick={handleTestProvider} disabled={providerTestBusy}>{providerTestBusy ? "测试中..." : "测试连接"}</button>
-          <button type="submit" className="settings-primary-action" disabled={providerBusy}>{mode === "edit" ? "保存" : "添加"}</button>
+          <button type="button" className="settings-secondary-action" onClick={onClose}>Cancel</button>
+          <button type="button" className="settings-secondary-action" onClick={handleTestProvider} disabled={providerTestBusy}>{providerTestBusy ? "Testing..." : "Test connection"}</button>
+          <button type="submit" className="settings-primary-action" disabled={providerBusy}>{mode === "edit" ? "Save" : "Add"}</button>
         </footer>
       </form>
     </div>

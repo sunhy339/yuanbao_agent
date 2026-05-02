@@ -50,6 +50,7 @@ class SupervisorOrchestrator:
         self._max_retries = max_retries
         self._decomposer = TaskDecomposer(provider=provider)
         self._synthesizer = ResultSynthesizer(provider=provider)
+        self._last_review_count = 0
 
     def execute(
         self,
@@ -152,8 +153,6 @@ class SupervisorOrchestrator:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-
-    _last_review_count: int = 0
 
     def _execute_with_review(
         self,

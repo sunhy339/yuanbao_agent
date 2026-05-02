@@ -168,3 +168,31 @@ class TestSupervisorPause:
 
         assert result.paused is True
         assert len(result.completed) >= 1
+
+
+class TestSupervisorInstanceIsolation:
+    def test_review_count_not_shared_across_instances(self) -> None:
+        """Two SupervisorOrchestrator instances must have independent review counts."""
+        mock_sub1 = MockSubagentService()
+        mock_prov1 = MockProvider(
+            reviews=[
+                json.dumps({"approved": False, "feedback": "Retry"}),
+                json.dumps({"approved": True, "feedback": ""}),
+                json.dumps({"approved": True, "feedback": ""}),
+            ],
+        )
+        s1 = SupervisorOrchestrator(provider=mock_prov1, subagent_service=mock_sub1, max_retries=2)
+        result1 = s1.execute("Task A", {}, session_id="s1", task=_make_task())
+        assert result1.review_count == 3  # reject + approve for sub-0, approve for sub-1
+
+        mock_sub2 = MockSubagentService()
+        mock_prov2 = MockProvider(
+            reviews=[
+                json.dumps({"approved": True, "feedback": ""}),
+                json.dumps({"approved": True, "feedback": ""}),
+            ],
+        )
+        s2 = SupervisorOrchestrator(provider=mock_prov2, subagent_service=mock_sub2, max_retries=2)
+        result2 = s2.execute("Task B", {}, session_id="s2", task=_make_task())
+        # s2 should have its own independent count, not inherited from s1
+        assert result2.review_count == 2

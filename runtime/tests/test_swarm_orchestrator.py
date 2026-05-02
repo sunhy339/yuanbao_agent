@@ -174,3 +174,42 @@ class TestSwarmHandoffPrompt:
         # Second dispatch should use handoff prompt
         assert len(mock_sub.calls) == 2
         assert "Custom context" in mock_sub.calls[1]["prompt"]
+
+
+class TestSwarmInstanceIsolation:
+    def test_handoff_prompt_not_shared_across_instances(self) -> None:
+        """Two SwarmOrchestrator instances must have independent handoff prompts."""
+        # Instance 1: sets a handoff prompt
+        mock_sub1 = MockSubagentService()
+        mock_prov1 = MockProvider(
+            subtasks=[
+                {"id": "sub-0", "title": "Step A", "description": "Do A", "dependencies": []},
+                {"id": "sub-1", "title": "Step B", "description": "Do B", "dependencies": []},
+            ],
+            handoffs=[
+                json.dumps({
+                    "next_subtask_id": "sub-1",
+                    "handoff_prompt": "Context from instance 1",
+                    "done": False,
+                }),
+                json.dumps({"done": True}),
+            ],
+        )
+        s1 = SwarmOrchestrator(provider=mock_prov1, subagent_service=mock_sub1)
+        s1.execute("Task 1", {}, session_id="s1", task=_make_task())
+
+        # Instance 2: no handoff prompts, should NOT inherit from instance 1
+        mock_sub2 = MockSubagentService()
+        mock_prov2 = MockProvider(
+            subtasks=[
+                {"id": "sub-0", "title": "Task X", "description": "Do X", "dependencies": []},
+            ],
+            handoffs=[],
+        )
+        s2 = SwarmOrchestrator(provider=mock_prov2, subagent_service=mock_sub2)
+        result2 = s2.execute("Task 2", {}, session_id="s2", task=_make_task())
+
+        assert result2.success is True
+        assert len(mock_sub2.calls) == 1
+        # Should use original description, NOT leaked handoff prompt from s1
+        assert mock_sub2.calls[0]["prompt"] == "Do X"

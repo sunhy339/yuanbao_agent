@@ -47,6 +47,7 @@ class SwarmOrchestrator:
         self._subagent = subagent_service
         self._decomposer = TaskDecomposer(provider=provider)
         self._synthesizer = ResultSynthesizer(provider=provider)
+        self._last_handoff_prompt: str | None = None
 
     def execute(
         self,
@@ -168,8 +169,6 @@ class SwarmOrchestrator:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-
-    _last_handoff_prompt: str | None = None
 
     def _handoff_decision(
         self,

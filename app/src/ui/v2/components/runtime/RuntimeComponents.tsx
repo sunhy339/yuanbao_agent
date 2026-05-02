@@ -96,7 +96,7 @@ export function ContextBudgetBar({
       </header>
       <div
         className="yb-context-budget-track"
-        aria-label={`${label}: 已使用 ${formatCount(usedTokens)} / ${formatCount(maxTokens)} tokens`}
+      aria-label={`${label}: 已使用 ${formatCount(usedTokens)} / ${formatCount(maxTokens)} 令牌`}
         role="meter"
         aria-valuemin={0}
         aria-valuemax={maxTokens}
@@ -292,10 +292,10 @@ export function ApprovalCard({ approval, busy = false, onApprove, onReject, onVi
         </div>
       </dl>
       <footer>
-        <Button size="sm" variant="primary" aria-label="Approve" loading={busy} disabled={!pending} disabledReason="只有待处理审批可以批准" onClick={() => onApprove(approval.id)}>
+        <Button size="sm" variant="primary" aria-label="批准" loading={busy} disabled={!pending} disabledReason="只有待处理审批可以批准" onClick={() => onApprove(approval.id)}>
           批准
         </Button>
-        <Button size="sm" variant="danger" aria-label="Reject" loading={busy} disabled={!pending} disabledReason="只有待处理审批可以拒绝" onClick={() => onReject(approval.id)}>
+        <Button size="sm" variant="danger" aria-label="拒绝" loading={busy} disabled={!pending} disabledReason="只有待处理审批可以拒绝" onClick={() => onReject(approval.id)}>
           拒绝
         </Button>
         {onViewDetails ? <Button size="sm" variant="ghost" onClick={() => onViewDetails(approval.id)}>详情</Button> : null}
@@ -356,7 +356,7 @@ export function PatchPlanCard({ patch, changedFiles = [], onOpenDiff, onApply, o
         </ul>
       ) : null}
       <footer>
-        <Button size="sm" variant="secondary" aria-label="Open diff" onClick={() => onOpenDiff(patch.id)}>查看差异</Button>
+        <Button size="sm" variant="secondary" aria-label="查看差异" onClick={() => onOpenDiff(patch.id)}>查看差异</Button>
         {onApply ? <Button size="sm" variant="primary" onClick={() => onApply(patch.id)}>应用</Button> : null}
         {onReject ? <Button size="sm" variant="danger" onClick={() => onReject(patch.id)}>拒绝</Button> : null}
       </footer>
@@ -396,13 +396,13 @@ export function CommandOutputPanel({ command, maxHeight = 220, onCopy }: Command
       </header>
       <div className="yb-command-output-meta">
         {command.cwd ? <span>{command.cwd}</span> : null}
-        {command.exitCode !== undefined && command.exitCode !== null ? <span>exit {command.exitCode}</span> : null}
+        {command.exitCode !== undefined && command.exitCode !== null ? <span>退出码 {command.exitCode}</span> : null}
         {command.durationMs !== undefined ? <span>{command.durationMs}ms</span> : null}
       </div>
       <pre style={{ maxHeight }}>{output}</pre>
       {onCopy ? (
         <footer>
-          <Button size="sm" variant="ghost" aria-label="Copy output" onClick={onCopy}>复制输出</Button>
+          <Button size="sm" variant="ghost" aria-label="复制输出" onClick={onCopy}>复制输出</Button>
         </footer>
       ) : null}
     </article>

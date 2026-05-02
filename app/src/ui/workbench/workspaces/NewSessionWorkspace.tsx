@@ -137,7 +137,7 @@ export function NewSessionWorkspace({
               }}
             >
               <TextField
-                aria-label="Session title"
+            aria-label="会话标题"
                 label="会话标题"
                 helperText="用于侧边栏和标签标题。"
                 value={sessionTitle}
@@ -146,7 +146,7 @@ export function NewSessionWorkspace({
               />
 
               <SelectField
-                aria-label="Select model"
+            aria-label="选择模型"
                 label="当前模型"
                 helperText={modelOptions.length ? "切换当前模型供应商配置。" : "请先在设置中配置模型供应商。"}
                 value={resolvedModelId}
@@ -157,7 +157,7 @@ export function NewSessionWorkspace({
 
               <div className="new-session-workspace-row">
                 <TextField
-                  aria-label="Workspace folder"
+            aria-label="工作区文件夹"
                   label="工作区文件夹"
                   helperText="命令、改动和搜索都会使用这个根目录。"
                   value={workspacePath}
@@ -168,7 +168,7 @@ export function NewSessionWorkspace({
                   <Button
                     type="button"
                     variant="secondary"
-                    aria-label="Browse"
+            aria-label="浏览"
                     disabled={workspaceBusy || sessionBusy}
                     onClick={handleBrowseFolder}
                     title="浏览文件夹"
@@ -178,7 +178,7 @@ export function NewSessionWorkspace({
                   <Button
                     type="button"
                     variant="secondary"
-                    aria-label="Apply workspace"
+            aria-label="应用工作区"
                     loading={workspaceBusy}
                     disabled={!onOpenWorkspace || sessionBusy || !workspacePath.trim()}
                     onClick={() => {
@@ -194,7 +194,7 @@ export function NewSessionWorkspace({
                 <Button
                   type="submit"
                   variant="primary"
-                  aria-label="Create session"
+            aria-label="创建会话"
                   size="lg"
                   loading={sessionBusy}
                   disabled={!onCreateSession || !sessionTitle.trim()}

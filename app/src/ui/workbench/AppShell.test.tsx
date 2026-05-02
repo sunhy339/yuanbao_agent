@@ -62,15 +62,15 @@ describe("AppShell", () => {
   it("renders sidebar, tabs, focused content, and composer for overview", () => {
     renderShell();
 
-    expect(screen.getByRole("button", { name: "Overview" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "New Session" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Scheduled" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Agent Skills" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Appearance" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Component Playground" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Desktop titlebar")).toHaveTextContent("Yuanbao Agent");
-    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "总览" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "新建会话" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "定时任务" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "智能体技能" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "外观" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "组件预览" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "设置" })).toBeInTheDocument();
+    expect(screen.getByLabelText("桌面标题栏")).toHaveTextContent("Yuanbao Agent");
+    expect(screen.getByRole("tab", { name: "总览" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByLabelText("workspace content")).toBeInTheDocument();
     expect(screen.getByLabelText("任务指令")).toBeInTheDocument();
   });
@@ -145,12 +145,12 @@ describe("AppShell", () => {
     const handlers = renderShell();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "Overview" }));
-    await user.click(screen.getByRole("button", { name: "Scheduled" }));
-    await user.click(screen.getByRole("button", { name: "Agent Skills" }));
-    await user.click(screen.getByRole("button", { name: "Appearance" }));
-    await user.click(screen.getByRole("button", { name: "Component Playground" }));
-    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "总览" }));
+    await user.click(screen.getByRole("button", { name: "定时任务" }));
+    await user.click(screen.getByRole("button", { name: "智能体技能" }));
+    await user.click(screen.getByRole("button", { name: "外观" }));
+    await user.click(screen.getByRole("button", { name: "组件预览" }));
+    await user.click(screen.getByRole("button", { name: "设置" }));
     await user.click(screen.getByRole("button", { name: /Repair failing tests/ }));
 
     expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("overview");
@@ -166,7 +166,7 @@ describe("AppShell", () => {
     const handlers = renderShell();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "Close Overview" }));
+    await user.click(screen.getByRole("button", { name: "关闭 总览" }));
 
     expect(handlers.onCloseTab).toHaveBeenCalledWith("system:overview");
   });

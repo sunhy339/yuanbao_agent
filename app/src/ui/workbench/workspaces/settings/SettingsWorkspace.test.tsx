@@ -412,24 +412,24 @@ describe("SettingsWorkspace", () => {
     const navButtons = container.querySelectorAll(".settings-nav button");
 
     await user.click(navButtons[3] as HTMLElement);
-    expect(screen.getByRole("button", { name: "Test IM connection" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "测试 IM 连接" })).toBeDisabled();
     expect(screen.getByText("当前桌面版本尚未接入运行时消息桥接测试。")).toBeInTheDocument();
 
     await user.click(navButtons[4] as HTMLElement);
-    expect(screen.getByRole("button", { name: "Add agent" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "添加智能体" })).toBeDisabled();
     expect(screen.getByText("运行时智能体管理定义完成前，智能体配置暂时只读。")).toBeInTheDocument();
 
     await user.click(navButtons[5] as HTMLElement);
-    expect(screen.getByRole("button", { name: "Open folder" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "打开目录" })).toBeDisabled();
     expect(screen.getByText("打开目录还在等待桌面 shell 桥接；刷新仍会使用运行时技能注册表。")).toBeInTheDocument();
 
     await user.click(navButtons[6] as HTMLElement);
-    expect(screen.getByRole("button", { name: "Recheck" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重新检查" })).toBeDisabled();
     expect(screen.getByText("桌面权限重新检查尚未实现。")).toBeInTheDocument();
 
     await user.click(navButtons[7] as HTMLElement);
-    expect(screen.getByRole("button", { name: "Open logs" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Open data folder" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "打开日志" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "打开数据目录" })).toBeDisabled();
     expect(screen.getByText("打开本地目录还在等待 Tauri shell 桥接；上方路径可用于手动检查。")).toBeInTheDocument();
   });
 
@@ -448,7 +448,7 @@ describe("SettingsWorkspace", () => {
     expect(screen.getByText("项目记忆")).toBeInTheDocument();
     expect(screen.getByText(/roadmap aligned/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Clear project memory" }));
+    await user.click(screen.getByRole("button", { name: "清空项目记忆" }));
 
     expect(onClearWorkspaceMemory).toHaveBeenCalledTimes(1);
   });
@@ -468,15 +468,15 @@ describe("SettingsWorkspace", () => {
     const navButtons = container.querySelectorAll(".settings-nav button");
 
     await user.click(navButtons[7] as HTMLElement);
-    const focusInput = screen.getByRole("textbox", { name: "Pinned focus" }) as HTMLTextAreaElement;
+    const focusInput = screen.getByRole("textbox", { name: "固定焦点" }) as HTMLTextAreaElement;
     await user.clear(focusInput);
     await user.type(focusInput, "Keep context focused on large projects.");
-    await user.click(screen.getByRole("button", { name: "Save project focus" }));
+    await user.click(screen.getByRole("button", { name: "保存项目焦点" }));
 
     expect(onSaveWorkspaceFocus).toHaveBeenCalledWith("Keep context focused on large projects.");
     expect(onClearWorkspaceMemory).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "Clear project focus" }));
+    await user.click(screen.getByRole("button", { name: "清空项目焦点" }));
 
     expect(onSaveWorkspaceFocus).toHaveBeenLastCalledWith("");
   });

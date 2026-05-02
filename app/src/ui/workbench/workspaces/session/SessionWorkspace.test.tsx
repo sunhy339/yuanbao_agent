@@ -206,7 +206,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText("assistant.token")).not.toBeInTheDocument();
     expect(screen.queryByText("provider.request")).not.toBeInTheDocument();
     expect(screen.queryByText("task.started")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /trace Runtime Error failed/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /trace Runtime Error 失败/i })).toBeInTheDocument();
     expect(screen.getByText("Command process exited unexpectedly.")).toBeInTheDocument();
     expect(screen.queryByText(/baseUrl/)).not.toBeInTheDocument();
     expect(screen.queryByText(/estimatedInputTokens/)).not.toBeInTheDocument();
@@ -274,14 +274,14 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Copy output" }));
+    await user.click(screen.getByRole("button", { name: "复制输出" }));
     expect(onCopyRuntimeText).toHaveBeenCalledWith(
       "命令输出",
       expect.stringContaining("Command failed with exit 1."),
     );
 
-    await user.click(screen.getByRole("button", { name: /trace Runtime Error failed/i }));
-    await user.click(screen.getByRole("button", { name: "Copy detail" }));
+    await user.click(screen.getByRole("button", { name: /trace Runtime Error 失败/i }));
+    await user.click(screen.getByRole("button", { name: "复制详情" }));
 
     expect(onCopyRuntimeText).toHaveBeenCalledWith(
       "诊断详情",
@@ -311,7 +311,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Open diff" }));
+    await user.click(screen.getByRole("button", { name: "查看差异" }));
 
     expect(onLoadPatch).toHaveBeenCalledWith("patch_1");
     expect(screen.getByRole("status")).toHaveTextContent("差异暂不可用");
@@ -344,7 +344,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Open diff" }));
+    await user.click(screen.getByRole("button", { name: "查看差异" }));
 
     expect(screen.getByText("[差异已截断：仅显示 623 行中的前 500 行]")).toBeInTheDocument();
     expect(screen.getByText("added line 1")).toBeInTheDocument();
@@ -431,26 +431,26 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /任务 任务重点 verifying/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /任务 变更文件 recorded/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /任务 任务重点 验证中/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /任务 变更文件 已记录/ })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "命令执行" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /任务 验证 passed/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /任务 验证 已通过/ })).toBeInTheDocument();
     expect(screen.queryByText(/sessionId/)).not.toBeInTheDocument();
     expect(screen.queryByText(/taskId/)).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /任务 任务重点 verifying/ }));
+    await user.click(screen.getByRole("button", { name: /任务 任务重点 验证中/ }));
     expect(screen.getAllByText("Run the generated CLI against a sample image").length).toBeGreaterThan(0);
-    expect(screen.getByText(/Acceptance/)).toHaveTextContent("Script exists");
+    expect(screen.getAllByText(/验收标准/).some((node) => node.textContent?.includes("Script exists"))).toBe(true);
 
-    await user.click(screen.getByRole("button", { name: /任务 变更文件 recorded/ }));
+    await user.click(screen.getByRole("button", { name: /任务 变更文件 已记录/ }));
     expect(screen.getAllByText(/tools\/bead_art_generator.py/).length).toBeGreaterThan(0);
     expect(screen.getByText(/\+148/)).toBeInTheDocument();
 
     expect(screen.getByText(/python tools\/bead_art_generator.py --help/)).toBeInTheDocument();
-    expect(screen.getByText(/exit 0/)).toBeInTheDocument();
+    expect(screen.getByText(/退出码 0/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /任务 验证 passed/ }));
-    expect(screen.getByText(/CLI help is available/)).toHaveTextContent("passed");
+    await user.click(screen.getByRole("button", { name: /任务 验证 已通过/ }));
+    expect(screen.getByText(/CLI help is available/)).toHaveTextContent("已通过");
   });
 
   it("does not render session memory cards (hidden by design)", () => {
@@ -531,8 +531,8 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Approve" }));
-    await user.click(screen.getByRole("button", { name: "Reject" }));
+    await user.click(screen.getByRole("button", { name: "批准" }));
+    await user.click(screen.getByRole("button", { name: "拒绝" }));
 
     expect(onApprove).toHaveBeenCalledWith("approval_1");
     expect(onReject).toHaveBeenCalledWith("approval_1");
@@ -564,7 +564,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getAllByText("apply_patch").length).toBeGreaterThan(0);
     expect(screen.getAllByText("已批准").length).toBeGreaterThan(0);
     expect(screen.getByText("Updated the session runtime panel.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "批准" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "拒绝" })).toBeDisabled();
   });
 });

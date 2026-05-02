@@ -55,7 +55,7 @@ function ToastItem({
       <button
         type="button"
         className="toast-dismiss"
-        aria-label="Dismiss"
+            aria-label="关闭通知"
         onClick={() => {
           setVisible(false);
           setTimeout(() => onDismiss(toast.id), 200);

@@ -16,7 +16,7 @@ export function ErrorState({ title, message, onRetry }: { title: string; message
     <div className="yb-error-state" role="alert">
       <strong>{title}</strong>
       <small>{message}</small>
-      {onRetry ? <button type="button" onClick={onRetry}>Retry</button> : null}
+      {onRetry ? <button type="button" onClick={onRetry}>重试</button> : null}
     </div>
   );
 }

@@ -108,10 +108,10 @@ export function AppShellV2({
               <StatusBadge label={formatSystemWorkspaceLabel(activeSystemTab)} tone="primary" />
             </div>
             <div className="yb-topbar-actions">
-              <Button variant="ghost" size="sm" aria-label="Open MCP Center" onClick={() => onOpenSystemTab("mcp")}>MCP</Button>
-              <Button variant="ghost" size="sm" aria-label="Open Agent Skills" onClick={() => onOpenSystemTab("skills")}>技能</Button>
-              <Button variant="ghost" size="sm" aria-label="Open Appearance" onClick={() => onOpenSystemTab("appearance")}>外观</Button>
-              <Button variant="ghost" size="sm" aria-label="Open Settings" onClick={() => onOpenSystemTab("settings")}>设置</Button>
+              <Button variant="ghost" size="sm" aria-label="打开 MCP 中心" onClick={() => onOpenSystemTab("mcp")}>MCP</Button>
+              <Button variant="ghost" size="sm" aria-label="打开智能体技能" onClick={() => onOpenSystemTab("skills")}>技能</Button>
+              <Button variant="ghost" size="sm" aria-label="打开外观" onClick={() => onOpenSystemTab("appearance")}>外观</Button>
+              <Button variant="ghost" size="sm" aria-label="打开设置" onClick={() => onOpenSystemTab("settings")}>设置</Button>
             </div>
           </header>
 

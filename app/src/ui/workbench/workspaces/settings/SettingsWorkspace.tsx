@@ -474,10 +474,10 @@ function buildProviderJson(draft: ProviderFormDraft) {
   return JSON.stringify(
     {
       env: {
-        LOCAL_AGENT_PROVIDER_BASE_URL: draft.endpoint || "(provider base URL)",
+        LOCAL_AGENT_PROVIDER_BASE_URL: draft.endpoint || "(供应商 Base URL)",
         LOCAL_AGENT_PROVIDER_API_FORMAT: draft.apiFormat,
-        LOCAL_AGENT_PROVIDER_MODEL: draft.mainModel || "(model id)",
-        LOCAL_AGENT_PROVIDER_API_KEY: draft.apiKey ? "(provided in form)" : "(set in runtime env)",
+        LOCAL_AGENT_PROVIDER_MODEL: draft.mainModel || "(模型 ID)",
+        LOCAL_AGENT_PROVIDER_API_KEY: draft.apiKey ? "(已在表单中提供)" : "(在运行时环境中设置)",
       },
     },
     null,
@@ -757,7 +757,7 @@ function ProvidersPanel({
           <h2>供应商控制台</h2>
           <p>管理 API 地址、模型映射、连接检查和当前运行时供应商。</p>
         </div>
-        <button className="settings-primary-action" type="button" onClick={onAddProvider} aria-label="Add provider">
+        <button className="settings-primary-action" type="button" onClick={onAddProvider} aria-label="添加供应商">
           添加供应商
         </button>
       </header>
@@ -1148,7 +1148,7 @@ function IMPanel({ value, onChange, onTestIM }: { value: SettingsIMConfig; onCha
         />
         <div className="settings-inline-actions">
           <span>签名密钥：{value.signingSecretSet ? "已配置" : "未配置"}</span>
-          <button type="button" className="settings-secondary-action" onClick={onTestIM} disabled={!onTestIM} aria-label="Test IM connection">测试消息桥接</button>
+          <button type="button" className="settings-secondary-action" onClick={onTestIM} disabled={!onTestIM} aria-label="测试 IM 连接">测试消息桥接</button>
           {!onTestIM ? <small className="settings-action-note">当前桌面版本尚未接入运行时消息桥接测试。</small> : null}
         </div>
       </div>
@@ -1179,7 +1179,7 @@ function AgentsPanel({ agents, onAgentToggle, onAddAgent }: { agents: SettingsAg
           <h2>智能体</h2>
           <p>管理常驻智能体、工作目录和默认权限策略。</p>
         </div>
-        <button type="button" className="settings-primary-action" onClick={onAddAgent} disabled={!onAddAgent} title={!onAddAgent ? "智能体配置管理尚未可用。" : undefined} aria-label="Add agent">添加智能体</button>
+        <button type="button" className="settings-primary-action" onClick={onAddAgent} disabled={!onAddAgent} title={!onAddAgent ? "智能体配置管理尚未可用。" : undefined} aria-label="添加智能体">添加智能体</button>
       </header>
       {!onAddAgent || !onAgentToggle ? (
         <p className="settings-action-note settings-panel-note">运行时智能体管理定义完成前，智能体配置暂时只读。</p>
@@ -1211,7 +1211,7 @@ function SkillsPanel({ skills, onRefreshSkills, onOpenSkillsFolder }: { skills: 
           <p>技能为本地智能体扩展专项工作流。已安装预设会从 ~/.codex/skills/ 提供给运行时。</p>
         </div>
         <div className="settings-header-actions">
-          <button type="button" className="settings-secondary-action" onClick={onOpenSkillsFolder} disabled={!onOpenSkillsFolder} title={!onOpenSkillsFolder ? "技能目录打开功能尚未接入。" : undefined} aria-label="Open folder">打开目录</button>
+          <button type="button" className="settings-secondary-action" onClick={onOpenSkillsFolder} disabled={!onOpenSkillsFolder} title={!onOpenSkillsFolder ? "技能目录打开功能尚未接入。" : undefined} aria-label="打开目录">打开目录</button>
           <button type="button" className="settings-primary-action" onClick={onRefreshSkills} disabled={!onRefreshSkills}>刷新技能</button>
         </div>
       </header>
@@ -1264,7 +1264,7 @@ function ComputerUsePanel({ value, onChange, onRecheckComputerUse }: { value: Se
         ))}
         <div className="settings-inline-actions">
           <span>状态：{value.status ? formatStatusLabel(value.status) : "未检查"}</span>
-          <button type="button" className="settings-secondary-action" onClick={onRecheckComputerUse} disabled={!onRecheckComputerUse} aria-label="Recheck">重新检查</button>
+          <button type="button" className="settings-secondary-action" onClick={onRecheckComputerUse} disabled={!onRecheckComputerUse} aria-label="重新检查">重新检查</button>
           {!onRecheckComputerUse ? <small className="settings-action-note">桌面权限重新检查尚未实现。</small> : null}
         </div>
       </div>
@@ -1329,8 +1329,8 @@ function AboutPanel({
         ))}
       </dl>
       <div className="settings-provider-actions">
-        <button type="button" className="settings-secondary-action" onClick={onOpenLogs} disabled={!onOpenLogs} title={!onOpenLogs ? "打开日志需要桌面 shell 桥接。" : undefined} aria-label="Open logs">打开日志</button>
-        <button type="button" className="settings-secondary-action" onClick={onOpenDataDirectory} disabled={!onOpenDataDirectory} title={!onOpenDataDirectory ? "打开数据目录需要桌面 shell 桥接。" : undefined} aria-label="Open data folder">打开数据目录</button>
+        <button type="button" className="settings-secondary-action" onClick={onOpenLogs} disabled={!onOpenLogs} title={!onOpenLogs ? "打开日志需要桌面 shell 桥接。" : undefined} aria-label="打开日志">打开日志</button>
+        <button type="button" className="settings-secondary-action" onClick={onOpenDataDirectory} disabled={!onOpenDataDirectory} title={!onOpenDataDirectory ? "打开数据目录需要桌面 shell 桥接。" : undefined} aria-label="打开数据目录">打开数据目录</button>
       </div>
       {!onOpenLogs || !onOpenDataDirectory ? (
         <p className="settings-action-note settings-panel-note">打开本地目录还在等待 Tauri shell 桥接；上方路径可用于手动检查。</p>
@@ -1345,7 +1345,7 @@ function AboutPanel({
           <span>固定焦点</span>
           <textarea
             id="project-focus"
-            aria-label="Pinned focus"
+            aria-label="固定焦点"
             value={focusDraft}
             rows={4}
             placeholder="示例：优先保障稳定的本地编码智能体工作流，避免无关重构。"
@@ -1356,7 +1356,7 @@ function AboutPanel({
           <button
             type="button"
             className="settings-primary-action"
-            aria-label="Save project focus"
+            aria-label="保存项目焦点"
             onClick={() => void onSaveWorkspaceFocus?.(focusDraft)}
             disabled={workspaceFocusBusy || !onSaveWorkspaceFocus}
           >
@@ -1365,7 +1365,7 @@ function AboutPanel({
           <button
             type="button"
             className="settings-secondary-action"
-            aria-label="Clear project focus"
+            aria-label="清空项目焦点"
             onClick={() => {
               setFocusDraft("");
               void onSaveWorkspaceFocus?.("");
@@ -1386,7 +1386,7 @@ function AboutPanel({
         <button
           type="button"
           className="settings-secondary-action"
-          aria-label="Clear project memory"
+          aria-label="清空项目记忆"
           onClick={() => void onClearWorkspaceMemory?.()}
           disabled={workspaceMemoryBusy || !workspaceMemorySummary?.trim() || !onClearWorkspaceMemory}
         >
@@ -1481,7 +1481,7 @@ function ProviderModal({
             <p className="settings-kicker">供应商</p>
             <h2 id="provider-modal-title">{title}</h2>
           </div>
-          <button type="button" className="settings-icon-button" onClick={onClose} aria-label="Close">x</button>
+          <button type="button" className="settings-icon-button" onClick={onClose} aria-label="关闭">x</button>
         </header>
 
         <div className="settings-provider-form">
@@ -1557,8 +1557,8 @@ function ProviderModal({
 
         <footer className="settings-modal-footer">
           <button type="button" className="settings-secondary-action" onClick={onClose}>取消</button>
-          <button type="button" className="settings-secondary-action" onClick={handleTestProvider} disabled={providerTestBusy} aria-label="Test connection">{providerTestBusy ? "测试中..." : "测试连接"}</button>
-          <button type="submit" className="settings-primary-action" disabled={providerBusy} aria-label={mode === "edit" ? "Save" : "Add"}>{mode === "edit" ? "保存" : "添加"}</button>
+          <button type="button" className="settings-secondary-action" onClick={handleTestProvider} disabled={providerTestBusy} aria-label="测试连接">{providerTestBusy ? "测试中..." : "测试连接"}</button>
+          <button type="submit" className="settings-primary-action" disabled={providerBusy} aria-label={mode === "edit" ? "保存" : "添加"}>{mode === "edit" ? "保存" : "添加"}</button>
         </footer>
       </form>
     </div>

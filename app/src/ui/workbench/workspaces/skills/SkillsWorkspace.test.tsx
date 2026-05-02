@@ -97,7 +97,7 @@ describe("SkillsWorkspace", () => {
     await user.clear(screen.getByLabelText("分类"));
     await user.type(screen.getByLabelText("分类"), "research");
     await user.type(screen.getByLabelText("系统提示词"), "Check every claim against sources.");
-    await user.type(screen.getByLabelText("工具 allowlist"), "web_search\nread_file");
+    await user.type(screen.getByLabelText("工具白名单"), "web_search\nread_file");
     await user.click(screen.getByRole("button", { name: "创建技能" }));
 
     expect(onCreateSkill).toHaveBeenCalledWith({

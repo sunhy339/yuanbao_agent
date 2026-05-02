@@ -76,13 +76,13 @@ describe("NewSessionWorkspace", () => {
 
     render(<Harness />);
 
-    await user.selectOptions(screen.getByLabelText("Select model"), "kimi");
-    await user.clear(screen.getByLabelText("Session title"));
-    await user.type(screen.getByLabelText("Session title"), "Plan frontend V2");
-    await user.clear(screen.getByLabelText("Workspace folder"));
-    await user.type(screen.getByLabelText("Workspace folder"), "D:\\py\\doubao_client");
-    await user.click(screen.getByRole("button", { name: "Apply workspace" }));
-    await user.click(screen.getByRole("button", { name: "Create session" }));
+    await user.selectOptions(screen.getByLabelText("选择模型"), "kimi");
+    await user.clear(screen.getByLabelText("会话标题"));
+    await user.type(screen.getByLabelText("会话标题"), "Plan frontend V2");
+    await user.clear(screen.getByLabelText("工作区文件夹"));
+    await user.type(screen.getByLabelText("工作区文件夹"), "D:\\py\\doubao_client");
+    await user.click(screen.getByRole("button", { name: "应用工作区" }));
+    await user.click(screen.getByRole("button", { name: "创建会话" }));
 
     expect(onSelectModel).toHaveBeenCalledWith("kimi");
     expect(onSessionTitleChange).toHaveBeenLastCalledWith("Plan frontend V2");

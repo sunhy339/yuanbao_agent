@@ -145,7 +145,7 @@ describe("App session message recovery", () => {
         limit: 500,
       });
     });
-    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "总览" })).toHaveAttribute("aria-selected", "true");
   });
 
   it("shows readable local preview provider copy instead of raw mock labels", async () => {
@@ -160,7 +160,7 @@ describe("App session message recovery", () => {
   it("loads persisted messages when selecting and switching sessions", async () => {
     const user = userEvent.setup();
     render(<App />);
-    const sessionRail = await screen.findByLabelText("Sessions");
+    const sessionRail = await screen.findByLabelText("会话");
 
     await user.click(await within(sessionRail).findByRole("button", { name: /Alpha Session/ }));
     expect(await screen.findByText("Alpha persisted request")).toBeInTheDocument();
@@ -182,7 +182,7 @@ describe("App session message recovery", () => {
   it("reloads persisted messages when activating already-open session tabs", async () => {
     const user = userEvent.setup();
     render(<App />);
-    const sessionRail = await screen.findByLabelText("Sessions");
+    const sessionRail = await screen.findByLabelText("会话");
 
     await user.click(await within(sessionRail).findByRole("button", { name: /Alpha Session/ }));
     expect(await screen.findByText("Alpha persisted request")).toBeInTheDocument();

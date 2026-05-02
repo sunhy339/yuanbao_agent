@@ -93,11 +93,11 @@ export function GlobalSidebar({
       </div>
 
       <nav className="sidebar-primary" aria-label="工作台">
-        <button type="button" aria-label="Overview" onClick={() => onOpenSystemTab("overview")}>
+        <button type="button" aria-label="总览" onClick={() => onOpenSystemTab("overview")}>
           <span>总览</span>
           <small>控制中心</small>
         </button>
-        <button type="button" aria-label="New Session" onClick={() => onOpenSystemTab("new-session")}>
+        <button type="button" aria-label="新建会话" onClick={() => onOpenSystemTab("new-session")}>
           <span>新建会话</span>
           <small>开始任务</small>
         </button>
@@ -113,14 +113,14 @@ export function GlobalSidebar({
           <span>搜索</span>
           <input
             type="search"
-            aria-label="Search sessions"
+            aria-label="搜索会话"
             placeholder="搜索会话"
             value={searchText}
             onChange={(event) => setSearchText(event.target.value)}
           />
         </label>
 
-        <div className="session-rail" aria-label="Sessions">
+        <div className="session-rail" aria-label="会话">
           {filtered.length ? (
             filtered.map((session) =>
               renamingId === session.id ? (
@@ -189,27 +189,27 @@ export function GlobalSidebar({
       ) : null}
 
       <div className="sidebar-footer">
-        <button type="button" aria-label="Scheduled" onClick={() => onOpenSystemTab("scheduled")}>
+        <button type="button" aria-label="定时任务" onClick={() => onOpenSystemTab("scheduled")}>
           <span>定时任务</span>
           <small>计划</small>
         </button>
-        <button type="button" aria-label="MCP Center" onClick={() => onOpenSystemTab("mcp")}>
+        <button type="button" aria-label="MCP 中心" onClick={() => onOpenSystemTab("mcp")}>
           <span>MCP</span>
           <small>工具</small>
         </button>
-        <button type="button" aria-label="Agent Skills" onClick={() => onOpenSystemTab("skills")}>
+        <button type="button" aria-label="智能体技能" onClick={() => onOpenSystemTab("skills")}>
           <span>技能</span>
           <small>智能体</small>
         </button>
-        <button type="button" aria-label="Appearance" onClick={() => onOpenSystemTab("appearance")}>
+        <button type="button" aria-label="外观" onClick={() => onOpenSystemTab("appearance")}>
           <span>外观</span>
           <small>主题</small>
         </button>
-        <button type="button" aria-label="Component Playground" onClick={() => onOpenSystemTab("playground")}>
+        <button type="button" aria-label="组件预览" onClick={() => onOpenSystemTab("playground")}>
           <span>组件预览</span>
           <small>UI 状态</small>
         </button>
-        <button type="button" aria-label="Settings" onClick={() => onOpenSystemTab("settings")}>
+        <button type="button" aria-label="设置" onClick={() => onOpenSystemTab("settings")}>
           <span>设置</span>
           <small>配置</small>
         </button>

@@ -379,7 +379,7 @@ export function ScheduledWorkspace({
               <input
                 aria-label="描述"
                 onChange={(event) => updateDraft("description", event.currentTarget.value)}
-                placeholder="Review yesterday's commits"
+                placeholder="复盘昨天的提交"
                 value={draft.description}
               />
             </label>
@@ -389,7 +389,7 @@ export function ScheduledWorkspace({
               <textarea
                 aria-label="提示词"
                 onChange={(event) => updateDraft("prompt", event.currentTarget.value)}
-                placeholder="Check the repository status and summarize anything that needs attention."
+                placeholder="检查仓库状态，并总结需要关注的事项。"
                 rows={5}
                 value={draft.prompt}
               />

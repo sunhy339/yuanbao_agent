@@ -101,7 +101,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 const EVENT_CHANNEL = "agent://event";
 const browserEventTarget = new EventTarget();
 const RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE =
-  "Desktop runtime bridge is unavailable. Open Yuanbao Agent through the Tauri desktop app or explicitly enable browser preview mode for tests/previews.";
+  "桌面运行时桥接不可用。请通过 Tauri 桌面应用打开 Yuanbao Agent，或为测试/预览显式启用浏览器预览模式。";
 
 export type RuntimeConfig = AppConfig & Required<Pick<AppConfig, "search">>;
 export type RuntimeCommandLog = CommandLogRecord;
@@ -180,7 +180,7 @@ function shouldUseBrowserMock(): boolean {
 
 function assertRuntimeBridgeAvailable(command: string): void {
   if (!isTauriBridgeAvailable()) {
-    throw new Error(`${RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE} Command: ${command}.`);
+    throw new Error(`${RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE} 命令：${command}。`);
   }
 }
 
@@ -253,7 +253,7 @@ function applyMockTaskControl(
     updatedAt: Date.now(),
   }));
   if (!task) {
-    throw new Error(`Task not found: ${taskId}`);
+    throw new Error(`未找到任务：${taskId}`);
   }
   emitBrowserEvent(buildMockEvent(task.sessionId, task.id, eventType, { status: task.status }));
   return { task };
@@ -533,7 +533,7 @@ function buildMockCommandLogs(): CommandLogRecord[] {
 function getMockCommandLog(commandId: string): CommandLogRecord {
   const commandLog = buildMockCommandLogs().find((log) => log.id === commandId);
   if (!commandLog) {
-    throw new Error(`Command log not found: ${commandId}`);
+    throw new Error(`未找到命令日志：${commandId}`);
   }
   return commandLog;
 }
@@ -599,7 +599,7 @@ function updateMockScheduledTask(
 ): ScheduledTaskRecord {
   const current = mockState.scheduledTasks[taskId];
   if (!current) {
-    throw new Error(`Scheduled task not found: ${taskId}`);
+    throw new Error(`未找到定时任务：${taskId}`);
   }
   const next = updater(current);
   mockState.scheduledTasks[taskId] = next;
@@ -671,7 +671,7 @@ function buildProviderTestFallback(
     return {
       ok: true,
       status: "mocked",
-      message: "Local preview provider is ready. No API key value is stored in app config.",
+      message: "本地预览供应商已就绪。应用配置中不会存储 API key 值。",
       profileId: providerProfileId,
       profileName: providerProfileName,
       providerMode: mode,
@@ -681,7 +681,7 @@ function buildProviderTestFallback(
       envVarName,
       lastCheckedAt: checkedAt,
       lastStatus: "mocked",
-      lastErrorSummary: "Local preview does not contact a remote model.",
+      lastErrorSummary: "本地预览不会连接远程模型。",
       source: "mock-fallback",
     };
   }
@@ -691,7 +691,7 @@ function buildProviderTestFallback(
     return {
       ok: false,
       status: "missing_env",
-      message: `Runtime provider test cannot read ${envVarName} in browser preview fallback.`,
+      message: `浏览器预览 fallback 无法读取运行时环境变量 ${envVarName}。`,
       profileId: providerProfileId,
       profileName: providerProfileName,
       providerMode: mode,
@@ -701,22 +701,22 @@ function buildProviderTestFallback(
       envVarName,
       lastCheckedAt: checkedAt,
       lastStatus: "missing_env",
-      lastErrorSummary: `Set ${envVarName} in the desktop runtime environment, then run Test Connection from the Tauri app.`,
+      lastErrorSummary: `请在桌面运行时环境中设置 ${envVarName}，然后在 Tauri 应用中运行连接测试。`,
       source: "mock-fallback",
       details: {
-        errorSummary: `Set ${envVarName} in the desktop runtime environment, then run Test Connection from the Tauri app.`,
+        errorSummary: `请在桌面运行时环境中设置 ${envVarName}，然后在 Tauri 应用中运行连接测试。`,
       },
     };
   }
 
-  const errorSummary = reason instanceof Error ? reason.message : "Provider test backend is not available yet.";
+  const errorSummary = reason instanceof Error ? reason.message : "供应商测试后端尚不可用。";
   return {
     ok: false,
     status: compatibleModes.has(String(mode).toLowerCase()) ? "failed" : "unsupported",
     message:
       reason instanceof Error
-        ? `Provider test backend is not available yet: ${reason.message}`
-        : "Provider test backend is not available yet.",
+        ? `供应商测试后端尚不可用：${reason.message}`
+        : "供应商测试后端尚不可用。",
     profileId: providerProfileId,
     profileName: providerProfileName,
     providerMode: mode,
@@ -895,7 +895,7 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
         buildMockEvent(sessionId, task.id, "task.started", {
           status: next.status,
           plan: next.plan,
-          detail: "Browser preview mode started a simulated task.",
+          detail: "浏览器预览模式已启动模拟任务。",
         }),
       );
     }
@@ -904,7 +904,7 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
   window.setTimeout(() => {
     emitBrowserEvent(
       buildMockEvent(sessionId, task.id, "assistant.token", {
-        delta: "Browser preview mode is active. ",
+        delta: "浏览器预览模式已启用。 ",
       }),
     );
   }, 140);
@@ -912,7 +912,7 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
   window.setTimeout(() => {
     emitBrowserEvent(
       buildMockEvent(sessionId, task.id, "assistant.token", {
-        delta: "Launch the desktop app through Tauri to talk to the Python runtime.",
+        delta: "请通过 Tauri 启动桌面应用，以连接 Python 运行时。",
       }),
     );
   }, 180);
@@ -923,12 +923,12 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
       sessionId,
       taskId: task.id,
       role: "assistant",
-      content: "Browser preview assistant response completed.",
+      content: "浏览器预览助手响应已完成。",
       createdAt: Date.now(),
     });
     emitBrowserEvent(
       buildMockEvent(sessionId, task.id, "assistant.message.completed", {
-        summary: "Browser preview assistant response completed.",
+        summary: "浏览器预览助手响应已完成。",
       }),
     );
   }, 205);
@@ -983,10 +983,10 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
       plan:
         current.plan?.map((step) => {
           if (step.id === "inspect-request") {
-            return { ...step, status: "completed", detail: "Mock request analysis completed." };
+            return { ...step, status: "completed", detail: "模拟请求分析已完成。" };
           }
           if (step.id === "prepare-next-step") {
-            return { ...step, status: "active", detail: "Waiting for approval to run the command." };
+            return { ...step, status: "active", detail: "等待审批后运行命令。" };
           }
           return step;
         }) ?? current.plan,
@@ -996,7 +996,7 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
       buildMockEvent(sessionId, task.id, "task.updated", {
         status: "waiting_approval",
         plan: mockState.tasks[task.id]?.plan,
-        detail: "Waiting for approval to run the command.",
+        detail: "等待审批后运行命令。",
       }),
     );
     emitBrowserEvent(
@@ -1010,7 +1010,7 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
     emitBrowserEvent(
       buildMockEvent(sessionId, task.id, "task.waiting_approval", {
         status: "waiting_approval",
-        detail: "Command requires approval before execution.",
+        detail: "命令执行前需要审批。",
       }),
     );
   }, 320);
@@ -1043,7 +1043,7 @@ export class RuntimeClient {
 
   async openAppPath(kind: AppPathKind): Promise<AppPathOpenResult> {
     if (shouldUseBrowserMock()) {
-      throw new Error(`${RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE} Command: open_app_path.`);
+      throw new Error(`${RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE} 命令：open_app_path。`);
     }
     return invokeOrReject<AppPathOpenResult>("open_app_path", { kind });
   }
@@ -1096,7 +1096,7 @@ export class RuntimeClient {
   async clearWorkspaceMemory(payload: WorkspaceMemoryClearParams): Promise<WorkspaceMemoryClearResult> {
     if (shouldUseBrowserMock()) {
       if (!mockState.workspace || mockState.workspace.id !== payload.workspaceId) {
-        throw new Error(`Workspace not found: ${payload.workspaceId}`);
+        throw new Error(`未找到工作区：${payload.workspaceId}`);
       }
       mockState.workspace = { ...mockState.workspace, summary: null, updatedAt: Date.now() };
       return { workspace: mockState.workspace };
@@ -1109,7 +1109,7 @@ export class RuntimeClient {
   async updateWorkspaceFocus(payload: WorkspaceFocusUpdateParams): Promise<WorkspaceFocusUpdateResult> {
     if (shouldUseBrowserMock()) {
       if (!mockState.workspace || mockState.workspace.id !== payload.workspaceId) {
-        throw new Error(`Workspace not found: ${payload.workspaceId}`);
+        throw new Error(`未找到工作区：${payload.workspaceId}`);
       }
       mockState.workspace = {
         ...mockState.workspace,
@@ -1151,7 +1151,7 @@ export class RuntimeClient {
   async updateSession(payload: SessionUpdateParams): Promise<SessionUpdateResult> {
     if (shouldUseBrowserMock()) {
       const session = mockState.sessions.find((s) => s.id === payload.sessionId);
-      if (!session) throw new Error(`Session not found: ${payload.sessionId}`);
+      if (!session) throw new Error(`未找到会话：${payload.sessionId}`);
       if (payload.title !== undefined) session.title = payload.title;
       if (payload.status !== undefined) session.status = payload.status as SessionRecord["status"];
       session.updatedAt = Date.now();
@@ -1163,7 +1163,7 @@ export class RuntimeClient {
   async deleteSession(payload: SessionDeleteParams): Promise<SessionDeleteResult> {
     if (shouldUseBrowserMock()) {
       const idx = mockState.sessions.findIndex((s) => s.id === payload.sessionId);
-      if (idx === -1) throw new Error(`Session not found: ${payload.sessionId}`);
+      if (idx === -1) throw new Error(`未找到会话：${payload.sessionId}`);
       const [session] = mockState.sessions.splice(idx, 1);
       return { session };
     }
@@ -1204,11 +1204,11 @@ export class RuntimeClient {
     if (shouldUseBrowserMock()) {
       const currentApproval = mockState.approvals[payload.approvalId];
       if (!currentApproval) {
-        throw new Error(`Approval not found: ${payload.approvalId}`);
+        throw new Error(`未找到审批：${payload.approvalId}`);
       }
 
       if (currentApproval.decision && currentApproval.decision !== payload.decision) {
-        throw new Error(`Approval already resolved as ${currentApproval.decision}`);
+        throw new Error(`审批已处理为：${currentApproval.decision}`);
       }
 
       const now = Date.now();
@@ -1222,7 +1222,7 @@ export class RuntimeClient {
 
       const task = mockState.tasks[approval.taskId];
       if (!task) {
-        throw new Error(`Task not found: ${approval.taskId}`);
+        throw new Error(`未找到任务：${approval.taskId}`);
       }
 
       const request = JSON.parse(approval.requestJson) as {
@@ -1262,7 +1262,7 @@ export class RuntimeClient {
           plan:
             current.plan?.map((step) =>
               step.id === "prepare-next-step"
-                ? { ...step, status: "completed", detail: "Approval granted; command is running." }
+                ? { ...step, status: "completed", detail: "审批已通过；命令正在运行。" }
                 : step,
             ) ?? current.plan,
         }));
@@ -1272,7 +1272,7 @@ export class RuntimeClient {
             buildMockEvent(task.sessionId, task.id, "task.updated", {
               status: "running",
               plan: runningTask.plan,
-              detail: "Approval accepted",
+              detail: "审批已接受",
             }),
           );
         }
@@ -1291,7 +1291,7 @@ export class RuntimeClient {
           buildMockEvent(task.sessionId, task.id, "command.output", {
             commandId,
             stream: "stdout",
-            chunk: `Approved command finished successfully: ${request.command ?? "pytest"}\n`,
+            chunk: `已批准的命令成功完成：${request.command ?? "pytest"}\n`,
           }),
         );
 
@@ -1304,19 +1304,19 @@ export class RuntimeClient {
             status: "completed",
             exitCode: 0,
             durationMs: 240,
-            summary: "Mock command completed successfully.",
+            summary: "模拟命令已成功完成。",
           }),
         );
 
         const completedTask = updateMockTask(task.id, (current) => ({
           ...current,
           status: "completed",
-          resultSummary: "Local preview completed the approved command and published output.",
+          resultSummary: "本地预览已完成批准的命令并发布输出。",
           updatedAt: Date.now(),
           plan:
             current.plan?.map((step) =>
               step.id === "prepare-next-step"
-                ? { ...step, status: "completed", detail: "Approved command finished in local preview." }
+                ? { ...step, status: "completed", detail: "已批准命令已在本地预览中完成。" }
                 : step,
             ) ?? current.plan,
         }));
@@ -1338,7 +1338,7 @@ export class RuntimeClient {
           plan:
             current.plan?.map((step) =>
               step.id === "prepare-next-step"
-                ? { ...step, status: "failed", detail: "Approval was rejected by the user." }
+                ? { ...step, status: "failed", detail: "审批已被用户拒绝。" }
                 : step,
             ) ?? current.plan,
         }));
@@ -1371,7 +1371,7 @@ export class RuntimeClient {
     if (shouldUseBrowserMock()) {
       const patch = mockState.patches[payload.patchId];
       if (!patch) {
-        throw new Error(`Patch not found: ${payload.patchId}`);
+        throw new Error(`未找到补丁：${payload.patchId}`);
       }
       return { patch, diffText: patch.diffText };
     }
@@ -1430,7 +1430,7 @@ export class RuntimeClient {
     if (shouldUseBrowserMock()) {
       const task = mockState.tasks[taskId];
       if (!task) {
-        throw new Error(`Task not found: ${taskId}`);
+        throw new Error(`未找到任务：${taskId}`);
       }
       return { task };
     }
@@ -1554,7 +1554,7 @@ export class RuntimeClient {
         startedAt,
         finishedAt: startedAt,
         durationMs: 0,
-        summary: "Run now recorded in browser fallback; desktop runtime executes real scheduled jobs.",
+        summary: "浏览器 fallback 已记录立即运行；真实定时任务由桌面运行时执行。",
         error: null,
       };
       mockState.scheduledRuns = sortScheduledRuns([run, ...mockState.scheduledRuns]).slice(0, 500);
@@ -1630,7 +1630,7 @@ export class RuntimeClient {
     const result = await withTimeout(
       invokePayloadOrReject<ProviderTestResult>("provider_test", payload),
       12_000,
-      "Provider test timed out. Check your API key, base URL, and network connection.",
+      "供应商测试超时。请检查 API key、Base URL 和网络连接。",
     );
     rememberProviderTestResult(result);
     return result;
@@ -1697,7 +1697,7 @@ export class RuntimeClient {
     if (shouldUseBrowserMock()) {
       const current = mockState.skills[payload.skillId];
       if (!current) {
-        throw new Error(`Skill not found: ${payload.skillId}`);
+        throw new Error(`未找到技能：${payload.skillId}`);
       }
       const skill = normalizeSkillRecord({
         ...current,
@@ -1764,7 +1764,7 @@ export class RuntimeClient {
     if (shouldUseBrowserMock()) {
       const current = mockState.mcpServers[payload.serverId];
       if (!current) {
-        throw new Error(`MCP server not found: ${payload.serverId}`);
+        throw new Error(`未找到 MCP 服务器：${payload.serverId}`);
       }
       const server = normalizeMcpServerRecord({
         ...current,

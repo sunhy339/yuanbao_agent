@@ -100,7 +100,7 @@ describe("RuntimeClient command log fallback", () => {
       shell: "powershell",
       status: "completed",
       exitCode: 0,
-      stdout: expect.stringContaining("Approved command finished successfully"),
+      stdout: expect.stringContaining("已批准的命令成功完成"),
     });
 
     const fetched = await client.commandLogGet({ commandId: listed.commandLogs[0].id });
@@ -159,7 +159,7 @@ describe("RuntimeClient message fallback", () => {
     const listed = await client.listMessages({ sessionId: firstSession.session.id });
     expect(listed.messages.map((message) => message.content)).toEqual([
       "remember me",
-      "Browser preview assistant response completed.",
+      "浏览器预览助手响应已完成。",
     ]);
   });
 });
@@ -177,9 +177,9 @@ describe("RuntimeClient desktop transport", () => {
 
     const client = new RuntimeClient();
 
-    await expect(client.getConfig()).rejects.toThrow("Desktop runtime bridge is unavailable");
+    await expect(client.getConfig()).rejects.toThrow("桌面运行时桥接不可用");
     await expect(client.sendMessage({ sessionId: "session", content: "hello", attachments: [] })).rejects.toThrow(
-      "Desktop runtime bridge is unavailable",
+      "桌面运行时桥接不可用",
     );
   });
 

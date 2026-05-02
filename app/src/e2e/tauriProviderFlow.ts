@@ -153,11 +153,11 @@ function setFieldValue(selector: string, value: string) {
 async function configureProviderThroughUi(fixture: Required<TauriProviderFlowFixture>["provider"]) {
   await waitFor("workbench shell", () => query(WORKBENCH_SHELL_SELECTOR));
   await waitFor("composer ready", () => {
-    const composer = query<HTMLTextAreaElement>('textarea[aria-label="Task prompt"]');
+    const composer = query<HTMLTextAreaElement>('textarea[aria-label="任务指令"]');
     return composer && !composer.disabled ? composer : null;
   });
 
-  click('button[aria-label="Settings"]', "Settings navigation");
+  click('button[aria-label="设置"]', "Settings navigation");
   await waitFor("settings provider panel", () => query(".settings-panel-providers"));
   click(".settings-panel-header .settings-primary-action", "Add Provider");
   await waitFor("provider dialog", () => query('[role="dialog"].settings-modal'));
@@ -196,9 +196,9 @@ async function configureProviderThroughUi(fixture: Required<TauriProviderFlowFix
 }
 
 async function sendPromptThroughUi(prompt: string) {
-  click('button[aria-label="New Session"]', "New Session navigation");
-  await waitFor("task prompt composer", () => query<HTMLTextAreaElement>('textarea[aria-label="Task prompt"]'));
-  setFieldValue('textarea[aria-label="Task prompt"]', prompt);
+  click('button[aria-label="新建会话"]', "New Session navigation");
+  await waitFor("task prompt composer", () => query<HTMLTextAreaElement>('textarea[aria-label="任务指令"]'));
+  setFieldValue('textarea[aria-label="任务指令"]', prompt);
   await waitFor("composer run enabled", () => {
     const button = query<HTMLButtonElement>(".composer-run");
     return button && !button.disabled ? button : null;
@@ -211,31 +211,31 @@ async function runUiSmokeFlow(workspacePath?: string) {
   const assertions: string[] = [];
 
   await waitFor("workbench shell", () => query(WORKBENCH_SHELL_SELECTOR));
-  assertText("Overview");
+  assertText("总览");
   assertions.push("workbench shell renders overview");
 
-  click('button[aria-label="New Session"]', "New Session navigation");
+  click('button[aria-label="新建会话"]', "New Session navigation");
   await waitFor("new session workspace", () => query(".new-session-workspace"));
   assertElement(".new-session-workspace", "new session workspace");
-  await waitFor("command composer", () => query('textarea[aria-label="Task prompt"]'));
-  assertText("New Session");
+  await waitFor("command composer", () => query('textarea[aria-label="任务指令"]'));
+  assertText("新建会话");
   assertions.push("new session workspace renders");
 
-  click('button[aria-label="Settings"]', "Settings navigation");
+  click('button[aria-label="设置"]', "Settings navigation");
   await waitFor("settings workspace", () => query(".settings-workspace"));
   assertElement(".settings-panel-providers", "settings providers panel");
   assertText("Provider Control");
   assertions.push("settings providers page renders");
 
-  click('button[aria-label="Scheduled"]', "Scheduled navigation");
+  click('button[aria-label="定时任务"]', "Scheduled navigation");
   await waitFor("scheduled workspace", () => query(".scheduled-workspace"));
   assertElement(".scheduled-empty", "scheduled empty state");
   assertText("No scheduled tasks");
   assertions.push("scheduled empty state renders without demo data");
 
-  click('button[aria-label="New Session"]', "New Session navigation");
+  click('button[aria-label="新建会话"]', "New Session navigation");
   await waitFor("new session workspace", () => query(".new-session-workspace"));
-  await waitFor("command composer after returning", () => query('textarea[aria-label="Task prompt"]'));
+  await waitFor("command composer after returning", () => query('textarea[aria-label="任务指令"]'));
   assertions.push("top-level navigation returns to new session");
 
   await finish({
@@ -326,7 +326,7 @@ async function runMcpLiveFlow(client: RuntimeClient) {
   const serverId = `e2e-mcp-${Date.now()}`;
 
   await waitFor("workbench shell", () => query(WORKBENCH_SHELL_SELECTOR));
-  click('button[aria-label="MCP Center"]', "MCP Center navigation");
+  click('button[aria-label="MCP 中心"]', "MCP Center navigation");
   await waitFor("MCP workspace", () => query(".mcp-workspace"));
   assertions.push("MCP workspace opened in desktop shell");
 
@@ -571,7 +571,7 @@ export async function maybeRunTauriProviderFlowE2e() {
     if (finalTask.status !== "completed") {
       throw new Error(`Expected completed task, got ${finalTask.status}.`);
     }
-    assertElement('.conversation-activity[aria-label="Conversation activity"]', "conversation activity stream");
+    assertElement('.conversation-activity[aria-label="会话活动"]', "conversation activity stream");
     assertText(finalTask.id);
     assertText("completed");
 

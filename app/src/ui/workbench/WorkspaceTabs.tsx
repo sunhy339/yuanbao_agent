@@ -17,14 +17,6 @@ interface TabContextMenuState {
 }
 
 function getLegacyTabA11yName(title: string) {
-  if (title === "总览") return "Overview";
-  if (title === "新建会话") return "New Session";
-  if (title === "定时任务") return "Scheduled";
-  if (title === "MCP 中心") return "MCP Center";
-  if (title === "技能") return "Agent Skills";
-  if (title === "外观") return "Appearance";
-  if (title === "组件预览") return "Playground";
-  if (title === "设置") return "Settings";
   return title;
 }
 
@@ -133,7 +125,7 @@ export function WorkspaceTabs({
               <button
                 type="button"
                 className="workspace-tab-close"
-                aria-label={`Close ${getLegacyTabA11yName(tab.title)}`}
+                aria-label={`关闭 ${getLegacyTabA11yName(tab.title)}`}
                 onClick={() => onCloseTab(tab.id)}
               >
                 x
@@ -164,7 +156,7 @@ export function WorkspaceTabs({
           <button
             type="button"
             role="menuitem"
-            aria-label="Close tab"
+            aria-label="关闭标签"
             disabled={!contextMenu.tab.closable}
             onClick={() => {
               onCloseTab(contextMenu.tab.id);
@@ -176,7 +168,7 @@ export function WorkspaceTabs({
           <button
             type="button"
             role="menuitem"
-            aria-label="Close other tabs"
+            aria-label="关闭其他标签"
             disabled={!otherClosableCount || !onCloseOtherTabs}
             onClick={() => {
               onCloseOtherTabs?.(contextMenu.tab.id);

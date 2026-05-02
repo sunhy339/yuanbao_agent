@@ -420,7 +420,7 @@ function formatTokenBudget(stats?: SessionWorkspaceContextPreview["budgetStats"]
   if (used === undefined || used === null || max === undefined || max === null) {
     return null;
   }
-  return `${used}/${max} tokens`;
+  return `${used}/${max} 令牌`;
 }
 
 function formatSignedCount(value: number | undefined, prefix: string) {
@@ -433,27 +433,27 @@ function formatSignedCount(value: number | undefined, prefix: string) {
 
 function formatTaskFileChange(file: NonNullable<SessionWorkspaceActiveTask["changedFiles"]>[number]) {
   const changeStats = compactMeta([formatSignedCount(file.additions, "+"), formatSignedCount(file.deletions, "-")]).join(" ");
-  const status = file.status ?? "changed";
+  const status = formatStatusLabel(file.status ?? "changed");
   const suffix = compactMeta([changeStats, file.reason]).join(" - ");
   return `${status} ${file.path}${suffix ? ` - ${suffix}` : ""}`;
 }
 
 function formatTaskCommand(command: NonNullable<SessionWorkspaceActiveTask["commands"]>[number]) {
   const meta = compactMeta([
-    command.status,
-    command.exitCode !== undefined && command.exitCode !== null ? `exit ${command.exitCode}` : null,
+    command.status ? formatStatusLabel(command.status) : null,
+    command.exitCode !== undefined && command.exitCode !== null ? `退出码 ${command.exitCode}` : null,
     formatDuration(command.durationMs ?? undefined),
     command.cwd,
-    command.background ? "background" : null,
+    command.background ? "后台" : null,
   ]);
   return `${command.command}${meta.length ? ` - ${meta.join(" - ")}` : ""}`;
 }
 
 function formatTaskVerification(record: NonNullable<SessionWorkspaceActiveTask["verification"]>[number]) {
-  const label = record.command ?? record.id ?? "verification";
+  const label = record.command ?? record.id ?? "验证";
   const meta = compactMeta([
-    record.status,
-    record.exitCode !== undefined && record.exitCode !== null ? `exit ${record.exitCode}` : null,
+    formatStatusLabel(record.status),
+    record.exitCode !== undefined && record.exitCode !== null ? `退出码 ${record.exitCode}` : null,
     formatDuration(record.durationMs ?? undefined),
     record.summary,
   ]);
@@ -511,7 +511,7 @@ function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolR
   const url = readRuntimeString(inputRecord, ["url"]);
   const query = readRuntimeString(inputRecord, ["query"]);
   const duration = formatDuration(toolCall.durationMs);
-  const tokenCount = toolCall.tokenCount !== undefined ? `${toolCall.tokenCount} tokens` : null;
+  const tokenCount = toolCall.tokenCount !== undefined ? `${toolCall.tokenCount} 令牌` : null;
   const statusMeta = compactMeta([duration, tokenCount]);
   const resultSummary = summarizeRuntimeOutput(toolCall.resultSummary || toolCall.output || toolCall.stdout || toolCall.stderr);
 
@@ -541,7 +541,7 @@ function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolR
       kind: "tool",
       title: path ? `list_dir ${path}` : "list_dir",
       summary: resultSummary,
-      meta: compactMeta([path ? `path: ${path}` : toolCall.input, ...statusMeta]),
+      meta: compactMeta([path ? `路径：${path}` : toolCall.input, ...statusMeta]),
       code: toolCall.argsPreview,
     };
   }
@@ -551,7 +551,7 @@ function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolR
       kind: "tool",
       title: path ? `read_file ${path}` : "read_file",
       summary: resultSummary,
-      meta: compactMeta([path ? `path: ${path}` : toolCall.input, ...statusMeta]),
+      meta: compactMeta([path ? `路径：${path}` : toolCall.input, ...statusMeta]),
       code: toolCall.argsPreview,
     };
   }
@@ -561,7 +561,7 @@ function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolR
       kind: "tool",
       title: path ? `write_file ${path}` : "write_file",
       summary: resultSummary,
-      meta: compactMeta([path ? `path: ${path}` : toolCall.input, ...statusMeta]),
+      meta: compactMeta([path ? `路径：${path}` : toolCall.input, ...statusMeta]),
       code: toolCall.argsPreview,
     };
   }
@@ -571,7 +571,7 @@ function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolR
       kind: "tool",
       title: query ? `search_files "${query}"` : "search_files",
       summary: resultSummary,
-      meta: compactMeta([path ? `root: ${path}` : null, ...statusMeta]),
+      meta: compactMeta([path ? `根目录：${path}` : null, ...statusMeta]),
       code: toolCall.argsPreview,
     };
   }
@@ -581,7 +581,7 @@ function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolR
       kind: "tool",
       title: query ? `code_search "${query}"` : "code_search",
       summary: resultSummary,
-      meta: compactMeta([path ? `root: ${path}` : null, ...statusMeta]),
+      meta: compactMeta([path ? `根目录：${path}` : null, ...statusMeta]),
       code: toolCall.argsPreview,
     };
   }
@@ -614,7 +614,7 @@ function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolR
       kind: "tool",
       title: path ? `notebook ${path}` : "notebook",
       summary: resultSummary,
-      meta: compactMeta([action ? `action: ${action}` : null, path ? `path: ${path}` : null, ...statusMeta]),
+      meta: compactMeta([action ? `动作：${action}` : null, path ? `路径：${path}` : null, ...statusMeta]),
       code: toolCall.argsPreview,
     };
   }
@@ -698,12 +698,12 @@ function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveTask | n
         outOfScope.length ? `${outOfScope.length} 条不在范围内` : null,
       ]),
       code: compactMeta([
-        activeTask.goal ? `📌 Goal:\n${activeTask.goal}` : null,
+        activeTask.goal ? `📌 目标：\n${activeTask.goal}` : null,
         acceptanceCriteria.length
-          ? `✅ Acceptance criteria:\n${acceptanceCriteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
+          ? `✅ 验收标准：\n${acceptanceCriteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
           : null,
         outOfScope.length
-          ? `🚫 Out of scope:\n${outOfScope.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
+          ? `🚫 不在范围内：\n${outOfScope.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
           : null,
       ]).join("\n\n"),
     });
@@ -833,9 +833,9 @@ function formatTraceSummary(trace: SessionWorkspaceTrace) {
 
 function buildTraceDetail(trace: SessionWorkspaceTrace) {
   return compactMeta([
-    trace.stderr ? `Error\n${compactText(trace.stderr, 800)}` : null,
-    trace.stdout && !isRawJsonLike(trace.stdout) ? `Output\n${compactText(trace.stdout, 800)}` : null,
-    trace.detail && !isRawJsonLike(trace.detail) ? `Detail\n${compactText(trace.detail, 800)}` : null,
+    trace.stderr ? `错误\n${compactText(trace.stderr, 800)}` : null,
+    trace.stdout && !isRawJsonLike(trace.stdout) ? `输出\n${compactText(trace.stdout, 800)}` : null,
+    trace.detail && !isRawJsonLike(trace.detail) ? `详情\n${compactText(trace.detail, 800)}` : null,
   ]).join("\n\n");
 }
 
@@ -872,10 +872,10 @@ function buildRuntimeItems({
       title: patch.summary || "改动",
       status: patch.status,
       summary: patch.files && patch.files.length > 0
-        ? `${patch.files.length} file${patch.files.length === 1 ? "" : "s"}: ${compactList(patch.files.map((f) => f.path))}`
+        ? `${patch.files.length} 个文件：${compactList(patch.files.map((f) => f.path))}`
         : undefined,
       meta: compactMeta([
-        patch.filesChanged !== undefined ? `${patch.filesChanged} files` : null,
+        patch.filesChanged !== undefined ? `${patch.filesChanged} 个文件` : null,
         ...changeStats,
       ]),
       code: fileSummaries?.join("\n"),
@@ -897,7 +897,7 @@ function buildRuntimeItems({
         trace.type,
         trace.source,
         formatDuration(trace.durationMs),
-        trace.tokenCount !== undefined ? `${trace.tokenCount} tokens` : null,
+        trace.tokenCount !== undefined ? `${trace.tokenCount} 令牌` : null,
       ]),
       code: outputDetail || undefined,
       time: trace.time,
@@ -912,7 +912,7 @@ function buildRuntimeItems({
       title: approval.title,
       status: approval.status,
       summary: approval.summary,
-      meta: compactMeta([approval.kind, approval.risk ? `risk: ${approval.risk}` : null, approval.cwd]),
+      meta: compactMeta([approval.kind, approval.risk ? `风险：${formatStatusLabel(`${approval.risk} risk`)}` : null, approval.cwd]),
       code: approval.command || approval.parametersPreview,
       rawDetail: approval.fullInput,
       time: approval.requestedAt,
@@ -929,7 +929,7 @@ function buildRuntimeItems({
       summary: presentation.summary,
       meta: presentation.meta,
       code: presentation.code,
-      rawDetail: compactMeta([toolCall.rawInput ? `Input\n${toolCall.rawInput}` : null, toolCall.rawOutput ? `Output\n${toolCall.rawOutput}` : null]).join("\n\n"),
+      rawDetail: compactMeta([toolCall.rawInput ? `输入\n${toolCall.rawInput}` : null, toolCall.rawOutput ? `输出\n${toolCall.rawOutput}` : null]).join("\n\n"),
       time: toolCall.time,
     });
   });
@@ -944,7 +944,7 @@ function buildRuntimeItems({
       meta: compactMeta([
         job.cwd,
         job.shell,
-        job.exitCode !== undefined && job.exitCode !== null ? `exit ${job.exitCode}` : null,
+        job.exitCode !== undefined && job.exitCode !== null ? `退出码 ${job.exitCode}` : null,
         formatDuration(job.durationMs),
       ]),
       code: job.stdoutPath || job.stderrPath,
@@ -1327,7 +1327,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
               <Button
                 size="xs"
                 variant="secondary"
-                aria-label="Copy output"
+                aria-label="复制输出"
                 onClick={() => {
                   void onCopyRuntimeText?.("命令输出", commandOutput);
                 }}
@@ -1391,7 +1391,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
         data-status={item.status ?? "recorded"}
       >
         <button
-          aria-label={`${kindLabel} ${item.title}${item.status ? ` ${item.status}` : ""}`}
+          aria-label={`${kindLabel} ${item.title}${item.status ? ` ${formatStatusLabel(item.status)}` : ""}`}
           aria-expanded={expanded}
           className="runtime-trace-row-summary"
           onClick={() => setExpanded((current) => !current)}
@@ -1419,7 +1419,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
                 <Button
                   size="xs"
                   variant="secondary"
-                  aria-label="Copy detail"
+                aria-label="复制详情"
                   onClick={() => {
                     void onCopyRuntimeText?.("诊断详情", item.code ?? "");
                   }}
@@ -1438,7 +1438,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
   return (
     <article className="runtime-event-card" data-activity-kind="runtime" data-kind={item.kind}>
       <button
-        aria-label={`${kindLabel} ${item.title}${item.status ? ` ${item.status}` : ""}`}
+        aria-label={`${kindLabel} ${item.title}${item.status ? ` ${formatStatusLabel(item.status)}` : ""}`}
         aria-expanded={expanded}
         className="runtime-event-summary"
         onClick={() => setExpanded((current) => !current)}
@@ -1462,7 +1462,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
       {canResolveApproval ? (
         <div className="runtime-event-actions">
           <button
-            aria-label={`Approve ${item.title}`}
+            aria-label={`批准 ${item.title}`}
             onClick={() => {
               void onApprove?.(item.sourceId ?? "");
             }}
@@ -1471,7 +1471,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
             批准
           </button>
           <button
-            aria-label={`Reject ${item.title}`}
+            aria-label={`拒绝 ${item.title}`}
             onClick={() => {
               void onReject?.(item.sourceId ?? "");
             }}

@@ -4571,7 +4571,7 @@ export function App() {
       {error ? (
         <div className="error-banner compact" role="alert">
           <span>{error}</span>
-          <button type="button" className="error-banner-dismiss" aria-label="Dismiss error" onClick={() => setError(null)}>×</button>
+          <button type="button" className="error-banner-dismiss" aria-label="关闭错误" onClick={() => setError(null)}>×</button>
         </div>
       ) : null}
       {workspaceContent}

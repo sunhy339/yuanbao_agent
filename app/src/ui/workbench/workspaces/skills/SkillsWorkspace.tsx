@@ -66,7 +66,7 @@ function formatSkillCategory(path?: string): string {
 }
 
 function formatToolList(skill: SettingsSkillConfig): string[] {
-  return skill.toolWhitelist?.length ? skill.toolWhitelist : ["未发布工具 allowlist"];
+  return skill.toolWhitelist?.length ? skill.toolWhitelist : ["未发布工具白名单"];
 }
 
 function draftFromSkill(skill: SettingsSkillConfig): SkillDraft {
@@ -214,7 +214,7 @@ export function SkillsWorkspace({
               <input
                 value={draft.name}
                 onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
-                placeholder="Research reviewer"
+                placeholder="研究审阅器"
                 required
               />
             </label>
@@ -244,7 +244,7 @@ export function SkillsWorkspace({
               />
             </label>
             <label className="skills-editor-wide">
-              <span>工具 allowlist</span>
+              <span>工具白名单</span>
               <textarea
                 value={draft.toolWhitelist}
                 onChange={(event) => setDraft((current) => ({ ...current, toolWhitelist: event.target.value }))}
@@ -395,7 +395,7 @@ export function SkillsWorkspace({
               <pre>{selectedSkill.systemPrompt?.trim() || "运行时未为该预设发布提示词文本。"}</pre>
             </section>
             <section>
-              <h4>工具 allowlist</h4>
+              <h4>工具白名单</h4>
               <div className="skills-tool-list">
                 {formatToolList(selectedSkill).map((tool) => (
                   <span key={tool}>{tool}</span>

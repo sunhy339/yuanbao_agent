@@ -770,6 +770,25 @@ function buildSettingsGeneralConfig(config: RuntimeConfig): SettingsGeneralConfi
   };
 }
 
+function buildComputerUseStatus(): string {
+  const clipboardAvailable =
+    typeof navigator !== "undefined" &&
+    typeof navigator.clipboard?.writeText === "function";
+  const desktopBridgeAvailable = runtimeClient.canOpenLocalAppPaths();
+  const ready = [
+    clipboardAvailable ? "clipboard" : null,
+    desktopBridgeAvailable ? "desktop shell bridge" : null,
+    "sensitive confirmations",
+  ].filter(Boolean);
+  const pending = [
+    "screen observation",
+    "browser automation",
+    "system shortcuts",
+  ];
+
+  return `Checked ${new Date().toLocaleTimeString("en-US", { hour12: false })}: ${ready.join(", ")} ready; ${pending.join(", ")} permission probes are not wired yet.`;
+}
+
 function clampAppearanceNumber(
   value: number | undefined,
   min: number,
@@ -3290,6 +3309,15 @@ export function App() {
     }
   }
 
+  function handleRecheckComputerUse() {
+    const status = buildComputerUseStatus();
+    setComputerUseSettings((current) => ({
+      ...current,
+      status,
+    }));
+    addToast("info", "Computer Use capabilities checked");
+  }
+
   async function refreshMcpServers() {
     setMcpLoading(true);
     setError(null);
@@ -4344,6 +4372,7 @@ export function App() {
         onRefreshSkills={refreshSkills}
         computerUse={computerUseSettings}
         onComputerUseChange={setComputerUseSettings}
+        onRecheckComputerUse={handleRecheckComputerUse}
         workspaceFocus={workspace?.focus}
         workspaceFocusBusy={workspaceFocusBusy}
         onSaveWorkspaceFocus={workspace ? handleSaveWorkspaceFocus : undefined}

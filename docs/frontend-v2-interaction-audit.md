@@ -128,7 +128,7 @@ P1 read-only or not-yet-defined areas:
 | Skills | Refresh skills | Real | `app/src/App.tsx` | Calls `runtimeClient.listSkills`. |
 | Skills | Open skills folder | Read-only | `SettingsWorkspace.tsx` | Disabled because no handler is passed. |
 | Computer Use | Edit config | Local | `app/src/App.tsx` | React state only. |
-| Computer Use | Recheck | Read-only | `SettingsWorkspace.tsx` | Disabled with note: desktop permission recheck is not implemented yet. |
+| Computer Use | Recheck | Real local capability check | `app/src/App.tsx`, `SettingsWorkspace.tsx` | Updates status with clipboard API, desktop shell bridge, and known not-yet-wired probes without changing user toggle preferences. |
 | Workspace | Save focus | Real | `app/src/App.tsx` | Calls `runtimeClient.updateWorkspaceFocus`. |
 | Workspace | Clear focus | Real | `app/src/App.tsx` | Calls same save path with empty focus. |
 | Workspace | Clear memory | Real | `app/src/App.tsx` | Calls `runtimeClient.clearWorkspaceMemory`. |

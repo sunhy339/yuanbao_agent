@@ -67,25 +67,25 @@ def open_page(page: Page, action: str) -> None:
     if action == "overview":
         return
     if action == "new-session":
-        click_by_aria(page, "New Session")
+        click_by_aria(page, "新建会话")
         return
     if action == "settings":
-        click_by_aria(page, "Settings")
+        click_by_aria(page, "设置")
         return
     if action == "scheduled":
-        click_by_aria(page, "Scheduled")
+        click_by_aria(page, "定时任务")
         return
     if action == "mcp":
-        click_by_aria(page, "MCP Center")
+        click_by_aria(page, "MCP 中心")
         return
     if action == "skills":
-        click_by_aria(page, "Agent Skills")
+        click_by_aria(page, "智能体技能")
         return
     if action == "appearance":
-        click_by_aria(page, "Appearance")
+        click_by_aria(page, "外观")
         return
     if action == "playground":
-        click_by_aria(page, "Component Playground")
+        click_by_aria(page, "组件预览")
         return
     if action == "chat":
         session_items = page.locator(".session-rail .session-rail-item")
@@ -93,8 +93,8 @@ def open_page(page: Page, action: str) -> None:
             session_items.first.click()
             page.wait_for_timeout(700)
             return
-        click_by_aria(page, "New Session")
-        create_button = page.locator("button").filter(has_text="Create session")
+        click_by_aria(page, "新建会话")
+        create_button = page.locator("button").filter(has_text="创建会话")
         create_button.wait_for(state="visible", timeout=10_000)
         create_button.click()
         page.wait_for_timeout(1_000)

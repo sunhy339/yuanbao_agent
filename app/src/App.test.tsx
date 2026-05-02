@@ -148,6 +148,15 @@ describe("App session message recovery", () => {
     expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
   });
 
+  it("shows readable local preview provider copy instead of raw mock labels", async () => {
+    render(<App />);
+
+    expect(await screen.findAllByText("Local preview model")).not.toHaveLength(0);
+    expect(screen.getByText("Runtime preview")).toBeInTheDocument();
+    expect(screen.queryByText(/mock/i)).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\uFFFD/);
+  });
+
   it("loads persisted messages when selecting and switching sessions", async () => {
     const user = userEvent.setup();
     render(<App />);

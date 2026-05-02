@@ -101,7 +101,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 const EVENT_CHANNEL = "agent://event";
 const browserEventTarget = new EventTarget();
 const RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE =
-  "Desktop runtime bridge is unavailable. Open Yuanbao Agent through the Tauri desktop app or explicitly enable browser mock mode for tests/previews.";
+  "Desktop runtime bridge is unavailable. Open Yuanbao Agent through the Tauri desktop app or explicitly enable browser preview mode for tests/previews.";
 
 export type RuntimeConfig = AppConfig & Required<Pick<AppConfig, "search">>;
 export type RuntimeCommandLog = CommandLogRecord;
@@ -671,7 +671,7 @@ function buildProviderTestFallback(
     return {
       ok: true,
       status: "mocked",
-      message: "Mock provider path is ready. No API key value is stored in app config.",
+      message: "Local preview provider is ready. No API key value is stored in app config.",
       profileId: providerProfileId,
       profileName: providerProfileName,
       providerMode: mode,
@@ -681,7 +681,7 @@ function buildProviderTestFallback(
       envVarName,
       lastCheckedAt: checkedAt,
       lastStatus: "mocked",
-      lastErrorSummary: "Mock mode does not contact a remote model.",
+      lastErrorSummary: "Local preview does not contact a remote model.",
       source: "mock-fallback",
     };
   }
@@ -691,7 +691,7 @@ function buildProviderTestFallback(
     return {
       ok: false,
       status: "missing_env",
-      message: `Runtime provider test cannot read ${envVarName} in browser/mock fallback.`,
+      message: `Runtime provider test cannot read ${envVarName} in browser preview fallback.`,
       profileId: providerProfileId,
       profileName: providerProfileName,
       providerMode: mode,
@@ -895,7 +895,7 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
         buildMockEvent(sessionId, task.id, "task.started", {
           status: next.status,
           plan: next.plan,
-          detail: "Browser mock mode started a simulated task.",
+          detail: "Browser preview mode started a simulated task.",
         }),
       );
     }
@@ -904,7 +904,7 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
   window.setTimeout(() => {
     emitBrowserEvent(
       buildMockEvent(sessionId, task.id, "assistant.token", {
-        delta: "Browser mock mode is active. ",
+        delta: "Browser preview mode is active. ",
       }),
     );
   }, 140);
@@ -923,12 +923,12 @@ function emitMockTaskSequence(sessionId: string, task: TaskRecord): void {
       sessionId,
       taskId: task.id,
       role: "assistant",
-      content: "Browser mock assistant response completed.",
+      content: "Browser preview assistant response completed.",
       createdAt: Date.now(),
     });
     emitBrowserEvent(
       buildMockEvent(sessionId, task.id, "assistant.message.completed", {
-        summary: "Browser mock assistant response completed.",
+        summary: "Browser preview assistant response completed.",
       }),
     );
   }, 205);
@@ -1311,12 +1311,12 @@ export class RuntimeClient {
         const completedTask = updateMockTask(task.id, (current) => ({
           ...current,
           status: "completed",
-          resultSummary: "Mock mode completed the approved command and published output.",
+          resultSummary: "Local preview completed the approved command and published output.",
           updatedAt: Date.now(),
           plan:
             current.plan?.map((step) =>
               step.id === "prepare-next-step"
-                ? { ...step, status: "completed", detail: "Approved command finished in mock mode." }
+                ? { ...step, status: "completed", detail: "Approved command finished in local preview." }
                 : step,
             ) ?? current.plan,
         }));

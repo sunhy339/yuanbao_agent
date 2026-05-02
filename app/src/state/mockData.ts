@@ -31,7 +31,7 @@ export function buildMockSession(workspaceId: string, title: string): SessionRec
     workspaceId,
     title,
     status: "active",
-    summary: "Browser mock session for the local coding agent shell.",
+    summary: "Browser preview session for the local coding agent shell.",
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
@@ -112,7 +112,7 @@ export function buildMockConfig(): AppConfig {
           timeout: 30,
           lastCheckedAt: now,
           lastStatus: "mocked",
-          lastErrorSummary: "Mock mode does not contact a remote model.",
+          lastErrorSummary: "Local preview does not contact a remote model.",
         },
       ],
     },
@@ -172,7 +172,7 @@ export const seedSession: SessionRecord = {
   workspaceId: "ws_demo",
   title: "Fix pytest failure",
   status: "active",
-  summary: "Browser mock demo session.",
+  summary: "Browser preview demo session.",
   createdAt: now,
   updatedAt: now,
 };

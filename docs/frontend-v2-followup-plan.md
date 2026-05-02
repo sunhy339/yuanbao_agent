@@ -196,7 +196,7 @@ Objective: make the core daily workflow easier to trust and inspect.
 - [x] Confirm approval cards remain visible until resolved.
 - [x] Confirm patch diff loading handles missing/large diffs.
 - [x] Add copy controls where users naturally expect them: command output, trace detail, patch paths.
-- [ ] Normalize raw/mock/provider copy in user-facing text.
+- [x] Normalize raw/mock/provider copy in user-facing text.
 - [ ] Re-check long text and narrow desktop layout.
 
 Progress:
@@ -206,6 +206,7 @@ Progress:
 - Added explicit empty/loading states for patch diff expansion and capped rendered diff output to keep very large patches readable.
 - Added regression coverage for resolved approval cards: resolved approvals remain visible in the activity stream and their approve/reject controls are disabled.
 - Ran `npm.cmd run e2e:desktop:recovery`; it verified a live Tauri/runtime session and running task persisted across desktop restart. Full provider task transition coverage still requires the real provider E2E credentials.
+- Replaced user-facing mock/provider wording with local/browser preview labels, removed the corrupted provider badge label, and added an App regression test that checks the overview no longer exposes raw mock copy.
 
 ## Phase 7: Visual and Regression Gate
 

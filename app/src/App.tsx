@@ -129,7 +129,7 @@ interface CommandPolicyForm {
   allowedCwdRoots: string;
 }
 
-type ProviderStatusBadge = "mock" | "configured" | "missing env" | "failed" | "ok";
+type ProviderStatusBadge = "preview" | "configured" | "missing env" | "failed" | "ok";
 
 interface ProviderStatusView {
   label: ProviderStatusBadge;
@@ -366,7 +366,7 @@ function getProviderStatusView(
 ): ProviderStatusView {
   if (!result) {
     return settings.mode === "mock"
-      ? { label: "mock", badgeClass: "info" }
+      ? { label: "preview", badgeClass: "info" }
       : { label: "configured", badgeClass: "neutral" };
   }
 
@@ -374,7 +374,7 @@ function getProviderStatusView(
     return { label: "ok", badgeClass: "ok" };
   }
   if (result.status === "mocked") {
-    return { label: "mock", badgeClass: "info" };
+    return { label: "preview", badgeClass: "info" };
   }
   if (result.status === "missing_env" || result.status === "not_configured") {
     return { label: "missing env", badgeClass: "warn" };
@@ -391,7 +391,7 @@ function getProviderRuntimeNotice(
     result?.checkedEnvVarName ?? (settings.apiKeyEnvVarName || DEFAULT_PROVIDER_API_KEY_ENV_VAR);
 
   if (settings.mode === "mock" || result?.status === "mocked") {
-    return "Current provider is mock mode. Tasks sent now use deterministic local behavior, not a real model.";
+    return "Current provider is local preview. Tasks sent now use deterministic local behavior, not a remote model.";
   }
   if (result?.status === "missing_env" || result?.status === "not_configured") {
     return `Current provider cannot reach a real model because ${envVarName} is missing. Set the env var and test again before sending real-model tasks.`;
@@ -1929,7 +1929,14 @@ function describeMode(hostStatus: HostStatus | null): string {
     return "Detecting runtime";
   }
 
-  return hostStatus.runtimeRunning ? "Connected to local runtime" : "Browser / Mock mode";
+  return hostStatus.runtimeRunning ? "Connected to local runtime" : "Browser preview mode";
+}
+
+function getProviderDisplayLabel(settings: ProviderSettingsForm): string {
+  if (settings.mode === "mock") {
+    return "Local preview model";
+  }
+  return settings.model || settings.name || "No model configured";
 }
 
 function RuntimeUnavailableWorkspace({ errorMessage }: { errorMessage: string }) {
@@ -3841,7 +3848,7 @@ export function App() {
         if (hostStatus?.runtimeRunning) {
           statusLines.push(`**Transport:** ${hostStatus.runtimeTransport}`);
         }
-        statusLines.push(`**Model:** ${providerSettings.mode === "mock" ? "mock" : providerSettings.model || "not set"}`);
+        statusLines.push(`**Model:** ${getProviderDisplayLabel(providerSettings)}`);
         statusLines.push(`**Session:** ${session ? session.title : "none"}`);
         statusLines.push(`**Messages:** ${chatMessages.length}`);
         if (task) {
@@ -3856,13 +3863,13 @@ export function App() {
           addToast("success", `Model set to: ${cmd.args}`);
         } else {
           addSystemMessage(
-            `**Current model:** ${providerSettings.mode === "mock" ? "mock" : providerSettings.model || "not set"}`,
+            `**Current model:** ${getProviderDisplayLabel(providerSettings)}`,
           );
         }
         break;
       case "config": {
         const configLines: string[] = [
-          `**Mode:** ${providerSettings.mode}`,
+          `**Mode:** ${providerSettings.mode === "mock" ? "local preview" : providerSettings.mode}`,
           `**Base URL:** ${providerSettings.baseUrl || "(default)"}`,
           `**Model:** ${providerSettings.model || "(default)"}`,
           `**Temperature:** ${providerSettings.temperature}`,
@@ -4082,10 +4089,7 @@ export function App() {
   const localPathActionsAvailable = runtimeClient.canOpenLocalAppPaths();
   const composerVisible = runtimeReady && (activeTab.kind === "new-session" || activeTab.kind === "session");
   const workspaceName = workspace?.name ?? workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? "yuanbao_agent";
-  const providerLabel =
-    providerSettings.mode === "mock"
-      ? "测试模式"
-      : providerSettings.model || providerSettings.name || "No model configured";
+  const providerLabel = getProviderDisplayLabel(providerSettings);
   const sessionContextPreview = useMemo(
     () =>
       buildSessionContextPreview({
@@ -4107,7 +4111,7 @@ export function App() {
     overviewRuntimeStatus === "ready"
       ? "Runtime ready"
       : overviewRuntimeStatus === "degraded"
-        ? "Runtime mock"
+        ? "Runtime preview"
         : "Runtime offline";
   const enabledMcpServers = mcpServers.filter((server) => server.enabled).length;
   const mcpStatusLabel = `${enabledMcpServers}/${mcpServers.length || 0} MCP`;
@@ -4139,7 +4143,7 @@ export function App() {
         apiFormat: profile.apiFormat as SettingsProvider["apiFormat"],
         note:
           profile.mode === "mock"
-            ? "Mock mode; no real model calls"
+            ? "Local preview; no remote model calls"
             : profile.apiKeyEnvVarName
               ? `Env var: ${profile.apiKeyEnvVarName}`
               : "API key required",

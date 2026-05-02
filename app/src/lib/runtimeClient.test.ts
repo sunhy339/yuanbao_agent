@@ -159,7 +159,7 @@ describe("RuntimeClient message fallback", () => {
     const listed = await client.listMessages({ sessionId: firstSession.session.id });
     expect(listed.messages.map((message) => message.content)).toEqual([
       "remember me",
-      "Browser mock assistant response completed.",
+      "Browser preview assistant response completed.",
     ]);
   });
 });

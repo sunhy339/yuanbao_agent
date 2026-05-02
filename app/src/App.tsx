@@ -3072,6 +3072,7 @@ export function App() {
 
     try {
       await persistSearchConfig();
+      addToast("success", "Search settings saved");
     } catch (reason) {
       toastError(reason);
     } finally {
@@ -3088,6 +3089,7 @@ export function App() {
       const normalized = await persistProviderConfig();
       if (normalized) {
         await runProviderTest(undefined, normalized.provider.activeProfileId);
+        addToast("success", "Provider settings saved");
       }
     } catch (reason) {
       toastError(reason);
@@ -3102,6 +3104,7 @@ export function App() {
 
     try {
       await persistCommandPolicyConfig();
+      addToast("success", "Command policy saved");
     } catch (reason) {
       toastError(reason);
     } finally {
@@ -3248,6 +3251,7 @@ export function App() {
       });
       const normalized = normalizeRuntimeConfig(result.config);
       setConfig(normalized);
+      addToast("success", "Permission mode saved");
     } catch (reason) {
       toastError(reason);
     }
@@ -3283,6 +3287,7 @@ export function App() {
       const normalized = normalizeRuntimeConfig(result.config);
       setConfig(normalized);
       setGeneralSettings(buildSettingsGeneralConfig(normalized));
+      addToast("success", "Appearance settings saved");
     } catch (reason) {
       toastError(reason);
     }

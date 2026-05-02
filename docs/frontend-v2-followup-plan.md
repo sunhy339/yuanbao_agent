@@ -133,7 +133,7 @@ Objective: make high-value desktop utility actions actually work.
 
 - [x] Implement Tauri-side folder opening for logs/data directory, or explicitly remove the buttons from Settings.
 - [x] Decide and implement Computer Use permission recheck behavior, or mark Computer Use as read-only configuration.
-- [ ] Add user-facing success/error to settings persistence paths that currently change state silently.
+- [x] Add user-facing success/error to settings persistence paths that currently change state silently.
 - [ ] Verify behavior in the Tauri desktop client, not only browser mock mode.
 
 Progress:
@@ -142,6 +142,7 @@ Progress:
 - Browser/mock mode keeps local folder actions disabled.
 - Desktop mode wires Settings buttons to `runtimeClient.openAppPath`.
 - Computer Use recheck now performs a conservative local capability check: clipboard API, desktop shell bridge, and sensitive-confirmation readiness are reported, while screen/browser/system-shortcut probes are explicitly listed as not wired.
+- Added success toasts for search settings, provider settings, command policy, permission mode, and appearance/general settings persistence.
 
 Verification:
 

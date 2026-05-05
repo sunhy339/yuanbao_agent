@@ -184,13 +184,21 @@ struct RuntimeProcess {
 
 impl RuntimeManager {
     fn call(&self, app_handle: &AppHandle, method: &str, params: Value) -> Result<Value, String> {
+        // Phase 1: ensure the runtime is started (holds lock briefly)
+        {
+            let mut bridge = self
+                .bridge
+                .lock()
+                .map_err(|_| "Failed to acquire runtime bridge lock".to_string())?;
+            bridge.ensure_started(app_handle)?;
+        }
+
+        // Phase 2: send request and register pending callback (lock per-operation)
         let (rx, request_id, pending) = {
             let mut bridge = self
                 .bridge
                 .lock()
                 .map_err(|_| "Failed to acquire runtime bridge lock".to_string())?;
-            
-            bridge.ensure_started(app_handle)?;
 
             let request_id = format!(
                 "req_{}",
@@ -224,7 +232,7 @@ impl RuntimeManager {
                     .map(|mut pending| pending.remove(&request_id));
                 return Err(format!("Failed to write RPC request to runtime: {reason}"));
             }
-            
+
             (rx, request_id, Arc::clone(&process.pending))
         };
 
@@ -548,17 +556,16 @@ async fn message_send(
     state: State<'_, RuntimeManager>,
     payload: MessageSendPayload,
 ) -> Result<Value, String> {
-    let manager = state.inner().clone();
-    let params = json!({
-        "sessionId": payload.session_id,
-        "content": payload.content,
-        "attachments": payload.attachments,
-        "background": true,
-    });
-
-    tauri::async_runtime::spawn_blocking(move || manager.call(&app_handle, "message.send", params))
-        .await
-        .map_err(|reason| format!("Runtime message worker failed: {reason}"))?
+    state.call_async(
+        app_handle,
+        "message.send".to_string(),
+        json!({
+            "sessionId": payload.session_id,
+            "content": payload.content,
+            "attachments": payload.attachments,
+            "background": true,
+        }),
+    ).await
 }
 
 #[tauri::command]
@@ -734,15 +741,14 @@ async fn approval_submit(
     state: State<'_, RuntimeManager>,
     payload: ApprovalSubmitPayload,
 ) -> Result<Value, String> {
-    let manager = state.inner().clone();
-    let params = json!({
-        "approvalId": payload.approval_id,
-        "decision": payload.decision,
-    });
-
-    tauri::async_runtime::spawn_blocking(move || manager.call(&app_handle, "approval.submit", params))
-        .await
-        .map_err(|reason| format!("Runtime approval worker failed: {reason}"))?
+    state.call_async(
+        app_handle,
+        "approval.submit".to_string(),
+        json!({
+            "approvalId": payload.approval_id,
+            "decision": payload.decision,
+        }),
+    ).await
 }
 
 #[tauri::command]
@@ -1052,6 +1058,7 @@ fn e2e_finish(app_handle: AppHandle, payload: Value) -> Result<(), String> {
 
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(RuntimeManager::default())
         .invoke_handler(tauri::generate_handler![
             host_status,

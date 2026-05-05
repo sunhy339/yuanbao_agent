@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button, Panel, SelectField, StatusBadge, TextField } from "../../v2/components/ui";
 import "./newSession.css";
@@ -55,6 +55,7 @@ export function NewSessionWorkspace({
   onOpenWorkspace,
   onCreateSession,
 }: NewSessionWorkspaceProps) {
+  const [browseError, setBrowseError] = useState<string | null>(null);
   const resolvedModelId = selectedModelId ?? modelOptions[0]?.id ?? "";
   const modelSelectOptions = modelOptions.length
     ? modelOptions.map((option) => ({ label: option.label, value: option.id }))
@@ -81,17 +82,23 @@ export function NewSessionWorkspace({
   ];
 
   const handleBrowseFolder = useCallback(async () => {
+    setBrowseError(null);
     try {
       const selected = await open({
         directory: true,
         multiple: false,
         title: "选择工作区文件夹",
       });
-      if (selected) {
-        onWorkspacePathChange?.(selected);
+      const selectedPath = Array.isArray(selected) ? selected[0] : selected;
+      if (typeof selectedPath === "string" && selectedPath.trim()) {
+        onWorkspacePathChange?.(selectedPath);
       }
-    } catch {
-      // The desktop dialog may be cancelled or unavailable in browser tests.
+    } catch (reason) {
+      setBrowseError(
+        reason instanceof Error && reason.message
+          ? `无法打开系统文件夹选择器：${reason.message}`
+          : "无法打开系统文件夹选择器，请直接粘贴路径后点击“应用工作区”。",
+      );
     }
   }, [onWorkspacePathChange]);
 
@@ -168,8 +175,9 @@ export function NewSessionWorkspace({
                   <Button
                     type="button"
                     variant="secondary"
-            aria-label="浏览"
-                    disabled={workspaceBusy || sessionBusy}
+                    aria-label="浏览"
+                    disabled={!onWorkspacePathChange || workspaceBusy || sessionBusy}
+                    disabledReason={!onWorkspacePathChange ? "当前视图无法更新工作区路径。" : undefined}
                     onClick={handleBrowseFolder}
                     title="浏览文件夹"
                   >
@@ -187,6 +195,11 @@ export function NewSessionWorkspace({
                   >
                     应用工作区
                   </Button>
+                  {browseError ? (
+                    <p className="new-session-browse-error" role="alert">
+                      {browseError}
+                    </p>
+                  ) : null}
                 </div>
               </div>
 

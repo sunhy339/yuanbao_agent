@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import "@testing-library/jest-dom/vitest";
+import { open } from "@tauri-apps/plugin-dialog";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -7,7 +8,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NewSessionWorkspace } from "./NewSessionWorkspace";
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(),
+}));
+
 afterEach(() => {
+  vi.mocked(open).mockReset();
   cleanup();
 });
 
@@ -89,5 +95,46 @@ describe("NewSessionWorkspace", () => {
     expect(onWorkspacePathChange).toHaveBeenLastCalledWith("D:\\py\\doubao_client");
     expect(onOpenWorkspace).toHaveBeenCalledTimes(1);
     expect(onCreateSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the native folder picker and applies the selected workspace path", async () => {
+    const user = userEvent.setup();
+    const onWorkspacePathChange = vi.fn();
+    vi.mocked(open).mockResolvedValue("D:\\picked-workspace");
+
+    render(
+      <NewSessionWorkspace
+        workspacePath="D:\\py\\yuanbao_agent"
+        hostStatusText="Runtime host online"
+        onWorkspacePathChange={onWorkspacePathChange}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "浏览" }));
+
+    expect(open).toHaveBeenCalledWith({
+      directory: true,
+      multiple: false,
+      title: "选择工作区文件夹",
+    });
+    expect(onWorkspacePathChange).toHaveBeenCalledWith("D:\\picked-workspace");
+  });
+
+  it("shows visible feedback when the folder picker cannot open", async () => {
+    const user = userEvent.setup();
+    vi.mocked(open).mockRejectedValue(new Error("dialog plugin unavailable"));
+
+    render(
+      <NewSessionWorkspace
+        workspacePath="D:\\py\\yuanbao_agent"
+        hostStatusText="Runtime host online"
+        onWorkspacePathChange={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "浏览" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent("无法打开系统文件夹选择器");
+    expect(screen.getByRole("alert")).toHaveTextContent("dialog plugin unavailable");
   });
 });

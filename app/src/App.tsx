@@ -1382,6 +1382,40 @@ function applyEventToTask(current: TaskRecord | null, event: AgentEventEnvelope)
   };
 }
 
+function taskRecordFromEvent(event: AgentEventEnvelope): TaskRecord | null {
+  if (!event.taskId || !event.sessionId || !event.type.startsWith("task.")) {
+    return null;
+  }
+
+  const payload = (event.payload ?? {}) as Partial<TaskUpdatedPayload> & {
+    goal?: string;
+    title?: string;
+    resultSummary?: string;
+    detail?: string;
+    errorCode?: string;
+  };
+  const status = payload.status ?? coerceTaskStatus(event, "running");
+  return {
+    id: event.taskId,
+    sessionId: event.sessionId,
+    type: "chat",
+    status,
+    goal: payload.goal ?? payload.title ?? "",
+    acceptanceCriteria: payload.acceptanceCriteria,
+    outOfScope: payload.outOfScope,
+    currentStep: payload.currentStep,
+    plan: payload.plan,
+    changedFiles: payload.changedFiles,
+    commands: payload.commands,
+    verification: payload.verification,
+    summary: payload.summary,
+    resultSummary: payload.detail ?? payload.resultSummary ?? payload.summary,
+    errorCode: payload.errorCode,
+    createdAt: event.ts,
+    updatedAt: event.ts,
+  };
+}
+
 function readTaskContextPreview(value: unknown): TaskContextPreviewPayload | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -1398,11 +1432,13 @@ function buildSessionContextPreview({
   traceEvents,
   workspace,
   activeTaskId,
+  activeTask,
 }: {
   events: AgentEventEnvelope[];
   traceEvents: TraceEventRecord[];
   workspace: WorkspaceRef | null;
   activeTaskId: string | null;
+  activeTask: TaskRecord | null;
 }): SessionWorkspaceContextPreview | undefined {
   const liveContexts = events
     .filter((event) => !activeTaskId || event.taskId === activeTaskId)
@@ -1428,7 +1464,12 @@ function buildSessionContextPreview({
     searchMode: latest?.searchMode,
     toolCount: latest?.toolCount,
     budgetStats: latest?.budgetStats,
-    taskFocus: latest?.taskFocus,
+    taskFocus: {
+      currentStep: activeTask?.currentStep ?? latest?.taskFocus?.currentStep,
+      acceptanceCriteriaCount:
+        activeTask?.acceptanceCriteria?.length ?? latest?.taskFocus?.acceptanceCriteriaCount,
+      outOfScopeCount: activeTask?.outOfScope?.length ?? latest?.taskFocus?.outOfScopeCount,
+    },
   };
 }
 
@@ -2277,15 +2318,22 @@ export function App() {
         }
 
         if (event.type.startsWith("task.")) {
-          setTask((current) => applyEventToTask(current, event));
+          const eventTask = taskRecordFromEvent(event);
+          setActiveTaskId((current) => (event.type === "task.started" || !current ? event.taskId : current));
+          setTask((current) => {
+            if (current && current.id !== event.taskId && event.type !== "task.started") {
+              return current;
+            }
+            return applyEventToTask(current, event) ?? eventTask ?? current;
+          });
           setTaskHistory((current) => {
             const existing = current.find((item) => item.id === event.taskId);
-            if (!existing) {
+            const updated = existing ? applyEventToTask(existing, event) : eventTask;
+            if (!updated) {
               return current;
             }
 
-            const updated = applyEventToTask(existing, event);
-            return updated ? upsertRecord(current, updated) : current;
+            return upsertRecord(current, updated);
           });
           setSession((current) =>
             current && current.id === event.sessionId
@@ -4097,8 +4145,9 @@ export function App() {
         traceEvents,
         workspace,
         activeTaskId,
+        activeTask: task,
       }),
-    [activeTaskId, events, traceEvents, workspace],
+    [activeTaskId, events, traceEvents, task, workspace],
   );
   const cwdLabel = sessionContextPreview?.workspaceRoot ?? workspace?.rootPath ?? workspacePath ?? DEFAULT_WORKSPACE_PATH;
   const hostStatusText = describeMode(hostStatus);

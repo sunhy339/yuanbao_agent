@@ -90,6 +90,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  flex-shrink: 0;
   width: fit-content;
   min-height: 22px;
   border: 1px solid var(--yb-line);
@@ -102,10 +103,13 @@
   font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+  white-space: nowrap;
+  writing-mode: horizontal-tb;
 }
 
 .yb-status-badge::before {
   content: "";
+  flex: 0 0 auto;
   width: 7px;
   height: 7px;
   border-radius: 999px;

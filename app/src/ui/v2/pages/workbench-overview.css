@@ -186,6 +186,13 @@ button.overview-row:hover {
   min-width: 0;
 }
 
+.overview-row .yb-status-badge,
+.overview-timeline-item .yb-status-badge {
+  justify-self: end;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .overview-row strong {
   overflow: hidden;
   color: var(--yb-ink);
@@ -235,9 +242,9 @@ button.overview-row:hover {
 .overview-timeline-item {
   position: relative;
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
+  grid-template-columns: 16px minmax(0, 1fr) max-content;
   gap: 10px;
-  align-items: start;
+  align-items: center;
   min-height: 54px;
   border: 1px solid var(--yb-line);
   border-radius: var(--yb-radius-md);
@@ -246,15 +253,38 @@ button.overview-row:hover {
   background: rgba(5, 10, 22, 0.38);
 }
 
+.overview-timeline-item > div {
+  min-width: 0;
+}
+
 .overview-timeline-item > span {
   position: relative;
   z-index: 1;
   width: 8px;
   height: 8px;
-  margin-top: 6px;
   border-radius: 999px;
   background: var(--yb-primary);
   box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.1);
+}
+
+.overview-timeline-item[data-status="completed"] > span,
+.overview-timeline-item[data-status="succeeded"] > span {
+  background: var(--yb-success);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--yb-success) 16%, transparent);
+}
+
+.overview-timeline-item[data-status="failed"] > span,
+.overview-timeline-item[data-status="cancelled"] > span {
+  background: var(--yb-danger);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--yb-danger) 14%, transparent);
+}
+
+.overview-timeline-item[data-status="running"] > span,
+.overview-timeline-item[data-status="planning"] > span,
+.overview-timeline-item[data-status="verifying"] > span,
+.overview-timeline-item[data-status="queued"] > span {
+  background: var(--yb-info);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--yb-info) 16%, transparent);
 }
 
 .overview-timeline-item strong,
@@ -378,6 +408,7 @@ button.overview-row:hover {
 }
 
 .yb-v2[data-theme="light"] .overview-row,
+.yb-v2[data-theme="light"] .overview-timeline-item,
 .yb-v2[data-theme="light"] .overview-signal-card,
 .yb-v2[data-theme="light"] .overview-capability-card,
 .yb-v2[data-theme="light"] .overview-task-flow li {

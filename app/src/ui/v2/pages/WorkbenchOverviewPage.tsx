@@ -170,7 +170,7 @@ export function WorkbenchOverviewPage({
               <div className="overview-timeline">
                 {recentTasks.length ? (
                   recentTasks.map((task) => (
-                    <article key={task.id} className="overview-timeline-item">
+                    <article key={task.id} className="overview-timeline-item" data-status={task.status}>
                       <span aria-hidden="true" />
                       <div>
                         <strong>{task.goal}</strong>

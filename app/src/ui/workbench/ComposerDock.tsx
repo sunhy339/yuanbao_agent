@@ -41,6 +41,7 @@ export function ComposerDock({
   }, [promptValue]);
 
   const showPopup = matches.length > 0;
+  const submitDisabled = disabled || sending || !promptValue.trim();
 
   // reset selection when matches change
   useEffect(() => {
@@ -102,13 +103,13 @@ export function ComposerDock({
               }
             }
             // ── normal submit ──
-            if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && !disabled && promptValue.trim()) {
+            if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && !submitDisabled) {
               event.preventDefault();
               onSubmitPrompt();
             }
           }}
           placeholder={COMMAND_PLACEHOLDER}
-          disabled={disabled}
+          disabled={sending}
           rows={1}
         />
         {showPopup && (
@@ -130,7 +131,7 @@ export function ComposerDock({
           </div>
         )}
       </label>
-      <button type="submit" className="composer-run" disabled={disabled || !promptValue.trim()} data-sending={sending ? "true" : undefined}>
+      <button type="submit" className="composer-run" disabled={submitDisabled} data-sending={sending ? "true" : undefined}>
         {sending ? SENDING_LABEL : SUBMIT_LABEL}
       </button>
     </form>

@@ -870,6 +870,7 @@
 
 .composer-dock {
   position: absolute;
+  z-index: 40;
   right: 10px;
   bottom: 10px;
   left: 10px;

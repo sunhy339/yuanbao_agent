@@ -773,6 +773,7 @@ const hiddenTraceTypes = new Set([
   "provider.request",
   "provider.response",
   "task.started",
+  "task.updated",
   "task.orphaned",
 ]);
 

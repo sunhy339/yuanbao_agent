@@ -239,11 +239,13 @@ def walk_directory(
     store: Any,
     ignore_patterns: Any = None,
 ) -> list[dict[str, Any]]:
+    from collections import deque
+
     items: list[dict[str, Any]] = []
-    queue: list[tuple[Path, int]] = [(base_path, 0)]
+    queue: deque[tuple[Path, int]] = deque([(base_path, 0)])
 
     while queue:
-        current_path, current_depth = queue.pop(0)
+        current_path, current_depth = queue.popleft()
         next_depth = current_depth + 1
         if next_depth > max_depth:
             continue

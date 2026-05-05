@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import deque
 from typing import Any
 
 from ..provider.adapter import ProviderAdapter
@@ -86,11 +87,11 @@ class TaskDecomposer:
                 dependents[dep].append(node)
                 in_degree[node] += 1
 
-        queue = [nid for nid in all_ids if in_degree[nid] == 0]
+        queue = deque(nid for nid in all_ids if in_degree[nid] == 0)
         order: list[str] = []
 
         while queue:
-            node = queue.pop(0)
+            node = queue.popleft()
             order.append(node)
             for dependent in dependents.get(node, []):
                 in_degree[dependent] -= 1

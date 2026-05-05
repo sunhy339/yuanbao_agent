@@ -1767,41 +1767,61 @@ export function SessionWorkspace({
     () => buildConversationActivity(messages, runtimeItems),
     [messages, runtimeItems],
   );
-  const pendingApprovals = approvals?.filter((approval) => approval.status === "pending").length ?? 0;
-  const patchCount = patches?.length ?? 0;
-  const commandCount = runtimeItems.filter((item) => item.kind === "command").length;
-  const diagnosticCount = runtimeItems.filter((item) => item.kind === "trace").length;
+  const { pendingApprovals, patchCount, commandCount, diagnosticCount, runtimeLanes } = useMemo(() => {
+    const pendingApprovals = approvals?.filter((approval) => approval.status === "pending").length ?? 0;
+    const patchCount = patches?.length ?? 0;
+    let commandCount = 0;
+    let diagnosticCount = 0;
+    const commandsAndTools: RuntimeTimelineItem[] = [];
+    const patchItems: RuntimeTimelineItem[] = [];
+    const traceItems: RuntimeTimelineItem[] = [];
+
+    for (const item of runtimeItems) {
+      if (item.kind === "command" || item.kind === "tool") {
+        commandsAndTools.push(item);
+        if (item.kind === "command") commandCount++;
+      } else if (item.kind === "patch") {
+        patchItems.push(item);
+      } else {
+        traceItems.push(item);
+        if (item.kind === "trace") diagnosticCount++;
+      }
+    }
+
+    const runtimeLanes = [
+      {
+        id: "commands" as const,
+        eyebrow: "执行",
+        title: "命令通道",
+        emptyTitle: "暂无运行中的命令",
+        emptyText: "Shell 任务会显示在这里，并提供停止和刷新控制。",
+        items: commandsAndTools,
+      },
+      {
+        id: "patches" as const,
+        eyebrow: "改动",
+        title: "改动队列",
+        emptyTitle: "暂无改动",
+        emptyText: "生成的差异会先显示在这里，再进入活动流。",
+        items: patchItems,
+      },
+      {
+        id: "trace" as const,
+        eyebrow: "诊断",
+        title: "重要信号",
+        emptyTitle: "暂无诊断",
+        emptyText: "失败、路由决策和可操作信号会显示在这里。",
+        items: traceItems,
+      },
+    ];
+
+    return { pendingApprovals, patchCount, commandCount, diagnosticCount, runtimeLanes };
+  }, [approvals, patches, runtimeItems]);
   const activeTaskStatus = activeTask?.status ?? "idle";
   const contextBudgetStats = contextPreview?.budgetStats;
   const contextUsedTokens =
     contextBudgetStats?.estimatedInputTokens ?? contextBudgetStats?.estimatedTokens ?? contextBudgetStats?.messageTokens;
   const contextMaxTokens = contextBudgetStats?.maxContextTokens;
-  const runtimeLanes = [
-    {
-      id: "commands",
-      eyebrow: "执行",
-      title: "命令通道",
-      emptyTitle: "暂无运行中的命令",
-      emptyText: "Shell 任务会显示在这里，并提供停止和刷新控制。",
-      items: runtimeItems.filter((item) => item.kind === "command" || item.kind === "tool"),
-    },
-    {
-      id: "patches",
-      eyebrow: "改动",
-      title: "改动队列",
-      emptyTitle: "暂无改动",
-      emptyText: "生成的差异会先显示在这里，再进入活动流。",
-      items: runtimeItems.filter((item) => item.kind === "patch"),
-    },
-    {
-      id: "trace",
-      eyebrow: "诊断",
-      title: "重要信号",
-      emptyTitle: "暂无诊断",
-      emptyText: "失败、路由决策和可操作信号会显示在这里。",
-      items: runtimeItems.filter((item) => item.kind === "trace" || item.kind === "approval" || item.kind === "task"),
-    },
-  ];
 
   return (
     <main className="session-workspace session-workspace-chat-only" aria-labelledby="session-title">

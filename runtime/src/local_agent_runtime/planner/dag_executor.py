@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable
+from typing import Any
 
 from ..observability.tracer import Tracer
 from ..services.subagent_service import SubagentService
@@ -56,7 +57,9 @@ class DAGExecutor:
         results: dict[str, str] = dict(prior_results or ())
         lock = threading.Lock()
 
-        levels = self._group_by_level(plan)
+        # Build index once to avoid O(N) linear scans
+        subtask_index: dict[str, Subtask] = {s.id: s for s in plan.subtasks}
+        levels = self._group_by_level(plan, subtask_index)
         logger.info("DAG execution: %d levels, %d total subtasks", len(levels), len(plan.subtasks))
 
         dag_span = None
@@ -71,7 +74,7 @@ class DAGExecutor:
             # Filter level to only runnable tasks (skip completed/failed/dependency-failed)
             runnable: list[str] = []
             for subtask_id in level:
-                subtask = self._find_subtask(plan.subtasks, subtask_id)
+                subtask = subtask_index.get(subtask_id)
                 if subtask is None:
                     continue
                 if subtask_id in completed:
@@ -100,7 +103,7 @@ class DAGExecutor:
             # Execute level — parallel if multiple tasks, serial if single
             if len(runnable) == 1:
                 self._execute_subtask(
-                    plan, runnable[0], completed, failed, results,
+                    subtask_index, runnable[0], completed, failed, results,
                     session_id, parent_task_id, lock, tracer,
                 )
             else:
@@ -109,7 +112,7 @@ class DAGExecutor:
                     futures = {
                         pool.submit(
                             self._execute_subtask,
-                            plan, sid, completed, failed, results,
+                            subtask_index, sid, completed, failed, results,
                             session_id, parent_task_id, lock, tracer,
                         ): sid
                         for sid in runnable
@@ -168,7 +171,7 @@ class DAGExecutor:
 
     def _execute_subtask(
         self,
-        plan: PlanResult,
+        subtask_index: dict[str, Subtask],
         subtask_id: str,
         completed: set[str],
         failed: set[str],
@@ -179,7 +182,7 @@ class DAGExecutor:
         tracer: Tracer | None = None,
     ) -> None:
         """Execute a single subtask and update shared state."""
-        subtask = self._find_subtask(plan.subtasks, subtask_id)
+        subtask = subtask_index.get(subtask_id)
         if subtask is None:
             return
 
@@ -217,16 +220,22 @@ class DAGExecutor:
             if span is not None:
                 tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
 
-    def _group_by_level(self, plan: PlanResult) -> list[list[str]]:
+    def _group_by_level(
+        self,
+        plan: PlanResult,
+        subtask_index: dict[str, Subtask] | None = None,
+    ) -> list[list[str]]:
         """Group execution_order into dependency levels for parallel execution.
 
         Level 0: tasks with no dependencies.
         Level N: tasks whose dependencies are all at level < N.
         Tasks within the same level can be executed in parallel.
         """
+        if subtask_index is None:
+            subtask_index = {s.id: s for s in plan.subtasks}
         levels: dict[str, int] = {}
         for sid in plan.execution_order:
-            subtask = self._find_subtask(plan.subtasks, sid)
+            subtask = subtask_index.get(sid)
             if subtask and subtask.dependencies:
                 levels[sid] = max(levels.get(d, 0) for d in subtask.dependencies) + 1
             else:
@@ -236,13 +245,6 @@ class DAGExecutor:
         for sid, lvl in levels.items():
             grouped.setdefault(lvl, []).append(sid)
         return [grouped[i] for i in sorted(grouped)]
-
-    @staticmethod
-    def _find_subtask(subtasks: list[Subtask], subtask_id: str) -> Subtask | None:
-        for s in subtasks:
-            if s.id == subtask_id:
-                return s
-        return None
 
     @staticmethod
     def _check_dependencies(subtask: Subtask, completed: set[str]) -> bool:

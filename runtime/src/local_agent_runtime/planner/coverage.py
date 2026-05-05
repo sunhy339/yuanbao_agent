@@ -53,11 +53,7 @@ class CoverageEvaluator:
         if not goal_keywords:
             return 1.0
 
-        combined_text = " ".join(
-            f"{s.title} {s.description}" for s in subtasks
-        )
-        subtask_keywords = self._extract_keywords(combined_text)
-
+        subtask_keywords = self._extract_subtask_keywords(subtasks)
         if not subtask_keywords:
             return 0.0
 
@@ -73,10 +69,14 @@ class CoverageEvaluator:
         goal_keywords = self._extract_keywords(goal)
         if not goal_keywords:
             return []
-        combined_text = " ".join(f"{s.title} {s.description}" for s in subtasks)
-        subtask_keywords = self._extract_keywords(combined_text)
+        subtask_keywords = self._extract_subtask_keywords(subtasks)
         gaps = goal_keywords - subtask_keywords
         return sorted(gaps)
+
+    def _extract_subtask_keywords(self, subtasks: list[Subtask]) -> set[str]:
+        """Extract keywords from combined subtask text (shared helper)."""
+        combined_text = " ".join(f"{s.title} {s.description}" for s in subtasks)
+        return self._extract_keywords(combined_text)
 
     def _extract_keywords(self, text: str) -> set[str]:
         """Extract meaningful keywords from text.

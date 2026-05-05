@@ -1108,7 +1108,7 @@ class ToolRegistry:
     def _schema_for(self, name: str) -> dict[str, Any]:
         schema = self._schemas.get(name) or BUILTIN_TOOL_SCHEMAS_BY_NAME.get(name)
         if schema is not None:
-            return deepcopy(schema)
+            return schema
         return {
             "name": name,
             "description": f"Execute the registered tool named {name}.",

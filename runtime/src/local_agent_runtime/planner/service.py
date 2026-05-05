@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 
 
@@ -137,7 +136,7 @@ class Planner:
         next_step_id: str | None = None,
         final_status: str | None = None,
     ) -> list[dict[str, Any]]:
-        updated_plan = deepcopy(plan)
+        updated_plan = [dict(step) for step in plan]
         for step in updated_plan:
             if step["id"] == completed_step_id:
                 step["status"] = "completed"

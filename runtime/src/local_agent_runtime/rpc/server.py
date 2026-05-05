@@ -95,10 +95,12 @@ class JsonRpcServer:
             "mcp.tools.refresh": self._orchestrator.mcp_tools_refresh,
         }
         self._runtime_event_store_path = str(getattr(self._store, "database_path", ":memory:"))
+        self._runtime_event_trace_store: SQLiteStore | None = None
         if hasattr(self._store, "append_runtime_event"):
             if self._runtime_event_store_path == ":memory:":
                 self._event_bus.subscribe(self._store.append_runtime_event)
             else:
+                self._runtime_event_trace_store = SQLiteStore(self._runtime_event_store_path)
                 self._event_bus.subscribe(self._append_runtime_event)
         bridge = get_background_command_event_bridge(getattr(self._store, "database_path", ":memory:"))
         bridge.add_listener(self._emit_bridge_event)
@@ -168,11 +170,10 @@ class JsonRpcServer:
         self._write_event_payload(event)
 
     def _append_runtime_event(self, event: Any) -> dict[str, Any] | None:
-        trace_store = SQLiteStore(self._runtime_event_store_path)
-        try:
-            return trace_store.append_runtime_event(event)
-        finally:
-            trace_store.close()
+        trace_store = self._runtime_event_trace_store
+        if trace_store is None:
+            return None
+        return trace_store.append_runtime_event(event)
 
     def _delete_session(self, params: dict[str, Any]) -> dict[str, Any]:
         """Consolidate working memory, then delete the session."""

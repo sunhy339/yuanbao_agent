@@ -91,12 +91,10 @@ class MemoryManager:
         Returns the number of entries promoted.
         """
         working = self._store.query_working(session_id)
-        count = 0
-        for entry in working:
-            updated = self._store.promote(entry.id, MemoryKind.SESSION)
-            if updated is not None:
-                count += 1
-        return count
+        if not working:
+            return 0
+        entry_ids = [entry.id for entry in working]
+        return self._store.promote_batch(entry_ids, MemoryKind.SESSION)
 
     def forget_working(self, session_id: str) -> int:
         """Discard all WORKING memories for a session (e.g. on discard)."""

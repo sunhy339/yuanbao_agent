@@ -21,6 +21,7 @@ class WorkerProcessStreamDrain:
         chunk_size: int = 4096,
         tail_max_chunks: int = 50,
         chunk_callback: Callable[[str], None] | None = None,
+        line_mode: bool = False,
     ) -> None:
         if chunk_size <= 0:
             raise ValueError("chunk_size must be greater than zero")
@@ -30,6 +31,7 @@ class WorkerProcessStreamDrain:
         self._stream_name = stream_name
         self._stream = stream
         self._chunk_size = chunk_size
+        self._line_mode = line_mode
         self._drained_chunks: deque[str] = deque()
         self._tail_chunks: deque[str] = deque(maxlen=tail_max_chunks)
         self._callbacks: list[Callable[[str], None]] = []
@@ -73,14 +75,24 @@ class WorkerProcessStreamDrain:
 
     def _run(self) -> None:
         try:
-            while True:
-                try:
-                    chunk = self._stream.read(1)
-                except (OSError, ValueError):
-                    return
-                if not chunk:
-                    return
-                self._emit_chunk(chunk)
+            if self._line_mode:
+                while True:
+                    try:
+                        chunk = self._stream.readline()
+                    except (OSError, ValueError):
+                        return
+                    if not chunk:
+                        return
+                    self._emit_chunk(chunk)
+            else:
+                while True:
+                    try:
+                        chunk = self._stream.read(1)
+                    except (OSError, ValueError):
+                        return
+                    if not chunk:
+                        return
+                    self._emit_chunk(chunk)
         finally:
             self._closed.set()
 
@@ -207,6 +219,7 @@ class WorkerProcessRuntime:
         chunk_callback: Callable[[str], None] | None = None,
         chunk_size: int = 4096,
         tail_max_chunks: int = 50,
+        line_mode: bool = False,
     ) -> WorkerProcessStreamDrain:
         if stream_name not in {"stdout", "stderr"}:
             raise ValueError(f"Unsupported worker stream: {stream_name}")
@@ -229,6 +242,7 @@ class WorkerProcessRuntime:
                 chunk_size=chunk_size,
                 tail_max_chunks=tail_max_chunks,
                 chunk_callback=chunk_callback,
+                line_mode=line_mode,
             ).start()
             self._stream_drains[stream_name] = drain
             return drain

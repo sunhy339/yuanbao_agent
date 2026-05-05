@@ -56,7 +56,7 @@ class WorkerProcessTransport:
         self._event_queue: Queue[dict[str, Any]] = Queue()
         self._lock = Lock()
         self._stdout_buffer_lock = Lock()
-        self._stdout_buffer = ""
+        self._stdout_buffer_parts: list[str] = []
         self._closed = False
         self._stdout_drain: WorkerProcessStreamDrain | None = None
         self._stderr_drain: WorkerProcessStreamDrain | None = None
@@ -80,7 +80,7 @@ class WorkerProcessTransport:
 
     def start(self) -> WorkerProcessTransport:
         self._runtime.start()
-        self._stdout_buffer = ""
+        self._stdout_buffer_parts = []
         self._stdout_drain = self._runtime.open_stream_drain("stdout", chunk_callback=self._handle_stdout_chunk)
         self._stderr_drain = self._runtime.open_stream_drain("stderr")
         return self
@@ -164,14 +164,15 @@ class WorkerProcessTransport:
     def _handle_stdout_chunk(self, chunk: str) -> None:
         lines: list[str] = []
         with self._stdout_buffer_lock:
-            self._stdout_buffer += chunk
-            while True:
-                newline_index = self._stdout_buffer.find("\n")
-                if newline_index < 0:
-                    break
-                line = self._stdout_buffer[:newline_index].rstrip("\r")
-                self._stdout_buffer = self._stdout_buffer[newline_index + 1 :]
+            self._stdout_buffer_parts.append(chunk)
+            buffer = "".join(self._stdout_buffer_parts)
+            newline_index = buffer.find("\n")
+            while newline_index >= 0:
+                line = buffer[:newline_index].rstrip("\r")
+                buffer = buffer[newline_index + 1 :]
                 lines.append(line)
+                newline_index = buffer.find("\n")
+            self._stdout_buffer_parts = [buffer] if buffer else []
         for line in lines:
             self._handle_stdout_line(line)
 
@@ -230,8 +231,8 @@ class WorkerProcessTransport:
         if drain is None or not drain.is_closed:
             return
         with self._stdout_buffer_lock:
-            remainder = self._stdout_buffer.rstrip("\r")
-            self._stdout_buffer = ""
+            remainder = "".join(self._stdout_buffer_parts).rstrip("\r")
+            self._stdout_buffer_parts = []
         if remainder:
             self._handle_stdout_line(remainder)
 

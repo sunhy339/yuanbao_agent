@@ -167,6 +167,45 @@ def test_done_without_prior_finish_reason_still_emits_final_response() -> None:
     }
 
 
+def test_stream_retries_timeout_before_first_event() -> None:
+    calls = 0
+
+    def timeout_before_first_event() -> Iterable[bytes]:
+        raise ProviderAdapterError("Provider stream timed out after 30s")
+        yield b""
+
+    def fake_stream(**_kwargs: Any) -> tuple[int, Iterable[bytes]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 200, timeout_before_first_event()
+        return 200, iter([_sse({"choices": [{"delta": {"content": "ok"}, "index": 0}]}), _sse("[DONE]")])
+
+    events = list(_adapter(fake_stream).chat_stream(messages=[{"role": "user", "content": "hi"}]))
+
+    assert calls == 2
+    assert events[0] == {"type": "content_delta", "delta": "ok"}
+    assert events[-1]["type"] == "final"
+
+
+def test_stream_does_not_retry_after_emitting_content() -> None:
+    calls = 0
+
+    def timeout_after_content() -> Iterable[bytes]:
+        yield _sse({"choices": [{"delta": {"content": "partial"}, "index": 0}]})
+        raise ProviderAdapterError("Provider stream timed out after 30s")
+
+    def fake_stream(**_kwargs: Any) -> tuple[int, Iterable[bytes]]:
+        nonlocal calls
+        calls += 1
+        return 200, timeout_after_content()
+
+    with pytest.raises(ProviderAdapterError, match="Provider stream timed out after 30s"):
+        list(_adapter(fake_stream).chat_stream(messages=[{"role": "user", "content": "hi"}]))
+
+    assert calls == 1
+
+
 def test_invalid_sse_json_raises_provider_adapter_error() -> None:
     def fake_stream(**_kwargs: Any) -> tuple[int, Iterable[bytes]]:
         return 200, iter([b"data: not-json\n\n"])

@@ -3016,6 +3016,11 @@ class SQLiteStore:
             CREATE INDEX IF NOT EXISTS idx_memory_accessed
                 ON memory_entries (accessed_at);
 
+            CREATE INDEX IF NOT EXISTS idx_memory_kind_workspace_accessed
+                ON memory_entries (kind, workspace_id, accessed_at);
+            CREATE INDEX IF NOT EXISTS idx_memory_kind_session_accessed
+                ON memory_entries (kind, session_id, accessed_at);
+
             CREATE TABLE IF NOT EXISTS trace_spans (
                 trace_id TEXT NOT NULL,
                 span_id TEXT PRIMARY KEY,

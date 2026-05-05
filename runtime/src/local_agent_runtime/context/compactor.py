@@ -80,7 +80,9 @@ class ContextCompactor:
         bookkeeping metadata.  When the messages already fit, no summary is
         generated.
         """
-        tokens_before = sum(estimate_tokens(m.get("content", "")) for m in messages)
+        # Compute per-message tokens once
+        msg_tokens = [estimate_tokens(m.get("content", "")) for m in messages]
+        tokens_before = sum(msg_tokens)
         if tokens_before <= max_tokens:
             return CompactionResult(
                 kept_messages=list(messages),
@@ -108,7 +110,8 @@ class ContextCompactor:
             })
         kept.extend(recents)
 
-        tokens_after = sum(estimate_tokens(m.get("content", "")) for m in kept)
+        # Compute tokens_after from pre-computed values + summary
+        tokens_after = primer_tokens + recent_tokens + summary_tokens
         primer_hash = self._hash_primers(primers)
 
         # Persist record

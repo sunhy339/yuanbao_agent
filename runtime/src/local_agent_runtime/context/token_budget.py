@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 
@@ -30,6 +31,7 @@ _CJK_RE = re.compile(
 )
 
 
+@lru_cache(maxsize=512)
 def _count_cjk_chars(text: str) -> int:
     """Count the number of CJK / fullwidth characters in *text*."""
     return len(_CJK_RE.findall(text))
@@ -50,6 +52,18 @@ class BudgetResult:
     stats: dict[str, Any]
 
 
+@lru_cache(maxsize=1024)
+def _estimate_string_tokens(text: str) -> int:
+    """Cached token estimation for string inputs."""
+    if not text:
+        return 0
+    cjk_count = _count_cjk_chars(text)
+    latin_count = len(text) - cjk_count
+    cjk_tokens = int(cjk_count / _CJK_CHARS_PER_TOKEN + 0.5) if cjk_count else 0
+    latin_tokens = (latin_count + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN if latin_count else 0
+    return max(1, cjk_tokens + latin_tokens)
+
+
 def estimate_tokens(value: Any) -> int:
     """Estimate token count using a CJK-aware char/token ratio.
 
@@ -59,18 +73,11 @@ def estimate_tokens(value: Any) -> int:
     if value is None:
         return 0
     if isinstance(value, str):
-        text = value
-    else:
-        text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        return _estimate_string_tokens(value)
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     if not text:
         return 0
-
-    cjk_count = _count_cjk_chars(text)
-    latin_count = len(text) - cjk_count
-
-    cjk_tokens = int(cjk_count / _CJK_CHARS_PER_TOKEN + 0.5) if cjk_count else 0
-    latin_tokens = (latin_count + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN if latin_count else 0
-    return max(1, cjk_tokens + latin_tokens)
+    return _estimate_string_tokens(text)
 
 
 def _effective_max_chars(text: str, max_tokens: int) -> int:
@@ -113,18 +120,18 @@ class TokenBudget:
         trimmed_sections: list[str] = []
         dropped_sections: list[str] = []
 
-        def total_tokens() -> int:
-            return fixed_tokens + sum(estimate_tokens(section.text) for section in kept)
+        # Cache token counts to avoid O(N²) re-estimation
+        token_cache: dict[int, int] = {id(s): estimate_tokens(s.text) for s in sections}
+        running_total = fixed_tokens + sum(token_cache.values())
 
         for section in sorted(sections, key=lambda item: item.priority):
-            current_total = total_tokens()
-            if current_total <= self.max_context_tokens:
+            if running_total <= self.max_context_tokens:
                 break
             if section not in kept:
                 continue
 
-            current_tokens = estimate_tokens(section.text)
-            overflow = current_total - self.max_context_tokens
+            current_tokens = token_cache.get(id(section), 0)
+            overflow = running_total - self.max_context_tokens
             target_tokens = max(section.minimum_tokens, current_tokens - overflow)
 
             if not section.truncatable:
@@ -132,36 +139,42 @@ class TokenBudget:
 
             if target_tokens <= 0:
                 kept.remove(section)
+                running_total -= current_tokens
                 dropped_sections.append(section.name)
                 continue
 
             trimmed_text = trim_text_to_tokens(section.text, target_tokens)
             if not trimmed_text:
                 kept.remove(section)
+                running_total -= current_tokens
                 dropped_sections.append(section.name)
                 continue
 
-            kept[kept.index(section)] = BudgetSection(
+            new_tokens = estimate_tokens(trimmed_text)
+            new_section = BudgetSection(
                 name=section.name,
                 text=trimmed_text,
                 priority=section.priority,
                 truncatable=section.truncatable,
                 minimum_tokens=section.minimum_tokens,
             )
+            kept[kept.index(section)] = new_section
+            running_total += new_tokens - current_tokens
+            token_cache[id(new_section)] = new_tokens
             trimmed_sections.append(section.name)
 
-        while total_tokens() > self.max_context_tokens and any(section.truncatable for section in kept):
+        while running_total > self.max_context_tokens and any(section.truncatable for section in kept):
             lowest = min((section for section in kept if section.truncatable), key=lambda item: item.priority)
+            running_total -= token_cache.get(id(lowest), 0)
             kept.remove(lowest)
             dropped_sections.append(lowest.name)
 
-        estimated_tokens = total_tokens()
         return BudgetResult(
             sections=kept,
             stats={
                 "maxContextTokens": self.max_context_tokens,
-                "estimatedTokens": estimated_tokens,
-                "estimatedInputTokens": estimated_tokens,
+                "estimatedTokens": running_total,
+                "estimatedInputTokens": running_total,
                 "fixedTokens": fixed_tokens,
                 "trimmedSections": trimmed_sections,
                 "droppedSections": dropped_sections,

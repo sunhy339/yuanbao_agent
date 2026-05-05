@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 from ..context.builder import ContextBuilder
 from ..context.compactor import ContextCompactor
 from ..context.scratchpad import Scratchpad
+from ..context.token_budget import estimate_tokens
 from ..event_bus import EventBus
 from ..memory import MemoryManager
 from ..models import RuntimeEvent
@@ -88,6 +89,7 @@ class Orchestrator:
         self._pending_react_tasks: dict[str, dict[str, Any]] = {}
         self._tracer = Tracer(store)
         self._shutting_down = False
+        self._streaming_mode_cache: bool | None = None
         self._cleanup_orphan_tasks()
 
     @staticmethod
@@ -3268,6 +3270,12 @@ class Orchestrator:
             )
 
     def _publish(self, session_id: str, task: dict[str, Any], event_type: str, payload: dict[str, Any]) -> None:
+        if event_type.startswith("task."):
+            payload = dict(payload)
+            payload.setdefault("goal", task.get("goal"))
+            payload.setdefault("acceptanceCriteria", list(task.get("acceptanceCriteria") or []))
+            payload.setdefault("outOfScope", list(task.get("outOfScope") or []))
+            payload.setdefault("currentStep", task.get("currentStep"))
         event = RuntimeEvent(
             event_id=self._store.new_id("evt"),
             session_id=session_id,
@@ -3454,6 +3462,12 @@ class Orchestrator:
         patch_repair_attempts: int,
     ) -> dict[str, Any]:
 
+        # Cache provider tools list — it does not change within the loop
+        cached_provider_tools: list[dict[str, Any]] | None = None
+        # Incremental token tracking — avoids re-estimating all messages every turn
+        _msg_token_total: int = sum(estimate_tokens(m.get("content", "")) for m in messages)
+        _msg_count_at_last_check: int = len(messages)
+
         while True:
             # Refresh task status to detect external pause
             task = self._store.get_task({"taskId": task["id"]})["task"]
@@ -3501,11 +3515,13 @@ class Orchestrator:
                 except Exception:  # noqa: BLE001
                     self._tracer.end_span(mem_span.span_id, status="error")
 
+            if cached_provider_tools is None:
+                cached_provider_tools = self._provider_tools(context)
             provider_context = {
                 **context,
                 "messages": messages,
-                "tools": self._provider_tools(context),
-                "openai_tools": context.get("openai_tools") or self._provider_tools(context),
+                "tools": cached_provider_tools,
+                "openai_tools": context.get("openai_tools") or cached_provider_tools,
                 "tool_results": tool_results,
                 "step": steps + 1,
                 "max_steps": max_steps,
@@ -3542,7 +3558,7 @@ class Orchestrator:
                 return {
                     "status": "completed",
                     "summary": parsed["summary"],
-                    "tool_results": deepcopy(tool_results),
+                    "tool_results": tool_results,
                 }
 
             tool_calls = parsed["tool_calls"]
@@ -3582,15 +3598,19 @@ class Orchestrator:
                 messages.append(self._tool_result_message(tool_call, tool_result))
                 # Compact messages if token budget is exceeded
                 if self._compactor is not None:
-                    from ..context.token_budget import estimate_tokens
-                    msg_tokens = sum(estimate_tokens(m.get("content", "")) for m in messages)
-                    if msg_tokens > 6000:
+                    # Incrementally update token count for new messages only
+                    for m in messages[_msg_count_at_last_check:]:
+                        _msg_token_total += estimate_tokens(m.get("content", ""))
+                    _msg_count_at_last_check = len(messages)
+                    if _msg_token_total > 6000:
                         compacted = self._compactor.compact(
                             session_id=session_id,
                             messages=messages,
                             max_tokens=6000,
                         )
                         messages = compacted.kept_messages
+                        _msg_token_total = compacted.tokens_after
+                        _msg_count_at_last_check = len(messages)
                     context["messages"] = messages
                 # Refresh volatile context sections (git status, directory
                 # listing) after state-mutating tools so the model sees the
@@ -3726,14 +3746,20 @@ class Orchestrator:
         return response
 
     def _should_stream_provider(self, provider_context: dict[str, Any]) -> bool:
+        if self._streaming_mode_cache is not None:
+            return self._streaming_mode_cache
         if not hasattr(self._provider, "stream"):
+            self._streaming_mode_cache = False
             return False
         config = provider_context.get("config") or {}
         provider_config = config.get("provider") if isinstance(config, dict) else {}
         if not isinstance(provider_config, dict):
+            self._streaming_mode_cache = False
             return False
         mode = str(provider_config.get("mode") or provider_config.get("providerMode") or "").strip().lower()
-        return mode in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}
+        result = mode in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}
+        self._streaming_mode_cache = result
+        return result
 
     def _append_provider_trace(self, *, task: dict[str, Any], event_type: str, payload: dict[str, Any]) -> None:
         if not hasattr(self._store, "append_trace_event"):

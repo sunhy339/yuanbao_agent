@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import codecs
 import concurrent.futures
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -46,33 +47,148 @@ class OpenAICompatibleSettings:
     timeout: float = 10.0
 
 
-def _run_with_hard_timeout(fn: Any, timeout: float) -> Any:
+_shared_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+# Per-host connection pool for HTTP keep-alive.
+# Keyed by (scheme, host, port); each entry is an open http.client connection.
+_connection_pool: dict[tuple[str, str, int], http.client.HTTPConnection | http.client.HTTPSConnection] = {}
+
+
+def _get_connection(url: str, timeout: float) -> http.client.HTTPConnection:
+    """Return a reusable HTTP(S) connection for *url*, creating one if needed."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    scheme = parsed.scheme
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if scheme == "https" else 80)
+    key = (scheme, host, port)
+
+    conn = _connection_pool.get(key)
+    if conn is not None:
+        try:
+            # Quick liveness check — if the socket is closed, discard it.
+            if conn.sock is None:
+                conn.close()
+                conn = None
+        except Exception:
+            conn.close()
+            conn = None
+
+    if conn is None:
+        if scheme == "https":
+            conn = http.client.HTTPSConnection(host, port, timeout=timeout)
+        else:
+            conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        _connection_pool[key] = conn
+
+    return conn
+
+
+def _request_via_pool(
+    *,
+    url: str,
+    headers: dict[str, str],
+    body: bytes,
+    timeout: float,
+) -> tuple[int, bytes]:
+    """Send a POST request using a pooled connection for keep-alive."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    conn = _get_connection(url, timeout)
+    try:
+        conn.request("POST", path, body=body, headers=headers)
+        resp = conn.getresponse()
+        status = resp.status
+        resp_body = resp.read()
+        return status, resp_body
+    except (http.client.HTTPException, OSError):
+        # Connection is stale — discard and retry once with a fresh one.
+        from urllib.parse import urlparse as _pu
+        p = _pu(url)
+        key = (p.scheme, p.hostname or "", p.port or (443 if p.scheme == "https" else 80))
+        old = _connection_pool.pop(key, None)
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+        raise
+
+
+def _stream_via_pool(
+    *,
+    url: str,
+    headers: dict[str, str],
+    body: bytes,
+    timeout: float,
+) -> tuple[int, Iterable[bytes]]:
+    """Send a streaming POST request using a pooled connection for keep-alive."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    conn = _get_connection(url, timeout)
+    try:
+        conn.request("POST", path, body=body, headers=headers)
+        resp = conn.getresponse()
+    except (http.client.HTTPException, OSError):
+        from urllib.parse import urlparse as _pu
+        p = _pu(url)
+        key = (p.scheme, p.hostname or "", p.port or (443 if p.scheme == "https" else 80))
+        old = _connection_pool.pop(key, None)
+        if old is not None:
+            try:
+                old.close()
+            except Exception:
+                pass
+        raise
+
+    status = resp.status
+
+    def iter_chunks() -> Iterator[bytes]:
+        try:
+            while True:
+                chunk = resp.readline()
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            # After streaming, the connection is consumed.
+            # Discard it from the pool so the next call creates a fresh one.
+            from urllib.parse import urlparse as _pu
+            p2 = urlparse(url)
+            key2 = (p2.scheme, p2.hostname or "", p2.port or (443 if p2.scheme == "https" else 80))
+            _connection_pool.pop(key2, None)
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    return status, iter_chunks()
     """Run *fn* in a worker thread and enforce a hard wall-clock deadline.
 
     On Windows, ``urllib``'s socket-level ``timeout`` only covers read/write
     phases — DNS resolution and TCP SYN retransmission can block for 20-75 s.
     This wrapper guarantees the caller never waits longer than *timeout* seconds.
 
-    IMPORTANT: We must NOT use ``with ThreadPoolExecutor`` because its
-    ``__exit__`` calls ``shutdown(wait=True)`` which blocks until the worker
-    thread completes — exactly the hang we're trying to avoid.
+    Reuses a shared ``ThreadPoolExecutor`` to avoid per-request thread creation
+    overhead (~1-2 ms per ``ThreadPoolExecutor`` on CPython).
     """
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(fn)
+    future = _shared_pool.submit(fn)
     try:
         return future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
         future.cancel()
-        # shutdown(wait=False) lets the orphaned thread die in the background
-        # without blocking the caller.  cancel_futures=True (Python 3.9+)
-        # prevents any queued-but-not-started work from running.
-        pool.shutdown(wait=False, cancel_futures=True)
         raise ProviderAdapterError(
             f"Provider request timed out after {timeout:g}s "
             "(DNS or TCP connection may be unreachable)"
         )
-    else:
-        pool.shutdown(wait=False)
 
 
 def default_http_post(
@@ -82,17 +198,12 @@ def default_http_post(
     body: bytes,
     timeout: float,
 ) -> tuple[int, bytes]:
-    request = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
-
+    """POST with keep-alive connection pool and hard timeout."""
     def _do_request() -> tuple[int, bytes]:
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-                return response.status, response.read()
-        except urllib.error.HTTPError as exc:
-            return exc.code, exc.read()
-        except urllib.error.URLError as exc:
-            reason = getattr(exc, "reason", exc)
-            raise ProviderAdapterError(f"Provider request failed: {reason}") from exc
+            return _request_via_pool(url=url, headers=headers, body=body, timeout=timeout)
+        except (http.client.HTTPException, OSError) as exc:
+            raise ProviderAdapterError(f"Provider request failed: {exc}") from exc
         except TimeoutError as exc:
             raise ProviderAdapterError(f"Provider request timed out after {timeout:g}s") from exc
 
@@ -106,45 +217,16 @@ def default_http_stream(
     body: bytes,
     timeout: float,
 ) -> tuple[int, Iterable[bytes]]:
-    request = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
-
-    def _do_connect() -> Any:
+    """Streaming POST with keep-alive connection pool and hard timeout."""
+    def _do_connect() -> tuple[int, Iterable[bytes]]:
         try:
-            return urllib.request.urlopen(request, timeout=timeout)  # noqa: S310
-        except urllib.error.HTTPError as exc:
-            return exc
-        except urllib.error.URLError as exc:
-            reason = getattr(exc, "reason", exc)
-            raise ProviderAdapterError(f"Provider request failed: {reason}") from exc
+            return _stream_via_pool(url=url, headers=headers, body=body, timeout=timeout)
+        except (http.client.HTTPException, OSError) as exc:
+            raise ProviderAdapterError(f"Provider streaming request failed: {exc}") from exc
         except TimeoutError as exc:
-            raise ProviderAdapterError(f"Provider request timed out after {timeout:g}s") from exc
+            raise ProviderAdapterError(f"Provider stream timed out after {timeout:g}s") from exc
 
-    result = _run_with_hard_timeout(_do_connect, timeout)
-
-    # HTTPError is a special case — it carries the error body
-    if isinstance(result, urllib.error.HTTPError):
-        return result.code, [result.read()]
-
-    response = result
-
-    def iter_lines() -> Iterator[bytes]:
-        try:
-            while True:
-                try:
-                    line = response.readline()
-                except urllib.error.URLError as exc:
-                    reason = getattr(exc, "reason", exc)
-                    raise ProviderAdapterError(f"Provider stream failed: {reason}") from exc
-                except TimeoutError as exc:
-                    raise ProviderAdapterError(f"Provider stream timed out after {timeout:g}s") from exc
-
-                if not line:
-                    break
-                yield line
-        finally:
-            response.close()
-
-    return response.status, iter_lines()
+    return _run_with_hard_timeout(_do_connect, timeout)
 
 
 class OpenAICompatibleChatClient:
@@ -452,21 +534,21 @@ class OpenAICompatibleChatClient:
         yield {"type": "final", "response": response}
 
     def _iter_sse_data(self, chunks: Iterable[bytes]) -> Iterator[str]:
-        buffer = ""
+        buffer_parts: list[str] = []
         data_lines: list[str] = []
         decoder = codecs.getincrementaldecoder("utf-8")()
 
         for chunk in chunks:
             try:
-                buffer += decoder.decode(chunk)
+                buffer_parts.append(decoder.decode(chunk))
             except UnicodeDecodeError as exc:
                 raise ProviderAdapterError(f"Provider returned non-UTF-8 SSE stream: {exc}") from exc
 
+            buffer = "".join(buffer_parts)
+            buffer_parts.clear()
             lines = buffer.splitlines(keepends=True)
             if lines and not lines[-1].endswith(("\n", "\r")):
-                buffer = lines.pop()
-            else:
-                buffer = ""
+                buffer_parts.append(lines.pop())
 
             for raw_line in lines:
                 line = raw_line.rstrip("\r\n")
@@ -484,10 +566,14 @@ class OpenAICompatibleChatClient:
                     data_lines.append(value)
 
         try:
-            buffer += decoder.decode(b"", final=True)
+            tail = decoder.decode(b"", final=True)
+            if tail:
+                buffer_parts.append(tail)
         except UnicodeDecodeError as exc:
             raise ProviderAdapterError(f"Provider returned non-UTF-8 SSE stream: {exc}") from exc
-        if buffer:
+        if buffer_parts:
+            buffer = "".join(buffer_parts)
+            buffer_parts.clear()
             line = buffer.rstrip("\r\n")
             if line.startswith("data:"):
                 value = line[5:]

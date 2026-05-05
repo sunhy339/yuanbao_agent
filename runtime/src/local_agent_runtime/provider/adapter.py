@@ -22,6 +22,24 @@ OPENAI_COMPATIBLE_MODES = {
     "openai-compatible-chat",
 }
 
+PROVIDER_RETRY_ATTEMPTS = 2
+
+RETRYABLE_PROVIDER_ERROR_MARKERS = (
+    "timed out",
+    "timeout",
+    "temporarily",
+    "temporary",
+    "connection",
+    "reset",
+    "unreachable",
+    "dns",
+)
+
+
+def _is_retryable_provider_error(exc: ProviderAdapterError) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in RETRYABLE_PROVIDER_ERROR_MARKERS)
+
 
 class ProviderAdapter:
     """Provider facade with deterministic fallback for local/test flows."""
@@ -39,6 +57,8 @@ class ProviderAdapter:
         self._environ = environ if environ is not None else os.environ
         self._openai_client = OpenAICompatibleChatClient(http_post=http_post, http_stream=http_stream)
         self._cache = cache
+        self._settings_cache: dict[str, Any] | None = None
+        self._settings_cache_key: int = 0
 
     def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
         if self._real_provider_enabled(context):
@@ -48,6 +68,7 @@ class ProviderAdapter:
             tools = self._normalize_tools(context.get("openai_tools") or context.get("tools"))
 
             # Cache lookup
+            cache_key = None
             if self._cache:
                 from .cache import LLMCache
                 model = context.get("model") if context else None
@@ -75,11 +96,8 @@ class ProviderAdapter:
                 response["final"] = assistant_message["content"]
                 response["final_answer"] = assistant_message["content"]
 
-            # Cache write
-            if self._cache:
-                from .cache import LLMCache
-                model = context.get("model") if context else None
-                cache_key = LLMCache.hash_prompt(messages, tools, model=model)
+            # Cache write (reuse hash computed earlier)
+            if self._cache and cache_key is not None:
                 self._cache.put(cache_key, json.dumps(response))
 
             return response
@@ -119,11 +137,22 @@ class ProviderAdapter:
                 "raw": {"id": None, "model": None, "usage": None},
             }
 
-        return self._openai_client.chat(
-            settings=settings,
-            messages=messages,
-            tools=tools,
-        )
+        last_error: ProviderAdapterError | None = None
+        for attempt in range(PROVIDER_RETRY_ATTEMPTS):
+            try:
+                return self._openai_client.chat(
+                    settings=settings,
+                    messages=messages,
+                    tools=tools,
+                )
+            except ProviderAdapterError as exc:
+                last_error = exc
+                if attempt + 1 >= PROVIDER_RETRY_ATTEMPTS or not _is_retryable_provider_error(exc):
+                    raise
+
+        if last_error is not None:
+            raise last_error
+        raise ProviderAdapterError("Provider request failed before a response was returned.")
 
     def chat_stream(
         self,
@@ -142,11 +171,26 @@ class ProviderAdapter:
             yield {"type": "final", "response": response}
             return
 
-        yield from self._openai_client.stream(
-            settings=settings,
-            messages=messages,
-            tools=tools,
-        )
+        last_error: ProviderAdapterError | None = None
+        for attempt in range(PROVIDER_RETRY_ATTEMPTS):
+            emitted = False
+            try:
+                for event in self._openai_client.stream(
+                    settings=settings,
+                    messages=messages,
+                    tools=tools,
+                ):
+                    emitted = True
+                    yield event
+                return
+            except ProviderAdapterError as exc:
+                last_error = exc
+                if emitted or attempt + 1 >= PROVIDER_RETRY_ATTEMPTS or not _is_retryable_provider_error(exc):
+                    raise
+
+        if last_error is not None:
+            raise last_error
+        raise ProviderAdapterError("Provider streaming request failed before a response was returned.")
 
     def stream(self, prompt: str, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
         messages = context.get("messages")
@@ -359,6 +403,19 @@ class ProviderAdapter:
         return self._resolve_settings(context) is not None
 
     def _resolve_settings(self, context: dict[str, Any] | None) -> OpenAICompatibleSettings | None:
+        # Fast path: if context config hasn't changed, reuse cached settings.
+        # We use id() of the context dict's config sub-dict as a cheap cache key.
+        context_config = context.get("config") if context else None
+        cache_key = id(context_config) if isinstance(context_config, dict) else 0
+        if cache_key == self._settings_cache_key and self._settings_cache is not None:
+            return self._settings_cache  # type: ignore[return-value]
+
+        settings = self._compute_settings(context)
+        self._settings_cache = settings
+        self._settings_cache_key = cache_key
+        return settings
+
+    def _compute_settings(self, context: dict[str, Any] | None) -> OpenAICompatibleSettings | None:
         provider_config = self._merged_provider_config(context)
         mode = self._string_value(provider_config, "mode", "providerMode") or self._env(
             "LOCAL_AGENT_PROVIDER_MODE",

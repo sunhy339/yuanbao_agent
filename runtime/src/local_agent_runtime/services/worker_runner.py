@@ -77,6 +77,7 @@ class WorkerRunner:
     """Executes child collaboration tasks behind a stable runner boundary."""
 
     _MIN_RETRY_EXECUTION_SLICE_SECONDS = 0.001
+    _shared_executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="worker-runner")
 
     def __init__(self, collaboration: Any, executor: ChildTaskExecutor | None = None) -> None:
         self._collaboration = collaboration
@@ -333,16 +334,13 @@ class WorkerRunner:
         if timeout_seconds <= 0:
             raise ChildTaskTimeoutError(timeout_seconds)
 
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="worker-runner")
-        future = executor.submit(self._executor, context)
+        future = self._shared_executor.submit(self._executor, context)
         try:
             return future.result(timeout=timeout_seconds)
         except FutureTimeoutError as exc:
             context.cancellation_event.set()
             future.cancel()
             raise ChildTaskTimeoutError(timeout_seconds) from exc
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
 
     def _execute_with_policy(self, context: ChildTaskExecutionContext) -> dict[str, Any]:
         policy = self._policy_for(context.request)
@@ -504,7 +502,7 @@ class WorkerRunner:
             return
 
         session_id = context.request.session_id or str(event.get("sessionId") or "")
-        payload = deepcopy(event.get("payload")) if isinstance(event.get("payload"), dict) else {}
+        payload = dict(event.get("payload")) if isinstance(event.get("payload"), dict) else {}
         bridge = {
             "source": "child-worker",
             "childTaskId": child_task_id,
@@ -529,7 +527,7 @@ class WorkerRunner:
         summary = self._child_progress_summary(event_type=event_type, payload=payload)
         if summary is None:
             return
-        progress_task = deepcopy(context.task)
+        progress_task = dict(context.task)
         progress_task["updatedAt"] = self._collaboration.store.now()
         progress_task["status"] = "blocked" if event_type == "approval.requested" else "running"
         progress_task["result"] = {"summary": summary}
@@ -578,7 +576,7 @@ class WorkerRunner:
         return None
 
     def _progress_worker(self, context: ChildTaskExecutionContext) -> dict[str, Any]:
-        worker = deepcopy(context.worker)
+        worker = dict(context.worker)
         worker["status"] = "busy"
         worker["currentTaskId"] = context.task["id"]
         return worker
@@ -590,33 +588,31 @@ class WorkerRunner:
             result: dict[str, Any] = {}
             payload: dict[str, Any] = {}
         elif isinstance(output, dict):
-            output_copy = deepcopy(output)
-            nested_result = output_copy.get("result")
-            result = nested_result if isinstance(nested_result, dict) else {}
-            payload_value = output_copy.get("payload")
-            payload = payload_value if isinstance(payload_value, dict) else {}
-            summary_value = output_copy.get("summary") or result.get("summary")
+            nested_result = output.get("result")
+            result = dict(nested_result) if isinstance(nested_result, dict) else {}
+            payload_value = output.get("payload")
+            payload = dict(payload_value) if isinstance(payload_value, dict) else {}
+            summary_value = output.get("summary") or result.get("summary")
             summary = str(summary_value).strip() if summary_value is not None else self._inline_summary()
             mode_value = (
-                output_copy.get("executionMode")
-                or output_copy.get("execution_mode")
+                output.get("executionMode")
+                or output.get("execution_mode")
                 or result.get("executionMode")
             )
             execution_mode = str(mode_value).strip() if mode_value else "inline-skeleton"
         else:
             raise TypeError("Child task executor must return a string or dictionary result")
 
-        normalized_result = deepcopy(result)
-        normalized_result["summary"] = summary
-        normalized_result["agentType"] = request.agent_type
-        normalized_result["executionMode"] = execution_mode
+        result["summary"] = summary
+        result["agentType"] = request.agent_type
+        result["executionMode"] = execution_mode
 
         return {
             "status": str(output.get("status") or "completed") if isinstance(output, dict) else "completed",
             "summary": summary,
             "executionMode": execution_mode,
-            "result": normalized_result,
-            "payload": deepcopy(payload),
+            "result": result,
+            "payload": payload,
         }
 
     def _fail_child_task(

@@ -44,24 +44,28 @@ class MemoryStore:
              kw_json, meta_json, now, now),
         )
         self._store._conn.commit()
-        return self.retrieve(entry_id)  # type: ignore[return-value]
+        return self.retrieve(entry_id, touch=False)  # type: ignore[return-value]
 
-    def retrieve(self, entry_id: str) -> MemoryEntry | None:
-        """Fetch a single entry by id. Touches accessed_at."""
+    def retrieve(self, entry_id: str, *, touch: bool = True) -> MemoryEntry | None:
+        """Fetch a single entry by id. Optionally touches accessed_at."""
         row = self._store._conn.execute(
             "SELECT * FROM memory_entries WHERE id = ?",
             (entry_id,),
         ).fetchone()
         if row is None:
             return None
-        # Touch access stats
-        now = self._store.now()
-        self._store._conn.execute(
-            "UPDATE memory_entries SET accessed_at = ?, access_count = access_count + 1 "
-            "WHERE id = ?",
-            (now, entry_id),
-        )
-        self._store._conn.commit()
+        if touch:
+            now = self._store.now()
+            self._store._conn.execute(
+                "UPDATE memory_entries SET accessed_at = ?, access_count = access_count + 1 "
+                "WHERE id = ?",
+                (now, entry_id),
+            )
+            self._store._conn.commit()
+            row = self._store._conn.execute(
+                "SELECT * FROM memory_entries WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
         return self._row_to_entry(row)
 
     def update(
@@ -106,7 +110,7 @@ class MemoryStore:
                 params,
             )
             self._store._conn.commit()
-        return self.retrieve(entry_id)
+        return self.retrieve(entry_id, touch=False)
 
     def delete(self, entry_id: str) -> bool:
         """Delete an entry. Returns True if something was removed."""
@@ -199,6 +203,21 @@ class MemoryStore:
     ) -> MemoryEntry | None:
         """Change the kind of an entry (e.g. WORKING → SESSION)."""
         return self.update(entry_id, kind=to_kind)
+
+    def promote_batch(self, entry_ids: list[str], to_kind: MemoryKind) -> int:
+        """Promote multiple entries to *to_kind* in a single transaction."""
+        if not entry_ids:
+            return 0
+        now = self._store.now()
+        placeholders = ", ".join("?" for _ in entry_ids)
+        params = [to_kind.value, now] + list(entry_ids)
+        cursor = self._store._conn.execute(
+            f"UPDATE memory_entries SET kind = ?, accessed_at = ? "
+            f"WHERE id IN ({placeholders})",
+            params,
+        )
+        self._store._conn.commit()
+        return cursor.rowcount
 
     # -- internals --
 

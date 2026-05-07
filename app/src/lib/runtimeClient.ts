@@ -50,6 +50,8 @@ import type {
   SessionCreateResult,
   SessionDeleteParams,
   SessionDeleteResult,
+  SessionCompactParams,
+  SessionCompactResult,
   SessionListResult,
   SessionUpdateParams,
   SessionUpdateResult,
@@ -57,6 +59,8 @@ import type {
   SkillCreateParams,
   SkillDeleteParams,
   SkillDeleteResult,
+  SkillImportParams,
+  SkillImportResult,
   SkillListParams,
   SkillListResult,
   SkillPresetRecord,
@@ -1126,7 +1130,11 @@ export class RuntimeClient {
   async createSession(payload: SessionCreateParams): Promise<SessionCreateResult> {
     if (shouldUseBrowserMock()) {
       const result = {
-        session: buildMockSession(payload.workspaceId, payload.title),
+        session: buildMockSession(
+          payload.workspaceId,
+          payload.title,
+          mockState.workspace?.id === payload.workspaceId ? mockState.workspace : null,
+        ),
       } satisfies SessionCreateResult;
       rememberSession(result.session);
       return result;
@@ -1170,8 +1178,24 @@ export class RuntimeClient {
     return invokePayloadOrReject<SessionDeleteResult>("session_delete", payload);
   }
 
+  async compactSession(payload: SessionCompactParams): Promise<SessionCompactResult> {
+    return invokePayloadOrReject<SessionCompactResult>("session_compact", payload);
+  }
+
   async sendMessage(payload: MessageSendParams): Promise<MessageSendResult> {
     if (shouldUseBrowserMock()) {
+      if (payload.mode === "supplement" && payload.taskId && mockState.tasks[payload.taskId]) {
+        const task = mockState.tasks[payload.taskId];
+        rememberMockMessage({
+          id: `msg_user_${Date.now()}`,
+          sessionId: payload.sessionId,
+          taskId: task.id,
+          role: "user",
+          content: payload.content,
+          createdAt: Date.now(),
+        });
+        return { task };
+      }
       const task = buildMockTask(payload.sessionId, payload.content);
       mockState.tasks[task.id] = task;
       rememberMockMessage({
@@ -1727,6 +1751,15 @@ export class RuntimeClient {
 
     const result = await invokePayloadOrReject<SkillDeleteResult>("skill_delete", payload);
     delete mockState.skills[payload.skillId];
+    return result;
+  }
+
+  async importSkills(payload: SkillImportParams): Promise<SkillImportResult> {
+    if (shouldUseBrowserMock()) {
+      return { imported: [], skipped: [], errors: [] };
+    }
+
+    const result = await invokePayloadOrReject<SkillImportResult>("skill_import", payload);
     return result;
   }
 

@@ -30,7 +30,7 @@ from ..services.worker_environment import normalize_child_tool_allowlist
 from ..services.worker_runner import WorkerRunner
 from ..router import MetaRouter, RoutingDecision
 from ..skills.registry import SkillRegistry
-from ..mcp.client import McpClientManager, McpServerConfig
+from ..mcp.client import McpClientManager, McpServerConfig, summarize_mcp_exception
 from ..reflection.evaluator import ReflectionEvaluator
 from ..reflection.types import ReflectionConfig
 from ..planner.decomposer import TaskDecomposer
@@ -366,6 +366,103 @@ class Orchestrator:
     def skill_usage(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._store.list_skill_usage(params)
 
+    def skill_import(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Import skills from a JSON file, folder, or .zip archive."""
+        import json
+        import zipfile
+        import tempfile
+        from pathlib import Path
+
+        source = params.get("filePath", "")
+        if not source:
+            return {"imported": [], "skipped": [], "errors": [{"name": "", "error": "filePath is required"}]}
+
+        source_path = Path(source)
+        if not source_path.exists():
+            return {"imported": [], "skipped": [], "errors": [{"name": "", "error": f"Path not found: {source}"}]}
+
+        # Collect all .json files to import
+        json_files: list[Path] = []
+
+        if source_path.is_file():
+            if source_path.suffix.lower() == ".zip":
+                # Extract zip to temp dir and scan for .json
+                try:
+                    with zipfile.ZipFile(source_path, "r") as zf:
+                        json_names = [n for n in zf.namelist() if n.lower().endswith(".json") and not n.startswith("__MACOSX")]
+                        if not json_names:
+                            return {"imported": [], "skipped": [], "errors": [{"name": "", "error": "ZIP 中未找到 .json 文件"}]}
+                        tmp_dir = tempfile.mkdtemp(prefix="skill_import_")
+                        zf.extractall(tmp_dir, members=json_names)
+                        for name in json_names:
+                            extracted = Path(tmp_dir) / name
+                            if extracted.is_file():
+                                json_files.append(extracted)
+                except zipfile.BadZipFile as exc:
+                    return {"imported": [], "skipped": [], "errors": [{"name": "", "error": f"无效的 ZIP 文件: {exc}"}]}
+                except OSError as exc:
+                    return {"imported": [], "skipped": [], "errors": [{"name": "", "error": str(exc)}]}
+            else:
+                # Single JSON file
+                json_files.append(source_path)
+        elif source_path.is_dir():
+            # Recursively find .json files
+            json_files = sorted(source_path.rglob("*.json"))
+            if not json_files:
+                return {"imported": [], "skipped": [], "errors": [{"name": "", "error": "文件夹中未找到 .json 文件"}]}
+        else:
+            return {"imported": [], "skipped": [], "errors": [{"name": "", "error": f"不支持的路径类型: {source}"}]}
+
+        imported: list[dict] = []
+        skipped: list[str] = []
+        errors: list[dict] = []
+
+        for json_path in json_files:
+            try:
+                raw = json_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                errors.append({"name": json_path.name, "error": str(exc)})
+                continue
+
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                errors.append({"name": json_path.name, "error": f"Invalid JSON: {exc}"})
+                continue
+
+            # Normalize to list
+            if isinstance(data, dict):
+                items = [data]
+            elif isinstance(data, list):
+                items = data
+            else:
+                errors.append({"name": json_path.name, "error": "Expected JSON object or array"})
+                continue
+
+            for item in items:
+                name = item.get("name", "")
+                if not name:
+                    errors.append({"name": "", "error": f"Missing required field: name (in {json_path.name})"})
+                    continue
+
+                create_params = {
+                    "name": name,
+                    "description": item.get("description"),
+                    "system_prompt": item.get("system_prompt"),
+                    "tool_whitelist": item.get("tool_whitelist"),
+                    "parameter_constraints": item.get("parameter_constraints"),
+                    "category": item.get("category"),
+                }
+                create_params = {k: v for k, v in create_params.items() if v is not None}
+
+                try:
+                    self._store.create_skill(create_params)
+                    imported.append(create_params)
+                except Exception:
+                    skipped.append(name)
+
+        return {"imported": imported, "skipped": skipped, "errors": errors}
+
     def _record_skill_usage(
         self, *, task_id: str, session_id: str, skill_id: str | None,
     ) -> None:
@@ -397,12 +494,55 @@ class Orchestrator:
                         schema,
                     )
                 self._tracer.end_span(span.span_id, status="ok", attributes={"tool_count": len(schemas)})
+                self._publish_mcp_event("mcp.server.connected", {
+                    "serverId": server_row.get("id", ""),
+                    "serverName": server_row.get("name", ""),
+                    "toolCount": len(schemas),
+                    "toolNames": [s.get("name", "") for s in schemas],
+                })
             except Exception as exc:  # noqa: BLE001
-                self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
-                logger.warning("Failed to connect MCP server %s: %s", server_row.get("id"), exc)
+                self._record_mcp_connect_failure(span=span, server=server_row, phase="init", exc=exc)
+
+    def compact_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Manually trigger context compaction for a session.
+
+        Params: ``{ sessionId: str, maxTokens?: int }``
+        Returns: ``{ tokensBefore, tokensAfter, summary, strategy }``
+        """
+        session_id = params.get("sessionId") or params.get("session_id")
+        if not session_id:
+            raise ValueError("sessionId is required")
+        if self._compactor is None:
+            return {"tokensBefore": 0, "tokensAfter": 0, "summary": None, "strategy": "none"}
+
+        msg_result = self._store.list_messages({"sessionId": session_id, "limit": 500})
+        messages = msg_result.get("messages", [])
+        if not messages:
+            return {"tokensBefore": 0, "tokensAfter": 0, "summary": None, "strategy": "none"}
+
+        max_tokens = params.get("maxTokens") or 6000
+        compacted = self._compactor.compact(
+            session_id=session_id,
+            messages=messages,
+            max_tokens=max_tokens,
+        )
+        return {
+            "tokensBefore": compacted.tokens_before,
+            "tokensAfter": compacted.tokens_after,
+            "summary": compacted.summary,
+            "strategy": compacted.strategy,
+            "compactionId": compacted.compaction_id,
+        }
 
     def mcp_server_list(self, params: dict[str, Any]) -> dict[str, Any]:
-        return self._store.list_mcp_servers(params)
+        result = self._store.list_mcp_servers(params)
+        # Enrich with live connection status and tool counts
+        all_mcp_schemas = self._mcp_manager.get_tool_schemas()
+        for server in result.get("servers", []):
+            sid = server.get("id", "")
+            server["connected"] = self._mcp_manager.is_connected(sid)
+            server["toolCount"] = sum(1 for s in all_mcp_schemas if s.get("_mcp_server_id") == sid)
+        return result
 
     def mcp_server_create(self, params: dict[str, Any]) -> dict[str, Any]:
         result = self._store.create_mcp_server(params)
@@ -423,9 +563,14 @@ class Orchestrator:
                         schema,
                     )
                 self._tracer.end_span(span.span_id, status="ok", attributes={"tool_count": len(schemas)})
+                self._publish_mcp_event("mcp.server.connected", {
+                    "serverId": server.get("id", ""),
+                    "serverName": server.get("name", ""),
+                    "toolCount": len(schemas),
+                    "toolNames": [s.get("name", "") for s in schemas],
+                })
             except Exception as exc:  # noqa: BLE001
-                self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
-                logger.warning("Failed to connect MCP server %s: %s", server.get("id"), exc)
+                self._record_mcp_connect_failure(span=span, server=server, phase="create", exc=exc)
         return result
 
     def mcp_server_update(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -453,16 +598,28 @@ class Orchestrator:
                         schema,
                     )
                 self._tracer.end_span(span.span_id, status="ok", attributes={"tool_count": len(schemas)})
+                self._publish_mcp_event("mcp.server.reconnected", {
+                    "serverId": server.get("id", ""),
+                    "serverName": server.get("name", ""),
+                    "toolCount": len(schemas),
+                    "toolNames": [s.get("name", "") for s in schemas],
+                })
             except Exception as exc:  # noqa: BLE001
-                self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
-                logger.warning("Failed to reconnect MCP server %s: %s", server.get("id"), exc)
+                self._record_mcp_connect_failure(span=span, server=server, phase="update", exc=exc)
         else:
             self._tracer.end_span(span.span_id, status="ok")
         return result
 
     def mcp_server_delete(self, params: dict[str, Any]) -> dict[str, Any]:
         server_id = params.get("serverId") or params.get("server_id")
+        server_name = ""
         if server_id:
+            # Try to get server name before deletion for the event
+            existing = self._store.list_mcp_servers({})
+            for s in existing.get("servers", []):
+                if s.get("id") == server_id:
+                    server_name = s.get("name", "")
+                    break
             span = self._tracer.start_span(
                 "mcp_disconnect",
                 attributes={"server_id": server_id, "phase": "delete"},
@@ -471,6 +628,10 @@ class Orchestrator:
             self._tool_registry.unregister_prefix(prefix)
             self._mcp_manager.sync_disconnect_server(server_id)
             self._tracer.end_span(span.span_id, status="ok")
+            self._publish_mcp_event("mcp.server.disconnected", {
+                "serverId": server_id,
+                "serverName": server_name,
+            })
         return self._store.delete_mcp_server(params)
 
     def mcp_tools_refresh(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -497,6 +658,11 @@ class Orchestrator:
                     schema,
                 )
             self._tracer.end_span(span.span_id, status="ok", attributes={"tool_count": len(schemas)})
+            self._publish_mcp_event("mcp.tools.refreshed", {
+                "serverId": server_id or "all",
+                "toolCount": len(schemas),
+                "toolNames": [s.get("name", "") for s in schemas],
+            })
         except Exception as exc:  # noqa: BLE001
             self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
             raise
@@ -580,7 +746,15 @@ class Orchestrator:
                 return self._attach_supplemental_message(session_id=session["id"], task=active_task, content=goal)
 
         # --- Phase 0: MetaRouter scenario classification ---
-        routing = self._meta_router.route(goal)
+        import time as _time
+        _route_t0 = _time.monotonic()
+        routing_span = self._tracer.start_span("routing_decision", attributes={"goal": goal[:200]})
+        try:
+            routing = self._meta_router.route(goal)
+        except Exception:
+            self._tracer.end_span(routing_span.span_id, status="error")
+            raise
+        _route_latency_ms = int((_time.monotonic() - _route_t0) * 1000)
         routing_dict = {
             "scenario": routing.scenario.value,
             "strategy": routing.strategy.value,
@@ -591,11 +765,22 @@ class Orchestrator:
             "reasoning": routing.reasoning,
             "skill_id": routing.skill_id,
         }
+        self._tracer.end_span(
+            routing_span.span_id,
+            status="ok",
+            attributes={
+                "scenario": routing.scenario.value,
+                "strategy": routing.strategy.value,
+                "confidence": routing.confidence,
+                "skill_id": routing.skill_id,
+                "latency_ms": _route_latency_ms,
+            },
+        )
 
         if params.get("background") is True:
             # Pass routing info to the background worker without blocking on
             # context build — the worker will build context with routing data.
-            plan = self._planner.plan(goal)
+            plan = self._planner.plan(goal, context={"routing": routing_dict})
             task = self._store.create_task(
                 session_id=session["id"],
                 task_type="edit",
@@ -612,6 +797,12 @@ class Orchestrator:
                 role="user",
                 content=goal,
             )
+            self._publish(
+                session_id=session["id"],
+                task=runtime_task,
+                event_type="task.routing.decided",
+                payload={**routing_dict, "latency_ms": _route_latency_ms},
+            )
             self._start_background_message(
                 session_id=session["id"],
                 task=runtime_task,
@@ -627,7 +818,7 @@ class Orchestrator:
             )
             return {"task": runtime_task}
 
-        context = self._context_builder.build(session_id=session["id"], goal=goal, skill_id=routing.skill_id)
+        context = self._context_builder.build(session_id=session["id"], goal=goal, skill_id=routing.skill_id, lightweight=False)
         # Inject routing decision into context as a plain dict for JSON safety.
         context["routing"] = routing_dict
         logger.info(
@@ -672,6 +863,12 @@ class Orchestrator:
                 "context": self._event_context_summary(context),
                 "routing": context["routing"],
             },
+        )
+        self._publish(
+            session_id=session["id"],
+            task=runtime_task,
+            event_type="task.routing.decided",
+            payload={**routing_dict, "latency_ms": _route_latency_ms},
         )
         self._publish(
             session_id=session["id"],
@@ -866,7 +1063,16 @@ class Orchestrator:
             plan_context = json.dumps(
                 context.get("tool_results", []), ensure_ascii=False,
             )[:2000]
+            decomp_span = self._tracer.start_span(
+                "plan_decomposition",
+                trace_id=getattr(self, "_active_trace_id", None),
+                attributes={"goal": goal[:200]},
+            )
             plan = self._decomposer.decompose(goal=goal, context=plan_context)
+            self._tracer.end_span(
+                decomp_span.span_id, status="ok",
+                attributes={"subtask_count": len(plan.subtasks), "execution_order": plan.execution_order},
+            )
 
             self._publish(
                 session_id=session_id, task=task,
@@ -937,12 +1143,17 @@ class Orchestrator:
                 return {"status": "waiting_approval"}
 
             # 2. Execute subtasks
+            def _on_subtask_event(subtask_id: str, event: str, details: dict[str, Any]) -> None:
+                event_type = f"task.planning.subtask.{event}"
+                self._publish(session_id=session_id, task=task, event_type=event_type, payload=details)
+
             execution = self._dag_executor.execute(
                 plan,
                 session_id=session_id,
                 parent_task_id=task["id"],
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
                 tracer=self._tracer,
+                on_subtask_callback=_on_subtask_event,
             )
 
             # Handle DAG cooperative pause
@@ -1327,10 +1538,14 @@ class Orchestrator:
         background_store: SQLiteStore | None = None
         worker = self
         try:
+            logger.info(
+                "Background message execution started for task=%s session=%s routing=%s",
+                task["id"], session_id, routing,
+            )
             worker, background_store = self._background_worker_orchestrator()
             if context is None:
                 context = worker._context_builder.build(
-                    session_id=session_id, goal=goal, skill_id=skill_id,
+                    session_id=session_id, goal=goal, skill_id=skill_id, lightweight=False,
                 )
                 if routing is not None:
                     context["routing"] = routing
@@ -1368,6 +1583,12 @@ class Orchestrator:
                         "context": worker._event_context_summary(context),
                     },
                 )
+            _provider_mode = (context.get("config") or {}).get("provider", {}).get("mode", "unknown")
+            _will_stream = worker._should_stream_provider({**context, "messages": [], "tools": [], "step": 1})
+            logger.info(
+                "Background worker executing task=%s strategy=%s provider_mode=%s will_stream=%s",
+                task["id"], (context.get("routing") or {}).get("strategy"), _provider_mode, _will_stream,
+            )
             worker._execute_message_task(
                 session_id=session_id,
                 task=task,
@@ -1423,7 +1644,11 @@ class Orchestrator:
             store,
         )
 
-    def _event_context_summary(self, context: dict[str, Any]) -> dict[str, Any]:
+    def _event_context_summary(
+        self,
+        context: dict[str, Any],
+        messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         budget_stats = context.get("budgetStats")
         summary: dict[str, Any] = {
             "workspaceId": context.get("workspace_id"),
@@ -1436,10 +1661,21 @@ class Orchestrator:
             "toolCount": len(context.get("tools") or []),
         }
         if isinstance(budget_stats, dict):
+            message_tokens = (
+                sum(estimate_tokens(message.get("content", "")) for message in messages)
+                if messages is not None
+                else budget_stats.get("messageTokens")
+            )
+            tool_schema_tokens = budget_stats.get("toolSchemaTokens") or 0
+            estimated_input_tokens = (
+                message_tokens + tool_schema_tokens
+                if isinstance(message_tokens, (int, float)) and isinstance(tool_schema_tokens, (int, float))
+                else budget_stats.get("estimatedInputTokens")
+            )
             summary["budgetStats"] = {
-                "estimatedTokens": budget_stats.get("estimatedTokens"),
-                "estimatedInputTokens": budget_stats.get("estimatedInputTokens"),
-                "messageTokens": budget_stats.get("messageTokens"),
+                "estimatedTokens": estimated_input_tokens,
+                "estimatedInputTokens": estimated_input_tokens,
+                "messageTokens": message_tokens,
                 "toolSchemaTokens": budget_stats.get("toolSchemaTokens"),
                 "maxContextTokens": budget_stats.get("maxContextTokens"),
                 "droppedSections": budget_stats.get("droppedSections"),
@@ -1454,6 +1690,25 @@ class Orchestrator:
                 "outOfScopeCount": len(task_focus.get("outOfScope") or []),
             }
         return summary
+
+    def _publish_context_update(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        messages: list[dict[str, Any]],
+    ) -> None:
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="task.updated",
+            payload={
+                "status": task.get("status"),
+                "currentStep": task.get("currentStep"),
+                "context": self._event_context_summary(context, messages=messages),
+            },
+        )
 
     def _default_acceptance_criteria(self, goal: str) -> list[str]:
         normalized_goal = " ".join(str(goal).split())
@@ -1601,7 +1856,7 @@ class Orchestrator:
 
         session = self._store.require_session(session_id)
         budget = WorkerBudget.from_metadata(params.get("budget"), params)
-        context = self._context_builder.build(session_id=session["id"], goal=prompt.strip())
+        context = self._context_builder.build(session_id=session["id"], goal=prompt.strip(), lightweight=False)
         context = self._context_with_worker_budget(context, budget)
         plan = self._planner.plan(prompt.strip(), context=context)
         task = self._store.create_task(
@@ -1946,6 +2201,12 @@ class Orchestrator:
         self._publish(
             session_id=session_id,
             task=runtime_task,
+            event_type="assistant.message.completed",
+            payload={"content": summary},
+        )
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
             event_type="task.failed",
             payload={
                 "status": runtime_task["status"],
@@ -2235,11 +2496,6 @@ class Orchestrator:
     def _merge_completion_summary(self, *, summary: str, validation: dict[str, Any] | None) -> str:
         base = (summary or "").strip()
         if not validation:
-            return base
-        ran = validation.get("ran")
-        checks = validation.get("checks")
-        failed_checks = [check for check in checks if isinstance(check, dict) and check.get("status") == "failed"] if isinstance(checks, list) else []
-        if not ran and not failed_checks:
             return base
         validation_summary = (validation.get("summary") or "").strip()
         if not validation_summary:
@@ -3372,6 +3628,46 @@ class Orchestrator:
         )
         self._event_bus.publish(event)
 
+    def _publish_mcp_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Publish an MCP lifecycle event (no task/session context)."""
+        event = RuntimeEvent(
+            event_id=self._store.new_id("evt"),
+            session_id="",
+            task_id="",
+            type=event_type,
+            ts=self._store.now(),
+            payload=payload,
+        )
+        self._event_bus.publish(event)
+
+    def _record_mcp_connect_failure(
+        self,
+        *,
+        span: Any,
+        server: dict[str, Any],
+        phase: str,
+        exc: BaseException,
+    ) -> str:
+        summary = summarize_mcp_exception(exc)
+        server_id = server.get("id", "")
+        server_name = server.get("name", "")
+        self._tracer.end_span(span.span_id, status="error", attributes={"error": summary})
+        logger.warning("Failed to connect MCP server %s: %s", server_id, summary)
+        logger.debug("MCP server %s connection traceback", server_id, exc_info=True)
+        self._publish_mcp_event(
+            "mcp.server.failed",
+            {
+                "serverId": server_id,
+                "serverName": server_name,
+                "phase": phase,
+                "error": summary,
+                "transport": server.get("transport"),
+                "command": server.get("command"),
+                "url": server.get("url"),
+            },
+        )
+        return summary
+
     def _save_pending_react_state(self, task_id: str, state: dict[str, Any]) -> None:
         normalized_state = {
             "session_id": state["session_id"],
@@ -3550,6 +3846,7 @@ class Orchestrator:
 
         # Cache provider tools list — it does not change within the loop
         cached_provider_tools: list[dict[str, Any]] | None = None
+        read_file_cache: dict[str, dict[str, Any]] = {}
         # Incremental token tracking — avoids re-estimating all messages every turn
         _msg_token_total: int = sum(estimate_tokens(m.get("content", "")) for m in messages)
         _msg_count_at_last_check: int = len(messages)
@@ -3657,12 +3954,21 @@ class Orchestrator:
             )
             for index, tool_call in enumerate(tool_calls):
                 tool_spec = self._provider_tool_call_to_spec(tool_call, context)
-                tool_result = self._execute_tool(
-                    session_id=session_id,
-                    task=task,
-                    tool_spec=tool_spec,
-                    budget=budget,
-                )
+                cache_key = self._read_file_cache_key(tool_spec)
+                cached_tool_result = read_file_cache.get(cache_key) if cache_key else None
+                if cached_tool_result is not None:
+                    tool_result = self._clone_cached_tool_result(tool_spec, cached_tool_result)
+                else:
+                    tool_result = self._execute_tool(
+                        session_id=session_id,
+                        task=task,
+                        tool_spec=tool_spec,
+                        budget=budget,
+                    )
+                    if cache_key and not self._tool_failed(tool_spec["name"], tool_result["result"]):
+                        read_file_cache[cache_key] = deepcopy(tool_result)
+                    elif self._invalidates_read_file_cache(tool_spec["name"]):
+                        read_file_cache.clear()
                 if task["status"] == "waiting_approval":
                     self._pending_react_tasks[task["id"]] = {
                         "session_id": session_id,
@@ -3709,6 +4015,12 @@ class Orchestrator:
                     )
                     # Keep the messages list in sync after refresh.
                     context["messages"] = messages
+                self._publish_context_update(
+                    session_id=session_id,
+                    task=task,
+                    context=context,
+                    messages=messages,
+                )
                 if self._is_patch_validation_failure(tool_spec["name"], tool_result["result"]):
                     patch_repair_attempts += 1
                     max_attempts = self._max_patch_repair_attempts(context)
@@ -3776,28 +4088,76 @@ class Orchestrator:
             event_type="provider.request",
             payload={**self._provider_trace_payload(provider_context), "stream": True},
         )
+        logger.info(
+            "Streaming provider response for task=%s step=%s",
+            task["id"], provider_context.get("step"),
+        )
         final_response: dict[str, Any] | None = None
         streamed_content = False
-        for event in self._provider.stream(goal, provider_context):
-            event_type = event.get("type")
-            if event_type == "content_delta":
-                delta = event.get("delta")
-                if isinstance(delta, str) and delta:
-                    streamed_content = True
-                    self._publish(
-                        session_id=session_id,
-                        task=task,
-                        event_type="assistant.token",
-                        payload={"delta": delta, "step": provider_context.get("step")},
+        _max_stream_retries = 1
+        _stream_text_parts: list[str] = []
+        _delta_count = 0
+        for _stream_attempt in range(_max_stream_retries + 1):
+            final_response = None
+            streamed_content = False
+            _stream_text_parts = []
+            try:
+                for event in self._provider.stream(goal, provider_context):
+                    event_type = event.get("type")
+                    if event_type == "content_delta":
+                        delta = event.get("delta")
+                        if isinstance(delta, str) and delta:
+                            streamed_content = True
+                            _delta_count += 1
+                            if _delta_count <= 3 or _delta_count % 50 == 0:
+                                logger.debug(
+                                    "Stream delta #%d for task=%s: %r",
+                                    _delta_count, task["id"], delta[:80],
+                                )
+                            # Repetition detection: if the same phrase appears
+                            # 3+ times in accumulated output, truncate.
+                            _stream_text_parts.append(delta)
+                            if self._detect_stream_repetition(_stream_text_parts):
+                                logger.warning(
+                                    "Stream repetition detected for task=%s, truncating after %d chars",
+                                    task["id"],
+                                    sum(len(p) for p in _stream_text_parts),
+                                )
+                                break
+                            self._publish(
+                                session_id=session_id,
+                                task=task,
+                                event_type="assistant.token",
+                                payload={"delta": delta, "step": provider_context.get("step")},
+                            )
+                    elif event_type == "final":
+                        response = event.get("response")
+                        if isinstance(response, dict):
+                            final_response = response
+                    elif event_type == "finish_reason":
+                        self._append_provider_trace(task=task, event_type="provider.stream.finish", payload=event)
+                    elif event_type == "tool_call_delta":
+                        self._append_provider_trace(task=task, event_type="provider.stream.tool_call_delta", payload=event)
+                logger.info(
+                    "Stream completed for task=%s: deltas=%d streamed=%s has_final=%s",
+                    task["id"], _delta_count, streamed_content, final_response is not None,
+                )
+                break  # stream completed successfully
+            except Exception as stream_exc:
+                from ..provider.openai_compatible import ProviderAdapterError
+                is_retryable = isinstance(stream_exc, ProviderAdapterError) and "timed out" in str(stream_exc).lower()
+                if is_retryable and _stream_attempt < _max_stream_retries:
+                    logger.warning(
+                        "Provider stream timed out (attempt %d/%d), retrying: %s",
+                        _stream_attempt + 1, _max_stream_retries + 1, stream_exc,
                     )
-            elif event_type == "final":
-                response = event.get("response")
-                if isinstance(response, dict):
-                    final_response = response
-            elif event_type == "finish_reason":
-                self._append_provider_trace(task=task, event_type="provider.stream.finish", payload=event)
-            elif event_type == "tool_call_delta":
-                self._append_provider_trace(task=task, event_type="provider.stream.tool_call_delta", payload=event)
+                    self._append_provider_trace(
+                        task=task,
+                        event_type="provider.stream.retry",
+                        payload={"attempt": _stream_attempt + 1, "error": str(stream_exc)},
+                    )
+                    continue
+                raise
 
         if final_response is None:
             raise RuntimeError("Provider stream ended without a final response.")
@@ -3816,8 +4176,13 @@ class Orchestrator:
             "_streamed_content": streamed_content,
         }
         if not response["tool_calls"]:
-            response["final"] = response["message"]
-            response["final_answer"] = response["message"]
+            # Use streamed text when the final event's content is empty but
+            # tokens were already sent to the frontend via assistant.token.
+            final_text = response["message"]
+            if not final_text.strip() and streamed_content and _stream_text_parts:
+                final_text = "".join(_stream_text_parts)
+            response["final"] = final_text
+            response["final_answer"] = final_text
         self._consume_budget_from_provider_response(
             session_id=session_id,
             task=task,
@@ -3846,6 +4211,35 @@ class Orchestrator:
         result = mode in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}
         self._streaming_mode_cache = result
         return result
+
+    @staticmethod
+    def _detect_stream_repetition(parts: list[str], min_chunk: int = 40, max_occurrences: int = 3) -> bool:
+        """Return True when accumulated stream parts show clear repetition loops.
+
+        Scans the full concatenated text for any substring of at least
+        *min_chunk* characters that appears *max_occurrences* or more times.
+        """
+        if len(parts) < max_occurrences:
+            return False
+        text = "".join(parts)
+        length = len(text)
+        if length < min_chunk * max_occurrences:
+            return False
+        # Only check the last portion to keep it O(n) — the repetition
+        # pattern, if present, will show up near the tail.
+        tail = text[-min(length, 4000):]
+        seen: dict[str, int] = {}
+        chunk_len = min_chunk
+        step = max(chunk_len // 2, 20)
+        for start in range(0, len(tail) - chunk_len + 1, step):
+            chunk = tail[start : start + chunk_len]
+            if not chunk.strip():
+                continue
+            count = seen.get(chunk, 0) + 1
+            seen[chunk] = count
+            if count >= max_occurrences:
+                return True
+        return False
 
     def _append_provider_trace(self, *, task: dict[str, Any], event_type: str, payload: dict[str, Any]) -> None:
         if not hasattr(self._store, "append_trace_event"):
@@ -4148,6 +4542,11 @@ class Orchestrator:
             return list(messages)
         return [{"role": "user", "content": goal}]
 
+    # Strategies that are allowed to create child tasks via the `task` tool.
+    _TASK_TOOL_STRATEGIES: frozenset[str] = frozenset({
+        "plan_execute", "plan_supervise", "plan_swarm",
+    })
+
     def _provider_tools(self, context: dict[str, Any]) -> list[dict[str, Any]]:
         tools_by_name: dict[str, dict[str, Any]] = {}
         # 1. Start with context-level tools (built by ContextBuilder)
@@ -4163,6 +4562,13 @@ class Orchestrator:
         for schema in self._tool_registry.schemas:
             if isinstance(schema, dict) and isinstance(schema.get("name"), str):
                 tools_by_name.setdefault(schema["name"], schema)
+        # 3. Remove the `task` tool when the routing strategy does not need it,
+        #    so that the LLM cannot spontaneously create child tasks for simple queries.
+        routing = context.get("routing")
+        if isinstance(routing, dict):
+            strategy = routing.get("strategy", "")
+            if strategy not in self._TASK_TOOL_STRATEGIES:
+                tools_by_name.pop("task", None)
         return list(tools_by_name.values())
 
     def _max_task_steps(self, context: dict[str, Any]) -> int:
@@ -4280,6 +4686,31 @@ class Orchestrator:
             "git_status": "git-status",
             "git_diff": "git-diff",
         }.get(tool_name, tool_name.replace("_", "-"))
+
+    def _read_file_cache_key(self, tool_spec: dict[str, Any]) -> str | None:
+        if tool_spec.get("name") != "read_file":
+            return None
+        arguments = tool_spec.get("arguments")
+        if not isinstance(arguments, dict):
+            return None
+        relevant_arguments = {
+            key: arguments.get(key)
+            for key in ("workspaceRoot", "workspace_root", "path", "encoding", "max_bytes")
+            if key in arguments
+        }
+        return json.dumps(relevant_arguments, sort_keys=True, ensure_ascii=False, default=str)
+
+    def _clone_cached_tool_result(self, tool_spec: dict[str, Any], cached_tool_result: dict[str, Any]) -> dict[str, Any]:
+        tool_result = deepcopy(cached_tool_result)
+        tool_result["id"] = tool_spec.get("id") or self._store.new_id("tc")
+        tool_result["arguments"] = deepcopy(tool_spec.get("arguments", {}))
+        result = tool_result.get("result")
+        if isinstance(result, dict):
+            result["cached"] = True
+        return tool_result
+
+    def _invalidates_read_file_cache(self, tool_name: str) -> bool:
+        return tool_name in {"apply_patch", "write_file", "run_command", "task"}
 
     def _ensure_tool_allowed_for_child_worker(self, tool_name: str) -> None:
         allowed = self._child_tool_allowlist()

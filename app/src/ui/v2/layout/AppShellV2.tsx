@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ComposerDock } from "../../workbench/ComposerDock";
+import { ComposerDock, type ComposerRuntimeChildTask } from "../../workbench/ComposerDock";
 import { DesktopTitlebar } from "../../workbench/DesktopTitlebar";
 import { GlobalSidebar } from "../../workbench/GlobalSidebar";
 import { WorkspaceFrame } from "../../workbench/WorkspaceFrame";
@@ -37,8 +37,19 @@ export interface AppShellV2Props {
   onRenameSession: (sessionId: string, newTitle: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onSubmitPrompt: () => void;
+  onQueuePrompt?: () => void;
+  onStopPrompt?: () => void;
   disabled: boolean;
   sending?: boolean;
+  submitting?: boolean;
+  queuedPromptCount?: number;
+  attachments?: string[];
+  onAttachmentsChange?: (attachments: string[]) => void;
+  onAttachmentError?: (message: string) => void;
+  modelOptions?: Array<{ id: string; label: string; subtitle?: string }>;
+  selectedModelId?: string;
+  onSelectModel?: (modelId: string) => void;
+  runtimeChildTasks?: ComposerRuntimeChildTask[];
   providerLabel: string;
   cwdLabel: string;
   runtimeLabel?: string;
@@ -66,8 +77,19 @@ export function AppShellV2({
   onRenameSession,
   onDeleteSession,
   onSubmitPrompt,
+  onQueuePrompt,
+  onStopPrompt,
   disabled,
   sending,
+  submitting,
+  queuedPromptCount,
+  attachments,
+  onAttachmentsChange,
+  onAttachmentError,
+  modelOptions,
+  selectedModelId,
+  onSelectModel,
+  runtimeChildTasks,
   providerLabel,
   cwdLabel,
   runtimeLabel,
@@ -133,8 +155,19 @@ export function AppShellV2({
             promptValue={promptValue}
             onPromptChange={onPromptChange}
             onSubmitPrompt={onSubmitPrompt}
+            onQueuePrompt={onQueuePrompt}
+            onStopPrompt={onStopPrompt}
             disabled={disabled}
             sending={sending}
+            submitting={submitting}
+            queuedPromptCount={queuedPromptCount}
+            attachments={attachments}
+            onAttachmentsChange={onAttachmentsChange}
+            onAttachmentError={onAttachmentError}
+            modelOptions={modelOptions}
+            selectedModelId={selectedModelId}
+            onSelectModel={onSelectModel}
+            runtimeChildTasks={runtimeChildTasks}
             providerLabel={providerLabel}
             cwdLabel={cwdLabel}
             hidden={!composerVisible}

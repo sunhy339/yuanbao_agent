@@ -64,7 +64,7 @@
 
 .overview-workbench {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.34fr);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.32fr);
   gap: 10px;
   align-items: start;
 }
@@ -105,7 +105,7 @@
 
 .overview-flow-grid {
   display: grid;
-  grid-template-columns: minmax(300px, 0.42fr) minmax(360px, 0.58fr);
+  grid-template-columns: minmax(280px, 0.42fr) minmax(0, 0.58fr);
   gap: 10px;
   align-items: start;
 }
@@ -186,8 +186,7 @@ button.overview-row:hover {
   min-width: 0;
 }
 
-.overview-row .yb-status-badge,
-.overview-timeline-item .yb-status-badge {
+.overview-row .yb-status-badge {
   justify-self: end;
   flex-shrink: 0;
   white-space: nowrap;
@@ -242,7 +241,7 @@ button.overview-row:hover {
 .overview-timeline-item {
   position: relative;
   display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) max-content;
+  grid-template-columns: 16px minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   min-height: 54px;
@@ -254,7 +253,24 @@ button.overview-row:hover {
 }
 
 .overview-timeline-item > div {
+  display: grid;
+  gap: 4px;
   min-width: 0;
+}
+
+.overview-timeline-item header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.overview-timeline-item .yb-status-badge {
+  justify-self: end;
+  max-width: 72px;
+  overflow: visible;
+  white-space: nowrap;
 }
 
 .overview-timeline-item > span {
@@ -301,7 +317,6 @@ button.overview-row:hover {
 }
 
 .overview-timeline-item small {
-  margin-top: 4px;
   color: var(--yb-muted);
   white-space: nowrap;
 }

@@ -11,13 +11,13 @@ from .types import ExecutionStrategy, Scenario
 SCENARIO_STRATEGY_MAP: dict[Scenario, dict[str, Any]] = {
     Scenario.SIMPLE_QUERY: {
         "strategy": ExecutionStrategy.REACT_FAST,
-        "max_steps": 5,
+        "max_steps": 12,
         "enable_reflection": False,
         "enable_planning": False,
     },
     Scenario.CODE_SEARCH: {
         "strategy": ExecutionStrategy.REACT_FAST,
-        "max_steps": 8,
+        "max_steps": 15,
         "enable_reflection": False,
         "enable_planning": False,
     },

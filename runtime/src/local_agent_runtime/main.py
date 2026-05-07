@@ -21,7 +21,7 @@ def _configure_stdio() -> None:
         stream = getattr(sys, stream_name, None)
         reconfigure = getattr(stream, "reconfigure", None)
         if callable(reconfigure):
-            reconfigure(encoding="utf-8", errors="replace")
+            reconfigure(encoding="utf-8", errors="replace", write_through=True)
 
 
 def build_server(database_path: str = ":memory:") -> JsonRpcServer:

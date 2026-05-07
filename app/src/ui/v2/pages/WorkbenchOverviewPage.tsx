@@ -62,6 +62,34 @@ function taskTone(status: TaskRecord["status"]) {
   return "info" as const;
 }
 
+function taskProgressLabel(task: TaskRecord) {
+  if (task.status === "completed") return "已完成";
+  if (task.status === "failed" || task.status === "cancelled") return "执行失败";
+  if (task.status === "waiting_approval" || task.status === "paused") return "等待审批";
+  if (task.status === "verifying" || task.verification?.length) return "正在验证";
+  if (task.changedFiles?.length || task.commands?.length) return "正在修改";
+  if (task.status === "queued" || task.status === "planning" || task.status === "running") return "正在分析代码";
+  return formatStatusLabel(task.status);
+}
+
+function taskProgressSummary(task: TaskRecord) {
+  const changedCount = task.changedFiles?.length ?? 0;
+  const verificationCount = task.verification?.length ?? 0;
+  if (task.status === "completed") {
+    return task.resultSummary || task.summary || (changedCount ? `${changedCount} 个文件已变更` : "任务已完成");
+  }
+  if (task.status === "failed" || task.status === "cancelled") {
+    return task.resultSummary || task.summary || "任务未完成";
+  }
+  if (verificationCount) {
+    return `${verificationCount} 项验证正在处理`;
+  }
+  if (changedCount) {
+    return `${changedCount} 个文件已进入变更结果`;
+  }
+  return task.goal || "任务正在执行";
+}
+
 function scheduleLabel(task?: ScheduledTaskRecord) {
   if (!task) {
     return "暂无启用计划";
@@ -152,7 +180,7 @@ export function WorkbenchOverviewPage({
                     <button key={session.id} type="button" className="overview-row" onClick={() => onOpenSession(session)}>
                       <span>
                         <strong>{session.title || "未命名会话"}</strong>
-                        <small>{session.summary || formatStatusLabel(session.status)}</small>
+                        <small>{session.workspaceRoot || session.summary || formatStatusLabel(session.status)}</small>
                       </span>
                       <StatusBadge label={formatStatusLabel(session.status)} tone={session.status === "active" ? "success" : "neutral"} compact />
                     </button>
@@ -173,10 +201,12 @@ export function WorkbenchOverviewPage({
                     <article key={task.id} className="overview-timeline-item" data-status={task.status}>
                       <span aria-hidden="true" />
                       <div>
-                        <strong>{task.goal}</strong>
-                        <small>{task.currentStep || task.summary || task.resultSummary || "暂无摘要"}</small>
+                        <header>
+                          <strong>{task.goal}</strong>
+                          <StatusBadge label={taskProgressLabel(task)} tone={taskTone(task.status)} compact />
+                        </header>
+                        <small>{taskProgressSummary(task)}</small>
                       </div>
-                      <StatusBadge label={formatStatusLabel(task.status)} tone={taskTone(task.status)} compact />
                     </article>
                   ))
                 ) : (

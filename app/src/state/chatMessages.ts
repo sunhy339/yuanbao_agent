@@ -36,6 +36,8 @@ export function replaceSessionMessages(
   const persistedMessages = records
     .map(messageRecordToChatMessage)
     .filter((message): message is ChatMessageView => message !== null);
+
+  // Single pass over current to split into other-session and live-streaming
   const otherSessionMessages: ChatMessageView[] = [];
   const liveStreamingMessages: ChatMessageView[] = [];
   const pendingLocalMessages: ChatMessageView[] = [];
@@ -213,6 +215,23 @@ export function failAssistantMessage(
       placeholder: false,
     },
   ];
+}
+
+export function stopStreamingMessages(
+  current: ChatMessageView[],
+  sessionId?: string | null,
+): ChatMessageView[] {
+  return current
+    .map((message) =>
+      (!sessionId || message.sessionId === sessionId) && message.streaming
+        ? {
+            ...message,
+            streaming: false,
+            placeholder: false,
+          }
+        : message,
+    )
+    .filter((message) => !(message.placeholder && !message.content.trim()));
 }
 
 export function isOperationalAssistantDelta(delta: string): boolean {

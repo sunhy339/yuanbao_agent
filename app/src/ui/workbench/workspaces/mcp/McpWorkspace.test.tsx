@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpWorkspace } from "./McpWorkspace";
@@ -12,6 +12,7 @@ describe("McpWorkspace", () => {
   const handlers = () => ({
     onRefreshServers: vi.fn(),
     onCreateServer: vi.fn().mockResolvedValue(undefined),
+    onImportServers: vi.fn().mockResolvedValue(undefined),
     onUpdateServer: vi.fn().mockResolvedValue(undefined),
     onToggleServer: vi.fn().mockResolvedValue(undefined),
     onRefreshTools: vi.fn().mockResolvedValue(undefined),
@@ -50,6 +51,8 @@ describe("McpWorkspace", () => {
       command: "",
       args: "",
       url: "http://127.0.0.1:8787/sse",
+      headers: "",
+      env: "",
       enabled: true,
     });
 
@@ -67,6 +70,38 @@ describe("McpWorkspace", () => {
         args: "@modelcontextprotocol/server-filesystem\nD:/py/yuanbao_agent",
       }),
     );
+  });
+
+  it("imports mcpServers JSON with args and env", async () => {
+    const user = userEvent.setup();
+    const actions = handlers();
+    render(<McpWorkspace servers={[]} {...actions} />);
+
+    fireEvent.change(screen.getByLabelText("MCP JSON"), {
+      target: {
+        value: JSON.stringify({
+          mcpServers: {
+            "firecrawl-mcp": {
+              command: "npx",
+              args: ["-y", "firecrawl-mcp"],
+              env: { FIRECRAWL_API_KEY: "secret" },
+            },
+          },
+        }),
+      },
+    });
+    await user.click(screen.getByRole("button", { name: "Import JSON" }));
+
+    expect(actions.onImportServers).toHaveBeenCalledWith([
+      expect.objectContaining({
+        name: "firecrawl-mcp",
+        transport: "stdio",
+        command: "npx",
+        args: "-y\nfirecrawl-mcp",
+        env: "FIRECRAWL_API_KEY=secret",
+        enabled: true,
+      }),
+    ]);
   });
 
   it("uses selected server actions for toggle, tool refresh, and delete", async () => {

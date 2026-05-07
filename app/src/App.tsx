@@ -33,6 +33,7 @@ import {
   getVisibleChatMessages,
   isOperationalAssistantDelta,
   replaceSessionMessages,
+  stopStreamingMessages,
   updatePendingMessageTask,
   type ChatMessageView,
 } from "./state/chatMessages";
@@ -77,6 +78,7 @@ import {
   type SessionWorkspaceCollaboration,
   type SessionWorkspaceContextPreview,
 } from "./ui/workbench/workspaces/session/SessionWorkspace";
+import type { ComposerRuntimeChildTask } from "./ui/workbench/ComposerDock";
 import {
   SettingsWorkspace,
   type SettingsComputerUseConfig,
@@ -109,6 +111,18 @@ const TRACE_AUTO_REFRESH_STATUSES = new Set<TaskRecord["status"]>([
   "waiting_approval",
 ]);
 type TaskControlAction = "cancel" | "pause" | "resume";
+
+function isTaskControllable(status?: string) {
+  return Boolean(status && ["running", "planning", "verifying", "waiting_approval", "queued"].includes(status));
+}
+
+function normalizeWorkspacePathForCompare(path: string) {
+  return path.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function workspaceNameFromPath(path?: string | null) {
+  return path?.split(/[\\/]/).filter(Boolean).pop() || undefined;
+}
 
 interface ProviderSettingsForm {
   name: string;
@@ -534,11 +548,112 @@ function normalizeSkillForSettings(skill: SkillPresetRecord): SettingsSkillConfi
   };
 }
 
+function stripWrappingShellQuotes(value: string): string {
+  const token = value.trim();
+  if (token.length >= 2 && token[0] === token[token.length - 1] && (token[0] === '"' || token[0] === "'")) {
+    return token.slice(1, -1);
+  }
+  return token;
+}
+
+function splitShellLikeArgs(value: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        args.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (current) {
+    args.push(current);
+  }
+  return args;
+}
+
 function parseMcpArgs(value: string): string[] {
-  return value
-    .split(/\r?\n|,/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return [];
+  }
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed.map((item) => stripWrappingShellQuotes(String(item))).filter(Boolean);
+      }
+    } catch {
+      // Fall through to line/comma parsing.
+    }
+  }
+  const rawParts = /\r?\n|,/.test(trimmed) ? trimmed.split(/\r?\n|,/) : splitShellLikeArgs(trimmed);
+  return rawParts.map(stripWrappingShellQuotes).filter(Boolean);
+}
+
+function parseMcpKeyValuePairs(value: string): Record<string, string> {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return {};
+  }
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return Object.fromEntries(
+          Object.entries(parsed as Record<string, unknown>)
+            .filter(([key]) => key.trim())
+            .map(([key, item]) => [key.trim(), String(item)]),
+        );
+      }
+    } catch {
+      // Fall through to KEY=value parsing.
+    }
+  }
+  return Object.fromEntries(
+    trimmed
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const separator = line.indexOf("=");
+        if (separator === -1) {
+          return [line, ""] as const;
+        }
+        return [line.slice(0, separator).trim(), line.slice(separator + 1).trim()] as const;
+      })
+      .filter(([key]) => Boolean(key)),
+  );
+}
+
+function buildMcpServerPayload(draft: McpServerDraft) {
+  return {
+    name: draft.name.trim(),
+    transport: draft.transport,
+    command: draft.transport === "stdio" ? stripWrappingShellQuotes(draft.command) : undefined,
+    args: draft.transport === "stdio" ? parseMcpArgs(draft.args) : [],
+    url: draft.transport === "stdio" ? undefined : draft.url.trim(),
+    headers: draft.transport === "stdio" ? {} : parseMcpKeyValuePairs(draft.headers),
+    env: parseMcpKeyValuePairs(draft.env),
+    enabled: draft.enabled,
+  };
 }
 
 function parseSkillToolWhitelist(value: string): string[] {
@@ -1258,6 +1373,12 @@ interface ToolTimelineItem {
   eventCount: number;
 }
 
+interface QueuedPromptSubmission {
+  id: string;
+  content: string;
+  attachments: string[];
+}
+
 interface CommandJobTimelineItem {
   id: string;
   taskId: string;
@@ -1492,8 +1613,37 @@ function getTaskBadgeClass(status?: TaskRecord["status"]): string {
   return "neutral";
 }
 
-function isTaskControllable(status?: string) {
-  return Boolean(status && ["running", "planning", "verifying", "waiting_approval", "queued"].includes(status));
+const TASK_ACTION_PLAN_RE =
+  /\b(apply|patch|edit|write|implement|modify|command|shell|run|verify|git|commit|diff|build|fix)\b|\u5e94\u7528|\u8865\u4e01|\u7f16\u8f91|\u5199\u5165|\u5b9e\u73b0|\u4fee\u6539|\u8fd0\u884c|\u6267\u884c|\u9a8c\u8bc1|\u6784\u5efa|\u4fee\u590d|\u63d0\u4ea4/i;
+const TASK_QUESTION_GOAL_RE = new RegExp(
+  "[?\\uFF1F]\\s*$|\\u5417|\\u662f\\u5426|\\u662f\\u4e0d\\u662f|\\u80fd\\u4e0d\\u80fd|\\u53ef\\u4ee5|\\u5b8c\\u6210\\u4e86\\u5417|\\u7ed3\\u675f\\u4e86\\u5417|\\u4ec0\\u4e48\\u60c5\\u51b5|\\u4e3a\\u4ec0\\u4e48|\\u600e\\u4e48",
+);
+const TASK_GENERIC_ANSWER_STEP_RE =
+  /\b(inspect|search|summarize|understand|locate)\b|\u7406\u89e3|\u5b9a\u4f4d|\u67e5\u627e|\u6574\u7406|\u7b54\u590d|\u603b\u7ed3/i;
+
+function taskHasWorkEvidence(task?: TaskRecord | null) {
+  return Boolean(task?.changedFiles?.length || task?.commands?.length || task?.verification?.length);
+}
+
+function taskHasActionPlan(task?: TaskRecord | null) {
+  return Boolean(task?.plan?.some((step) => TASK_ACTION_PLAN_RE.test(`${step.id ?? ""} ${step.title ?? ""}`)));
+}
+
+function isGenericAnswerTaskPlan(task?: TaskRecord | null) {
+  const plan = task?.plan ?? [];
+  return Boolean(
+    plan.length > 0 &&
+      plan.length <= 3 &&
+      plan.every((step) => TASK_GENERIC_ANSWER_STEP_RE.test(`${step.id ?? ""} ${step.title ?? ""}`)),
+  );
+}
+
+function shouldPromoteTaskToActive(task: TaskRecord, currentTaskId?: string | null) {
+  if (currentTaskId && task.id === currentTaskId) return true;
+  if (taskHasWorkEvidence(task) || taskHasActionPlan(task)) return true;
+  if ((task.plan?.length ?? 0) > 3) return true;
+  if (TASK_QUESTION_GOAL_RE.test(task.goal.trim()) && isGenericAnswerTaskPlan(task)) return false;
+  return !TASK_QUESTION_GOAL_RE.test(task.goal.trim());
 }
 
 function appendAssistantToken(current: ChatMessageView[], event: AgentEventEnvelope): ChatMessageView[] {
@@ -1551,11 +1701,10 @@ function completeAssistantMessage(current: ChatMessageView[], event: AgentEventE
     "",
     10_000,
   );
-  const next = [...current];
   const payloadRecord = event.payload && typeof event.payload === "object" ? (event.payload as Record<string, unknown>) : {};
   if (payloadRecord.supplemental === true && completedContent) {
     return [
-      ...next,
+      ...current,
       {
         id: `assistant_${event.eventId}`,
         sessionId: event.sessionId,
@@ -1568,6 +1717,7 @@ function completeAssistantMessage(current: ChatMessageView[], event: AgentEventE
       },
     ];
   }
+  const next = [...current];
   const lastAssistantIndex = (() => {
     for (let index = next.length - 1; index >= 0; index -= 1) {
       const item = next[index];
@@ -1583,6 +1733,10 @@ function completeAssistantMessage(current: ChatMessageView[], event: AgentEventE
 
   if (lastAssistantIndex >= 0) {
     const currentMessage = next[lastAssistantIndex];
+    // Prefer streaming content when it was built from token deltas — avoids
+    // replacing a rich multi-step answer with a shorter/final-summary that
+    // may overlap or differ. Fall back to completedContent when the streaming
+    // message is still a placeholder or very short.
     const streamingContent = currentMessage.content || "";
     const isPlaceholder = currentMessage.placeholder === true || streamingContent === "\u601d\u8003\u4e2d..." || streamingContent.length < 5;
     next[lastAssistantIndex] = {
@@ -2082,6 +2236,8 @@ export function App() {
   const [commandLogCacheById, setCommandLogCacheById] = useState<Record<string, CommandLogRecord>>({});
   const [patchCacheById, setPatchCacheById] = useState<Record<string, PatchRecord>>({});
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
+  const [promptAttachments, setPromptAttachments] = useState<string[]>([]);
+  const [queuedPromptSubmissions, setQueuedPromptSubmissions] = useState<QueuedPromptSubmission[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessageView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
@@ -2166,6 +2322,7 @@ export function App() {
   const pendingAssistantTokenEventsRef = useRef<AgentEventEnvelope[]>([]);
   const assistantTokenFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messageLoadRequestRef = useRef(0);
+  const childTaskIdsRef = useRef<Set<string>>(new Set());
 
   function clearPendingAssistantTokens() {
     pendingAssistantTokenEventsRef.current = [];
@@ -2330,11 +2487,13 @@ export function App() {
         }
 
         if (event.type === "assistant.token") {
-          queueAssistantToken(event);
+          if (!childTaskIdsRef.current.has(event.taskId)) {
+            queueAssistantToken(event);
+          }
           return;
         }
 
-        setEvents((current) => [...current, event].slice(-80));
+        setEvents((current) => [...current, event].slice(-500));
 
         if (event.type === "session.updated") {
           const payload = (event.payload ?? {}) as SessionUpdatedPayload;
@@ -2366,8 +2525,30 @@ export function App() {
 
         if (event.type.startsWith("task.")) {
           const eventTask = taskRecordFromEvent(event);
-          setActiveTaskId((current) => (event.type === "task.started" || !current ? event.taskId : current));
+          const isChildWorker = (event.payload as Record<string, unknown>)?.childWorker === true;
+          if (isChildWorker && event.type === "task.started") {
+            childTaskIdsRef.current.add(event.taskId);
+          }
+          if (isChildWorker && event.type === "task.completed") {
+            childTaskIdsRef.current.delete(event.taskId);
+          }
+          setActiveTaskId((current) => {
+            if (isChildWorker) return current;
+            if (event.type === "task.started") {
+              return eventTask && shouldPromoteTaskToActive(eventTask, current) ? event.taskId : current;
+            }
+            return !current && eventTask && shouldPromoteTaskToActive(eventTask, current) ? event.taskId : current;
+          });
           setTask((current) => {
+            if (event.type === "task.started" && isChildWorker) {
+              return current;
+            }
+            if (event.type === "task.started" && eventTask && !shouldPromoteTaskToActive(eventTask, current?.id ?? null)) {
+              return current;
+            }
+            if (!current && event.type !== "task.started") {
+              return current;
+            }
             if (current && current.id !== event.taskId && event.type !== "task.started") {
               return current;
             }
@@ -2390,15 +2571,19 @@ export function App() {
           setSessions((current) =>
             current.map((item) => (item.id === event.sessionId ? { ...item, updatedAt: event.ts } : item)),
           );
-          if (event.type === "task.failed") {
+          if (event.type === "task.failed" && !isChildWorker) {
             flushPendingAssistantTokens();
             setChatMessages((current) => failAssistantMessageForEvent(current, event));
           }
         }
 
         if (event.type === "assistant.message.completed") {
-          flushPendingAssistantTokens();
-          setChatMessages((current) => completeAssistantMessage(current, event));
+          if (childTaskIdsRef.current.has(event.taskId)) {
+            // skip child task completion
+          } else {
+            flushPendingAssistantTokens();
+            setChatMessages((current) => completeAssistantMessage(current, event));
+          }
         }
       })
       .then((unlisten) => {
@@ -2682,11 +2867,16 @@ export function App() {
   );
 
   async function ensureWorkspace(): Promise<WorkspaceRef> {
-    if (workspace) {
+    const requestedPath = workspacePath.trim();
+    if (!requestedPath) {
+      throw new Error("Enter a workspace path before connecting.");
+    }
+
+    if (workspace && normalizeWorkspacePathForCompare(workspace.rootPath) === normalizeWorkspacePathForCompare(requestedPath)) {
       return workspace;
     }
 
-    const result = await runtimeClient.openWorkspace(workspacePath.trim());
+    const result = await runtimeClient.openWorkspace(requestedPath);
     setWorkspace(result.workspace);
     setConfig((current) =>
       current
@@ -3488,6 +3678,29 @@ export function App() {
     }
   }
 
+  async function handleImportSkills(filePath: string) {
+    setSkillBusyId("import");
+    setError(null);
+    try {
+      const result = await runtimeClient.importSkills({ filePath });
+      if (result.imported.length > 0) {
+        await refreshSkills();
+        addToast("success", `已导入 ${result.imported.length} 个技能`);
+      }
+      if (result.skipped.length > 0) {
+        addToast("info", `已跳过 ${result.skipped.length} 个同名技能：${result.skipped.join("、")}`);
+      }
+      if (result.errors.length > 0) {
+        const errorNames = result.errors.map((e) => e.name || "未知").join("、");
+        addToast("error", `导入失败：${errorNames}`);
+      }
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setSkillBusyId(null);
+    }
+  }
+
   async function handleOpenAppPath(kind: "logs" | "data") {
     setError(null);
     try {
@@ -3535,14 +3748,7 @@ export function App() {
     setMcpLoading(true);
     setError(null);
     try {
-      const result = await runtimeClient.createMcpServer({
-        name: draft.name,
-        transport: draft.transport,
-        command: draft.transport === "stdio" ? draft.command.trim() : undefined,
-        args: draft.transport === "stdio" ? parseMcpArgs(draft.args) : [],
-        url: draft.transport === "stdio" ? undefined : draft.url.trim(),
-        enabled: draft.enabled,
-      });
+      const result = await runtimeClient.createMcpServer(buildMcpServerPayload(draft));
       setMcpServers((current) => [
         result.server,
         ...current.filter((server) => server.id !== result.server.id),
@@ -3558,18 +3764,37 @@ export function App() {
     }
   }
 
+  async function handleImportMcpServers(drafts: McpServerDraft[]) {
+    setMcpLoading(true);
+    setError(null);
+    try {
+      const imported: McpServerRecord[] = [];
+      for (const draft of drafts) {
+        const result = await runtimeClient.createMcpServer(buildMcpServerPayload(draft));
+        imported.push(result.server);
+      }
+      setMcpServers((current) => [
+        ...imported,
+        ...current.filter((server) => !imported.some((item) => item.id === server.id)),
+      ]);
+      setMcpError(null);
+      addToast("success", `Imported ${imported.length} MCP server${imported.length === 1 ? "" : "s"}`);
+    } catch (reason) {
+      setMcpError(getErrorMessage(reason));
+      toastError(reason);
+      throw reason;
+    } finally {
+      setMcpLoading(false);
+    }
+  }
+
   async function handleUpdateMcpServer(serverId: string, draft: McpServerDraft) {
     setMcpBusyServerId(serverId);
     setError(null);
     try {
       const result = await runtimeClient.updateMcpServer({
         serverId,
-        name: draft.name,
-        transport: draft.transport,
-        command: draft.transport === "stdio" ? draft.command.trim() : undefined,
-        args: draft.transport === "stdio" ? parseMcpArgs(draft.args) : [],
-        url: draft.transport === "stdio" ? undefined : draft.url.trim(),
-        enabled: draft.enabled,
+        ...buildMcpServerPayload(draft),
       });
       setMcpServers((current) =>
         current.map((server) => (server.id === result.server.id ? result.server : server)),
@@ -3808,17 +4033,13 @@ export function App() {
     }
   }
 
-  async function handleSendMessage() {
-    if (!prompt.trim()) {
+  async function sendMessageContent(
+    messageContentInput: string,
+    messageAttachmentsInput: string[],
+    options: { clearComposer?: boolean; mode?: "new" | "supplement" | "queued" } = {},
+  ) {
+    if (!messageContentInput.trim() && messageAttachmentsInput.length === 0) {
       setError("Enter a task description before sending.");
-      return;
-    }
-
-    // Slash command dispatch.
-    const slashResult = dispatchSlashCommand(prompt);
-    if (slashResult) {
-      setPrompt("");
-      handleSlashCommand(slashResult);
       return;
     }
 
@@ -3826,7 +4047,6 @@ export function App() {
     setError(null);
     let pendingAssistantMessageIdForCatch: string | null = null;
     let pendingSessionIdForCatch: string | null = null;
-    let pendingTaskIdForCatch: string | null = null;
 
     try {
       await persistSearchConfig();
@@ -3835,27 +4055,21 @@ export function App() {
           ? activeSessionRecord ?? (await ensureSessionForSend())
           : await ensureSessionForSend();
       pendingSessionIdForCatch = activeSession.id;
-      const messageContent = prompt.trim();
+      const messageContent = messageContentInput.trim() || "Please review the attached file.";
+      const messageAttachments = messageAttachmentsInput;
       const messageCreatedAt = Date.now();
       const pendingUserMessageId = `user_${messageCreatedAt}`;
       const pendingAssistantMessageId = `assistant_pending_${messageCreatedAt}`;
-      const currentTaskIdBeforeSend = task?.id ?? null;
-      const targetTaskId = task?.id ?? activeTaskId ?? undefined;
-      const hasStreamingMessage = chatMessages.some((message) => message.sessionId === activeSession.id && message.streaming);
-      const isSupplement = Boolean((isTaskControllable(task?.status) || hasStreamingMessage) && targetTaskId);
-      pendingTaskIdForCatch = isSupplement ? targetTaskId ?? null : null;
-      const shouldCreateAssistantPlaceholder = !isSupplement;
+      const shouldCreateAssistantPlaceholder = options.mode !== "supplement";
       pendingAssistantMessageIdForCatch = shouldCreateAssistantPlaceholder ? pendingAssistantMessageId : null;
+      const currentTaskIdBeforeSend = task?.id ?? null;
       if (shouldCreateAssistantPlaceholder) {
         clearPendingAssistantTokens();
-        setEvents([]);
-        setTraceEvents([]);
-        setCommandLogCacheById({});
-        setTraceError(null);
-        setPatchCacheById({});
-        setPatchBusyId(null);
       }
-      setPrompt("");
+      if (options.clearComposer ?? true) {
+        setPrompt("");
+        setPromptAttachments([]);
+      }
       setChatMessages((current) =>
         shouldCreateAssistantPlaceholder
           ? appendAssistantPlaceholder(
@@ -3884,10 +4098,10 @@ export function App() {
       const result = await runtimeClient.sendMessage({
         sessionId: activeSession.id,
         content: messageContent,
-        attachments: [],
-        mode: isSupplement ? "supplement" : "new",
-        taskId: isSupplement ? targetTaskId : undefined,
-        newTask: isSupplement ? undefined : true,
+        attachments: messageAttachments,
+        mode: options.mode,
+        taskId: options.mode === "supplement" ? task?.id ?? activeTaskId ?? undefined : undefined,
+        newTask: options.mode === "new" ? true : undefined,
       });
 
       setChatMessages((current) => updatePendingMessageTask(current, pendingUserMessageId, result.task.id));
@@ -3895,7 +4109,7 @@ export function App() {
         setChatMessages((current) => updatePendingMessageTask(current, pendingAssistantMessageId, result.task.id));
       }
       setTaskHistory((current) => upsertRecord(current, result.task));
-      if (!currentTaskIdBeforeSend || result.task.id === currentTaskIdBeforeSend || !isSupplement) {
+      if (shouldPromoteTaskToActive(result.task, currentTaskIdBeforeSend)) {
         setTask(result.task);
         setActiveTaskId(result.task.id);
       }
@@ -3908,20 +4122,65 @@ export function App() {
         return resultTabs.tabs;
       });
     } catch (reason) {
-      const errorSummary = getErrorMessage(reason);
-      setChatMessages((current) =>
-        failAssistantMessage(current, {
-          messageId: pendingAssistantMessageIdForCatch,
-          sessionId: pendingSessionIdForCatch ?? activeSessionRecord?.id ?? session?.id ?? "pending",
-          taskId: pendingTaskIdForCatch ?? task?.id ?? activeTaskId ?? undefined,
-          content: `发送失败：${errorSummary}`,
-          now: Date.now(),
-        }),
-      );
+      if (pendingAssistantMessageIdForCatch || options.mode === "supplement") {
+        const errorSummary = getErrorMessage(reason);
+        setChatMessages((current) =>
+          failAssistantMessage(current, {
+            messageId: pendingAssistantMessageIdForCatch,
+            sessionId: pendingSessionIdForCatch ?? activeSessionRecord?.id ?? session?.id ?? "pending",
+            taskId: task?.id ?? activeTaskId ?? undefined,
+            content: `发送失败：${errorSummary}`,
+            now: Date.now(),
+          }),
+        );
+      }
       toastError(reason);
     } finally {
       setMessageBusy(false);
     }
+  }
+
+  async function handleSendMessage() {
+    if (!prompt.trim() && promptAttachments.length === 0) {
+      setError("Enter a task description before sending.");
+      return;
+    }
+
+    // Slash command dispatch.
+    const slashResult = dispatchSlashCommand(prompt);
+    if (slashResult) {
+      setPrompt("");
+      handleSlashCommand(slashResult);
+      return;
+    }
+
+    await sendMessageContent(prompt, promptAttachments, {
+      clearComposer: true,
+      mode: composerCanStop || composerHasStreamingMessage ? "supplement" : "new",
+    });
+  }
+
+  function handleQueuePrompt() {
+    if (!prompt.trim() && promptAttachments.length === 0) {
+      setError("Enter a task description before queueing.");
+      return;
+    }
+
+    const slashResult = dispatchSlashCommand(prompt);
+    if (slashResult) {
+      setError("Slash commands cannot be queued.");
+      return;
+    }
+
+    const queued: QueuedPromptSubmission = {
+      id: `queued_${Date.now()}`,
+      content: prompt.trim() || "Please review the attached file.",
+      attachments: promptAttachments,
+    };
+    setQueuedPromptSubmissions((current) => [...current, queued]);
+    setPrompt("");
+    setPromptAttachments([]);
+    setError(null);
   }
 
   function formatMcpSummary(servers: McpServerRecord[]): string {
@@ -3951,7 +4210,7 @@ export function App() {
   }
 
   /** Handle a locally-recognized slash command. */
-  function handleSlashCommand(cmd: ReturnType<typeof dispatchSlashCommand>) {
+  async function handleSlashCommand(cmd: ReturnType<typeof dispatchSlashCommand>) {
     if (!cmd) return;
 
     switch (cmd.kind) {
@@ -3967,11 +4226,31 @@ export function App() {
         setChatMessages([]);
         addToast("success", "聊天已清空");
         break;
-      case "compact":
-        addSystemMessage(
-          "上下文压缩尚未实现。后续运行时会支持对长会话进行摘要。",
-        );
+      case "compact": {
+        if (!session) {
+          addSystemMessage("没有活跃会话，无法压缩上下文。");
+          break;
+        }
+        try {
+          const result = await runtimeClient.compactSession({ sessionId: session.id });
+          if (result.strategy === "none" || result.tokensBefore === 0) {
+            addSystemMessage("会话消息为空，无需压缩。");
+          } else {
+            const saved = result.tokensBefore - result.tokensAfter;
+            addSystemMessage(
+              `**上下文压缩完成**\n\n` +
+              `- 策略：${result.strategy}\n` +
+              `- 压缩前：${result.tokensBefore} tokens\n` +
+              `- 压缩后：${result.tokensAfter} tokens\n` +
+              `- 节省：${saved > 0 ? saved : 0} tokens` +
+              (result.summary ? `\n\n**摘要：**\n${result.summary.slice(0, 500)}` : ""),
+            );
+          }
+        } catch (err: unknown) {
+          addSystemMessage(`压缩失败：${err instanceof Error ? err.message : String(err)}`);
+        }
         break;
+      }
       case "status": {
         const statusLines: string[] = [];
         statusLines.push(`**运行时：** ${hostStatusText}`);
@@ -4129,6 +4408,18 @@ export function App() {
     }
   }
 
+  function handleStopPrompt() {
+    clearPendingAssistantTokens();
+    setChatMessages((current) => stopStreamingMessages(current, session?.id));
+    setMessageBusy(false);
+    setSessionBusy(false);
+    setError(null);
+    setTaskControlError(null);
+    if (task && isTaskControllable(task.status)) {
+      void handleTaskControl("cancel");
+    }
+  }
+
   async function handleRefreshTrace() {
     if (!activeTaskId) {
       setTraceEvents([]);
@@ -4218,8 +4509,35 @@ export function App() {
   const runtimeReady = Boolean(hostStatus && config);
   const localPathActionsAvailable = runtimeClient.canOpenLocalAppPaths();
   const composerVisible = runtimeReady && (activeTab.kind === "new-session" || activeTab.kind === "session");
-  const workspaceName = workspace?.name ?? workspacePath.split(/[\\/]/).filter(Boolean).pop() ?? "yuanbao_agent";
+  const composerCanStop = isTaskControllable(task?.status);
+  const composerHasStreamingMessage = visibleChatMessages.some((message) => message.streaming);
+  const composerSending = messageBusy || composerCanStop || composerHasStreamingMessage;
+  const queuedPromptCount = queuedPromptSubmissions.length;
+  const activeSessionWorkspaceRoot = activeTab.kind === "session" ? activeSessionRecord?.workspaceRoot : undefined;
+  const activeSessionWorkspaceName =
+    activeTab.kind === "session"
+      ? activeSessionRecord?.workspaceName ?? workspaceNameFromPath(activeSessionWorkspaceRoot)
+      : undefined;
+  const workspaceName =
+    activeSessionWorkspaceName ?? workspace?.name ?? workspaceNameFromPath(workspacePath) ?? "yuanbao_agent";
   const providerLabel = getProviderDisplayLabel(providerSettings);
+  useEffect(() => {
+    if (
+      loading ||
+      !runtimeReady ||
+      messageBusy ||
+      composerCanStop ||
+      composerHasStreamingMessage ||
+      queuedPromptSubmissions.length === 0
+    ) {
+      return;
+    }
+
+    const [nextSubmission] = queuedPromptSubmissions;
+    setQueuedPromptSubmissions((current) => current.slice(1));
+    void sendMessageContent(nextSubmission.content, nextSubmission.attachments, { clearComposer: false, mode: "queued" });
+  }, [composerCanStop, composerHasStreamingMessage, loading, messageBusy, queuedPromptSubmissions, runtimeReady]);
+
   const sessionContextPreview = useMemo(
     () =>
       buildSessionContextPreview({
@@ -4231,7 +4549,12 @@ export function App() {
       }),
     [activeTaskId, events, traceEvents, task, workspace],
   );
-  const cwdLabel = sessionContextPreview?.workspaceRoot ?? workspace?.rootPath ?? workspacePath ?? DEFAULT_WORKSPACE_PATH;
+  const cwdLabel =
+    sessionContextPreview?.workspaceRoot ??
+    activeSessionWorkspaceRoot ??
+    workspace?.rootPath ??
+    workspacePath ??
+    DEFAULT_WORKSPACE_PATH;
   const hostStatusText = describeMode(hostStatus);
   const overviewRuntimeStatus = runtimeReady
     ? providerSettings.mode === "mock"
@@ -4375,25 +4698,39 @@ export function App() {
   );
   const sessionToolCalls = useMemo(
     () =>
-      toolTimelineItems.map((toolCall) => ({
-        id: toolCall.id,
-        toolName: toolCall.toolName,
-        status: toolCall.status,
-        time: toolCall.updatedAt,
-        resultSummary: toolCall.errorSummary ?? toolCall.resultSummary,
-        durationMs: toolCall.durationMs,
-        argsPreview: toolCall.argsSummary,
-        input: toolCall.argsSummary,
-        output: toolCall.resultSummary,
-        rawInput: toolCall.argsRaw,
-        rawOutput: toolCall.resultRaw,
-        stderr: toolCall.errorSummary,
-      })),
-    [toolTimelineItems],
+      toolTimelineItems
+        .filter((toolCall) => !activeTaskId || toolCall.taskId === activeTaskId)
+        .map((toolCall) => ({
+          id: toolCall.id,
+          toolName: toolCall.toolName,
+          status: toolCall.status,
+          time: toolCall.finishedAt ?? toolCall.updatedAt ?? toolCall.startedAt,
+          resultSummary: toolCall.errorSummary ?? toolCall.resultSummary,
+          durationMs: toolCall.durationMs,
+          argsPreview: toolCall.argsSummary,
+          input: toolCall.argsSummary,
+          output: toolCall.resultSummary,
+          rawInput: toolCall.argsRaw,
+          rawOutput: toolCall.resultRaw,
+          stderr: toolCall.errorSummary,
+        })),
+    [activeTaskId, toolTimelineItems],
   );
   const sessionCollaboration = useMemo(
     () => buildSessionCollaboration(events, traceEvents),
     [events, traceEvents],
+  );
+  const composerRuntimeChildTasks: ComposerRuntimeChildTask[] = useMemo(
+    () =>
+      (sessionCollaboration.childTasks ?? []).map((childTask) => ({
+        id: childTask.id,
+        title: childTask.title,
+        status: childTask.status,
+        workerName: childTask.workerName,
+        summary: childTask.summary,
+        updatedAt: childTask.updatedAt,
+      })),
+    [sessionCollaboration.childTasks],
   );
   const sessionBackgroundJobs = useMemo(
     () => {
@@ -4472,6 +4809,7 @@ export function App() {
           modelOptions={(settingsProviders ?? []).map((provider) => ({
             id: provider.id,
             label: provider.models?.[0] ?? provider.name,
+            subtitle: provider.models?.[0] && provider.name !== provider.models[0] ? provider.name : undefined,
           }))}
           selectedModelId={activeProviderProfileId}
           workspaceBusy={workspaceBusy}
@@ -4495,6 +4833,8 @@ export function App() {
                   id: task.id,
                   status: task.status,
                   goal: task.goal,
+                  createdAt: task.createdAt,
+                  updatedAt: task.updatedAt,
                   acceptanceCriteria: task.acceptanceCriteria,
                   outOfScope: task.outOfScope,
                   currentStep: task.currentStep,
@@ -4574,6 +4914,7 @@ export function App() {
           errorMessage={mcpError}
           onRefreshServers={refreshMcpServers}
           onCreateServer={handleCreateMcpServer}
+          onImportServers={handleImportMcpServers}
           onUpdateServer={handleUpdateMcpServer}
           onToggleServer={handleToggleMcpServer}
           onRefreshTools={handleRefreshMcpTools}
@@ -4597,6 +4938,7 @@ export function App() {
           onCreateSkill={handleCreateSkill}
           onUpdateSkill={handleUpdateSkill}
           onDeleteSkill={handleDeleteSkill}
+          onImportSkills={handleImportSkills}
         />
       );
     }
@@ -4682,8 +5024,23 @@ export function App() {
       onRenameSession={handleRenameSession}
       onDeleteSession={handleDeleteSession}
       onSubmitPrompt={handleSendMessage}
-      disabled={loading || messageBusy || !runtimeReady}
-      sending={messageBusy}
+      onQueuePrompt={handleQueuePrompt}
+      onStopPrompt={handleStopPrompt}
+      disabled={loading || !runtimeReady}
+      sending={composerSending}
+      submitting={messageBusy}
+      queuedPromptCount={queuedPromptCount}
+      runtimeChildTasks={composerRuntimeChildTasks}
+      attachments={promptAttachments}
+      onAttachmentsChange={setPromptAttachments}
+      onAttachmentError={toastError}
+      modelOptions={(settingsProviders ?? []).map((provider) => ({
+        id: provider.id,
+        label: provider.models?.[0] ?? provider.name,
+        subtitle: provider.models?.[0] && provider.name !== provider.models[0] ? provider.name : undefined,
+      }))}
+      selectedModelId={activeProviderProfileId}
+      onSelectModel={selectProviderProfile}
       loading={loading}
       providerLabel={providerLabel}
       cwdLabel={cwdLabel}

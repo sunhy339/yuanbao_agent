@@ -116,6 +116,7 @@ class SQLiteStore:
         self._artifact_dir.mkdir(parents=True, exist_ok=True)
         self._bootstrap()
         self._config = self._load_or_initialize_config()
+        self._config_snapshot: dict[str, Any] | None = None
 
     def close(self) -> None:
         self._conn.close()
@@ -212,7 +213,12 @@ class SQLiteStore:
 
     def require_session(self, session_id: str) -> dict[str, Any]:
         row = self._conn.execute(
-            "SELECT * FROM sessions WHERE id = ?",
+            """
+            SELECT s.*, w.name AS workspace_name, w.root_path AS workspace_root
+            FROM sessions s
+            LEFT JOIN workspaces w ON w.id = s.workspace_id
+            WHERE s.id = ?
+            """,
             (session_id,),
         ).fetchone()
         if row is None:
@@ -223,7 +229,14 @@ class SQLiteStore:
         return {"session": self.require_session(params["sessionId"])}
 
     def list_sessions(self, _params: dict[str, Any]) -> dict[str, Any]:
-        rows = self._conn.execute("SELECT * FROM sessions ORDER BY updated_at DESC").fetchall()
+        rows = self._conn.execute(
+            """
+            SELECT s.*, w.name AS workspace_name, w.root_path AS workspace_root
+            FROM sessions s
+            LEFT JOIN workspaces w ON w.id = s.workspace_id
+            ORDER BY s.updated_at DESC
+            """
+        ).fetchall()
         return {"sessions": [self._serialize_session(dict(row)) for row in rows]}
 
     def create_message(
@@ -1775,7 +1788,9 @@ class SQLiteStore:
         return str(artifact_path)
 
     def get_config(self, _params: dict[str, Any]) -> dict[str, Any]:
-        return {"config": deepcopy(self._config)}
+        if self._config_snapshot is None:
+            self._config_snapshot = deepcopy(self._config)
+        return {"config": self._config_snapshot}
 
     def update_config(self, params: dict[str, Any]) -> dict[str, Any]:
         patch = params.get("config", params)
@@ -1787,6 +1802,7 @@ class SQLiteStore:
         if isinstance(provider_patch, dict) and "profiles" not in provider_patch:
             self._apply_provider_patch_to_active_profile(merged, provider_patch)
         self._config = self._normalize_config(merged)
+        self._config_snapshot = None
         self._persist_config(self._config)
         return {"config": deepcopy(self._config)}
 
@@ -1827,6 +1843,7 @@ class SQLiteStore:
             **deepcopy(self._config),
             "provider": provider,
         })
+        self._config_snapshot = None
         self._persist_config(self._config)
         return {"config": deepcopy(self._config)}
 
@@ -1842,7 +1859,7 @@ class SQLiteStore:
         }
 
     def _serialize_session(self, row: dict[str, Any]) -> dict[str, Any]:
-        return {
+        session = {
             "id": row["id"],
             "workspaceId": row["workspace_id"],
             "title": row["title"],
@@ -1851,6 +1868,11 @@ class SQLiteStore:
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
+        if row.get("workspace_name"):
+            session["workspaceName"] = row["workspace_name"]
+        if row.get("workspace_root"):
+            session["workspaceRoot"] = row["workspace_root"]
+        return session
 
     def _serialize_message(self, row: dict[str, Any]) -> dict[str, Any]:
         message = {
@@ -1908,6 +1930,7 @@ class SQLiteStore:
             "commands": self._json_list(row.get("commands_json")),
             "verification": self._json_list(row.get("verification_json")),
             "reflection": self._json_dict(row.get("reflection_json")),
+            "routing": self._json_dict(row.get("routing_json")),
             "summary": row.get("summary"),
             "resultSummary": row["result_json"],
             "errorCode": row["error_code"],

@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionWorkspace } from "./SessionWorkspace";
@@ -130,6 +130,130 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText(/发送第一条消息/)).toBeInTheDocument();
   });
 
+  it("shows the current conversation elapsed time while the assistant is streaming", () => {
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          { id: "m1", role: "user", content: "Keep working", createdAt: Date.now() - 75_000 },
+          { id: "m2", role: "assistant", content: "Still checking the flow.", streaming: true, createdAt: Date.now() - 40_000 },
+        ]}
+      />,
+    );
+
+    expect(screen.getByLabelText(/本轮对话正在输出\.\.\.1m/)).toBeInTheDocument();
+    const flow = Array.from(container.querySelectorAll(".message-bubble, .conversation-live-row")).map(
+      (item) => item.textContent ?? "",
+    );
+    expect(flow[0]).toContain("Keep working");
+    expect(flow[1]).toContain("Still checking the flow.");
+    expect(flow[2]).toContain("正在输出");
+  });
+
+  it("keeps the live pill at the bottom of the activity stream", () => {
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          { id: "m1", role: "user", content: "Patch the game", createdAt: 1 },
+          { id: "m2", role: "assistant", content: "Thinking...", streaming: true, placeholder: true, createdAt: Date.now() - 1_000 },
+        ]}
+        toolCalls={[
+          {
+            id: "tool_write",
+            toolName: "write_file",
+            status: "completed",
+            rawInput: '{"path":"game.py"}',
+            resultSummary: "Wrote file",
+            time: 3,
+          },
+        ]}
+      />,
+    );
+
+    const flow = Array.from(container.querySelectorAll(".message-bubble, .conversation-live-row, .runtime-event-card")).map(
+      (item) => item.textContent ?? "",
+    );
+    expect(flow[0]).toContain("Patch the game");
+    expect(flow[1]).toContain("write_file");
+    expect(flow[2]).toContain("思考");
+    expect(flow[3]).toContain("正在输出");
+  });
+
+  it("does not move a streaming assistant message below a later user message when updatedAt changes", () => {
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          { id: "m1", role: "assistant", content: "Streaming answer", streaming: true, createdAt: 10, updatedAt: 100 },
+          { id: "m2", role: "user", content: "Follow-up", createdAt: 20, updatedAt: 20 },
+        ]}
+      />,
+    );
+
+    const flow = Array.from(container.querySelectorAll(".message-bubble")).map((item) => item.textContent ?? "");
+    expect(flow[0]).toContain("Streaming answer");
+    expect(flow[1]).toContain("Follow-up");
+  });
+
+  it("keeps the current conversation status visible after the assistant stops", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          { id: "m1", role: "user", content: "Keep working", createdAt: Date.now() - 75_000 },
+          { id: "m2", role: "assistant", content: "Done.", createdAt: Date.now() - 15_000 },
+        ]}
+      />,
+    );
+
+    expect(screen.getByLabelText(/本轮对话已完成1m/)).toBeInTheDocument();
+  });
+
+  it("explains when a thinking placeholder has not produced output for a while", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          { id: "m1", role: "user", content: "Any update?", createdAt: Date.now() - 130_000 },
+          {
+            id: "m2",
+            role: "assistant",
+            content: "Thinking...",
+            createdAt: Date.now() - 125_000,
+            updatedAt: Date.now() - 125_000,
+            streaming: true,
+            placeholder: true,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("仍在思考…")).toBeInTheDocument();
+    expect(screen.getByText(/长时间无新输出/)).toBeInTheDocument();
+  });
+
+  it("does not invent plan steps when the runtime did not create a plan", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_1",
+          status: "running",
+          goal: "Answer a short question",
+        }}
+        messages={[{ id: "m1", role: "user", content: "Quick question", createdAt: Date.now() - 10_000 }]}
+      />,
+    );
+
+    expect(screen.queryByLabelText("计划步骤")).not.toBeInTheDocument();
+  });
+
   it("renders assistant markdown as structured content", () => {
     render(
       <SessionWorkspace
@@ -213,7 +337,8 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText(/"internal":"hidden"/)).not.toBeInTheDocument();
   });
 
-  it("renders command runtime cards without exposing raw details", () => {
+  it("renders command runtime cards as compact rows until expanded", async () => {
+    const user = userEvent.setup();
     render(
       <SessionWorkspace
         session={session}
@@ -234,12 +359,180 @@ describe("SessionWorkspace", () => {
     );
 
     expect(screen.getByRole("heading", { name: "npm test" })).toBeInTheDocument();
-    expect(screen.getByText(/Command failed with exit 1/)).toBeInTheDocument();
+    const commandButton = screen.getByRole("button", { name: /npm test/ });
+    expect(screen.queryByText(/Command failed with exit 1/)).not.toBeInTheDocument();
     expect(screen.queryByText(/"command":"npm test"/)).not.toBeInTheDocument();
+    await user.click(commandButton);
+    expect(screen.getByText(/Command failed with exit 1/)).toBeInTheDocument();
 
     // Raw data should not be shown at all
     expect(screen.queryByText("查看原始数据")).not.toBeInTheDocument();
     expect(screen.queryByText(/"command":"npm test"/)).not.toBeInTheDocument();
+  });
+
+  it("renders tool process rows with status and elapsed time before expansion", async () => {
+    const user = userEvent.setup();
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Read game", createdAt: 1 }]}
+        toolCalls={[
+          {
+            id: "tool_read",
+            toolName: "read_file",
+            status: "completed",
+            resultSummary: "读取完成，3749 字节: \"\"\"游戏核心逻辑\"\"\"",
+            rawInput: '{"path":"snake_game/game.py"}',
+            durationMs: 1250,
+            time: 2,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "read_file snake_game/game.py" })).toBeInTheDocument();
+    const toolButton = screen.getByRole("button", { name: /read_file snake_game\/game.py .*1\.3s/ });
+    expect(toolButton).toBeInTheDocument();
+    expect(screen.queryByText(/读取完成，3749 字节/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/"path":"snake_game\/game.py"/)).not.toBeInTheDocument();
+    await user.click(toolButton);
+    expect(screen.getByText(/读取完成，3749 字节/)).toBeInTheDocument();
+  });
+
+  it("folds repeated read_file process rows for the same file in a short window", () => {
+    const baseTime = Date.UTC(2026, 4, 6, 6, 0, 0);
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Read game", createdAt: baseTime }]}
+        toolCalls={[
+          {
+            id: "tool_read_1",
+            toolName: "read_file",
+            status: "completed",
+            resultSummary: "Read snake_game/game.py",
+            rawInput: '{"path":"snake_game/game.py"}',
+            time: baseTime + 10,
+          },
+          {
+            id: "tool_read_2",
+            toolName: "read_file",
+            status: "completed",
+            resultSummary: "Read snake_game/game.py again",
+            rawInput: '{"path":"snake_game/game.py"}',
+            time: baseTime + 35,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByRole("heading", { name: "read_file snake_game/game.py" })).toHaveLength(1);
+  });
+
+  it("renders markdown images as bounded image blocks", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          {
+            id: "m1",
+            role: "assistant",
+            content: "Here is the screenshot:\n\n![UI screenshot](https://example.com/screenshot.png)",
+            createdAt: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "UI screenshot" })).toHaveAttribute(
+      "src",
+      "https://example.com/screenshot.png",
+    );
+  });
+
+  it("keeps assistant output in created order even when updated after tool activity", () => {
+    const baseTime = Date.UTC(2026, 4, 6, 6, 0, 0);
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          { id: "m1", role: "user", content: "Check current status", createdAt: baseTime + 1 },
+          {
+            id: "m2",
+            role: "assistant",
+            content: "Latest generated answer",
+            createdAt: baseTime + 2,
+            updatedAt: baseTime + 5,
+          },
+        ]}
+        toolCalls={[
+          {
+            id: "tool_read",
+            toolName: "read_file",
+            status: "completed",
+            resultSummary: "Read snake_game/game.py",
+            rawInput: '{"path":"snake_game/game.py"}',
+            time: baseTime + 3,
+          },
+        ]}
+      />,
+    );
+
+    const flow = Array.from(container.querySelectorAll(".message-bubble, .runtime-process-card")).map(
+      (item) => item.textContent ?? "",
+    );
+    expect(flow[0]).toContain("Check current status");
+    expect(flow[1]).toContain("Latest generated answer");
+    expect(flow[2]).toContain("read_file snake_game/game.py");
+  });
+
+  it("shows a live elapsed timer for running tool process cards", () => {
+    const startedAt = Date.now() - 50_000;
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Inspect", createdAt: 1 }]}
+        toolCalls={[
+          {
+            id: "tool_read",
+            toolName: "read_file",
+            status: "started",
+            resultSummary: "正在读取 snake_game/game.py",
+            rawInput: '{"path":"snake_game/game.py"}',
+            time: startedAt,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /read_file snake_game\/game.py .*50s/ })).toBeInTheDocument();
+  });
+
+  it("shows a fallback elapsed timer when a running tool has no timestamp yet", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Inspect", createdAt: 1 }]}
+        toolCalls={[
+          {
+            id: "tool_read",
+            toolName: "read_file",
+            status: "started",
+            resultSummary: "正在读取 snake_game/game.py",
+            rawInput: '{"path":"snake_game/game.py"}',
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /read_file snake_game\/game.py .*0s/ })).toBeInTheDocument();
   });
 
   it("copies command output and trace detail through explicit controls", async () => {
@@ -382,8 +675,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText("查看原始数据")).not.toBeInTheDocument();
   });
 
-  it("renders active task execution progress as compact readable cards", async () => {
-    const user = userEvent.setup();
+  it("renders active task execution progress without duplicating task summary cards", () => {
 
     render(
       <SessionWorkspace
@@ -392,9 +684,15 @@ describe("SessionWorkspace", () => {
           id: "task_1",
           status: "verifying",
           goal: "Create a pixel-art image tool",
+          createdAt: Date.now() - 120_000,
           currentStep: "Run the generated CLI against a sample image",
           acceptanceCriteria: ["Script exists", "Help command works"],
           outOfScope: ["No GUI in this pass"],
+          planSteps: [
+            { id: "inspect", title: "Inspect workspace", status: "completed", detail: "Read the project shape." },
+            { id: "implement", title: "Implement the generator", status: "completed", detail: "Create the CLI." },
+            { id: "verify", title: "Verify the CLI", status: "active", detail: "Run the help command." },
+          ],
           changedFiles: [
             {
               path: "tools/bead_art_generator.py",
@@ -431,21 +729,180 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /任务 变更文件 已记录/ })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "命令执行" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /任务 验证 已通过/ })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "任务进度" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "正在验证" })).toBeInTheDocument();
+    expect(screen.getByLabelText(/本轮对话助手工作中/)).toBeInTheDocument();
+    expect(screen.getByText(/2m/)).toBeInTheDocument();
+    expect(screen.getAllByText("Create a pixel-art image tool").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Inspect workspace")).not.toBeInTheDocument();
+    expect(screen.queryByText("Implement the generator")).not.toBeInTheDocument();
+    expect(screen.queryByText("Verify the CLI")).not.toBeInTheDocument();
+    expect(screen.getByText("正在分析代码")).toBeInTheDocument();
+    expect(screen.getByText("正在修改")).toBeInTheDocument();
+    expect(screen.getAllByText("正在验证").length).toBeGreaterThan(0);
+    expect(screen.getByText("代码变更")).toBeInTheDocument();
+    expect(screen.getAllByText("1 个文件").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("验证").length).toBeGreaterThan(0);
+    expect(screen.getByText("1 项")).toBeInTheDocument();
+    expect(screen.getAllByText("执行").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1 条命令").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /任务 变更文件 已记录/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /任务 验证 已通过/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/sessionId/)).not.toBeInTheDocument();
     expect(screen.queryByText(/taskId/)).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /任务 变更文件 已记录/ }));
     expect(screen.getAllByText(/tools\/bead_art_generator.py/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/\+148/)).toBeInTheDocument();
+    expect(screen.getAllByText(/\+148/).length).toBeGreaterThan(0);
 
-    expect(screen.getByText(/python tools\/bead_art_generator.py --help/)).toBeInTheDocument();
-    expect(screen.getByText(/退出码 0/)).toBeInTheDocument();
+    expect(screen.getAllByText(/python tools\/bead_art_generator.py --help/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/CLI help is available|已通过/).length).toBeGreaterThan(0);
+  });
 
-    await user.click(screen.getByRole("button", { name: /任务 验证 已通过/ }));
-    expect(screen.getByText(/CLI help is available/)).toHaveTextContent("已通过");
+  it("renders real agent child tasks separately from the execution plan", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_parent",
+          status: "running",
+          goal: "Improve snake game UI",
+          planSteps: [{ id: "plan_1", title: "Update board visuals", status: "active" }],
+        }}
+        collaboration={{
+          workers: [
+            {
+              id: "worker_1",
+              name: "Worker 1",
+              status: "running",
+              mode: "worker",
+              claimedTaskId: "child_1",
+            },
+          ],
+          childTasks: [
+            {
+              id: "child_1",
+              title: "Implement food sprite polish",
+              status: "running",
+              workerId: "worker_1",
+              workerName: "Worker 1",
+              summary: "Editing snake_game/food.py",
+            },
+          ],
+          results: [
+            {
+              id: "child_1:result",
+              taskId: "child_1",
+              title: "Implement food sprite polish",
+              status: "completed",
+              summary: "Food rendering updated.",
+            },
+          ],
+        }}
+        messages={[{ id: "m1", role: "user", content: "Improve snake game UI", createdAt: 1, taskId: "task_parent" }]}
+      />,
+    );
+
+    expect(screen.queryByLabelText("计划步骤")).not.toBeInTheDocument();
+    const agentPanel = screen.getByLabelText("真实 Agent 任务");
+    expect(within(agentPanel).getAllByText("Implement food sprite polish").length).toBeGreaterThan(0);
+    expect(within(agentPanel).getByText(/worker: Worker 1/)).toBeInTheDocument();
+    expect(within(agentPanel).getByText("Worker 1")).toBeInTheDocument();
+    expect(within(agentPanel).getByText("Food rendering updated.")).toBeInTheDocument();
+  });
+
+  it("shows that no real agent child task exists when agent work was requested but none was emitted", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_parent",
+          status: "running",
+          goal: "起多个agent来做",
+          planSteps: [{ id: "plan_1", title: "Plan visual updates", status: "active" }],
+        }}
+        collaboration={{ workers: [], childTasks: [], results: [] }}
+        messages={[{ id: "m1", role: "user", content: "起多个agent来做", createdAt: 1, taskId: "task_parent" }]}
+      />,
+    );
+
+    const agentPanel = screen.getByLabelText("真实 Agent 任务");
+    expect(within(agentPanel).getByText("尚未检测到运行时创建的真实 agent child task。")).toBeInTheDocument();
+  });
+
+  it("does not render the task checklist inside the message stream", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_inline",
+          status: "running",
+          goal: "Add AI snake battle",
+          planSteps: [
+            { id: "inspect", title: "Inspect snake game structure", status: "completed", detail: "Read game files." },
+            { id: "implement", title: "Implement AI snake opponent", status: "active", detail: "Add opponent logic." },
+            { id: "verify", title: "Verify the battle mode", status: "pending", detail: "Run the game smoke check." },
+          ],
+        }}
+        messages={[
+          { id: "m1", role: "user", content: "Earlier unrelated request", createdAt: 1, taskId: "task_old" },
+          { id: "m2", role: "assistant", content: "Earlier answer", createdAt: 2, taskId: "task_old" },
+          { id: "m3", role: "user", content: "Add AI snake battle", createdAt: 3, taskId: "task_inline" },
+        ]}
+      />,
+    );
+
+    expect(screen.queryByLabelText("助手任务清单")).not.toBeInTheDocument();
+  });
+
+  it("does not show task scaffolding for a simple follow-up question", () => {
+    const question = "\u4ec0\u4e48\u60c5\u51b5\u4e86";
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_question",
+          status: "failed",
+          goal: question,
+          acceptanceCriteria: ["Answer the user's question."],
+          outOfScope: ["Do not change files."],
+          planSteps: [
+            {
+              id: "inspect-workspace",
+              title: "\u7406\u89e3\u4efb\u52a1\u76ee\u6807",
+              status: "active",
+              detail: "\u786e\u8ba4 test_pro \u4e2d\u4e0e\u201c\u4ec0\u4e48\u60c5\u51b5\u4e86\u201d\u76f8\u5173\u7684\u5165\u53e3\u3001\u6a21\u5757\u548c\u73b0\u6709\u72b6\u6001\u3002",
+            },
+            {
+              id: "search-relevant-files",
+              title: "\u5b9a\u4f4d\u76f8\u5173\u6587\u4ef6",
+              status: "pending",
+              detail: "\u67e5\u627e\u652f\u6491\u201c\u4ec0\u4e48\u60c5\u51b5\u4e86\u201d\u6240\u9700\u4fee\u6539\u7684\u4ee3\u7801\u3001\u8d44\u6e90\u548c\u6d4b\u8bd5\u4f4d\u7f6e\u3002",
+            },
+            {
+              id: "summarize-findings",
+              title: "\u6574\u7406\u7b54\u590d",
+              status: "pending",
+              detail: "\u56f4\u7ed5\u201c\u4ec0\u4e48\u60c5\u51b5\u4e86\u201d\u7ed9\u51fa\u5177\u4f53\u7ed3\u8bba\u548c\u4e0b\u4e00\u6b65\u3002",
+            },
+          ],
+        }}
+        messages={[
+          {
+            id: "m1",
+            role: "user",
+            content: question,
+            createdAt: 1,
+            taskId: "task_question",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(question)).toBeInTheDocument();
+    expect(screen.queryByText("\u7406\u89e3\u4efb\u52a1\u76ee\u6807")).not.toBeInTheDocument();
+    expect(screen.queryByText("\u5b9a\u4f4d\u76f8\u5173\u6587\u4ef6")).not.toBeInTheDocument();
+    expect(screen.queryByText("\u6574\u7406\u7b54\u590d")).not.toBeInTheDocument();
   });
 
   it("does not render session memory cards (hidden by design)", () => {
@@ -519,12 +976,15 @@ describe("SessionWorkspace", () => {
             status: "pending",
             kind: "apply_patch",
             command: "apply_patch",
+            risk: "medium",
           },
         ]}
         onApprove={onApprove}
         onReject={onReject}
       />,
     );
+
+    expect(screen.getByText("中风险")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "批准" }));
     await user.click(screen.getByRole("button", { name: "拒绝" }));

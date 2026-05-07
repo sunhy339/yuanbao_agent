@@ -24,6 +24,61 @@ OPENAI_COMPATIBLE_MODES = {
 
 PROVIDER_RETRY_ATTEMPTS = 2
 
+# JSON Schema keywords that many provider APIs (e.g. Tencent Yuanbao) reject.
+_UNSUPPORTED_SCHEMA_KEYS = frozenset({
+    "$defs",
+    "$id",
+    "$schema",
+    "additionalProperties",
+    "allOf",
+    "anyOf",
+    "const",
+    "default",
+    "definitions",
+    "dependencies",
+    "dependentSchemas",
+    "else",
+    "examples",
+    "exclusiveMaximum",
+    "exclusiveMinimum",
+    "format",
+    "if",
+    "maxItems",
+    "maxLength",
+    "maximum",
+    "minItems",
+    "minLength",
+    "minimum",
+    "multipleOf",
+    "not",
+    "nullable",
+    "oneOf",
+    "pattern",
+    "patternProperties",
+    "propertyNames",
+    "then",
+    "title",
+    "uniqueItems",
+})
+
+
+def _sanitize_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Recursively strip unsupported JSON Schema keys from a tool parameter schema."""
+    cleaned: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in _UNSUPPORTED_SCHEMA_KEYS:
+            continue
+        if isinstance(value, dict):
+            cleaned[key] = _sanitize_schema(value)
+        elif isinstance(value, list):
+            cleaned[key] = [
+                _sanitize_schema(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            cleaned[key] = value
+    return cleaned
+
 RETRYABLE_PROVIDER_ERROR_MARKERS = (
     "timed out",
     "timeout",
@@ -208,18 +263,24 @@ class ProviderAdapter:
             if not isinstance(tool, dict):
                 continue
             if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+                # Already in OpenAI format — sanitize parameters in-place.
+                func = tool["function"]
+                params = func.get("parameters")
+                if isinstance(params, dict):
+                    func["parameters"] = _sanitize_schema(params)
                 normalized.append(tool)
                 continue
             name = tool.get("name")
             if not isinstance(name, str) or not name:
                 continue
+            raw_params = tool.get("input_schema") or tool.get("parameters") or {"type": "object"}
             normalized.append(
                 {
                     "type": "function",
                     "function": {
                         "name": name,
                         "description": tool.get("description") or "",
-                        "parameters": tool.get("input_schema") or tool.get("parameters") or {"type": "object"},
+                        "parameters": _sanitize_schema(raw_params) if isinstance(raw_params, dict) else raw_params,
                     },
                 }
             )
@@ -239,7 +300,7 @@ class ProviderAdapter:
                     "ignore": search_config.get("ignore", []),
                 },
                 "plan_step_id": "inspect-workspace",
-                "start_token": f"Inspecting the top-level structure of {context['workspace_name']}...",
+                "start_token": f"Inspecting the top-level structure of {context.get('workspace_name', 'the project')}...",
             }
         ]
 
@@ -341,7 +402,7 @@ class ProviderAdapter:
         git_diff_hint = self._describe_git_diff(git_diff_result)
 
         parts = [
-            f"Completed an initial pass over workspace {context['workspace_name']}.",
+            f"Completed an initial pass over workspace {context.get('workspace_name', 'the project')}.",
             directory_hint,
         ]
         if search_hint:

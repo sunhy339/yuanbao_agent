@@ -260,6 +260,10 @@ def _assert_trace_covers_e2e(runtime: SimpleNamespace, task_id: str) -> None:
 
 def _run_patch_approval_smoke(runtime: SimpleNamespace, workspace_root: Path) -> dict[str, Any]:
     workspace_root.mkdir()
+    import subprocess
+    subprocess.run(["git", "init", str(workspace_root)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(workspace_root), "config", "user.email", "test@test.com"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(workspace_root), "config", "user.name", "Test"], check=True, capture_output=True)
     target_file = workspace_root / "todo.txt"
     target_file.write_text("status: old\n", encoding="utf-8")
     session = _open_session(runtime, workspace_root)

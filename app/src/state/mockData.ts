@@ -25,10 +25,12 @@ export function buildMockWorkspace(path: string): WorkspaceRef {
   };
 }
 
-export function buildMockSession(workspaceId: string, title: string): SessionRecord {
+export function buildMockSession(workspaceId: string, title: string, workspace?: WorkspaceRef | null): SessionRecord {
   return {
     id: `sess_${Date.now()}`,
     workspaceId,
+    workspaceName: workspace?.name,
+    workspaceRoot: workspace?.rootPath,
     title,
     status: "active",
     summary: "Browser preview session for the local coding agent shell.",

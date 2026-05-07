@@ -23,6 +23,7 @@ from local_agent_runtime.mcp.client import (
     McpServerConfig,
     mcp_tool_to_internal_schema,
     parse_mcp_result,
+    summarize_mcp_exception,
 )
 from local_agent_runtime.orchestrator.service import Orchestrator
 from local_agent_runtime.provider.adapter import ProviderAdapter
@@ -143,6 +144,34 @@ class TestParseMcpResult:
         assert parsed == {"status": "ok", "output": ""}
 
 
+class TestMcpExceptionSummary:
+    def test_unwraps_exception_group_leaf_errors(self):
+        exc = ExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [FileNotFoundError("No such file or directory: 'missing-mcp'")],
+        )
+
+        summary = summarize_mcp_exception(exc)
+
+        assert "FileNotFoundError" in summary
+        assert "missing-mcp" in summary
+        assert "TaskGroup" not in summary
+
+    def test_deduplicates_nested_exception_group_errors(self):
+        exc = ExceptionGroup(
+            "outer",
+            [
+                ExceptionGroup("inner", [ConnectionRefusedError("connection refused")]),
+                ConnectionRefusedError("connection refused"),
+            ],
+        )
+
+        summary = summarize_mcp_exception(exc)
+
+        assert summary.count("ConnectionRefusedError") == 1
+        assert "connection refused" in summary
+
+
 # ── McpServerConfig ────────────────────────────────────────────────────
 
 
@@ -177,6 +206,22 @@ class TestMcpServerConfig:
         assert config.args == []
         assert config.headers is None
         assert config.env is None
+
+    def test_from_row_strips_wrapping_shell_quotes(self):
+        row = {
+            "id": "puppeteer",
+            "name": "Puppeteer",
+            "transport": "stdio",
+            "command": '"npx"',
+            "args": '["\\"-y\\"", "\\"@modelcontextprotocol/server-puppeteer\\""]',
+            "url": None,
+            "headers": None,
+            "env": '{"FIRECRAWL_API_KEY": "secret"}',
+        }
+        config = McpServerConfig.from_row(row)
+        assert config.command == "npx"
+        assert config.args == ["-y", "@modelcontextprotocol/server-puppeteer"]
+        assert config.env == {"FIRECRAWL_API_KEY": "secret"}
 
 
 # ── McpClientManager (mocked async) ────────────────────────────────────
@@ -580,9 +625,15 @@ class TestMcpClientManagerShutdown:
         thread = MagicMock()
         mgr._thread = thread
 
-        # Patch asyncio.run_coroutine_threadsafe used by new shutdown path
+        # Patch asyncio.run_coroutine_threadsafe used by new shutdown path.
+        # Close the coroutine to suppress "RuntimeWarning: coroutine was never awaited".
         with patch("asyncio.run_coroutine_threadsafe") as mock_rcts:
-            mock_rcts.return_value.result.return_value = None
+            def _close_coroutine(coro, loop):
+                coro.close()
+                f = MagicMock()
+                f.result.return_value = None
+                return f
+            mock_rcts.side_effect = _close_coroutine
             mgr.shutdown()
 
             # Should have attempted disconnect for each server

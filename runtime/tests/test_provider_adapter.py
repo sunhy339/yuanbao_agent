@@ -110,8 +110,73 @@ def test_openai_compatible_request_payload() -> None:
         "temperature": 0.7,
         "max_tokens": 123,
         "tools": tools,
-        "tool_choice": "auto",
     }
+
+
+def test_openai_compatible_maps_unsafe_tool_names_round_trip() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "memory_remember", "arguments": "{\"text\":\"keep\"}"},
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+    response = adapter.chat(
+        messages=[{"role": "user", "content": "remember this"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory.remember",
+                    "description": "Remember",
+                    "parameters": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {"text": {"type": "string", "default": ""}},
+                        "required": ["text"],
+                        "oneOf": [{"required": ["text"]}],
+                    },
+                },
+            }
+        ],
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["tools"][0]["function"]["name"] == "memory_remember"
+    parameters = payload["tools"][0]["function"]["parameters"]
+    assert "additionalProperties" not in parameters
+    assert "oneOf" not in parameters
+    assert "default" not in parameters["properties"]["text"]
+    assert response["message"]["tool_calls"][0]["name"] == "memory.remember"
 
 
 def test_openai_compatible_serializes_internal_tool_messages_for_request() -> None:

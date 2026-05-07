@@ -106,26 +106,26 @@ describe("chatMessages", () => {
   });
 
   it("turns a failed pending assistant placeholder into a visible error message", () => {
-    const next = appendAssistantPlaceholder(messages, {
+    const pending = appendAssistantPlaceholder(messages, {
       id: "thinking_1",
       sessionId: "sess_1",
-      content: "thinking...",
+      content: "鎬濊€冧腑...",
       now: 4,
     });
 
-    const failed = failAssistantMessage(next, {
+    const next = failAssistantMessage(pending, {
       messageId: "thinking_1",
       sessionId: "sess_1",
       taskId: "task_3",
-      content: "Send failed: Provider request failed",
+      content: "发送失败：Provider request failed",
       now: 5,
     });
 
-    expect(failed.at(-1)).toMatchObject({
+    expect(next.at(-1)).toMatchObject({
       id: "thinking_1",
       taskId: "task_3",
       role: "assistant",
-      content: "Send failed: Provider request failed",
+      content: "发送失败：Provider request failed",
       streaming: false,
       placeholder: false,
     });
@@ -186,70 +186,102 @@ describe("chatMessages", () => {
     ]);
   });
 
-  it("keeps local pending messages during a persisted-message refresh race", () => {
-    const localMessages: ChatMessageView[] = [
-      ...messages,
+  it("keeps live assistant placeholders sorted after newly persisted user messages", () => {
+    const persisted: MessageRecord[] = [
       {
-        id: "user_local",
+        id: "stored_user",
         sessionId: "sess_1",
-        taskId: "pending",
         role: "user",
-        content: "new local request",
-        createdAt: 20,
-        updatedAt: 20,
+        content: "continue crawling",
+        createdAt: 100,
       },
+    ];
+    const liveMessages: ChatMessageView[] = [
       {
-        id: "assistant_pending_local",
+        id: "live_assistant",
         sessionId: "sess_1",
-        taskId: "pending",
+        taskId: "task_live",
         role: "assistant",
         content: "thinking...",
-        createdAt: 21,
-        updatedAt: 21,
+        createdAt: 51,
+        updatedAt: 51,
         streaming: true,
         placeholder: true,
       },
     ];
 
-    const next = replaceSessionMessages(localMessages, "sess_1", [
+    const next = replaceSessionMessages(liveMessages, "sess_1", persisted);
+    const visible = getVisibleChatMessages(next, "sess_1");
+
+    expect(visible.map((message) => message.id)).toEqual(["stored_user", "live_assistant"]);
+    expect(visible[1].updatedAt).toBeGreaterThan(visible[0].createdAt);
+  });
+
+  it("keeps local pending messages during a persisted-message refresh race", () => {
+    const persisted: MessageRecord[] = [
       {
         id: "stored_user",
         sessionId: "sess_1",
         role: "user",
-        content: "persisted request",
+        content: "previous request",
         createdAt: 10,
       },
-    ]);
+    ];
+    const localMessages: ChatMessageView[] = [
+      {
+        id: "user_100",
+        sessionId: "sess_1",
+        taskId: "pending",
+        role: "user",
+        content: "new request not persisted yet",
+        createdAt: 100,
+        updatedAt: 100,
+      },
+      {
+        id: "assistant_pending_101",
+        sessionId: "sess_1",
+        taskId: "pending",
+        role: "assistant",
+        content: "thinking...",
+        createdAt: 101,
+        updatedAt: 101,
+        streaming: true,
+        placeholder: true,
+      },
+    ];
 
-    expect(getVisibleChatMessages(next, "sess_1").map((message) => message.id)).toEqual([
-      "stored_user",
-      "user_local",
-      "assistant_pending_local",
+    const next = replaceSessionMessages(localMessages, "sess_1", persisted);
+
+    expect(getVisibleChatMessages(next, "sess_1").map((message) => message.content)).toEqual([
+      "previous request",
+      "new request not persisted yet",
+      "thinking...",
     ]);
   });
 
   it("drops a local pending message once the same persisted message arrives", () => {
-    const localMessages: ChatMessageView[] = [
-      {
-        id: "user_local",
-        sessionId: "sess_1",
-        taskId: "pending",
-        role: "user",
-        content: "same request",
-        createdAt: 20,
-        updatedAt: 20,
-      },
-    ];
-
-    const next = replaceSessionMessages(localMessages, "sess_1", [
+    const persisted: MessageRecord[] = [
       {
         id: "stored_user",
         sessionId: "sess_1",
         role: "user",
-        content: "same request",
-        createdAt: 21,
+        content: "new request",
+        createdAt: 110,
       },
-    ]);
+    ];
+    const localMessages: ChatMessageView[] = [
+      {
+        id: "user_100",
+        sessionId: "sess_1",
+        taskId: "pending",
+        role: "user",
+        content: "new request",
+        createdAt: 100,
+        updatedAt: 100,
+      },
+    ];
+
+    const next = replaceSessionMessages(localMessages, "sess_1", persisted);
 
     expect(getVisibleChatMessages(next, "sess_1").map((message) => message.id)).toEqual(["stored_user"]);
   });

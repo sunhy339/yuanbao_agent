@@ -287,6 +287,7 @@ impl RuntimeBridge {
 
         let mut command = Command::new(python_executable);
         command
+            .arg("-u")
             .arg("-m")
             .arg("local_agent_runtime.main")
             .current_dir(&working_dir)
@@ -296,7 +297,8 @@ impl RuntimeBridge {
             .env("PYTHONPATH", append_path_env("PYTHONPATH", &runtime_src)?)
             .env("LOCAL_AGENT_DB_PATH", database_path.as_os_str())
             .env("PYTHONUTF8", "1")
-            .env("PYTHONIOENCODING", "utf-8");
+            .env("PYTHONIOENCODING", "utf-8")
+            .env("PYTHONUNBUFFERED", "1");
 
         let mut child = command
             .spawn()

@@ -136,7 +136,7 @@ export interface MessageSendParams {
   content: string;
   attachments: string[];
   taskId?: Identifier;
-  mode?: "new" | "supplement";
+  mode?: "new" | "supplement" | "queued";
   newTask?: boolean;
   background?: boolean;
 }
@@ -249,6 +249,19 @@ export interface SessionUpdateResult {
 
 export interface SessionDeleteResult {
   session: SessionRecord;
+}
+
+export interface SessionCompactParams {
+  sessionId: string;
+  maxTokens?: number;
+}
+
+export interface SessionCompactResult {
+  tokensBefore: number;
+  tokensAfter: number;
+  summary: string | null;
+  strategy: string;
+  compactionId?: string;
 }
 
 export interface MessageSendResult {
@@ -469,6 +482,18 @@ export interface McpServerDeleteResult {
 }
 
 export type McpToolsRefreshRpcResult = McpToolRefreshResult;
+
+// --- Skill Import ---
+
+export interface SkillImportParams {
+  filePath: string;
+}
+
+export interface SkillImportResult {
+  imported: SkillPresetRecord[];
+  skipped: string[];
+  errors: Array<{ name: string; error: string }>;
+}
 
 // --- Skill Usage ---
 

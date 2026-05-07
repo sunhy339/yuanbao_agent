@@ -50,6 +50,8 @@ class WorkerProcessTransport:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         self._request_id = 0
         self._response_queues: dict[str, Queue[dict[str, Any]]] = {}

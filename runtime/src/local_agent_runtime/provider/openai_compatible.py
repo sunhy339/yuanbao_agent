@@ -4,11 +4,67 @@ import codecs
 import concurrent.futures
 import http.client
 import json
+import logging
+import re
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Iterable, Iterator
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+logger = logging.getLogger(__name__)
+
+_SAFE_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_UNSAFE_TOOL_NAME_CHARS_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_UNSUPPORTED_REQUEST_SCHEMA_KEYS = frozenset({
+    "$defs",
+    "$id",
+    "$schema",
+    "additionalProperties",
+    "allOf",
+    "anyOf",
+    "const",
+    "default",
+    "definitions",
+    "dependencies",
+    "dependentSchemas",
+    "else",
+    "examples",
+    "exclusiveMaximum",
+    "exclusiveMinimum",
+    "format",
+    "if",
+    "maxItems",
+    "maxLength",
+    "maximum",
+    "minItems",
+    "minLength",
+    "minimum",
+    "multipleOf",
+    "not",
+    "nullable",
+    "oneOf",
+    "pattern",
+    "patternProperties",
+    "propertyNames",
+    "then",
+    "title",
+    "uniqueItems",
+})
+
+
+def _sanitize_request_schema(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_request_schema(child)
+            for key, child in value.items()
+            if key not in _UNSUPPORTED_REQUEST_SCHEMA_KEYS
+        }
+    if isinstance(value, list):
+        return [_sanitize_request_schema(item) for item in value]
+    return value
 
 
 class ProviderAdapterError(RuntimeError):
@@ -52,36 +108,90 @@ _shared_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 # Per-host connection pool for HTTP keep-alive.
 # Keyed by (scheme, host, port); each entry is an open http.client connection.
 _connection_pool: dict[tuple[str, str, int], http.client.HTTPConnection | http.client.HTTPSConnection] = {}
+_pool_lock = threading.Lock()
 
 
-def _get_connection(url: str, timeout: float) -> http.client.HTTPConnection:
-    """Return a reusable HTTP(S) connection for *url*, creating one if needed."""
+def _pool_key(url: str) -> tuple[str, str, int]:
     from urllib.parse import urlparse
     parsed = urlparse(url)
     scheme = parsed.scheme
     host = parsed.hostname or ""
     port = parsed.port or (443 if scheme == "https" else 80)
-    key = (scheme, host, port)
+    return (scheme, host, port)
 
-    conn = _connection_pool.get(key)
-    if conn is not None:
+
+def _make_connection(key: tuple[str, str, int], timeout: float) -> http.client.HTTPConnection:
+    scheme, host, port = key
+    if scheme == "https":
+        return http.client.HTTPSConnection(host, port, timeout=timeout)
+    return http.client.HTTPConnection(host, port, timeout=timeout)
+
+
+def _discard_connection(key: tuple[str, str, int]) -> None:
+    """Remove and close the pooled connection for *key* if present."""
+    with _pool_lock:
+        old = _connection_pool.pop(key, None)
+    if old is not None:
         try:
-            # Quick liveness check — if the socket is closed, discard it.
-            if conn.sock is None:
-                conn.close()
-                conn = None
+            old.close()
         except Exception:
+            pass
+
+
+def _is_conn_clean(conn: http.client.HTTPConnection) -> bool:
+    """Return True if *conn* is safe to reuse."""
+    try:
+        if conn.sock is None:
+            return False
+        # Access the internal __state via mangled name.
+        state = conn._HTTPConnection__state  # type: ignore[attr-defined]
+        return state == "idle"
+    except Exception:
+        return False
+
+
+def _get_connection(url: str, timeout: float) -> http.client.HTTPConnection:
+    """Return an HTTP(S) connection for *url*.
+
+    Tries to reuse an idle pooled connection under a lock so that concurrent
+    threads never share the same connection object.
+    """
+    key = _pool_key(url)
+
+    with _pool_lock:
+        conn = _connection_pool.pop(key, None)
+
+    # Validate outside the lock (socket checks can block briefly).
+    if conn is not None and not _is_conn_clean(conn):
+        try:
             conn.close()
-            conn = None
+        except Exception:
+            pass
+        conn = None
 
     if conn is None:
-        if scheme == "https":
-            conn = http.client.HTTPSConnection(host, port, timeout=timeout)
-        else:
-            conn = http.client.HTTPConnection(host, port, timeout=timeout)
-        _connection_pool[key] = conn
+        conn = _make_connection(key, timeout)
 
     return conn
+
+
+def _return_connection(key: tuple[str, str, int], conn: http.client.HTTPConnection) -> None:
+    """Return a connection to the pool if it's still clean."""
+    if not _is_conn_clean(conn):
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return
+    with _pool_lock:
+        # If someone else already placed a new connection, close the old one.
+        existing = _connection_pool.get(key)
+        if existing is not None and existing is not conn:
+            try:
+                existing.close()
+            except Exception:
+                pass
+        _connection_pool[key] = conn
 
 
 def _request_via_pool(
@@ -98,24 +208,17 @@ def _request_via_pool(
     if parsed.query:
         path = f"{path}?{parsed.query}"
 
+    key = _pool_key(url)
     conn = _get_connection(url, timeout)
     try:
         conn.request("POST", path, body=body, headers=headers)
         resp = conn.getresponse()
         status = resp.status
         resp_body = resp.read()
+        _return_connection(key, conn)
         return status, resp_body
     except (http.client.HTTPException, OSError):
-        # Connection is stale — discard and retry once with a fresh one.
-        from urllib.parse import urlparse as _pu
-        p = _pu(url)
-        key = (p.scheme, p.hostname or "", p.port or (443 if p.scheme == "https" else 80))
-        old = _connection_pool.pop(key, None)
-        if old is not None:
-            try:
-                old.close()
-            except Exception:
-                pass
+        _discard_connection(key)
         raise
 
 
@@ -133,44 +236,51 @@ def _stream_via_pool(
     if parsed.query:
         path = f"{path}?{parsed.query}"
 
+    key = _pool_key(url)
     conn = _get_connection(url, timeout)
     try:
         conn.request("POST", path, body=body, headers=headers)
         resp = conn.getresponse()
     except (http.client.HTTPException, OSError):
-        from urllib.parse import urlparse as _pu
-        p = _pu(url)
-        key = (p.scheme, p.hostname or "", p.port or (443 if p.scheme == "https" else 80))
-        old = _connection_pool.pop(key, None)
-        if old is not None:
-            try:
-                old.close()
-            except Exception:
-                pass
+        _discard_connection(key)
         raise
 
     status = resp.status
 
+    # Raise socket timeout for the streaming read phase — LLM may take a long
+    # time between tokens.  The *timeout* param covers the connection phase only.
+    # Some models (especially on complex reasoning tasks) can pause for minutes
+    # between chunks, so we use a generous default of 300s (5 minutes).
+    _stream_read_timeout = max(timeout * 12, 300.0)
+    try:
+        sock = conn.sock
+        if sock is not None:
+            sock.settimeout(_stream_read_timeout)
+    except Exception:
+        pass
+
     def iter_chunks() -> Iterator[bytes]:
         try:
             while True:
-                chunk = resp.readline()
+                try:
+                    chunk = resp.readline()
+                except (TimeoutError, OSError) as exc:
+                    raise ProviderAdapterError(
+                        f"Provider streaming read timed out: {exc}"
+                    ) from exc
                 if not chunk:
                     break
                 yield chunk
+        except ProviderAdapterError:
+            raise
         finally:
-            # After streaming, the connection is consumed.
-            # Discard it from the pool so the next call creates a fresh one.
-            from urllib.parse import urlparse as _pu
-            p2 = urlparse(url)
-            key2 = (p2.scheme, p2.hostname or "", p2.port or (443 if p2.scheme == "https" else 80))
-            _connection_pool.pop(key2, None)
-            try:
-                conn.close()
-            except Exception:
-                pass
+            # After streaming, the connection is consumed — discard it.
+            _discard_connection(key)
 
     return status, iter_chunks()
+
+
+def _run_with_hard_timeout(fn, timeout):
     """Run *fn* in a worker thread and enforce a hard wall-clock deadline.
 
     On Windows, ``urllib``'s socket-level ``timeout`` only covers read/write
@@ -234,6 +344,48 @@ class OpenAICompatibleChatClient:
         self._http_post = http_post or default_http_post
         self._http_stream = http_stream or default_http_stream
 
+    def _prepare_tools_for_request(self, tools: list[dict[str, Any]] | None) -> tuple[list[dict[str, Any]] | None, dict[str, str]]:
+        if not tools:
+            return None, {}
+        prepared: list[dict[str, Any]] = []
+        name_map: dict[str, str] = {}
+        used_names: set[str] = set()
+        for index, tool in enumerate(tools, start=1):
+            if not isinstance(tool, dict):
+                continue
+            outbound = deepcopy(tool)
+            function = outbound.get("function")
+            if not isinstance(function, dict):
+                continue
+            raw_name = function.get("name")
+            if not isinstance(raw_name, str) or not raw_name:
+                continue
+            safe_name = self._safe_tool_name(raw_name, used_names, index)
+            function["name"] = safe_name
+            parameters = function.get("parameters")
+            if isinstance(parameters, dict):
+                function["parameters"] = _sanitize_request_schema(parameters)
+            used_names.add(safe_name)
+            name_map[safe_name] = raw_name
+            prepared.append(outbound)
+        return prepared or None, name_map
+
+    def _safe_tool_name(self, name: str, used_names: set[str], index: int) -> str:
+        if _SAFE_TOOL_NAME_RE.match(name) and name not in used_names:
+            return name
+        base = _UNSAFE_TOOL_NAME_CHARS_RE.sub("_", name).strip("_") or f"tool_{index}"
+        base = base[:64].strip("_") or f"tool_{index}"
+        candidate = base
+        suffix = 2
+        while candidate in used_names or not _SAFE_TOOL_NAME_RE.match(candidate):
+            suffix_text = f"_{suffix}"
+            candidate = f"{base[:64 - len(suffix_text)]}{suffix_text}".strip("_") or f"tool_{index}_{suffix}"
+            suffix += 1
+        return candidate
+
+    def _original_tool_name(self, name: str, tool_name_map: dict[str, str] | None) -> str:
+        return tool_name_map.get(name, name) if tool_name_map else name
+
     def chat(
         self,
         *,
@@ -241,7 +393,8 @@ class OpenAICompatibleChatClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        payload = self._build_payload(settings=settings, messages=messages, tools=tools, stream=False)
+        request_tools, tool_name_map = self._prepare_tools_for_request(tools)
+        payload = self._build_payload(settings=settings, messages=messages, tools=request_tools, stream=False)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         status, response_body = self._request(settings=settings, body=body)
         response_json = self._decode_response(response_body)
@@ -251,7 +404,7 @@ class OpenAICompatibleChatClient:
             )
         if self._contains_error(response_json):
             raise ProviderAdapterError(f"Provider returned error: {self._error_message(response_json)}")
-        return self._normalize_response(response_json)
+        return self._normalize_response(response_json, tool_name_map=tool_name_map)
 
     def stream(
         self,
@@ -260,7 +413,8 @@ class OpenAICompatibleChatClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> Iterator[dict[str, Any]]:
-        payload = self._build_payload(settings=settings, messages=messages, tools=tools, stream=True)
+        request_tools, tool_name_map = self._prepare_tools_for_request(tools)
+        payload = self._build_payload(settings=settings, messages=messages, tools=request_tools, stream=True)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         status, chunks = self._stream_request(settings=settings, body=body)
         if status >= 400:
@@ -268,7 +422,7 @@ class OpenAICompatibleChatClient:
             raise ProviderAdapterError(
                 f"Provider request failed with HTTP {status}: {self._error_response_message(response_body)}"
             )
-        yield from self._normalize_stream(chunks)
+        yield from self._normalize_stream(chunks, tool_name_map=tool_name_map)
 
     def _build_payload(
         self,
@@ -290,7 +444,6 @@ class OpenAICompatibleChatClient:
             payload["stream"] = True
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
         return payload
 
     def _serialize_messages_for_request(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -419,7 +572,7 @@ class OpenAICompatibleChatClient:
             return str(error)
         return "unknown provider error"
 
-    def _normalize_response(self, response_json: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_response(self, response_json: dict[str, Any], *, tool_name_map: dict[str, str] | None = None) -> dict[str, Any]:
         choices = response_json.get("choices")
         if not isinstance(choices, list) or not choices:
             raise ProviderAdapterError("Provider returned invalid response: missing choices")
@@ -435,7 +588,7 @@ class OpenAICompatibleChatClient:
         normalized_message = {
             "role": message.get("role") or "assistant",
             "content": content if isinstance(content, str) else "",
-            "tool_calls": self._normalize_tool_calls(message.get("tool_calls") or []),
+            "tool_calls": self._normalize_tool_calls(message.get("tool_calls") or [], tool_name_map=tool_name_map),
         }
         return {
             "message": normalized_message,
@@ -447,7 +600,7 @@ class OpenAICompatibleChatClient:
             },
         }
 
-    def _normalize_tool_calls(self, tool_calls: Any) -> list[dict[str, Any]]:
+    def _normalize_tool_calls(self, tool_calls: Any, *, tool_name_map: dict[str, str] | None = None) -> list[dict[str, Any]]:
         if not isinstance(tool_calls, list):
             raise ProviderAdapterError("Provider returned invalid response: tool_calls must be a list")
 
@@ -461,19 +614,20 @@ class OpenAICompatibleChatClient:
             name = function.get("name")
             if not isinstance(name, str) or not name:
                 raise ProviderAdapterError("Provider returned invalid response: tool call is missing function name")
+            original_name = self._original_tool_name(name, tool_name_map)
             raw_id = item.get("id")
             tool_call_id = raw_id if isinstance(raw_id, str) and raw_id else f"call_{len(normalized)}"
             normalized.append(
                 {
                     "id": tool_call_id,
                     "type": item.get("type") or "function",
-                    "name": name,
-                    "arguments": self._parse_tool_arguments(name, function.get("arguments")),
+                    "name": original_name,
+                    "arguments": self._parse_tool_arguments(original_name, function.get("arguments")),
                 }
             )
         return normalized
 
-    def _normalize_stream(self, chunks: Iterable[bytes]) -> Iterator[dict[str, Any]]:
+    def _normalize_stream(self, chunks: Iterable[bytes], *, tool_name_map: dict[str, str] | None = None) -> Iterator[dict[str, Any]]:
         content_parts: list[str] = []
         role = "assistant"
         tool_call_parts: dict[int, dict[str, Any]] = {}
@@ -486,6 +640,8 @@ class OpenAICompatibleChatClient:
             if data == "[DONE]":
                 break
             chunk = self._decode_sse_json(data)
+            if chunk is None:
+                continue
             if self._contains_error(chunk):
                 raise ProviderAdapterError(f"Provider returned error: {self._error_message(chunk)}")
             response_id = chunk.get("id", response_id)
@@ -515,7 +671,7 @@ class OpenAICompatibleChatClient:
                 content_parts.append(content_delta)
                 yield {"type": "content_delta", "delta": content_delta}
 
-            for event in self._apply_tool_call_deltas(delta.get("tool_calls"), tool_call_parts):
+            for event in self._apply_tool_call_deltas(delta.get("tool_calls"), tool_call_parts, tool_name_map=tool_name_map):
                 yield event
 
             if first_choice.get("finish_reason") is not None:
@@ -530,6 +686,7 @@ class OpenAICompatibleChatClient:
             response_id=response_id,
             model=model,
             usage=usage,
+            tool_name_map=tool_name_map,
         )
         yield {"type": "final", "response": response}
 
@@ -583,19 +740,23 @@ class OpenAICompatibleChatClient:
         if data_lines:
             yield "\n".join(data_lines)
 
-    def _decode_sse_json(self, data: str) -> dict[str, Any]:
+    def _decode_sse_json(self, data: str) -> dict[str, Any] | None:
         try:
             value = json.loads(data)
-        except json.JSONDecodeError as exc:
-            raise ProviderAdapterError(f"Provider returned invalid SSE JSON: {exc.msg}") from exc
+        except json.JSONDecodeError:
+            # Malformed SSE data — likely a truncated chunk from network
+            # instability.  Skip it rather than killing the entire stream.
+            return None
         if not isinstance(value, dict):
-            raise ProviderAdapterError("Provider returned invalid SSE JSON: expected an object")
+            return None
         return value
 
     def _apply_tool_call_deltas(
         self,
         tool_calls: Any,
         tool_call_parts: dict[int, dict[str, Any]],
+        *,
+        tool_name_map: dict[str, str] | None = None,
     ) -> Iterator[dict[str, Any]]:
         if tool_calls is None:
             return
@@ -625,7 +786,7 @@ class OpenAICompatibleChatClient:
                 raise ProviderAdapterError("Provider returned invalid SSE chunk: tool function must be an object")
             name = function.get("name")
             if isinstance(name, str) and name:
-                part["name"] = name
+                part["name"] = self._original_tool_name(name, tool_name_map)
             arguments_delta = function.get("arguments")
             if isinstance(arguments_delta, str):
                 part["arguments"] += arguments_delta
@@ -635,7 +796,7 @@ class OpenAICompatibleChatClient:
                 "index": index,
                 "id": tool_id if isinstance(tool_id, str) else None,
                 "tool_type": tool_type if isinstance(tool_type, str) else None,
-                "name": name if isinstance(name, str) else None,
+                "name": self._original_tool_name(name, tool_name_map) if isinstance(name, str) else None,
                 "arguments_delta": arguments_delta if isinstance(arguments_delta, str) else "",
             }
 
@@ -649,6 +810,7 @@ class OpenAICompatibleChatClient:
         response_id: Any,
         model: Any,
         usage: Any,
+        tool_name_map: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         tool_calls = []
         for index in sorted(tool_call_parts):
@@ -667,7 +829,7 @@ class OpenAICompatibleChatClient:
             "message": {
                 "role": role,
                 "content": content,
-                "tool_calls": self._normalize_tool_calls(tool_calls),
+                "tool_calls": self._normalize_tool_calls(tool_calls, tool_name_map=tool_name_map),
             },
             "finish_reason": finish_reason,
             "raw": {"id": response_id, "model": model, "usage": usage},
@@ -684,12 +846,53 @@ class OpenAICompatibleChatClient:
             )
         try:
             parsed = json.loads(arguments)
-        except json.JSONDecodeError as exc:
-            raise ProviderAdapterError(
-                f"Provider returned invalid tool call arguments JSON for {name}: {exc.msg}"
-            ) from exc
+        except json.JSONDecodeError:
+            # Try lightweight JSON repair for common LLM mistakes (truncated,
+            # missing delimiters, trailing commas) before giving up entirely.
+            repaired = self._try_repair_json(arguments)
+            if repaired is not None:
+                return repaired
+            logger.warning(
+                "Provider returned invalid tool call arguments JSON for %s, "
+                "using empty dict as fallback: %.200s",
+                name, arguments,
+            )
+            return {}
         if not isinstance(parsed, dict):
             raise ProviderAdapterError(
                 f"Provider returned invalid tool call arguments for {name}: expected JSON object"
             )
         return parsed
+
+    @staticmethod
+    def _try_repair_json(raw: str) -> dict[str, Any] | None:
+        """Attempt to repair common JSON mistakes from LLM tool calls."""
+        import re
+        s = raw.strip()
+        if not s:
+            return None
+
+        # Ensure it looks like an object
+        if not s.startswith("{"):
+            brace = s.find("{")
+            if brace >= 0:
+                s = s[brace:]
+        if not s.endswith("}"):
+            brace = s.rfind("}")
+            if brace >= 0:
+                s = s[:brace + 1]
+            else:
+                # Likely truncated — try closing it
+                s = s + "}"
+
+        # Remove trailing commas before } or ]
+        s = re.sub(r",\s*([}\]])", r"\1", s)
+
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        return None

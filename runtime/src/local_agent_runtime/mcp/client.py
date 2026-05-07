@@ -79,7 +79,63 @@ def parse_mcp_result(result: CallToolResult) -> dict[str, Any]:
     return {"status": "ok", "output": content}
 
 
+def summarize_mcp_exception(exc: BaseException, *, max_parts: int = 5) -> str:
+    """Return a useful one-line summary for MCP connection failures."""
+
+    def _single_message(error: BaseException) -> str:
+        message = str(error).strip()
+        if isinstance(error, OSError):
+            details = []
+            filename = getattr(error, "filename", None)
+            strerror = getattr(error, "strerror", None)
+            if filename:
+                details.append(str(filename))
+            if strerror and str(strerror) not in message:
+                details.append(str(strerror))
+            if details:
+                message = f"{message} ({'; '.join(details)})" if message else "; ".join(details)
+        return f"{type(error).__name__}: {message}" if message else type(error).__name__
+
+    def _walk(error: BaseException, depth: int = 0) -> list[str]:
+        if depth > 8:
+            return [_single_message(error)]
+        if isinstance(error, BaseExceptionGroup):
+            parts: list[str] = []
+            for child in error.exceptions:
+                parts.extend(_walk(child, depth + 1))
+            return parts or [_single_message(error)]
+        return [_single_message(error)]
+
+    seen: set[str] = set()
+    unique_parts: list[str] = []
+    for part in _walk(exc):
+        if part in seen:
+            continue
+        seen.add(part)
+        unique_parts.append(part)
+
+    if not unique_parts:
+        return _single_message(exc)
+    suffix = "" if len(unique_parts) <= max_parts else f"; +{len(unique_parts) - max_parts} more"
+    return "; ".join(unique_parts[:max_parts]) + suffix
+
+
 # ── server config dataclass ────────────────────────────────────────────
+
+
+def strip_wrapping_shell_quotes(value: str) -> str:
+    """Remove one complete layer of shell quotes from a persisted token."""
+    token = value.strip()
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"}:
+        return token[1:-1]
+    return token
+
+
+def normalize_mcp_stdio_args(args: Any) -> list[str]:
+    """Normalize persisted MCP stdio args before spawning a child process."""
+    if not isinstance(args, list):
+        return []
+    return [strip_wrapping_shell_quotes(item) for item in args if isinstance(item, str)]
 
 
 class McpServerConfig:
@@ -113,8 +169,8 @@ class McpServerConfig:
             id=row["id"],
             name=row["name"],
             transport=row.get("transport", "stdio"),
-            command=row.get("command"),
-            args=_parse_json_field(row.get("args"), []),
+            command=strip_wrapping_shell_quotes(row["command"]) if isinstance(row.get("command"), str) else row.get("command"),
+            args=normalize_mcp_stdio_args(_parse_json_field(row.get("args"), [])),
             url=row.get("url"),
             headers=_parse_json_field(row.get("headers"), None),
             env=_parse_json_field(row.get("env"), None),

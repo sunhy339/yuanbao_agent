@@ -252,10 +252,57 @@
 }
 
 .yb-app-shell .composer-meta span,
+.yb-app-shell .composer-tool-button,
+.yb-app-shell .composer-model-trigger,
+.yb-app-shell .composer-model-select select,
 .yb-app-shell .composer-input textarea {
   border-color: var(--yb-line);
   background: rgba(2, 6, 23, 0.34);
   color: var(--yb-ink);
+}
+
+.yb-app-shell .composer-model-menu {
+  border-color: var(--yb-line);
+  background: rgba(15, 23, 42, 0.96);
+  box-shadow: 0 24px 56px rgba(2, 6, 23, 0.42);
+}
+
+.yb-app-shell .composer-model-option {
+  color: var(--yb-ink);
+}
+
+.yb-app-shell .composer-model-option:hover {
+  background: rgba(148, 163, 184, 0.12);
+}
+
+.yb-app-shell .composer-model-option em,
+.yb-app-shell .composer-model-option b {
+  color: rgba(203, 213, 225, 0.86);
+}
+
+.yb-app-shell .composer-model-option[aria-selected="true"] {
+  border-color: rgba(251, 146, 60, 0.42);
+  background: rgba(127, 29, 29, 0.74);
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .composer-model-menu {
+  border-color: rgba(15, 23, 42, 0.12);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 22px 48px rgba(15, 23, 42, 0.18);
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .composer-model-option {
+  color: var(--wb-ink);
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .composer-model-option em,
+.yb-v2[data-theme="light"] .yb-app-shell .composer-model-option b {
+  color: rgba(87, 83, 78, 0.92);
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .composer-model-option[aria-selected="true"] {
+  border-color: rgba(248, 113, 113, 0.34);
+  background: #fed8cc;
 }
 
 .yb-app-shell .composer-run {
@@ -263,6 +310,27 @@
   background: var(--yb-primary);
   color: #042f35;
   box-shadow: 0 16px 36px rgba(34, 211, 238, 0.18);
+}
+
+.yb-app-shell .composer-stop {
+  border-color: rgba(248, 113, 113, 0.28);
+  color: #7f1d1d;
+  background: #fecaca;
+  box-shadow: 0 16px 36px rgba(239, 68, 68, 0.14);
+}
+
+.yb-app-shell .composer-queue {
+  border-color: rgba(251, 191, 36, 0.28);
+  color: #78350f;
+  background: #fde68a;
+  box-shadow: 0 16px 36px rgba(245, 158, 11, 0.12);
+}
+
+.yb-app-shell .composer-run[data-stopping="true"] {
+  border-color: rgba(248, 113, 113, 0.28);
+  color: #7f1d1d;
+  background: #fecaca;
+  box-shadow: 0 16px 36px rgba(239, 68, 68, 0.14);
 }
 
 .yb-v2[data-theme="light"] .yb-app-shell {

@@ -155,6 +155,8 @@ class BackgroundCommandService:
                 stdout=-1,
                 stderr=-1,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             runtime.start()
             if state.attach_runtime(runtime):

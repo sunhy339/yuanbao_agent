@@ -87,7 +87,7 @@ class WorkerProcessStreamDrain:
             else:
                 while True:
                     try:
-                        chunk = self._stream.read(1)
+                        chunk = self._stream.read(self._chunk_size)
                     except (OSError, ValueError):
                         return
                     if not chunk:

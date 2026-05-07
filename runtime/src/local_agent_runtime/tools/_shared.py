@@ -8,6 +8,7 @@ from __future__ import annotations
 import difflib
 import fnmatch
 import json
+import locale
 import os
 import re
 import shutil
@@ -78,12 +79,19 @@ def expand_ignore_patterns(patterns: list[str]) -> list[str]:
     return list(dict.fromkeys(expanded))
 
 
-_gitignore_cache: dict[str, list[str]] = {}
+_gitignore_cache: dict[str, tuple[float, list[str]]] = {}
+_GITIGNORE_CACHE_TTL = 300.0  # seconds
 
 
 def load_gitignore_patterns(workspace_root: str) -> list[str]:
-    if workspace_root in _gitignore_cache:
-        return _gitignore_cache[workspace_root]
+    import time
+
+    now = time.monotonic()
+    cached = _gitignore_cache.get(workspace_root)
+    if cached is not None:
+        cached_time, cached_patterns = cached
+        if now - cached_time < _GITIGNORE_CACHE_TTL:
+            return cached_patterns
     gitignore_path = Path(workspace_root) / ".gitignore"
     patterns: list[str] = []
     if gitignore_path.is_file():
@@ -94,7 +102,7 @@ def load_gitignore_patterns(workspace_root: str) -> list[str]:
                     patterns.append(stripped)
         except OSError:
             pass
-    _gitignore_cache[workspace_root] = patterns
+    _gitignore_cache[workspace_root] = (now, patterns)
     return patterns
 
 
@@ -149,6 +157,8 @@ def is_ignored(
     workspace_root: Path,
     store: Any,
     extra_patterns: Any = None,
+    *,
+    _expanded_patterns: list[str] | None = None,
 ) -> bool:
     try:
         relative_path = path.relative_to(workspace_root)
@@ -157,7 +167,8 @@ def is_ignored(
 
     relative_text = relative_path.as_posix()
     parts = relative_path.parts
-    for pattern in merged_ignore_patterns(store, extra_patterns):
+    patterns = _expanded_patterns if _expanded_patterns is not None else merged_ignore_patterns(store, extra_patterns)
+    for pattern in patterns:
         if any(matches_pattern(relative_text, part, pattern) for part in parts):
             return True
     return False
@@ -238,6 +249,7 @@ def walk_directory(
     max_depth: int,
     store: Any,
     ignore_patterns: Any = None,
+    max_items: int = 2000,
 ) -> list[dict[str, Any]]:
     from collections import deque
 
@@ -255,6 +267,8 @@ def walk_directory(
             key=lambda child: (not child.is_dir(), child.name.lower()),
         )
         for child in children:
+            if len(items) >= max_items:
+                return items
             if is_ignored(child, workspace_root, store, ignore_patterns):
                 continue
             items.append(build_entry(workspace_root, child, next_depth))
@@ -279,18 +293,20 @@ def python_filename_search(
     if not search_terms:
         return []
 
+    expanded = merged_ignore_patterns(store, ignore_patterns)
     scored_matches: list[tuple[int, dict[str, Any]]] = []
+    overfetch = max_results * 5
     for path in workspace_root.rglob("*"):
         if not path.is_file():
             continue
-        if is_ignored(path, workspace_root, store, ignore_patterns):
-            continue
-        relative_path = to_relative_path(workspace_root, path)
-        if glob_patterns and not any(matches_glob(relative_path, pattern) for pattern in glob_patterns):
+        if is_ignored(path, workspace_root, store, ignore_patterns, _expanded_patterns=expanded):
             continue
         normalized_name = path.name.lower()
         matched_terms = [term for term in search_terms if term in normalized_name]
         if not matched_terms:
+            continue
+        relative_path = to_relative_path(workspace_root, path)
+        if glob_patterns and not any(matches_glob(relative_path, pattern) for pattern in glob_patterns):
             continue
         score = sum(len(term) for term in matched_terms)
         scored_matches.append(
@@ -303,6 +319,8 @@ def python_filename_search(
                 },
             )
         )
+        if len(scored_matches) >= overfetch:
+            break
 
     scored_matches.sort(key=lambda item: (-item[0], item[1]["path"]))
     return [match for _, match in scored_matches[:max_results]]
@@ -318,12 +336,13 @@ def python_content_search(
 ) -> list[dict[str, Any]]:
     normalized_query = query.lower()
     matches: list[dict[str, Any]] = []
+    expanded = merged_ignore_patterns(store, ignore_patterns)
     for path in workspace_root.rglob("*"):
         if len(matches) >= max_results:
             break
         if not path.is_file():
             continue
-        if is_ignored(path, workspace_root, store, ignore_patterns):
+        if is_ignored(path, workspace_root, store, ignore_patterns, _expanded_patterns=expanded):
             continue
         relative_path = to_relative_path(workspace_root, path)
         if glob_patterns and not any(matches_glob(relative_path, pattern) for pattern in glob_patterns):
@@ -334,9 +353,10 @@ def python_content_search(
             continue
 
         for line_number, line in enumerate(content.splitlines(), start=1):
-            if normalized_query not in line.lower():
+            lowered = line.lower()
+            if normalized_query not in lowered:
                 continue
-            column = line.lower().find(normalized_query) + 1
+            column = lowered.find(normalized_query) + 1
             matches.append(
                 {
                     "path": relative_path,
@@ -372,8 +392,9 @@ def rg_filename_search(
         command,
         capture_output=True,
         text=True,
-        check=True,
     )
+    if completed.returncode not in (0, 1):
+        raise subprocess.CalledProcessError(completed.returncode, command, completed.stdout, completed.stderr)
 
     scored_matches: list[tuple[int, dict[str, Any]]] = []
     for line in completed.stdout.splitlines():
@@ -429,8 +450,9 @@ def rg_content_search(
         command,
         capture_output=True,
         text=True,
-        check=True,
     )
+    if completed.returncode not in (0, 1):
+        raise subprocess.CalledProcessError(completed.returncode, command, completed.stdout, completed.stderr)
 
     matches: list[dict[str, Any]] = []
     for line in completed.stdout.splitlines():
@@ -518,6 +540,63 @@ def background_requested(params: dict[str, Any]) -> bool:
     return bool(raw_value)
 
 
+_FILE_DUMP_COMMAND_RE = re.compile(
+    r"""^\s*(?P<cmd>type|cat|gc|get-content)(?:\s+-Raw)?(?:\s+-Encoding\s+\S+)?\s+(?P<path>"[^"]+"|'[^']+'|[^\s|;&<>]+)\s*$""",
+    re.IGNORECASE,
+)
+
+
+def _decode_command_bytes(value: bytes | str | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    candidates = [
+        "utf-8-sig",
+        "utf-8",
+        locale.getpreferredencoding(False),
+        "cp936",
+        "gbk",
+        "cp950",
+        "big5",
+    ]
+    seen: set[str] = set()
+    for encoding in candidates:
+        normalized = encoding.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        try:
+            return value.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return value.decode("utf-8", errors="replace")
+
+
+def _strip_command_path_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _run_simple_file_dump(command: str, cwd: Path) -> str | None:
+    match = _FILE_DUMP_COMMAND_RE.match(command)
+    if not match:
+        return None
+    raw_path = _strip_command_path_quotes(match.group("path"))
+    file_path = Path(raw_path)
+    if not file_path.is_absolute():
+        file_path = cwd / file_path
+    try:
+        resolved = file_path.resolve()
+    except OSError:
+        return None
+    if not resolved.is_file():
+        return None
+    return _decode_command_bytes(resolved.read_bytes())
+
+
 def run_shell(
     shell_name: str,
     command: str,
@@ -525,26 +604,30 @@ def run_shell(
     timeout_ms: int,
 ) -> tuple[str, str, int | None, str, int]:
     started = time.perf_counter()
+    if shell_name == "powershell":
+        dumped = _run_simple_file_dump(command, cwd)
+        if dumped is not None:
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            return dumped, "", 0, "completed", duration_ms
+
     try:
         completed = subprocess.run(
             build_shell_command(shell_name, command),
             cwd=str(cwd),
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=False,
             timeout=timeout_ms / 1000 if timeout_ms else None,
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or "")
-        stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or "")
+        stdout = _decode_command_bytes(exc.stdout)
+        stderr = _decode_command_bytes(exc.stderr)
         duration_ms = int((time.perf_counter() - started) * 1000)
         return stdout, stderr, None, "timeout", duration_ms
 
     duration_ms = int((time.perf_counter() - started) * 1000)
-    stdout = completed.stdout or ""
-    stderr = completed.stderr or ""
+    stdout = _decode_command_bytes(completed.stdout)
+    stderr = _decode_command_bytes(completed.stderr)
     status = "completed" if completed.returncode == 0 else "failed"
     if completed.returncode < 0:
         status = "killed"

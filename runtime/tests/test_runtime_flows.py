@@ -49,7 +49,8 @@ def test_workspace_session_message_tool_flow(runtime_harness: Any, tmp_path: Pat
     assert task["status"] == "completed"
     event_types = _event_types(runtime_harness.events)
     assert event_types[0] == "task.started"
-    assert event_types[1] == "assistant.token"
+    assert "task.routing.decided" in event_types
+    assert "assistant.token" in event_types
     assert event_types[-1] == "task.completed"
     assert event_types.count("tool.started") == 3
     assert event_types.count("tool.completed") == 3
@@ -183,7 +184,7 @@ def test_message_send_fails_when_openai_provider_key_is_missing(
     assert task["status"] == "failed"
     assert "YUANBAO_TEST_MISSING_KEY" in task["resultSummary"]
     assert "Completed an initial pass" not in task["resultSummary"]
-    assert not [event for event in runtime_harness.events if event["type"] == "assistant.message.completed"]
+    assert [event for event in runtime_harness.events if event["type"] == "assistant.message.completed"]
     messages = runtime_harness.call(
         "message.list",
         {"sessionId": session["id"]},
@@ -1440,3 +1441,148 @@ def test_session_summary_generated_after_task_completion(runtime_harness: Any, t
     )
     assert updated_session.get("summary") is not None
     assert "Task memory:" in updated_session["summary"]
+
+
+def test_background_task_preserves_routing_fields(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Background and foreground tasks should store identical routing metadata."""
+    from local_agent_runtime.provider.adapter import ProviderAdapter
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Routing alignment"},
+        ),
+        "session",
+    )
+
+    def mock_generate(self: ProviderAdapter, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        return {"final": "done", "prompt": prompt, "context": context}
+
+    monkeypatch.setattr(ProviderAdapter, "generate", mock_generate)
+
+    # Foreground task
+    fg_task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "foreground routing test"},
+        ),
+        "task",
+    )
+
+    # Background task
+    bg_task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "background routing test", "background": True},
+        ),
+        "task",
+    )
+
+    # Both tasks should have routing stored
+    fg_routing = fg_task.get("routing")
+    bg_routing = bg_task.get("routing")
+    assert fg_routing is not None, "Foreground task missing routing"
+    assert bg_routing is not None, "Background task missing routing"
+
+    # Routing keys should be identical
+    routing_keys = {"scenario", "strategy", "confidence", "max_steps", "enable_reflection", "enable_planning"}
+    assert routing_keys.issubset(set(fg_routing.keys())), f"FG routing missing keys: {routing_keys - set(fg_routing.keys())}"
+    assert routing_keys.issubset(set(bg_routing.keys())), f"BG routing missing keys: {routing_keys - set(bg_routing.keys())}"
+
+    # Both should have the same scenario and strategy (same MetaRouter rules)
+    assert fg_routing["scenario"] == bg_routing["scenario"]
+    assert fg_routing["strategy"] == bg_routing["strategy"]
+    assert fg_routing["max_steps"] == bg_routing["max_steps"]
+    assert fg_routing["enable_planning"] == bg_routing["enable_planning"]
+    assert fg_routing["enable_reflection"] == bg_routing["enable_reflection"]
+
+
+# ── Observability tests ──────────────────────────────────────────────────
+
+
+def test_routing_emits_decided_event(runtime_harness: Any, tmp_path: Path) -> None:
+    """task.routing.decided event should contain routing metadata and latency."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call("session.create", {"workspaceId": workspace["id"], "title": "routing obs"}),
+        "session",
+    )
+    _call_result(
+        runtime_harness.call("message.send", {"sessionId": session["id"], "content": "read file.txt"}),
+        "task",
+    )
+
+    routing_events = [e for e in runtime_harness.events if e["type"] == "task.routing.decided"]
+    assert len(routing_events) >= 1, f"No task.routing.decided events; got {_event_types(runtime_harness.events)}"
+    payload = routing_events[0]["payload"]
+    assert "scenario" in payload
+    assert "strategy" in payload
+    assert "confidence" in payload
+    assert "latency_ms" in payload
+    assert isinstance(payload["latency_ms"], int)
+    assert payload["latency_ms"] >= 0
+
+
+def test_routing_creates_trace_span(runtime_harness: Any, tmp_path: Path) -> None:
+    """Routing decision should produce a routing_decision trace span."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call("session.create", {"workspaceId": workspace["id"], "title": "routing trace"}),
+        "session",
+    )
+    task = _call_result(
+        runtime_harness.call("message.send", {"sessionId": session["id"], "content": "list files"}),
+        "task",
+    )
+
+    # Use the event's routing info to verify the span was created
+    routing_events = [e for e in runtime_harness.events if e["type"] == "task.routing.decided"]
+    assert len(routing_events) >= 1
+    payload = routing_events[0]["payload"]
+    # The routing event payload should contain all expected fields
+    assert payload["scenario"] in (
+        "simple_query", "code_search", "code_edit", "code_review", "debug",
+        "test_write", "doc_write", "multi_step_task", "supervised_task",
+        "swarm_task", "free_form",
+    )
+    assert payload["strategy"] in (
+        "react_fast", "react_standard", "react_reflect", "skill_based",
+        "plan_execute", "plan_supervise", "plan_swarm",
+    )
+    assert isinstance(payload["confidence"], (int, float))
+    assert isinstance(payload["latency_ms"], int)
+
+
+def test_mcp_server_list_includes_connection_status(runtime_harness: Any) -> None:
+    """mcp.server.list should include connected and toolCount fields."""
+    result = runtime_harness.call("mcp.server.list", {})
+    servers = result["result"]["servers"]
+    # Even with no MCP servers configured, the response shape should be correct
+    assert isinstance(servers, list)
+    for server in servers:
+        assert "connected" in server
+        assert "toolCount" in server
+        assert isinstance(server["connected"], bool)
+        assert isinstance(server["toolCount"], int)

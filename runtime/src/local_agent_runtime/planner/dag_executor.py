@@ -39,6 +39,7 @@ class DAGExecutor:
         failed_ids: set[str] | None = None,
         prior_results: dict[str, str] | None = None,
         tracer: Tracer | None = None,
+        on_subtask_callback: Callable[[str, str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         """Execute all sub-tasks, parallelising independent tasks per level.
 
@@ -104,7 +105,7 @@ class DAGExecutor:
             if len(runnable) == 1:
                 self._execute_subtask(
                     subtask_index, runnable[0], completed, failed, results,
-                    session_id, parent_task_id, lock, tracer,
+                    session_id, parent_task_id, lock, tracer, on_subtask_callback,
                 )
             else:
                 logger.info("Level %d: executing %d subtasks in parallel", level_idx, len(runnable))
@@ -113,7 +114,7 @@ class DAGExecutor:
                         pool.submit(
                             self._execute_subtask,
                             subtask_index, sid, completed, failed, results,
-                            session_id, parent_task_id, lock, tracer,
+                            session_id, parent_task_id, lock, tracer, on_subtask_callback,
                         ): sid
                         for sid in runnable
                     }
@@ -180,6 +181,7 @@ class DAGExecutor:
         parent_task_id: str,
         lock: threading.Lock,
         tracer: Tracer | None = None,
+        on_subtask_callback: Callable[[str, str, dict[str, Any]], None] | None = None,
     ) -> None:
         """Execute a single subtask and update shared state."""
         subtask = subtask_index.get(subtask_id)
@@ -195,6 +197,10 @@ class DAGExecutor:
             )
 
         subtask.status = "running"
+        _subtask_t0 = None
+        if on_subtask_callback is not None:
+            _subtask_t0 = __import__("time").monotonic()
+            on_subtask_callback(subtask_id, "started", {"subtaskId": subtask_id, "subtaskTitle": subtask.title})
         try:
             dispatch_result = self._subagent.dispatch({
                 "prompt": subtask.description,
@@ -208,6 +214,12 @@ class DAGExecutor:
                 subtask.result = dispatch_result.get("summary") or "Completed"
                 completed.add(subtask.id)
                 results[subtask.id] = subtask.result
+            if on_subtask_callback is not None and _subtask_t0 is not None:
+                duration_ms = int((__import__("time").monotonic() - _subtask_t0) * 1000)
+                on_subtask_callback(subtask_id, "completed", {
+                    "subtaskId": subtask_id, "subtaskTitle": subtask.title,
+                    "status": "completed", "duration_ms": duration_ms,
+                })
             if span is not None:
                 tracer.end_span(span.span_id, status="ok")
         except Exception as exc:  # noqa: BLE001
@@ -217,6 +229,12 @@ class DAGExecutor:
                 subtask.result = str(exc)
                 failed.add(subtask.id)
                 results[subtask.id] = f"Failed: {exc}"
+            if on_subtask_callback is not None and _subtask_t0 is not None:
+                duration_ms = int((__import__("time").monotonic() - _subtask_t0) * 1000)
+                on_subtask_callback(subtask_id, "completed", {
+                    "subtaskId": subtask_id, "subtaskTitle": subtask.title,
+                    "status": "failed", "duration_ms": duration_ms, "error": str(exc),
+                })
             if span is not None:
                 tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
 

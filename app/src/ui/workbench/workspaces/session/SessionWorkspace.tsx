@@ -1,14 +1,65 @@
-import { memo, useMemo, useState, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ApprovalCard,
-  CommandOutputPanel,
   ContextBudgetBar,
   PatchPlanCard,
-  ToolTraceCard,
 } from "../../../v2/components/runtime";
 import { Button, Panel, StatusBadge } from "../../../v2/components/ui";
 import { formatStatusLabel } from "../../../copy";
+import { formatTimestamp } from "../../../../lib/formatUtils";
 import "./session.css";
+
+// ── Shared 1-second tick hub ────────────────────────────────────────
+// All "elapsed time" components subscribe to a single global interval
+// instead of each creating their own, reducing timer overhead.
+
+type TickListener = () => void;
+const _tickListeners = new Set<TickListener>();
+let _tickTimer: number | undefined;
+let _tickRefCount = 0;
+
+function _startGlobalTick() {
+  if (_tickTimer !== undefined) return;
+  _tickTimer = window.setInterval(() => {
+    for (const fn of _tickListeners) fn();
+  }, 1000);
+}
+
+function _stopGlobalTick() {
+  if (_tickTimer !== undefined) {
+    window.clearInterval(_tickTimer);
+    _tickTimer = undefined;
+  }
+}
+
+function _subscribeTick(fn: TickListener): () => void {
+  _tickListeners.add(fn);
+  _tickRefCount++;
+  _startGlobalTick();
+  return () => {
+    _tickListeners.delete(fn);
+    _tickRefCount--;
+    if (_tickRefCount <= 0) {
+      _tickRefCount = 0;
+      _stopGlobalTick();
+    }
+  };
+}
+
+/**
+ * Returns `Date.now()` and re-renders the component every second while
+ * `active` is true.  Shares a single global timer across all callers.
+ */
+function useTickWhen(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return undefined;
+    setNow(Date.now());
+    const unsub = _subscribeTick(() => setNow(Date.now()));
+    return unsub;
+  }, [active]);
+  return now;
+}
 
 export interface SessionWorkspaceSession {
   id: string;
@@ -33,6 +84,8 @@ export interface SessionWorkspaceActiveTask {
   id: string;
   status?: string;
   goal?: string;
+  createdAt?: number;
+  updatedAt?: number;
   acceptanceCriteria?: string[];
   outOfScope?: string[];
   currentStep?: string;
@@ -119,9 +172,11 @@ export interface SessionWorkspaceMessage {
   id: string;
   role: "user" | "assistant" | "system" | "tool";
   content: string;
+  taskId?: string;
   streaming?: boolean;
   placeholder?: boolean;
   createdAt?: number;
+  updatedAt?: number;
   toolName?: string;
   status?: string;
 }
@@ -270,21 +325,6 @@ export interface SessionWorkspaceProps {
   messagesLoading?: boolean;
 }
 
-const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-});
-
-function formatTimestamp(timestamp?: number) {
-  if (timestamp === undefined) {
-    return null;
-  }
-
-  return dateTimeFormatter.format(new Date(timestamp));
-}
-
 interface DiffLine {
   type: "add" | "remove" | "context" | "header";
   content: string;
@@ -298,9 +338,11 @@ interface RuntimeTimelineItem {
   status?: string;
   summary?: string;
   meta?: string[];
+  riskLevel?: "low" | "medium" | "high";
   code?: string;
   rawDetail?: string;
   time?: number;
+  durationMs?: number;
   diffLines?: DiffLine[];
 }
 
@@ -310,6 +352,7 @@ interface ToolRuntimePresentation {
   summary?: string;
   meta: string[];
   code?: string;
+  durationMs?: number;
 }
 
 type ConversationActivityItem =
@@ -327,6 +370,8 @@ type ConversationActivityItem =
       time?: number;
       runtime: RuntimeTimelineItem;
     };
+
+const THINKING_STALLED_MS = 45_000;
 
 function getRoleLabel(role: SessionWorkspaceMessage["role"]) {
   switch (role) {
@@ -355,6 +400,20 @@ function formatDuration(durationMs?: number) {
   return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
+function formatElapsedTime(durationMs: number) {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
 function compactMeta(values: Array<string | null | undefined>) {
   return values.filter((value): value is string => Boolean(value));
 }
@@ -379,6 +438,7 @@ function compactText(value: string | null | undefined, maxChars = 240) {
 }
 
 const MAX_RENDERED_DIFF_LINES = 500;
+const READ_FILE_REPEAT_WINDOW_MS = 2 * 60 * 1000;
 
 function parseUnifiedDiff(diffText: string): DiffLine[] {
   const lines: DiffLine[] = [];
@@ -489,6 +549,58 @@ function readRuntimeString(record: Record<string, unknown> | null, keys: string[
   }
 
   return undefined;
+}
+
+function normalizeRuntimeComparableString(value: string | undefined) {
+  return value?.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function getRepeatedReadFileKey(toolCall: SessionWorkspaceToolCall) {
+  if (toolCall.toolName !== "read_file") {
+    return null;
+  }
+  const inputRecord = parseRuntimeJsonRecord(toolCall.rawInput);
+  const path = normalizeRuntimeComparableString(readRuntimeString(inputRecord, ["path", "file"]));
+  if (!path) {
+    return null;
+  }
+  const workspaceRoot = normalizeRuntimeComparableString(readRuntimeString(inputRecord, ["workspaceRoot", "workspace_root", "root"]));
+  const encoding = readRuntimeString(inputRecord, ["encoding"]) ?? "utf-8";
+  const maxBytes = readRuntimeString(inputRecord, ["max_bytes", "maxBytes"]) ?? "";
+  return [workspaceRoot ?? "", path, encoding.toLowerCase(), maxBytes].join("|");
+}
+
+function compactRepeatedReadFileCalls(toolCalls: SessionWorkspaceToolCall[]) {
+  const sorted = [...toolCalls].sort((left, right) => {
+    const leftTime = left.time ?? Number.MAX_SAFE_INTEGER;
+    const rightTime = right.time ?? Number.MAX_SAFE_INTEGER;
+    return leftTime - rightTime || left.id.localeCompare(right.id);
+  });
+  const visible: SessionWorkspaceToolCall[] = [];
+  const lastCompletedReadByKey = new Map<string, number>();
+
+  for (const toolCall of sorted) {
+    if (["apply_patch", "write_file", "run_command", "task"].includes(toolCall.toolName)) {
+      lastCompletedReadByKey.clear();
+    }
+
+    const key = getRepeatedReadFileKey(toolCall);
+    const time = toolCall.time;
+    const status = toolCall.status.toLowerCase();
+    const completed = ["completed", "succeeded", "passed"].includes(status);
+
+    if (key && completed && time !== undefined) {
+      const previousTime = lastCompletedReadByKey.get(key);
+      if (previousTime !== undefined && time - previousTime <= READ_FILE_REPEAT_WINDOW_MS) {
+        continue;
+      }
+      lastCompletedReadByKey.set(key, time);
+    }
+
+    visible.push(toolCall);
+  }
+
+  return visible;
 }
 
 function summarizeRuntimeOutput(value?: string) {
@@ -670,6 +782,130 @@ function aggregateRuntimeStatus(statuses: Array<string | undefined>, emptyStatus
   return "recorded";
 }
 
+type TaskPhase = "idle" | "analyzing" | "modifying" | "verifying" | "waiting" | "completed" | "failed";
+
+const TASK_PHASES: Array<{ id: TaskPhase; label: string }> = [
+  { id: "analyzing", label: "正在分析代码" },
+  { id: "modifying", label: "正在修改" },
+  { id: "verifying", label: "正在验证" },
+  { id: "completed", label: "已完成" },
+];
+
+function getTaskPhase(activeTask?: SessionWorkspaceActiveTask | null): TaskPhase {
+  const status = activeTask?.status?.toLowerCase();
+  if (!activeTask) return "idle";
+  if (status && ["failed", "error", "cancelled", "rejected"].includes(status)) return "failed";
+  if (status === "completed" || status === "succeeded") return "completed";
+  if (status === "waiting_approval" || status === "paused") return "waiting";
+  if (status === "verifying" || (activeTask.verification?.length && status !== "completed")) return "verifying";
+  if (activeTask.changedFiles?.length || activeTask.commands?.some((command) => command.status === "running")) return "modifying";
+  return "analyzing";
+}
+
+function getTaskPhaseLabel(phase: TaskPhase) {
+  if (phase === "idle") return "等待需求";
+  if (phase === "waiting") return "等待审批";
+  if (phase === "failed") return "执行失败";
+  return TASK_PHASES.find((item) => item.id === phase)?.label ?? "正在处理";
+}
+
+function getTaskPhaseTone(phase: TaskPhase): "neutral" | "primary" | "success" | "warning" | "danger" | "info" {
+  if (phase === "completed") return "success";
+  if (phase === "failed") return "danger";
+  if (phase === "waiting") return "warning";
+  if (phase === "idle") return "neutral";
+  return "info";
+}
+
+function getTaskPhaseIndex(phase: TaskPhase) {
+  if (phase === "completed") return TASK_PHASES.length - 1;
+  const index = TASK_PHASES.findIndex((item) => item.id === phase);
+  return index >= 0 ? index : 0;
+}
+
+function buildTaskProgressSummary(activeTask?: SessionWorkspaceActiveTask | null) {
+  if (!activeTask) return "说出一个需求后，我会先分析代码，再修改和验证。";
+  const phase = getTaskPhase(activeTask);
+  if (phase === "completed") {
+    return activeTask.resultSummary || activeTask.summary || "任务已完成，下面可以查看变更和验证结果。";
+  }
+  if (phase === "failed") {
+    return activeTask.resultSummary || activeTask.summary || "任务执行失败，下面会保留可用的诊断信息。";
+  }
+  if (phase === "waiting") {
+    return "任务需要审批后才能继续。";
+  }
+  return activeTask.goal || "任务正在执行。";
+}
+
+function normalizeSubtaskStatus(status?: string) {
+  const normalized = status?.toLowerCase();
+  if (!normalized) return "pending";
+  if (["active", "running", "started", "planning", "verifying"].includes(normalized)) return "active";
+  if (["completed", "succeeded", "passed", "applied"].includes(normalized)) return "completed";
+  if (["failed", "error", "cancelled", "rejected"].includes(normalized)) return "failed";
+  return normalized;
+}
+
+const ACTION_PLAN_STEP_RE =
+  /\b(apply|patch|edit|write|implement|modify|command|shell|run|verify|git|commit|diff|build|fix)\b|\u5e94\u7528|\u8865\u4e01|\u7f16\u8f91|\u5199\u5165|\u5b9e\u73b0|\u4fee\u6539|\u8fd0\u884c|\u6267\u884c|\u9a8c\u8bc1|\u6784\u5efa|\u4fee\u590d|\u63d0\u4ea4/i;
+const QUESTION_GOAL_RE = new RegExp(
+  "[?\\uFF1F]\\s*$|\\u5417|\\u662f\\u5426|\\u662f\\u4e0d\\u662f|\\u80fd\\u4e0d\\u80fd|\\u53ef\\u4ee5|\\u5b8c\\u6210\\u4e86\\u5417|\\u7ed3\\u675f\\u4e86\\u5417|\\u4ec0\\u4e48\\u60c5\\u51b5|\\u4e3a\\u4ec0\\u4e48|\\u600e\\u4e48",
+);
+const GENERIC_ANSWER_STEP_RE =
+  /\b(inspect|search|summarize|understand|locate)\b|\u7406\u89e3|\u5b9a\u4f4d|\u67e5\u627e|\u6574\u7406|\u7b54\u590d|\u603b\u7ed3/i;
+const AGENT_WORK_REQUEST_RE = /\b(agent|worker|subagent|child task|childtask)\b|子任务|协作|多个\s*agent|多\s*agent|起\s*agent/i;
+
+function hasTaskWorkEvidence(activeTask?: SessionWorkspaceActiveTask | null) {
+  return Boolean(
+    activeTask?.changedFiles?.length ||
+      activeTask?.commands?.length ||
+      activeTask?.verification?.length,
+  );
+}
+
+function hasActionPlanStep(activeTask?: SessionWorkspaceActiveTask | null) {
+  return Boolean(
+    activeTask?.planSteps?.some((step) =>
+      ACTION_PLAN_STEP_RE.test(`${step.id ?? ""} ${step.title ?? ""}`),
+    ),
+  );
+}
+
+function isQuestionLikeGoal(goal?: string | null) {
+  return QUESTION_GOAL_RE.test(goal?.trim() ?? "");
+}
+
+function isGenericAnswerPlan(activeTask?: SessionWorkspaceActiveTask | null) {
+  const planSteps = activeTask?.planSteps ?? [];
+  return Boolean(
+    planSteps.length > 0 &&
+      planSteps.length <= 3 &&
+      planSteps.every((step) => GENERIC_ANSWER_STEP_RE.test(`${step.id ?? ""} ${step.title ?? ""}`)),
+  );
+}
+
+function shouldDisplayTaskScaffold(activeTask?: SessionWorkspaceActiveTask | null) {
+  if (!activeTask) return false;
+  if (hasTaskWorkEvidence(activeTask)) return true;
+
+  const planCount = activeTask.planSteps?.length ?? 0;
+  if (isQuestionLikeGoal(activeTask.goal) && isGenericAnswerPlan(activeTask)) return false;
+  if (hasActionPlanStep(activeTask)) return true;
+  if (planCount > 3) return true;
+
+  // Generic discovery plans are useful internally, but they make ordinary follow-up
+  // questions look like failed work. Keep the task UI for real execution plans only.
+  if (planCount > 0 && isQuestionLikeGoal(activeTask.goal)) return false;
+
+  return !isQuestionLikeGoal(activeTask.goal);
+}
+
+function expectsAgentWork(activeTask?: SessionWorkspaceActiveTask | null) {
+  if (!activeTask) return false;
+  return AGENT_WORK_REQUEST_RE.test(`${activeTask.goal ?? ""} ${activeTask.currentStep ?? ""}`);
+}
+
 function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveTask | null): RuntimeTimelineItem[] {
   if (!activeTask) {
     return [];
@@ -824,9 +1060,7 @@ function buildRuntimeItems({
   SessionWorkspaceProps,
   "session" | "activeTask" | "contextPreview" | "approvals" | "patches" | "traces" | "toolCalls" | "backgroundJobs"
 >): RuntimeTimelineItem[] {
-  const items: RuntimeTimelineItem[] = [
-    ...buildActiveTaskRuntimeItems(activeTask),
-  ];
+  const items: RuntimeTimelineItem[] = [];
 
   patches.forEach((patch) => {
     const changeStats = compactMeta([
@@ -873,6 +1107,7 @@ function buildRuntimeItems({
       ]),
       code: outputDetail || undefined,
       time: trace.time,
+      durationMs: trace.durationMs,
     });
   });
 
@@ -885,13 +1120,14 @@ function buildRuntimeItems({
       status: approval.status,
       summary: approval.summary,
       meta: compactMeta([approval.kind, approval.risk ? `风险：${formatStatusLabel(`${approval.risk} risk`)}` : null, approval.cwd]),
+      riskLevel: approval.risk,
       code: approval.command || approval.parametersPreview,
       rawDetail: approval.fullInput,
       time: approval.requestedAt,
     });
   });
 
-  toolCalls.forEach((toolCall) => {
+  compactRepeatedReadFileCalls(toolCalls).forEach((toolCall) => {
     const presentation = buildToolRuntimePresentation(toolCall);
     items.push({
       id: `tool:${toolCall.id}`,
@@ -903,6 +1139,7 @@ function buildRuntimeItems({
       code: presentation.code,
       rawDetail: compactMeta([toolCall.rawInput ? `输入\n${toolCall.rawInput}` : null, toolCall.rawOutput ? `输出\n${toolCall.rawOutput}` : null]).join("\n\n"),
       time: toolCall.time,
+      durationMs: toolCall.durationMs,
     });
   });
 
@@ -921,6 +1158,7 @@ function buildRuntimeItems({
       ]),
       code: job.stdoutPath || job.stderrPath,
       time: job.startedAt ?? job.finishedAt,
+      durationMs: job.durationMs,
     });
   });
 
@@ -953,16 +1191,17 @@ function getStatusTone(status?: string): "neutral" | "primary" | "success" | "wa
   if (!status) {
     return "neutral";
   }
-  if (["completed", "succeeded", "approved", "applied", "passed"].includes(status)) {
+  const normalized = status.toLowerCase();
+  if (["completed", "succeeded", "approved", "applied", "passed"].includes(normalized)) {
     return "success";
   }
-  if (["running", "started", "planning", "verifying"].includes(status)) {
+  if (["running", "started", "planning", "verifying"].includes(normalized)) {
     return "info";
   }
-  if (["pending", "queued", "waiting_approval"].includes(status)) {
+  if (["pending", "queued", "waiting_approval"].includes(normalized)) {
     return "warning";
   }
-  if (["failed", "error", "cancelled", "rejected"].includes(status)) {
+  if (["failed", "error", "cancelled", "rejected"].includes(normalized)) {
     return "danger";
   }
   return "neutral";
@@ -970,6 +1209,133 @@ function getStatusTone(status?: string): "neutral" | "primary" | "success" | "wa
 
 function isTaskControllable(status?: string) {
   return Boolean(status && ["running", "planning", "verifying", "waiting_approval", "queued"].includes(status));
+}
+
+function isRuntimeInFlight(status?: string) {
+  const normalized = status?.toLowerCase();
+  return Boolean(
+    normalized &&
+      ["running", "started", "planning", "verifying", "pending", "queued", "waiting_approval"].includes(normalized),
+  );
+}
+
+function getProcessStatusLabel(status?: string) {
+  const normalized = status?.toLowerCase();
+  if (!normalized) return "已记录";
+  if (["completed", "succeeded", "approved", "applied", "passed"].includes(normalized)) return "已完成";
+  if (["running", "started", "planning", "verifying"].includes(normalized)) return "进行中";
+  if (["pending", "queued", "waiting_approval"].includes(normalized)) return "等待中";
+  if (["failed", "error", "rejected"].includes(normalized)) return "失败";
+  if (normalized === "cancelled") return "已取消";
+  if (normalized === "skipped") return "已跳过";
+  return formatStatusLabel(status);
+}
+
+function getProcessTimeLabel(item: RuntimeTimelineItem, now: number, fallbackStartedAt: number) {
+  if (isRuntimeInFlight(item.status)) {
+    return formatElapsedTime(now - (item.time ?? fallbackStartedAt));
+  }
+  const duration = formatDuration(item.durationMs);
+  const timestamp = formatTimestamp(item.time);
+  if (duration && timestamp) {
+    return `${duration} · ${timestamp}`;
+  }
+  return duration ?? timestamp ?? "刚刚";
+}
+
+function getLiveTaskLabel(activeTask?: SessionWorkspaceActiveTask | null) {
+  const status = activeTask?.status?.toLowerCase();
+  if (status === "waiting_approval") return "等待审批...";
+  if (status === "queued") return "排队中...";
+  if (status === "planning") return "规划中...";
+  if (status === "verifying") return "验证中...";
+  return "执行中...";
+}
+
+function isUsableTimelineTimestamp(timestamp?: number) {
+  return Boolean(
+    timestamp !== undefined &&
+      Number.isFinite(timestamp) &&
+      timestamp > Date.UTC(2020, 0, 1) &&
+      timestamp < Date.now() + 60_000,
+  );
+}
+
+function getConversationLiveLabel({
+  messagesLoading,
+  hasStreamingMessage,
+  activeTask,
+  isRunning,
+}: {
+  messagesLoading?: boolean;
+  hasStreamingMessage: boolean;
+  activeTask?: SessionWorkspaceActiveTask | null;
+  isRunning: boolean;
+}) {
+  if (hasStreamingMessage) return "正在输出...";
+  if (messagesLoading) return "正在加载...";
+  const status = activeTask?.status?.toLowerCase();
+  if (status === "waiting_approval") return "等待审批...";
+  if (isRunning) return "助手工作中...";
+  return "已完成";
+}
+
+function getConversationStartedAt(
+  messages: SessionWorkspaceMessage[],
+  activeTask?: SessionWorkspaceActiveTask | null,
+  fallbackStartedAt?: number,
+) {
+  const latestUserMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user" && isUsableTimelineTimestamp(message.createdAt));
+  const streamingAssistantMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant" && message.streaming && isUsableTimelineTimestamp(message.createdAt));
+
+  return (
+    latestUserMessage?.createdAt ??
+    streamingAssistantMessage?.createdAt ??
+    (isUsableTimelineTimestamp(activeTask?.createdAt) ? activeTask?.createdAt : undefined) ??
+    (isUsableTimelineTimestamp(activeTask?.updatedAt) ? activeTask?.updatedAt : undefined) ??
+    fallbackStartedAt ??
+    Date.now()
+  );
+}
+
+function getConversationFinishedAt(
+  messages: SessionWorkspaceMessage[],
+  startedAt: number,
+  activeTask?: SessionWorkspaceActiveTask | null,
+) {
+  const latestMessageAfterStart = messages
+    .filter((message) => {
+      const timestamp = getMessageTimelineTime(message);
+      return message.role !== "user" && isUsableTimelineTimestamp(timestamp) && (timestamp ?? 0) >= startedAt;
+    })
+    .reduce<number | undefined>((latest, message) => {
+      const timestamp = getMessageTimelineTime(message) ?? 0;
+      return latest === undefined || timestamp > latest ? timestamp : latest;
+    }, undefined);
+
+  if (latestMessageAfterStart !== undefined) {
+    return latestMessageAfterStart;
+  }
+  const taskUpdatedAt = activeTask?.updatedAt;
+  if (isUsableTimelineTimestamp(taskUpdatedAt) && taskUpdatedAt !== undefined && taskUpdatedAt >= startedAt) {
+    return taskUpdatedAt;
+  }
+  return Date.now();
+}
+
+function getMessageTimelineTime(message: SessionWorkspaceMessage) {
+  if (message.role === "assistant" && isUsableTimelineTimestamp(message.updatedAt)) {
+    return message.updatedAt;
+  }
+  return message.createdAt;
+}
+
+function getMessageActivitySortTime(message: SessionWorkspaceMessage) {
+  return message.createdAt;
 }
 
 function parsePatchPath(line: string) {
@@ -1020,9 +1386,17 @@ function isSafeLink(url: string) {
   return /^(https?:|mailto:)/i.test(url);
 }
 
+function isSafeImageUrl(url: string) {
+  return /^(https?:|data:image\/|blob:|file:)/i.test(url) || url.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(url);
+}
+
+function normalizeImageUrl(url: string) {
+  return url.trim().replace(/\\/g, "/");
+}
+
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
+  const pattern = /(!\[[^\]]*\]\([^)]+\)|\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
   let cursor = 0;
   let match: RegExpExecArray | null;
 
@@ -1037,6 +1411,22 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
       nodes.push(<strong key={key}>{renderInlineMarkdown(token.slice(2, -2), `${key}-strong`)}</strong>);
     } else if (token.startsWith("`") && token.endsWith("`")) {
       nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith("![")) {
+      const imageMatch = token.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+      if (imageMatch && isSafeImageUrl(imageMatch[2])) {
+        const alt = imageMatch[1] || "image";
+        nodes.push(
+          <img
+            alt={alt}
+            className="markdown-image markdown-image-inline"
+            key={key}
+            loading="lazy"
+            src={normalizeImageUrl(imageMatch[2])}
+          />,
+        );
+      } else {
+        nodes.push(token);
+      }
     } else {
       const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
       if (linkMatch && isSafeLink(linkMatch[2])) {
@@ -1076,6 +1466,7 @@ function parseTableRow(line: string) {
 function isMarkdownBlockStart(line: string) {
   return (
     /^#{1,3}\s+/.test(line) ||
+    /^!\[[^\]]*\]\([^)]+\)\s*$/.test(line) ||
     /^[-*]\s+/.test(line) ||
     /^\d+\.\s+/.test(line) ||
     /^```/.test(line) ||
@@ -1126,6 +1517,17 @@ function MarkdownContent({ content }: { content: string }) {
         ) : (
           <h4 key={`h-${index}`}>{children}</h4>
         ),
+      );
+      index += 1;
+      continue;
+    }
+
+    const image = line.match(/^!\[([^\]]*)\]\(([^)]+)\)\s*$/);
+    if (image && isSafeImageUrl(image[2])) {
+      blocks.push(
+        <figure className="markdown-image-frame" key={`image-${index}`}>
+          <img alt={image[1] || "image"} className="markdown-image" loading="lazy" src={normalizeImageUrl(image[2])} />
+        </figure>,
       );
       index += 1;
       continue;
@@ -1196,6 +1598,58 @@ function MarkdownContent({ content }: { content: string }) {
   return <div className="markdown-content">{blocks}</div>;
 }
 
+function ProcessRuntimeCard({
+  item,
+  kindLabel,
+  expanded,
+  onToggleExpanded,
+}: {
+  item: RuntimeTimelineItem;
+  kindLabel: string;
+  expanded: boolean;
+  onToggleExpanded(): void;
+}) {
+  const inFlight = isRuntimeInFlight(item.status);
+  const [fallbackStartedAt] = useState(() => Date.now());
+  const now = useTickWhen(inFlight);
+
+  const statusLabel = getProcessStatusLabel(item.status);
+  const timeLabel = getProcessTimeLabel(item, now, fallbackStartedAt);
+  const detail = item.code || item.rawDetail;
+  const showSecondaryDetail = expanded || inFlight;
+
+  return (
+    <article
+      className="runtime-process-card"
+      data-kind={item.kind}
+      data-status={item.status ?? "recorded"}
+      data-active={inFlight ? "true" : "false"}
+    >
+      <button
+        aria-label={`${kindLabel} ${item.title} ${statusLabel}${timeLabel ? ` ${timeLabel}` : ""}`}
+        aria-expanded={expanded}
+        className="runtime-process-head"
+        onClick={onToggleExpanded}
+        type="button"
+      >
+        <span className="runtime-process-spark" aria-hidden="true" />
+        <h3>{item.title}</h3>
+        <StatusBadge label={statusLabel} tone={getStatusTone(item.status)} compact />
+        {timeLabel ? <time>{timeLabel}</time> : null}
+      </button>
+      {showSecondaryDetail && item.summary ? <p className="runtime-process-summary">{compactText(item.summary, 180)}</p> : null}
+      {showSecondaryDetail && item.meta?.length ? (
+        <div className="runtime-process-meta">
+          {item.meta.slice(0, expanded ? 6 : 3).map((entry) => (
+            <span key={entry}>{entry}</span>
+          ))}
+        </div>
+      ) : null}
+      {expanded && detail ? <pre className="runtime-process-detail">{detail}</pre> : null}
+    </article>
+  );
+}
+
 const RuntimeEventCard = memo(function RuntimeEventCard({
   item,
   onApprove,
@@ -1244,7 +1698,7 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
             kind: item.meta?.[0],
             status: item.status ?? "pending",
             summary: item.summary,
-            risk: item.meta?.some((entry) => entry.includes("high")) ? "high" : item.meta?.some((entry) => entry.includes("medium")) ? "medium" : "low",
+            risk: item.riskLevel ?? "low",
             command: item.code,
             cwd: item.meta?.find((entry) => /^[A-Z]:|^\//.test(entry)),
             requestedAt: item.time,
@@ -1285,13 +1739,11 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
   if (item.kind === "command") {
     return (
       <div className="runtime-event-card runtime-event-v2-card" data-activity-kind="runtime" data-kind={item.kind}>
-        <CommandOutputPanel
-          command={{
-            id: item.sourceId ?? item.id,
-            command: item.title,
-            status: item.status ?? "recorded",
-            stdout: commandOutput,
-          }}
+        <ProcessRuntimeCard
+          item={item}
+          kindLabel={kindLabel}
+          expanded={expanded}
+          onToggleExpanded={() => setExpanded((current) => !current)}
         />
         {hasCommandActions ? (
           <div className="runtime-event-actions">
@@ -1340,15 +1792,11 @@ const RuntimeEventCard = memo(function RuntimeEventCard({
   if (item.kind === "tool") {
     return (
       <div className="runtime-event-card runtime-event-v2-card" data-activity-kind="runtime" data-kind={item.kind}>
-        <ToolTraceCard
-          toolCall={{
-            id: item.sourceId ?? item.id,
-            toolName: item.title,
-            status: item.status ?? "recorded",
-            inputPreview: item.code,
-            outputPreview: item.summary,
-            startedAt: item.time,
-          }}
+        <ProcessRuntimeCard
+          item={item}
+          kindLabel={kindLabel}
+          expanded={expanded}
+          onToggleExpanded={() => setExpanded((current) => !current)}
         />
       </div>
     );
@@ -1573,10 +2021,17 @@ function PatchDiffBody({ diffLines, isBusy }: { diffLines?: DiffLine[]; isBusy: 
 }
 
 const MessageBubble = memo(function MessageBubble({ message }: { message: SessionWorkspaceMessage }) {
-  const isThinking = message.streaming && message.placeholder;
+  const isThinking = Boolean(message.streaming && message.placeholder);
+  const now = useTickWhen(isThinking);
+
+  const thinkingStartedAt = message.createdAt ?? now;
+  const thinkingElapsedMs = Math.max(0, now - thinkingStartedAt);
+  const thinkingStalled = thinkingElapsedMs >= THINKING_STALLED_MS;
+
   return (
     <article
       className={`message-bubble${isThinking ? " message-bubble-thinking" : ""}`}
+      data-stalled={isThinking && thinkingStalled ? "true" : undefined}
       data-activity-kind="message"
       data-role={message.role}
       aria-label={`${getRoleLabel(message.role)}消息`}
@@ -1586,11 +2041,18 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Sessio
         {message.toolName ? <em>{message.toolName}</em> : null}
         {message.status ? <em>{formatStatusLabel(message.status)}</em> : null}
         {message.streaming && !message.placeholder ? <em>流式输出</em> : null}
-        {message.createdAt ? <time>{formatTimestamp(message.createdAt)}</time> : null}
+        {getMessageTimelineTime(message) ? <time>{formatTimestamp(getMessageTimelineTime(message))}</time> : null}
       </div>
       {isThinking ? (
-        <div className="thinking-dots" aria-label="思考中">
-          <span /><span /><span />
+        <div className="thinking-status" data-stalled={thinkingStalled ? "true" : "false"}>
+          <div className="thinking-dots" aria-label="思考中">
+            <span /><span /><span />
+          </div>
+          <p>
+            <strong>{thinkingStalled ? "仍在思考…" : "思考中…"}</strong>
+            <time>{formatElapsedTime(thinkingElapsedMs)}</time>
+          </p>
+          {thinkingStalled ? <small>长时间无新输出。可以停止当前轮次或暂存下一条消息。</small> : null}
         </div>
       ) : message.role === "assistant" ? (
         <MarkdownContent content={message.content} />
@@ -1598,6 +2060,70 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: Sessio
         <p>{message.content}</p>
       )}
     </article>
+  );
+});
+
+const ConversationLivePill = memo(function ConversationLivePill({
+  messages,
+  activeTask,
+  messagesLoading,
+}: {
+  messages: SessionWorkspaceMessage[];
+  activeTask?: SessionWorkspaceActiveTask | null;
+  messagesLoading?: boolean;
+}) {
+  const hasStreamingMessage = messages.some((message) => message.streaming);
+  const isRunning = Boolean(messagesLoading || hasStreamingMessage || isTaskControllable(activeTask?.status));
+  const shouldShow = Boolean(messages.length || activeTask || isRunning);
+  const [fallbackStartedAt] = useState(() => Date.now());
+  const startedAt = getConversationStartedAt(messages, activeTask, fallbackStartedAt);
+  const now = useTickWhen(isRunning);
+
+  if (!shouldShow) {
+    return null;
+  }
+
+  const finishedAt = isRunning ? now : getConversationFinishedAt(messages, startedAt, activeTask);
+  const elapsed = formatElapsedTime(finishedAt - startedAt);
+  const label = getConversationLiveLabel({ messagesLoading, hasStreamingMessage, activeTask, isRunning });
+
+  return (
+    <div
+      className="session-conversation-live-pill"
+      data-state={isRunning ? "running" : "completed"}
+      aria-label={`本轮对话${label}${elapsed}`}
+      title="本轮对话持续时间"
+    >
+      <span className="session-conversation-live-spark" aria-hidden="true" />
+      <strong>{label}</strong>
+      <time>{elapsed}</time>
+    </div>
+  );
+});
+
+const TaskLivePill = memo(function TaskLivePill({ activeTask }: { activeTask?: SessionWorkspaceActiveTask | null }) {
+  const shouldShow = isTaskControllable(activeTask?.status);
+  const [fallbackStartedAt] = useState(() => Date.now());
+  const startedAt = activeTask?.createdAt ?? activeTask?.updatedAt ?? fallbackStartedAt;
+  const now = useTickWhen(shouldShow);
+
+  if (!shouldShow || !activeTask) {
+    return null;
+  }
+
+  const elapsed = formatElapsedTime(now - startedAt);
+  const label = getLiveTaskLabel(activeTask);
+
+  return (
+    <div
+      className="session-task-live-pill"
+      aria-label={`当前任务${label}${elapsed}`}
+      title={activeTask.currentStep || activeTask.goal || label}
+    >
+      <span className="session-task-live-spark" aria-hidden="true" />
+      <strong>{label}</strong>
+      <time>{elapsed}</time>
+    </div>
   );
 });
 
@@ -1610,7 +2136,7 @@ function buildConversationActivity(
       id: `message:${message.id}`,
       kind: "message" as const,
       order: index,
-      time: message.createdAt,
+      time: getMessageActivitySortTime(message),
       message,
     })),
     ...runtimeItems.map((runtime, index) => ({
@@ -1638,6 +2164,9 @@ function buildConversationActivity(
 
 const ConversationActivity = memo(function ConversationActivity({
   items,
+  messages,
+  activeTask,
+  messagesLoading,
   onApprove,
   onReject,
   onLoadPatch,
@@ -1648,6 +2177,9 @@ const ConversationActivity = memo(function ConversationActivity({
   busyId,
 }: {
   items: ConversationActivityItem[];
+  messages: SessionWorkspaceMessage[];
+  activeTask?: SessionWorkspaceActiveTask | null;
+  messagesLoading?: boolean;
   onApprove?(approvalId: string): void | Promise<void>;
   onReject?(approvalId: string): void | Promise<void>;
   onLoadPatch?(patchId: string): void | Promise<void>;
@@ -1657,11 +2189,23 @@ const ConversationActivity = memo(function ConversationActivity({
   onStopCommandJob?(commandId: string): void | Promise<void>;
   busyId?: string | null;
 }) {
+  const livePill = (
+    <div className="conversation-live-row">
+      <ConversationLivePill messages={messages} activeTask={activeTask} messagesLoading={messagesLoading} />
+    </div>
+  );
+  const activeTaskIsRunning = isTaskControllable(activeTask?.status);
+  const showLivePill = Boolean(
+    messages.length || activeTask || messagesLoading || messages.some((message) => message.streaming) || activeTaskIsRunning,
+  );
+
   return (
     <div className="conversation-activity" aria-label="会话活动">
       {items.map((item) =>
         item.kind === "message" ? (
-          <MessageBubble message={item.message} key={item.id} />
+          <Fragment key={item.id}>
+            <MessageBubble message={item.message} />
+          </Fragment>
         ) : (
           <RuntimeEventCard
             item={item.runtime}
@@ -1677,14 +2221,213 @@ const ConversationActivity = memo(function ConversationActivity({
           />
         ),
       )}
+      {showLivePill ? livePill : null}
     </div>
   );
 });
+
+function TaskProgressPanel({
+  activeTask,
+  patches,
+}: {
+  activeTask?: SessionWorkspaceActiveTask | null;
+  patches?: SessionWorkspacePatch[];
+}) {
+  const phase = getTaskPhase(activeTask);
+  const currentIndex = getTaskPhaseIndex(phase);
+  const changedFiles = activeTask?.changedFiles ?? [];
+  const commands = activeTask?.commands ?? [];
+  const verification = activeTask?.verification ?? [];
+  const patchFiles = patches?.flatMap((patch) => patch.files ?? []) ?? [];
+  const files = changedFiles.length
+    ? changedFiles
+    : patchFiles.map((file) => ({
+        path: file.path,
+        status: file.status,
+        additions: file.additions,
+        deletions: file.deletions,
+      }));
+
+  return (
+    <section className="task-progress-panel" aria-label="任务进度">
+      <header>
+        <div>
+          <p className="session-kicker">任务进度</p>
+          <h3>{getTaskPhaseLabel(phase)}</h3>
+        </div>
+        <StatusBadge
+          label={getTaskPhaseLabel(phase)}
+          tone={getTaskPhaseTone(phase)}
+          pulse={["analyzing", "modifying", "verifying"].includes(phase)}
+          compact
+        />
+      </header>
+      <p>{buildTaskProgressSummary(activeTask)}</p>
+      <ol className="task-progress-steps">
+        {TASK_PHASES.map((step, index) => {
+          const state =
+            phase === "failed"
+              ? index <= currentIndex
+                ? "failed"
+                : "pending"
+              : index < currentIndex || phase === "completed"
+                ? "done"
+                : index === currentIndex
+                  ? "current"
+                  : "pending";
+          return (
+            <li key={step.id} data-state={state}>
+              <span aria-hidden="true" />
+              <strong>{step.label}</strong>
+            </li>
+          );
+        })}
+      </ol>
+      <div className="task-result-grid" aria-label="任务结果">
+        <article>
+          <span>代码变更</span>
+          <strong>{files.length ? `${files.length} 个文件` : "暂无变更"}</strong>
+          {files.length ? (
+            <ul>
+              {files.slice(0, 5).map((file) => (
+                <li key={file.path}>
+                  <code>{file.path}</code>
+                  <small>
+                    {compactMeta([
+                      file.status ? formatStatusLabel(file.status) : null,
+                      file.additions !== undefined ? `+${file.additions}` : null,
+                      file.deletions !== undefined ? `-${file.deletions}` : null,
+                    ]).join(" ")}
+                  </small>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </article>
+        <article>
+          <span>验证</span>
+          <strong>{verification.length ? `${verification.length} 项` : "等待验证"}</strong>
+          {verification.length ? (
+            <ul>
+              {verification.slice(0, 3).map((item) => (
+                <li key={item.id ?? item.command ?? item.summary}>
+                  <code>{item.command ?? item.id ?? "验证"}</code>
+                  <small>{formatStatusLabel(item.status)}</small>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </article>
+        <article>
+          <span>执行</span>
+          <strong>{commands.length ? `${commands.length} 条命令` : "暂无命令"}</strong>
+          {commands.length ? (
+            <ul>
+              {commands.slice(0, 3).map((item) => (
+                <li key={item.id ?? item.command}>
+                  <code>{item.command}</code>
+                  <small>{formatStatusLabel(item.status)}</small>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </article>
+      </div>
+    </section>
+  );
+}
+
+function AgentCollaborationPanel({
+  collaboration,
+  expectAgentWork,
+}: {
+  collaboration?: SessionWorkspaceCollaboration;
+  expectAgentWork?: boolean;
+}) {
+  const workers = collaboration?.workers ?? [];
+  const childTasks = collaboration?.childTasks ?? [];
+  const results = collaboration?.results ?? [];
+  const hasAgentWork = workers.length > 0 || childTasks.length > 0 || results.length > 0;
+
+  if (!hasAgentWork && !expectAgentWork) {
+    return null;
+  }
+
+  return (
+    <section className="agent-collaboration-panel" aria-label="真实 Agent 任务">
+      <header>
+        <div>
+          <p className="session-kicker">Agent 协作</p>
+          <h3>真实 Agent 任务</h3>
+        </div>
+        <StatusBadge
+          label={`${childTasks.length} 项`}
+          tone={childTasks.some((task) => isRuntimeInFlight(task.status)) ? "info" : "neutral"}
+          pulse={childTasks.some((task) => isRuntimeInFlight(task.status))}
+          compact
+        />
+      </header>
+
+      {childTasks.length ? (
+        <ol className="agent-task-list" aria-label="Agent child tasks">
+          {childTasks.map((task) => (
+            <li key={task.id} data-state={normalizeSubtaskStatus(task.status)}>
+              <div>
+                <strong>{task.title}</strong>
+                <small>
+                  {compactMeta([task.workerName ? `worker: ${task.workerName}` : null, task.summary]).join(" - ") ||
+                    task.id}
+                </small>
+              </div>
+              <StatusBadge
+                label={formatStatusLabel(task.status)}
+                tone={getStatusTone(task.status)}
+                pulse={isRuntimeInFlight(task.status)}
+                compact
+              />
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="agent-collaboration-empty">尚未检测到运行时创建的真实 agent child task。</p>
+      )}
+
+      {workers.length ? (
+        <div className="agent-worker-strip" aria-label="Agent workers">
+          {workers.slice(0, 4).map((worker) => (
+            <article key={worker.id}>
+              <strong>{worker.name}</strong>
+              <span>
+                {compactMeta([
+                  worker.mode,
+                  worker.claimedTaskId ? `task: ${worker.claimedTaskId}` : null,
+                  worker.healthState,
+                ]).join(" - ") || worker.id}
+              </span>
+            </article>
+          ))}
+        </div>
+      ) : null}
+
+      {results.length ? (
+        <ul className="agent-result-list" aria-label="Agent task results">
+          {results.slice(0, 3).map((result) => (
+            <li key={result.id}>
+              <strong>{result.title ?? result.taskId ?? result.id}</strong>
+              <span>{result.summary ?? formatStatusLabel(result.status)}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
 
 export function SessionWorkspace({
   session,
   messages,
   activeTask,
+  collaboration,
   contextPreview,
   approvals,
   patches,
@@ -1720,11 +2463,12 @@ export function SessionWorkspace({
     );
   }
 
+  const visibleActiveTask = shouldDisplayTaskScaffold(activeTask) ? activeTask : null;
   const runtimeItems = useMemo(
     () =>
       buildRuntimeItems({
         session,
-        activeTask,
+        activeTask: visibleActiveTask,
         contextPreview,
         approvals,
         patches,
@@ -1732,7 +2476,7 @@ export function SessionWorkspace({
         toolCalls,
         backgroundJobs,
       }),
-    [activeTask, approvals, backgroundJobs, contextPreview, patches, session, toolCalls, traces],
+    [visibleActiveTask, approvals, backgroundJobs, contextPreview, patches, session, toolCalls, traces],
   );
   const activityItems = useMemo(
     () => buildConversationActivity(messages, runtimeItems),
@@ -1740,7 +2484,7 @@ export function SessionWorkspace({
   );
   const { pendingApprovals, patchCount, commandCount, diagnosticCount, runtimeLanes } = useMemo(() => {
     const pendingApprovals = approvals?.filter((approval) => approval.status === "pending").length ?? 0;
-    const patchCount = patches?.length ?? 0;
+    const patchCount = (patches?.length ?? 0) || (visibleActiveTask?.changedFiles?.length ?? 0);
     let commandCount = 0;
     let diagnosticCount = 0;
     const commandsAndTools: RuntimeTimelineItem[] = [];
@@ -1751,7 +2495,7 @@ export function SessionWorkspace({
       if (item.kind === "command" || item.kind === "tool") {
         commandsAndTools.push(item);
         if (item.kind === "command") commandCount++;
-      } else if (item.kind === "patch") {
+      } else if (item.kind === "patch" || item.id.startsWith("task-files:")) {
         patchItems.push(item);
       } else {
         traceItems.push(item);
@@ -1787,15 +2531,15 @@ export function SessionWorkspace({
     ];
 
     return { pendingApprovals, patchCount, commandCount, diagnosticCount, runtimeLanes };
-  }, [approvals, patches, runtimeItems]);
-  const activeTaskStatus = activeTask?.status ?? "idle";
+  }, [visibleActiveTask?.changedFiles?.length, approvals, patches, runtimeItems]);
+  const activeTaskPhase = getTaskPhase(visibleActiveTask);
   const contextBudgetStats = contextPreview?.budgetStats;
   const contextUsedTokens =
     contextBudgetStats?.estimatedInputTokens ?? contextBudgetStats?.estimatedTokens ?? contextBudgetStats?.messageTokens;
   const contextMaxTokens = contextBudgetStats?.maxContextTokens;
 
   return (
-    <main className="session-workspace session-workspace-chat-only" aria-labelledby="session-title">
+    <main className="session-workspace session-workspace-chat-only" aria-label="Session">
       <section className="session-workbench-grid">
         <section className="session-conversation-column">
           <header className="session-chat-header">
@@ -1804,7 +2548,7 @@ export function SessionWorkspace({
               <h1 id="session-title">{session.title}</h1>
               <div className="session-chip-row" aria-label="会话上下文">
                 <StatusBadge label={formatStatusLabel(session.status ?? "active")} tone={getStatusTone(session.status)} />
-                {activeTask?.status ? <StatusBadge label={formatStatusLabel(activeTask.status)} tone={getStatusTone(activeTask.status)} pulse={isTaskControllable(activeTask.status)} /> : null}
+                {visibleActiveTask?.status ? <StatusBadge label={formatStatusLabel(visibleActiveTask.status)} tone={getStatusTone(visibleActiveTask.status)} pulse={isTaskControllable(visibleActiveTask.status)} /> : null}
                 {taskCount !== undefined ? <span>{taskCount} 个任务</span> : null}
                 {composerContext?.model ? <span>{composerContext.model}</span> : null}
                 {composerContext?.permissionMode ? <span>审批：{composerContext.permissionMode}</span> : null}
@@ -1815,7 +2559,7 @@ export function SessionWorkspace({
                 size="sm"
                 variant="secondary"
                 loading={taskBusyAction === "refresh"}
-                disabled={!activeTask || !onRefreshTask}
+                disabled={!visibleActiveTask || !onRefreshTask}
                 onClick={() => {
                   void onRefreshTask?.();
                 }}
@@ -1837,10 +2581,10 @@ export function SessionWorkspace({
                 size="sm"
                 variant="danger"
                 loading={taskBusyAction === "stop"}
-                disabled={!activeTask || !isTaskControllable(activeTask.status) || !onStopTask}
+                disabled={!visibleActiveTask || !isTaskControllable(visibleActiveTask.status) || !onStopTask}
                 onClick={() => {
-                  if (activeTask) {
-                    void onStopTask?.(activeTask.id);
+                  if (visibleActiveTask) {
+                    void onStopTask?.(visibleActiveTask.id);
                   }
                 }}
               >
@@ -1871,6 +2615,9 @@ export function SessionWorkspace({
               ) : (
                 <ConversationActivity
                   items={activityItems}
+                  messages={messages}
+                  activeTask={visibleActiveTask}
+                  messagesLoading={messagesLoading}
                   onApprove={onApprove}
                   onReject={onReject}
                   onLoadPatch={onLoadPatch}
@@ -1889,8 +2636,8 @@ export function SessionWorkspace({
           <section className="session-runtime-dashboard" aria-label="运行时仪表盘">
             <div>
               <p className="session-kicker">任务状态</p>
-              <strong>{formatStatusLabel(activeTaskStatus)}</strong>
-              <span>{activeTask?.currentStep ?? activeTask?.goal ?? "等待下一条指令"}</span>
+              <strong>{getTaskPhaseLabel(activeTaskPhase)}</strong>
+              <span>{buildTaskProgressSummary(visibleActiveTask)}</span>
             </div>
             <dl>
               <div>
@@ -1916,14 +2663,8 @@ export function SessionWorkspace({
             </dl>
           </section>
 
-          {activeTask?.currentStep || activeTask?.goal ? (
-            <Panel className="session-task-panel" eyebrow="运行时重点" title={activeTask?.currentStep ?? "等待下一个任务"}>
-              <div className="session-task-panel-grid">
-                <p>{activeTask?.goal ?? session.summary ?? "当前会话没有正在运行的任务。"}</p>
-                {composerContext?.cwd ? <code>{composerContext.cwd}</code> : null}
-              </div>
-            </Panel>
-          ) : null}
+          <TaskProgressPanel activeTask={visibleActiveTask} patches={patches} />
+          <AgentCollaborationPanel collaboration={collaboration} expectAgentWork={expectsAgentWork(visibleActiveTask)} />
 
           {typeof contextUsedTokens === "number" && typeof contextMaxTokens === "number" ? (
             <ContextBudgetBar

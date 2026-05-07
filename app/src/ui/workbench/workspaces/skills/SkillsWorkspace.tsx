@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import type { SettingsSkillConfig } from "../settings/SettingsWorkspace";
 import { Button, StatusBadge } from "../../../v2/components/ui";
 import type { McpServerRecord } from "@shared";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import "./skills.css";
 
 export interface SkillDraft {
@@ -24,6 +25,7 @@ export interface SkillsWorkspaceProps {
   onCreateSkill?: (draft: SkillDraft) => void | Promise<void>;
   onUpdateSkill?: (skillId: string, draft: SkillDraft) => void | Promise<void>;
   onDeleteSkill?: (skillId: string) => void | Promise<void>;
+  onImportSkills?: (filePath: string) => void | Promise<void>;
 }
 
 const emptySkillDraft: SkillDraft = {
@@ -91,6 +93,7 @@ export function SkillsWorkspace({
   onCreateSkill,
   onUpdateSkill,
   onDeleteSkill,
+  onImportSkills,
 }: SkillsWorkspaceProps) {
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [editorMode, setEditorMode] = useState<"create" | "edit" | null>(null);
@@ -131,6 +134,31 @@ export function SkillsWorkspace({
     setSelectedSkillId(null);
     setDraft(emptySkillDraft);
     setEditorMode("create");
+  }
+
+  async function handleImportClick() {
+    const selected = await openDialog({
+      multiple: false,
+      filters: [
+        { name: "技能文件", extensions: ["json", "zip"] },
+        { name: "JSON", extensions: ["json"] },
+        { name: "ZIP 压缩包", extensions: ["zip"] },
+      ],
+    });
+    if (!selected) {
+      return;
+    }
+    await onImportSkills?.(selected);
+  }
+
+  async function handleImportFolder() {
+    const selected = await openDialog({
+      directory: true,
+    });
+    if (!selected) {
+      return;
+    }
+    await onImportSkills?.(selected);
   }
 
   function openEditEditor(skill: SettingsSkillConfig) {
@@ -187,6 +215,24 @@ export function SkillsWorkspace({
           disabledReason="自定义技能持久化尚不可用"
         >
           新建自定义技能
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => void handleImportClick()}
+          disabled={!onImportSkills || busySkillId === "import"}
+          loading={busySkillId === "import"}
+          disabledReason="技能导入尚未接入"
+        >
+          导入文件
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => void handleImportFolder()}
+          disabled={!onImportSkills || busySkillId === "import"}
+          loading={busySkillId === "import"}
+          disabledReason="技能导入尚未接入"
+        >
+          导入文件夹
         </Button>
       </section>
 

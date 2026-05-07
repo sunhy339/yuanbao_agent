@@ -9,6 +9,8 @@ export interface McpServerDraft {
   command: string;
   args: string;
   url: string;
+  headers: string;
+  env: string;
   enabled: boolean;
 }
 
@@ -20,6 +22,7 @@ export interface McpWorkspaceProps {
   errorMessage?: string | null;
   onRefreshServers: () => void | Promise<void>;
   onCreateServer: (draft: McpServerDraft) => void | Promise<void>;
+  onImportServers?: (drafts: McpServerDraft[]) => void | Promise<void>;
   onUpdateServer: (serverId: string, draft: McpServerDraft) => void | Promise<void>;
   onToggleServer: (serverId: string, enabled: boolean) => void | Promise<void>;
   onRefreshTools: (serverId?: string) => void | Promise<void>;
@@ -33,6 +36,8 @@ const initialDraft: McpServerDraft = {
   command: "",
   args: "",
   url: "",
+  headers: "",
+  env: "",
   enabled: true,
 };
 
@@ -47,6 +52,74 @@ function formatArgs(args?: string[]) {
   return args?.length ? args.join(" ") : "无参数";
 }
 
+function formatRecordKeys(record?: Record<string, string>) {
+  const keys = Object.keys(record ?? {});
+  return keys.length ? keys.join(", ") : "none";
+}
+
+function formatKeyValueRecord(record?: Record<string, string>) {
+  return Object.entries(record ?? {})
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+}
+
+function stringifyImportedArgs(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join("\n");
+  }
+  return typeof value === "string" ? value : "";
+}
+
+function stringifyImportedRecord(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "";
+  }
+  return Object.entries(value as Record<string, unknown>)
+    .map(([key, recordValue]) => `${key}=${String(recordValue)}`)
+    .join("\n");
+}
+
+function parseMcpServersImport(value: string): McpServerDraft[] {
+  const parsed = JSON.parse(value) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Expected a JSON object.");
+  }
+  const record = parsed as Record<string, unknown>;
+  const rawServers = record.mcpServers ?? record.servers ?? record;
+  if (!rawServers || typeof rawServers !== "object" || Array.isArray(rawServers)) {
+    throw new Error("Expected an mcpServers object.");
+  }
+  return Object.entries(rawServers as Record<string, unknown>)
+    .map(([name, raw]) => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        return null;
+      }
+      const server = raw as Record<string, unknown>;
+      const transport =
+        typeof server.transport === "string"
+          ? (server.transport as McpServerTransport)
+          : typeof server.url === "string"
+            ? "sse"
+            : "stdio";
+      const enabled = typeof server.enabled === "boolean"
+        ? server.enabled
+        : typeof server.disabled === "boolean"
+          ? !server.disabled
+          : true;
+      return {
+        name,
+        transport,
+        command: typeof server.command === "string" ? server.command : "",
+        args: stringifyImportedArgs(server.args),
+        url: typeof server.url === "string" ? server.url : "",
+        headers: stringifyImportedRecord(server.headers),
+        env: stringifyImportedRecord(server.env),
+        enabled,
+      };
+    })
+    .filter((draft): draft is McpServerDraft => Boolean(draft?.name));
+}
+
 function draftFromServer(server: McpServerRecord): McpServerDraft {
   return {
     name: server.name,
@@ -54,6 +127,8 @@ function draftFromServer(server: McpServerRecord): McpServerDraft {
     command: server.command ?? "",
     args: server.args?.join("\n") ?? "",
     url: server.url ?? "",
+    headers: formatKeyValueRecord(server.headers),
+    env: formatKeyValueRecord(server.env),
     enabled: server.enabled,
   };
 }
@@ -66,6 +141,7 @@ export function McpWorkspace({
   errorMessage = null,
   onRefreshServers,
   onCreateServer,
+  onImportServers,
   onUpdateServer,
   onToggleServer,
   onRefreshTools,
@@ -73,6 +149,8 @@ export function McpWorkspace({
   onDismissError,
 }: McpWorkspaceProps) {
   const [draft, setDraft] = useState<McpServerDraft>(initialDraft);
+  const [importText, setImportText] = useState("");
+  const [importError, setImportError] = useState<string | null>(null);
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(servers[0]?.id ?? null);
@@ -96,6 +174,24 @@ export function McpWorkspace({
       setDraft(initialDraft);
     } catch {
       // Parent owns persistent error state; keep the draft intact for correction.
+    }
+  }
+
+  async function handleImport() {
+    try {
+      const drafts = parseMcpServersImport(importText);
+      if (!drafts.length) {
+        throw new Error("No MCP servers found.");
+      }
+      if (onImportServers) {
+        await onImportServers(drafts);
+        setImportText("");
+      } else {
+        setDraft(drafts[0]);
+      }
+      setImportError(null);
+    } catch (reason) {
+      setImportError(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
@@ -199,6 +295,29 @@ export function McpWorkspace({
               </Button>
             ) : null}
           </div>
+          {formMode === "create" ? (
+            <div className="mcp-import-box">
+              <label>
+                <span>MCP JSON</span>
+                <textarea
+                  aria-label="MCP JSON"
+                  value={importText}
+                  onChange={(event) => {
+                    setImportText(event.currentTarget.value);
+                    setImportError(null);
+                  }}
+                  placeholder={'{ "mcpServers": { "firecrawl-mcp": { "command": "npx", "args": ["-y", "firecrawl-mcp"], "env": { "FIRECRAWL_API_KEY": "..." } } } }'}
+                  rows={4}
+                />
+              </label>
+              <div className="mcp-import-actions">
+                <Button type="button" variant="secondary" size="sm" disabled={!importText.trim() || loading} onClick={() => void handleImport()}>
+                  Import JSON
+                </Button>
+                {importError ? <span role="alert">{importError}</span> : null}
+              </div>
+            </div>
+          ) : null}
           <label>
             <span>名称</span>
             <input
@@ -264,6 +383,34 @@ export function McpWorkspace({
               />
             </label>
           )}
+          {draft.transport !== "stdio" ? (
+            <label>
+              <span>Headers</span>
+              <textarea
+                aria-label="Headers"
+                value={draft.headers}
+                onChange={(event) => {
+                  const { value } = event.currentTarget;
+                  setDraft((current) => ({ ...current, headers: value }));
+                }}
+                placeholder="Authorization=Bearer ..."
+                rows={3}
+              />
+            </label>
+          ) : null}
+          <label>
+            <span>Env</span>
+            <textarea
+              aria-label="Env"
+              value={draft.env}
+              onChange={(event) => {
+                const { value } = event.currentTarget;
+                setDraft((current) => ({ ...current, env: value }));
+              }}
+              placeholder="FIRECRAWL_API_KEY=..."
+              rows={3}
+            />
+          </label>
           <label className="mcp-toggle">
             <input
               type="checkbox"
@@ -345,6 +492,10 @@ export function McpWorkspace({
                 <div>
                   <dt>参数</dt>
                   <dd>{formatArgs(selectedServer.args)}</dd>
+                </div>
+                <div>
+                  <dt>Env</dt>
+                  <dd>{formatRecordKeys(selectedServer.env)}</dd>
                 </div>
                 <div>
                   <dt>更新时间</dt>

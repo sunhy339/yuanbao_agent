@@ -162,7 +162,120 @@ def test_react_loop_injects_task_focus_into_provider_context(tmp_path: Any) -> N
     assert "Out of scope:" in user_context
     assert task["acceptanceCriteria"]
     assert task["outOfScope"]
-    assert task["currentStep"] == "Inspect workspace"
+    assert task["currentStep"] == "Understand task context"
+
+
+def test_next_turn_context_keeps_recent_conversation_before_current_request(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {"final": "I will remember the alpha checklist."},
+            {"final": "You asked me to remember the alpha checklist."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "remember the alpha checklist"},
+        ),
+        "task",
+    )
+    _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "what did I ask you to remember?"},
+        ),
+        "task",
+    )
+
+    second_context_text = provider.calls[1]["context"]["messages"][-1]["content"]
+    assert "Recent conversation:" in second_context_text
+    assert "User: remember the alpha checklist" in second_context_text
+    assert "Assistant: I will remember the alpha checklist." in second_context_text
+    assert second_context_text.rfind("Current user request:") > second_context_text.rfind("Recent conversation:")
+    assert "Current user request:\nwhat did I ask you to remember?" in second_context_text
+
+
+def test_message_send_attaches_supplement_to_open_task_without_replanning(tmp_path: Any) -> None:
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    original_plan = [
+        {"id": "inspect-workspace", "title": "Inspect snake game structure", "status": "completed"},
+        {"id": "search-relevant-files", "title": "Find snake gameplay files", "status": "active"},
+        {"id": "apply-patch", "title": "Implement AI snake opponent", "status": "pending"},
+        {"id": "run-command", "title": "Verify the change", "status": "pending"},
+        {"id": "summarize-findings", "title": "Report completion", "status": "pending"},
+    ]
+    open_task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="Add backgrounds and AI snake battle",
+        plan=original_plan,
+        current_step="Find snake gameplay files",
+    )
+
+    returned_task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "also make the AI compare scores"},
+        ),
+        "task",
+    )
+
+    assert returned_task["id"] == open_task["id"]
+    assert returned_task["plan"] == original_plan
+    assert returned_task["currentStep"] == "Find snake gameplay files"
+    assert runtime.store.list_tasks({"sessionId": session["id"]})["tasks"][0]["id"] == open_task["id"]
+    messages = _call_result(_rpc(runtime, "message.list", {"sessionId": session["id"]}), "messages")
+    assert messages[-2]["taskId"] == open_task["id"]
+    assert messages[-2]["content"] == "also make the AI compare scores"
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["taskId"] == open_task["id"]
+    assert "\u539f\u4efb\u52a1\u8ba1\u5212" in messages[-1]["content"]
+    completed_events = [event for event in runtime.events if event["type"] == "assistant.message.completed"]
+    assert completed_events[-1]["payload"]["supplemental"] is True
+    assert not provider.calls
+
+
+def test_message_send_explicit_supplement_overrides_background_new_task(tmp_path: Any) -> None:
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    open_task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="Fix current UI",
+        plan=[{"id": "edit", "title": "Patch UI", "status": "active"}],
+        current_step="Patch UI",
+    )
+
+    returned_task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {
+                "sessionId": session["id"],
+                "content": "also keep it in the current conversation",
+                "taskId": open_task["id"],
+                "mode": "supplement",
+                "background": True,
+            },
+        ),
+        "task",
+    )
+
+    assert returned_task["id"] == open_task["id"]
+    assert len(runtime.store.list_tasks({"sessionId": session["id"]})["tasks"]) == 1
+    messages = _call_result(_rpc(runtime, "message.list", {"sessionId": session["id"]}), "messages")
+    assert messages[-2]["taskId"] == open_task["id"]
+    assert messages[-2]["content"] == "also keep it in the current conversation"
+    assert not provider.calls
 
 
 def test_message_send_attaches_supplement_to_open_task_without_replanning(tmp_path: Any) -> None:
@@ -1119,6 +1232,116 @@ def test_react_loop_fails_when_max_steps_are_exceeded(tmp_path: Any) -> None:
     assert task["errorCode"] == "LOOP_EXECUTION_FAILED"
     assert "maxTaskSteps" in task["resultSummary"]
     assert "tool.completed" in [event["type"] for event in runtime.events]
+
+
+def test_react_loop_reuses_duplicate_read_file_results(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_read_1",
+                        "name": "read_file",
+                        "arguments": {"path": "calculator.py"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_read_2",
+                        "name": "read_file",
+                        "arguments": {"path": "calculator.py"},
+                    }
+                ]
+            },
+            {"final": "Done."},
+        ]
+    )
+    read_count = 0
+
+    def read_file(params: dict[str, Any]) -> dict[str, Any]:
+        nonlocal read_count
+        read_count += 1
+        return {"path": params["path"], "content": "alpha", "bytesRead": 5}
+
+    runtime = _make_runtime(tmp_path, provider, {"read_file": read_file})
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "read calculator twice"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert read_count == 1
+    read_events = [
+        event
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "read_file"
+    ]
+    assert len(read_events) == 1
+    assert provider.calls[-1]["context"]["tool_results"][-1]["result"]["cached"] is True
+
+
+def test_react_loop_publishes_live_context_budget_updates(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "name": "read_file",
+                        "arguments": {"path": "calculator.py"},
+                    }
+                ]
+            },
+            {"final": "Done."},
+        ]
+    )
+
+    def read_file(params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "path": params["path"],
+            "content": "alpha " * 200,
+            "bytesRead": 1200,
+        }
+
+    runtime = _make_runtime(tmp_path, provider, {"read_file": read_file})
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "read calculator"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started_context = next(
+        event["payload"]["context"]
+        for event in runtime.events
+        if event["type"] == "task.started" and event["taskId"] == task["id"]
+    )
+    context_updates = [
+        event["payload"]["context"]
+        for event in runtime.events
+        if event["type"] == "task.updated"
+        and event["taskId"] == task["id"]
+        and isinstance(event.get("payload"), dict)
+        and isinstance(event["payload"].get("context"), dict)
+    ]
+
+    assert context_updates
+    initial_tokens = started_context["budgetStats"]["messageTokens"]
+    live_tokens = context_updates[-1]["budgetStats"]["messageTokens"]
+    assert live_tokens > initial_tokens
 
 
 def test_react_loop_fails_when_tool_fails(tmp_path: Any) -> None:

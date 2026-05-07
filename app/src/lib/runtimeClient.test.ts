@@ -286,6 +286,40 @@ describe("RuntimeClient desktop transport", () => {
     });
   });
 
+  it("forwards supplement message metadata through the Tauri command payload", async () => {
+    const client = new RuntimeClient();
+    const task = {
+      id: "task_real",
+      sessionId: "sess_real",
+      type: "chat",
+      status: "running",
+      goal: "continue",
+      createdAt: 1,
+      updatedAt: 2,
+    };
+
+    invokeMock.mockResolvedValueOnce({ task });
+
+    await expect(
+      client.sendMessage({
+        sessionId: "sess_real",
+        content: "one more detail",
+        attachments: [],
+        taskId: "task_real",
+        mode: "supplement",
+      }),
+    ).resolves.toEqual({ task });
+    expect(invokeMock).toHaveBeenLastCalledWith("message_send", {
+      payload: {
+        sessionId: "sess_real",
+        content: "one more detail",
+        attachments: [],
+        taskId: "task_real",
+        mode: "supplement",
+      },
+    });
+  });
+
   it.each([
     ["session list", () => new RuntimeClient().listSessions()],
     ["message list", () => new RuntimeClient().listMessages({ sessionId: "sess_real" })],

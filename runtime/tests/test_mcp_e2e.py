@@ -99,7 +99,7 @@ class TestInitializeMcpServers:
     """Startup reconnection: enabled servers in DB should be reconnected."""
 
     def test_reconnects_enabled_servers(self, tmp_path):
-        server, store, orch, _ = _build_harness(tmp_path)
+        server, store, orch, events = _build_harness(tmp_path)
 
         # Pre-seed two servers: one enabled, one disabled
         store.create_mcp_server({"id": "pg", "name": "PG", "enabled": True})
@@ -138,6 +138,10 @@ class TestInitializeMcpServers:
         # bad failed but good should still be registered
         assert orch._tool_registry.has_tool("mcp__good__search")
         assert call_count == 2
+        failed_events = [event for event in events if event["type"] == "mcp.server.failed"]
+        assert len(failed_events) == 1
+        assert failed_events[0]["payload"]["serverId"] == "bad"
+        assert failed_events[0]["payload"]["error"] == "ConnectionError: cannot reach bad server"
 
         store.close()
 
@@ -498,5 +502,86 @@ class TestMcpCallToolErrors:
         result = mgr.sync_call_tool("mcp__srv__ping", {"x": 1})
         assert result["status"] == "failed"
         assert "timeout" in result["error"]
+
+        store.close()
+
+
+class TestMcpToolVisibility:
+    """Verify MCP tools are visible to the model via _provider_tools."""
+
+    def test_registered_mcp_tool_appears_in_provider_tools(self, tmp_path):
+        """MCP tool registered after ContextBuilder construction should be
+        visible in the merged provider tool list."""
+        _, store, orch, _ = _build_harness(tmp_path)
+
+        schema = _make_schema("pg", "query", "PG query")
+
+        with _connect_patch(orch, [schema]):
+            _call(server := JsonRpcServer(orchestrator=orch, store=store, event_bus=EventBus()),
+                  "mcp.server.create", {"id": "pg", "name": "PG"})
+
+        # Simulate a context with openai_tools built before MCP registration
+        context = {
+            "openai_tools": [{"type": "function", "function": {"name": "read_file"}}],
+            "tools": [{"name": "read_file"}],
+        }
+        provider_tools = orch._provider_tools(context)
+        tool_names = [t["function"]["name"] if "function" in t else t.get("name") for t in provider_tools]
+
+        assert "mcp__pg__query" in tool_names
+        assert "read_file" in tool_names
+
+        store.close()
+
+    def test_mcp_tool_visible_after_context_build(self, tmp_path):
+        """Register MCP tool after context is built — it should still appear."""
+        _, store, orch, _ = _build_harness(tmp_path)
+
+        # Build context first (no MCP tools yet)
+        from local_agent_runtime.context.builder import ContextBuilder
+        builder = ContextBuilder(store=store)
+        ws = store.upsert_workspace(str(tmp_path))
+        session = store.create_session(workspace_id=ws["id"], title="test")
+        context = builder.build(session["id"], "test goal")
+
+        # Now register an MCP tool
+        schema = _make_schema("calc", "add")
+        orch._tool_registry.register(
+            "mcp__calc__add",
+            lambda args: {"status": "ok", "output": "42"},
+            schema,
+        )
+
+        # _provider_tools should include the newly registered tool
+        provider_tools = orch._provider_tools(context)
+        tool_names = [t["function"]["name"] if "function" in t else t.get("name") for t in provider_tools]
+
+        assert "mcp__calc__add" in tool_names
+
+        store.close()
+
+    def test_deleted_mcp_tool_removed_from_provider_tools(self, tmp_path):
+        """Deleting an MCP server should remove its tools from provider visibility."""
+        _, store, orch, _ = _build_harness(tmp_path)
+
+        schema = _make_schema("redis", "get")
+        with _connect_patch(orch, [schema]):
+            orch._tool_registry.register(
+                "mcp__redis__get",
+                lambda args: {"status": "ok"},
+                schema,
+            )
+
+        # Verify it's visible
+        tools_before = orch._provider_tools({})
+        names_before = [t["function"]["name"] if "function" in t else t.get("name") for t in tools_before]
+        assert "mcp__redis__get" in names_before
+
+        # Unregister (simulates delete)
+        orch._tool_registry.unregister("mcp__redis__get")
+
+        tools_after = orch._provider_tools({})
+        names_after = [t["function"]["name"] if "function" in t else t.get("name") for t in tools_after]
+        assert "mcp__redis__get" not in names_after
 
         store.close()

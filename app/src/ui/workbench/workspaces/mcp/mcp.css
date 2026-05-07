@@ -217,6 +217,29 @@
   border-color: rgba(103, 232, 249, 0.48);
 }
 
+.mcp-import-box {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(103, 232, 249, 0.2);
+  border-radius: var(--yb-radius-md);
+  background: rgba(8, 47, 73, 0.18);
+}
+
+.mcp-import-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mcp-import-actions [role="alert"] {
+  min-width: 0;
+  color: var(--yb-danger);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
 .mcp-toggle {
   grid-template-columns: auto 1fr;
   align-items: center;

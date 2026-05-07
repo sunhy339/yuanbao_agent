@@ -8,32 +8,44 @@ from pathlib import Path
 from .worker_process_runtime import WorkerProcessRuntime
 
 
+_POWERSHELL_INVOKABLE_SUFFIXES = (".exe", ".cmd", ".bat", ".ps1")
+
+
+def _normalize_powershell_command(command: str) -> str:
+    stripped = command.lstrip()
+    leading = command[: len(command) - len(stripped)]
+    if not stripped or stripped[0] not in {"'", '"'}:
+        return command
+
+    quote = stripped[0]
+    end = stripped.find(quote, 1)
+    if end <= 0:
+        return command
+
+    target = stripped[1:end].lower()
+    if target.endswith(_POWERSHELL_INVOKABLE_SUFFIXES):
+        return f"{leading}& {stripped}"
+    return command
+
+
 def build_shell_command(shell_name: str, command: str) -> list[str]:
     if shell_name == "bash":
         return ["bash", "-lc", command]
     if shell_name == "zsh":
         return ["zsh", "-lc", command]
     utf8_prelude = (
-        "chcp.com 65001 > $null; "
-        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-        "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
-        "$env:PYTHONIOENCODING = 'utf-8'; "
-        "$env:PYTHONUTF8 = '1'; "
-        "$PSDefaultParameterValues['Get-Content:Encoding'] = 'UTF8'; "
+        "$__codexUtf8 = [System.Text.UTF8Encoding]::new($false); "
+        "[Console]::InputEncoding = $__codexUtf8; "
+        "[Console]::OutputEncoding = $__codexUtf8; "
+        "$OutputEncoding = $__codexUtf8; "
     )
-    return ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", f"{utf8_prelude}{_normalize_powershell_command(command)}"]
-
-
-def _normalize_powershell_command(command: str) -> str:
-    stripped = command.lstrip()
-    if not stripped or stripped[0] not in {"'", '"'}:
-        return command
-    quote = stripped[0]
-    close_index = stripped.find(quote, 1)
-    if close_index <= 0 or not stripped[close_index + 1 :].lstrip():
-        return command
-    leading = command[: len(command) - len(stripped)]
-    return f"{leading}& {stripped}"
+    command = _normalize_powershell_command(command)
+    utf8_command = (
+        f"{utf8_prelude}{command}; "
+        "if ($LASTEXITCODE -ne $null) { exit $LASTEXITCODE }; "
+        "if (-not $?) { exit 1 }"
+    )
+    return ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", utf8_command]
 
 
 def run_shell_command(

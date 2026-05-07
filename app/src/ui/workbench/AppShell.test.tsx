@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppShell } from "./AppShell";
@@ -22,7 +22,18 @@ afterEach(() => {
   cleanup();
 });
 
-function renderShell(options: { activeTab?: WorkbenchTab["id"]; composerVisible?: boolean } = {}) {
+function renderShell(
+  options: {
+    activeTab?: WorkbenchTab["id"];
+    composerVisible?: boolean;
+    sending?: boolean;
+    submitting?: boolean;
+    promptValue?: string;
+    modelOptions?: Array<{ id: string; label: string; subtitle?: string }>;
+    selectedModelId?: string;
+    runtimeChildTasks?: Array<{ id: string; title: string; status?: string; workerName?: string; summary?: string }>;
+  } = {},
+) {
   const tabs = getInitialTabs();
   const activeTabId = options.activeTab ?? "system:overview";
   const handlers = {
@@ -34,7 +45,10 @@ function renderShell(options: { activeTab?: WorkbenchTab["id"]; composerVisible?
     onRenameSession: vi.fn(),
     onDeleteSession: vi.fn(),
     onSubmitPrompt: vi.fn(),
+    onQueuePrompt: vi.fn(),
+    onStopPrompt: vi.fn(),
     onPromptChange: vi.fn(),
+    onSelectModel: vi.fn(),
   };
 
   render(
@@ -45,10 +59,19 @@ function renderShell(options: { activeTab?: WorkbenchTab["id"]; composerVisible?
       activeSessionId={null}
       workspaceName="yuanbao_agent"
       composerVisible={options.composerVisible ?? true}
-      promptValue=""
+      promptValue={options.promptValue ?? ""}
       disabled={false}
+      sending={options.sending}
+      submitting={options.submitting}
+      queuedPromptCount={1}
+      runtimeChildTasks={options.runtimeChildTasks}
       providerLabel="MiniMax-M2.7-highspeed"
       cwdLabel="D:/py/yuanbao_agent"
+      modelOptions={options.modelOptions ?? [
+        { id: "gpt-5-codex", label: "gpt-5-codex" },
+        { id: "glm-5.1", label: "GLM-5.1" },
+      ]}
+      selectedModelId={options.selectedModelId ?? "glm-5.1"}
       {...handlers}
     >
       <section aria-label="workspace content">Content</section>
@@ -106,6 +129,90 @@ describe("AppShell", () => {
 
     const form = document.querySelector("form.composer-dock-hidden");
     expect(form).toBeTruthy();
+  });
+
+  it("opens the composer model menu and switches model", async () => {
+    const handlers = renderShell();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /GLM-5\.1/ }));
+    const menu = screen.getByRole("listbox");
+    expect(within(menu).getByRole("option", { name: /glm-5\.1/i })).toHaveAttribute("aria-selected", "true");
+
+    await user.click(within(menu).getByRole("option", { name: /gpt-5-codex/i }));
+
+    expect(handlers.onSelectModel).toHaveBeenCalledWith("gpt-5-codex");
+  });
+
+  it("does not expose provider profile ids in the model picker", () => {
+    renderShell({
+      selectedModelId: "profile_1777724299376",
+      modelOptions: [
+        { id: "profile_1777724299376", label: "GLM-5.1", subtitle: "GLM" },
+        { id: "profile_2", label: "gpt-5-codex", subtitle: "OpenAI" },
+      ],
+    });
+
+    const trigger = screen.getByRole("button", { name: /GLM-5\.1/ });
+    expect(trigger).toHaveTextContent("GLM-5.1");
+    expect(trigger).toHaveTextContent("GLM");
+    expect(trigger).not.toHaveTextContent("profile_1777724299376");
+  });
+
+  it("keeps stop separate from sending supplements while a task is running", async () => {
+    const handlers = renderShell({ sending: true, promptValue: "Add this detail" });
+    const user = userEvent.setup();
+
+    const stopButton = document.querySelector<HTMLButtonElement>(".composer-stop");
+    expect(stopButton).toBeInTheDocument();
+    expect(stopButton).not.toBeDisabled();
+    expect(screen.getByRole("textbox")).not.toBeDisabled();
+
+    await user.click(stopButton!);
+
+    expect(handlers.onStopPrompt).toHaveBeenCalledOnce();
+
+    const submitButton = document.querySelector<HTMLButtonElement>(".composer-run");
+    expect(submitButton).toBeInTheDocument();
+    expect(submitButton).not.toBeDisabled();
+
+    await user.click(submitButton!);
+
+    expect(handlers.onSubmitPrompt).toHaveBeenCalledOnce();
+  });
+
+  it("queues a running conversation supplement for later", async () => {
+    const handlers = renderShell({ sending: true, promptValue: "Send after this finishes" });
+    const user = userEvent.setup();
+
+    const queueButton = screen.getByRole("button", { name: /暂存/ });
+    expect(queueButton).not.toBeDisabled();
+
+    await user.click(queueButton);
+
+    expect(handlers.onQueuePrompt).toHaveBeenCalledOnce();
+    expect(handlers.onSubmitPrompt).not.toHaveBeenCalled();
+  });
+
+  it("shows real runtime child tasks above the prompt input", () => {
+    renderShell({
+      runtimeChildTasks: [
+        { id: "child_one", title: "Patch snake rendering", status: "completed", workerName: "Worker 1" },
+        { id: "child_two", title: "Verify gameplay loop", status: "running", workerName: "Worker 2" },
+      ],
+    });
+
+    const checklist = screen.getByLabelText("Runtime child tasks");
+    const input = screen.getByLabelText("任务指令");
+    expect(checklist).toBeInTheDocument();
+    expect(within(checklist).getByText("1/2")).toBeInTheDocument();
+    expect(within(checklist).getByText("Patch snake rendering")).toBeInTheDocument();
+    expect(within(checklist).getByText("Verify gameplay loop")).toBeInTheDocument();
+    expect(within(checklist).getByText(/Worker 1/)).toBeInTheDocument();
+
+    const nodes = Array.from(document.querySelectorAll(".composer-runtime-child-tasks, .composer-input"));
+    expect(nodes[0]).toBe(checklist);
+    expect(nodes[1]).toBe(input.closest(".composer-input"));
   });
 
   it("applies the selected shell theme", () => {

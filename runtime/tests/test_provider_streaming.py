@@ -151,6 +151,58 @@ def test_tool_call_chunks_stream_and_arguments_are_merged() -> None:
     }
 
 
+def test_streaming_tool_call_name_maps_back_to_runtime_name() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_stream(**kwargs: Any) -> tuple[int, Iterable[bytes]]:
+        calls.append(kwargs)
+        return 200, iter(
+            [
+                _sse(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {"name": "memory_remember", "arguments": "{\"text\":\"keep\"}"},
+                                        }
+                                    ]
+                                },
+                                "index": 0,
+                                "finish_reason": "tool_calls",
+                            }
+                        ]
+                    }
+                ),
+                _sse("[DONE]"),
+            ]
+        )
+
+    events = list(
+        _adapter(fake_stream).chat_stream(
+            messages=[{"role": "user", "content": "remember"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "memory.remember",
+                        "description": "Remember",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        )
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["tools"][0]["function"]["name"] == "memory_remember"
+    assert events[-1]["response"]["message"]["tool_calls"][0]["name"] == "memory.remember"
+
+
 def test_done_without_prior_finish_reason_still_emits_final_response() -> None:
     def fake_stream(**_kwargs: Any) -> tuple[int, Iterable[bytes]]:
         return 200, iter([_sse({"choices": [{"delta": {"content": "ok"}, "index": 0}]}), _sse("[DONE]")])
@@ -206,12 +258,19 @@ def test_stream_does_not_retry_after_emitting_content() -> None:
     assert calls == 1
 
 
-def test_invalid_sse_json_raises_provider_adapter_error() -> None:
+def test_invalid_sse_json_is_skipped_gracefully() -> None:
+    """Malformed SSE data (e.g. truncated by network) should be skipped, not crash the stream."""
     def fake_stream(**_kwargs: Any) -> tuple[int, Iterable[bytes]]:
-        return 200, iter([b"data: not-json\n\n"])
+        return 200, iter([
+            b"data: not-json\n\n",
+            b'data: {"choices":[{"delta":{"content":"ok"},"index":0}]}\n\n',
+        ])
 
-    with pytest.raises(ProviderAdapterError, match="Provider returned invalid SSE JSON"):
-        list(_adapter(fake_stream).chat_stream(messages=[{"role": "user", "content": "hi"}]))
+    events = list(_adapter(fake_stream).chat_stream(messages=[{"role": "user", "content": "hi"}]))
+    # Should get content from the valid chunk, skipping the malformed one
+    content_events = [e for e in events if e.get("type") == "content_delta"]
+    assert len(content_events) == 1
+    assert content_events[0]["delta"] == "ok"
 
 
 def test_streaming_http_error_raises_provider_adapter_error() -> None:

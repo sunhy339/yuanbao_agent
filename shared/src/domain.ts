@@ -114,6 +114,8 @@ export interface WorkspaceRef {
 export interface SessionRecord {
   id: Identifier;
   workspaceId: Identifier;
+  workspaceName?: string;
+  workspaceRoot?: string;
   title: string;
   status: SessionStatus;
   summary?: string;

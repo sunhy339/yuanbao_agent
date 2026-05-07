@@ -9,6 +9,7 @@ import {
   type ThemeMode,
 } from "../v2/theme/ThemeProvider";
 import type { SystemWorkspaceKind, WorkbenchSession, WorkbenchTab } from "./types";
+import type { ComposerRuntimeChildTask } from "./ComposerDock";
 
 interface AppShellProps {
   tabs: WorkbenchTab[];
@@ -27,8 +28,19 @@ interface AppShellProps {
   onRenameSession: (sessionId: string, newTitle: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onSubmitPrompt: () => void;
+  onQueuePrompt?: () => void;
+  onStopPrompt?: () => void;
   disabled: boolean;
   sending?: boolean;
+  submitting?: boolean;
+  queuedPromptCount?: number;
+  attachments?: string[];
+  onAttachmentsChange?: (attachments: string[]) => void;
+  onAttachmentError?: (message: string) => void;
+  modelOptions?: Array<{ id: string; label: string; subtitle?: string }>;
+  selectedModelId?: string;
+  onSelectModel?: (modelId: string) => void;
+  runtimeChildTasks?: ComposerRuntimeChildTask[];
   providerLabel: string;
   cwdLabel: string;
   runtimeLabel?: string;
@@ -63,8 +75,19 @@ export function AppShell({
   onRenameSession,
   onDeleteSession,
   onSubmitPrompt,
+  onQueuePrompt,
+  onStopPrompt,
   disabled,
   sending,
+  submitting,
+  queuedPromptCount,
+  attachments,
+  onAttachmentsChange,
+  onAttachmentError,
+  modelOptions,
+  selectedModelId,
+  onSelectModel,
+  runtimeChildTasks,
   providerLabel,
   cwdLabel,
   runtimeLabel,
@@ -108,8 +131,19 @@ export function AppShell({
         onRenameSession={onRenameSession}
         onDeleteSession={onDeleteSession}
         onSubmitPrompt={onSubmitPrompt}
+        onQueuePrompt={onQueuePrompt}
+        onStopPrompt={onStopPrompt}
         disabled={disabled}
         sending={sending}
+        submitting={submitting}
+        queuedPromptCount={queuedPromptCount}
+        attachments={attachments}
+        onAttachmentsChange={onAttachmentsChange}
+        onAttachmentError={onAttachmentError}
+        modelOptions={modelOptions}
+        selectedModelId={selectedModelId}
+        onSelectModel={onSelectModel}
+        runtimeChildTasks={runtimeChildTasks}
         providerLabel={providerLabel}
         cwdLabel={cwdLabel}
         loading={loading}

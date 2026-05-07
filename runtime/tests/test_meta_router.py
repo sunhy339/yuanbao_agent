@@ -160,7 +160,7 @@ class TestRoutingDecision:
     def test_simple_query_uses_react_fast(self) -> None:
         decision = self.router.route("explain closures")
         assert decision.strategy == ExecutionStrategy.REACT_FAST
-        assert decision.max_steps <= 10
+        assert decision.max_steps <= 20
 
 
 # ---------------------------------------------------------------------------

@@ -728,6 +728,7 @@ class Orchestrator:
             raise RuntimeError("服务正在关闭，暂不接受新任务")
         session = self._store.require_session(params["sessionId"])
         goal = params["content"]
+        client_message_id = params.get("clientMessageId")
 
         explicit_supplement = params.get("mode") == "supplement"
         explicit_task_id = params.get("taskId") or params.get("task_id")
@@ -791,11 +792,45 @@ class Orchestrator:
                 routing=routing_dict,
             )
             runtime_task = {**task, "plan": plan}
-            self._store.create_message(
+            user_msg = self._store.create_message(
                 session_id=session["id"],
                 task_id=runtime_task["id"],
                 role="user",
                 content=goal,
+                client_message_id=client_message_id,
+                kind="normal",
+                status="completed",
+            )
+            assistant_msg = self._store.create_message(
+                session_id=session["id"],
+                task_id=runtime_task["id"],
+                role="assistant",
+                content="",
+                kind="normal",
+                status="streaming",
+            )
+            self._store.update_task(
+                task_id=runtime_task["id"],
+                active_assistant_message_id=assistant_msg["id"],
+            )
+            runtime_task["activeAssistantMessageId"] = assistant_msg["id"]
+            self._publish(
+                session_id=session["id"],
+                task=runtime_task,
+                event_type="message.created",
+                payload={"message": user_msg},
+            )
+            self._publish(
+                session_id=session["id"],
+                task=runtime_task,
+                event_type="message.created",
+                payload={"message": assistant_msg},
+            )
+            self._publish(
+                session_id=session["id"],
+                task=runtime_task,
+                event_type="task.created",
+                payload={"status": runtime_task["status"], "goal": goal},
             )
             self._publish(
                 session_id=session["id"],
@@ -816,7 +851,7 @@ class Orchestrator:
                 session_id=session["id"],
                 skill_id=routing.skill_id,
             )
-            return {"task": runtime_task}
+            return {"task": runtime_task, "userMessage": user_msg, "assistantMessage": assistant_msg}
 
         context = self._context_builder.build(session_id=session["id"], goal=goal, skill_id=routing.skill_id, lightweight=False)
         # Inject routing decision into context as a plain dict for JSON safety.
@@ -838,12 +873,28 @@ class Orchestrator:
             routing=routing_dict,
         )
         runtime_task = {**task, "plan": plan}
-        self._store.create_message(
+        user_msg = self._store.create_message(
             session_id=session["id"],
             task_id=runtime_task["id"],
             role="user",
             content=goal,
+            client_message_id=client_message_id,
+            kind="normal",
+            status="completed",
         )
+        assistant_msg = self._store.create_message(
+            session_id=session["id"],
+            task_id=runtime_task["id"],
+            role="assistant",
+            content="",
+            kind="normal",
+            status="streaming",
+        )
+        self._store.update_task(
+            task_id=runtime_task["id"],
+            active_assistant_message_id=assistant_msg["id"],
+        )
+        runtime_task["activeAssistantMessageId"] = assistant_msg["id"]
         context = self._context_with_task_focus(context, runtime_task)
 
         self._record_skill_usage(
@@ -852,6 +903,24 @@ class Orchestrator:
             skill_id=routing.skill_id,
         )
 
+        self._publish(
+            session_id=session["id"],
+            task=runtime_task,
+            event_type="message.created",
+            payload={"message": user_msg},
+        )
+        self._publish(
+            session_id=session["id"],
+            task=runtime_task,
+            event_type="message.created",
+            payload={"message": assistant_msg},
+        )
+        self._publish(
+            session_id=session["id"],
+            task=runtime_task,
+            event_type="task.created",
+            payload={"status": runtime_task["status"], "goal": goal},
+        )
         self._publish(
             session_id=session["id"],
             task=runtime_task,
@@ -2057,12 +2126,23 @@ class Orchestrator:
             "resultSummary": final_summary,
         }
         logger.info("Task %s completed: summary_len=%d", task["id"], len(final_summary))
-        self._store.create_message(
-            session_id=session_id,
-            task_id=runtime_task["id"],
-            role="assistant",
-            content=final_summary,
-        )
+        # Update existing active assistant message or create a new one
+        active_msg_id = runtime_task.get("activeAssistantMessageId")
+        if active_msg_id:
+            completed_msg = self._store.update_message(
+                active_msg_id,
+                content=final_summary,
+                status="completed",
+            )
+        else:
+            completed_msg = self._store.create_message(
+                session_id=session_id,
+                task_id=runtime_task["id"],
+                role="assistant",
+                content=final_summary,
+                kind="normal",
+                status="completed",
+            )
         self._remember_task_result(session_id=session_id, task=runtime_task)
         self._promote_scratchpad_to_memory(session_id)
         self._consolidate_working_memories(session_id)
@@ -2071,8 +2151,8 @@ class Orchestrator:
         self._publish(
             session_id=session_id,
             task=runtime_task,
-            event_type="assistant.message.completed",
-            payload={"content": final_summary},
+            event_type="message.completed",
+            payload={"messageId": completed_msg["id"], "content": final_summary},
         )
         self._publish(
             session_id=session_id,
@@ -2188,12 +2268,24 @@ class Orchestrator:
             "plan": task_plan,
             "errorCode": error_code,
         }
-        self._store.create_message(
-            session_id=session_id,
-            task_id=runtime_task["id"],
-            role="assistant",
-            content=summary,
-        )
+        # Update existing active assistant message or create a failure message
+        active_msg_id = runtime_task.get("activeAssistantMessageId")
+        if active_msg_id:
+            failed_msg = self._store.update_message(
+                active_msg_id,
+                content=summary,
+                status="failed",
+                kind="failure",
+            )
+        else:
+            failed_msg = self._store.create_message(
+                session_id=session_id,
+                task_id=runtime_task["id"],
+                role="assistant",
+                content=summary,
+                kind="failure",
+                status="failed",
+            )
         self._remember_task_result(session_id=session_id, task=runtime_task)
         self._promote_scratchpad_to_memory(session_id)
         self._clear_pending_react_state(task["id"])
@@ -2201,8 +2293,8 @@ class Orchestrator:
         self._publish(
             session_id=session_id,
             task=runtime_task,
-            event_type="assistant.message.completed",
-            payload={"content": summary},
+            event_type="message.failed",
+            payload={"messageId": failed_msg["id"], "content": summary, "errorCode": error_code},
         )
         self._publish(
             session_id=session_id,
@@ -3504,11 +3596,29 @@ class Orchestrator:
                     "plan": runtime_task["plan"],
                     "resultSummary": summary,
                 }
-                self._store.create_message(
+                # Update existing active assistant message or create a failure message
+                active_msg_id = runtime_task.get("activeAssistantMessageId")
+                if active_msg_id:
+                    failed_msg = self._store.update_message(
+                        active_msg_id,
+                        content=summary,
+                        status="failed",
+                        kind="failure",
+                    )
+                else:
+                    failed_msg = self._store.create_message(
+                        session_id=task["sessionId"],
+                        task_id=runtime_task["id"],
+                        role="assistant",
+                        content=summary,
+                        kind="failure",
+                        status="failed",
+                    )
+                self._publish(
                     session_id=task["sessionId"],
-                    task_id=runtime_task["id"],
-                    role="assistant",
-                    content=summary,
+                    task=runtime_task,
+                    event_type="message.failed",
+                    payload={"messageId": failed_msg["id"], "content": summary, "errorCode": "COMMAND_EXECUTION_FAILED"},
                 )
                 self._publish(
                     session_id=task["sessionId"],
@@ -3528,27 +3638,15 @@ class Orchestrator:
                 f"Approved command finished with status {cmd_status} "
                 f"and exit code {exit_code}."
             )
-            completed_task = self._store.update_task(
-                task_id=task["id"],
-                status="completed",
-                plan=runtime_task["plan"],
-                result_summary=summary,
-            )
-            runtime_task = {
-                **completed_task,
-                "plan": runtime_task["plan"],
-                "resultSummary": summary,
-            }
-            self._publish(
+            runtime_task = self._complete_task(
                 session_id=task["sessionId"],
                 task=runtime_task,
-                event_type="task.completed",
-                payload={
-                    "status": "completed",
-                    "plan": runtime_task["plan"],
-                    "detail": summary,
-                    "commandLogId": command_log.get("id"),
-                },
+                summary=summary,
+                context=self._context_builder.build(
+                    session_id=task["sessionId"],
+                    goal=task.get("goal") or summary,
+                ),
+                tool_results=[tool_result],
             )
             return runtime_task
         except Exception as exc:  # noqa: BLE001
@@ -3618,6 +3716,24 @@ class Orchestrator:
             payload.setdefault("acceptanceCriteria", list(task.get("acceptanceCriteria") or []))
             payload.setdefault("outOfScope", list(task.get("outOfScope") or []))
             payload.setdefault("currentStep", task.get("currentStep"))
+        # Enrich streaming token events with messageId and emit unified message.delta
+        if event_type == "assistant.token":
+            payload = dict(payload)
+            active_msg_id = task.get("activeAssistantMessageId")
+            if active_msg_id:
+                payload["messageId"] = active_msg_id
+            # Emit the new unified event name alongside the legacy one
+            delta_payload = {**payload}
+            delta_payload.setdefault("messageId", active_msg_id or "")
+            delta_event = RuntimeEvent(
+                event_id=self._store.new_id("evt"),
+                session_id=session_id,
+                task_id=task["id"],
+                type="message.delta",
+                ts=self._store.now(),
+                payload=delta_payload,
+            )
+            self._event_bus.publish(delta_event)
         event = RuntimeEvent(
             event_id=self._store.new_id("evt"),
             session_id=session_id,

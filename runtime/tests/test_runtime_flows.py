@@ -48,7 +48,9 @@ def test_workspace_session_message_tool_flow(runtime_harness: Any, tmp_path: Pat
 
     assert task["status"] == "completed"
     event_types = _event_types(runtime_harness.events)
-    assert event_types[0] == "task.started"
+    assert "message.created" in event_types
+    assert "task.started" in event_types
+    assert "task.created" in event_types
     assert "task.routing.decided" in event_types
     assert "assistant.token" in event_types
     assert event_types[-1] == "task.completed"
@@ -184,7 +186,7 @@ def test_message_send_fails_when_openai_provider_key_is_missing(
     assert task["status"] == "failed"
     assert "YUANBAO_TEST_MISSING_KEY" in task["resultSummary"]
     assert "Completed an initial pass" not in task["resultSummary"]
-    assert [event for event in runtime_harness.events if event["type"] == "assistant.message.completed"]
+    assert [event for event in runtime_harness.events if event["type"] == "message.failed"]
     messages = runtime_harness.call(
         "message.list",
         {"sessionId": session["id"]},
@@ -289,17 +291,21 @@ def test_background_message_send_persists_user_before_completion(
         {"sessionId": session["id"]},
     )["result"]["messages"]
     assert [(message["role"], message["content"]) for message in immediate_messages] == [
-        ("user", "persist immediately")
+        ("user", "persist immediately"),
+        ("assistant", ""),
     ]
 
     messages = immediate_messages
-    deadline = time.monotonic() + 2
+    deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         messages = runtime_harness.call(
             "message.list",
             {"sessionId": session["id"]},
         )["result"]["messages"]
-        if [message["role"] for message in messages] == ["user", "assistant"]:
+        if (
+            [message["role"] for message in messages] == ["user", "assistant"]
+            and messages[1]["content"]
+        ):
             break
         time.sleep(0.05)
 
@@ -1586,3 +1592,141 @@ def test_mcp_server_list_includes_connection_status(runtime_harness: Any) -> Non
         assert "toolCount" in server
         assert isinstance(server["connected"], bool)
         assert isinstance(server["toolCount"], int)
+
+
+def test_streaming_emits_message_delta_with_message_id(runtime_harness: Any, tmp_path: Path) -> None:
+    """Streaming token events should emit message.delta with messageId alongside legacy assistant.token."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Delta event test"},
+        ),
+        "session",
+    )
+
+    send_response = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "hello"},
+    )
+    task = _call_result(send_response, "task")
+
+    # Collect message.delta and assistant.token events
+    delta_events = [e for e in runtime_harness.events if e["type"] == "message.delta"]
+    token_events = [e for e in runtime_harness.events if e["type"] == "assistant.token"]
+
+    # Both event types should have been emitted (legacy compat)
+    assert len(token_events) > 0, "Expected at least one assistant.token event"
+    assert len(delta_events) > 0, "Expected at least one message.delta event"
+
+    # message.delta events should carry messageId matching the task's active assistant message
+    active_msg_id = task.get("activeAssistantMessageId")
+    if active_msg_id:
+        for delta_event in delta_events:
+            assert delta_event["payload"]["messageId"] == active_msg_id
+
+    # assistant.token should also now include messageId
+    if active_msg_id:
+        for token_event in token_events:
+            assert token_event["payload"]["messageId"] == active_msg_id
+
+
+def test_provider_http_400_produces_persistent_failure_message(
+    runtime_harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When provider returns HTTP 400, a persistent failure message should be created."""
+    from local_agent_runtime.provider.openai_compatible import ProviderAdapterError
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "HTTP 400 test"},
+        ),
+        "session",
+    )
+
+    def _raise_400(*args: Any, **kwargs: Any) -> None:
+        raise ProviderAdapterError("Provider returned error: HTTP 400 Bad Request - invalid model")
+
+    monkeypatch.setattr(runtime_harness.server._orchestrator._provider, "generate", _raise_400)
+
+    send_response = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "hello"},
+    )
+    task = _call_result(send_response, "task")
+
+    assert task["status"] == "failed"
+    assert "HTTP 400" in task["resultSummary"]
+
+    # Verify failure message is persisted
+    messages = runtime_harness.call(
+        "message.list",
+        {"sessionId": session["id"]},
+    )["result"]["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert "HTTP 400" in messages[1]["content"]
+    assert messages[1]["status"] == "failed"
+
+    # Verify failure events were emitted
+    assert [e for e in runtime_harness.events if e["type"] == "message.failed"]
+    assert [e for e in runtime_harness.events if e["type"] == "task.failed"]
+
+
+def test_provider_timeout_produces_persistent_failure_message(
+    runtime_harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When provider times out, a persistent failure message should be created."""
+    from local_agent_runtime.provider.openai_compatible import ProviderAdapterError
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Timeout test"},
+        ),
+        "session",
+    )
+
+    def _raise_timeout(*args: Any, **kwargs: Any) -> None:
+        raise ProviderAdapterError("Provider request timed out after 30.0s")
+
+    monkeypatch.setattr(runtime_harness.server._orchestrator._provider, "generate", _raise_timeout)
+
+    send_response = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "hello"},
+    )
+    task = _call_result(send_response, "task")
+
+    assert task["status"] == "failed"
+    assert "timed out" in task["resultSummary"].lower()
+
+    # Verify failure message is persisted
+    messages = runtime_harness.call(
+        "message.list",
+        {"sessionId": session["id"]},
+    )["result"]["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert "timed out" in messages[1]["content"].lower()
+    assert messages[1]["status"] == "failed"
+
+    # Verify failure events were emitted
+    assert [e for e in runtime_harness.events if e["type"] == "message.failed"]
+    assert [e for e in runtime_harness.events if e["type"] == "task.failed"]

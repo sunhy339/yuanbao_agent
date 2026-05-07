@@ -131,6 +131,17 @@ class SQLiteStore:
     def new_id(self, prefix: str) -> str:
         return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
+    def next_seq(self) -> int:
+        """Allocate a monotonically increasing sequence number from a dedicated counter table."""
+        self._conn.execute(
+            "UPDATE seq_counter SET val = val + 1 WHERE id = 1"
+        )
+        row = self._conn.execute(
+            "SELECT val FROM seq_counter WHERE id = 1"
+        ).fetchone()
+        self._conn.commit()
+        return int(row["val"])
+
     def upsert_workspace(self, path: str) -> dict[str, Any]:
         root = str(Path(path))
         workspace_id = self.new_id("ws")
@@ -246,6 +257,10 @@ class SQLiteStore:
         role: str,
         content: str,
         task_id: str | None = None,
+        client_message_id: str | None = None,
+        kind: str | None = None,
+        status: str | None = None,
+        created_seq: int | None = None,
     ) -> dict[str, Any]:
         if role not in {"user", "assistant", "system", "tool"}:
             raise ValueError(f"Unsupported message role: {role}")
@@ -253,10 +268,18 @@ class SQLiteStore:
         now = self.now()
         self._conn.execute(
             """
-            INSERT INTO messages (id, session_id, task_id, role, content, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO messages (id, session_id, task_id, role, content, created_at,
+                                  client_message_id, kind, status, created_seq, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (message_id, session_id, task_id, role, content, now),
+            (
+                message_id, session_id, task_id, role, content, now,
+                client_message_id,
+                kind or "normal",
+                status or "completed",
+                created_seq,
+                now,
+            ),
         )
         self._conn.execute(
             """
@@ -271,6 +294,34 @@ class SQLiteStore:
         if row is None:
             raise ValueError(f"Message not found: {message_id}")
         return self._serialize_message(dict(row))
+
+    def update_message(
+        self,
+        message_id: str,
+        *,
+        content: str | None = None,
+        status: str | None = None,
+        kind: str | None = None,
+    ) -> dict[str, Any] | None:
+        assignments: list[str] = ["updated_at = ?"]
+        values: list[Any] = [self.now()]
+        if content is not None:
+            assignments.append("content = ?")
+            values.append(content)
+        if status is not None:
+            assignments.append("status = ?")
+            values.append(status)
+        if kind is not None:
+            assignments.append("kind = ?")
+            values.append(kind)
+        values.append(message_id)
+        self._conn.execute(
+            f"UPDATE messages SET {', '.join(assignments)} WHERE id = ?",
+            values,
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+        return self._serialize_message(dict(row)) if row else None
 
     def list_messages(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = self._require_non_empty(params, "sessionId")
@@ -486,6 +537,9 @@ class SQLiteStore:
         out_of_scope: list[str] | None = None,
         current_step: str | None = None,
         routing: dict[str, Any] | None = None,
+        root_task_id: str | None = None,
+        role: str | None = None,
+        created_seq: int | None = None,
     ) -> dict[str, Any]:
         task_id = self.new_id("task")
         now = self.now()
@@ -495,9 +549,10 @@ class SQLiteStore:
             INSERT INTO tasks (
                 id, session_id, type, status, goal, acceptance_criteria_json, out_of_scope_json,
                 current_step, plan_json, changed_files_json, commands_json, verification_json,
-                reflection_json, routing_json, summary, result_json, error_code, created_at, updated_at
+                reflection_json, routing_json, summary, result_json, error_code,
+                created_at, updated_at, root_task_id, role, created_seq
             )
-            VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, '[]', '[]', '[]', NULL, ?, NULL, NULL, NULL, ?, ?)
+            VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, '[]', '[]', '[]', NULL, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -511,6 +566,9 @@ class SQLiteStore:
                 json.dumps(routing, ensure_ascii=False) if routing else None,
                 now,
                 now,
+                root_task_id,
+                role or "root",
+                created_seq,
             ),
         )
         self._conn.commit()
@@ -545,6 +603,7 @@ class SQLiteStore:
         summary: str | None = None,
         result_summary: str | None = None,
         error_code: str | None = None,
+        active_assistant_message_id: str | None = None,
     ) -> dict[str, Any]:
         assignments: list[str] = ["updated_at = ?"]
         values: list[Any] = [self.now()]
@@ -587,6 +646,9 @@ class SQLiteStore:
         if error_code is not None:
             assignments.append("error_code = ?")
             values.append(error_code)
+        if active_assistant_message_id is not None:
+            assignments.append("active_assistant_message_id = ?")
+            values.append(active_assistant_message_id)
 
         values.append(task_id)
         self._conn.execute(
@@ -1884,6 +1946,17 @@ class SQLiteStore:
         }
         if row.get("task_id"):
             message["taskId"] = row["task_id"]
+        # New fields — use .get() for backward compat with legacy rows
+        if row.get("client_message_id"):
+            message["clientMessageId"] = row["client_message_id"]
+        if row.get("kind") and row["kind"] != "normal":
+            message["kind"] = row["kind"]
+        if row.get("status") and row["status"] != "completed":
+            message["status"] = row["status"]
+        if row.get("created_seq") is not None:
+            message["createdSeq"] = row["created_seq"]
+        if row.get("updated_at") is not None:
+            message["updatedAt"] = row["updated_at"]
         return message
 
     def _serialize_scheduled_task(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -1916,7 +1989,7 @@ class SQLiteStore:
         }
 
     def _serialize_task(self, row: dict[str, Any]) -> dict[str, Any]:
-        return {
+        result = {
             "id": row["id"],
             "sessionId": row["session_id"],
             "type": row["type"],
@@ -1937,6 +2010,16 @@ class SQLiteStore:
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
+        # New fields — use .get() for backward compat with legacy rows
+        if row.get("root_task_id"):
+            result["rootTaskId"] = row["root_task_id"]
+        if row.get("role") and row["role"] != "root":
+            result["role"] = row["role"]
+        if row.get("active_assistant_message_id"):
+            result["activeAssistantMessageId"] = row["active_assistant_message_id"]
+        if row.get("created_seq") is not None:
+            result["createdSeq"] = row["created_seq"]
+        return result
 
     def _json_list(self, raw: Any) -> list[Any]:
         if not raw:
@@ -2756,7 +2839,11 @@ class SQLiteStore:
                 result_json TEXT,
                 error_code TEXT,
                 created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                root_task_id TEXT DEFAULT NULL,
+                role TEXT DEFAULT 'root',
+                active_assistant_message_id TEXT DEFAULT NULL,
+                created_seq INTEGER DEFAULT NULL
             );
 
             CREATE TABLE IF NOT EXISTS messages (
@@ -2765,7 +2852,12 @@ class SQLiteStore:
                 task_id TEXT,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                client_message_id TEXT DEFAULT NULL,
+                kind TEXT DEFAULT 'normal',
+                status TEXT DEFAULT 'completed',
+                created_seq INTEGER DEFAULT NULL,
+                updated_at INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
@@ -3082,8 +3174,22 @@ class SQLiteStore:
             """
         )
         self._conn.commit()
+
+        # Ensure seq_counter table exists
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS seq_counter (
+                id INTEGER PRIMARY KEY,
+                val INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        self._conn.execute(
+            "INSERT OR IGNORE INTO seq_counter (id, val) VALUES (1, 0)"
+        )
+        self._conn.commit()
+
         self._ensure_workspace_columns()
         self._ensure_task_columns()
+        self._ensure_message_columns()
         self._ensure_patch_columns()
         self._ensure_collaboration_task_columns()
         self._ensure_schedule_columns()
@@ -3114,10 +3220,31 @@ class SQLiteStore:
             "reflection_json": "TEXT",
             "routing_json": "TEXT",
             "summary": "TEXT",
+            "root_task_id": "TEXT DEFAULT NULL",
+            "role": "TEXT DEFAULT 'root'",
+            "active_assistant_message_id": "TEXT DEFAULT NULL",
+            "created_seq": "INTEGER DEFAULT NULL",
         }
         for column, definition in expected.items():
             if column not in columns:
                 self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
+        self._conn.commit()
+
+    def _ensure_message_columns(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        expected = {
+            "client_message_id": "TEXT DEFAULT NULL",
+            "kind": "TEXT DEFAULT 'normal'",
+            "status": "TEXT DEFAULT 'completed'",
+            "created_seq": "INTEGER DEFAULT NULL",
+            "updated_at": "INTEGER",
+        }
+        for column, definition in expected.items():
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE messages ADD COLUMN {column} {definition}")
         self._conn.commit()
 
     def _ensure_patch_columns(self) -> None:

@@ -16,11 +16,14 @@ class EventBus:
 
     def __init__(self) -> None:
         self._subscribers: list[EventSink] = []
+        self._seq_counter: int = 0
 
     def subscribe(self, sink: EventSink) -> None:
         self._subscribers.append(sink)
 
     def publish(self, event: RuntimeEvent) -> None:
+        self._seq_counter += 1
+        event.seq = self._seq_counter
         for sink in list(self._subscribers):
             try:
                 sink(event)
@@ -30,6 +33,7 @@ class EventBus:
     def as_payload(self, event: RuntimeEvent) -> dict[str, Any]:
         return {
             "eventId": event.event_id,
+            "seq": event.seq,
             "sessionId": event.session_id,
             "taskId": event.task_id,
             "type": event.type,

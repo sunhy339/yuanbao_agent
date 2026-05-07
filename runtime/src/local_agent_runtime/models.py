@@ -85,6 +85,7 @@ class RuntimeEvent:
     type: str
     ts: int
     payload: dict[str, Any]
+    seq: int = 0
 
 
 @dataclass(slots=True)

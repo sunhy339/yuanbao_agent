@@ -165,6 +165,67 @@ def test_react_loop_injects_task_focus_into_provider_context(tmp_path: Any) -> N
     assert task["currentStep"] == "Inspect workspace"
 
 
+def test_message_send_attaches_supplement_to_open_task_without_replanning(tmp_path: Any) -> None:
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="original task",
+        plan=[{"id": "step-1", "title": "Inspect", "status": "running"}],
+    )
+
+    result = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "please keep using the existing task"},
+        ),
+        "task",
+    )
+
+    assert result["id"] == task["id"]
+    assert provider.calls == []
+    messages = runtime.store.list_messages({"sessionId": session["id"]})["messages"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[0]["taskId"] == task["id"]
+    assert messages[0]["content"] == "please keep using the existing task"
+    completed_events = [event for event in runtime.events if event["type"] == "assistant.message.completed"]
+    assert completed_events[-1]["payload"]["supplemental"] is True
+
+
+def test_message_send_explicit_supplement_overrides_background_new_task_flags(tmp_path: Any) -> None:
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="active task",
+        plan=[{"id": "step-1", "title": "Inspect", "status": "running"}],
+    )
+
+    result = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {
+                "sessionId": session["id"],
+                "content": "extra context for the active task",
+                "taskId": task["id"],
+                "mode": "supplement",
+                "background": True,
+                "newTask": True,
+            },
+        ),
+        "task",
+    )
+
+    assert result["id"] == task["id"]
+    assert provider.calls == []
+
+
 def test_completed_task_updates_session_memory_for_next_context(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [

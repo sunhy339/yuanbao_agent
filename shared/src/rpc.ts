@@ -135,6 +135,10 @@ export interface MessageSendParams {
   sessionId: Identifier;
   content: string;
   attachments: string[];
+  taskId?: Identifier;
+  mode?: "new" | "supplement";
+  newTask?: boolean;
+  background?: boolean;
 }
 
 export interface MessageListParams {

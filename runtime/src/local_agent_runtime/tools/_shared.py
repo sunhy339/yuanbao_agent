@@ -531,6 +531,8 @@ def run_shell(
             cwd=str(cwd),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_ms / 1000 if timeout_ms else None,
             check=False,
         )

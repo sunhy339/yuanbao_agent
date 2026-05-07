@@ -563,6 +563,22 @@ class Orchestrator:
         session = self._store.require_session(params["sessionId"])
         goal = params["content"]
 
+        explicit_supplement = params.get("mode") == "supplement"
+        explicit_task_id = params.get("taskId") or params.get("task_id")
+        should_auto_supplement = params.get("background") is not True and params.get("newTask") is not True
+        if explicit_supplement or should_auto_supplement:
+            active_task = (
+                self._find_supplement_target_task(
+                    session_id=session["id"],
+                    task_id=str(explicit_task_id) if explicit_task_id else None,
+                    strict=explicit_supplement,
+                )
+                if explicit_task_id
+                else self._find_open_session_task(session["id"])
+            )
+            if active_task is not None:
+                return self._attach_supplemental_message(session_id=session["id"], task=active_task, content=goal)
+
         # --- Phase 0: MetaRouter scenario classification ---
         routing = self._meta_router.route(goal)
         routing_dict = {
@@ -1454,6 +1470,76 @@ class Orchestrator:
             "Operations outside the workspace root unless the user explicitly supplies or approves them.",
             "Claiming success before required edits, commands or verification have actually completed.",
         ]
+
+    def _find_open_session_task(self, session_id: str) -> dict[str, Any] | None:
+        open_statuses = {"running", "planning", "verifying", "waiting_approval", "queued", "paused"}
+        try:
+            tasks = self._store.list_tasks({"sessionId": session_id}).get("tasks", [])
+        except Exception:  # noqa: BLE001
+            return None
+        for task in tasks:
+            if task.get("status") in open_statuses:
+                return task
+        return None
+
+    def _find_supplement_target_task(self, *, session_id: str, task_id: str | None, strict: bool) -> dict[str, Any] | None:
+        if not task_id:
+            return self._find_open_session_task(session_id)
+        try:
+            task = self._store.get_task({"taskId": task_id})["task"]
+        except Exception:  # noqa: BLE001
+            if strict:
+                raise ValueError(f"Cannot supplement missing task: {task_id}")
+            return None
+        if task.get("sessionId") != session_id:
+            if strict:
+                raise ValueError(f"Cannot supplement task outside session: {task_id}")
+            return None
+        if task.get("status") not in {"running", "planning", "verifying", "waiting_approval", "queued", "paused"}:
+            if strict:
+                raise ValueError(f"Cannot supplement task that is not active: {task_id}")
+            return None
+        return task
+
+    def _attach_supplemental_message(self, *, session_id: str, task: dict[str, Any], content: str) -> dict[str, Any]:
+        self._store.create_message(
+            session_id=session_id,
+            task_id=task["id"],
+            role="user",
+            content=content,
+        )
+        updated_task = self._store.update_task(
+            task_id=task["id"],
+            status=task["status"],
+            plan=task.get("plan") or [],
+            current_step=task.get("currentStep"),
+        )
+        runtime_task = {**updated_task, "plan": updated_task.get("plan") or task.get("plan") or []}
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
+            event_type="task.updated",
+            payload={
+                "status": runtime_task["status"],
+                "plan": runtime_task.get("plan") or [],
+                "currentStep": runtime_task.get("currentStep"),
+                "detail": "Supplemental user message attached to the active task.",
+            },
+        )
+        acknowledgement = "\u5df2\u8865\u5145\u5230\u5f53\u524d\u672a\u5b8c\u6210\u4efb\u52a1\uff0c\u7ee7\u7eed\u6cbf\u7528\u539f\u4efb\u52a1\u8ba1\u5212\u3002"
+        self._store.create_message(
+            session_id=session_id,
+            task_id=runtime_task["id"],
+            role="assistant",
+            content=acknowledgement,
+        )
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
+            event_type="assistant.message.completed",
+            payload={"content": acknowledgement, "supplemental": True},
+        )
+        return {"task": runtime_task}
 
     def _context_with_task_focus(self, context: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
         focused_context = {**context}

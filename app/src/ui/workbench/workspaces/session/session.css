@@ -1492,6 +1492,14 @@
   min-height: 100%;
 }
 
+.session-workspace-chat-only .session-workbench-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.session-workspace-chat-only .session-runtime-column {
+  display: none;
+}
+
 .session-conversation-column,
 .session-runtime-column {
   display: grid;

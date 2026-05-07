@@ -431,16 +431,11 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /任务 任务重点 验证中/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /任务 变更文件 已记录/ })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "命令执行" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /任务 验证 已通过/ })).toBeInTheDocument();
     expect(screen.queryByText(/sessionId/)).not.toBeInTheDocument();
     expect(screen.queryByText(/taskId/)).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /任务 任务重点 验证中/ }));
-    expect(screen.getAllByText("Run the generated CLI against a sample image").length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/验收标准/).some((node) => node.textContent?.includes("Script exists"))).toBe(true);
 
     await user.click(screen.getByRole("button", { name: /任务 变更文件 已记录/ }));
     expect(screen.getAllByText(/tools\/bead_art_generator.py/).length).toBeGreaterThan(0);

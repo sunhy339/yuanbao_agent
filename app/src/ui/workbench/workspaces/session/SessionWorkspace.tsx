@@ -676,38 +676,9 @@ function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveTask | n
   }
 
   const items: RuntimeTimelineItem[] = [];
-  const acceptanceCriteria = activeTask.acceptanceCriteria ?? [];
-  const outOfScope = activeTask.outOfScope ?? [];
   const changedFiles = activeTask.changedFiles ?? [];
   const commands = activeTask.commands ?? [];
   const verification = activeTask.verification ?? [];
-
-  // Skip task focus for very short goals (simple conversations like "你好", "1+1=?") —
-  // the boilerplate acceptance criteria / out-of-scope items add noise without value.
-  const isSimpleGoal = !activeTask.goal || activeTask.goal.trim().length < 15;
-
-  if (!isSimpleGoal && (activeTask.currentStep || activeTask.goal || acceptanceCriteria.length || outOfScope.length)) {
-    items.push({
-      id: `task-focus:${activeTask.id}`,
-      kind: "task",
-      title: "任务重点",
-      status: activeTask.status,
-      summary: activeTask.currentStep || activeTask.goal,
-      meta: compactMeta([
-        acceptanceCriteria.length ? `${acceptanceCriteria.length} 条验收标准` : null,
-        outOfScope.length ? `${outOfScope.length} 条不在范围内` : null,
-      ]),
-      code: compactMeta([
-        activeTask.goal ? `📌 目标：\n${activeTask.goal}` : null,
-        acceptanceCriteria.length
-          ? `✅ 验收标准：\n${acceptanceCriteria.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
-          : null,
-        outOfScope.length
-          ? `🚫 不在范围内：\n${outOfScope.map((c, i) => `  ${i + 1}. ${c}`).join("\n")}`
-          : null,
-      ]).join("\n\n"),
-    });
-  }
 
   if (changedFiles.length) {
     items.push({

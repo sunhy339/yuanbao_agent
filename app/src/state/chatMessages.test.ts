@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendAssistantPlaceholder,
   appendUserMessage,
+  failAssistantMessage,
   getVisibleChatMessages,
   isOperationalAssistantDelta,
   removeChatMessage,
@@ -104,6 +105,32 @@ describe("chatMessages", () => {
     expect(removeChatMessage(next, "thinking_1")).toEqual(messages);
   });
 
+  it("turns a failed pending assistant placeholder into a visible error message", () => {
+    const next = appendAssistantPlaceholder(messages, {
+      id: "thinking_1",
+      sessionId: "sess_1",
+      content: "thinking...",
+      now: 4,
+    });
+
+    const failed = failAssistantMessage(next, {
+      messageId: "thinking_1",
+      sessionId: "sess_1",
+      taskId: "task_3",
+      content: "Send failed: Provider request failed",
+      now: 5,
+    });
+
+    expect(failed.at(-1)).toMatchObject({
+      id: "thinking_1",
+      taskId: "task_3",
+      role: "assistant",
+      content: "Send failed: Provider request failed",
+      streaming: false,
+      placeholder: false,
+    });
+  });
+
   it("classifies runtime progress tokens as non-chat assistant deltas", () => {
     expect(isOperationalAssistantDelta("Building context and preparing the first tool calls...")).toBe(true);
     expect(isOperationalAssistantDelta("Running tool: list_dir")).toBe(true);
@@ -157,5 +184,73 @@ describe("chatMessages", () => {
       "persisted answer",
       "thinking...",
     ]);
+  });
+
+  it("keeps local pending messages during a persisted-message refresh race", () => {
+    const localMessages: ChatMessageView[] = [
+      ...messages,
+      {
+        id: "user_local",
+        sessionId: "sess_1",
+        taskId: "pending",
+        role: "user",
+        content: "new local request",
+        createdAt: 20,
+        updatedAt: 20,
+      },
+      {
+        id: "assistant_pending_local",
+        sessionId: "sess_1",
+        taskId: "pending",
+        role: "assistant",
+        content: "thinking...",
+        createdAt: 21,
+        updatedAt: 21,
+        streaming: true,
+        placeholder: true,
+      },
+    ];
+
+    const next = replaceSessionMessages(localMessages, "sess_1", [
+      {
+        id: "stored_user",
+        sessionId: "sess_1",
+        role: "user",
+        content: "persisted request",
+        createdAt: 10,
+      },
+    ]);
+
+    expect(getVisibleChatMessages(next, "sess_1").map((message) => message.id)).toEqual([
+      "stored_user",
+      "user_local",
+      "assistant_pending_local",
+    ]);
+  });
+
+  it("drops a local pending message once the same persisted message arrives", () => {
+    const localMessages: ChatMessageView[] = [
+      {
+        id: "user_local",
+        sessionId: "sess_1",
+        taskId: "pending",
+        role: "user",
+        content: "same request",
+        createdAt: 20,
+        updatedAt: 20,
+      },
+    ];
+
+    const next = replaceSessionMessages(localMessages, "sess_1", [
+      {
+        id: "stored_user",
+        sessionId: "sess_1",
+        role: "user",
+        content: "same request",
+        createdAt: 21,
+      },
+    ]);
+
+    expect(getVisibleChatMessages(next, "sess_1").map((message) => message.id)).toEqual(["stored_user"]);
   });
 });

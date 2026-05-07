@@ -120,6 +120,8 @@ class WorkerProcessRuntime:
         stdout: int | TextIO | None = None,
         stderr: int | TextIO | None = None,
         text: bool = False,
+        encoding: str | None = None,
+        errors: str | None = None,
         creationflags: int = 0,
     ) -> None:
         self._command = list(command) if not isinstance(command, str) else command
@@ -129,6 +131,8 @@ class WorkerProcessRuntime:
         self._stdout = stdout
         self._stderr = stderr
         self._text = text
+        self._encoding = encoding
+        self._errors = errors
         self._creationflags = creationflags
         self._process: subprocess.Popen[Any] | None = None
         self._stream_drains: dict[str, WorkerProcessStreamDrain] = {}
@@ -155,6 +159,8 @@ class WorkerProcessRuntime:
             stdout=self._stdout,
             stderr=self._stderr,
             text=self._text,
+            encoding=self._encoding,
+            errors=self._errors,
             creationflags=self._creationflags | self._platform_creationflags(),
         )
         return self

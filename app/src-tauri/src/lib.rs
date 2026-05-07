@@ -56,6 +56,10 @@ struct MessageSendPayload {
     session_id: String,
     content: String,
     attachments: Vec<String>,
+    task_id: Option<String>,
+    mode: Option<String>,
+    new_task: Option<bool>,
+    background: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -556,6 +560,8 @@ async fn message_send(
     state: State<'_, RuntimeManager>,
     payload: MessageSendPayload,
 ) -> Result<Value, String> {
+    let is_supplement = payload.mode.as_deref() == Some("supplement");
+    let background = payload.background.unwrap_or(!is_supplement);
     state.call_async(
         app_handle,
         "message.send".to_string(),
@@ -563,7 +569,10 @@ async fn message_send(
             "sessionId": payload.session_id,
             "content": payload.content,
             "attachments": payload.attachments,
-            "background": true,
+            "taskId": payload.task_id,
+            "mode": payload.mode,
+            "newTask": payload.new_task,
+            "background": background,
         }),
     ).await
 }

@@ -13,7 +13,27 @@ def build_shell_command(shell_name: str, command: str) -> list[str]:
         return ["bash", "-lc", command]
     if shell_name == "zsh":
         return ["zsh", "-lc", command]
-    return ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", command]
+    utf8_prelude = (
+        "chcp.com 65001 > $null; "
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+        "$OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+        "$env:PYTHONIOENCODING = 'utf-8'; "
+        "$env:PYTHONUTF8 = '1'; "
+        "$PSDefaultParameterValues['Get-Content:Encoding'] = 'UTF8'; "
+    )
+    return ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", f"{utf8_prelude}{_normalize_powershell_command(command)}"]
+
+
+def _normalize_powershell_command(command: str) -> str:
+    stripped = command.lstrip()
+    if not stripped or stripped[0] not in {"'", '"'}:
+        return command
+    quote = stripped[0]
+    close_index = stripped.find(quote, 1)
+    if close_index <= 0 or not stripped[close_index + 1 :].lstrip():
+        return command
+    leading = command[: len(command) - len(stripped)]
+    return f"{leading}& {stripped}"
 
 
 def run_shell_command(
@@ -35,6 +55,8 @@ def run_shell_command(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
     def _chunk_handler(

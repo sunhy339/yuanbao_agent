@@ -191,12 +191,6 @@ class ContextBuilder:
                 priority=800,
                 minimum_tokens=30,
             ),
-            BudgetSection(
-                name="user_message",
-                text=f"User request:\n{goal}",
-                priority=900,
-                truncatable=False,
-            ),
         ]
 
         # In lightweight mode, skip heavy context sections (project memory, git,
@@ -225,6 +219,17 @@ class ContextBuilder:
                 )
             )
             sections.extend(self._history_sections(session))
+        else:
+            sections.extend(self._conversation_history_sections(session))
+
+        sections.append(
+            BudgetSection(
+                name="user_message",
+                text=f"Current user request:\n{goal}",
+                priority=900,
+                truncatable=False,
+            )
+        )
 
         # Scratchpad: inject intermediate reasoning state if available
         scratchpad_section = self._scratchpad_section(session["id"])
@@ -495,27 +500,7 @@ class ContextBuilder:
         return stdout or ""
 
     def _history_sections(self, session: dict[str, Any]) -> list[BudgetSection]:
-        sections: list[BudgetSection] = []
-        if session.get("summary"):
-            sections.append(
-                BudgetSection(
-                    name="session_summary",
-                    text=f"Session summary:\n{session['summary']}",
-                    priority=650,
-                    minimum_tokens=32,
-                )
-            )
-
-        recent_messages = self._recent_messages(session["id"], limit=8)
-        if recent_messages:
-            sections.append(
-                BudgetSection(
-                    name="recent_conversation",
-                    text=self._conversation_summary(recent_messages),
-                    priority=640,
-                    minimum_tokens=32,
-                )
-            )
+        sections: list[BudgetSection] = self._conversation_history_sections(session)
 
         tasks = self._recent_tasks(session["id"], limit=6)
         total_tasks = len(tasks)
@@ -547,6 +532,30 @@ class ContextBuilder:
                     text=self._command_summary(command),
                     priority=350,
                     minimum_tokens=18,
+                )
+            )
+        return sections
+
+    def _conversation_history_sections(self, session: dict[str, Any]) -> list[BudgetSection]:
+        sections: list[BudgetSection] = []
+        if session.get("summary"):
+            sections.append(
+                BudgetSection(
+                    name="session_summary",
+                    text=f"Session summary:\n{session['summary']}",
+                    priority=650,
+                    minimum_tokens=32,
+                )
+            )
+
+        recent_messages = self._recent_messages(session["id"], limit=8)
+        if recent_messages:
+            sections.append(
+                BudgetSection(
+                    name="recent_conversation",
+                    text=self._conversation_summary(recent_messages),
+                    priority=640,
+                    minimum_tokens=32,
                 )
             )
         return sections

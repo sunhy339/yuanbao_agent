@@ -29,9 +29,9 @@ import { RuntimeClient, type HostStatus, type RuntimeConfig } from "./lib/runtim
 import {
   appendAssistantPlaceholder,
   appendUserMessage,
+  failAssistantMessage,
   getVisibleChatMessages,
   isOperationalAssistantDelta,
-  removeChatMessage,
   replaceSessionMessages,
   updatePendingMessageTask,
   type ChatMessageView,
@@ -1492,6 +1492,10 @@ function getTaskBadgeClass(status?: TaskRecord["status"]): string {
   return "neutral";
 }
 
+function isTaskControllable(status?: string) {
+  return Boolean(status && ["running", "planning", "verifying", "waiting_approval", "queued"].includes(status));
+}
+
 function appendAssistantToken(current: ChatMessageView[], event: AgentEventEnvelope): ChatMessageView[] {
   const payload = event.payload as AssistantTokenPayload;
   const delta = payload.delta ?? "";
@@ -1503,7 +1507,11 @@ function appendAssistantToken(current: ChatMessageView[], event: AgentEventEnvel
   const lastAssistantIndex = (() => {
     for (let index = next.length - 1; index >= 0; index -= 1) {
       const item = next[index];
-      if (item.taskId === event.taskId && item.role === "assistant" && item.streaming) {
+      if (
+        item.role === "assistant" &&
+        item.streaming &&
+        (item.taskId === event.taskId || (item.taskId === "pending" && item.sessionId === event.sessionId))
+      ) {
         return index;
       }
     }
@@ -1514,6 +1522,7 @@ function appendAssistantToken(current: ChatMessageView[], event: AgentEventEnvel
     const currentMessage = next[lastAssistantIndex];
     next[lastAssistantIndex] = {
       ...currentMessage,
+      taskId: event.taskId,
       content: currentMessage.placeholder ? delta : `${currentMessage.content}${delta}`,
       updatedAt: event.ts,
       placeholder: false,
@@ -1543,10 +1552,29 @@ function completeAssistantMessage(current: ChatMessageView[], event: AgentEventE
     10_000,
   );
   const next = [...current];
+  const payloadRecord = event.payload && typeof event.payload === "object" ? (event.payload as Record<string, unknown>) : {};
+  if (payloadRecord.supplemental === true && completedContent) {
+    return [
+      ...next,
+      {
+        id: `assistant_${event.eventId}`,
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        role: "assistant",
+        content: completedContent,
+        createdAt: event.ts,
+        updatedAt: event.ts,
+        streaming: false,
+      },
+    ];
+  }
   const lastAssistantIndex = (() => {
     for (let index = next.length - 1; index >= 0; index -= 1) {
       const item = next[index];
-      if (item.taskId === event.taskId && item.role === "assistant") {
+      if (
+        item.role === "assistant" &&
+        (item.taskId === event.taskId || (item.streaming && item.taskId === "pending" && item.sessionId === event.sessionId))
+      ) {
         return index;
       }
     }
@@ -1555,11 +1583,15 @@ function completeAssistantMessage(current: ChatMessageView[], event: AgentEventE
 
   if (lastAssistantIndex >= 0) {
     const currentMessage = next[lastAssistantIndex];
+    const streamingContent = currentMessage.content || "";
+    const isPlaceholder = currentMessage.placeholder === true || streamingContent === "\u601d\u8003\u4e2d..." || streamingContent.length < 5;
     next[lastAssistantIndex] = {
       ...currentMessage,
-      content: completedContent || currentMessage.content,
+      taskId: event.taskId,
+      content: isPlaceholder ? (completedContent || streamingContent) : streamingContent,
       updatedAt: event.ts,
       streaming: false,
+      placeholder: false,
     };
     return next;
   }
@@ -1581,6 +1613,21 @@ function completeAssistantMessage(current: ChatMessageView[], event: AgentEventE
       streaming: false,
     },
   ];
+}
+
+function failAssistantMessageForEvent(current: ChatMessageView[], event: AgentEventEnvelope): ChatMessageView[] {
+  const content =
+    summarizeValue(
+      getPayloadValue(event.payload, ["detail", "resultSummary", "summary", "error", "message"]),
+      "",
+      10_000,
+    ) || "任务失败，未返回具体错误。";
+  return failAssistantMessage(current, {
+    sessionId: event.sessionId,
+    taskId: event.taskId,
+    content: `任务失败：${content}`,
+    now: event.ts,
+  });
 }
 
 interface CollaborationSourceEvent {
@@ -2343,6 +2390,10 @@ export function App() {
           setSessions((current) =>
             current.map((item) => (item.id === event.sessionId ? { ...item, updatedAt: event.ts } : item)),
           );
+          if (event.type === "task.failed") {
+            flushPendingAssistantTokens();
+            setChatMessages((current) => failAssistantMessageForEvent(current, event));
+          }
         }
 
         if (event.type === "assistant.message.completed") {
@@ -3774,6 +3825,8 @@ export function App() {
     setMessageBusy(true);
     setError(null);
     let pendingAssistantMessageIdForCatch: string | null = null;
+    let pendingSessionIdForCatch: string | null = null;
+    let pendingTaskIdForCatch: string | null = null;
 
     try {
       await persistSearchConfig();
@@ -3781,34 +3834,50 @@ export function App() {
         activeTab.kind === "session"
           ? activeSessionRecord ?? (await ensureSessionForSend())
           : await ensureSessionForSend();
+      pendingSessionIdForCatch = activeSession.id;
       const messageContent = prompt.trim();
       const messageCreatedAt = Date.now();
       const pendingUserMessageId = `user_${messageCreatedAt}`;
       const pendingAssistantMessageId = `assistant_pending_${messageCreatedAt}`;
-      pendingAssistantMessageIdForCatch = pendingAssistantMessageId;
-      clearPendingAssistantTokens();
-      setEvents([]);
-      setTraceEvents([]);
-      setCommandLogCacheById({});
-      setTraceError(null);
-      setPatchCacheById({});
-      setPatchBusyId(null);
+      const currentTaskIdBeforeSend = task?.id ?? null;
+      const targetTaskId = task?.id ?? activeTaskId ?? undefined;
+      const hasStreamingMessage = chatMessages.some((message) => message.sessionId === activeSession.id && message.streaming);
+      const isSupplement = Boolean((isTaskControllable(task?.status) || hasStreamingMessage) && targetTaskId);
+      pendingTaskIdForCatch = isSupplement ? targetTaskId ?? null : null;
+      const shouldCreateAssistantPlaceholder = !isSupplement;
+      pendingAssistantMessageIdForCatch = shouldCreateAssistantPlaceholder ? pendingAssistantMessageId : null;
+      if (shouldCreateAssistantPlaceholder) {
+        clearPendingAssistantTokens();
+        setEvents([]);
+        setTraceEvents([]);
+        setCommandLogCacheById({});
+        setTraceError(null);
+        setPatchCacheById({});
+        setPatchBusyId(null);
+      }
       setPrompt("");
       setChatMessages((current) =>
-        appendAssistantPlaceholder(
-          appendUserMessage(current, {
-            id: pendingUserMessageId,
-            sessionId: activeSession.id,
-            content: messageContent,
-            now: messageCreatedAt,
-          }),
-          {
-            id: pendingAssistantMessageId,
-            sessionId: activeSession.id,
-            content: "\u601d\u8003\u4e2d...",
-            now: messageCreatedAt + 1,
-          },
-        ),
+        shouldCreateAssistantPlaceholder
+          ? appendAssistantPlaceholder(
+              appendUserMessage(current, {
+                id: pendingUserMessageId,
+                sessionId: activeSession.id,
+                content: messageContent,
+                now: messageCreatedAt,
+              }),
+              {
+                id: pendingAssistantMessageId,
+                sessionId: activeSession.id,
+                content: "\u601d\u8003\u4e2d...",
+                now: messageCreatedAt + 1,
+              },
+            )
+          : appendUserMessage(current, {
+              id: pendingUserMessageId,
+              sessionId: activeSession.id,
+              content: messageContent,
+              now: messageCreatedAt,
+            }),
       );
       setApprovalBusyId(null);
 
@@ -3816,13 +3885,20 @@ export function App() {
         sessionId: activeSession.id,
         content: messageContent,
         attachments: [],
+        mode: isSupplement ? "supplement" : "new",
+        taskId: isSupplement ? targetTaskId : undefined,
+        newTask: isSupplement ? undefined : true,
       });
 
       setChatMessages((current) => updatePendingMessageTask(current, pendingUserMessageId, result.task.id));
-      setChatMessages((current) => updatePendingMessageTask(current, pendingAssistantMessageId, result.task.id));
+      if (shouldCreateAssistantPlaceholder) {
+        setChatMessages((current) => updatePendingMessageTask(current, pendingAssistantMessageId, result.task.id));
+      }
       setTaskHistory((current) => upsertRecord(current, result.task));
-      setTask(result.task);
-      setActiveTaskId(result.task.id);
+      if (!currentTaskIdBeforeSend || result.task.id === currentTaskIdBeforeSend || !isSupplement) {
+        setTask(result.task);
+        setActiveTaskId(result.task.id);
+      }
       const touchedSession = { ...activeSession, updatedAt: result.task.updatedAt };
       setSessions((current) => upsertRecord(current, touchedSession));
       setSession(touchedSession);
@@ -3832,10 +3908,16 @@ export function App() {
         return resultTabs.tabs;
       });
     } catch (reason) {
-      if (pendingAssistantMessageIdForCatch) {
-        const failedAssistantMessageId = pendingAssistantMessageIdForCatch;
-        setChatMessages((current) => removeChatMessage(current, failedAssistantMessageId));
-      }
+      const errorSummary = getErrorMessage(reason);
+      setChatMessages((current) =>
+        failAssistantMessage(current, {
+          messageId: pendingAssistantMessageIdForCatch,
+          sessionId: pendingSessionIdForCatch ?? activeSessionRecord?.id ?? session?.id ?? "pending",
+          taskId: pendingTaskIdForCatch ?? task?.id ?? activeTaskId ?? undefined,
+          content: `发送失败：${errorSummary}`,
+          now: Date.now(),
+        }),
+      );
       toastError(reason);
     } finally {
       setMessageBusy(false);

@@ -808,7 +808,8 @@ class Orchestrator:
 
         explicit_supplement = params.get("mode") == "supplement"
         explicit_task_id = params.get("taskId") or params.get("task_id")
-        should_auto_supplement = params.get("background") is not True and params.get("newTask") is not True
+        is_queued_mode = params.get("mode") == "queued"
+        should_auto_supplement = not is_queued_mode and params.get("background") is not True and params.get("newTask") is not True
         if explicit_supplement or should_auto_supplement:
             active_task = (
                 self._find_supplement_target_task(
@@ -821,6 +822,31 @@ class Orchestrator:
             )
             if active_task is not None:
                 return self._attach_supplemental_message(session_id=session["id"], task=active_task, content=goal)
+
+        # --- Queued mode: create task but don't execute if another is running ---
+        if params.get("mode") == "queued":
+            active_task = self._find_open_session_task(session["id"])
+            if active_task is not None:
+                queued_task = self._store.create_task(
+                    session_id=session["id"],
+                    task_type="edit",
+                    goal=goal,
+                    plan=[],
+                    status="queued",
+                )
+                user_msg = self._store.create_message(
+                    session_id=session["id"],
+                    task_id=queued_task["id"],
+                    role="user",
+                    content=goal,
+                    client_message_id=client_message_id,
+                    kind="normal",
+                    status="completed",
+                )
+                self._publish(session["id"], queued_task, "message.created", {"message": user_msg})
+                self._publish(session["id"], queued_task, "task.created", {"status": "queued", "goal": goal})
+                self._publish(session["id"], queued_task, "task.queued", {"status": "queued", "goal": goal})
+                return {"task": queued_task, "userMessage": user_msg}
 
         # --- Phase 0: MetaRouter scenario classification ---
         import time as _time
@@ -1885,6 +1911,45 @@ class Orchestrator:
                 return task
         return None
 
+    def _drain_session_queue(self, session_id: str) -> None:
+        """Start the next queued task in the session, if any."""
+        # Only check truly active states (not queued)
+        _active_statuses = {"running", "planning", "verifying", "waiting_approval", "paused"}
+        try:
+            tasks = self._store.list_tasks({"sessionId": session_id}).get("tasks", [])
+        except Exception:  # noqa: BLE001
+            return
+        for t in tasks:
+            if t.get("status") in _active_statuses:
+                return
+        queued_tasks = self._store.list_tasks_by_session_and_status(session_id, "queued")
+        if not queued_tasks:
+            return
+        next_task = queued_tasks[0]
+        self._validate_task_transition("queued", "running", next_task["id"])
+        self._store.update_task_status(task_id=next_task["id"], status="running")
+        next_task["status"] = "running"
+        assistant_msg = self._store.create_message(
+            session_id=session_id,
+            task_id=next_task["id"],
+            role="assistant",
+            content="",
+            kind="normal",
+            status="streaming",
+        )
+        self._store.update_task(task_id=next_task["id"], active_assistant_message_id=assistant_msg["id"])
+        next_task["activeAssistantMessageId"] = assistant_msg["id"]
+        self._publish(session_id, next_task, "message.created", {"message": assistant_msg})
+        self._publish(session_id, next_task, "task.started", {"status": "running", "goal": next_task.get("goal")})
+        self._start_background_message(
+            session_id=session_id,
+            task=next_task,
+            goal=next_task["goal"],
+            context=None,
+            routing=next_task.get("routing") or {},
+            skill_id=(next_task.get("routing") or {}).get("skill_id"),
+        )
+
     def _find_supplement_target_task(self, *, session_id: str, task_id: str | None, strict: bool) -> dict[str, Any] | None:
         if not task_id:
             return self._find_open_session_task(session_id)
@@ -2272,6 +2337,7 @@ class Orchestrator:
                 "detail": final_summary,
             },
         )
+        self._drain_session_queue(session_id)
         return runtime_task
 
     def _reflect_on_result(
@@ -2417,6 +2483,7 @@ class Orchestrator:
                 "errorCode": error_code,
             },
         )
+        self._drain_session_queue(session_id)
         return runtime_task
 
     def _record_task_metrics(
@@ -4469,6 +4536,12 @@ class Orchestrator:
                             # Repetition detection: if the same phrase appears
                             # 3+ times in accumulated output, truncate.
                             _stream_text_parts.append(delta)
+                            # Periodically persist partial content for crash recovery
+                            _partial_len = sum(len(p) for p in _stream_text_parts)
+                            if _delta_count % 50 == 0 or _partial_len > 2048:
+                                _active_msg_id = task.get("activeAssistantMessageId")
+                                if _active_msg_id:
+                                    self._store.update_message(_active_msg_id, content="".join(_stream_text_parts))
                             if self._detect_stream_repetition(_stream_text_parts):
                                 logger.warning(
                                     "Stream repetition detected for task=%s, truncating after %d chars",
@@ -4494,6 +4567,11 @@ class Orchestrator:
                     "Stream completed for task=%s: deltas=%d streamed=%s has_final=%s",
                     task["id"], _delta_count, streamed_content, final_response is not None,
                 )
+                # Persist full streamed content to assistant message
+                if _stream_text_parts:
+                    _active_msg_id = task.get("activeAssistantMessageId")
+                    if _active_msg_id:
+                        self._store.update_message(_active_msg_id, content="".join(_stream_text_parts))
                 break  # stream completed successfully
             except Exception as stream_exc:
                 from ..provider.openai_compatible import ProviderAdapterError

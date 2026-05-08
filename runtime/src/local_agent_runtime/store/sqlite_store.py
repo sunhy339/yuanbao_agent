@@ -658,6 +658,7 @@ class SQLiteStore:
         root_task_id: str | None = None,
         role: str | None = None,
         created_seq: int | None = None,
+        status: str = "running",
     ) -> dict[str, Any]:
         task_id = self.new_id("task")
         now = self.now()
@@ -670,12 +671,13 @@ class SQLiteStore:
                 reflection_json, routing_json, summary, result_json, error_code,
                 created_at, updated_at, root_task_id, role, created_seq
             )
-            VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, '[]', '[]', '[]', NULL, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', '[]', NULL, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
                 session_id,
                 task_type,
+                status,
                 goal,
                 json.dumps(acceptance_criteria or [], ensure_ascii=False),
                 json.dumps(out_of_scope or [], ensure_ascii=False),
@@ -1980,6 +1982,14 @@ class SQLiteStore:
         rows = self._conn.execute(
             f"SELECT * FROM tasks WHERE status IN ({placeholders})",
             tuple(statuses),
+        ).fetchall()
+        return [self._serialize_task(dict(r)) for r in rows]
+
+    def list_tasks_by_session_and_status(self, session_id: str, status: str) -> list[dict[str, Any]]:
+        """Return tasks matching session_id and status, ordered by created_at."""
+        rows = self._conn.execute(
+            "SELECT * FROM tasks WHERE session_id = ? AND status = ? ORDER BY created_at ASC",
+            (session_id, status),
         ).fetchall()
         return [self._serialize_task(dict(r)) for r in rows]
 

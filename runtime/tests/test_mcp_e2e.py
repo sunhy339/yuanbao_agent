@@ -117,7 +117,7 @@ class TestInitializeMcpServers:
         store.close()
 
     def test_connect_failure_does_not_block_others(self, tmp_path):
-        server, store, orch, _ = _build_harness(tmp_path)
+        server, store, orch, events = _build_harness(tmp_path)
 
         store.create_mcp_server({"id": "bad", "name": "Bad", "enabled": True})
         store.create_mcp_server({"id": "good", "name": "Good", "enabled": True})
@@ -165,6 +165,7 @@ class TestCreateDisabledServer:
         resp = _call(server, "mcp.server.create", {
             "id": "pg",
             "name": "Postgres",
+            "command": "echo",
             "enabled": False,
         })
         assert "result" in resp
@@ -188,7 +189,7 @@ class TestUpdateDisablesServer:
 
         # Create enabled server
         with _connect_patch(orch, [schema]):
-            _call(server, "mcp.server.create", {"id": "pg", "name": "PG"})
+            _call(server, "mcp.server.create", {"id": "pg", "name": "PG", "command": "echo"})
 
         assert orch._tool_registry.has_tool("mcp__pg__query")
 
@@ -197,6 +198,7 @@ class TestUpdateDisablesServer:
              patch.object(orch._mcp_manager, "sync_disconnect_server"):
             resp = _call(server, "mcp.server.update", {
                 "serverId": "pg",
+                "command": "echo",
                 "enabled": False,
             })
 
@@ -213,7 +215,7 @@ class TestUpdateDisablesServer:
 
         # Create with one tool
         with _connect_patch(orch, [old_schema]):
-            _call(server, "mcp.server.create", {"id": "pg", "name": "PG"})
+            _call(server, "mcp.server.create", {"id": "pg", "name": "PG", "command": "echo"})
 
         assert orch._tool_registry.has_tool("mcp__pg__query")
         assert not orch._tool_registry.has_tool("mcp__pg__insert")
@@ -222,7 +224,7 @@ class TestUpdateDisablesServer:
         with patch.object(orch._mcp_manager, "is_connected", return_value=True), \
              patch.object(orch._mcp_manager, "sync_disconnect_server"), \
              _connect_patch(orch, new_schemas):
-            _call(server, "mcp.server.update", {"serverId": "pg", "name": "PG v2"})
+            _call(server, "mcp.server.update", {"serverId": "pg", "name": "PG v2", "command": "echo"})
 
         assert orch._tool_registry.has_tool("mcp__pg__query")
         assert orch._tool_registry.has_tool("mcp__pg__insert")
@@ -240,7 +242,7 @@ class TestMcpToolExecution:
         schema = _make_schema("calc", "add")
 
         with _connect_patch(orch, [schema]):
-            _call(server, "mcp.server.create", {"id": "calc", "name": "Calculator"})
+            _call(server, "mcp.server.create", {"id": "calc", "name": "Calculator", "command": "echo"})
 
         # The tool handler delegates to sync_call_tool — mock it
         with patch.object(
@@ -262,7 +264,7 @@ class TestMcpToolExecution:
         schema = _make_schema("calc", "add")
 
         with _connect_patch(orch, [schema]):
-            _call(server, "mcp.server.create", {"id": "calc", "name": "Calc"})
+            _call(server, "mcp.server.create", {"id": "calc", "name": "Calc", "command": "echo"})
 
         # Delete the server
         with patch.object(orch._mcp_manager, "sync_disconnect_server"):
@@ -286,8 +288,8 @@ class TestMcpToolExecution:
             return [schema_b]
 
         with patch.object(orch._mcp_manager, "sync_connect_server", side_effect=_connect_side_effect):
-            _call(server, "mcp.server.create", {"id": "pg", "name": "PG"})
-            _call(server, "mcp.server.create", {"id": "mysql", "name": "MySQL"})
+            _call(server, "mcp.server.create", {"id": "pg", "name": "PG", "command": "echo"})
+            _call(server, "mcp.server.create", {"id": "mysql", "name": "MySQL", "command": "echo"})
 
         assert orch._tool_registry.has_tool("mcp__pg__query")
         assert orch._tool_registry.has_tool("mcp__mysql__query")
@@ -317,8 +319,8 @@ class TestRefreshAllServers:
 
         # Create two servers
         with patch.object(orch._mcp_manager, "sync_connect_server", side_effect=_connect_side_effect):
-            _call(server, "mcp.server.create", {"id": "pg", "name": "PG"})
-            _call(server, "mcp.server.create", {"id": "redis", "name": "Redis"})
+            _call(server, "mcp.server.create", {"id": "pg", "name": "PG", "command": "echo"})
+            _call(server, "mcp.server.create", {"id": "redis", "name": "Redis", "command": "echo"})
 
         # Refresh all
         new_schemas = [_make_schema("pg", "query"), _make_schema("pg", "insert")]
@@ -335,7 +337,7 @@ class TestRefreshAllServers:
 
         schema = _make_schema("pg", "query")
         with _connect_patch(orch, [schema]):
-            _call(server, "mcp.server.create", {"id": "pg", "name": "PG"})
+            _call(server, "mcp.server.create", {"id": "pg", "name": "PG", "command": "echo"})
 
         with patch.object(
             orch._mcp_manager,
@@ -389,6 +391,7 @@ class TestMcpFullLifecycle:
             resp = _call(server, "mcp.server.update", {
                 "serverId": "srv",
                 "name": "Docs Server v2",
+                "command": "echo",
             })
 
         assert resp["result"]["server"]["name"] == "Docs Server v2"
@@ -445,7 +448,7 @@ class TestMcpConcurrentOperations:
 
         # Create
         with _connect_patch(orch, [schema]):
-            _call(server, "mcp.server.create", {"id": "srv", "name": "Srv"})
+            _call(server, "mcp.server.create", {"id": "srv", "name": "Srv", "command": "echo"})
 
         assert orch._tool_registry.has_tool("mcp__srv__ping")
 
@@ -458,7 +461,7 @@ class TestMcpConcurrentOperations:
         # Recreate with different tools
         schema2 = _make_schema("srv", "pong")
         with _connect_patch(orch, [schema2]):
-            _call(server, "mcp.server.create", {"id": "srv", "name": "Srv v2"})
+            _call(server, "mcp.server.create", {"id": "srv", "name": "Srv v2", "command": "echo"})
 
         assert orch._tool_registry.has_tool("mcp__srv__pong")
         assert not orch._tool_registry.has_tool("mcp__srv__ping")  # old tool stays gone
@@ -518,7 +521,7 @@ class TestMcpToolVisibility:
 
         with _connect_patch(orch, [schema]):
             _call(server := JsonRpcServer(orchestrator=orch, store=store, event_bus=EventBus()),
-                  "mcp.server.create", {"id": "pg", "name": "PG"})
+                  "mcp.server.create", {"id": "pg", "name": "PG", "command": "echo"})
 
         # Simulate a context with openai_tools built before MCP registration
         context = {

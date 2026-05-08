@@ -1015,6 +1015,11 @@ class ToolRegistry:
         self._tools = tools or {}
         self._schemas = schemas or {}
         self._call_counts: dict[str, dict[str, int]] = {}
+        self._version: int = 0
+
+    @property
+    def version(self) -> int:
+        return self._version
 
     # ── registration ────────────────────────────────────────────────
 
@@ -1022,10 +1027,12 @@ class ToolRegistry:
         self._tools[name] = handler
         if schema is not None:
             self._schemas[name] = schema
+        self._version += 1
 
     def unregister(self, name: str) -> None:
         self._tools.pop(name, None)
         self._schemas.pop(name, None)
+        self._version += 1
 
     def unregister_prefix(self, prefix: str) -> int:
         """Remove all tools whose name starts with *prefix*.  Returns count removed."""
@@ -1033,6 +1040,8 @@ class ToolRegistry:
         for n in names:
             self._tools.pop(n, None)
             self._schemas.pop(n, None)
+        if names:
+            self._version += 1
         return len(names)
 
     # ── query ───────────────────────────────────────────────────────

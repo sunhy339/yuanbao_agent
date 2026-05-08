@@ -1,6 +1,9 @@
 import type {
   ApprovalKind,
   Identifier,
+  MessageKind,
+  MessageRecord,
+  MessageStatus,
   PlanStep,
   TaskChangedFile,
   TaskCommandRun,
@@ -19,10 +22,18 @@ export type AgentEventType =
   | "task.cancelled"
   | "task.paused"
   | "task.resumed"
+  | "task.created"
+  | "task.routing.decided"
+  | "task.planning.subtask.started"
+  | "task.planning.subtask.completed"
   | "provider.request"
   | "provider.response"
   | "assistant.token"
   | "assistant.message.completed"
+  | "message.created"
+  | "message.delta"
+  | "message.completed"
+  | "message.failed"
   | "tool.started"
   | "tool.completed"
   | "tool.failed"
@@ -32,7 +43,9 @@ export type AgentEventType =
   | "command.failed"
   | "patch.proposed"
   | "approval.requested"
-  | "approval.resolved";
+  | "approval.resolved"
+  | "task.supplement.received"
+  | "task.supplement.consumed";
 
 export interface AgentEventEnvelope<TPayload = unknown> {
   eventId: Identifier;
@@ -146,4 +159,41 @@ export interface ApprovalResolvedPayload {
   approvalId: Identifier;
   taskId: Identifier;
   decision: "approved" | "rejected";
+}
+
+// --- Message lifecycle events (P1.3 / P1.4) ---
+
+export interface MessageCreatedPayload {
+  message: MessageRecord;
+}
+
+export interface MessageDeltaPayload {
+  delta: string;
+  messageId: Identifier;
+  taskId?: Identifier;
+}
+
+export interface MessageCompletedPayload {
+  messageId: Identifier;
+  content?: string;
+}
+
+export interface MessageFailedPayload {
+  messageId: Identifier;
+  content: string;
+  errorCode?: string;
+}
+
+// --- Supplement inbox events ---
+
+export interface TaskSupplementReceivedPayload {
+  inboxEntryId: Identifier;
+  messageId: Identifier;
+  content: string;
+}
+
+export interface TaskSupplementConsumedPayload {
+  count: number;
+  entryIds: Identifier[];
+  step: number;
 }

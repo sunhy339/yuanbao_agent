@@ -1,4 +1,4 @@
-import type { MessageRecord } from "@shared";
+import type { MessageKind, MessageRecord, MessageStatus } from "@shared";
 
 export interface ChatMessageView {
   id: string;
@@ -10,6 +10,10 @@ export interface ChatMessageView {
   updatedAt: number;
   streaming?: boolean;
   placeholder?: boolean;
+  clientMessageId?: string;
+  kind?: MessageKind;
+  status?: MessageStatus;
+  createdSeq?: number;
 }
 
 export function messageRecordToChatMessage(record: MessageRecord): ChatMessageView | null {
@@ -24,7 +28,11 @@ export function messageRecordToChatMessage(record: MessageRecord): ChatMessageVi
     role: record.role,
     content: record.content,
     createdAt: record.createdAt,
-    updatedAt: record.createdAt,
+    updatedAt: record.updatedAt ?? record.createdAt,
+    clientMessageId: record.clientMessageId,
+    kind: record.kind,
+    status: record.status,
+    createdSeq: record.createdSeq,
   };
 }
 
@@ -37,7 +45,7 @@ export function replaceSessionMessages(
     .map(messageRecordToChatMessage)
     .filter((message): message is ChatMessageView => message !== null);
 
-  // Single pass over current to split into other-session and live-streaming
+  // Single pass over current to split into other-session, live-streaming, and pending-local
   const otherSessionMessages: ChatMessageView[] = [];
   const liveStreamingMessages: ChatMessageView[] = [];
   const pendingLocalMessages: ChatMessageView[] = [];
@@ -60,13 +68,67 @@ export function replaceSessionMessages(
       updatedAt: Math.max(msg.updatedAt, createdAt),
     };
   });
-  const unmatchedPendingLocalMessages = pendingLocalMessages.filter(
-    (message) => !persistedMessages.some((persisted) => isPersistedMatchForLocalMessage(persisted, message)),
-  );
+
+  // Match pending local messages to persisted ones by clientMessageId (primary) or id/content (fallback)
+  const matchedPersistedIds = new Set<string>();
+  const unmatchedPendingLocalMessages: ChatMessageView[] = [];
+
+  for (const local of pendingLocalMessages) {
+    const match = findPersistedMatch(persistedMessages, local, matchedPersistedIds);
+    if (match) {
+      matchedPersistedIds.add(match.id);
+    } else {
+      unmatchedPendingLocalMessages.push(local);
+    }
+  }
 
   return [...otherSessionMessages, ...persistedMessages, ...unmatchedPendingLocalMessages, ...updatedLiveStreamingMessages].sort(
-    (left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id),
+    (left, right) => sortBySeqAndTime(left, right),
   );
+}
+
+function findPersistedMatch(
+  persisted: ChatMessageView[],
+  local: ChatMessageView,
+  alreadyMatched: Set<string>,
+): ChatMessageView | null {
+  // Primary: match by clientMessageId
+  if (local.clientMessageId) {
+    const match = persisted.find(
+      (p) => !alreadyMatched.has(p.id) && p.clientMessageId === local.clientMessageId,
+    );
+    if (match) return match;
+  }
+  // Fallback: match by backend id directly (if local.id is a real backend id)
+  const directMatch = persisted.find(
+    (p) => !alreadyMatched.has(p.id) && p.id === local.id,
+  );
+  if (directMatch) return directMatch;
+  // Legacy fallback: content + role + sessionId + time window
+  return (
+    persisted.find(
+      (p) =>
+        !alreadyMatched.has(p.id) &&
+        p.sessionId === local.sessionId &&
+        p.role === local.role &&
+        p.content.trim() === local.content.trim() &&
+        Math.abs(p.createdAt - local.createdAt) < 5 * 60 * 1000,
+    ) ?? null
+  );
+}
+
+/** Sort by createdSeq (if available), then createdAt, then id. */
+function sortBySeqAndTime(left: ChatMessageView, right: ChatMessageView): number {
+  const leftSeq = left.createdSeq;
+  const rightSeq = right.createdSeq;
+  if (leftSeq != null && rightSeq != null && leftSeq !== rightSeq) {
+    return leftSeq - rightSeq;
+  }
+  if (leftSeq != null && rightSeq == null) return -1;
+  if (leftSeq == null && rightSeq != null) return 1;
+  const timeDiff = left.createdAt - right.createdAt;
+  if (timeDiff !== 0) return timeDiff;
+  return left.id.localeCompare(right.id);
 }
 
 function isLocalPendingMessage(message: ChatMessageView) {
@@ -78,15 +140,6 @@ function isLocalPendingMessage(message: ChatMessageView) {
   );
 }
 
-function isPersistedMatchForLocalMessage(persisted: ChatMessageView, local: ChatMessageView) {
-  return (
-    persisted.sessionId === local.sessionId &&
-    persisted.role === local.role &&
-    persisted.content.trim() === local.content.trim() &&
-    Math.abs(persisted.createdAt - local.createdAt) < 5 * 60 * 1000
-  );
-}
-
 export function appendUserMessage(
   current: ChatMessageView[],
   payload: {
@@ -94,6 +147,7 @@ export function appendUserMessage(
     sessionId: string;
     content: string;
     now: number;
+    clientMessageId?: string;
   },
 ): ChatMessageView[] {
   return [
@@ -106,6 +160,7 @@ export function appendUserMessage(
       content: payload.content,
       createdAt: payload.now,
       updatedAt: payload.now,
+      clientMessageId: payload.clientMessageId,
     },
   ];
 }
@@ -123,6 +178,45 @@ export function updatePendingMessageTask(
         }
       : message,
   );
+}
+
+/**
+ * Replace a local pending message with a backend-confirmed message (by clientMessageId or id).
+ * Returns updated array with the local message replaced by the backend one.
+ */
+export function reconcileBackendMessage(
+  current: ChatMessageView[],
+  backend: ChatMessageView,
+): ChatMessageView[] {
+  const matchIndex = (() => {
+    // Try clientMessageId match first
+    if (backend.clientMessageId) {
+      const idx = current.findIndex(
+        (m) => m.clientMessageId === backend.clientMessageId && m.sessionId === backend.sessionId,
+      );
+      if (idx >= 0) return idx;
+    }
+    // Try direct id match
+    const idx = current.findIndex((m) => m.id === backend.id);
+    if (idx >= 0) return idx;
+    return -1;
+  })();
+
+  if (matchIndex >= 0) {
+    const local = current[matchIndex];
+    // Preserve streaming state if the local message is actively streaming
+    // (backend message for assistant streaming placeholder)
+    const next = [...current];
+    next[matchIndex] = {
+      ...backend,
+      streaming: local.streaming,
+      placeholder: local.placeholder,
+    };
+    return next;
+  }
+
+  // No match found — just append
+  return [...current, backend];
 }
 
 export function appendAssistantPlaceholder(
@@ -146,6 +240,7 @@ export function appendAssistantPlaceholder(
       updatedAt: payload.now,
       streaming: true,
       placeholder: true,
+      status: "streaming",
     },
   ];
 }
@@ -197,6 +292,8 @@ export function failAssistantMessage(
       updatedAt: payload.now,
       streaming: false,
       placeholder: false,
+      kind: "failure",
+      status: "failed",
     };
     return next;
   }
@@ -213,8 +310,24 @@ export function failAssistantMessage(
       updatedAt: payload.now,
       streaming: false,
       placeholder: false,
+      kind: "failure",
+      status: "failed",
     },
   ];
+}
+
+export function updateAssistantMessageByMessageId(
+  current: ChatMessageView[],
+  messageId: string,
+  updater: (msg: ChatMessageView) => ChatMessageView,
+): ChatMessageView[] {
+  const index = current.findIndex((m) => m.id === messageId);
+  if (index >= 0) {
+    const next = [...current];
+    next[index] = updater(next[index]);
+    return next;
+  }
+  return current;
 }
 
 export function stopStreamingMessages(
@@ -261,5 +374,5 @@ export function getVisibleChatMessages(
 
   return messages
     .filter((message) => message.sessionId === sessionId)
-    .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+    .sort((left, right) => sortBySeqAndTime(left, right));
 }

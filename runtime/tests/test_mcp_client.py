@@ -495,6 +495,7 @@ class TestMcpRpcIntegration:
             self._call(server, "mcp.server.create", {
                 "id": "del-me",
                 "name": "Delete Me",
+                "command": "echo",
             })
 
         resp = self._call(server, "mcp.server.delete", {"serverId": "del-me"})
@@ -530,6 +531,7 @@ class TestMcpRpcIntegration:
             self._call(server, "mcp.server.create", {
                 "id": "pg",
                 "name": "Postgres",
+                "command": "pg-mcp",
             })
 
         assert orch._tool_registry.has_tool("mcp__pg__query")
@@ -550,6 +552,7 @@ class TestMcpRpcIntegration:
             self._call(server, "mcp.server.create", {
                 "id": "pg",
                 "name": "Postgres",
+                "command": "pg-mcp",
             })
 
         with patch.object(orch._mcp_manager, "sync_refresh_tools", return_value=[schema_new, schema_new2]):
@@ -568,6 +571,7 @@ class TestMcpRpcIntegration:
             self._call(server, "mcp.server.create", {
                 "id": "pg",
                 "name": "Postgres",
+                "command": "pg-mcp",
             })
 
         # Update name, should disconnect and reconnect
@@ -577,6 +581,7 @@ class TestMcpRpcIntegration:
             resp = self._call(server, "mcp.server.update", {
                 "serverId": "pg",
                 "name": "Postgres Updated",
+                "command": "pg-mcp",
             })
 
         assert resp["result"]["server"]["name"] == "Postgres Updated"

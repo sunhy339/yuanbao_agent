@@ -139,6 +139,7 @@ export interface MessageSendParams {
   mode?: "new" | "supplement" | "queued";
   newTask?: boolean;
   background?: boolean;
+  clientMessageId?: string;
 }
 
 export interface MessageListParams {
@@ -266,6 +267,8 @@ export interface SessionCompactResult {
 
 export interface MessageSendResult {
   task: TaskRecord;
+  userMessage?: MessageRecord;
+  assistantMessage?: MessageRecord;
 }
 
 export interface MessageListResult {

@@ -28,9 +28,49 @@ class MemoryManager:
         content: str,
         kind: MemoryKind = MemoryKind.WORKING,
         metadata: dict | None = None,
+        dedup: bool = False,
+        dedup_threshold: float = 0.5,
     ) -> MemoryEntry:
-        """Store a memory entry with auto-extracted keywords."""
+        """Store a memory entry with auto-extracted keywords.
+
+        When *dedup* is True, checks for similar existing entries and merges
+        with the best match instead of creating a duplicate.
+        """
         keywords = extract_keywords(content)
+
+        if dedup and workspace_id:
+            similar = self._retriever.search(
+                workspace_id=workspace_id,
+                query=content,
+                session_id=session_id,
+                limit=3,
+                threshold=dedup_threshold,
+            )
+            if similar:
+                best_entry, best_score = similar[0]
+                # Merge: update content and metadata, keep higher confidence
+                existing_meta = best_entry.metadata or {}
+                new_meta = metadata or {}
+                merged_meta = {**existing_meta, **new_meta}
+                # Keep the higher confidence
+                if "confidence" in existing_meta and "confidence" in new_meta:
+                    merged_meta["confidence"] = max(
+                        float(existing_meta["confidence"]),
+                        float(new_meta["confidence"]),
+                    )
+                # Merge sourceTaskIds lists
+                existing_ids = set(existing_meta.get("sourceTaskIds") or [])
+                new_ids = new_meta.get("sourceTaskIds") or []
+                merged_ids = list(existing_ids | set(new_ids))
+                if merged_ids:
+                    merged_meta["sourceTaskIds"] = merged_ids
+                return self._store.update(
+                    best_entry.id,
+                    content=content,
+                    keywords=keywords,
+                    metadata=merged_meta,
+                )
+
         return self._store.create(
             kind=kind,
             content=content,
@@ -53,10 +93,35 @@ class MemoryManager:
         1. **Recent**: most recently accessed memories for the workspace/session.
         2. **Semantic**: keyword similarity search against all memory entries.
 
-        Results are deduplicated and returned in relevance order.
+        Results are deduplicated, boosted by pinned status and confidence,
+        then returned in relevance order.
+        """
+        scored = self.recall_with_scores(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            query=query,
+            limit=limit,
+        )
+        return [entry for entry, _score in scored]
+
+    def recall_with_scores(
+        self,
+        *,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+        query: str,
+        limit: int = 10,
+    ) -> list[tuple[MemoryEntry, float]]:
+        """Recall memories with adjusted relevance scores.
+
+        Returns ``(entry, adjusted_score)`` pairs sorted by score descending.
+        Adjustments:
+        - pinned memories get +0.3 boost
+        - low confidence (<0.4) memories get -0.2 penalty
+        - failed-task memories (open_issue with confidence <0.5) get -0.1 penalty
         """
         seen_ids: set[str] = set()
-        results: list[MemoryEntry] = []
+        results: list[tuple[MemoryEntry, float]] = []
 
         # Path 1: semantic search (if workspace available)
         if workspace_id:
@@ -66,10 +131,10 @@ class MemoryManager:
                 session_id=session_id,
                 limit=limit,
             )
-            for entry, _score in scored:
+            for entry, score in scored:
                 if entry.id not in seen_ids:
                     seen_ids.add(entry.id)
-                    results.append(entry)
+                    results.append((entry, self._adjust_score(entry, score)))
 
         # Path 2: recent memories (fill remaining slots)
         if workspace_id or session_id:
@@ -81,9 +146,35 @@ class MemoryManager:
             for entry in recent:
                 if entry.id not in seen_ids:
                     seen_ids.add(entry.id)
-                    results.append(entry)
+                    # Recent path gets a base score that decays with position
+                    base_score = 0.3
+                    results.append((entry, self._adjust_score(entry, base_score)))
 
+        # Sort by adjusted score descending
+        results.sort(key=lambda x: x[1], reverse=True)
         return results[:limit]
+
+    @staticmethod
+    def _adjust_score(entry: MemoryEntry, raw_score: float) -> float:
+        """Apply confidence and pinned adjustments to a recall score."""
+        meta = entry.metadata or {}
+        score = raw_score
+
+        # Pinned boost
+        if meta.get("pinned"):
+            score += 0.3
+
+        # Low confidence penalty
+        confidence = float(meta.get("confidence", 0.7))
+        if confidence < 0.4:
+            score -= 0.2
+
+        # Failed-task memory penalty
+        category = meta.get("category", "")
+        if category == "open_issue" and confidence < 0.5:
+            score -= 0.1
+
+        return max(score, 0.0)
 
     def consolidate(self, session_id: str) -> int:
         """Promote WORKING memories to SESSION after session ends.

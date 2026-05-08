@@ -46,6 +46,18 @@ from ..observability.tracer import Tracer
 class Orchestrator:
     """Coordinates the first-pass agent loop for Sprint 1."""
 
+    _VALID_TASK_TRANSITIONS: dict[str, set[str]] = {
+        "queued": {"running", "cancelled"},
+        "running": {"completed", "failed", "cancelled", "paused", "waiting_approval"},
+        "paused": {"running", "cancelled"},
+        "waiting_approval": {"running", "cancelled", "failed", "paused"},
+        "planning": {"running", "failed", "cancelled"},
+        "verifying": {"running", "failed", "cancelled"},
+        "completed": set(),
+        "failed": set(),
+        "cancelled": set(),
+    }
+
     def __init__(
         self,
         store: Any,
@@ -54,6 +66,8 @@ class Orchestrator:
         provider: Any,
         meta_router: MetaRouter | None = None,
         memory_manager: MemoryManager | None = None,
+        *,
+        _skip_orphan_cleanup: bool = False,
     ) -> None:
         self._store = store
         self._event_bus = event_bus
@@ -90,7 +104,8 @@ class Orchestrator:
         self._tracer = Tracer(store)
         self._shutting_down = False
         self._streaming_mode_cache: bool | None = None
-        self._cleanup_orphan_tasks()
+        if not _skip_orphan_cleanup:
+            self._cleanup_orphan_tasks()
 
     @staticmethod
     def _build_reflector(store: SQLiteStore, provider: ProviderAdapter) -> ReflectionEvaluator | None:
@@ -105,6 +120,64 @@ class Orchestrator:
             evaluation_prompt=rc.get("evaluationPrompt", ""),
         )
         return ReflectionEvaluator(provider=provider, config=reflection_config)
+
+    # ── validation helpers ──────────────────────────────────────────
+
+    def _validate_mcp_config(self, params: dict[str, Any]) -> None:
+        """Validate MCP server config before create/update. Raises ValueError with fix suggestions."""
+        transport = (params.get("transport") or "stdio").lower()
+
+        if transport == "stdio":
+            command = params.get("command")
+            if not command or not isinstance(command, str) or not command.strip():
+                raise ValueError(
+                    "stdio transport requires a non-empty 'command'. "
+                    "Fix: set command to the executable path, e.g. 'npx' or 'python'."
+                )
+            args = params.get("args")
+            if args is not None:
+                if not isinstance(args, list):
+                    raise ValueError("'args' must be a string array. Fix: pass args as [\"--port\", \"8080\"].")
+                for i, a in enumerate(args):
+                    if not isinstance(a, str):
+                        raise ValueError(f"'args[{i}]' must be a string, got {type(a).__name__}. Fix: convert to string.")
+
+        elif transport in ("sse", "streamable_http"):
+            url = params.get("url")
+            if not url or not isinstance(url, str) or not url.strip():
+                raise ValueError(
+                    f"{transport} transport requires a non-empty 'url'. "
+                    "Fix: set url to the server endpoint."
+                )
+
+        env = params.get("env")
+        if env is not None and not isinstance(env, dict):
+            raise ValueError("'env' must be an object with string keys and values.")
+
+        headers = params.get("headers")
+        if headers is not None and not isinstance(headers, dict):
+            raise ValueError("'headers' must be an object with string keys and values.")
+
+    def _validate_task_transition(self, current_status: str, target_status: str, task_id: str, *, silent: bool = False) -> None:
+        """Validate task status transition.
+
+        Args:
+            silent: If True, log warning instead of raising. Used by internal
+                methods (_complete_task, _fail_task) that may be called from
+                error handlers where the task is already terminal.
+        """
+        allowed = self._VALID_TASK_TRANSITIONS.get(current_status, set())
+        if target_status in allowed:
+            return
+        logger.warning(
+            "Illegal task transition: %s -> %s for task %s (allowed: %s)",
+            current_status, target_status, task_id, allowed or "none (terminal)",
+        )
+        if not silent:
+            raise ValueError(
+                f"Task {task_id} cannot transition from '{current_status}' to '{target_status}'. "
+                f"Allowed: {sorted(allowed) or 'none (terminal state)'}"
+            )
 
     def open_workspace(self, params: dict[str, Any]) -> dict[str, Any]:
         workspace = self._store.upsert_workspace(path=params["path"])
@@ -545,6 +618,7 @@ class Orchestrator:
         return result
 
     def mcp_server_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._validate_mcp_config(params)
         result = self._store.create_mcp_server(params)
         server = result["server"]
         if server.get("enabled", True):
@@ -574,6 +648,7 @@ class Orchestrator:
         return result
 
     def mcp_server_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        self._validate_mcp_config(params)
         server_id = params.get("serverId") or params.get("server_id")
         span = self._tracer.start_span(
             "mcp_update",
@@ -662,6 +737,7 @@ class Orchestrator:
                 "serverId": server_id or "all",
                 "toolCount": len(schemas),
                 "toolNames": [s.get("name", "") for s in schemas],
+                "toolRegistryVersion": self._tool_registry.version,
             })
         except Exception as exc:  # noqa: BLE001
             self._tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
@@ -1187,6 +1263,7 @@ class Orchestrator:
                         failed_ids=[],
                         results={},
                     )
+                self._validate_task_transition(task["status"], "waiting_approval", task["id"])
                 self._store.update_task_status(task_id=task["id"], status="waiting_approval")
                 self._publish(
                     session_id=session_id, task=task,
@@ -1386,6 +1463,7 @@ class Orchestrator:
                 failed_ids=[],
                 results={},
             )
+        self._validate_task_transition(task["status"], "waiting_approval", task["id"])
         self._store.update_task_status(task_id=task["id"], status="waiting_approval")
         self._publish(
             session_id=session_id, task=task,
@@ -1709,6 +1787,7 @@ class Orchestrator:
                 tool_registry=tool_registry,
                 provider=ProviderAdapter(),
                 memory_manager=bg_memory_manager,
+                _skip_orphan_cleanup=True,
             ),
             store,
         )
@@ -1826,11 +1905,20 @@ class Orchestrator:
         return task
 
     def _attach_supplemental_message(self, *, session_id: str, task: dict[str, Any], content: str) -> dict[str, Any]:
-        self._store.create_message(
+        # Create user message for chat history
+        user_msg = self._store.create_message(
             session_id=session_id,
             task_id=task["id"],
             role="user",
             content=content,
+            kind="supplement",
+        )
+        # Write to task inbox so the running loop can consume it
+        inbox_entry = self._store.create_inbox_entry(
+            task_id=task["id"],
+            session_id=session_id,
+            content=content,
+            message_id=user_msg["id"],
         )
         updated_task = self._store.update_task(
             task_id=task["id"],
@@ -1848,6 +1936,16 @@ class Orchestrator:
                 "plan": runtime_task.get("plan") or [],
                 "currentStep": runtime_task.get("currentStep"),
                 "detail": "Supplemental user message attached to the active task.",
+            },
+        )
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
+            event_type="task.supplement.received",
+            payload={
+                "inboxEntryId": inbox_entry["id"],
+                "messageId": user_msg["id"],
+                "content": content,
             },
         )
         acknowledgement = "\u5df2\u8865\u5145\u5230\u5f53\u524d\u672a\u5b8c\u6210\u4efb\u52a1\uff0c\u7ee7\u7eed\u6cbf\u7528\u539f\u4efb\u52a1\u8ba1\u5212\u3002"
@@ -2112,6 +2210,9 @@ class Orchestrator:
             "summarize-findings",
             final_status="completed",
         )
+        self._validate_task_transition(task["status"], "completed", task["id"], silent=True)
+        if task["status"] in {"completed", "failed", "cancelled"}:
+            return {**task, "resultSummary": final_summary}
         completed_task = self._store.update_task(
             task_id=task["id"],
             status="completed",
@@ -2255,6 +2356,9 @@ class Orchestrator:
     ) -> dict[str, Any]:
         logger.warning("Task %s failed: error_code=%s summary=%s", task["id"], error_code, summary[:200])
         task_plan = task.get("plan") or []
+        self._validate_task_transition(task["status"], "failed", task["id"], silent=True)
+        if task["status"] in {"completed", "failed", "cancelled"}:
+            return {**task, "errorCode": error_code, "resultSummary": summary}
         failed_task = self._store.update_task(
             task_id=task["id"],
             status="failed",
@@ -2368,13 +2472,19 @@ class Orchestrator:
         """Promote scratchpad entries to session memory after task completion."""
         if self._memory_manager is None or self._scratchpad is None:
             return
-        from ..memory.types import MemoryKind
+        from ..memory.types import MemoryKind, MemoryCategory, MemoryScope, MemorySource
         entries = self._scratchpad.list_entries(session_id)
         for entry in entries:
             self._memory_manager.remember(
                 content=f"[{entry.key}] {entry.value}",
                 session_id=session_id,
                 kind=MemoryKind.SESSION,
+                metadata={
+                    "category": MemoryCategory.IMPLEMENTATION_NOTE.value,
+                    "scope": MemoryScope.SESSION.value,
+                    "confidence": 0.7,
+                    "source": MemorySource.ASSISTANT_SUMMARY.value,
+                },
             )
         if entries:
             self._scratchpad.clear(session_id)
@@ -2432,12 +2542,32 @@ class Orchestrator:
         if self._memory_manager is not None:
             memory_content = self._task_memory_entry(task)
             workspace_id = current_session.get("workspaceId")
-            from ..memory.types import MemoryKind
+            from ..memory.types import MemoryKind, MemoryCategory, MemoryScope, MemorySource
+
+            task_status = task.get("status", "completed")
+            if task_status == "completed":
+                category = MemoryCategory.TASK_LEARNING
+                confidence = 0.8
+            elif task_status == "failed":
+                category = MemoryCategory.OPEN_ISSUE
+                confidence = 0.5
+            else:
+                category = MemoryCategory.TASK_LEARNING
+                confidence = 0.4
+
             self._memory_manager.remember(
                 session_id=session_id,
                 workspace_id=workspace_id,
                 content=memory_content,
                 kind=MemoryKind.WORKING,
+                metadata={
+                    "category": category.value,
+                    "scope": MemoryScope.WORKSPACE.value if workspace_id else MemoryScope.SESSION.value,
+                    "confidence": confidence,
+                    "source": MemorySource.TASK_RESULT.value,
+                    "sourceTaskIds": [task.get("id", "")],
+                },
+                dedup=(task_status == "completed"),
             )
 
     def _task_memory_entry(self, task: dict[str, Any]) -> str:
@@ -3065,6 +3195,7 @@ class Orchestrator:
 
     def cancel_task(self, params: dict[str, Any]) -> dict[str, Any]:
         task = self._store.get_task({"taskId": params["taskId"]})["task"]
+        self._validate_task_transition(task["status"], "cancelled", task["id"])
         cancel_background_commands(database_path=self._store.database_path, task_id=task["id"])
         task = self._store.update_task(task_id=params["taskId"], status="cancelled")
         self._clear_pending_react_state(task["id"])
@@ -3078,8 +3209,7 @@ class Orchestrator:
 
     def pause_task(self, params: dict[str, Any]) -> dict[str, Any]:
         task = self._store.get_task({"taskId": params["taskId"]})["task"]
-        if task["status"] not in {"running", "waiting_approval"}:
-            return {"task": task}
+        self._validate_task_transition(task["status"], "paused", task["id"])
         span = self._tracer.start_span("task_pause", trace_id=task.get("id", ""))
         paused_task = self._store.update_task(task_id=task["id"], status="paused")
         self._publish(
@@ -3093,8 +3223,7 @@ class Orchestrator:
 
     def resume_task(self, params: dict[str, Any]) -> dict[str, Any]:
         task = self._store.get_task({"taskId": params["taskId"]})["task"]
-        if task["status"] != "paused":
-            return {"task": task}
+        self._validate_task_transition(task["status"], "running", task["id"])
 
         span = self._tracer.start_span("task_resume", trace_id=task.get("id", ""))
 
@@ -3156,6 +3285,7 @@ class Orchestrator:
                 self._tracer.end_span(span.span_id, status="ok", attributes={"path": "react_rejected"})
                 return {"task": failed_task}
 
+            self._validate_task_transition(task["status"], "waiting_approval", task["id"])
             waiting_task = self._store.update_task_status(task_id=task["id"], status="waiting_approval")
             self._publish(
                 session_id=waiting_task["sessionId"],
@@ -3368,6 +3498,7 @@ class Orchestrator:
             )
             return {"approval": approval}
         if approval["decision"] == "approved":
+            self._validate_task_transition(task["status"], "running", task["id"])
             task = self._store.update_task_status(task_id=approval["taskId"], status="running")
             self._publish(
                 session_id=task["sessionId"],
@@ -3966,8 +4097,13 @@ class Orchestrator:
         # Incremental token tracking — avoids re-estimating all messages every turn
         _msg_token_total: int = sum(estimate_tokens(m.get("content", "")) for m in messages)
         _msg_count_at_last_check: int = len(messages)
+        # Per-step tracking for ProviderTurn / ContextSnapshot
+        _step_supplement_ids: list[str] = []
+        _step_memory_ids: list[str] = []
 
         while True:
+            _step_supplement_ids = []
+            _step_memory_ids = []
             # Refresh task status to detect external pause
             task = self._store.get_task({"taskId": task["id"]})["task"]
             if task["status"] == "paused":
@@ -3990,6 +4126,30 @@ class Orchestrator:
             if steps >= max_steps:
                 raise RuntimeError(f"Reached maxTaskSteps ({max_steps}) before the provider returned a final answer.")
 
+            # Drain pending supplements from task inbox
+            pending_supplements = self._store.get_pending_supplements(task["id"])
+            if pending_supplements:
+                supplement_lines = []
+                for entry in pending_supplements:
+                    supplement_lines.append(f"- {entry['content']}")
+                    self._store.mark_supplement_consumed(
+                        entry["id"],
+                        consumed_by_turn_id=f"step_{steps}",
+                    )
+                    _step_supplement_ids.append(entry["id"])
+                supplement_text = "[User supplement]\n" + "\n".join(supplement_lines)
+                messages.append({"role": "user", "content": supplement_text})
+                self._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="task.supplement.consumed",
+                    payload={
+                        "count": len(pending_supplements),
+                        "entryIds": [e["id"] for e in pending_supplements],
+                        "step": steps,
+                    },
+                )
+
             # Inject recalled memories into context on first step
             if steps == 0 and self._memory_manager is not None:
                 workspace_id = context.get("workspace_id")
@@ -4000,16 +4160,42 @@ class Orchestrator:
                     attributes={"query": goal[:200]},
                 )
                 try:
-                    recalled = self._memory_manager.recall(
+                    scored_recall = self._memory_manager.recall_with_scores(
                         workspace_id=workspace_id,
                         session_id=session_id,
                         query=goal,
                         limit=5,
                     )
+                    recalled = [e for e, _s in scored_recall]
+                    _step_memory_ids = [e.id for e in recalled]
                     if recalled:
-                        mem_lines = [f"- {e.content[:200]}" for e in recalled]
-                        mem_hint = "[Relevant memories]\n" + "\n".join(mem_lines)
+                        # Group by category for structured injection
+                        groups: dict[str, list[str]] = {}
+                        for e in recalled:
+                            cat = (e.metadata.get("category") or "other").replace("_", " ").title()
+                            groups.setdefault(cat, []).append(f"  - {e.content[:200]}")
+                        parts = ["[Relevant memories]"]
+                        for cat_name, items in groups.items():
+                            parts.append(f"{cat_name}:")
+                            parts.extend(items)
+                        mem_hint = "\n".join(parts)
                         messages.append({"role": "system", "content": mem_hint})
+
+                        # Record recall for traceability
+                        try:
+                            memory_ids = [e.id for e in recalled]
+                            scores = {e.id: round(s, 3) for e, s in scored_recall}
+                            self._memory_manager._store.record_recall(
+                                session_id=session_id,
+                                task_id=task.get("id"),
+                                query=goal[:500],
+                                memory_ids=memory_ids,
+                                scores=scores,
+                                injected=True,
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.debug("Failed to record memory recall", exc_info=True)
+
                     self._tracer.end_span(mem_span.span_id, status="ok", attributes={"count": len(recalled) if recalled else 0})
                 except Exception:  # noqa: BLE001
                     self._tracer.end_span(mem_span.span_id, status="error")
@@ -4025,17 +4211,56 @@ class Orchestrator:
                 "step": steps + 1,
                 "max_steps": max_steps,
             }
-            response = self._request_provider_response(
+            # --- ProviderTurn: create before provider call ---
+            provider_turn = self._store.create_provider_turn(
+                task_id=task["id"],
                 session_id=session_id,
-                task=task,
-                goal=goal,
-                provider_context=provider_context,
-                budget=budget,
+                turn_index=steps,
+                model=context.get("config", {}).get("provider", {}).get("model"),
+                request_message_count=len(messages),
+                request_tool_count=len(cached_provider_tools),
+                request_token_estimate=_msg_token_total,
             )
+            # --- ContextSnapshot: capture what the model will see ---
+            snapshot_meta = (context.get("_build_result") or {}).get("snapshot_metadata", {})
+            snapshot = self._store.create_context_snapshot(
+                session_id=session_id,
+                task_id=task["id"],
+                provider_turn_id=provider_turn["id"],
+                included_sections=snapshot_meta.get("included_sections"),
+                trimmed_sections=snapshot_meta.get("trimmed_sections"),
+                dropped_sections=snapshot_meta.get("dropped_sections"),
+                recent_message_ids=[m.get("id") for m in messages if m.get("id")],
+                memory_ids=_step_memory_ids or None,
+                supplement_inbox_ids=_step_supplement_ids or None,
+                tool_count=len(cached_provider_tools),
+                skill_id=context.get("skill_id"),
+                token_estimate=_msg_token_total,
+            )
+            try:
+                response = self._request_provider_response(
+                    session_id=session_id,
+                    task=task,
+                    goal=goal,
+                    provider_context=provider_context,
+                    budget=budget,
+                )
+            except Exception as exc:
+                self._store.fail_provider_turn(turn_id=provider_turn["id"], error_summary=str(exc)[:500])
+                raise
             parsed = self._parse_provider_response(
                 response,
                 allow_fallback=not react_started and steps == 0,
                 allow_plain_message_final=react_started,
+            )
+            # --- ProviderTurn: mark completed ---
+            raw_usage = response.get("usage") or {}
+            self._store.complete_provider_turn(
+                turn_id=provider_turn["id"],
+                finish_reason=response.get("finish_reason"),
+                usage=raw_usage,
+                tool_call_count=len(parsed.get("tool_calls") or []),
+                snapshot_id=snapshot["id"],
             )
             if parsed["status"] == "fallback":
                 return parsed
@@ -4115,10 +4340,21 @@ class Orchestrator:
                             session_id=session_id,
                             messages=messages,
                             max_tokens=6000,
+                            task_id=task.get("id"),
                         )
                         messages = compacted.kept_messages
                         _msg_token_total = compacted.tokens_after
                         _msg_count_at_last_check = len(messages)
+                        # Rolling session summary: persist compaction summary
+                        if compacted.summary:
+                            try:
+                                session_rec = self._store.require_session(session_id)
+                                existing = session_rec.get("summary") or ""
+                                # Prepend new summary, cap at 4000 chars
+                                updated = (compacted.summary + "\n" + existing)[:4000].strip()
+                                self._store.update_session_summary(session_id, updated)
+                            except Exception:  # noqa: BLE001
+                                logger.debug("Failed to update session summary after compaction", exc_info=True)
                     context["messages"] = messages
                 # Refresh volatile context sections (git status, directory
                 # listing) after state-mutating tools so the model sees the
@@ -5048,6 +5284,7 @@ class Orchestrator:
 
         if result.get("status") == "approval_required":
             approval = result.get("approval", {})
+            self._validate_task_transition(task["status"], "waiting_approval", task["id"])
             task["status"] = "waiting_approval"
             self._store.update_task(task_id=task["id"], status="waiting_approval", plan=task["plan"])
             if tool_spec["name"] == "apply_patch":

@@ -95,6 +95,10 @@ class JsonRpcServer:
             "mcp.server.update": self._orchestrator.mcp_server_update,
             "mcp.server.delete": self._orchestrator.mcp_server_delete,
             "mcp.tools.refresh": self._orchestrator.mcp_tools_refresh,
+            "events.after": self._events_after,
+            "provider_turn.list": self._provider_turn_list,
+            "context_snapshot.list": self._context_snapshot_list,
+            "context_snapshot.get": self._context_snapshot_get,
         }
         self._runtime_event_store_path = str(getattr(self._store, "database_path", ":memory:"))
         self._runtime_event_trace_store: SQLiteStore | None = None
@@ -229,6 +233,31 @@ class JsonRpcServer:
         service = get_background_command_service(db_path)
         running_ids = service.active_command_ids()
         return {"runningCommandIds": running_ids, "count": len(running_ids)}
+
+    def _events_after(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Fetch trace events after a given sequence number."""
+        session_id = params.get("sessionId") or params.get("session_id", "")
+        after_seq = int(params.get("afterSeq", params.get("after_seq", 0)))
+        limit = int(params.get("limit", 500))
+        return self._store.events_after(session_id, after_seq, limit=min(limit, 500))
+
+    def _provider_turn_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        """List provider turns for a task."""
+        task_id = params.get("taskId") or params.get("task_id", "")
+        turns = self._store.list_provider_turns(task_id)
+        return {"turns": turns}
+
+    def _context_snapshot_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        """List context snapshots for a task."""
+        task_id = params.get("taskId") or params.get("task_id", "")
+        snapshots = self._store.list_context_snapshots(task_id)
+        return {"snapshots": snapshots}
+
+    def _context_snapshot_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Get a single context snapshot by ID."""
+        snapshot_id = params.get("snapshotId") or params.get("snapshot_id", "")
+        snapshot = self._store.get_context_snapshot(snapshot_id)
+        return {"snapshot": snapshot}
 
     def _write_event_payload(self, payload: dict[str, Any]) -> None:
         if self._writer is None:

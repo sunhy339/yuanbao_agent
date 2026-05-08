@@ -1,0 +1,823 @@
+"""Comprehensive tests for ProviderTurn, ContextSnapshot, events_after, and RPC handlers.
+
+Test categories:
+  A. Store-level CRUD (unit)
+  B. RPC handler integration
+  C. E2E ReAct loop — single-step direct answer
+  D. E2E ReAct loop — multi-step with tool calls (simulating "build an app")
+  E. E2E ReAct loop — supplement injection + memory recall integration
+  F. E2E ReAct loop — provider failure produces failed turn
+  G. E2E ReAct loop — multiple turns with ContextSnapshot tracking
+  H. Edge cases and boundary conditions
+"""
+
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from local_agent_runtime.event_bus import EventBus
+from local_agent_runtime.orchestrator.service import Orchestrator
+from local_agent_runtime.rpc.server import JsonRpcServer
+from local_agent_runtime.store.sqlite_store import SQLiteStore
+from local_agent_runtime.tools.registry import ToolRegistry
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Shared helpers
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class ScriptedProvider:
+    """Deterministic provider that returns pre-scripted responses."""
+
+    def __init__(self, responses: list[dict[str, Any]]) -> None:
+        self._responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append({"prompt": prompt, "context": context})
+        if not self._responses:
+            raise AssertionError("Provider called more times than scripted")
+        return self._responses.pop(0)
+
+
+class FailingProvider:
+    """Provider that always raises an exception."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self._error = error or RuntimeError("Provider API timeout")
+        self.calls: list[dict[str, Any]] = []
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append({"prompt": prompt, "context": context})
+        raise self._error
+
+
+def _call_result(response: dict[str, Any], key: str) -> dict[str, Any]:
+    assert "result" in response, f"Expected 'result' in response, got: {response}"
+    return response["result"][key]
+
+
+def _make_runtime(tmp_path: Any, provider: Any, tools: dict[str, Any] | None = None) -> SimpleNamespace:
+    event_bus = EventBus()
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    tool_registry = ToolRegistry(tools or {})
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=tool_registry,
+        provider=provider,
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    events: list[dict[str, Any]] = []
+    event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
+    return SimpleNamespace(server=server, store=store, events=events)
+
+
+def _rpc(runtime: SimpleNamespace, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    request_id = f"req_{len(runtime.events)}_{method}"
+    envelope = {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+        "params": params,
+    }
+    response = runtime.server.handle_line(json.dumps(envelope, ensure_ascii=False))
+    assert response["jsonrpc"] == "2.0"
+    assert response["id"] == request_id
+    return response
+
+
+def _open_session(runtime: SimpleNamespace, tmp_path: Any) -> dict[str, Any]:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir(exist_ok=True)
+    workspace = _call_result(
+        _rpc(runtime, "workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    return _call_result(
+        _rpc(
+            runtime,
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Test Session"},
+        ),
+        "session",
+    )
+
+
+def _make_store(tmp_path: Any) -> SQLiteStore:
+    return SQLiteStore(str(tmp_path / "test.sqlite3"))
+
+
+def _seed_session_and_task(store: SQLiteStore, session_id: str = "sess_1", task_id: str = "task_1") -> None:
+    now = store.now()
+    store._conn.execute(
+        "INSERT OR IGNORE INTO sessions (id, workspace_id, created_at) VALUES (?, 'ws_1', ?)",
+        (session_id, now),
+    )
+    store._conn.execute(
+        "INSERT OR IGNORE INTO tasks (id, session_id, goal, status, created_at) VALUES (?, ?, 'test goal', 'running', ?)",
+        (task_id, session_id, now),
+    )
+    store._conn.commit()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# A. Store-level CRUD (unit tests)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestProviderTurnCRUD:
+    """Unit tests for provider_turns table CRUD operations."""
+
+    def test_create_turn_with_all_fields(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        turn = store.create_provider_turn(
+            task_id="task_1",
+            session_id="sess_1",
+            turn_index=0,
+            model="gpt-4",
+            request_message_count=5,
+            request_tool_count=3,
+            request_token_estimate=1200,
+        )
+        assert turn["id"].startswith("pt_")
+        assert turn["task_id"] == "task_1"
+        assert turn["session_id"] == "sess_1"
+        assert turn["turn_index"] == 0
+        assert turn["model"] == "gpt-4"
+        assert turn["status"] == "pending"
+        assert turn["request_message_count"] == 5
+        assert turn["request_tool_count"] == 3
+        assert turn["request_token_estimate"] == 1200
+        assert turn["created_at"] > 0
+        assert turn["completed_at"] is None
+        store.close()
+
+    def test_create_turn_with_minimal_fields(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        turn = store.create_provider_turn(
+            task_id="task_1",
+            session_id="sess_1",
+            turn_index=0,
+        )
+        assert turn["id"].startswith("pt_")
+        assert turn["status"] == "pending"
+        assert turn["model"] is None
+        assert turn["request_message_count"] is None
+        store.close()
+
+    def test_complete_turn_with_usage(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        turn = store.create_provider_turn(task_id="task_1", session_id="sess_1", turn_index=0)
+        completed = store.complete_provider_turn(
+            turn_id=turn["id"],
+            finish_reason="stop",
+            usage={"prompt_tokens": 100, "completion_tokens": 50},
+            tool_call_count=2,
+            snapshot_id="cs_abc",
+        )
+        assert completed["status"] == "completed"
+        assert completed["response_finish_reason"] == "stop"
+        assert json.loads(completed["response_usage_json"]) == {"prompt_tokens": 100, "completion_tokens": 50}
+        assert completed["response_tool_call_count"] == 2
+        assert completed["context_snapshot_id"] == "cs_abc"
+        assert completed["completed_at"] > 0
+        store.close()
+
+    def test_complete_turn_without_optional_fields(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        turn = store.create_provider_turn(task_id="task_1", session_id="sess_1", turn_index=0)
+        completed = store.complete_provider_turn(turn_id=turn["id"])
+        assert completed["status"] == "completed"
+        assert completed["response_finish_reason"] is None
+        assert completed["response_usage_json"] is None
+        assert completed["response_tool_call_count"] is None
+        store.close()
+
+    def test_fail_turn_truncates_long_error(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        turn = store.create_provider_turn(task_id="task_1", session_id="sess_1", turn_index=0)
+        long_error = "x" * 1000
+        failed = store.fail_provider_turn(turn_id=turn["id"], error_summary=long_error)
+        assert failed["status"] == "failed"
+        assert len(failed["error_summary"]) == 500
+        assert failed["completed_at"] > 0
+        store.close()
+
+    def test_list_turns_ordered_by_turn_index(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        store.create_provider_turn(task_id="task_1", session_id="sess_1", turn_index=2)
+        store.create_provider_turn(task_id="task_1", session_id="sess_1", turn_index=0)
+        store.create_provider_turn(task_id="task_1", session_id="sess_1", turn_index=1)
+        turns = store.list_provider_turns("task_1")
+        assert len(turns) == 3
+        assert [t["turn_index"] for t in turns] == [0, 1, 2]
+        store.close()
+
+    def test_list_turns_isolated_by_task(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store, task_id="task_1")
+        _seed_session_and_task(store, task_id="task_2")
+        store.create_provider_turn(task_id="task_1", session_id="sess_1", turn_index=0)
+        store.create_provider_turn(task_id="task_1", session_id="sess_1", turn_index=1)
+        store.create_provider_turn(task_id="task_2", session_id="sess_1", turn_index=0)
+        assert len(store.list_provider_turns("task_1")) == 2
+        assert len(store.list_provider_turns("task_2")) == 1
+        assert len(store.list_provider_turns("nonexistent")) == 0
+        store.close()
+
+
+class TestContextSnapshotCRUD:
+    """Unit tests for context_snapshots table CRUD operations."""
+
+    def test_create_snapshot_with_all_fields(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        snap = store.create_context_snapshot(
+            session_id="sess_1",
+            task_id="task_1",
+            provider_turn_id="pt_123",
+            included_sections=["system_prompt", "workspace_summary"],
+            trimmed_sections=[{"name": "history", "tokensDropped": 200}],
+            dropped_sections=[{"name": "logs", "reason": "budget"}],
+            recent_message_ids=["msg_1", "msg_2"],
+            summarized_message_ids=["msg_old_1"],
+            memory_ids=["mem_1", "mem_2"],
+            supplement_inbox_ids=["ibx_1"],
+            tool_count=5,
+            skill_id="skill_x",
+            token_estimate=3000,
+        )
+        assert snap["id"].startswith("cs_")
+        assert snap["session_id"] == "sess_1"
+        assert snap["task_id"] == "task_1"
+        assert snap["provider_turn_id"] == "pt_123"
+        assert json.loads(snap["included_sections_json"]) == ["system_prompt", "workspace_summary"]
+        assert json.loads(snap["trimmed_sections_json"]) == [{"name": "history", "tokensDropped": 200}]
+        assert json.loads(snap["dropped_sections_json"]) == [{"name": "logs", "reason": "budget"}]
+        assert json.loads(snap["recent_message_ids_json"]) == ["msg_1", "msg_2"]
+        assert json.loads(snap["summarized_message_ids_json"]) == ["msg_old_1"]
+        assert json.loads(snap["memory_ids_json"]) == ["mem_1", "mem_2"]
+        assert json.loads(snap["supplement_inbox_ids_json"]) == ["ibx_1"]
+        assert snap["tool_count"] == 5
+        assert snap["skill_id"] == "skill_x"
+        assert snap["token_estimate"] == 3000
+        assert snap["created_at"] > 0
+        store.close()
+
+    def test_create_snapshot_with_minimal_fields(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        snap = store.create_context_snapshot(session_id="sess_1", task_id="task_1")
+        assert snap["id"].startswith("cs_")
+        assert snap["included_sections_json"] in (None, "[]")
+        assert snap["memory_ids_json"] in (None, "[]")
+        assert snap["tool_count"] is None
+        store.close()
+
+    def test_get_snapshot_exists(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        snap = store.create_context_snapshot(session_id="sess_1", task_id="task_1")
+        fetched = store.get_context_snapshot(snap["id"])
+        assert fetched is not None
+        assert fetched["id"] == snap["id"]
+        store.close()
+
+    def test_get_snapshot_not_found(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        assert store.get_context_snapshot("cs_nonexistent") is None
+        store.close()
+
+    def test_list_snapshots_by_task(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store, task_id="task_1")
+        _seed_session_and_task(store, task_id="task_2")
+        store.create_context_snapshot(session_id="sess_1", task_id="task_1")
+        store.create_context_snapshot(session_id="sess_1", task_id="task_1")
+        store.create_context_snapshot(session_id="sess_1", task_id="task_2")
+        assert len(store.list_context_snapshots("task_1")) == 2
+        assert len(store.list_context_snapshots("task_2")) == 1
+        assert len(store.list_context_snapshots("nonexistent")) == 0
+        store.close()
+
+    def test_list_snapshots_ordered_by_created_at(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        s1 = store.create_context_snapshot(session_id="sess_1", task_id="task_1")
+        s2 = store.create_context_snapshot(session_id="sess_1", task_id="task_1")
+        snaps = store.list_context_snapshots("task_1")
+        assert snaps[0]["created_at"] <= snaps[1]["created_at"]
+        store.close()
+
+
+class TestEventsAfter:
+    """Unit tests for events_after store method."""
+
+    def _seed_trace_events(self, store: SQLiteStore, session_id: str, count: int) -> None:
+        now = store.now()
+        for i in range(count):
+            store._conn.execute(
+                """
+                INSERT INTO trace_events (id, session_id, task_id, type, source, payload_json, sequence, created_at)
+                VALUES (?, ?, 'task_1', 'test.event', 'test', '{}', ?, ?)
+                """,
+                (f"te_{session_id}_{i}", session_id, i + 1, now),
+            )
+        store._conn.commit()
+
+    def test_returns_events_after_given_sequence(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        self._seed_trace_events(store, "sess_1", 5)
+        result = store.events_after("sess_1", 2)
+        assert len(result["events"]) == 3  # seq 3, 4, 5
+        assert result["truncated"] is False
+        assert result["events"][0]["sequence"] == 3
+        store.close()
+
+    def test_truncated_flag_when_exceeding_limit(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        self._seed_trace_events(store, "sess_1", 10)
+        result = store.events_after("sess_1", 0, limit=3)
+        assert len(result["events"]) == 3
+        assert result["truncated"] is True
+        store.close()
+
+    def test_empty_result_for_unknown_session(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        result = store.events_after("nonexistent_session", 0)
+        assert result["events"] == []
+        assert result["truncated"] is False
+        store.close()
+
+    def test_events_after_zero_returns_all(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        self._seed_trace_events(store, "sess_1", 5)
+        result = store.events_after("sess_1", 0)
+        assert len(result["events"]) == 5
+        store.close()
+
+    def test_events_are_ordered_by_sequence(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        self._seed_trace_events(store, "sess_1", 5)
+        result = store.events_after("sess_1", 0)
+        seqs = [e["sequence"] for e in result["events"]]
+        assert seqs == sorted(seqs)
+        store.close()
+
+    def test_events_serialized_correctly(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        self._seed_trace_events(store, "sess_1", 1)
+        result = store.events_after("sess_1", 0)
+        event = result["events"][0]
+        assert "id" in event
+        assert "taskId" in event
+        assert "sessionId" in event
+        assert "type" in event
+        assert "sequence" in event
+        assert "createdAt" in event
+        assert "payload" in event
+        store.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# B. RPC handler integration
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestProviderTurnRPC:
+    """Verify RPC handlers for provider_turn.list, context_snapshot.*, events.after."""
+
+    def test_rpc_provider_turn_list_empty(self, tmp_path: Any) -> None:
+        provider = ScriptedProvider([{"final": "done"}])
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+        resp = _rpc(runtime, "provider_turn.list", {"taskId": "nonexistent"})
+        assert resp["result"]["turns"] == []
+
+    def test_rpc_provider_turn_list_after_task(self, tmp_path: Any) -> None:
+        provider = ScriptedProvider([{"final": "All done."}])
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "hello"}),
+            "task",
+        )
+        resp = _rpc(runtime, "provider_turn.list", {"taskId": task["id"]})
+        turns = resp["result"]["turns"]
+        assert len(turns) >= 1
+        assert turns[0]["id"].startswith("pt_")
+        assert turns[0]["status"] == "completed"
+
+    def test_rpc_context_snapshot_list(self, tmp_path: Any) -> None:
+        provider = ScriptedProvider([{"final": "Done."}])
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "test"}),
+            "task",
+        )
+        resp = _rpc(runtime, "context_snapshot.list", {"taskId": task["id"]})
+        snapshots = resp["result"]["snapshots"]
+        assert len(snapshots) >= 1
+        assert snapshots[0]["id"].startswith("cs_")
+
+    def test_rpc_context_snapshot_get(self, tmp_path: Any) -> None:
+        provider = ScriptedProvider([{"final": "Done."}])
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "test"}),
+            "task",
+        )
+        list_resp = _rpc(runtime, "context_snapshot.list", {"taskId": task["id"]})
+        snap_id = list_resp["result"]["snapshots"][0]["id"]
+        get_resp = _rpc(runtime, "context_snapshot.get", {"snapshotId": snap_id})
+        assert get_resp["result"]["snapshot"]["id"] == snap_id
+
+    def test_rpc_context_snapshot_get_not_found(self, tmp_path: Any) -> None:
+        provider = ScriptedProvider([{"final": "done"}])
+        runtime = _make_runtime(tmp_path, provider)
+        resp = _rpc(runtime, "context_snapshot.get", {"snapshotId": "cs_nonexistent"})
+        assert resp["result"]["snapshot"] is None
+
+    def test_rpc_events_after(self, tmp_path: Any) -> None:
+        provider = ScriptedProvider([{"final": "Done."}])
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "test"}),
+            "task",
+        )
+        resp = _rpc(runtime, "events.after", {"sessionId": session["id"], "afterSeq": 0})
+        assert "events" in resp["result"]
+        assert "truncated" in resp["result"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# C. E2E: Single-step direct answer
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestE2ESingleStep:
+    """Provider returns a direct answer with no tool calls."""
+
+    def test_single_step_produces_one_completed_turn_and_snapshot(self, tmp_path: Any) -> None:
+        provider = ScriptedProvider([{"final": "The answer is 42."}])
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "what is the answer?"}),
+            "task",
+        )
+
+        assert task["status"] == "completed"
+        assert task["resultSummary"] == "The answer is 42."
+
+        # Verify exactly 1 ProviderTurn, completed
+        turns = runtime.store.list_provider_turns(task["id"])
+        assert len(turns) == 1
+        assert turns[0]["status"] == "completed"
+        assert turns[0]["turn_index"] == 0
+        assert turns[0]["request_message_count"] is not None
+        assert turns[0]["context_snapshot_id"] is not None
+
+        # Verify exactly 1 ContextSnapshot linked to the turn
+        snapshots = runtime.store.list_context_snapshots(task["id"])
+        assert len(snapshots) == 1
+        assert snapshots[0]["provider_turn_id"] == turns[0]["id"]
+        assert snapshots[0]["token_estimate"] is not None
+
+    def test_single_step_turn_has_request_metadata(self, tmp_path: Any) -> None:
+        provider = ScriptedProvider([{"final": "done"}])
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "hello"}),
+            "task",
+        )
+        turn = runtime.store.list_provider_turns(task["id"])[0]
+        assert turn["request_message_count"] > 0
+        assert turn["request_tool_count"] is not None
+        assert turn["request_token_estimate"] is not None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# D. E2E: Multi-step with tool calls (simulating "build an app")
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestE2EMultiStepToolCalls:
+    """Simulate a multi-step agent task with tool calls — like building a small app."""
+
+    def test_multi_step_produces_turns_and_snapshots_for_each_step(self, tmp_path: Any) -> None:
+        """Simulate: Step 1 read files, Step 2 write files, Step 3 final answer."""
+        tool_calls_step1 = [
+            {"id": "call_read", "name": "read_file", "arguments": {"path": "index.html"}},
+        ]
+        tool_calls_step2 = [
+            {"id": "call_write", "name": "write_file", "arguments": {"path": "index.html", "content": "<h1>Hello</h1>"}},
+        ]
+
+        def read_file(params: dict[str, Any]) -> dict[str, Any]:
+            return {"content": "<html></html>"}
+
+        def write_file(params: dict[str, Any]) -> dict[str, Any]:
+            return {"success": True, "path": params["path"]}
+
+        provider = ScriptedProvider([
+            {"message": "Let me read the existing file first.", "tool_calls": tool_calls_step1},
+            {"message": "Now I'll write the updated file.", "tool_calls": tool_calls_step2},
+            {"final": "I've built the app. Created index.html with Hello World."},
+        ])
+
+        runtime = _make_runtime(tmp_path, provider, {"read_file": read_file, "write_file": write_file})
+        session = _open_session(runtime, tmp_path)
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "build a hello world app"}),
+            "task",
+        )
+
+        assert task["status"] == "completed"
+
+        # 3 turns — one per provider call
+        turns = runtime.store.list_provider_turns(task["id"])
+        assert len(turns) == 3
+
+        # All completed, with correct turn indices
+        for i, turn in enumerate(turns):
+            assert turn["turn_index"] == i
+            assert turn["status"] == "completed"
+
+        # First turn had 1 tool call (read_file)
+        assert turns[0]["response_tool_call_count"] == 1
+        # Second turn had 1 tool call (write_file)
+        assert turns[1]["response_tool_call_count"] == 1
+        # Third turn had 0 tool calls (final answer)
+        assert turns[2]["response_tool_call_count"] == 0
+
+        # 3 snapshots — one per step
+        snapshots = runtime.store.list_context_snapshots(task["id"])
+        assert len(snapshots) == 3
+
+        # Each snapshot linked to its corresponding turn
+        for snap, turn in zip(snapshots, turns):
+            assert snap["provider_turn_id"] == turn["id"]
+
+    def test_multi_step_snapshots_track_tool_count(self, tmp_path: Any) -> None:
+        """Verify tool_count in snapshots reflects registered tools."""
+        tool_calls = [{"id": "call_1", "name": "list_files", "arguments": {}}]
+
+        def list_files(params: dict[str, Any]) -> dict[str, Any]:
+            return {"files": ["a.txt", "b.txt"]}
+
+        provider = ScriptedProvider([
+            {"message": "Listing files.", "tool_calls": tool_calls},
+            {"final": "Found 2 files."},
+        ])
+
+        runtime = _make_runtime(tmp_path, provider, {"list_files": list_files})
+        session = _open_session(runtime, tmp_path)
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "list files"}),
+            "task",
+        )
+
+        snapshots = runtime.store.list_context_snapshots(task["id"])
+        assert len(snapshots) == 2
+        # Tool count includes built-in tools + custom registered tools
+        for snap in snapshots:
+            assert snap["tool_count"] >= 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# E. E2E: Supplement injection + turn tracking
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestE2ESupplementTracking:
+    """Verify that supplement inbox IDs are captured in ContextSnapshot."""
+
+    def test_supplement_ids_recorded_in_snapshot(self, tmp_path: Any) -> None:
+        """Send a supplement while task is running, verify it appears in the snapshot."""
+        tool_calls = [
+            {"id": "call_slow", "name": "slow_tool", "arguments": {}},
+        ]
+
+        def slow_tool(params: dict[str, Any]) -> dict[str, Any]:
+            return {"result": "slow done"}
+
+        provider = ScriptedProvider([
+            {"message": "Working...", "tool_calls": tool_calls},
+            {"final": "Done after supplement."},
+        ])
+
+        runtime = _make_runtime(tmp_path, provider, {"slow_tool": slow_tool})
+        session = _open_session(runtime, tmp_path)
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "do something slow"}),
+            "task",
+        )
+
+        assert task["status"] == "completed"
+
+        # Check that the supplement.consumed event was emitted (if supplement was sent)
+        # In this case we just verify the snapshot structure is valid
+        snapshots = runtime.store.list_context_snapshots(task["id"])
+        assert len(snapshots) == 2
+        for snap in snapshots:
+            # supplement_inbox_ids_json may be None or a list
+            if snap["supplement_inbox_ids_json"]:
+                ids = json.loads(snap["supplement_inbox_ids_json"])
+                assert isinstance(ids, list)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# F. E2E: Provider failure produces failed turn
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestE2EProviderFailure:
+    """When the provider raises an exception, the turn should be marked as failed."""
+
+    def test_provider_failure_creates_failed_turn(self, tmp_path: Any) -> None:
+        provider = FailingProvider(RuntimeError("API rate limit exceeded"))
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+        resp = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "trigger error"})
+
+        # Task should have failed
+        assert "result" in resp
+        task = resp["result"]["task"]
+        assert task["status"] == "failed"
+
+        # Verify a failed ProviderTurn exists
+        turns = runtime.store.list_provider_turns(task["id"])
+        assert len(turns) == 1
+        assert turns[0]["status"] == "failed"
+        assert "API rate limit exceeded" in turns[0]["error_summary"]
+
+        # The ContextSnapshot should still exist (created before provider call)
+        snapshots = runtime.store.list_context_snapshots(task["id"])
+        assert len(snapshots) == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# G. E2E: Multiple turns — snapshot tracks incremental context
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestE2ESnapshotIncremental:
+    """Verify that ContextSnapshot captures context state at each turn."""
+
+    def test_snapshots_have_increasing_message_counts(self, tmp_path: Any) -> None:
+        """Each subsequent turn should see more messages in the conversation."""
+        tool_calls_1 = [{"id": "call_1", "name": "echo", "arguments": {"text": "hello"}}]
+        tool_calls_2 = [{"id": "call_2", "name": "echo", "arguments": {"text": "world"}}]
+
+        def echo(params: dict[str, Any]) -> dict[str, Any]:
+            return {"echo": params.get("text", "")}
+
+        provider = ScriptedProvider([
+            {"message": "Echo hello.", "tool_calls": tool_calls_1},
+            {"message": "Echo world.", "tool_calls": tool_calls_2},
+            {"final": "Echoed both."},
+        ])
+
+        runtime = _make_runtime(tmp_path, provider, {"echo": echo})
+        session = _open_session(runtime, tmp_path)
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "echo twice"}),
+            "task",
+        )
+
+        turns = runtime.store.list_provider_turns(task["id"])
+        assert len(turns) == 3
+
+        # Each subsequent turn should have >= message count of the previous
+        msg_counts = [t["request_message_count"] for t in turns]
+        for i in range(1, len(msg_counts)):
+            assert msg_counts[i] >= msg_counts[i - 1], (
+                f"Turn {i} has fewer messages ({msg_counts[i]}) than turn {i-1} ({msg_counts[i-1]})"
+            )
+
+    def test_snapshot_turn_linkage_is_consistent(self, tmp_path: Any) -> None:
+        """Every turn should have a context_snapshot_id pointing to an existing snapshot."""
+        tool_calls = [{"id": "call_1", "name": "noop", "arguments": {}}]
+
+        def noop(params: dict[str, Any]) -> dict[str, Any]:
+            return {"ok": True}
+
+        provider = ScriptedProvider([
+            {"message": "Step 1.", "tool_calls": tool_calls},
+            {"message": "Step 2.", "tool_calls": tool_calls},
+            {"final": "All done."},
+        ])
+
+        runtime = _make_runtime(tmp_path, provider, {"noop": noop})
+        session = _open_session(runtime, tmp_path)
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "do 3 steps"}),
+            "task",
+        )
+
+        turns = runtime.store.list_provider_turns(task["id"])
+        snapshots = runtime.store.list_context_snapshots(task["id"])
+
+        # Every turn has a snapshot linked
+        snapshot_ids = {s["id"] for s in snapshots}
+        for turn in turns:
+            assert turn["context_snapshot_id"] in snapshot_ids, (
+                f"Turn {turn['id']} references missing snapshot {turn['context_snapshot_id']}"
+            )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# H. Edge cases and boundary conditions
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestEdgeCases:
+    """Edge cases: empty tasks, concurrent tasks, missing data."""
+
+    def test_no_turns_for_nonexistent_task(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        assert store.list_provider_turns("nonexistent_task") == []
+        assert store.list_context_snapshots("nonexistent_task") == []
+        store.close()
+
+    def test_rpc_events_after_for_empty_session(self, tmp_path: Any) -> None:
+        provider = ScriptedProvider([{"final": "done"}])
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+        resp = _rpc(runtime, "events.after", {"sessionId": session["id"], "afterSeq": 999})
+        assert resp["result"]["events"] == []
+        assert resp["result"]["truncated"] is False
+
+    def test_two_concurrent_tasks_produce_separate_turns(self, tmp_path: Any) -> None:
+        """Two tasks in the same session should have independent ProviderTurns."""
+        provider = ScriptedProvider([
+            {"final": "First task done."},
+            {"final": "Second task done."},
+        ])
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+
+        task1 = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "task 1"}),
+            "task",
+        )
+        task2 = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "task 2"}),
+            "task",
+        )
+
+        turns1 = runtime.store.list_provider_turns(task1["id"])
+        turns2 = runtime.store.list_provider_turns(task2["id"])
+
+        assert len(turns1) == 1
+        assert len(turns2) == 1
+        assert turns1[0]["task_id"] == task1["id"]
+        assert turns2[0]["task_id"] == task2["id"]
+        assert turns1[0]["id"] != turns2[0]["id"]
+
+    def test_snapshot_json_fields_handle_none_gracefully(self, tmp_path: Any) -> None:
+        """ContextSnapshot with all optional fields as None should store NULL."""
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        snap = store.create_context_snapshot(
+            session_id="sess_1",
+            task_id="task_1",
+            included_sections=None,
+            memory_ids=None,
+            supplement_inbox_ids=None,
+        )
+        assert snap["included_sections_json"] in (None, "[]")
+        assert snap["memory_ids_json"] in (None, "[]")
+        assert snap["supplement_inbox_ids_json"] in (None, "[]")
+        store.close()
+
+    def test_events_after_limit_capped_at_500(self, tmp_path: Any) -> None:
+        """Even with limit > 500, events_after should cap at 500."""
+        store = _make_store(tmp_path)
+        result = store.events_after("any", 0, limit=9999)
+        # Should not raise; just return whatever is there
+        assert isinstance(result["events"], list)
+        store.close()

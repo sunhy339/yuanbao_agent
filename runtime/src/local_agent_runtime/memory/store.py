@@ -219,6 +219,41 @@ class MemoryStore:
         self._store._conn.commit()
         return cursor.rowcount
 
+    # -- Recall records --
+
+    def record_recall(
+        self,
+        *,
+        session_id: str,
+        task_id: str | None = None,
+        query: str,
+        memory_ids: list[str],
+        scores: dict[str, float],
+        injected: bool = True,
+    ) -> str:
+        """Persist a memory recall record for traceability."""
+        record_id = self._store.new_id("mrr")
+        now = self._store.now()
+        self._store._conn.execute(
+            """
+            INSERT INTO memory_recall_records
+                (id, session_id, task_id, query, memory_ids, scores, injected, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record_id,
+                session_id,
+                task_id,
+                query[:500],
+                json.dumps(memory_ids, ensure_ascii=False),
+                json.dumps(scores, ensure_ascii=False),
+                1 if injected else 0,
+                now,
+            ),
+        )
+        self._store._conn.commit()
+        return record_id
+
     # -- internals --
 
     def _query(

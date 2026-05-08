@@ -3,12 +3,15 @@
 from .manager import MemoryManager
 from .retriever import MemoryRetriever
 from .store import MemoryStore
-from .types import MemoryEntry, MemoryKind
+from .types import MemoryCategory, MemoryEntry, MemoryKind, MemoryScope, MemorySource
 
 __all__ = [
+    "MemoryCategory",
     "MemoryEntry",
     "MemoryKind",
     "MemoryManager",
     "MemoryRetriever",
+    "MemoryScope",
+    "MemorySource",
     "MemoryStore",
 ]

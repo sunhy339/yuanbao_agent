@@ -60,6 +60,7 @@ struct MessageSendPayload {
     mode: Option<String>,
     new_task: Option<bool>,
     background: Option<bool>,
+    client_message_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -575,6 +576,7 @@ async fn message_send(
             "mode": payload.mode,
             "newTask": payload.new_task,
             "background": background,
+            "clientMessageId": payload.client_message_id,
         }),
     ).await
 }

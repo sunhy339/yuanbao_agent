@@ -16,6 +16,37 @@ class MemoryKind(str, Enum):
     SEMANTIC = "semantic"     # keyword-indexed semantic memory
 
 
+class MemoryCategory(str, Enum):
+    """Semantic category of a memory entry."""
+
+    USER_PREFERENCE = "user_preference"
+    PROJECT_CONVENTION = "project_convention"
+    WORKSPACE_FACT = "workspace_fact"
+    TASK_LEARNING = "task_learning"
+    DECISION = "decision"
+    OPEN_ISSUE = "open_issue"
+    TOOLING = "tooling"
+    IMPLEMENTATION_NOTE = "implementation_note"
+
+
+class MemoryScope(str, Enum):
+    """Scope of a memory entry."""
+
+    SESSION = "session"
+    WORKSPACE = "workspace"
+    USER = "user"
+    GLOBAL = "global"
+
+
+class MemorySource(str, Enum):
+    """Origin of a memory entry."""
+
+    TASK_RESULT = "task_result"
+    USER_MESSAGE = "user_message"
+    ASSISTANT_SUMMARY = "assistant_summary"
+    MANUAL = "manual"
+
+
 @dataclass(slots=True)
 class MemoryEntry:
     """A single memory record."""

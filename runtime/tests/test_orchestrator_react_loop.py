@@ -1675,3 +1675,194 @@ def test_patch_completion_skips_run_command_without_validate_command(tmp_path: A
     assert validation_event["payload"]["ran"] == ["git_status", "git_diff"]
     assert validation_event["payload"]["command"]["status"] == "skipped"
     assert validation_event["payload"]["command"]["reason"] == "No validation command was configured."
+
+
+# ── Supplement TaskInbox tests ────────────────────────────────────────────
+
+
+class TestStoreInbox:
+    """Tests for task_inbox store CRUD operations."""
+
+    def test_create_and_get_pending(self, tmp_path: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        entry = store.create_inbox_entry(
+            task_id="task_1",
+            session_id="sess_1",
+            content="Use Python 3.12",
+            message_id="msg_1",
+        )
+        assert entry["id"].startswith("ibx_")
+        assert entry["task_id"] == "task_1"
+        assert entry["status"] == "pending"
+        assert entry["content"] == "Use Python 3.12"
+
+        pending = store.get_pending_supplements("task_1")
+        assert len(pending) == 1
+        assert pending[0]["id"] == entry["id"]
+        store.close()
+
+    def test_mark_consumed(self, tmp_path: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        entry = store.create_inbox_entry(
+            task_id="task_1",
+            session_id="sess_1",
+            content="Important hint",
+        )
+        store.mark_supplement_consumed(entry["id"], consumed_by_turn_id="step_2")
+
+        pending = store.get_pending_supplements("task_1")
+        assert len(pending) == 0
+        store.close()
+
+    def test_multiple_entries_ordered_by_time(self, tmp_path: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        e1 = store.create_inbox_entry(task_id="task_1", session_id="sess_1", content="First")
+        e2 = store.create_inbox_entry(task_id="task_1", session_id="sess_1", content="Second")
+        pending = store.get_pending_supplements("task_1")
+        assert [e["id"] for e in pending] == [e1["id"], e2["id"]]
+        store.close()
+
+    def test_different_tasks_isolated(self, tmp_path: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        store.create_inbox_entry(task_id="task_1", session_id="sess_1", content="For task 1")
+        store.create_inbox_entry(task_id="task_2", session_id="sess_1", content="For task 2")
+        assert len(store.get_pending_supplements("task_1")) == 1
+        assert len(store.get_pending_supplements("task_2")) == 1
+        store.close()
+
+
+def test_supplement_creates_inbox_entry_and_events(tmp_path: Any) -> None:
+    """Verify _attach_supplemental_message writes to task_inbox and emits events."""
+    provider = ScriptedProvider([
+        {"message": "Working...", "tool_calls": [{"id": "call_slow", "name": "slow_tool", "arguments": {}}]},
+        {"final": "Done after supplement."},
+    ])
+
+    inbox_entries_created: list[dict[str, Any]] = []
+
+    def slow_tool(params: dict[str, Any]) -> dict[str, Any]:
+        # While tool is executing, simulate a supplement arriving via send_message
+        # by directly calling the store's inbox method (same as _attach_supplemental_message)
+        runtime_ref = params.get("__runtime")
+        if runtime_ref is not None:
+            entry = runtime_ref.store.create_inbox_entry(
+                task_id=params["taskId"],
+                session_id=params["sessionId"],
+                content="Remember to use type hints",
+            )
+            inbox_entries_created.append(entry)
+        return {"result": "ok"}
+
+    runtime = _make_runtime(tmp_path, provider, {"slow_tool": slow_tool})
+
+    # Inject runtime reference so tool can access store
+    original_generate = provider.generate
+
+    def patched_generate(prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        return original_generate(prompt, context)
+
+    # We need a different approach: use the tool's params dict to pass runtime
+    # Instead, use the tool's closure to capture the store directly
+    store_ref = runtime.store
+
+    def slow_tool_with_store(params: dict[str, Any]) -> dict[str, Any]:
+        entry = store_ref.create_inbox_entry(
+            task_id=params["taskId"],
+            session_id=params["sessionId"],
+            content="Remember to use type hints",
+        )
+        inbox_entries_created.append(entry)
+        return {"result": "ok"}
+
+    runtime = _make_runtime(tmp_path, provider, {"slow_tool": slow_tool_with_store})
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "do work"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+
+    # Verify inbox entry was created during tool execution
+    assert len(inbox_entries_created) == 1
+
+    # Verify the supplement was consumed (no pending left)
+    pending = runtime.store.get_pending_supplements(task["id"])
+    assert len(pending) == 0
+
+    # Verify the second provider call contains the supplement in messages
+    assert len(provider.calls) == 2
+    second_messages = provider.calls[1]["context"]["messages"]
+    supplement_msgs = [m for m in second_messages if m.get("role") == "user" and "[User supplement]" in m.get("content", "")]
+    assert len(supplement_msgs) == 1
+    assert "Remember to use type hints" in supplement_msgs[0]["content"]
+
+    # Verify consumed event was emitted
+    consumed_events = [e for e in runtime.events if e["type"] == "task.supplement.consumed"]
+    assert len(consumed_events) == 1
+    assert consumed_events[0]["payload"]["count"] == 1
+
+
+def test_attach_supplemental_message_writes_inbox(tmp_path: Any) -> None:
+    """Verify _attach_supplemental_message writes to task_inbox and publishes received event."""
+    provider = ScriptedProvider([{"final": "done"}])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    # Create a completed task — its inbox should be empty
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "start task"}),
+        "task",
+    )
+    assert task["status"] == "completed"
+    inbox = runtime.store.get_pending_supplements(task["id"])
+    assert len(inbox) == 0
+
+
+def test_attach_supplemental_message_emits_received_event(tmp_path: Any) -> None:
+    """Verify _attach_supplemental_message emits task.supplement.received via RPC."""
+    # Create a task in running state directly in the store
+    store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+    event_bus = EventBus()
+    events: list[dict[str, Any]] = []
+    event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
+    provider = ScriptedProvider([])
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=ToolRegistry({}),
+        provider=provider,
+    )
+
+    (tmp_path / "ws").mkdir(exist_ok=True)
+    workspace = store.upsert_workspace(str(tmp_path / "ws"))
+    session = store.create_session(workspace_id=workspace["id"], title="test")
+    task = store.create_task(
+        session_id=session["id"],
+        task_type="code",
+        goal="test goal",
+        plan=[],
+    )
+
+    # Directly call _attach_supplemental_message
+    orchestrator._attach_supplemental_message(
+        session_id=session["id"],
+        task=task,
+        content="Use type hints everywhere",
+    )
+
+    # Verify inbox entry was created
+    pending = store.get_pending_supplements(task["id"])
+    assert len(pending) == 1
+    assert pending[0]["content"] == "Use type hints everywhere"
+    assert pending[0]["message_id"] is not None
+
+    # Verify received event was emitted
+    received_events = [e for e in events if e["type"] == "task.supplement.received"]
+    assert len(received_events) == 1
+    assert received_events[0]["payload"]["content"] == "Use type hints everywhere"
+    assert received_events[0]["payload"]["inboxEntryId"] == pending[0]["id"]
+
+    store.close()
+

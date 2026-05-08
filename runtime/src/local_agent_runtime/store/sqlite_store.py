@@ -338,6 +338,59 @@ class SQLiteStore:
         ).fetchall()
         return {"messages": [self._serialize_message(dict(row)) for row in rows]}
 
+    # ── task_inbox ──────────────────────────────────────────────────────
+
+    def create_inbox_entry(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        content: str,
+        message_id: str | None = None,
+    ) -> dict[str, Any]:
+        entry_id = self.new_id("ibx")
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO task_inbox (id, task_id, session_id, message_id, content, status, created_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?)
+            """,
+            (entry_id, task_id, session_id, message_id, content, now),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM task_inbox WHERE id = ?", (entry_id,)).fetchone()
+        return dict(row) if row else {}
+
+    def get_pending_supplements(self, task_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM task_inbox
+            WHERE task_id = ? AND status = 'pending'
+            ORDER BY created_at ASC, id ASC
+            """,
+            (task_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_supplement_consumed(
+        self,
+        entry_id: str,
+        *,
+        consumed_by_turn_id: str | None = None,
+    ) -> dict[str, Any]:
+        now = self.now()
+        self._conn.execute(
+            """
+            UPDATE task_inbox
+            SET status = 'consumed', consumed_by_turn_id = ?, consumed_at = ?
+            WHERE id = ?
+            """,
+            (consumed_by_turn_id, now, entry_id),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM task_inbox WHERE id = ?", (entry_id,)).fetchone()
+        return dict(row) if row else {}
+
     def update_session(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = self._require_non_empty(params, "sessionId")
         now = self.now()
@@ -381,6 +434,71 @@ class SQLiteStore:
         )
         self._conn.commit()
         return self.require_session(session_id)
+
+    # -- Rolling session summary --
+
+    def get_rolling_summary(self, session_id: str) -> dict[str, Any] | None:
+        """Get the current rolling summary for a session."""
+        row = self._conn.execute(
+            "SELECT * FROM session_rolling_summaries WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        import json
+        d = dict(row)
+        d["covered_message_ids"] = json.loads(d.get("covered_message_ids") or "[]")
+        return d
+
+    def upsert_rolling_summary(
+        self,
+        session_id: str,
+        summary: str,
+        covered_message_ids: list[str],
+        token_estimate: int,
+    ) -> dict[str, Any]:
+        """Insert or update the rolling summary for a session."""
+        import json
+        now = self.now()
+        existing = self._conn.execute(
+            "SELECT id FROM session_rolling_summaries WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if existing:
+            self._conn.execute(
+                """
+                UPDATE session_rolling_summaries
+                SET summary = ?, covered_message_ids = ?, token_estimate = ?, updated_at = ?
+                WHERE session_id = ?
+                """,
+                (
+                    summary,
+                    json.dumps(covered_message_ids, ensure_ascii=False),
+                    token_estimate,
+                    now,
+                    session_id,
+                ),
+            )
+        else:
+            rid = self.new_id("rs")
+            self._conn.execute(
+                """
+                INSERT INTO session_rolling_summaries
+                    (id, session_id, summary, covered_message_ids, token_estimate, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rid,
+                    session_id,
+                    summary,
+                    json.dumps(covered_message_ids, ensure_ascii=False),
+                    token_estimate,
+                    now,
+                    now,
+                ),
+            )
+        self._conn.commit()
+        return self.get_rolling_summary(session_id)  # type: ignore[return-value]
 
     def create_scheduled_task(self, params: dict[str, Any]) -> dict[str, Any]:
         name = self._require_non_empty(params, "name")
@@ -1105,6 +1223,159 @@ class SQLiteStore:
         ).fetchall()
         return {"messages": [self._serialize_agent_message(dict(row)) for row in rows]}
 
+    # ------------------------------------------------------------------
+    # ProviderTurn
+    # ------------------------------------------------------------------
+
+    def create_provider_turn(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        turn_index: int,
+        model: str | None = None,
+        request_message_count: int | None = None,
+        request_tool_count: int | None = None,
+        request_token_estimate: int | None = None,
+    ) -> dict[str, Any]:
+        turn_id = self.new_id("pt")
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO provider_turns
+                (id, task_id, session_id, turn_index, model, status,
+                 request_message_count, request_tool_count, request_token_estimate,
+                 created_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+            """,
+            (turn_id, task_id, session_id, turn_index, model,
+             request_message_count, request_tool_count, request_token_estimate,
+             now),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM provider_turns WHERE id = ?", (turn_id,)).fetchone()
+        return dict(row) if row else {}
+
+    def complete_provider_turn(
+        self,
+        *,
+        turn_id: str,
+        finish_reason: str | None = None,
+        usage: dict | None = None,
+        tool_call_count: int | None = None,
+        snapshot_id: str | None = None,
+    ) -> dict[str, Any]:
+        now = self.now()
+        usage_json = json.dumps(usage, ensure_ascii=False) if usage else None
+        self._conn.execute(
+            """
+            UPDATE provider_turns
+            SET status = 'completed',
+                response_finish_reason = ?,
+                response_usage_json = ?,
+                response_tool_call_count = ?,
+                context_snapshot_id = ?,
+                completed_at = ?
+            WHERE id = ?
+            """,
+            (finish_reason, usage_json, tool_call_count, snapshot_id, now, turn_id),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM provider_turns WHERE id = ?", (turn_id,)).fetchone()
+        return dict(row) if row else {}
+
+    def fail_provider_turn(
+        self,
+        *,
+        turn_id: str,
+        error_summary: str,
+    ) -> dict[str, Any]:
+        now = self.now()
+        self._conn.execute(
+            """
+            UPDATE provider_turns
+            SET status = 'failed',
+                error_summary = ?,
+                completed_at = ?
+            WHERE id = ?
+            """,
+            (error_summary[:500], now, turn_id),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM provider_turns WHERE id = ?", (turn_id,)).fetchone()
+        return dict(row) if row else {}
+
+    def list_provider_turns(self, task_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM provider_turns WHERE task_id = ? ORDER BY turn_index",
+            (task_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # ContextSnapshot
+    # ------------------------------------------------------------------
+
+    def create_context_snapshot(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        provider_turn_id: str | None = None,
+        included_sections: list[str] | None = None,
+        trimmed_sections: list[dict] | None = None,
+        dropped_sections: list[dict] | None = None,
+        recent_message_ids: list[str] | None = None,
+        summarized_message_ids: list[str] | None = None,
+        memory_ids: list[str] | None = None,
+        supplement_inbox_ids: list[str] | None = None,
+        tool_count: int | None = None,
+        skill_id: str | None = None,
+        token_estimate: int | None = None,
+    ) -> dict[str, Any]:
+        snap_id = self.new_id("cs")
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO context_snapshots
+                (id, session_id, task_id, provider_turn_id,
+                 included_sections_json, trimmed_sections_json, dropped_sections_json,
+                 recent_message_ids_json, summarized_message_ids_json,
+                 memory_ids_json, supplement_inbox_ids_json,
+                 tool_count, skill_id, token_estimate, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snap_id, session_id, task_id, provider_turn_id,
+                json.dumps(included_sections or [], ensure_ascii=False),
+                json.dumps(trimmed_sections or [], ensure_ascii=False),
+                json.dumps(dropped_sections or [], ensure_ascii=False),
+                json.dumps(recent_message_ids or [], ensure_ascii=False),
+                json.dumps(summarized_message_ids or [], ensure_ascii=False),
+                json.dumps(memory_ids or [], ensure_ascii=False),
+                json.dumps(supplement_inbox_ids or [], ensure_ascii=False),
+                tool_count, skill_id, token_estimate, now,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM context_snapshots WHERE id = ?", (snap_id,)).fetchone()
+        return dict(row) if row else {}
+
+    def get_context_snapshot(self, snapshot_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM context_snapshots WHERE id = ?", (snapshot_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_context_snapshots(self, task_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT * FROM context_snapshots WHERE task_id = ? ORDER BY created_at",
+            (task_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Trace Events
+    # ------------------------------------------------------------------
+
     def append_trace_event(
         self,
         *,
@@ -1253,6 +1524,31 @@ class SQLiteStore:
             (task_id, limit),
         ).fetchall()
         return {"traceEvents": [self._serialize_trace_event(dict(row)) for row in rows]}
+
+    def events_after(self, session_id: str, after_seq: int, *, limit: int = 500) -> dict[str, Any]:
+        """Return trace events for a session after a given sequence number.
+
+        Used for event recovery after reconnect / page refresh.
+        """
+        limit = max(1, min(limit, 500))
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM trace_events
+            WHERE session_id = ? AND sequence > ?
+            ORDER BY sequence ASC
+            LIMIT ?
+            """,
+            (session_id, after_seq, limit),
+        ).fetchall()
+        total_after = self._conn.execute(
+            "SELECT COUNT(*) FROM trace_events WHERE session_id = ? AND sequence > ?",
+            (session_id, after_seq),
+        ).fetchone()[0]
+        return {
+            "events": [self._serialize_trace_event(dict(row)) for row in rows],
+            "truncated": total_after > limit,
+        }
 
     # ── trace spans ────────────────────────────────────────────────────
 
@@ -3122,6 +3418,21 @@ class SQLiteStore:
                 access_count INTEGER DEFAULT 0
             );
 
+            CREATE TABLE IF NOT EXISTS task_inbox (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                message_id TEXT,
+                content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                consumed_by_turn_id TEXT,
+                created_at INTEGER NOT NULL,
+                consumed_at INTEGER
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_task_inbox_task_status
+                ON task_inbox (task_id, status);
+
             CREATE INDEX IF NOT EXISTS idx_memory_kind
                 ON memory_entries (kind);
             CREATE INDEX IF NOT EXISTS idx_memory_workspace
@@ -3171,7 +3482,81 @@ class SQLiteStore:
                 ON skill_usage (skill_id);
             CREATE INDEX IF NOT EXISTS idx_skill_usage_task_id
                 ON skill_usage (task_id);
+
+            CREATE TABLE IF NOT EXISTS memory_recall_records (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                task_id TEXT,
+                query TEXT NOT NULL,
+                memory_ids TEXT NOT NULL DEFAULT '[]',
+                scores TEXT NOT NULL DEFAULT '{}',
+                injected INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_recall_session
+                ON memory_recall_records (session_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS session_rolling_summaries (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                covered_message_ids TEXT NOT NULL DEFAULT '[]',
+                token_estimate INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_rolling_summary_session
+                ON session_rolling_summaries (session_id);
             """
+        )
+        self._conn.commit()
+
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS provider_turns (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                turn_index INTEGER NOT NULL,
+                model TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error_summary TEXT,
+                request_message_count INTEGER,
+                request_tool_count INTEGER,
+                request_token_estimate INTEGER,
+                response_finish_reason TEXT,
+                response_usage_json TEXT,
+                response_tool_call_count INTEGER,
+                context_snapshot_id TEXT,
+                created_at INTEGER NOT NULL,
+                completed_at INTEGER
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_provider_turns_task ON provider_turns(task_id)"
+        )
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS context_snapshots (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                provider_turn_id TEXT,
+                included_sections_json TEXT,
+                trimmed_sections_json TEXT,
+                dropped_sections_json TEXT,
+                recent_message_ids_json TEXT,
+                summarized_message_ids_json TEXT,
+                memory_ids_json TEXT,
+                supplement_inbox_ids_json TEXT,
+                tool_count INTEGER,
+                skill_id TEXT,
+                token_estimate INTEGER,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_context_snapshots_task ON context_snapshots(task_id)"
         )
         self._conn.commit()
 
@@ -3193,6 +3578,7 @@ class SQLiteStore:
         self._ensure_patch_columns()
         self._ensure_collaboration_task_columns()
         self._ensure_schedule_columns()
+        self._ensure_compaction_columns()
 
     def _ensure_workspace_columns(self) -> None:
         columns = {
@@ -3299,6 +3685,22 @@ class SQLiteStore:
         for column, definition in run_expected.items():
             if column not in run_columns:
                 self._conn.execute(f"ALTER TABLE scheduled_task_runs ADD COLUMN {column} {definition}")
+        self._conn.commit()
+
+    def _ensure_compaction_columns(self) -> None:
+        """Add traceability columns to compaction_records if missing."""
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(compaction_records)").fetchall()
+        }
+        expected = {
+            "covered_message_ids": "TEXT DEFAULT '[]'",
+            "trimmed_sections": "TEXT DEFAULT '[]'",
+            "task_id": "TEXT",
+        }
+        for column, definition in expected.items():
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE compaction_records ADD COLUMN {column} {definition}")
         self._conn.commit()
 
     def export_logs(self, params: dict[str, Any]) -> dict[str, Any]:

@@ -42,6 +42,8 @@ export type ScheduledRunStatus =
   | "failed"
   | "cancelled";
 export type MessageRole = "user" | "assistant" | "system" | "tool";
+export type MessageKind = "normal" | "supplement" | "failure" | "system";
+export type MessageStatus = "streaming" | "completed" | "failed";
 export type TraceEventSource =
   | "provider"
   | "tool"
@@ -130,6 +132,11 @@ export interface MessageRecord {
   role: MessageRole;
   content: string;
   createdAt: number;
+  clientMessageId?: string;
+  kind?: MessageKind;
+  status?: MessageStatus;
+  createdSeq?: number;
+  updatedAt?: number;
 }
 
 export interface PlanStep {

@@ -169,6 +169,7 @@ class TokenBudget:
             kept.remove(lowest)
             dropped_sections.append(lowest.name)
 
+        included_sections = [s.name for s in kept]
         return BudgetResult(
             sections=kept,
             stats={
@@ -176,6 +177,7 @@ class TokenBudget:
                 "estimatedTokens": running_total,
                 "estimatedInputTokens": running_total,
                 "fixedTokens": fixed_tokens,
+                "includedSections": included_sections,
                 "trimmedSections": trimmed_sections,
                 "droppedSections": dropped_sections,
             },

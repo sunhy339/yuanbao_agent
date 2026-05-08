@@ -139,21 +139,7 @@ export function SkillsWorkspace({
   async function handleImportClick() {
     const selected = await openDialog({
       multiple: false,
-      filters: [
-        { name: "技能文件", extensions: ["json", "zip"] },
-        { name: "JSON", extensions: ["json"] },
-        { name: "ZIP 压缩包", extensions: ["zip"] },
-      ],
-    });
-    if (!selected) {
-      return;
-    }
-    await onImportSkills?.(selected);
-  }
-
-  async function handleImportFolder() {
-    const selected = await openDialog({
-      directory: true,
+      filters: [{ name: "JSON", extensions: ["json"] }],
     });
     if (!selected) {
       return;
@@ -223,16 +209,7 @@ export function SkillsWorkspace({
           loading={busySkillId === "import"}
           disabledReason="技能导入尚未接入"
         >
-          导入文件
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={() => void handleImportFolder()}
-          disabled={!onImportSkills || busySkillId === "import"}
-          loading={busySkillId === "import"}
-          disabledReason="技能导入尚未接入"
-        >
-          导入文件夹
+          导入技能
         </Button>
       </section>
 

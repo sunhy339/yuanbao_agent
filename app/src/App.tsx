@@ -7,6 +7,11 @@ import type {
   AssistantTokenPayload,
   CommandLogRecord,
   McpServerRecord,
+  MessageCreatedPayload,
+  MessageDeltaPayload,
+  MessageCompletedPayload,
+  MessageFailedPayload,
+  MessageRecord,
   PatchRecord,
   PatchProposedPayload,
   ProviderMode,
@@ -32,8 +37,10 @@ import {
   failAssistantMessage,
   getVisibleChatMessages,
   isOperationalAssistantDelta,
+  reconcileBackendMessage,
   replaceSessionMessages,
   stopStreamingMessages,
+  updateAssistantMessageByMessageId,
   updatePendingMessageTask,
   type ChatMessageView,
 } from "./state/chatMessages";
@@ -1784,6 +1791,26 @@ function failAssistantMessageForEvent(current: ChatMessageView[], event: AgentEv
   });
 }
 
+/** Convert a MessageRecord from events/RPC into a ChatMessageView. */
+function messageRecordToChatMessageLocal(record: MessageRecord): ChatMessageView | null {
+  if (record.role !== "user" && record.role !== "assistant") {
+    return null;
+  }
+  return {
+    id: record.id,
+    sessionId: record.sessionId,
+    taskId: record.taskId ?? "persisted",
+    role: record.role,
+    content: record.content,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt ?? record.createdAt,
+    clientMessageId: record.clientMessageId,
+    kind: record.kind,
+    status: record.status,
+    createdSeq: record.createdSeq,
+  };
+}
+
 interface CollaborationSourceEvent {
   id: string;
   type: string;
@@ -2261,6 +2288,7 @@ export function App() {
   const [taskControlBusyAction, setTaskControlBusyAction] = useState<TaskControlAction | null>(null);
   const [taskControlError, setTaskControlError] = useState<string | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const sessionActiveTaskMapRef = useRef<Map<string, string>>(new Map());
   const [scheduledRecords, setScheduledRecords] = useState<ScheduledTaskRecord[]>([]);
   const [scheduledLogs, setScheduledLogs] = useState<ScheduledTaskRunRecord[]>([]);
   const [selectedScheduledTaskId, setSelectedScheduledTaskId] = useState<string | null>(null);
@@ -2323,6 +2351,19 @@ export function App() {
   const assistantTokenFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messageLoadRequestRef = useRef(0);
   const childTaskIdsRef = useRef<Set<string>>(new Set());
+
+  /** Update activeTaskId state and persist it in per-session map. */
+  function setActiveTaskForSession(taskId: string | null, sessionId?: string | null) {
+    setActiveTaskId(taskId);
+    const sid = sessionId ?? session?.id;
+    if (sid) {
+      if (taskId) {
+        sessionActiveTaskMapRef.current.set(sid, taskId);
+      } else {
+        sessionActiveTaskMapRef.current.delete(sid);
+      }
+    }
+  }
 
   function clearPendingAssistantTokens() {
     pendingAssistantTokenEventsRef.current = [];
@@ -2421,7 +2462,7 @@ export function App() {
           : sortByUpdatedAtDesc(nextTasks.tasks)[0] ?? null;
         setSession(initialSession);
         setTask(initialTask);
-        setActiveTaskId(initialTask?.id ?? null);
+        setActiveTaskForSession(initialTask?.id ?? null, initialSession?.id);
         void loadSessionMessages(initialSession?.id);
         setScheduledRecords(nextScheduledTasks.tasks);
         setSelectedScheduledTaskId(nextScheduledTasks.tasks[0]?.id ?? null);
@@ -2486,6 +2527,100 @@ export function App() {
           return;
         }
 
+        // --- New message lifecycle events (P1.3 / P1.4) ---
+        // message.delta: streaming token, routed by messageId
+        if (event.type === "message.delta") {
+          if (childTaskIdsRef.current.has(event.taskId)) {
+            return;
+          }
+          const payload = event.payload as MessageDeltaPayload;
+          const delta = payload.delta ?? "";
+          if (!delta || isOperationalAssistantDelta(delta)) {
+            return;
+          }
+          const messageId = payload.messageId;
+          if (messageId) {
+            setChatMessages((current) =>
+              updateAssistantMessageByMessageId(current, messageId, (msg) => ({
+                ...msg,
+                taskId: event.taskId,
+                content: msg.placeholder ? delta : `${msg.content}${delta}`,
+                updatedAt: event.ts,
+                placeholder: false,
+              })),
+            );
+          } else {
+            // Fallback: no messageId, use legacy behavior
+            queueAssistantToken(event);
+          }
+          return;
+        }
+
+        // message.created: reconcile local pending message with backend message
+        if (event.type === "message.created") {
+          const payload = event.payload as MessageCreatedPayload;
+          const msg = payload.message;
+          if (!msg) return;
+          // Only process user/assistant messages
+          if (msg.role !== "user" && msg.role !== "assistant") return;
+          const chatMsg = messageRecordToChatMessageLocal(msg);
+          if (!chatMsg) return;
+          setChatMessages((current) => reconcileBackendMessage(current, chatMsg));
+          setEvents((current) => [...current, event].slice(-500));
+          return;
+        }
+
+        // message.completed: finalize assistant message by messageId
+        if (event.type === "message.completed") {
+          const payload = event.payload as MessageCompletedPayload;
+          flushPendingAssistantTokens();
+          if (payload.messageId) {
+            setChatMessages((current) =>
+              updateAssistantMessageByMessageId(current, payload.messageId!, (msg) => {
+                // Prefer existing streaming content if richer
+                const streamingContent = msg.content || "";
+                const isPlaceholder = msg.placeholder === true || streamingContent === "\u601d\u8003\u4e2d..." || streamingContent.length < 5;
+                return {
+                  ...msg,
+                  taskId: event.taskId || msg.taskId,
+                  content: isPlaceholder ? (payload.content || streamingContent) : streamingContent,
+                  updatedAt: event.ts,
+                  streaming: false,
+                  placeholder: false,
+                  status: "completed",
+                };
+              }),
+            );
+          } else {
+            // Fallback: no messageId, use legacy completion
+            setChatMessages((current) => completeAssistantMessage(current, event));
+          }
+          setEvents((current) => [...current, event].slice(-500));
+          return;
+        }
+
+        // message.failed: mark assistant message as failed by messageId
+        if (event.type === "message.failed") {
+          const payload = event.payload as MessageFailedPayload;
+          flushPendingAssistantTokens();
+          if (payload.messageId) {
+            setChatMessages((current) =>
+              failAssistantMessage(current, {
+                messageId: payload.messageId,
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                content: payload.content || "任务失败，未返回具体错误。",
+                now: event.ts,
+              }),
+            );
+          } else {
+            setChatMessages((current) => failAssistantMessageForEvent(current, event));
+          }
+          setEvents((current) => [...current, event].slice(-500));
+          return;
+        }
+
+        // --- Legacy assistant.token (kept for backward compat) ---
         if (event.type === "assistant.token") {
           if (!childTaskIdsRef.current.has(event.taskId)) {
             queueAssistantToken(event);
@@ -2535,9 +2670,13 @@ export function App() {
           setActiveTaskId((current) => {
             if (isChildWorker) return current;
             if (event.type === "task.started") {
-              return eventTask && shouldPromoteTaskToActive(eventTask, current) ? event.taskId : current;
+              const next = eventTask && shouldPromoteTaskToActive(eventTask, current) ? event.taskId : current;
+              if (next && next !== current) sessionActiveTaskMapRef.current.set(event.sessionId, next);
+              return next;
             }
-            return !current && eventTask && shouldPromoteTaskToActive(eventTask, current) ? event.taskId : current;
+            const next = !current && eventTask && shouldPromoteTaskToActive(eventTask, current) ? event.taskId : current;
+            if (next && next !== current) sessionActiveTaskMapRef.current.set(event.sessionId, next);
+            return next;
           });
           setTask((current) => {
             if (event.type === "task.started" && isChildWorker) {
@@ -2571,12 +2710,16 @@ export function App() {
           setSessions((current) =>
             current.map((item) => (item.id === event.sessionId ? { ...item, updatedAt: event.ts } : item)),
           );
+          // task.failed: only update task panel, don't create chat bubble
+          // (message.failed handles the chat bubble now)
           if (event.type === "task.failed" && !isChildWorker) {
             flushPendingAssistantTokens();
-            setChatMessages((current) => failAssistantMessageForEvent(current, event));
+            // Legacy fallback: only create failure bubble if no message.failed was received
+            // (handled by message.failed event now)
           }
         }
 
+        // Legacy assistant.message.completed (kept for backward compat)
         if (event.type === "assistant.message.completed") {
           if (childTaskIdsRef.current.has(event.taskId)) {
             // skip child task completion
@@ -2911,11 +3054,17 @@ export function App() {
     }
 
     void loadSessionMessages(nextSession.id);
-    const nextTask = sortByUpdatedAtDesc(
+
+    // Restore per-session activeTaskId — prefer persisted map, fallback to latest task
+    const restoredTaskId = sessionActiveTaskMapRef.current.get(nextSession.id);
+    const fallbackTask = sortByUpdatedAtDesc(
       taskHistory.filter((item) => item.sessionId === nextSession.id),
     )[0];
+    const nextTask = restoredTaskId
+      ? taskHistory.find((item) => item.id === restoredTaskId) ?? fallbackTask
+      : fallbackTask;
     setTask(nextTask ?? null);
-    setActiveTaskId(nextTask?.id ?? null);
+    setActiveTaskForSession(nextTask?.id ?? null, nextSession.id);
   }
 
   function handleOpenSystemTab(kind: SystemWorkspaceKind) {
@@ -2995,6 +3144,7 @@ export function App() {
   async function handleDeleteSession(sessionId: string) {
     try {
       await runtimeClient.deleteSession({ sessionId });
+      sessionActiveTaskMapRef.current.delete(sessionId);
       setSessions((current) => current.filter((s) => s.id !== sessionId));
       setSession((current) => (current && current.id === sessionId ? null : current));
       setOpenTabs((current) => {
@@ -3023,7 +3173,7 @@ export function App() {
     }
 
     setTask(nextTask);
-    setActiveTaskId(nextTask.id);
+    setActiveTaskForSession(nextTask.id);
   }
 
   function updateProviderSetting<K extends keyof ProviderSettingsForm>(
@@ -3188,11 +3338,16 @@ export function App() {
         return;
       }
 
-      const nextTask = sortByUpdatedAtDesc(
+      // Restore per-session activeTaskId from map, fallback to latest task
+      const restoredTaskId = sessionActiveTaskMapRef.current.get(preferredSession.id);
+      const fallbackTask = sortByUpdatedAtDesc(
         nextTasks.filter((item) => item.sessionId === preferredSession.id),
       )[0];
+      const nextTask = restoredTaskId
+        ? nextTasks.find((item) => item.id === restoredTaskId) ?? fallbackTask
+        : fallbackTask;
       setTask(nextTask ?? null);
-      setActiveTaskId(nextTask?.id ?? null);
+      setActiveTaskForSession(nextTask?.id ?? null, preferredSession.id);
       void loadSessionMessages(preferredSession.id);
     } catch (reason) {
       toastError(reason);
@@ -3317,6 +3472,7 @@ export function App() {
       setTaskHistory([]);
       setSessions([]);
       setActiveTaskId(null);
+      sessionActiveTaskMapRef.current.clear();
       setTraceEvents([]);
       setCommandLogCacheById({});
       setTraceError(null);
@@ -4058,6 +4214,7 @@ export function App() {
       const messageContent = messageContentInput.trim() || "Please review the attached file.";
       const messageAttachments = messageAttachmentsInput;
       const messageCreatedAt = Date.now();
+      const clientMessageId = `client_${messageCreatedAt}`;
       const pendingUserMessageId = `user_${messageCreatedAt}`;
       const pendingAssistantMessageId = `assistant_pending_${messageCreatedAt}`;
       const shouldCreateAssistantPlaceholder = options.mode !== "supplement";
@@ -4078,6 +4235,7 @@ export function App() {
                 sessionId: activeSession.id,
                 content: messageContent,
                 now: messageCreatedAt,
+                clientMessageId,
               }),
               {
                 id: pendingAssistantMessageId,
@@ -4091,6 +4249,7 @@ export function App() {
               sessionId: activeSession.id,
               content: messageContent,
               now: messageCreatedAt,
+              clientMessageId,
             }),
       );
       setApprovalBusyId(null);
@@ -4102,16 +4261,30 @@ export function App() {
         mode: options.mode,
         taskId: options.mode === "supplement" ? task?.id ?? activeTaskId ?? undefined : undefined,
         newTask: options.mode === "new" ? true : undefined,
+        clientMessageId,
       });
 
-      setChatMessages((current) => updatePendingMessageTask(current, pendingUserMessageId, result.task.id));
-      if (shouldCreateAssistantPlaceholder) {
+      // Reconcile local pending messages with backend-confirmed messages
+      if (result.userMessage) {
+        const chatMsg = messageRecordToChatMessageLocal(result.userMessage);
+        if (chatMsg) {
+          setChatMessages((current) => reconcileBackendMessage(current, chatMsg));
+        }
+      } else {
+        setChatMessages((current) => updatePendingMessageTask(current, pendingUserMessageId, result.task.id));
+      }
+      if (shouldCreateAssistantPlaceholder && result.assistantMessage) {
+        const chatMsg = messageRecordToChatMessageLocal(result.assistantMessage);
+        if (chatMsg) {
+          setChatMessages((current) => reconcileBackendMessage(current, chatMsg));
+        }
+      } else if (shouldCreateAssistantPlaceholder) {
         setChatMessages((current) => updatePendingMessageTask(current, pendingAssistantMessageId, result.task.id));
       }
       setTaskHistory((current) => upsertRecord(current, result.task));
       if (shouldPromoteTaskToActive(result.task, currentTaskIdBeforeSend)) {
         setTask(result.task);
-        setActiveTaskId(result.task.id);
+        setActiveTaskForSession(result.task.id, activeSession.id);
       }
       const touchedSession = { ...activeSession, updatedAt: result.task.updatedAt };
       setSessions((current) => upsertRecord(current, touchedSession));
@@ -4358,7 +4531,7 @@ export function App() {
     try {
       const result = await runtimeClient.getTask(taskId);
       setTask(result.task);
-      setActiveTaskId(result.task.id);
+      setActiveTaskForSession(result.task.id);
       setTaskHistory((current) => upsertRecord(current, result.task));
       await loadTraceForTask(taskId);
     } catch (reason) {
@@ -4375,7 +4548,7 @@ export function App() {
     ]);
     setTask(taskResult.task);
     setTaskHistory(taskListResult.tasks);
-    setActiveTaskId(taskId);
+    setActiveTaskForSession(taskId);
     await loadTraceForTask(taskId);
   }
 

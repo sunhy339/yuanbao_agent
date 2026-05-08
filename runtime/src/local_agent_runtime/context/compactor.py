@@ -73,12 +73,18 @@ class ContextCompactor:
         session_id: str,
         messages: list[dict[str, Any]],
         max_tokens: int,
+        *,
+        message_ids: list[str] | None = None,
+        task_id: str | None = None,
     ) -> CompactionResult:
         """Compact *messages* to fit within *max_tokens*.
 
         Returns a ``CompactionResult`` with the retained message list and
         bookkeeping metadata.  When the messages already fit, no summary is
         generated.
+
+        *message_ids* maps to the input messages for traceability.
+        *task_id* is the task that triggered this compaction.
         """
         # Compute per-message tokens once
         msg_tokens = [estimate_tokens(m.get("content", "")) for m in messages]
@@ -115,23 +121,42 @@ class ContextCompactor:
         primer_hash = self._hash_primers(primers)
 
         # Persist record
+        import json as _json
         compaction_id = self._store.new_id("cmp")
         now = self._store.now()
+
+        # Determine which message IDs were covered (history segment)
+        covered_ids: list[str] = []
+        if message_ids:
+            msg_count = len(messages)
+            ids_count = len(message_ids)
+            # History messages are the ones not in primers or recents
+            primer_count = len(primers)
+            body_count = msg_count - primer_count
+            split_point = max(0, body_count - self._recent_turns)
+            # History segment covers from primer_count to primer_count + split_point
+            for idx in range(primer_count, primer_count + split_point):
+                if idx < ids_count:
+                    covered_ids.append(message_ids[idx])
+
         self._store._conn.execute(
             """
             INSERT INTO compaction_records
-                (id, session_id, strategy, tokens_before, tokens_after,
-                 summary, primer_hash, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, session_id, task_id, strategy, tokens_before, tokens_after,
+                 summary, primer_hash, covered_message_ids, trimmed_sections, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 compaction_id,
                 session_id,
+                task_id,
                 "primer_summary_recent",
                 tokens_before,
                 tokens_after,
                 summary,
                 primer_hash,
+                _json.dumps(covered_ids, ensure_ascii=False),
+                _json.dumps([], ensure_ascii=False),
                 now,
             ),
         )

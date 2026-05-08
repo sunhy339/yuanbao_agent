@@ -148,6 +148,14 @@ class ContextBuilder:
             "tools": tools,
             "openai_tools": openai_tools,
             "budgetStats": budget_stats,
+            "snapshot_metadata": {
+                "included_sections": budget_stats.get("includedSections", []),
+                "trimmed_sections": budget_stats.get("trimmedSections", []),
+                "dropped_sections": budget_stats.get("droppedSections", []),
+                "tool_count": len(tools),
+                "skill_id": skill_id,
+                "token_estimate": budget_stats.get("estimatedTokens", 0),
+            },
             "lightweight": lightweight,
         }
 

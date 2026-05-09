@@ -214,4 +214,135 @@ def validate_proposal(kind: str, payload: dict[str, Any]) -> list[str]:
     if kind == "artifact_contract":
         reasons.extend(validate_artifact_contract(payload))
 
+    # Risk policy validator
+    if kind == "risk_policy":
+        reasons.extend(validate_risk_policy(payload))
+
+    # Approval gate validator
+    if kind == "approval_policy":
+        reasons.extend(validate_approval_gates(payload))
+
+    # Test strategy validator
+    if kind == "test_strategy":
+        reasons.extend(validate_test_strategy(payload))
+
+    return reasons
+
+
+# ---------------------------------------------------------------------------
+# Risk policy validator
+# ---------------------------------------------------------------------------
+
+VALID_RISK_LEVELS = frozenset({"low", "medium", "high", "critical"})
+
+RISK_APPROVAL_REQUIREMENTS: dict[str, list[str]] = {
+    "low": [],
+    "medium": [],
+    "high": ["reviewer"],
+    "critical": ["reviewer", "verifier"],
+}
+
+
+def validate_risk_policy(payload: dict[str, Any]) -> list[str]:
+    """Validate risk level and approval requirements."""
+    reasons: list[str] = []
+    risk = payload.get("riskLevel")
+    if not risk:
+        return reasons
+    if risk not in VALID_RISK_LEVELS:
+        reasons.append(f"Invalid riskLevel: {risk!r}. Must be one of {sorted(VALID_RISK_LEVELS)}")
+        return reasons
+    # Check if high/critical risk has required gates
+    required_gates = RISK_APPROVAL_REQUIREMENTS.get(risk, [])
+    if required_gates:
+        gates = payload.get("approvalGates", [])
+        if not isinstance(gates, list):
+            gates = []
+        for gate in required_gates:
+            if gate not in gates:
+                reasons.append(
+                    f"Risk level {risk!r} requires approval gate {gate!r} but it is not specified"
+                )
+    return reasons
+
+
+# ---------------------------------------------------------------------------
+# Approval gate validator
+# ---------------------------------------------------------------------------
+
+VALID_GATE_TYPES = frozenset({"reviewer", "verifier", "user", "automated"})
+
+
+def validate_approval_gates(payload: dict[str, Any]) -> list[str]:
+    """Validate approval gate proposals."""
+    reasons: list[str] = []
+    gates = payload.get("gates")
+    if not isinstance(gates, list):
+        reasons.append("gates must be a list")
+        return reasons
+    if len(gates) == 0:
+        reasons.append("gates must be non-empty")
+        return reasons
+    for i, gate in enumerate(gates):
+        if not isinstance(gate, dict):
+            reasons.append(f"gates[{i}] must be a dict")
+            continue
+        gate_type = gate.get("type")
+        if not gate_type:
+            reasons.append(f"gates[{i}] missing required field 'type'")
+        elif gate_type not in VALID_GATE_TYPES:
+            reasons.append(
+                f"gates[{i}] invalid gate type: {gate_type!r}. "
+                f"Must be one of {sorted(VALID_GATE_TYPES)}"
+            )
+        # condition is optional but must be a non-empty string if present
+        condition = gate.get("condition")
+        if condition is not None and (not isinstance(condition, str) or not condition.strip()):
+            reasons.append(f"gates[{i}] condition must be a non-empty string if provided")
+    return reasons
+
+
+# ---------------------------------------------------------------------------
+# Test strategy validator
+# ---------------------------------------------------------------------------
+
+SAFE_TEST_COMMANDS = frozenset({
+    "python -m pytest",
+    "pytest",
+    "npm test",
+    "npx jest",
+    "make test",
+    "go test ./...",
+    "cargo test",
+})
+
+DANGEROUS_TEST_PATTERNS = frozenset({
+    "rm ", "del ", "format ", "shutdown", "reboot",
+    "drop ", "delete from", "truncate ",
+})
+
+
+def validate_test_strategy(payload: dict[str, Any]) -> list[str]:
+    """Validate test strategy proposals including command safety."""
+    reasons: list[str] = []
+    commands = payload.get("commands")
+    if not isinstance(commands, list):
+        reasons.append("commands must be a list")
+        return reasons
+    if len(commands) == 0:
+        reasons.append("commands must be non-empty")
+        return reasons
+    for i, cmd in enumerate(commands):
+        if not isinstance(cmd, str):
+            reasons.append(f"commands[{i}] must be a string")
+            continue
+        cmd_lower = cmd.lower().strip()
+        if not cmd_lower:
+            reasons.append(f"commands[{i}] must be a non-empty string")
+            continue
+        # Check for dangerous patterns
+        for pattern in DANGEROUS_TEST_PATTERNS:
+            if pattern in cmd_lower:
+                reasons.append(f"commands[{i}] contains dangerous pattern: {pattern.strip()!r}")
+                break
     return reasons

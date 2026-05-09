@@ -111,6 +111,37 @@ def validate_agent_profile(profile: dict[str, Any]) -> list[str]:
         if not isinstance(done, list) or len(done) == 0:
             reasons.append("doneCriteria must be a non-empty list")
 
+    # Expected artifacts
+    expected_artifacts = profile.get("expectedArtifacts")
+    if expected_artifacts is not None:
+        if not isinstance(expected_artifacts, list):
+            reasons.append("expectedArtifacts must be a list")
+        else:
+            for j, art in enumerate(expected_artifacts):
+                if not isinstance(art, dict):
+                    reasons.append(f"expectedArtifacts[{j}] must be a dict")
+                elif "kind" not in art:
+                    reasons.append(f"expectedArtifacts[{j}] missing required field 'kind'")
+
+    # Handoff notes
+    handoff = profile.get("handoffNotes")
+    if handoff is not None and not isinstance(handoff, str):
+        reasons.append("handoffNotes must be a string")
+
+    # Priority
+    priority = profile.get("priority")
+    if priority is not None:
+        if not isinstance(priority, int) or priority < 0:
+            reasons.append("priority must be a non-negative integer")
+
+    # Verification requirements
+    verification = profile.get("verificationRequirements")
+    if verification is not None:
+        if not isinstance(verification, list):
+            reasons.append("verificationRequirements must be a list")
+        elif len(verification) == 0:
+            reasons.append("verificationRequirements must be non-empty if provided")
+
     return reasons
 
 
@@ -213,6 +244,18 @@ def validate_planner_output(output: dict[str, Any]) -> list[str]:
             else:
                 scope_map[scope_str] = name
 
+    # Check high-risk tasks have approval gates
+    for i, task in enumerate(subtasks):
+        if not isinstance(task, dict):
+            continue
+        risk = task.get("riskLevel")
+        if risk in ("high", "critical"):
+            gates = task.get("approvalGates")
+            if not isinstance(gates, list) or len(gates) == 0:
+                reasons.append(
+                    f"subtasks[{i}]: risk level {risk!r} requires approval gates"
+                )
+
     return reasons
 
 
@@ -266,3 +309,44 @@ def compute_execution_order(subtasks: list[dict[str, Any]]) -> list[list[str]]:
             remaining[name] -= set(ready)
 
     return layers
+
+
+def compute_blocked_downstream(
+    subtasks: list[dict[str, Any]],
+    failed_task_name: str,
+) -> list[str]:
+    """Compute which downstream tasks are blocked by a failed task.
+
+    Returns a list of task names that transitively depend on the failed task.
+    """
+    # Build reverse adjacency: task -> set of tasks that depend on it
+    task_names = set()
+    for task in subtasks:
+        name = task.get("name")
+        if name:
+            task_names.add(name)
+
+    reverse_deps: dict[str, set[str]] = {n: set() for n in task_names}
+    for task in subtasks:
+        name = task.get("name")
+        if not name:
+            continue
+        deps = task.get("dependencies", [])
+        if isinstance(deps, list):
+            for dep in deps:
+                if dep in task_names:
+                    reverse_deps[dep].add(name)
+
+    # BFS from failed task
+    blocked: list[str] = []
+    visited: set[str] = set()
+    queue = [failed_task_name]
+    while queue:
+        current = queue.pop(0)
+        for downstream in sorted(reverse_deps.get(current, set())):
+            if downstream not in visited:
+                visited.add(downstream)
+                blocked.append(downstream)
+                queue.append(downstream)
+
+    return blocked

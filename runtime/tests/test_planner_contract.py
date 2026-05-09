@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from local_agent_runtime.policy.planner_contract import (
+    compute_blocked_downstream,
     compute_execution_order,
     validate_agent_profile,
     validate_planner_output,
@@ -392,3 +393,258 @@ class TestDAGExecutionOrder:
             {"name": "b", "dependencies": []},
         ])
         assert layers[0] == ["a", "b", "c"]
+
+
+# ---------------------------------------------------------------------------
+# P7 Extended: Additional profile fields
+# ---------------------------------------------------------------------------
+
+
+class TestAgentProfileExpectedArtifacts:
+    def test_valid_expected_artifacts(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "expectedArtifacts": [{"kind": "file", "path": "src/main.py"}],
+        })
+        assert reasons == []
+
+    def test_expected_artifacts_not_list(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "expectedArtifacts": "file",
+        })
+        assert any("expectedArtifacts must be a list" in r for r in reasons)
+
+    def test_expected_artifacts_missing_kind(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "expectedArtifacts": [{"path": "src/main.py"}],
+        })
+        assert any("missing required field 'kind'" in r for r in reasons)
+
+    def test_expected_artifacts_not_dict(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "expectedArtifacts": ["not a dict"],
+        })
+        assert any("must be a dict" in r for r in reasons)
+
+    def test_no_expected_artifacts_passes(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+        })
+        assert reasons == []
+
+
+class TestAgentProfileHandoffNotes:
+    def test_valid_handoff_notes(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "handoffNotes": "Explore src/ directory structure",
+        })
+        assert reasons == []
+
+    def test_handoff_notes_not_string(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "handoffNotes": 42,
+        })
+        assert any("handoffNotes must be a string" in r for r in reasons)
+
+
+class TestAgentProfilePriority:
+    def test_valid_priority(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "priority": 5,
+        })
+        assert reasons == []
+
+    def test_priority_zero(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "priority": 0,
+        })
+        assert reasons == []
+
+    def test_negative_priority(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "priority": -1,
+        })
+        assert any("priority must be" in r for r in reasons)
+
+    def test_priority_not_int(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "priority": "high",
+        })
+        assert any("priority must be" in r for r in reasons)
+
+
+class TestAgentProfileVerificationRequirements:
+    def test_valid_verification(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "verificationRequirements": ["tests pass", "no lint errors"],
+        })
+        assert reasons == []
+
+    def test_empty_verification(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "verificationRequirements": [],
+        })
+        assert any("verificationRequirements must be non-empty" in r for r in reasons)
+
+    def test_verification_not_list(self):
+        reasons = validate_agent_profile({
+            "name": "X", "baseType": "worker", "mission": "m",
+            "verificationRequirements": "tests pass",
+        })
+        assert any("verificationRequirements must be a list" in r for r in reasons)
+
+
+# ---------------------------------------------------------------------------
+# P7 Extended: Planner output approval gate check
+# ---------------------------------------------------------------------------
+
+
+class TestPlannerOutputApprovalGates:
+    def test_high_risk_without_approval_gates(self):
+        output = {
+            "title": "T",
+            "subtasks": [
+                {
+                    "name": "a", "baseType": "worker", "mission": "m",
+                    "dependencies": [], "riskLevel": "high",
+                },
+            ],
+        }
+        reasons = validate_planner_output(output)
+        assert any("requires approval gates" in r for r in reasons)
+
+    def test_high_risk_with_approval_gates(self):
+        output = {
+            "title": "T",
+            "subtasks": [
+                {
+                    "name": "a", "baseType": "worker", "mission": "m",
+                    "dependencies": [], "riskLevel": "high",
+                    "approvalGates": ["reviewer"],
+                },
+            ],
+        }
+        reasons = validate_planner_output(output)
+        assert all("approval" not in r for r in reasons)
+
+    def test_critical_risk_without_approval_gates(self):
+        output = {
+            "title": "T",
+            "subtasks": [
+                {
+                    "name": "a", "baseType": "worker", "mission": "m",
+                    "dependencies": [], "riskLevel": "critical",
+                },
+            ],
+        }
+        reasons = validate_planner_output(output)
+        assert any("requires approval gates" in r for r in reasons)
+
+    def test_low_risk_no_gates_needed(self):
+        output = {
+            "title": "T",
+            "subtasks": [
+                {
+                    "name": "a", "baseType": "worker", "mission": "m",
+                    "dependencies": [], "riskLevel": "low",
+                },
+            ],
+        }
+        reasons = validate_planner_output(output)
+        assert all("approval" not in r for r in reasons)
+
+
+# ---------------------------------------------------------------------------
+# P8 Extended: Blocked downstream computation
+# ---------------------------------------------------------------------------
+
+
+class TestBlockedDownstream:
+    def test_no_downstream(self):
+        blocked = compute_blocked_downstream(
+            [{"name": "a", "dependencies": []}],
+            "a",
+        )
+        assert blocked == []
+
+    def test_direct_downstream(self):
+        blocked = compute_blocked_downstream([
+            {"name": "a", "dependencies": []},
+            {"name": "b", "dependencies": ["a"]},
+        ], "a")
+        assert blocked == ["b"]
+
+    def test_transitive_downstream(self):
+        """
+        a -> b -> c
+        a -> d
+        """
+        blocked = compute_blocked_downstream([
+            {"name": "a", "dependencies": []},
+            {"name": "b", "dependencies": ["a"]},
+            {"name": "c", "dependencies": ["b"]},
+            {"name": "d", "dependencies": ["a"]},
+        ], "a")
+        assert set(blocked) == {"b", "c", "d"}
+
+    def test_diamond_downstream(self):
+        """
+        a -> b -> d
+        a -> c -> d
+        """
+        blocked = compute_blocked_downstream([
+            {"name": "a", "dependencies": []},
+            {"name": "b", "dependencies": ["a"]},
+            {"name": "c", "dependencies": ["a"]},
+            {"name": "d", "dependencies": ["b", "c"]},
+        ], "a")
+        assert set(blocked) == {"b", "c", "d"}
+
+    def test_partial_failure(self):
+        """
+        a -> b
+        c -> d
+        If b fails, only b's downstream is blocked (none).
+        If a fails, b is blocked but c, d are not.
+        """
+        subtasks = [
+            {"name": "a", "dependencies": []},
+            {"name": "b", "dependencies": ["a"]},
+            {"name": "c", "dependencies": []},
+            {"name": "d", "dependencies": ["c"]},
+        ]
+        blocked_a = compute_blocked_downstream(subtasks, "a")
+        assert blocked_a == ["b"]
+
+        blocked_b = compute_blocked_downstream(subtasks, "b")
+        assert blocked_b == []
+
+        blocked_c = compute_blocked_downstream(subtasks, "c")
+        assert blocked_c == ["d"]
+
+    def test_nonexistent_task(self):
+        blocked = compute_blocked_downstream(
+            [{"name": "a", "dependencies": []}],
+            "nonexistent",
+        )
+        assert blocked == []
+
+    def test_results_are_sorted(self):
+        blocked = compute_blocked_downstream([
+            {"name": "a", "dependencies": []},
+            {"name": "d", "dependencies": ["a"]},
+            {"name": "b", "dependencies": ["a"]},
+            {"name": "c", "dependencies": ["a"]},
+        ], "a")
+        assert blocked == ["b", "c", "d"]

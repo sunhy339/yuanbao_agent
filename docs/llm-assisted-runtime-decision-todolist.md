@@ -183,9 +183,9 @@ LLM-assisted proposals guarded by deterministic runtime validators.
 - [ ] Let LLM propose completed/failed/skipped summary.
 - [ ] Validate raw trace remains available.
 - [ ] Validate source event links.
-- [ ] Validate unverified artifacts are not claimed complete.
-- [ ] Add tests for trace summary linked to event ranges.
-- [ ] Add tests for final synthesis with mixed child outcomes.
+- [x] Validate unverified artifacts are not claimed complete.
+- [x] Add tests for trace summary linked to event ranges.
+- [x] Add tests for final synthesis with mixed child outcomes.
 
 ## P11: TODO and Roadmap Maintenance
 

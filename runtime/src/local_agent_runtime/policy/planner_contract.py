@@ -142,6 +142,11 @@ def validate_agent_profile(profile: dict[str, Any]) -> list[str]:
         elif len(verification) == 0:
             reasons.append("verificationRequirements must be non-empty if provided")
 
+    # Prompt (optional string with task-specific instructions)
+    prompt = profile.get("prompt")
+    if prompt is not None and not isinstance(prompt, str):
+        reasons.append("prompt must be a string")
+
     return reasons
 
 

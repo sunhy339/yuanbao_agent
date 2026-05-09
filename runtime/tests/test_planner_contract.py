@@ -436,6 +436,35 @@ class TestAgentProfileExpectedArtifacts:
         assert reasons == []
 
 
+class TestAgentProfilePrompt:
+    def test_valid_prompt(self):
+        reasons = validate_agent_profile({
+            "name": "Explorer", "baseType": "explorer", "mission": "m",
+            "prompt": "Search for all Python files in the src/ directory.",
+        })
+        assert reasons == []
+
+    def test_prompt_not_string(self):
+        reasons = validate_agent_profile({
+            "name": "Explorer", "baseType": "explorer", "mission": "m",
+            "prompt": 42,
+        })
+        assert any("prompt must be a string" in r for r in reasons)
+
+    def test_no_prompt_passes(self):
+        reasons = validate_agent_profile({
+            "name": "Explorer", "baseType": "explorer", "mission": "m",
+        })
+        assert reasons == []
+
+    def test_empty_prompt_passes(self):
+        reasons = validate_agent_profile({
+            "name": "Explorer", "baseType": "explorer", "mission": "m",
+            "prompt": "",
+        })
+        assert reasons == []
+
+
 class TestAgentProfileHandoffNotes:
     def test_valid_handoff_notes(self):
         reasons = validate_agent_profile({
@@ -648,3 +677,124 @@ class TestBlockedDownstream:
             {"name": "c", "dependencies": ["a"]},
         ], "a")
         assert blocked == ["b", "c", "d"]
+
+
+# ---------------------------------------------------------------------------
+# P7: Planner proposal repair after rejection
+# ---------------------------------------------------------------------------
+
+
+class TestPlannerProposalRepair:
+    """Tests for repairing planner output after initial rejection.
+
+    Simulates: planner proposes → validator rejects → planner repairs → accepted.
+    """
+
+    def _repairable_output(self) -> dict:
+        """Output with fixable issues: unsafe tool and unknown dependency."""
+        return {
+            "title": "Build music player",
+            "subtasks": [
+                {
+                    "name": "explorer",
+                    "baseType": "explorer",
+                    "mission": "Explore workspace",
+                    "dependencies": [],
+                    "allowedTools": ["task"],  # unsafe
+                },
+                {
+                    "name": "worker",
+                    "baseType": "worker",
+                    "mission": "Build UI",
+                    "dependencies": ["nonexistent"],  # unknown dep
+                    "ownedScope": ["src/"],
+                },
+            ],
+        }
+
+    def test_initial_rejection_reasons(self):
+        """First proposal has issues."""
+        reasons = validate_planner_output(self._repairable_output())
+        assert len(reasons) >= 2
+        assert any("Unsafe tool" in r for r in reasons)
+        assert any("unknown dependency" in r for r in reasons)
+
+    def test_repair_unsafe_tool(self):
+        """Replace unsafe tool with safe one → one less rejection."""
+        output = self._repairable_output()
+        output["subtasks"][0]["allowedTools"] = ["read_file", "search_files"]
+        reasons = validate_planner_output(output)
+        assert not any("Unsafe tool" in r for r in reasons)
+        assert any("unknown dependency" in r for r in reasons)
+
+    def test_repair_unknown_dependency(self):
+        """Fix unknown dependency → one less rejection."""
+        output = self._repairable_output()
+        output["subtasks"][1]["dependencies"] = ["explorer"]
+        reasons = validate_planner_output(output)
+        assert any("Unsafe tool" in r for r in reasons)
+        assert not any("unknown dependency" in r for r in reasons)
+
+    def test_fully_repaired_output(self):
+        """Fix all issues → proposal accepted."""
+        output = {
+            "title": "Build music player",
+            "subtasks": [
+                {
+                    "name": "explorer",
+                    "baseType": "explorer",
+                    "mission": "Explore workspace",
+                    "dependencies": [],
+                    "allowedTools": ["read_file", "search_files"],
+                    "prompt": "Search all Python files.",
+                },
+                {
+                    "name": "worker",
+                    "baseType": "worker",
+                    "mission": "Build UI",
+                    "dependencies": ["explorer"],
+                    "ownedScope": ["src/ui/"],
+                    "allowedTools": ["read_file", "apply_patch"],
+                },
+            ],
+        }
+        reasons = validate_planner_output(output)
+        assert reasons == []
+
+    def test_repair_overlapping_scopes(self):
+        """Fix overlapping scopes and get accepted."""
+        output = {
+            "title": "T",
+            "subtasks": [
+                {"name": "a", "baseType": "worker", "mission": "m1",
+                 "ownedScope": ["src/"], "dependencies": []},
+                {"name": "b", "baseType": "worker", "mission": "m2",
+                 "ownedScope": ["src/"], "dependencies": []},
+            ],
+        }
+        # Initially rejected for overlapping scopes
+        reasons = validate_planner_output(output)
+        assert any("Overlapping" in r for r in reasons)
+
+        # Repair: assign distinct scopes
+        output["subtasks"][0]["ownedScope"] = ["src/ui/"]
+        output["subtasks"][1]["ownedScope"] = ["src/engine/"]
+        reasons = validate_planner_output(output)
+        assert reasons == []
+
+    def test_repair_high_risk_without_approval(self):
+        """Fix missing approval gates for high-risk task."""
+        output = {
+            "title": "T",
+            "subtasks": [
+                {"name": "a", "baseType": "worker", "mission": "m",
+                 "dependencies": [], "riskLevel": "high"},
+            ],
+        }
+        reasons = validate_planner_output(output)
+        assert any("approval gates" in r for r in reasons)
+
+        # Repair: add approval gates
+        output["subtasks"][0]["approvalGates"] = ["reviewer"]
+        reasons = validate_planner_output(output)
+        assert all("approval" not in r for r in reasons)

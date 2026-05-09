@@ -196,7 +196,7 @@ synthesis should use the system-wide decision framework.
 - [ ] Let LLM propose final synthesis hints.
 - [x] Define planner output schema.
 - [x] Include title.
-- [ ] Include prompt.
+- [x] Include prompt.
 - [x] Include agent type.
 - [x] Include priority.
 - [x] Include dependencies.
@@ -212,7 +212,7 @@ synthesis should use the system-wide decision framework.
 - [x] Reject planner output that requires approval but lacks a gate.
 - [x] Add tests for LLM planner proposal accepted by validator.
 - [x] Add tests for LLM planner proposal rejected by validator.
-- [ ] Add tests for LLM planner proposal repaired after rejection.
+- [x] Add tests for LLM planner proposal repaired after rejection.
 
 ## P8: DAG Scheduling
 

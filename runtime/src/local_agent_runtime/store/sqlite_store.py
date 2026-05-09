@@ -338,6 +338,18 @@ class SQLiteStore:
         ).fetchall()
         return {"messages": [self._serialize_message(dict(row)) for row in rows]}
 
+    def list_messages_by_task(self, task_id: str) -> list[dict[str, Any]]:
+        """Return all messages for a task, ordered by created_at."""
+        rows = self._conn.execute(
+            """
+            SELECT * FROM messages
+            WHERE task_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (task_id,),
+        ).fetchall()
+        return [self._serialize_message(dict(row)) for row in rows]
+
     # ── task_inbox ──────────────────────────────────────────────────────
 
     def create_inbox_entry(

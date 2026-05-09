@@ -36,13 +36,20 @@ def build_generation_report(
     })
     children = collab_result.get("tasks", [])
 
+    # Gather artifacts early so child entries can reference them
+    artifacts_result = store.list_artifacts({
+        "parentTaskId": parent_task_id,
+    })
+    artifacts = artifacts_result.get("artifacts", [])
+
     child_reports: list[dict[str, Any]] = []
     status_counts: dict[str, int] = {}
     for child in children:
         st = child.get("status", "unknown")
         status_counts[st] = status_counts.get(st, 0) + 1
+        child_id = child["id"]
         report_entry: dict[str, Any] = {
-            "taskId": child["id"],
+            "taskId": child_id,
             "title": child.get("title"),
             "status": st,
             "priority": child.get("priority"),
@@ -58,13 +65,49 @@ def build_generation_report(
         completed = child.get("completedAt")
         if claimed and completed:
             report_entry["durationMs"] = completed - claimed
-        child_reports.append(report_entry)
 
-    # Gather artifacts
-    artifacts_result = store.list_artifacts({
-        "parentTaskId": parent_task_id,
-    })
-    artifacts = artifacts_result.get("artifacts", [])
+        # P2 extended: execution mode and attempt count
+        meta = child.get("metadata") or {}
+        report_entry["executionMode"] = meta.get("executionMode", "default")
+        report_entry["attemptCount"] = meta.get("attemptCount", 1)
+
+        # P2 extended: structured error fields for failures
+        if st == "failed":
+            err = child.get("error") or {}
+            report_entry["errorCode"] = err.get("code") if isinstance(err, dict) else None
+            report_entry["errorMessage"] = err.get("message") if isinstance(err, dict) else str(err) if err else None
+            report_entry["retryable"] = err.get("retryable", False) if isinstance(err, dict) else False
+
+        # P2 extended: trace event counts by type and visibility
+        try:
+            trace_result = store.list_trace_events({"taskId": child_id, "limit": 5000})
+            trace_events = trace_result.get("traceEvents", [])
+            event_type_counts: dict[str, int] = {}
+            event_visibility_counts: dict[str, int] = {}
+            for evt in trace_events:
+                et = evt.get("type", "unknown")
+                event_type_counts[et] = event_type_counts.get(et, 0) + 1
+                ev = evt.get("visibility", "chat")
+                event_visibility_counts[ev] = event_visibility_counts.get(ev, 0) + 1
+            report_entry["traceEventCounts"] = event_type_counts
+            report_entry["traceVisibilityCounts"] = event_visibility_counts
+        except Exception:
+            pass
+
+        # P2 extended: message IDs and artifact IDs for the child task
+        try:
+            msgs_result = store.list_messages_by_task(child_id)
+            report_entry["messageIds"] = [m["id"] for m in msgs_result]
+        except Exception:
+            report_entry["messageIds"] = []
+
+        child_artifacts = [
+            a for a in artifacts
+            if a.get("producerTaskId") == child_id
+        ]
+        report_entry["artifactIds"] = [a["id"] for a in child_artifacts]
+
+        child_reports.append(report_entry)
 
     artifact_summaries: list[dict[str, Any]] = []
     artifact_kind_counts: dict[str, int] = {}

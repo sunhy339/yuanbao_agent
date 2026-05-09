@@ -198,7 +198,7 @@ class TestCompositeValidator:
 
     def test_other_kind_schema_only(self):
         reasons = validate_proposal("model_policy", {
-            "model": "gpt-4",
+            "model": "gpt-4o",
         })
         assert reasons == []
 

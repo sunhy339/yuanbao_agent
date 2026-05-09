@@ -92,13 +92,33 @@ class ContextBuilder:
 
         # Resolve skill preset if skill_id is provided
         skill_preset = self._resolve_skill(skill_id)
+        filtered_tool_names: list[str] | None = None
+        original_tool_names: list[str] | None = None
         if skill_preset is not None:
-            whitelist = set(skill_preset.tool_whitelist)
-            # Always include memory and scratchpad tools if present
-            for t in tools:
-                if t.get("name", "").startswith(("memory.", "scratchpad.")):
-                    whitelist.add(t["name"])
-            tools = [t for t in tools if t.get("name") in whitelist]
+            original_tool_names = [t.get("name", "") for t in tools]
+            from ..skills.types import ToolPolicy
+            policy = skill_preset.tool_policy
+
+            if policy == ToolPolicy.INHERIT_ALL:
+                # All tools available — no filtering
+                pass
+            elif policy == ToolPolicy.INHERIT_MCP:
+                # Whitelist for built-in tools, but all MCP tools pass through
+                whitelist = set(skill_preset.tool_whitelist)
+                for t in tools:
+                    if t.get("name", "").startswith(("memory.", "scratchpad.", "mcp__")):
+                        whitelist.add(t["name"])
+                filtered_tool_names = [t.get("name", "") for t in tools if t.get("name") in whitelist]
+                tools = [t for t in tools if t.get("name") in whitelist]
+            else:
+                # strict_whitelist (default)
+                whitelist = set(skill_preset.tool_whitelist)
+                # Always include memory and scratchpad tools if present
+                for t in tools:
+                    if t.get("name", "").startswith(("memory.", "scratchpad.")):
+                        whitelist.add(t["name"])
+                filtered_tool_names = [t.get("name", "") for t in tools if t.get("name") in whitelist]
+                tools = [t for t in tools if t.get("name") in whitelist]
 
             # Inject skill parameter constraints into provider config
             if skill_preset.parameter_constraints:
@@ -155,6 +175,8 @@ class ContextBuilder:
                 "tool_count": len(tools),
                 "skill_id": skill_id,
                 "token_estimate": budget_stats.get("estimatedTokens", 0),
+                "filtered_tool_names": filtered_tool_names,
+                "original_tool_names": original_tool_names,
             },
             "lightweight": lightweight,
         }

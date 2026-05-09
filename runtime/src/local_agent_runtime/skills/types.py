@@ -3,7 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
+
+
+class ToolPolicy(str, Enum):
+    """Controls how a skill filters available tools.
+
+    - ``strict_whitelist``: Only tools listed in ``tool_whitelist`` are available
+      (plus ``memory.*`` and ``scratchpad.*`` which are always included).
+    - ``inherit_all``: All registered tools are available (``tool_whitelist`` is
+      ignored).
+    - ``inherit_mcp``: Built-in tools are filtered by ``tool_whitelist`` as
+      usual, but all MCP tools (``mcp__*`` prefix) are always available.
+    """
+
+    STRICT_WHITELIST = "strict_whitelist"
+    INHERIT_ALL = "inherit_all"
+    INHERIT_MCP = "inherit_mcp"
 
 
 @dataclass(slots=True)
@@ -17,6 +34,7 @@ class SkillPreset:
     tool_whitelist: list[str]
     parameter_constraints: dict[str, Any]
     category: str
+    tool_policy: ToolPolicy = ToolPolicy.STRICT_WHITELIST
     is_builtin: bool = True
     created_at: int = 0
     updated_at: int = 0

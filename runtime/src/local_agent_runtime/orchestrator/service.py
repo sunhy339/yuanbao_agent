@@ -963,6 +963,8 @@ class Orchestrator:
         context = self._context_builder.build(session_id=session["id"], goal=goal, skill_id=routing.skill_id, lightweight=False)
         # Inject routing decision into context as a plain dict for JSON safety.
         context["routing"] = routing_dict
+        # Emit tool filter event if skill filtering was applied
+        self._maybe_publish_tool_filter(context, routing.skill_id)
         logger.info(
             "Routing decision: scenario=%s strategy=%s confidence=%.2f max_steps=%d skill=%s",
             routing.scenario.value, routing.strategy.value,
@@ -1725,6 +1727,8 @@ class Orchestrator:
                 context = worker._context_builder.build(
                     session_id=session_id, goal=goal, skill_id=skill_id, lightweight=False,
                 )
+                # Emit tool filter event if skill filtering was applied
+                worker._maybe_publish_tool_filter(context, skill_id)
                 if routing is not None:
                     context["routing"] = routing
                 plan = worker._planner.plan(goal, context=context)
@@ -3911,6 +3915,30 @@ class Orchestrator:
                 summary=str(exc),
                 error_code="PATCH_APPLY_FAILED",
             )
+
+    def _maybe_publish_tool_filter(self, context: dict[str, Any], skill_id: str | None) -> None:
+        """Publish skill.tools.filtered event when a skill filtered the available tools."""
+        if not skill_id:
+            return
+        snapshot_meta = context.get("snapshot_metadata") or {}
+        filtered_names = snapshot_meta.get("filtered_tool_names")
+        if filtered_names is None:
+            return
+        task_id = context.get("task_id") or ""
+        session_id = context.get("session_id", "")
+        task = {"id": task_id, "goal": context.get("goal", "")}
+        original_names = snapshot_meta.get("original_tool_names") or [t.get("name", "") for t in context.get("tools", [])]
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="skill.tools.filtered",
+            payload={
+                "skillId": skill_id,
+                "allowedTools": filtered_names,
+                "filteredOut": [n for n in original_names if n not in filtered_names],
+                "policy": (context.get("routing") or {}).get("tool_policy", "strict_whitelist"),
+            },
+        )
 
     def _publish(self, session_id: str, task: dict[str, Any], event_type: str, payload: dict[str, Any]) -> None:
         if event_type.startswith("task."):

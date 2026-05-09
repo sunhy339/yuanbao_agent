@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..store.sqlite_store import SQLiteStore
-from .types import BUILTIN_SKILLS, SkillPreset
+from .types import BUILTIN_SKILLS, SkillPreset, ToolPolicy
 
 
 class SkillRegistry:
@@ -30,6 +30,7 @@ class SkillRegistry:
                 tool_whitelist=skill.tool_whitelist,
                 parameter_constraints=skill.parameter_constraints,
                 category=skill.category,
+                tool_policy=skill.tool_policy.value if skill.tool_policy else "strict_whitelist",
                 is_builtin=True,
             )
 
@@ -65,6 +66,11 @@ class SkillRegistry:
 
     @staticmethod
     def _row_to_preset(row: dict[str, Any]) -> SkillPreset:
+        raw_policy = row.get("tool_policy", "strict_whitelist") or "strict_whitelist"
+        try:
+            tool_policy = ToolPolicy(raw_policy)
+        except ValueError:
+            tool_policy = ToolPolicy.STRICT_WHITELIST
         return SkillPreset(
             id=row["id"],
             name=row["name"],
@@ -73,6 +79,7 @@ class SkillRegistry:
             tool_whitelist=row.get("tool_whitelist", []),
             parameter_constraints=row.get("parameter_constraints", {}),
             category=row.get("category", "custom"),
+            tool_policy=tool_policy,
             is_builtin=bool(row.get("is_builtin", False)),
             created_at=row.get("created_at", 0),
             updated_at=row.get("updated_at", 0),

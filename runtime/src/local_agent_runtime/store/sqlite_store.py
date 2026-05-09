@@ -2826,12 +2826,13 @@ class SQLiteStore:
         tool_whitelist = params.get("tool_whitelist", [])
         parameter_constraints = params.get("parameter_constraints", {})
         category = params.get("category", "custom")
+        tool_policy = params.get("tool_policy", "strict_whitelist")
         now = self.now()
         self._conn.execute(
             """
             INSERT INTO skill_presets (id, name, description, system_prompt, tool_whitelist,
-                                        parameter_constraints, category, is_builtin, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                                        parameter_constraints, category, tool_policy, is_builtin, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             """,
             (
                 skill_id,
@@ -2841,6 +2842,7 @@ class SQLiteStore:
                 json.dumps(tool_whitelist, ensure_ascii=False),
                 json.dumps(parameter_constraints, ensure_ascii=False),
                 category,
+                tool_policy,
                 now,
                 now,
             ),
@@ -2867,6 +2869,8 @@ class SQLiteStore:
             updates["tool_whitelist"] = json.dumps(params["tool_whitelist"], ensure_ascii=False)
         if "parameter_constraints" in params:
             updates["parameter_constraints"] = json.dumps(params["parameter_constraints"], ensure_ascii=False)
+        if "tool_policy" in params:
+            updates["tool_policy"] = params["tool_policy"]
         if not updates:
             return {"skill": self._serialize_skill(existing)}
         updates["updated_at"] = self.now()
@@ -2897,14 +2901,15 @@ class SQLiteStore:
     def upsert_skill(self, skill_id: str, *, name: str, description: str,
                      system_prompt: str, tool_whitelist: list[str],
                      parameter_constraints: dict[str, Any], category: str,
+                     tool_policy: str = "strict_whitelist",
                      is_builtin: bool = True) -> dict[str, Any]:
         """Upsert a skill preset (used for loading built-in skills)."""
         now = self.now()
         self._conn.execute(
             """
             INSERT INTO skill_presets (id, name, description, system_prompt, tool_whitelist,
-                                        parameter_constraints, category, is_builtin, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        parameter_constraints, category, tool_policy, is_builtin, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 description = excluded.description,
@@ -2912,6 +2917,7 @@ class SQLiteStore:
                 tool_whitelist = excluded.tool_whitelist,
                 parameter_constraints = excluded.parameter_constraints,
                 category = excluded.category,
+                tool_policy = excluded.tool_policy,
                 updated_at = excluded.updated_at
             """,
             (
@@ -2922,6 +2928,7 @@ class SQLiteStore:
                 json.dumps(tool_whitelist, ensure_ascii=False),
                 json.dumps(parameter_constraints, ensure_ascii=False),
                 category,
+                tool_policy,
                 1 if is_builtin else 0,
                 now,
                 now,
@@ -3406,6 +3413,7 @@ class SQLiteStore:
                 tool_whitelist TEXT NOT NULL,
                 parameter_constraints TEXT NOT NULL DEFAULT '{}',
                 category TEXT NOT NULL DEFAULT 'custom',
+                tool_policy TEXT NOT NULL DEFAULT 'strict_whitelist',
                 is_builtin INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL

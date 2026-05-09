@@ -151,6 +151,18 @@ class WorkerRunner:
         )
         completed = completion["task"]
         final_worker = completion["worker"]
+
+        # P4: Register artifact candidates from child executor output
+        artifact_ids = self._register_artifact_candidates(
+            execution=execution,
+            task=completed,
+            request=request,
+        )
+
+        extra_payload = dict(execution["payload"]) if isinstance(execution["payload"], dict) else {}
+        if artifact_ids:
+            extra_payload["artifactIds"] = artifact_ids
+
         message = self._collaboration.send_agent_message(
             {
                 "senderWorkerId": final_worker["id"],
@@ -162,7 +174,7 @@ class WorkerRunner:
                     task=completed,
                     worker=final_worker,
                     execution_mode=execution["executionMode"],
-                    extra=execution["payload"],
+                    extra=extra_payload,
                 ),
             }
         )["message"]
@@ -584,6 +596,47 @@ class WorkerRunner:
         worker["currentTaskId"] = context.task["id"]
         return worker
 
+    def _register_artifact_candidates(
+        self,
+        *,
+        execution: dict[str, Any],
+        task: dict[str, Any],
+        request: ChildTaskRequest,
+    ) -> list[str]:
+        """P4: Register artifact candidates from child executor output."""
+        candidates = execution.get("artifacts")
+        if not isinstance(candidates, list) or not candidates:
+            return []
+        store = getattr(self._collaboration, "store", None) or getattr(self._collaboration, "_store", None)
+        if store is None:
+            return []
+        session_id = request.session_id or task.get("sessionId", "")
+        parent_task_id = request.parent_runtime_task_id
+        if not session_id or not parent_task_id:
+            return []
+        artifact_ids: list[str] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            kind = candidate.get("kind")
+            if not isinstance(kind, str) or not kind:
+                continue
+            try:
+                result = store.create_artifact({
+                    "sessionId": session_id,
+                    "parentTaskId": parent_task_id,
+                    "producerTaskId": task["id"],
+                    "kind": kind,
+                    "title": candidate.get("title"),
+                    "description": candidate.get("description"),
+                    "content": candidate.get("content", {}),
+                    "metadata": candidate.get("metadata", {}),
+                })
+                artifact_ids.append(result["artifact"]["id"])
+            except (ValueError, KeyError):
+                continue
+        return artifact_ids
+
     def _normalize_execution_result(self, *, request: ChildTaskRequest, output: Any) -> dict[str, Any]:
         if isinstance(output, str):
             summary = output.strip() or self._inline_summary()
@@ -616,6 +669,7 @@ class WorkerRunner:
             "executionMode": execution_mode,
             "result": result,
             "payload": payload,
+            "artifacts": output.get("artifacts") if isinstance(output, dict) else None,
         }
 
     def _fail_child_task(

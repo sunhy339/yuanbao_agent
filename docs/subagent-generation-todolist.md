@@ -126,9 +126,9 @@ synthesis should use the system-wide decision framework.
 
 ## P4: Result Message and Artifact Linking
 
-- [ ] Let child executor output artifact candidates in a structured field.
+- [x] Let child executor output artifact candidates in a structured field.
 - [x] Register artifacts when a child task completes.
-- [ ] Attach artifact ids to `collab.message.sent` payload.
+- [x] Attach artifact ids to `collab.message.sent` payload.
 - [x] Attach artifact ids to the child task result metadata.
 - [x] Add report query support for artifact references.
 - [x] Add tests proving message-to-artifact lookup.

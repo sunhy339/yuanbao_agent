@@ -3948,14 +3948,17 @@ class Orchestrator:
         - "panel": child/worker progress visible in task panel
         - "trace": fine-grained token/tool details for debugging
         """
-        # Trace-level: token streams and tool call details
-        if event_type in {"assistant.token", "message.delta", "tool.call.started", "tool.call.completed", "tool.call.failed"}:
+        task_role = task.get("role", "root")
+        # Root streaming deltas are user-facing chat output; child deltas stay in trace.
+        if event_type in {"assistant.token", "message.delta"}:
+            return "chat" if task_role == "root" else "trace"
+        # Trace-level: tool call details
+        if event_type in {"tool.call.started", "tool.call.completed", "tool.call.failed"}:
             return "trace"
         # Panel-level: child task lifecycle events
         if event_type.startswith("collab."):
             return "panel"
         # Panel-level: child task events detected via role
-        task_role = task.get("role", "root")
         if task_role != "root":
             if event_type.startswith(("task.", "message.")):
                 return "panel"

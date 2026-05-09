@@ -1623,6 +1623,8 @@ def test_streaming_emits_message_delta_with_message_id(runtime_harness: Any, tmp
     # Both event types should have been emitted (legacy compat)
     assert len(token_events) > 0, "Expected at least one assistant.token event"
     assert len(delta_events) > 0, "Expected at least one message.delta event"
+    assert {event["visibility"] for event in delta_events} == {"chat"}
+    assert {event["visibility"] for event in token_events} == {"chat"}
 
     # message.delta events should carry messageId matching the task's active assistant message
     active_msg_id = task.get("activeAssistantMessageId")

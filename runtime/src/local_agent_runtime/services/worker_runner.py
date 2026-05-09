@@ -902,6 +902,13 @@ class WorkerRunner:
         }
         if request.profile is not None:
             metadata["profile"] = deepcopy(request.profile)
+            # P9: Extract writeScope from profile.ownedScope for enforcement
+            owned_scope = request.profile.get("ownedScope")
+            if owned_scope is not None:
+                if isinstance(owned_scope, str):
+                    metadata["writeScope"] = [owned_scope]
+                elif isinstance(owned_scope, list):
+                    metadata["writeScope"] = list(owned_scope)
         if request.cancellation is not None:
             metadata["cancellation"] = deepcopy(request.cancellation)
         if request.budget is not None:

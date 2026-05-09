@@ -27,6 +27,29 @@ AgentMessageKind = Literal["note", "handoff", "broadcast", "result", "system"]
 AgentRole = Literal["root", "planner", "worker", "reviewer", "summarizer"]
 EventVisibility = Literal["chat", "panel", "trace"]
 
+# Proposal kinds — P2 of llm-assisted-runtime-decision-todolist
+ProposalKind = Literal[
+    "intent_mode",
+    "decomposition",
+    "agent_profile",
+    "model_policy",
+    "skill_policy",
+    "tool_policy",
+    "mcp_policy",
+    "context_policy",
+    "memory_policy",
+    "artifact_contract",
+    "risk_policy",
+    "approval_policy",
+    "test_strategy",
+    "failure_recovery",
+    "event_presentation",
+    "synthesis_strategy",
+    "todo_maintenance",
+]
+
+ProposalStatus = Literal["pending", "accepted", "rejected", "applied"]
+
 
 @dataclass(slots=True)
 class Workspace:
@@ -199,3 +222,21 @@ class AgentMessage:
     task_id: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
     read_at: int | None = None
+
+
+@dataclass(slots=True)
+class ProposalRecord:
+    id: str
+    kind: ProposalKind
+    session_id: str
+    task_id: str
+    proposal: dict[str, Any]
+    status: ProposalStatus
+    created_at: int
+    updated_at: int
+    source: dict[str, Any] = field(default_factory=dict)
+    input_summary: str | None = None
+    validation_reasons: list[str] = field(default_factory=list)
+    applied_to: dict[str, Any] = field(default_factory=dict)
+    model_id: str | None = None
+    turn_id: str | None = None

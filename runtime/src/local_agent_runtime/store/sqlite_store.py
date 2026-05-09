@@ -3608,6 +3608,36 @@ class SQLiteStore:
         )
         self._conn.commit()
 
+        # proposal_records table — P1 of llm-assisted-runtime-decision-todolist
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS proposal_records (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                source_json TEXT NOT NULL DEFAULT '{}',
+                input_summary TEXT,
+                proposal_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                validation_reasons_json TEXT NOT NULL DEFAULT '[]',
+                applied_to_json TEXT NOT NULL DEFAULT '{}',
+                model_id TEXT,
+                turn_id TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proposal_records_session ON proposal_records(session_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proposal_records_task ON proposal_records(task_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_proposal_records_status ON proposal_records(status)"
+        )
+        self._conn.commit()
+
         # Ensure seq_counter table exists
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS seq_counter (
@@ -3917,6 +3947,146 @@ class SQLiteStore:
         rows = [dict(r) for r in self._conn.execute(query, args).fetchall()]
         return {"metrics": rows}
 
+    # -----------------------------------------------------------------------
+    # Proposal Record CRUD — P1 of llm-assisted-runtime-decision-todolist
+    # -----------------------------------------------------------------------
+
+    def _serialize_proposal(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            "sessionId": row["session_id"],
+            "taskId": row["task_id"],
+            "source": json.loads(row.get("source_json") or "{}"),
+            "inputSummary": row.get("input_summary"),
+            "proposal": json.loads(row.get("proposal_json") or "{}"),
+            "status": row["status"],
+            "validationReasons": json.loads(row.get("validation_reasons_json") or "[]"),
+            "appliedTo": json.loads(row.get("applied_to_json") or "{}"),
+            "modelId": row.get("model_id"),
+            "turnId": row.get("turn_id"),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    VALID_PROPOSAL_KINDS = frozenset({
+        "intent_mode", "decomposition", "agent_profile", "model_policy",
+        "skill_policy", "tool_policy", "mcp_policy", "context_policy",
+        "memory_policy", "artifact_contract", "risk_policy", "approval_policy",
+        "test_strategy", "failure_recovery", "event_presentation",
+        "synthesis_strategy", "todo_maintenance",
+    })
+
+    VALID_PROPOSAL_STATUSES = frozenset({"pending", "accepted", "rejected", "applied"})
+
+    def create_proposal(self, params: dict[str, Any]) -> dict[str, Any]:
+        kind = self._require_non_empty(params, "kind")
+        if kind not in self.VALID_PROPOSAL_KINDS:
+            raise ValueError(f"Invalid proposal kind: {kind!r}")
+        session_id = self._require_non_empty(params, "sessionId")
+        task_id = self._require_non_empty(params, "taskId")
+        proposal = self._dict_value(params.get("proposal", {}), "proposal")
+        source = self._dict_value(params.get("source", {}), "source")
+        input_summary = params.get("inputSummary")
+        model_id = params.get("modelId")
+        turn_id = params.get("turnId")
+        proposal_id = self.new_id("prop")
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO proposal_records (
+                id, kind, session_id, task_id, source_json, input_summary,
+                proposal_json, status, validation_reasons_json, applied_to_json,
+                model_id, turn_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '[]', '{}', ?, ?, ?, ?)
+            """,
+            (
+                proposal_id, kind, session_id, task_id,
+                json.dumps(source, ensure_ascii=False),
+                input_summary,
+                json.dumps(proposal, ensure_ascii=False),
+                model_id, turn_id, now, now,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM proposal_records WHERE id = ?", (proposal_id,)
+        ).fetchone()
+        return {"proposal": self._serialize_proposal(dict(row))}
+
+    def validate_proposal(self, params: dict[str, Any]) -> dict[str, Any]:
+        proposal_id = self._require_non_empty(params, "proposalId")
+        status = self._require_non_empty(params, "status")
+        if status not in ("accepted", "rejected"):
+            raise ValueError(f"Validation status must be 'accepted' or 'rejected', got {status!r}")
+        reasons = self._string_list(params.get("reasons", []), "reasons")
+        now = self.now()
+        row = self._conn.execute(
+            "SELECT * FROM proposal_records WHERE id = ?", (proposal_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Proposal not found: {proposal_id}")
+        current = dict(row)
+        if current["status"] != "pending":
+            raise ValueError(f"Proposal {proposal_id} has status {current['status']!r}, expected 'pending'")
+        self._conn.execute(
+            "UPDATE proposal_records SET status = ?, validation_reasons_json = ?, updated_at = ? WHERE id = ?",
+            (status, json.dumps(reasons, ensure_ascii=False), now, proposal_id),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM proposal_records WHERE id = ?", (proposal_id,)
+        ).fetchone()
+        return {"proposal": self._serialize_proposal(dict(row))}
+
+    def apply_proposal(self, params: dict[str, Any]) -> dict[str, Any]:
+        proposal_id = self._require_non_empty(params, "proposalId")
+        applied_to = self._dict_value(params.get("appliedTo", {}), "appliedTo")
+        now = self.now()
+        row = self._conn.execute(
+            "SELECT * FROM proposal_records WHERE id = ?", (proposal_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Proposal not found: {proposal_id}")
+        current = dict(row)
+        if current["status"] != "accepted":
+            raise ValueError(f"Proposal {proposal_id} has status {current['status']!r}, expected 'accepted'")
+        self._conn.execute(
+            "UPDATE proposal_records SET status = 'applied', applied_to_json = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(applied_to, ensure_ascii=False), now, proposal_id),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM proposal_records WHERE id = ?", (proposal_id,)
+        ).fetchone()
+        return {"proposal": self._serialize_proposal(dict(row))}
+
+    def list_proposals(self, params: dict[str, Any]) -> dict[str, Any]:
+        filters = []
+        args: list[Any] = []
+        session_id = params.get("sessionId")
+        if session_id:
+            filters.append("session_id = ?")
+            args.append(session_id)
+        task_id = params.get("taskId")
+        if task_id:
+            filters.append("task_id = ?")
+            args.append(task_id)
+        kind = params.get("kind")
+        if kind:
+            filters.append("kind = ?")
+            args.append(kind)
+        status = params.get("status")
+        if status:
+            filters.append("status = ?")
+            args.append(status)
+        limit = min(int(params.get("limit") or 100), 500)
+        where = f" WHERE {' AND '.join(filters)}" if filters else ""
+        query = f"SELECT * FROM proposal_records{where} ORDER BY created_at DESC LIMIT ?"
+        args.append(limit)
+        rows = [dict(r) for r in self._conn.execute(query, args).fetchall()]
+        return {"proposals": [self._serialize_proposal(r) for r in rows]}
+
     def _ensure_collaboration_task_columns_original(self) -> None:
         pass
 
@@ -3935,5 +4105,14 @@ class SQLiteStore:
         }
         if "visibility" not in trace_columns:
             self._conn.execute("ALTER TABLE trace_events ADD COLUMN visibility TEXT NOT NULL DEFAULT 'chat'")
+
+        # --- proposal_records model_id/turn_id columns ---
+        proposal_columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(proposal_records)").fetchall()
+        }
+        if proposal_columns and "model_id" not in proposal_columns:
+            self._conn.execute("ALTER TABLE proposal_records ADD COLUMN model_id TEXT")
+            self._conn.execute("ALTER TABLE proposal_records ADD COLUMN turn_id TEXT")
 
         self._conn.commit()

@@ -61,6 +61,31 @@ UNSAFE_CHILD_TOOLS = frozenset(
 )
 KNOWN_CHILD_TOOLS = frozenset((*DEFAULT_CHILD_TOOL_ALLOWLIST, "run_command", "apply_patch"))
 
+# Tool alias map: common aliases -> canonical tool names
+TOOL_ALIAS_MAP: dict[str, str] = {
+    "rg": "search_files",
+    "grep": "search_files",
+    "search": "search_files",
+    "cat": "read_file",
+    "read": "read_file",
+    "git status": "git_status",
+    "status": "git_status",
+    "git diff": "git_diff",
+    "diff": "git_diff",
+    "shell": "run_command",
+    "command": "run_command",
+    "patch": "apply_patch",
+}
+
+
+def resolve_tool_alias(name: str) -> str:
+    """Resolve a tool alias to its canonical name.
+
+    If the name is a known alias, return the canonical tool name.
+    Otherwise return the name unchanged.
+    """
+    return TOOL_ALIAS_MAP.get(name, name)
+
 
 def build_child_worker_env(
     *,
@@ -112,7 +137,11 @@ def normalize_child_tool_allowlist(value: Sequence[str] | str | None = None) -> 
     seen: set[str] = set()
     for item in raw_items:
         name = str(item).strip()
-        if not name or name in seen:
+        if not name:
+            continue
+        # Resolve alias before validation
+        name = resolve_tool_alias(name)
+        if name in seen:
             continue
         if name in UNSAFE_CHILD_TOOLS or name not in KNOWN_CHILD_TOOLS:
             raise ValueError(f"Tools not allowed for child workers: {name}")

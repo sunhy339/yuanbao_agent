@@ -138,7 +138,8 @@ def build_generation_report(
             "title": art.get("title"),
         })
 
-    return {
+    # P8: DAG dependency and execution order from persisted DAG plan
+    report: dict[str, Any] = {
         "parentTaskId": parent_task_id,
         "sessionId": session_id,
         "planningMode": planning_mode,
@@ -151,3 +152,26 @@ def build_generation_report(
             "artifactsByKind": artifact_kind_counts,
         },
     }
+
+    dag_state = store.get_pending_dag_state(parent_task_id)
+    if dag_state is not None:
+        plan_data = dag_state.get("plan")
+        if isinstance(plan_data, dict):
+            execution_order = plan_data.get("execution_order")
+            if isinstance(execution_order, list):
+                report["executionOrder"] = execution_order
+
+            subtasks = plan_data.get("subtasks")
+            if isinstance(subtasks, list):
+                dependency_order: list[dict[str, Any]] = []
+                for st in subtasks:
+                    if isinstance(st, dict):
+                        dependency_order.append({
+                            "id": st.get("id"),
+                            "title": st.get("title"),
+                            "dependencies": st.get("dependencies", []),
+                        })
+                if dependency_order:
+                    report["dependencyOrder"] = dependency_order
+
+    return report

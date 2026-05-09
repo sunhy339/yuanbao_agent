@@ -869,15 +869,16 @@ class WorkerRunner:
         )["worker"]
 
     def _create_inline_task(self, *, request: ChildTaskRequest) -> dict[str, Any]:
-        return self._collaboration.create_collaboration_task(
-            {
-                "sessionId": request.session_id,
-                "title": request.title,
-                "description": request.prompt,
-                "priority": request.priority,
-                "metadata": self._task_metadata(request),
-            }
-        )["task"]
+        params: dict[str, Any] = {
+            "sessionId": request.session_id,
+            "title": request.title,
+            "description": request.prompt,
+            "priority": request.priority,
+            "metadata": self._task_metadata(request),
+        }
+        if request.parent_runtime_task_id:
+            params["parentTaskId"] = request.parent_runtime_task_id
+        return self._collaboration.create_collaboration_task(params)["task"]
 
     def _worker_metadata(self, request: ChildTaskRequest) -> dict[str, Any]:
         metadata: dict[str, Any] = {

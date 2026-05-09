@@ -12,8 +12,8 @@ synthesis should use the system-wide decision framework.
 
 ## P0: Baseline and Safety
 
-- [ ] Capture current behavior with a regression test for headless multi-subagent dispatch.
-- [ ] Assert parent task id, child task ids, worker ids, statuses, messages, and trace event types.
+- [x] Capture current behavior with a regression test for headless multi-subagent dispatch.
+- [x] Assert parent task id, child task ids, worker ids, statuses, messages, and trace event types.
 - [x] Assert child collaboration lifecycle events use `visibility = "panel"`.
 - [x] Assert root assistant streaming events still use `visibility = "chat"`.
 - [x] Document the current supported child tool names.
@@ -91,8 +91,8 @@ synthesis should use the system-wide decision framework.
 - [x] Include started/completed timestamps and duration.
 - [x] Include result summary.
 - [x] Include error code, message, retryable flag, and attempts for failures.
-- [ ] Include trace event counts by type and visibility.
-- [ ] Include message ids and artifact ids.
+- [x] Include trace event counts by type and visibility.
+- [x] Include message ids and artifact ids.
 - [x] Add store/service helper to build the report from durable state.
 - [x] Add tests for completed child tasks.
 - [x] Add tests for failed child tasks.
@@ -220,23 +220,23 @@ synthesis should use the system-wide decision framework.
 - [x] Run independent read-only tasks concurrently.
 - [x] Keep dependent tasks queued until upstream completion.
 - [x] Block downstream tasks when upstream failure policy requires it.
-- [ ] Add parent report fields for dependency order and execution order.
+- [x] Add parent report fields for dependency order and execution order.
 - [x] Add tests for serial dependencies.
 - [x] Add tests for independent parallel tasks.
 - [x] Add tests for blocked downstream tasks.
 
 ## P9: Multi-Agent Write Safety
 
-- [ ] Add child task write scope metadata.
-- [ ] Enforce write scope for `apply_patch`.
-- [ ] Enforce explicit opt-in for `run_command`.
-- [ ] Detect overlapping write scopes before dispatch.
-- [ ] Record patch artifacts before applying them.
-- [ ] Add reviewer gate status.
-- [ ] Prevent final merge when reviewer rejects.
-- [ ] Add tests for out-of-scope patch rejection.
-- [ ] Add tests for patch conflict detection.
-- [ ] Add tests for reviewer rejection blocking finalization.
+- [x] Add child task write scope metadata.
+- [x] Enforce write scope for `apply_patch`.
+- [x] Enforce explicit opt-in for `run_command`.
+- [x] Detect overlapping write scopes before dispatch.
+- [x] Record patch artifacts before applying them.
+- [x] Add reviewer gate status.
+- [x] Prevent final merge when reviewer rejects.
+- [x] Add tests for out-of-scope patch rejection.
+- [x] Add tests for patch conflict detection.
+- [x] Add tests for reviewer rejection blocking finalization.
 
 ## P10: Frontend Visibility and Recovery
 

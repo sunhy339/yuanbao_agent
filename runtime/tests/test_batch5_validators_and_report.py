@@ -760,6 +760,47 @@ class TestExtendedGenerationReport:
         report = build_generation_report(store, parent_task_id=parent["id"])
         assert report["parentTaskId"] == parent["id"]
 
+    def test_report_child_trace_event_counts_by_type_and_visibility(self, store: SQLiteStore):
+        """P2: Child report entries include traceEventCounts and traceVisibilityCounts."""
+        parent = _create_parent_task(store)
+        child = _create_collab_child(store, parent["id"], title="explorer")
+        child_id = child["task"]["id"]
+
+        # Add collaboration trace events for the child task
+        store.append_collaboration_trace_event(
+            task_id=child_id,
+            event_type="tool_call",
+            source="child",
+            payload={"tool": "search_files"},
+            session_id="s1",
+            visibility="panel",
+        )
+        store.append_collaboration_trace_event(
+            task_id=child_id,
+            event_type="tool_call",
+            source="child",
+            payload={"tool": "read_file"},
+            session_id="s1",
+            visibility="panel",
+        )
+        store.append_collaboration_trace_event(
+            task_id=child_id,
+            event_type="message.delta",
+            source="child",
+            payload={"text": "..."},
+            session_id="s1",
+            visibility="trace",
+        )
+
+        report = build_generation_report(store, parent_task_id=parent["id"])
+        ct = report["childTasks"][0]
+        assert "traceEventCounts" in ct
+        assert ct["traceEventCounts"]["tool_call"] == 2
+        assert ct["traceEventCounts"]["message.delta"] == 1
+        assert "traceVisibilityCounts" in ct
+        assert ct["traceVisibilityCounts"]["panel"] == 2
+        assert ct["traceVisibilityCounts"]["trace"] == 1
+
     def test_report_includes_message_ids(self, store: SQLiteStore):
         parent = _create_parent_task(store)
         child = _create_collab_child(store, parent["id"])
@@ -819,3 +860,118 @@ class TestExtendedGenerationReport:
         assert "errorCode" not in ct
         assert "errorMessage" not in ct
         assert "retryable" not in ct
+
+    def test_report_includes_dag_execution_order(self, store: SQLiteStore):
+        """P8: Report includes executionOrder from DAG plan data."""
+        import json
+
+        parent = _create_parent_task(store)
+        _create_collab_child(store, parent["id"], title="explorer")
+        _create_collab_child(store, parent["id"], title="worker")
+
+        # Persist DAG plan data
+        plan = {
+            "subtasks": [
+                {"id": "st1", "title": "Explore", "dependencies": []},
+                {"id": "st2", "title": "Build UI", "dependencies": ["st1"]},
+            ],
+            "dag": {"st1": ["st2"], "st2": []},
+            "execution_order": ["st1", "st2"],
+        }
+        store.upsert_pending_dag_state(
+            task_id=parent["id"],
+            session_id="s1",
+            goal="build player",
+            context={},
+            plan_json=json.dumps(plan),
+            completed_ids=[],
+            failed_ids=[],
+            results={},
+        )
+
+        report = build_generation_report(store, parent_task_id=parent["id"])
+        assert "executionOrder" in report
+        assert report["executionOrder"] == ["st1", "st2"]
+
+    def test_report_includes_dag_dependency_order(self, store: SQLiteStore):
+        """P8: Report includes dependencyOrder from DAG plan subtasks."""
+        import json
+
+        parent = _create_parent_task(store)
+        _create_collab_child(store, parent["id"], title="explorer")
+        _create_collab_child(store, parent["id"], title="worker")
+        _create_collab_child(store, parent["id"], title="reviewer")
+
+        plan = {
+            "subtasks": [
+                {"id": "st1", "title": "Explore", "dependencies": []},
+                {"id": "st2", "title": "Build UI", "dependencies": ["st1"]},
+                {"id": "st3", "title": "Review", "dependencies": ["st2"]},
+            ],
+            "dag": {"st1": ["st2"], "st2": ["st3"], "st3": []},
+            "execution_order": ["st1", "st2", "st3"],
+        }
+        store.upsert_pending_dag_state(
+            task_id=parent["id"],
+            session_id="s1",
+            goal="build player",
+            context={},
+            plan_json=json.dumps(plan),
+            completed_ids=[],
+            failed_ids=[],
+            results={},
+        )
+
+        report = build_generation_report(store, parent_task_id=parent["id"])
+        assert "dependencyOrder" in report
+        deps = report["dependencyOrder"]
+        assert len(deps) == 3
+        assert deps[0] == {"id": "st1", "title": "Explore", "dependencies": []}
+        assert deps[1] == {"id": "st2", "title": "Build UI", "dependencies": ["st1"]}
+        assert deps[2] == {"id": "st3", "title": "Review", "dependencies": ["st2"]}
+
+    def test_report_no_dag_state_omits_order_fields(self, store: SQLiteStore):
+        """P8: Without DAG state, report omits executionOrder and dependencyOrder."""
+        parent = _create_parent_task(store)
+        _create_collab_child(store, parent["id"])
+
+        report = build_generation_report(store, parent_task_id=parent["id"])
+        assert "executionOrder" not in report
+        assert "dependencyOrder" not in report
+
+    def test_report_dag_parallel_execution_order(self, store: SQLiteStore):
+        """P8: Report correctly reflects parallel tasks in executionOrder."""
+        import json
+
+        parent = _create_parent_task(store)
+        for t in ["explorer", "worker_a", "worker_b", "reviewer"]:
+            _create_collab_child(store, parent["id"], title=t)
+
+        plan = {
+            "subtasks": [
+                {"id": "st1", "title": "Explore", "dependencies": []},
+                {"id": "st2a", "title": "Build UI", "dependencies": ["st1"]},
+                {"id": "st2b", "title": "Build Audio", "dependencies": ["st1"]},
+                {"id": "st3", "title": "Review", "dependencies": ["st2a", "st2b"]},
+            ],
+            "dag": {"st1": ["st2a", "st2b"], "st2a": ["st3"], "st2b": ["st3"], "st3": []},
+            "execution_order": ["st1", "st2a", "st2b", "st3"],
+        }
+        store.upsert_pending_dag_state(
+            task_id=parent["id"],
+            session_id="s1",
+            goal="build player",
+            context={},
+            plan_json=json.dumps(plan),
+            completed_ids=[],
+            failed_ids=[],
+            results={},
+        )
+
+        report = build_generation_report(store, parent_task_id=parent["id"])
+        assert report["executionOrder"] == ["st1", "st2a", "st2b", "st3"]
+        deps = report["dependencyOrder"]
+        st2a = next(d for d in deps if d["id"] == "st2a")
+        st2b = next(d for d in deps if d["id"] == "st2b")
+        assert st2a["dependencies"] == ["st1"]
+        assert st2b["dependencies"] == ["st1"]

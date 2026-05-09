@@ -798,6 +798,83 @@ class TestEdgeCases:
         assert turns2[0]["task_id"] == task2["id"]
         assert turns1[0]["id"] != turns2[0]["id"]
 
+    def test_supplement_inbox_ids_appear_in_second_turn_snapshot(self, tmp_path: Any) -> None:
+        """Inject supplement inbox entry; verify second turn's snapshot captures it."""
+        from unittest.mock import patch
+
+        tool_calls_0 = [{"id": "call_1", "name": "echo", "arguments": {"text": "hello"}}]
+
+        def echo(params: dict[str, Any]) -> dict[str, Any]:
+            return {"echo": params.get("text", "")}
+
+        provider = ScriptedProvider([
+            {"message": "Working...", "tool_calls": tool_calls_0},
+            {"final": "Done after supplement."},
+        ])
+
+        runtime = _make_runtime(tmp_path, provider, {"echo": echo})
+        session = _open_session(runtime, tmp_path)
+
+        fake_inbox_id = "ibx_injected_test"
+        fake_entry = {"id": fake_inbox_id, "content": "extra info", "task_id": ""}
+
+        original_get_pending = runtime.store.get_pending_supplements
+        call_count = [0]
+
+        def patched_get_pending(task_id: str) -> list[dict[str, Any]]:
+            call_count[0] += 1
+            if call_count[0] == 2:
+                # Second turn: return fake supplement so it gets captured in snapshot
+                return [{**fake_entry, "task_id": task_id}]
+            return original_get_pending(task_id)
+
+        with patch.object(runtime.store, "get_pending_supplements", side_effect=patched_get_pending):
+            task = _call_result(
+                _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "do something"}),
+                "task",
+            )
+
+        assert task["status"] == "completed"
+
+        # Second turn's snapshot should have the inbox entry ID
+        snapshots = runtime.store.list_context_snapshots(task["id"])
+        assert len(snapshots) == 2  # turn 0 + turn 1
+
+        snap_1 = snapshots[1]  # second turn
+        assert snap_1["supplement_inbox_ids_json"] is not None, (
+            "supplement_inbox_ids_json is None — supplement was not captured"
+        )
+        ids = json.loads(snap_1["supplement_inbox_ids_json"])
+        assert fake_inbox_id in ids, f"Expected {fake_inbox_id} in {ids}"
+
+    def test_skill_id_appears_in_snapshot(self, tmp_path: Any) -> None:
+        """When MetaRouter routes to a skill, snapshot captures skill_id."""
+        from local_agent_runtime.router.types import RoutingDecision, Scenario, ExecutionStrategy
+        from unittest.mock import patch
+
+        provider = ScriptedProvider([{"final": "Skill executed."}])
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+
+        skill_routing = RoutingDecision(
+            scenario=Scenario.CODE_EDIT,
+            strategy=ExecutionStrategy.REACT_STANDARD,
+            confidence=0.95,
+            skill_id="skill_code_review",
+            max_steps=5,
+        )
+
+        with patch.object(runtime.server._orchestrator._meta_router, "route", return_value=skill_routing):
+            task = _call_result(
+                _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "review my code"}),
+                "task",
+            )
+
+        assert task["status"] == "completed"
+        snapshots = runtime.store.list_context_snapshots(task["id"])
+        assert len(snapshots) >= 1
+        assert snapshots[0]["skill_id"] == "skill_code_review"
+
     def test_snapshot_json_fields_handle_none_gracefully(self, tmp_path: Any) -> None:
         """ContextSnapshot with all optional fields as None should store NULL."""
         store = _make_store(tmp_path)

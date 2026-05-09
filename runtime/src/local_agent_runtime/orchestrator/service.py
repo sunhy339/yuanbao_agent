@@ -4294,7 +4294,7 @@ class Orchestrator:
                 request_token_estimate=_msg_token_total,
             )
             # --- ContextSnapshot: capture what the model will see ---
-            snapshot_meta = (context.get("_build_result") or {}).get("snapshot_metadata", {})
+            snapshot_meta = (context.get("_build_result") or context).get("snapshot_metadata", {}) or {}
             snapshot = self._store.create_context_snapshot(
                 session_id=session_id,
                 task_id=task["id"],
@@ -4306,7 +4306,7 @@ class Orchestrator:
                 memory_ids=_step_memory_ids or None,
                 supplement_inbox_ids=_step_supplement_ids or None,
                 tool_count=len(cached_provider_tools),
-                skill_id=context.get("skill_id"),
+                skill_id=context.get("routing", {}).get("skill_id") or snapshot_meta.get("skill_id"),
                 token_estimate=_msg_token_total,
             )
             try:

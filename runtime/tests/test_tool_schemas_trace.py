@@ -208,6 +208,7 @@ def test_trace_append_list_orders_by_time_and_sequence(tmp_path: Path) -> None:
             payload={"toolName": "list_dir"},
             related_id="call_1",
             created_at=100,
+            visibility="trace",
         )
 
         response = store.list_trace_events({"taskId": task["id"]})
@@ -216,6 +217,7 @@ def test_trace_append_list_orders_by_time_and_sequence(tmp_path: Path) -> None:
         assert response["traceEvents"][1]["sessionId"] == session["id"]
         assert response["traceEvents"][1]["type"] == "tool.started"
         assert response["traceEvents"][1]["relatedId"] == "call_1"
+        assert response["traceEvents"][1]["visibility"] == "trace"
         assert response["traceEvents"][1]["payload"] == {"toolName": "list_dir"}
     finally:
         store.close()

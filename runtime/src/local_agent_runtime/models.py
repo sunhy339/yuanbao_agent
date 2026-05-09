@@ -24,6 +24,8 @@ ScheduledRunStatus = Literal["queued", "running", "completed", "failed", "cancel
 CollaborationTaskStatus = Literal["queued", "claimed", "running", "blocked", "completed", "failed", "cancelled"]
 AgentWorkerStatus = Literal["idle", "busy", "offline", "stopped", "failed"]
 AgentMessageKind = Literal["note", "handoff", "broadcast", "result", "system"]
+AgentRole = Literal["root", "planner", "worker", "reviewer", "summarizer"]
+EventVisibility = Literal["chat", "panel", "trace"]
 
 
 @dataclass(slots=True)
@@ -86,6 +88,7 @@ class RuntimeEvent:
     ts: int
     payload: dict[str, Any]
     seq: int = 0
+    visibility: EventVisibility = "chat"
 
 
 @dataclass(slots=True)

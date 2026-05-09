@@ -97,11 +97,13 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
 
     assert created_event["sessionId"] == session["id"]
     assert created_event["taskId"] == task["id"]
+    assert created_event["visibility"] == "panel"
     assert created_event["payload"]["task"]["id"] == task["id"]
     assert created_event["payload"]["task"]["title"] == "Publish collaboration events"
 
     assert claimed_event["sessionId"] == session["id"]
     assert claimed_event["taskId"] == task["id"]
+    assert claimed_event["visibility"] == "panel"
     assert claimed_event["payload"]["task"]["id"] == claimed["task"]["id"]
     assert claimed_event["payload"]["task"]["assignedWorkerId"] == worker["id"]
     assert claimed_event["payload"]["worker"]["id"] == worker["id"]
@@ -109,12 +111,14 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
 
     assert message_event["sessionId"] == session["id"]
     assert message_event["taskId"] == task["id"]
+    assert message_event["visibility"] == "panel"
     assert message_event["payload"]["message"]["id"] == message["id"]
     assert message_event["payload"]["message"]["senderWorkerId"] == worker["id"]
     assert message_event["payload"]["message"]["taskId"] == task["id"]
     assert message_event["payload"]["message"]["payload"]["confidence"] == 0.95
     assert completed_event["sessionId"] == session["id"]
     assert completed_event["taskId"] == task["id"]
+    assert completed_event["visibility"] == "panel"
     assert completed_event["payload"]["task"]["id"] == completed["id"]
     assert completed_event["payload"]["task"]["status"] == "completed"
     assert completed_event["payload"]["worker"]["status"] == "idle"
@@ -129,3 +133,4 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     ]
     assert trace_events[0]["sessionId"] == session["id"]
     assert trace_events[0]["taskId"] == task["id"]
+    assert {event["visibility"] for event in trace_events} == {"panel"}

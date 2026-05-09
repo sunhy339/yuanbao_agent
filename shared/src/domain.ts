@@ -53,6 +53,7 @@ export type TraceEventSource =
   | "task"
   | "assistant"
   | "runtime";
+export type EventVisibility = "chat" | "panel" | "trace";
 export type TraceEventType =
   | "provider.request"
   | "provider.response"
@@ -288,6 +289,7 @@ export interface TraceEventRecord<TPayload = unknown> {
   payload: TPayload;
   createdAt: number;
   sequence: number;
+  visibility?: EventVisibility;
 }
 
 export type ErrorSource = "task" | "command" | "patch" | "provider" | "tool";

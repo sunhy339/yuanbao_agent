@@ -39,4 +39,5 @@ class EventBus:
             "type": event.type,
             "ts": event.ts,
             "payload": event.payload,
+            "visibility": event.visibility,
         }

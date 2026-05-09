@@ -108,12 +108,14 @@ class CollaborationService:
         task_id: str,
         event_type: str,
         payload: dict[str, Any],
+        visibility: str = "panel",
     ) -> None:
         self._publish(
             session_id=session_id,
             task_id=task_id,
             event_type=event_type,
             payload=payload,
+            visibility=visibility,
         )
 
     def _publish_task_event(self, result: dict[str, Any], event_type: str) -> None:
@@ -258,7 +260,15 @@ class CollaborationService:
                 return task
         return None
 
-    def _publish(self, *, session_id: str, task_id: str, event_type: str, payload: dict[str, Any]) -> None:
+    def _publish(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        visibility: str = "panel",
+    ) -> None:
         event = RuntimeEvent(
             event_id=self._store.new_id("evt"),
             session_id=session_id,
@@ -266,6 +276,7 @@ class CollaborationService:
             type=event_type,
             ts=self._store.now(),
             payload=payload,
+            visibility=visibility,
         )
         self._event_bus.publish(event)
 

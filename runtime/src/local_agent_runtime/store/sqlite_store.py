@@ -676,6 +676,11 @@ class SQLiteStore:
         task_id = self.new_id("task")
         now = self.now()
         current_step = current_step or self._current_step_from_plan(plan)
+        valid_roles = {"root", "planner", "worker", "reviewer", "summarizer"}
+        effective_role = role or "root"
+        if effective_role not in valid_roles:
+            raise ValueError(f"Invalid task role: {effective_role!r}. Must be one of {sorted(valid_roles)}")
+        effective_root_task_id = root_task_id or task_id
         self._conn.execute(
             """
             INSERT INTO tasks (
@@ -699,8 +704,8 @@ class SQLiteStore:
                 json.dumps(routing, ensure_ascii=False) if routing else None,
                 now,
                 now,
-                root_task_id,
-                role or "root",
+                effective_root_task_id,
+                effective_role,
                 created_seq,
             ),
         )
@@ -1401,6 +1406,7 @@ class SQLiteStore:
         related_id: str | None = None,
         session_id: str | None = None,
         created_at: int | None = None,
+        visibility: str = "chat",
     ) -> dict[str, Any]:
         task_row = self._conn.execute(
             "SELECT session_id FROM tasks WHERE id = ?",
@@ -1418,6 +1424,7 @@ class SQLiteStore:
             payload=payload,
             related_id=related_id,
             created_at=created_at,
+            visibility=visibility,
         )
 
     def append_collaboration_trace_event(
@@ -1430,6 +1437,7 @@ class SQLiteStore:
         related_id: str | None = None,
         session_id: str | None = None,
         created_at: int | None = None,
+        visibility: str = "panel",
     ) -> dict[str, Any]:
         self.require_collaboration_task(task_id)
         return self._append_trace_event_row(
@@ -1440,6 +1448,7 @@ class SQLiteStore:
             payload=payload,
             related_id=related_id,
             created_at=created_at,
+            visibility=visibility,
         )
 
     def _append_trace_event_row(
@@ -1452,6 +1461,7 @@ class SQLiteStore:
         payload: Any,
         related_id: str | None = None,
         created_at: int | None = None,
+        visibility: str = "chat",
     ) -> dict[str, Any]:
         trace_id = self.new_id("trace")
         timestamp = self.now() if created_at is None else int(created_at)
@@ -1461,9 +1471,9 @@ class SQLiteStore:
         self._conn.execute(
             """
             INSERT INTO trace_events (
-                id, task_id, session_id, type, source, related_id, payload_json, created_at, sequence
+                id, task_id, session_id, type, source, related_id, payload_json, created_at, sequence, visibility
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trace_id,
@@ -1475,6 +1485,7 @@ class SQLiteStore:
                 payload_json,
                 timestamp,
                 sequence,
+                visibility,
             ),
         )
         self._conn.commit()
@@ -1500,6 +1511,7 @@ class SQLiteStore:
             bridge = payload.get("_bridge")
             if isinstance(bridge, dict) and bool(bridge.get("skipTraceMirror")):
                 return None
+        event_visibility = getattr(event, "visibility", "chat")
         if normalized_type.startswith("collab."):
             if not str(task_id).startswith("ctask_"):
                 return None
@@ -1511,6 +1523,7 @@ class SQLiteStore:
                 related_id=self._trace_related_id(payload),
                 payload=payload,
                 created_at=getattr(event, "ts", None),
+                visibility=event_visibility,
             )
         return self.append_trace_event(
             task_id=task_id,
@@ -1520,6 +1533,7 @@ class SQLiteStore:
             related_id=self._trace_related_id(payload),
             payload=payload,
             created_at=getattr(event, "ts", None),
+            visibility=event_visibility,
         )
 
     def list_trace_events(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -2467,6 +2481,7 @@ class SQLiteStore:
             "payload": json.loads(row["payload_json"]),
             "createdAt": row["created_at"],
             "sequence": row["sequence"],
+            "visibility": row.get("visibility", "chat"),
         }
 
     def _require_non_empty(self, params: dict[str, Any], key: str) -> str:
@@ -3283,7 +3298,8 @@ class SQLiteStore:
                 related_id TEXT,
                 payload_json TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
-                sequence INTEGER NOT NULL
+                sequence INTEGER NOT NULL,
+                visibility TEXT NOT NULL DEFAULT 'chat'
             );
 
             CREATE TABLE IF NOT EXISTS collaboration_tasks (
@@ -3647,6 +3663,7 @@ class SQLiteStore:
         for column, definition in expected.items():
             if column not in columns:
                 self._conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
+        self._conn.execute("UPDATE tasks SET root_task_id = id WHERE root_task_id IS NULL OR root_task_id = ''")
         self._conn.commit()
 
     def _ensure_message_columns(self) -> None:
@@ -3910,4 +3927,13 @@ class SQLiteStore:
         }
         if "error_json" not in columns:
             self._conn.execute("ALTER TABLE collaboration_tasks ADD COLUMN error_json TEXT")
+
+        # --- trace_events visibility column ---
+        trace_columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(trace_events)").fetchall()
+        }
+        if "visibility" not in trace_columns:
+            self._conn.execute("ALTER TABLE trace_events ADD COLUMN visibility TEXT NOT NULL DEFAULT 'chat'")
+
         self._conn.commit()

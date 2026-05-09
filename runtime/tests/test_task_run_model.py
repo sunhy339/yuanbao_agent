@@ -37,6 +37,7 @@ def test_task_run_fields_round_trip(tmp_path: Path) -> None:
         assert task["commands"] == []
         assert task["verification"] == []
         assert task["summary"] is None
+        assert task["rootTaskId"] == task["id"]
 
         updated = store.update_task(
             task_id=task["id"],
@@ -127,6 +128,7 @@ def test_legacy_task_table_migrates_task_run_columns(tmp_path: Path) -> None:
         assert task["commands"] == []
         assert task["verification"] == []
         assert task["summary"] is None
+        assert task["rootTaskId"] == "task_legacy"
 
         updated = store.update_task(
             task_id="task_legacy",

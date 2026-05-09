@@ -241,6 +241,7 @@ function rememberMockTrace(event: AgentEventEnvelope): void {
     payload: event.payload,
     createdAt: event.ts,
     sequence: mockState.traces.length + 1,
+    visibility: event.visibility,
   };
 
   mockState.traces = [...mockState.traces, trace].slice(-400);

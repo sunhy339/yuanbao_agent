@@ -9,6 +9,7 @@ import type {
   TaskCommandRun,
   TaskVerificationRecord,
   TaskStatus,
+  EventVisibility,
 } from "./domain";
 
 export type AgentEventType =
@@ -54,6 +55,7 @@ export interface AgentEventEnvelope<TPayload = unknown> {
   type: AgentEventType;
   ts: number;
   payload: TPayload;
+  visibility?: EventVisibility;
 }
 
 export interface TaskUpdatedPayload {

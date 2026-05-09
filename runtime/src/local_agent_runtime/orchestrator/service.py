@@ -3940,13 +3940,37 @@ class Orchestrator:
             },
         )
 
-    def _publish(self, session_id: str, task: dict[str, Any], event_type: str, payload: dict[str, Any]) -> None:
+    @staticmethod
+    def _infer_event_visibility(event_type: str, task: dict[str, Any]) -> str:
+        """Determine event visibility based on event type and task role.
+
+        - "chat": root-level user-facing output (messages, task status changes)
+        - "panel": child/worker progress visible in task panel
+        - "trace": fine-grained token/tool details for debugging
+        """
+        # Trace-level: token streams and tool call details
+        if event_type in {"assistant.token", "message.delta", "tool.call.started", "tool.call.completed", "tool.call.failed"}:
+            return "trace"
+        # Panel-level: child task lifecycle events
+        if event_type.startswith("collab."):
+            return "panel"
+        # Panel-level: child task events detected via role
+        task_role = task.get("role", "root")
+        if task_role != "root":
+            if event_type.startswith(("task.", "message.")):
+                return "panel"
+            return "trace"
+        # Chat-level: everything else for root tasks
+        return "chat"
+
+    def _publish(self, session_id: str, task: dict[str, Any], event_type: str, payload: dict[str, Any], *, visibility: str | None = None) -> None:
         if event_type.startswith("task."):
             payload = dict(payload)
             payload.setdefault("goal", task.get("goal"))
             payload.setdefault("acceptanceCriteria", list(task.get("acceptanceCriteria") or []))
             payload.setdefault("outOfScope", list(task.get("outOfScope") or []))
             payload.setdefault("currentStep", task.get("currentStep"))
+        effective_visibility = visibility or self._infer_event_visibility(event_type, task)
         # Enrich streaming token events with messageId and emit unified message.delta
         if event_type == "assistant.token":
             payload = dict(payload)
@@ -3963,6 +3987,7 @@ class Orchestrator:
                 type="message.delta",
                 ts=self._store.now(),
                 payload=delta_payload,
+                visibility=effective_visibility,
             )
             self._event_bus.publish(delta_event)
         event = RuntimeEvent(
@@ -3972,6 +3997,7 @@ class Orchestrator:
             type=event_type,
             ts=self._store.now(),
             payload=payload,
+            visibility=effective_visibility,
         )
         self._event_bus.publish(event)
 
@@ -3984,6 +4010,7 @@ class Orchestrator:
             type=event_type,
             ts=self._store.now(),
             payload=payload,
+            visibility="panel",
         )
         self._event_bus.publish(event)
 

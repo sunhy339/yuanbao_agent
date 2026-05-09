@@ -679,6 +679,11 @@ class Orchestrator:
                     "toolCount": len(schemas),
                     "toolNames": [s.get("name", "") for s in schemas],
                 })
+                self._publish_mcp_event("mcp.server.updated", {
+                    "serverId": server.get("id", ""),
+                    "serverName": server.get("name", ""),
+                    "toolCount": len(schemas),
+                })
             except Exception as exc:  # noqa: BLE001
                 self._record_mcp_connect_failure(span=span, server=server, phase="update", exc=exc)
         else:
@@ -2026,7 +2031,7 @@ class Orchestrator:
             event_type="assistant.message.completed",
             payload={"content": acknowledgement, "supplemental": True},
         )
-        return {"task": runtime_task}
+        return {"task": runtime_task, "acceptedMode": "supplement"}
 
     def _context_with_task_focus(self, context: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
         focused_context = {**context}
@@ -5294,6 +5299,16 @@ class Orchestrator:
                 "arguments": tool_arguments,
             },
         )
+        # MCP-specific lifecycle event
+        is_mcp_tool = tool_spec["name"].startswith("mcp__")
+        if is_mcp_tool:
+            parts = tool_spec["name"].split("__", 2)
+            mcp_server_id = parts[1] if len(parts) >= 2 else ""
+            self._publish_mcp_event("mcp.tool.started", {
+                "toolCallId": tool_call_id,
+                "toolName": tool_spec["name"],
+                "serverId": mcp_server_id,
+            })
         tool_span = self._tracer.start_span(
             "tool_call",
             trace_id=getattr(self, "_active_trace_id", None),
@@ -5314,6 +5329,13 @@ class Orchestrator:
                 "summary": f"Tool {tool_spec['name']} raised an exception: {exc}",
             }
             self._tracer.end_span(tool_span.span_id, status="error")
+            if is_mcp_tool:
+                self._publish_mcp_event("mcp.tool.failed", {
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_spec["name"],
+                    "serverId": mcp_server_id,
+                    "error": str(exc),
+                })
         if tool_spec["name"] == "run_command":
             command_log = result.get("commandLog") or {}
             command_id = command_log.get("id")
@@ -5458,6 +5480,13 @@ class Orchestrator:
                     "result": result,
                 },
             )
+            if is_mcp_tool:
+                self._publish_mcp_event("mcp.tool.failed", {
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_spec["name"],
+                    "serverId": mcp_server_id,
+                    "error": result.get("error", f"Tool returned status: {result.get('status')}"),
+                })
             return tool_result
 
         if tool_spec["name"] == "run_command":
@@ -5519,6 +5548,13 @@ class Orchestrator:
                 "result": result,
             },
         )
+        if is_mcp_tool:
+            self._publish_mcp_event("mcp.tool.completed", {
+                "toolCallId": tool_call_id,
+                "toolName": tool_spec["name"],
+                "serverId": mcp_server_id,
+                "ok": result.get("ok", True),
+            })
         return tool_result
 
     def _consume_budget_from_provider_response(

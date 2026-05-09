@@ -219,14 +219,14 @@ def test_message_send_attaches_supplement_to_open_task_without_replanning(tmp_pa
         current_step="Find snake gameplay files",
     )
 
-    returned_task = _call_result(
-        _rpc(
-            runtime,
-            "message.send",
-            {"sessionId": session["id"], "content": "also make the AI compare scores"},
-        ),
-        "task",
+    supplement_resp = _rpc(
+        runtime,
+        "message.send",
+        {"sessionId": session["id"], "content": "also make the AI compare scores"},
     )
+    returned_task = _call_result(supplement_resp, "task")
+    # Verify acceptedMode is returned for supplement
+    assert supplement_resp["result"]["acceptedMode"] == "supplement"
 
     assert returned_task["id"] == open_task["id"]
     assert returned_task["plan"] == original_plan
@@ -1730,6 +1730,33 @@ class TestStoreInbox:
         assert len(store.get_pending_supplements("task_2")) == 1
         store.close()
 
+    def test_created_seq_allocated(self, tmp_path: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        e1 = store.create_inbox_entry(task_id="task_1", session_id="sess_1", content="First")
+        e2 = store.create_inbox_entry(task_id="task_1", session_id="sess_1", content="Second")
+        assert e1["created_seq"] is not None
+        assert e2["created_seq"] is not None
+        assert e2["created_seq"] > e1["created_seq"]
+        store.close()
+
+    def test_list_task_inbox_items(self, tmp_path: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        store.create_inbox_entry(task_id="task_1", session_id="sess_1", content="A")
+        e2 = store.create_inbox_entry(task_id="task_1", session_id="sess_1", content="B")
+        store.mark_supplement_consumed(e2["id"], consumed_by_turn_id="step_1")
+        store.create_inbox_entry(task_id="task_1", session_id="sess_1", content="C")
+
+        items = store.list_task_inbox_items("task_1")
+        assert len(items) == 3
+        assert [i["content"] for i in items] == ["A", "B", "C"]
+        assert items[1]["status"] == "consumed"
+        store.close()
+
+    def test_list_task_inbox_items_empty(self, tmp_path: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        assert store.list_task_inbox_items("nonexistent") == []
+        store.close()
+
 
 def test_supplement_creates_inbox_entry_and_events(tmp_path: Any) -> None:
     """Verify _attach_supplemental_message writes to task_inbox and emits events."""
@@ -1865,4 +1892,383 @@ def test_attach_supplemental_message_emits_received_event(tmp_path: Any) -> None
     assert received_events[0]["payload"]["inboxEntryId"] == pending[0]["id"]
 
     store.close()
+
+
+# ── Edge case: supplement to tasks in various states ────────────────────────
+
+
+def test_supplement_to_completed_task_creates_new_task(tmp_path: Any) -> None:
+    """When the only task in session is completed, send_message creates a new task (not supplement)."""
+    provider = ScriptedProvider([{"final": "New task response."}])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    completed_task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="Already done",
+        plan=[],
+        status="completed",
+    )
+
+    resp = _rpc(
+        runtime,
+        "message.send",
+        {"sessionId": session["id"], "content": "follow-up question"},
+    )
+    new_task = _call_result(resp, "task")
+
+    # Should NOT be the completed task — a brand-new task was created
+    assert new_task["id"] != completed_task["id"]
+    assert new_task["status"] == "completed"
+    assert new_task["resultSummary"] == "New task response."
+
+
+def test_explicit_supplement_to_completed_task_rejected(tmp_path: Any) -> None:
+    """Explicit mode=supplement to a completed task raises error."""
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    completed_task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="Already done",
+        plan=[],
+        status="completed",
+    )
+
+    resp = _rpc(
+        runtime,
+        "message.send",
+        {
+            "sessionId": session["id"],
+            "content": "additional info",
+            "taskId": completed_task["id"],
+            "mode": "supplement",
+        },
+    )
+    # Should return error since completed task cannot be supplemented
+    assert "error" in resp
+    assert "not active" in resp["error"]["message"].lower() or "cannot supplement" in resp["error"]["message"].lower()
+
+
+def test_supplement_to_waiting_approval_task(tmp_path: Any) -> None:
+    """A task in waiting_approval status can receive supplements."""
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    waiting_task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="Waiting for approval",
+        plan=[{"id": "s1", "title": "Step 1", "status": "active"}],
+        current_step="Step 1",
+        status="waiting_approval",
+    )
+
+    resp = _rpc(
+        runtime,
+        "message.send",
+        {"sessionId": session["id"], "content": "please also add tests"},
+    )
+    result = resp["result"]
+    assert result["acceptedMode"] == "supplement"
+    assert result["task"]["id"] == waiting_task["id"]
+    assert not provider.calls
+
+
+def test_supplement_to_queued_task(tmp_path: Any) -> None:
+    """A task in queued status can receive supplements."""
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    queued_task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="Queued for later",
+        plan=[],
+        status="queued",
+    )
+
+    resp = _rpc(
+        runtime,
+        "message.send",
+        {"sessionId": session["id"], "content": "extra context for when this runs"},
+    )
+    result = resp["result"]
+    assert result["acceptedMode"] == "supplement"
+    assert result["task"]["id"] == queued_task["id"]
+    assert not provider.calls
+
+
+def test_supplement_to_paused_task(tmp_path: Any) -> None:
+    """A paused task can receive supplements."""
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    paused_task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="Paused task",
+        plan=[{"id": "s1", "title": "Step 1", "status": "active"}],
+        current_step="Step 1",
+        status="paused",
+    )
+
+    resp = _rpc(
+        runtime,
+        "message.send",
+        {"sessionId": session["id"], "content": "resume hint"},
+    )
+    result = resp["result"]
+    assert result["acceptedMode"] == "supplement"
+    assert result["task"]["id"] == paused_task["id"]
+
+
+def test_explicit_supplement_to_wrong_session_rejected(tmp_path: Any) -> None:
+    """Explicit supplement with taskId belonging to a different session is rejected."""
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    # Create a second workspace + session
+    workspace_root2 = tmp_path / "workspace2"
+    workspace_root2.mkdir()
+    ws2 = _call_result(
+        _rpc(runtime, "workspace.open", {"path": str(workspace_root2)}),
+        "workspace",
+    )
+    session2 = _call_result(
+        _rpc(runtime, "session.create", {"workspaceId": ws2["id"], "title": "Other"}),
+        "session",
+    )
+    other_task = runtime.store.create_task(
+        session_id=session2["id"],
+        task_type="edit",
+        goal="Other session task",
+        plan=[],
+        status="running",
+    )
+
+    resp = _rpc(
+        runtime,
+        "message.send",
+        {
+            "sessionId": session["id"],
+            "content": "should fail",
+            "taskId": other_task["id"],
+            "mode": "supplement",
+        },
+    )
+    assert "error" in resp
+
+
+# ── Multi-session isolation ─────────────────────────────────────────────────
+
+
+def test_multi_session_context_isolation(tmp_path: Any) -> None:
+    """Session A's messages do not leak into session B's provider context."""
+    calls_a: list[dict[str, Any]] = []
+    calls_b: list[dict[str, Any]] = []
+
+    class RecordingProvider:
+        def __init__(self, bucket: list[dict[str, Any]]) -> None:
+            self._bucket = bucket
+
+        def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+            self._bucket.append({"prompt": prompt, "context": context})
+            return {"final": "done"}
+
+    runtime = _make_runtime(tmp_path, None)
+
+    # Open two workspaces + sessions
+    ws1_root = tmp_path / "workspace_a"
+    ws1_root.mkdir()
+    ws2_root = tmp_path / "workspace_b"
+    ws2_root.mkdir()
+    ws1 = _call_result(_rpc(runtime, "workspace.open", {"path": str(ws1_root)}), "workspace")
+    ws2 = _call_result(_rpc(runtime, "workspace.open", {"path": str(ws2_root)}), "workspace")
+    session_a = _call_result(
+        _rpc(runtime, "session.create", {"workspaceId": ws1["id"], "title": "Session A"}),
+        "session",
+    )
+    session_b = _call_result(
+        _rpc(runtime, "session.create", {"workspaceId": ws2["id"], "title": "Session B"}),
+        "session",
+    )
+
+    # Send a message in session A with a recording provider
+    runtime.server._orchestrator._provider = RecordingProvider(calls_a)
+    task_a = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session_a["id"], "content": "remember project alpha"}),
+        "task",
+    )
+    assert task_a["status"] == "completed"
+    assert len(calls_a) == 1
+
+    # Send a message in session B
+    runtime.server._orchestrator._provider = RecordingProvider(calls_b)
+    task_b = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session_b["id"], "content": "remember project beta"}),
+        "task",
+    )
+    assert task_b["status"] == "completed"
+    assert len(calls_b) == 1
+
+    # Verify B's provider context does NOT contain A's content
+    b_messages = calls_b[0]["context"].get("messages") or []
+    b_text = " ".join(m.get("content", "") for m in b_messages if isinstance(m.get("content"), str))
+    assert "project alpha" not in b_text
+    assert "project beta" in b_text
+
+    # Verify A's provider context does NOT contain B's content
+    a_messages = calls_a[0]["context"].get("messages") or []
+    a_text = " ".join(m.get("content", "") for m in a_messages if isinstance(m.get("content"), str))
+    assert "project alpha" in a_text
+    assert "project beta" not in a_text
+
+
+def test_multi_session_tasks_dont_cross(tmp_path: Any) -> None:
+    """Tasks from different sessions are fully independent."""
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    ws1_root = tmp_path / "workspace_x"
+    ws1_root.mkdir()
+    ws2_root = tmp_path / "workspace_y"
+    ws2_root.mkdir()
+    ws1 = _call_result(_rpc(runtime, "workspace.open", {"path": str(ws1_root)}), "workspace")
+    ws2 = _call_result(_rpc(runtime, "workspace.open", {"path": str(ws2_root)}), "workspace")
+    session_a = _call_result(
+        _rpc(runtime, "session.create", {"workspaceId": ws1["id"], "title": "A"}),
+        "session",
+    )
+    session_b = _call_result(
+        _rpc(runtime, "session.create", {"workspaceId": ws2["id"], "title": "B"}),
+        "session",
+    )
+
+    # Create a running task in session A
+    task_a = runtime.store.create_task(
+        session_id=session_a["id"],
+        task_type="edit",
+        goal="Task A",
+        plan=[],
+        status="running",
+    )
+    # Session B should not see session A's task via supplement
+    resp = _rpc(
+        runtime,
+        "message.send",
+        {"sessionId": session_b["id"], "content": "new request"},
+    )
+    # Should create a new task for B, not supplement A
+    assert "result" in resp
+    task_b = resp["result"]["task"]
+    assert task_b["id"] != task_a["id"]
+    assert task_b["sessionId"] == session_b["id"]
+
+
+# ── Reload / persistence recovery ───────────────────────────────────────────
+
+
+def test_reload_preserves_completed_task_and_messages(tmp_path: Any) -> None:
+    """After closing and reopening the store, completed task and messages are recoverable."""
+    db_path = tmp_path / "runtime.sqlite3"
+    provider = ScriptedProvider([{"final": "Persisted answer."}])
+
+    # First runtime instance
+    runtime1 = _make_runtime_at_path(db_path, provider)
+    session = _open_session(runtime1, tmp_path)
+    task = _call_result(
+        _rpc(runtime1, "message.send", {"sessionId": session["id"], "content": "persist this"}),
+        "task",
+    )
+    assert task["status"] == "completed"
+    task_id = task["id"]
+    session_id = session["id"]
+    runtime1.store.close()
+
+    # Second runtime instance — same database
+    runtime2 = _make_runtime_at_path(db_path, provider)
+    recovered_task = runtime2.store.get_task({"taskId": task_id})["task"]
+    assert recovered_task["id"] == task_id
+    assert recovered_task["status"] == "completed"
+    assert recovered_task["resultSummary"] == "Persisted answer."
+
+    msgs = runtime2.store.list_messages({"sessionId": session_id})["messages"]
+    assert len(msgs) >= 2  # user + assistant
+    assert any(m["role"] == "user" and "persist this" in m.get("content", "") for m in msgs)
+    assert any(m["role"] == "assistant" and "Persisted answer" in m.get("content", "") for m in msgs)
+    runtime2.store.close()
+
+
+def test_reload_preserves_failed_task_and_error(tmp_path: Any) -> None:
+    """Failed task and error message survive store reload."""
+
+    class FailProvider:
+        def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("provider exploded")
+
+    db_path = tmp_path / "runtime.sqlite3"
+    runtime1 = _make_runtime_at_path(db_path, FailProvider())
+    session = _open_session(runtime1, tmp_path)
+    resp = _rpc(runtime1, "message.send", {"sessionId": session["id"], "content": "trigger failure"})
+    task = resp["result"]["task"]
+    assert task["status"] == "failed"
+    task_id = task["id"]
+    session_id = session["id"]
+    runtime1.store.close()
+
+    # Reopen
+    runtime2 = _make_runtime_at_path(db_path, FailProvider())
+    recovered = runtime2.store.get_task({"taskId": task_id})["task"]
+    assert recovered["status"] == "failed"
+
+    msgs = runtime2.store.list_messages({"sessionId": session_id})["messages"]
+    # Should have at least the user message and the error assistant message
+    assert any(m["role"] == "user" for m in msgs)
+    runtime2.store.close()
+
+
+def test_reload_preserves_queued_task(tmp_path: Any) -> None:
+    """Queued tasks survive store reload."""
+    db_path = tmp_path / "runtime.sqlite3"
+    provider = ScriptedProvider([])
+    runtime1 = _make_runtime_at_path(db_path, provider)
+    session = _open_session(runtime1, tmp_path)
+
+    # Create a running task so queued mode is needed
+    running_task = runtime1.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="Running",
+        plan=[],
+        status="running",
+    )
+    queued_resp = _rpc(
+        runtime1,
+        "message.send",
+        {"sessionId": session["id"], "content": "queued task", "mode": "queued"},
+    )
+    queued_task = queued_resp["result"]["task"]
+    assert queued_task["status"] == "queued"
+    queued_id = queued_task["id"]
+    session_id = session["id"]
+    runtime1.store.close()
+
+    # Reopen
+    runtime2 = _make_runtime_at_path(db_path, provider)
+    recovered = runtime2.store.get_task({"taskId": queued_id})["task"]
+    assert recovered["status"] == "queued"
+    assert recovered["goal"] == "queued task"
+
+    # The running (orphan) task is marked as failed by _cleanup_orphan_tasks
+    recovered_running = runtime2.store.get_task({"taskId": running_task["id"]})["task"]
+    assert recovered_running["status"] == "failed"
+    assert recovered_running.get("errorCode") == "ORPHAN_CLEANUP"
+    runtime2.store.close()
 

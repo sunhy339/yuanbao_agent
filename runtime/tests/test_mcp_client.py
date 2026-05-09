@@ -668,3 +668,124 @@ class TestMcpClientManagerTransport:
         mgr = McpClientManager(MagicMock())
         with pytest.raises(ValueError, match="Unsupported MCP transport"):
             asyncio.run(mgr._open_transport(config))
+
+
+# ── MCP config validation ─────────────────────────────────────────────
+
+
+class TestMcpConfigValidation:
+    """Test _validate_mcp_config for stdio/sse/streamable_http and malformed args."""
+
+    @pytest.fixture()
+    def orchestrator(self, tmp_path):
+        store = SQLiteStore(str(tmp_path / "rt.sqlite3"))
+        event_bus = EventBus()
+        tool_registry = ToolRegistry()
+        orch = Orchestrator(store=store, event_bus=event_bus, tool_registry=tool_registry, provider=None)
+        return orch
+
+    # -- stdio valid --
+
+    def test_stdio_valid_command_only(self, orchestrator):
+        """stdio with command only should pass."""
+        orchestrator._validate_mcp_config({"transport": "stdio", "command": "npx"})
+
+    def test_stdio_valid_with_args(self, orchestrator):
+        """stdio with command and args should pass."""
+        orchestrator._validate_mcp_config({
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-memory"],
+        })
+
+    def test_stdio_valid_with_env(self, orchestrator):
+        """stdio with env dict should pass."""
+        orchestrator._validate_mcp_config({
+            "transport": "stdio",
+            "command": "python",
+            "env": {"API_KEY": "secret"},
+        })
+
+    # -- stdio invalid --
+
+    def test_stdio_missing_command(self, orchestrator):
+        with pytest.raises(ValueError, match="non-empty 'command'"):
+            orchestrator._validate_mcp_config({"transport": "stdio"})
+
+    def test_stdio_empty_command(self, orchestrator):
+        with pytest.raises(ValueError, match="non-empty 'command'"):
+            orchestrator._validate_mcp_config({"transport": "stdio", "command": "  "})
+
+    def test_stdio_args_not_list(self, orchestrator):
+        with pytest.raises(ValueError, match="string array"):
+            orchestrator._validate_mcp_config({"transport": "stdio", "command": "x", "args": "bad"})
+
+    def test_stdio_args_non_string_element(self, orchestrator):
+        with pytest.raises(ValueError, match="must be a string"):
+            orchestrator._validate_mcp_config({"transport": "stdio", "command": "x", "args": [123]})
+
+    # -- sse valid --
+
+    def test_sse_valid_url(self, orchestrator):
+        orchestrator._validate_mcp_config({"transport": "sse", "url": "http://localhost:8080/sse"})
+
+    def test_sse_valid_with_headers(self, orchestrator):
+        orchestrator._validate_mcp_config({
+            "transport": "sse",
+            "url": "http://localhost:8080/sse",
+            "headers": {"Authorization": "Bearer token"},
+        })
+
+    # -- sse invalid --
+
+    def test_sse_missing_url(self, orchestrator):
+        with pytest.raises(ValueError, match="non-empty 'url'"):
+            orchestrator._validate_mcp_config({"transport": "sse"})
+
+    def test_sse_empty_url(self, orchestrator):
+        with pytest.raises(ValueError, match="non-empty 'url'"):
+            orchestrator._validate_mcp_config({"transport": "sse", "url": ""})
+
+    # -- streamable_http valid --
+
+    def test_streamable_http_valid_url(self, orchestrator):
+        orchestrator._validate_mcp_config({
+            "transport": "streamable_http",
+            "url": "http://localhost:8080/mcp",
+        })
+
+    def test_streamable_http_missing_url(self, orchestrator):
+        with pytest.raises(ValueError, match="non-empty 'url'"):
+            orchestrator._validate_mcp_config({"transport": "streamable_http"})
+
+    # -- malformed args --
+
+    def test_env_not_dict(self, orchestrator):
+        with pytest.raises(ValueError, match="'env' must be an object"):
+            orchestrator._validate_mcp_config({"transport": "stdio", "command": "x", "env": "bad"})
+
+    def test_env_list(self, orchestrator):
+        with pytest.raises(ValueError, match="'env' must be an object"):
+            orchestrator._validate_mcp_config({"transport": "stdio", "command": "x", "env": [1, 2]})
+
+    def test_headers_not_dict(self, orchestrator):
+        with pytest.raises(ValueError, match="'headers' must be an object"):
+            orchestrator._validate_mcp_config({
+                "transport": "sse",
+                "url": "http://x",
+                "headers": "bad",
+            })
+
+    def test_default_transport_is_stdio(self, orchestrator):
+        """When transport is not specified, defaults to stdio and requires command."""
+        with pytest.raises(ValueError, match="non-empty 'command'"):
+            orchestrator._validate_mcp_config({})
+
+    def test_valid_config_no_exception(self, orchestrator):
+        """Fully valid stdio config should not raise."""
+        orchestrator._validate_mcp_config({
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "server"],
+            "env": {"KEY": "val"},
+        })

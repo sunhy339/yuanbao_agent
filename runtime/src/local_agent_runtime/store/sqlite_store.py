@@ -350,12 +350,13 @@ class SQLiteStore:
     ) -> dict[str, Any]:
         entry_id = self.new_id("ibx")
         now = self.now()
+        seq = self.next_seq()
         self._conn.execute(
             """
-            INSERT INTO task_inbox (id, task_id, session_id, message_id, content, status, created_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', ?)
+            INSERT INTO task_inbox (id, task_id, session_id, message_id, content, status, created_seq, created_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
             """,
-            (entry_id, task_id, session_id, message_id, content, now),
+            (entry_id, task_id, session_id, message_id, content, seq, now),
         )
         self._conn.commit()
         row = self._conn.execute("SELECT * FROM task_inbox WHERE id = ?", (entry_id,)).fetchone()
@@ -390,6 +391,18 @@ class SQLiteStore:
         self._conn.commit()
         row = self._conn.execute("SELECT * FROM task_inbox WHERE id = ?", (entry_id,)).fetchone()
         return dict(row) if row else {}
+
+    def list_task_inbox_items(self, task_id: str) -> list[dict[str, Any]]:
+        """Return all inbox items for a task, ordered by created_seq then created_at."""
+        rows = self._conn.execute(
+            """
+            SELECT * FROM task_inbox
+            WHERE task_id = ?
+            ORDER BY COALESCE(created_seq, 0) ASC, created_at ASC, id ASC
+            """,
+            (task_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def update_session(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = self._require_non_empty(params, "sessionId")
@@ -3436,6 +3449,7 @@ class SQLiteStore:
                 content TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 consumed_by_turn_id TEXT,
+                created_seq INTEGER DEFAULT NULL,
                 created_at INTEGER NOT NULL,
                 consumed_at INTEGER
             );
@@ -3589,6 +3603,7 @@ class SQLiteStore:
         self._ensure_collaboration_task_columns()
         self._ensure_schedule_columns()
         self._ensure_compaction_columns()
+        self._ensure_inbox_columns()
 
     def _ensure_workspace_columns(self) -> None:
         columns = {
@@ -3711,6 +3726,16 @@ class SQLiteStore:
         for column, definition in expected.items():
             if column not in columns:
                 self._conn.execute(f"ALTER TABLE compaction_records ADD COLUMN {column} {definition}")
+        self._conn.commit()
+
+    def _ensure_inbox_columns(self) -> None:
+        """Add created_seq column to task_inbox if missing."""
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(task_inbox)").fetchall()
+        }
+        if "created_seq" not in columns:
+            self._conn.execute("ALTER TABLE task_inbox ADD COLUMN created_seq INTEGER DEFAULT NULL")
         self._conn.commit()
 
     def export_logs(self, params: dict[str, Any]) -> dict[str, Any]:

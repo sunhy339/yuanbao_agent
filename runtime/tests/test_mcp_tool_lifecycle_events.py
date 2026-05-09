@@ -1,0 +1,165 @@
+"""Tests for MCP tool lifecycle events: mcp.tool.started/completed/failed."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from local_agent_runtime.event_bus import EventBus
+from local_agent_runtime.orchestrator.service import Orchestrator
+from local_agent_runtime.rpc.server import JsonRpcServer
+from local_agent_runtime.store.sqlite_store import SQLiteStore
+from local_agent_runtime.tools.registry import ToolRegistry
+
+
+# ── helpers ────────────────────────────────────────────────────────────────
+
+
+def _make_runtime(tmp_path: Any, tools: dict[str, Any] | None = None) -> SimpleNamespace:
+    event_bus = EventBus()
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    tool_registry = ToolRegistry(tools or {})
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=tool_registry,
+        provider=None,
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    events: list[dict[str, Any]] = []
+    event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
+    return SimpleNamespace(
+        orchestrator=orchestrator, store=store, events=events,
+        event_bus=event_bus, server=server,
+    )
+
+
+def _open_session(runtime: SimpleNamespace, tmp_path: Any) -> dict[str, Any]:
+    import json
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir(exist_ok=True)
+    ws_resp = runtime.server.handle_line(json.dumps({
+        "jsonrpc": "2.0", "id": "ws1", "method": "workspace.open",
+        "params": {"path": str(workspace_root)},
+    }))
+    ws = ws_resp["result"]["workspace"]
+    sess_resp = runtime.server.handle_line(json.dumps({
+        "jsonrpc": "2.0", "id": "s1", "method": "session.create",
+        "params": {"workspaceId": ws["id"], "title": "Test"},
+    }))
+    return sess_resp["result"]["session"]
+
+
+# ── tests ──────────────────────────────────────────────────────────────────
+
+
+class TestMcpToolLifecycleEvents:
+    """Verify MCP-specific tool lifecycle events are published."""
+
+    def test_mcp_tool_started_completed(self, tmp_path: Any) -> None:
+        """mcp__ prefixed tool triggers mcp.tool.started + mcp.tool.completed."""
+        def _mcp_tool(args: dict[str, Any]) -> dict[str, Any]:
+            return {"status": "ok", "ok": True, "output": "done"}
+
+        runtime = _make_runtime(tmp_path, tools={"mcp__postgres__query": _mcp_tool})
+        session = _open_session(runtime, tmp_path)
+        tool_spec = {
+            "name": "mcp__postgres__query",
+            "arguments": {"sql": "SELECT 1"},
+            "start_token": "<tool_call_begin>",
+            "end_token": "<tool_call_end>",
+        }
+        task = {"id": runtime.store.new_id("tsk"), "status": "running"}
+
+        runtime.orchestrator._execute_tool(session["id"], task, tool_spec)
+
+        mcp_started = [e for e in runtime.events if e["type"] == "mcp.tool.started"]
+        mcp_completed = [e for e in runtime.events if e["type"] == "mcp.tool.completed"]
+        assert len(mcp_started) == 1
+        assert mcp_started[0]["payload"]["toolName"] == "mcp__postgres__query"
+        assert mcp_started[0]["payload"]["serverId"] == "postgres"
+        assert len(mcp_completed) == 1
+        assert mcp_completed[0]["payload"]["serverId"] == "postgres"
+        assert mcp_completed[0]["payload"]["ok"] is True
+
+    def test_mcp_tool_failed_via_registry(self, tmp_path: Any) -> None:
+        """Tool handler raising exception is caught by registry, returns failed result.
+
+        ToolRegistry.execute catches exceptions and returns {"status": "failed", ...}.
+        _execute_tool's _tool_failed branch detects this and emits mcp.tool.failed.
+        """
+
+        def _failing_tool(args: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("connection refused")
+
+        runtime = _make_runtime(tmp_path, tools={"mcp__redis__get": _failing_tool})
+        session = _open_session(runtime, tmp_path)
+        tool_spec = {
+            "name": "mcp__redis__get",
+            "arguments": {"key": "foo"},
+            "start_token": "<tool_call_begin>",
+            "end_token": "<tool_call_end>",
+        }
+        task = {"id": runtime.store.new_id("tsk"), "status": "running"}
+
+        runtime.orchestrator._execute_tool(session["id"], task, tool_spec)
+
+        mcp_started = [e for e in runtime.events if e["type"] == "mcp.tool.started"]
+        mcp_failed = [e for e in runtime.events if e["type"] == "mcp.tool.failed"]
+        mcp_completed = [e for e in runtime.events if e["type"] == "mcp.tool.completed"]
+        assert len(mcp_started) == 1
+        assert mcp_started[0]["payload"]["serverId"] == "redis"
+        # Registry catches exception → _tool_failed returns True → mcp.tool.failed
+        assert len(mcp_failed) == 1
+        assert mcp_failed[0]["payload"]["serverId"] == "redis"
+        assert "connection refused" in mcp_failed[0]["payload"]["error"]
+        # No completed event for failed tool
+        assert len(mcp_completed) == 0
+
+    def test_non_mcp_tool_no_mcp_events(self, tmp_path: Any) -> None:
+        """Non-MCP tool should not emit any mcp.tool.* events."""
+
+        def _custom_tool(args: dict[str, Any]) -> dict[str, Any]:
+            return {"status": "ok", "ok": True, "output": "content"}
+
+        runtime = _make_runtime(tmp_path, tools={"custom_tool": _custom_tool})
+        session = _open_session(runtime, tmp_path)
+        tool_spec = {
+            "name": "custom_tool",
+            "arguments": {"key": "value"},
+            "start_token": "<tool_call_begin>",
+            "end_token": "<tool_call_end>",
+        }
+        task = {"id": runtime.store.new_id("tsk"), "status": "running"}
+
+        runtime.orchestrator._execute_tool(session["id"], task, tool_spec)
+
+        mcp_events = [e for e in runtime.events if e["type"].startswith("mcp.tool.")]
+        assert len(mcp_events) == 0
+        # Generic events should still fire
+        assert any(e["type"] == "tool.started" for e in runtime.events)
+        assert any(e["type"] == "tool.completed" for e in runtime.events)
+
+    def test_mcp_tool_server_id_parsed(self, tmp_path: Any) -> None:
+        """Server ID is correctly parsed from mcp__{server}__{tool} pattern."""
+
+        def _tool(args: dict[str, Any]) -> dict[str, Any]:
+            return {"ok": True}
+
+        runtime = _make_runtime(tmp_path, tools={"mcp__my_server__my_tool": _tool})
+        session = _open_session(runtime, tmp_path)
+        tool_spec = {
+            "name": "mcp__my_server__my_tool",
+            "arguments": {},
+            "start_token": "<t>",
+            "end_token": "</t>",
+        }
+        task = {"id": runtime.store.new_id("tsk"), "status": "running"}
+
+        runtime.orchestrator._execute_tool(session["id"], task, tool_spec)
+
+        started = [e for e in runtime.events if e["type"] == "mcp.tool.started"]
+        assert started[0]["payload"]["serverId"] == "my_server"
+        assert started[0]["payload"]["toolName"] == "mcp__my_server__my_tool"

@@ -10,8 +10,26 @@ from ..services.collaboration_service import CollaborationService
 from ..services.command_background import cancel_background_command, get_background_command_event_bridge, get_background_command_service
 from ..services.schedule_service import ScheduleService
 from ..store.sqlite_store import SQLiteStore
+from ..memory.store import MemoryStore
+from ..memory.types import MemoryKind
 
 RpcHandler = Callable[[dict[str, Any]], dict[str, Any]]
+
+
+def _entry_to_dict(entry: Any) -> dict[str, Any]:
+    """Serialize a MemoryEntry to a JSON-safe dict."""
+    return {
+        "id": entry.id,
+        "kind": entry.kind.value,
+        "content": entry.content,
+        "createdAt": entry.created_at,
+        "accessedAt": entry.accessed_at,
+        "accessCount": entry.access_count,
+        "sessionId": entry.session_id,
+        "workspaceId": entry.workspace_id,
+        "keywords": entry.keywords,
+        "metadata": entry.metadata,
+    }
 
 
 class JsonRpcServer:
@@ -99,6 +117,10 @@ class JsonRpcServer:
             "provider_turn.list": self._provider_turn_list,
             "context_snapshot.list": self._context_snapshot_list,
             "context_snapshot.get": self._context_snapshot_get,
+            "memory.list": self._memory_list,
+            "memory.get": self._memory_get,
+            "memory.edit": self._memory_edit,
+            "memory.delete": self._memory_delete,
         }
         self._runtime_event_store_path = str(getattr(self._store, "database_path", ":memory:"))
         self._runtime_event_trace_store: SQLiteStore | None = None
@@ -258,6 +280,56 @@ class JsonRpcServer:
         snapshot_id = params.get("snapshotId") or params.get("snapshot_id", "")
         snapshot = self._store.get_context_snapshot(snapshot_id)
         return {"snapshot": snapshot}
+
+    # -- Memory management RPCs --
+
+    def _memory_store(self) -> MemoryStore:
+        return MemoryStore(self._store)
+
+    def _memory_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        """List memory entries with optional filters."""
+        mem_store = self._memory_store()
+        kind = params.get("kind")
+        entries = mem_store.query_all(
+            workspace_id=params.get("workspaceId") or None,
+            session_id=params.get("sessionId") or None,
+            kind=MemoryKind(kind) if kind else None,
+            limit=int(params.get("limit", 100)),
+        )
+        return {"entries": [_entry_to_dict(e) for e in entries]}
+
+    def _memory_get(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Retrieve a single memory entry by ID."""
+        entry_id = params.get("entryId") or params.get("entry_id", "")
+        entry = self._memory_store().retrieve(entry_id, touch=False)
+        if entry is None:
+            raise ValueError(f"Memory entry not found: {entry_id}")
+        return {"entry": _entry_to_dict(entry)}
+
+    def _memory_edit(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Edit a memory entry's content, keywords, metadata, or kind."""
+        entry_id = params.get("entryId") or params.get("entry_id", "")
+        if not entry_id:
+            raise ValueError("entryId is required")
+        kind_str = params.get("kind")
+        updated = self._memory_store().update(
+            entry_id,
+            content=params.get("content"),
+            keywords=params.get("keywords"),
+            metadata=params.get("metadata"),
+            kind=MemoryKind(kind_str) if kind_str else None,
+        )
+        if updated is None:
+            raise ValueError(f"Memory entry not found: {entry_id}")
+        return {"entry": _entry_to_dict(updated)}
+
+    def _memory_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Delete a memory entry."""
+        entry_id = params.get("entryId") or params.get("entry_id", "")
+        if not entry_id:
+            raise ValueError("entryId is required")
+        deleted = self._memory_store().delete(entry_id)
+        return {"deleted": deleted}
 
     def _write_event_payload(self, payload: dict[str, Any]) -> None:
         if self._writer is None:

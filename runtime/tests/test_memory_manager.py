@@ -170,3 +170,51 @@ class TestMemoryManagerRetrieveDelete:
 
     def test_delete_nonexistent(self) -> None:
         assert self.mgr.delete("mem_nonexistent") is False
+
+
+class TestMemoryDeleteExcludesFromRecall:
+    """Deleting a memory entry removes it from subsequent recall results."""
+
+    def setup_method(self) -> None:
+        self.store = SQLiteStore(":memory:")
+        self.ms = MemoryStore(self.store)
+        self.retriever = MemoryRetriever(self.ms)
+        self.mgr = MemoryManager(self.ms, self.retriever)
+
+    def test_deleted_memory_not_in_recall(self) -> None:
+        """After deleting a memory, recall should not include it."""
+        entry = self.mgr.remember(
+            content="Use tabs not spaces",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+        )
+        # Recall before delete — should find it
+        results_before = self.mgr.recall(workspace_id="w1", query="tabs spaces")
+        assert any(e.id == entry.id for e in results_before)
+
+        # Delete and recall again
+        self.mgr.delete(entry.id)
+        results_after = self.mgr.recall(workspace_id="w1", query="tabs spaces")
+        assert not any(e.id == entry.id for e in results_after)
+
+
+class TestMemoryUserPreferenceRecall:
+    """User preferences written as user_preference category can be recalled."""
+
+    def setup_method(self) -> None:
+        self.store = SQLiteStore(":memory:")
+        self.ms = MemoryStore(self.store)
+        self.retriever = MemoryRetriever(self.ms)
+        self.mgr = MemoryManager(self.ms, self.retriever)
+
+    def test_user_preference_recallable(self) -> None:
+        """A memory tagged as user_preference in metadata should be recallable."""
+        self.mgr.remember(
+            content="User prefers dark mode for all editors",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "user_preference", "confidence": 0.9},
+        )
+        results = self.mgr.recall(workspace_id="w1", query="editor theme preference")
+        assert len(results) >= 1
+        assert "dark mode" in results[0].content

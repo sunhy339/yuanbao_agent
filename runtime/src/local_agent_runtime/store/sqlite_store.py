@@ -3638,6 +3638,40 @@ class SQLiteStore:
         )
         self._conn.commit()
 
+        # artifacts table — P3 of subagent-generation-todolist
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS artifacts (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                parent_task_id TEXT NOT NULL,
+                producer_task_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'proposed',
+                title TEXT,
+                description TEXT,
+                content_json TEXT NOT NULL DEFAULT '{}',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_session ON artifacts(session_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_parent_task ON artifacts(parent_task_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_producer_task ON artifacts(producer_task_id)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_kind ON artifacts(kind)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_status ON artifacts(status)"
+        )
+        self._conn.commit()
+
         # Ensure seq_counter table exists
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS seq_counter (
@@ -4086,6 +4120,126 @@ class SQLiteStore:
         args.append(limit)
         rows = [dict(r) for r in self._conn.execute(query, args).fetchall()]
         return {"proposals": [self._serialize_proposal(r) for r in rows]}
+
+    # -----------------------------------------------------------------------
+    # Artifact Registry CRUD — P3 of subagent-generation-todolist
+    # -----------------------------------------------------------------------
+
+    VALID_ARTIFACT_KINDS = frozenset({"plan", "file", "patch", "review", "test_report", "asset"})
+    VALID_ARTIFACT_STATUSES = frozenset({"proposed", "applied", "verified", "rejected"})
+
+    def _serialize_artifact(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "sessionId": row["session_id"],
+            "parentTaskId": row["parent_task_id"],
+            "producerTaskId": row["producer_task_id"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "title": row.get("title"),
+            "description": row.get("description"),
+            "content": json.loads(row.get("content_json") or "{}"),
+            "metadata": json.loads(row.get("metadata_json") or "{}"),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    def create_artifact(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = self._require_non_empty(params, "sessionId")
+        parent_task_id = self._require_non_empty(params, "parentTaskId")
+        producer_task_id = self._require_non_empty(params, "producerTaskId")
+        kind = self._require_non_empty(params, "kind")
+        if kind not in self.VALID_ARTIFACT_KINDS:
+            raise ValueError(f"Invalid artifact kind: {kind!r}")
+        title = params.get("title")
+        description = params.get("description")
+        content = self._dict_value(params.get("content", {}), "content")
+        metadata = self._dict_value(params.get("metadata", {}), "metadata")
+        artifact_id = self.new_id("art")
+        now = self.now()
+        self._conn.execute(
+            """
+            INSERT INTO artifacts (
+                id, session_id, parent_task_id, producer_task_id,
+                kind, status, title, description, content_json,
+                metadata_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                artifact_id, session_id, parent_task_id, producer_task_id,
+                kind, title, description,
+                json.dumps(content, ensure_ascii=False),
+                json.dumps(metadata, ensure_ascii=False),
+                now, now,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
+        ).fetchone()
+        return {"artifact": self._serialize_artifact(dict(row))}
+
+    def update_artifact(self, params: dict[str, Any]) -> dict[str, Any]:
+        artifact_id = self._require_non_empty(params, "artifactId")
+        now = self.now()
+        row = self._conn.execute(
+            "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Artifact not found: {artifact_id}")
+        updates: list[str] = []
+        args: list[Any] = []
+        for field, col in [("status", "status"), ("title", "title"), ("description", "description")]:
+            if field in params:
+                val = params[field]
+                if field == "status" and val not in self.VALID_ARTIFACT_STATUSES:
+                    raise ValueError(f"Invalid artifact status: {val!r}")
+                updates.append(f"{col} = ?")
+                args.append(val)
+        if "content" in params:
+            updates.append("content_json = ?")
+            args.append(json.dumps(self._dict_value(params["content"], "content"), ensure_ascii=False))
+        if "metadata" in params:
+            updates.append("metadata_json = ?")
+            args.append(json.dumps(self._dict_value(params["metadata"], "metadata"), ensure_ascii=False))
+        if not updates:
+            return {"artifact": self._serialize_artifact(dict(row))}
+        updates.append("updated_at = ?")
+        args.append(now)
+        args.append(artifact_id)
+        self._conn.execute(
+            f"UPDATE artifacts SET {', '.join(updates)} WHERE id = ?", args
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
+        ).fetchone()
+        return {"artifact": self._serialize_artifact(dict(row))}
+
+    def list_artifacts(self, params: dict[str, Any]) -> dict[str, Any]:
+        filters: list[str] = []
+        args: list[Any] = []
+        if params.get("sessionId"):
+            filters.append("session_id = ?")
+            args.append(params["sessionId"])
+        if params.get("parentTaskId"):
+            filters.append("parent_task_id = ?")
+            args.append(params["parentTaskId"])
+        if params.get("producerTaskId"):
+            filters.append("producer_task_id = ?")
+            args.append(params["producerTaskId"])
+        if params.get("kind"):
+            filters.append("kind = ?")
+            args.append(params["kind"])
+        if params.get("status"):
+            filters.append("status = ?")
+            args.append(params["status"])
+        limit = min(int(params.get("limit") or 100), 500)
+        where = f" WHERE {' AND '.join(filters)}" if filters else ""
+        query = f"SELECT * FROM artifacts{where} ORDER BY created_at ASC LIMIT ?"
+        args.append(limit)
+        rows = [dict(r) for r in self._conn.execute(query, args).fetchall()]
+        return {"artifacts": [self._serialize_artifact(r) for r in rows]}
 
     def _ensure_collaboration_task_columns_original(self) -> None:
         pass

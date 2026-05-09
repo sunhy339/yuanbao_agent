@@ -50,6 +50,25 @@ ProposalKind = Literal[
 
 ProposalStatus = Literal["pending", "accepted", "rejected", "applied"]
 
+ArtifactKind = Literal["plan", "file", "patch", "review", "test_report", "asset"]
+ArtifactStatus = Literal["proposed", "applied", "verified", "rejected"]
+
+
+@dataclass(slots=True)
+class ArtifactRecord:
+    id: str
+    session_id: str
+    parent_task_id: str
+    producer_task_id: str
+    kind: ArtifactKind
+    status: ArtifactStatus
+    created_at: int
+    updated_at: int
+    title: str | None = None
+    description: str | None = None
+    content_json: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass(slots=True)
 class Workspace:

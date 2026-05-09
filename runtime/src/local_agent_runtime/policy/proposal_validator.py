@@ -171,6 +171,26 @@ def validate_write_scopes(
 
 
 # ---------------------------------------------------------------------------
+# Artifact contract validator
+# ---------------------------------------------------------------------------
+
+VALID_ARTIFACT_KINDS = frozenset({"plan", "file", "patch", "review", "test_report", "asset"})
+
+
+def validate_artifact_contract(payload: dict[str, Any]) -> list[str]:
+    """Validate artifact contract proposals."""
+    reasons: list[str] = []
+    kind = payload.get("kind")
+    if kind and kind not in VALID_ARTIFACT_KINDS:
+        reasons.append(f"Invalid artifact kind: {kind!r}")
+    status = payload.get("status")
+    valid_statuses = {"proposed", "applied", "verified", "rejected"}
+    if status and status not in valid_statuses:
+        reasons.append(f"Invalid artifact status: {status!r}")
+    return reasons
+
+
+# ---------------------------------------------------------------------------
 # Composite validator
 # ---------------------------------------------------------------------------
 
@@ -189,5 +209,9 @@ def validate_proposal(kind: str, payload: dict[str, Any]) -> list[str]:
         subtasks = payload.get("subtasks", [])
         reasons.extend(validate_dependency_graph(subtasks))
         reasons.extend(validate_write_scopes(subtasks))
+
+    # Artifact contract validator
+    if kind == "artifact_contract":
+        reasons.extend(validate_artifact_contract(payload))
 
     return reasons

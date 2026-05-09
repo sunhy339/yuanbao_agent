@@ -15,7 +15,7 @@ staged with `git add -f` when they need to be committed.
 | System-wide LLM decision TODO | `docs/llm-assisted-runtime-decision-todolist.md` | 39 done / 129 open |
 | TDD remediation test suite | `docs/tdd-remediation-test-suite.md` | New test design, use as acceptance gate |
 | Subagent generation | `docs/subagent-generation-remediation-plan.md` | Partially implemented: P1-P4, P7, P8 backend done |
-| Subagent generation TODO | `docs/subagent-generation-todolist.md` | 128 done / 114 open |
+| Subagent generation TODO | `docs/subagent-generation-todolist.md` | Batch 6 complete: P6 failure observability, P7 profile persistence, P0.6 dispatch guard done |
 | Multi-agent collaboration backbone | `docs/multi-agent-collaboration-todo.md` | Checklist complete, 22 done / 0 open |
 | Chat runtime agent run | `docs/chat-runtime-agent-run-todolist.md` | Largely complete, 323 done / 153 open |
 | Chat runtime architecture plan | `docs/chat-runtime-agent-run-rectification-plan.md` | Design reference, no checklist |

@@ -53,12 +53,12 @@ synthesis should use the system-wide decision framework.
 - [x] Add test command validator.
 - [x] Add risk policy validator.
 - [x] Add approval gate validator.
-- [ ] Prevent dispatch when proposal validation fails.
-- [ ] Support sending rejection reasons back to planner.
-- [ ] Persist validator decisions in trace or report state.
+- [x] Prevent dispatch when proposal validation fails.
+- [x] Support sending rejection reasons back to planner.
+- [x] Persist validator decisions in trace or report state.
 - [ ] Add fallback path for planner failure.
 - [ ] Add fallback path for simple tasks that should not be decomposed.
-- [ ] Add report field describing planning mode: `llm`, `rule_fallback`, or `manual`.
+- [x] Add report field describing planning mode: `llm`, `rule_fallback`, or `manual`.
 
 ## P1: Child Tool Alias Normalization
 
@@ -87,10 +87,10 @@ synthesis should use the system-wide decision framework.
 - [x] Include parent task id and session id.
 - [x] Include child task id, title, agent type, status, and priority.
 - [x] Include worker id, role, status, and capabilities.
-- [ ] Include execution mode and attempt count.
+- [x] Include execution mode and attempt count.
 - [x] Include started/completed timestamps and duration.
 - [x] Include result summary.
-- [ ] Include error code, message, retryable flag, and attempts for failures.
+- [x] Include error code, message, retryable flag, and attempts for failures.
 - [ ] Include trace event counts by type and visibility.
 - [ ] Include message ids and artifact ids.
 - [x] Add store/service helper to build the report from durable state.
@@ -148,16 +148,16 @@ synthesis should use the system-wide decision framework.
 
 ## P6: Failure, Timeout, Cancel, and Retry Observability
 
-- [ ] Standardize child failure payload fields.
-- [ ] Persist timeout failures with `CHILD_TASK_TIMEOUT`.
-- [ ] Persist cancellation failures with `CHILD_TASK_CANCELLED`.
-- [ ] Persist process startup failures with a stable error code.
-- [ ] Persist retry attempt counts.
-- [ ] Emit trace events for retry attempts.
-- [ ] Add tests for timeout.
-- [ ] Add tests for cancellation.
-- [ ] Add tests for retry success.
-- [ ] Add tests for retry exhaustion.
+- [x] Standardize child failure payload fields.
+- [x] Persist timeout failures with `CHILD_TASK_TIMEOUT`.
+- [x] Persist cancellation failures with `CHILD_TASK_CANCELLED`.
+- [x] Persist process startup failures with a stable error code.
+- [x] Persist retry attempt counts.
+- [x] Emit trace events for retry attempts.
+- [x] Add tests for timeout.
+- [x] Add tests for cancellation.
+- [x] Add tests for retry success.
+- [x] Add tests for retry exhaustion.
 
 ## P7: Planner Contract
 
@@ -172,8 +172,8 @@ synthesis should use the system-wide decision framework.
 - [x] Include profile `dependencies`.
 - [x] Include profile `riskLevel`.
 - [x] Include profile `handoffNotes`.
-- [ ] Persist dynamic profile metadata on child collaboration tasks.
-- [ ] Show dynamic profile name in generation reports.
+- [x] Persist dynamic profile metadata on child collaboration tasks.
+- [x] Show dynamic profile name in generation reports.
 - [x] Keep base types small and stable.
 - [x] Allow task-specific names such as `Audio Engine Agent`.
 - [x] Allow task-specific names such as `Player UI Agent`.

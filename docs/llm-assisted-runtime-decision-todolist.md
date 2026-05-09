@@ -72,27 +72,27 @@ LLM-assisted proposals guarded by deterministic runtime validators.
 ## P3: Runtime Validators
 
 - [x] Add schema validator.
-- [ ] Add session/task state validator.
-- [ ] Add mode validator.
-- [ ] Add model/provider availability validator.
-- [ ] Add model budget validator.
+- [x] Add session/task state validator.
+- [x] Add mode validator.
+- [x] Add model/provider availability validator.
+- [x] Add model budget validator.
 - [ ] Add installed skill validator.
 - [ ] Add skill root allowlist validator.
 - [x] Add tool allowlist validator.
 - [x] Add tool alias normalizer.
 - [x] Add unsafe tool validator.
-- [ ] Add MCP server availability validator.
-- [ ] Add MCP tool schema validator.
-- [ ] Add context token budget validator.
-- [ ] Add required context section validator.
-- [ ] Add memory source validator.
+- [x] Add MCP server availability validator.
+- [x] Add MCP tool schema validator.
+- [x] Add context token budget validator.
+- [x] Add required context section validator.
+- [x] Add memory source validator.
 - [x] Add artifact contract validator.
 - [x] Add risk policy validator.
 - [x] Add approval gate validator.
-- [ ] Add retry budget validator.
+- [x] Add retry budget validator.
 - [x] Add test command allowlist validator.
-- [ ] Add frontend visibility validator.
-- [ ] Add roadmap edit approval validator.
+- [x] Add frontend visibility validator.
+- [x] Add roadmap edit approval validator.
 
 ## P4: Intent and Mode Routing
 

@@ -33,6 +33,7 @@ class ChildTaskRequest:
     retry: dict[str, Any] | None = None
     cancellation: dict[str, Any] | None = None
     budget: dict[str, Any] | None = None
+    profile: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -362,6 +363,8 @@ class WorkerRunner:
                 last_error = exc
                 if not policy.retry.should_retry(attempt_number=attempt_number, error=exc):
                     raise
+                # P6: emit retry trace event
+                self._emit_retry_trace(context, attempt_number=attempt_number, error=exc)
                 remaining_seconds = deadline.remaining(time.monotonic())
                 if remaining_seconds is not None and remaining_seconds <= self._MIN_RETRY_EXECUTION_SLICE_SECONDS:
                     context.attempt_number = min(attempt_number + 1, policy.retry.max_attempts)
@@ -710,6 +713,33 @@ class WorkerRunner:
             payload["attempts"] = attempts
         return payload
 
+    def _emit_retry_trace(
+        self,
+        context: ChildTaskExecutionContext,
+        *,
+        attempt_number: int,
+        error: Exception,
+    ) -> None:
+        """P6: Emit a trace event when a retry attempt begins."""
+        session_id = context.request.session_id or ""
+        task_id = context.task.get("id", "")
+        if not session_id and not task_id:
+            return
+        error_code = str(getattr(error, "code", error.__class__.__name__))
+        self._collaboration.publish_runtime_event(
+            session_id=session_id,
+            task_id=task_id,
+            event_type="child.retry.attempt",
+            payload={
+                "attemptNumber": attempt_number,
+                "nextAttempt": attempt_number + 1,
+                "errorCode": error_code,
+                "errorMessage": str(error)[:200],
+                "childTaskId": task_id,
+            },
+            visibility="trace",
+        )
+
     def _execution_mode_from_task(self, task: dict[str, Any]) -> str:
         metadata = task.get("metadata")
         if isinstance(metadata, dict):
@@ -870,6 +900,8 @@ class WorkerRunner:
             "parentRuntimeTaskId": request.parent_runtime_task_id,
             "executionMode": self._default_execution_mode(request),
         }
+        if request.profile is not None:
+            metadata["profile"] = deepcopy(request.profile)
         if request.cancellation is not None:
             metadata["cancellation"] = deepcopy(request.cancellation)
         if request.budget is not None:

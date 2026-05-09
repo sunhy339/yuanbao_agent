@@ -21,6 +21,25 @@ class SubagentService:
 
     def dispatch(self, params: dict[str, Any]) -> dict[str, Any]:
         prompt = self._require_non_empty(params, "prompt")
+
+        # P0.6: Dispatch guard — run proposal validation if provided
+        proposal = self._optional_object(params, "proposal")
+        if proposal is not None:
+            from ..policy.proposal_validator import validate_proposal
+            kind = proposal.get("kind", "")
+            payload = proposal.get("payload", {})
+            rejection_reasons = validate_proposal(kind, payload)
+            if rejection_reasons:
+                return {
+                    "status": "rejected",
+                    "rejectionReasons": rejection_reasons,
+                    "proposalKind": kind,
+                    "planningMode": params.get("planningMode", "llm"),
+                }
+
+        # P7: Dynamic profile from planner output
+        profile = self._optional_object(params, "profile")
+
         request = ChildTaskRequest(
             prompt=prompt,
             title=self._optional_string(params, "title") or self._title_from_prompt(prompt),
@@ -34,8 +53,14 @@ class SubagentService:
             retry=self._optional_object(params, "retry"),
             cancellation=self._optional_object(params, "cancellation"),
             budget=self._budget_with_child_tool_allowlist(params),
+            profile=profile,
         )
-        return self._worker_runner.run_child_task(request)
+        result = self._worker_runner.run_child_task(request)
+        # P0.6: Annotate result with planning mode
+        planning_mode = params.get("planningMode")
+        if planning_mode is not None:
+            result["planningMode"] = planning_mode
+        return result
 
     def _title_from_prompt(self, prompt: str) -> str:
         normalized = " ".join(prompt.split())

@@ -25,10 +25,20 @@ def build_generation_report(
     - aggregate counts
     """
     # Resolve session_id from parent task if not given
+    parent_task: dict[str, Any] = {}
     if session_id is None:
         task_result = store.get_task({"taskId": parent_task_id})
-        task = task_result.get("task", {})
-        session_id = task.get("sessionId", "")
+        parent_task = task_result.get("task", {})
+        session_id = parent_task.get("sessionId", "")
+    else:
+        try:
+            parent_task = store.get_task({"taskId": parent_task_id}).get("task", {})
+        except Exception:
+            pass
+
+    # P0.6: Derive planning mode from parent task routing
+    parent_routing = parent_task.get("routing") or {}
+    planning_mode = parent_routing.get("planningMode", "rule_fallback")
 
     # Gather child collaboration tasks
     collab_result = store.list_collaboration_tasks({
@@ -70,6 +80,12 @@ def build_generation_report(
         meta = child.get("metadata") or {}
         report_entry["executionMode"] = meta.get("executionMode", "default")
         report_entry["attemptCount"] = meta.get("attemptCount", 1)
+
+        # P7: Dynamic profile name from metadata
+        profile = meta.get("profile")
+        if isinstance(profile, dict):
+            report_entry["profileName"] = profile.get("name")
+            report_entry["profileBaseType"] = profile.get("baseType")
 
         # P2 extended: structured error fields for failures
         if st == "failed":
@@ -125,6 +141,7 @@ def build_generation_report(
     return {
         "parentTaskId": parent_task_id,
         "sessionId": session_id,
+        "planningMode": planning_mode,
         "childTasks": child_reports,
         "artifacts": artifact_summaries,
         "counts": {

@@ -553,3 +553,66 @@ class TestSubagentProfileForwarding:
         })
         assert len(runner.requests) == 1
         assert runner.requests[0].profile is None
+
+
+# ===========================================================================
+# P0.6: Fallback paths for planner failure and simple tasks
+# ===========================================================================
+
+
+class TestPlannerFallback:
+    def test_planner_failure_falls_back_to_rule_fallback(self) -> None:
+        """P0.6: When LLM planning mode expected but no proposal, fallback to rule_fallback."""
+        runner = RecordingRunner()
+        service = SubagentService(object(), object(), runner=runner)
+        result = service.dispatch({
+            "prompt": "Explore workspace",
+            "planningMode": "llm",
+            # No proposal — simulates planner failure
+        })
+        assert result["planningMode"] == "rule_fallback"
+
+    def test_planner_failure_with_valid_proposal_stays_llm(self) -> None:
+        """P0.6: When LLM mode with valid proposal, planning mode stays llm."""
+        runner = RecordingRunner()
+        service = SubagentService(object(), object(), runner=runner)
+        result = service.dispatch({
+            "prompt": "Explore workspace",
+            "planningMode": "llm",
+            "proposal": {
+                "kind": "tool_policy",
+                "payload": {"allowedTools": ["read_file"]},
+            },
+        })
+        assert result["planningMode"] == "llm"
+
+    def test_simple_task_skip_decomposition(self) -> None:
+        """P0.6: skipDecomposition forces rule_fallback planning mode."""
+        runner = RecordingRunner()
+        service = SubagentService(object(), object(), runner=runner)
+        result = service.dispatch({
+            "prompt": "Simple question",
+            "planningMode": "llm",
+            "skipDecomposition": True,
+        })
+        assert result["planningMode"] == "rule_fallback"
+
+    def test_skip_decomposition_without_planning_mode(self) -> None:
+        """P0.6: skipDecomposition sets rule_fallback even without explicit planningMode."""
+        runner = RecordingRunner()
+        service = SubagentService(object(), object(), runner=runner)
+        result = service.dispatch({
+            "prompt": "Simple task",
+            "skipDecomposition": True,
+        })
+        assert result["planningMode"] == "rule_fallback"
+
+    def test_rule_fallback_mode_stays_when_no_proposal(self) -> None:
+        """P0.6: Explicit rule_fallback mode stays even without proposal."""
+        runner = RecordingRunner()
+        service = SubagentService(object(), object(), runner=runner)
+        result = service.dispatch({
+            "prompt": "Explore workspace",
+            "planningMode": "rule_fallback",
+        })
+        assert result["planningMode"] == "rule_fallback"

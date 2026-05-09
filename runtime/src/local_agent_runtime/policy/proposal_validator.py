@@ -259,6 +259,11 @@ def validate_proposal(kind: str, payload: dict[str, Any]) -> list[str]:
     if kind == "todo_maintenance":
         reasons.extend(validate_roadmap_edit(payload))
 
+    # Skill policy validator
+    if kind == "skill_policy":
+        reasons.extend(validate_skill_availability(payload))
+        reasons.extend(validate_skill_root_allowlist(payload))
+
     return reasons
 
 
@@ -728,4 +733,54 @@ def validate_reviewer_gate(payload: dict[str, Any]) -> list[str]:
         reasons.append(
             f"Cannot merge when reviewStatus is {review_status!r}"
         )
+    return reasons
+
+
+def validate_skill_availability(payload: dict[str, Any]) -> list[str]:
+    """Validate that proposed skills are available in the installed skill set.
+
+    Expects:
+    - payload["skills"]: list of skill names proposed
+    - payload["installedSkills"]: list/set of available skill names
+    """
+    reasons: list[str] = []
+    proposed = payload.get("skills")
+    if not isinstance(proposed, list) or not proposed:
+        return reasons
+    installed = payload.get("installedSkills")
+    if not isinstance(installed, (list, set)):
+        return reasons
+    installed_set = set(installed)
+    for skill in proposed:
+        if isinstance(skill, str) and skill not in installed_set:
+            reasons.append(f"Skill {skill!r} is not installed")
+    return reasons
+
+
+def validate_skill_root_allowlist(payload: dict[str, Any]) -> list[str]:
+    """Validate that skills proposed for root execution are on the root allowlist.
+
+    Some skills should only be available to subagents, not root agents.
+    Expects:
+    - payload["skills"]: list of skill names proposed
+    - payload["rootAllowedSkills"]: list/set of skill names allowed for root
+    - payload["role"]: the agent role (default "root")
+    """
+    reasons: list[str] = []
+    role = payload.get("role", "root")
+    if role != "root":
+        return reasons
+    skills = payload.get("skills")
+    if not isinstance(skills, list) or not skills:
+        return reasons
+    allowed = payload.get("rootAllowedSkills")
+    if not isinstance(allowed, (list, set)):
+        return reasons
+    allowed_set = set(allowed)
+    for skill in skills:
+        if isinstance(skill, str) and skill not in allowed_set:
+            reasons.append(
+                f"Skill {skill!r} is not allowed for root agent. "
+                f"Allowed: {sorted(allowed_set)}"
+            )
     return reasons

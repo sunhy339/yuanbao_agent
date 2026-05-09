@@ -18,6 +18,8 @@ from local_agent_runtime.policy.proposal_validator import (
     validate_no_unsafe_tools,
     validate_proposal,
     validate_proposal_schema,
+    validate_skill_availability,
+    validate_skill_root_allowlist,
     validate_tool_allowlist,
     validate_write_scopes,
 )
@@ -205,3 +207,100 @@ class TestCompositeValidator:
     def test_other_kind_missing_field(self):
         reasons = validate_proposal("model_policy", {})
         assert any("model" in r for r in reasons)
+
+    def test_skill_policy_valid(self):
+        reasons = validate_proposal("skill_policy", {
+            "skillId": "commit",
+            "skills": ["commit"],
+            "installedSkills": ["commit", "review-pr"],
+            "role": "root",
+            "rootAllowedSkills": ["commit"],
+        })
+        assert reasons == []
+
+    def test_skill_policy_missing_skill(self):
+        reasons = validate_proposal("skill_policy", {
+            "skillId": "commit",
+            "skills": ["commit"],
+            "installedSkills": [],
+            "role": "root",
+            "rootAllowedSkills": ["commit"],
+        })
+        assert any("not installed" in r for r in reasons)
+
+    def test_skill_policy_root_not_allowed(self):
+        reasons = validate_proposal("skill_policy", {
+            "skillId": "dangerous-skill",
+            "skills": ["dangerous-skill"],
+            "installedSkills": ["dangerous-skill"],
+            "role": "root",
+            "rootAllowedSkills": ["commit"],
+        })
+        assert any("not allowed for root" in r for r in reasons)
+
+    def test_skill_policy_non_root_skips_root_check(self):
+        reasons = validate_proposal("skill_policy", {
+            "skillId": "dangerous-skill",
+            "skills": ["dangerous-skill"],
+            "installedSkills": ["dangerous-skill"],
+            "role": "child",
+            "rootAllowedSkills": ["commit"],
+        })
+        assert reasons == []
+
+
+class TestSkillAvailabilityValidator:
+    def test_all_installed(self):
+        reasons = validate_skill_availability({
+            "skills": ["commit", "review-pr"],
+            "installedSkills": ["commit", "review-pr", "pdf"],
+        })
+        assert reasons == []
+
+    def test_missing_skill(self):
+        reasons = validate_skill_availability({
+            "skills": ["commit", "missing-skill"],
+            "installedSkills": ["commit"],
+        })
+        assert any("missing-skill" in r and "not installed" in r for r in reasons)
+
+    def test_no_skills_field(self):
+        assert validate_skill_availability({}) == []
+
+    def test_empty_skills(self):
+        assert validate_skill_availability({"skills": []}) == []
+
+    def test_no_installed_skills(self):
+        assert validate_skill_availability({"skills": ["commit"]}) == []
+
+
+class TestSkillRootAllowlistValidator:
+    def test_root_allowed(self):
+        reasons = validate_skill_root_allowlist({
+            "role": "root",
+            "skills": ["commit"],
+            "rootAllowedSkills": ["commit", "review-pr"],
+        })
+        assert reasons == []
+
+    def test_root_not_allowed(self):
+        reasons = validate_skill_root_allowlist({
+            "role": "root",
+            "skills": ["danger"],
+            "rootAllowedSkills": ["commit"],
+        })
+        assert any("danger" in r and "not allowed" in r for r in reasons)
+
+    def test_child_skips_check(self):
+        reasons = validate_skill_root_allowlist({
+            "role": "child",
+            "skills": ["anything"],
+        })
+        assert reasons == []
+
+    def test_no_root_allowed_skills(self):
+        reasons = validate_skill_root_allowlist({
+            "role": "root",
+            "skills": ["commit"],
+        })
+        assert reasons == []

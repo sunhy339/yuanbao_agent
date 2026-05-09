@@ -22,6 +22,14 @@ class SubagentService:
     def dispatch(self, params: dict[str, Any]) -> dict[str, Any]:
         prompt = self._require_non_empty(params, "prompt")
 
+        # Determine planning mode
+        explicit_planning_mode = params.get("planningMode")
+        planning_mode = explicit_planning_mode
+
+        # P0.6: Simple task — skip decomposition when explicitly marked
+        if params.get("skipDecomposition") is True:
+            planning_mode = "rule_fallback"
+
         # P0.6: Dispatch guard — run proposal validation if provided
         proposal = self._optional_object(params, "proposal")
         if proposal is not None:
@@ -30,12 +38,20 @@ class SubagentService:
             payload = proposal.get("payload", {})
             rejection_reasons = validate_proposal(kind, payload)
             if rejection_reasons:
-                return {
+                result = {
                     "status": "rejected",
                     "rejectionReasons": rejection_reasons,
                     "proposalKind": kind,
-                    "planningMode": params.get("planningMode", "llm"),
                 }
+                if planning_mode is not None:
+                    result["planningMode"] = planning_mode
+                else:
+                    result["planningMode"] = "llm"
+                return result
+
+        # P0.6: Fallback path for planner failure — no proposal when LLM mode expected
+        if proposal is None and planning_mode == "llm":
+            planning_mode = "rule_fallback"
 
         # P7: Dynamic profile from planner output
         profile = self._optional_object(params, "profile")
@@ -56,8 +72,7 @@ class SubagentService:
             profile=profile,
         )
         result = self._worker_runner.run_child_task(request)
-        # P0.6: Annotate result with planning mode
-        planning_mode = params.get("planningMode")
+        # P0.6: Annotate result with planning mode (may have been overridden by fallback)
         if planning_mode is not None:
             result["planningMode"] = planning_mode
         return result

@@ -56,8 +56,8 @@ synthesis should use the system-wide decision framework.
 - [x] Prevent dispatch when proposal validation fails.
 - [x] Support sending rejection reasons back to planner.
 - [x] Persist validator decisions in trace or report state.
-- [ ] Add fallback path for planner failure.
-- [ ] Add fallback path for simple tasks that should not be decomposed.
+- [x] Add fallback path for planner failure.
+- [x] Add fallback path for simple tasks that should not be decomposed.
 - [x] Add report field describing planning mode: `llm`, `rule_fallback`, or `manual`.
 
 ## P1: Child Tool Alias Normalization

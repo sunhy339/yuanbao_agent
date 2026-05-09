@@ -76,8 +76,8 @@ LLM-assisted proposals guarded by deterministic runtime validators.
 - [x] Add mode validator.
 - [x] Add model/provider availability validator.
 - [x] Add model budget validator.
-- [ ] Add installed skill validator.
-- [ ] Add skill root allowlist validator.
+- [x] Add installed skill validator.
+- [x] Add skill root allowlist validator.
 - [x] Add tool allowlist validator.
 - [x] Add tool alias normalizer.
 - [x] Add unsafe tool validator.
@@ -126,14 +126,14 @@ LLM-assisted proposals guarded by deterministic runtime validators.
 - [ ] Let LLM propose read-only tool scope.
 - [ ] Let LLM propose write-capable tool scope.
 - [ ] Let LLM propose relevant MCP server/tool.
-- [ ] Validate skill availability.
-- [ ] Validate tool aliases and allowlist.
-- [ ] Validate unsafe tool rejection.
-- [ ] Validate MCP availability and schema.
-- [ ] Add tests for skill proposal acceptance.
-- [ ] Add tests for missing skill rejection.
-- [ ] Add tests for unsafe tool rejection.
-- [ ] Add tests for unavailable MCP rejection.
+- [x] Validate skill availability.
+- [x] Validate tool aliases and allowlist.
+- [x] Validate unsafe tool rejection.
+- [x] Validate MCP availability and schema.
+- [x] Add tests for skill proposal acceptance.
+- [x] Add tests for missing skill rejection.
+- [x] Add tests for unsafe tool rejection.
+- [x] Add tests for unavailable MCP rejection.
 
 ## P7: Context and Memory Policy
 

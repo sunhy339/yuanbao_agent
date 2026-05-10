@@ -243,6 +243,163 @@ class TestReviewerReceivesChildOutput:
         assert "sub-0" in result.failed
 
 
+class TestReviewStructuredContext:
+    """P6.5: Reviewer receives structured context from dispatch_result."""
+
+    def test_review_prompt_includes_changed_files(self) -> None:
+        """Review prompt should list changed files from dispatch_result."""
+        received_prompts: list[str] = []
+
+        class CapturingProvider:
+            def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+                received_prompts.append(prompt)
+                if "task decomposition specialist" in prompt:
+                    return {"message": json.dumps([
+                        {"id": "sub-0", "title": "Add tests", "description": "Write unit tests", "dependencies": []},
+                    ])}
+                if "supervisor reviewing" in prompt:
+                    return {"message": json.dumps({"approved": True, "feedback": ""})}
+                return {"message": "ok"}
+
+        class StructuredSubagent:
+            def dispatch(self, params: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "summary": "Added 3 test files",
+                    "status": "completed",
+                    "result": {
+                        "changedFiles": ["test_auth.py", "test_api.py", "test_models.py"],
+                        "testsRun": {"passed": 12, "failed": 0},
+                    },
+                }
+
+        supervisor = SupervisorOrchestrator(
+            provider=CapturingProvider(), subagent_service=StructuredSubagent(), max_retries=2,
+        )
+        result = supervisor.execute(
+            "Add unit tests", {},
+            session_id="sess-1", task=_make_task(),
+        )
+
+        assert result.success is True
+        review_prompts = [p for p in received_prompts if "supervisor reviewing" in p]
+        assert len(review_prompts) == 1
+
+        prompt = review_prompts[0]
+        assert "test_auth.py" in prompt
+        assert "Changed files" in prompt
+        assert "Tests run" in prompt
+
+    def test_review_prompt_includes_risks(self) -> None:
+        """Review prompt should include risks from dispatch_result."""
+        received_prompts: list[str] = []
+
+        class CapturingProvider:
+            def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+                received_prompts.append(prompt)
+                if "task decomposition specialist" in prompt:
+                    return {"message": json.dumps([
+                        {"id": "sub-0", "title": "Refactor DB", "description": "Refactor database layer", "dependencies": []},
+                    ])}
+                if "supervisor reviewing" in prompt:
+                    return {"message": json.dumps({"approved": True, "feedback": ""})}
+                return {"message": "ok"}
+
+        class RiskySubagent:
+            def dispatch(self, params: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "summary": "Refactored DB layer",
+                    "status": "completed",
+                    "result": {
+                        "changedFiles": ["db/models.py", "db/queries.py"],
+                        "risks": ["Migration needed for production", "Breaking change in API response format"],
+                    },
+                }
+
+        supervisor = SupervisorOrchestrator(
+            provider=CapturingProvider(), subagent_service=RiskySubagent(), max_retries=2,
+        )
+        result = supervisor.execute(
+            "Refactor database", {},
+            session_id="sess-1", task=_make_task(),
+        )
+
+        assert result.success is True
+        review_prompts = [p for p in received_prompts if "supervisor reviewing" in p]
+        prompt = review_prompts[0]
+        assert "Risks" in prompt
+        assert "Migration needed" in prompt
+
+    def test_review_prompt_without_structured_context(self) -> None:
+        """When dispatch_result has no structured data, prompt should still work."""
+        received_prompts: list[str] = []
+
+        class CapturingProvider:
+            def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+                received_prompts.append(prompt)
+                if "task decomposition specialist" in prompt:
+                    return {"message": json.dumps([
+                        {"id": "sub-0", "title": "Task A", "description": "Do A", "dependencies": []},
+                    ])}
+                if "supervisor reviewing" in prompt:
+                    return {"message": json.dumps({"approved": True, "feedback": ""})}
+                return {"message": "ok"}
+
+        mock_sub = MockSubagentService()
+        supervisor = SupervisorOrchestrator(
+            provider=CapturingProvider(), subagent_service=mock_sub, max_retries=2,
+        )
+        result = supervisor.execute(
+            "Do task A", {},
+            session_id="sess-1", task=_make_task(),
+        )
+
+        assert result.success is True
+        review_prompts = [p for p in received_prompts if "supervisor reviewing" in p]
+        # Prompt should not contain structured sections when none provided
+        prompt = review_prompts[0]
+        assert "Changed files" not in prompt
+        assert "Risks" not in prompt
+
+
+class TestBuildStructuredContext:
+    """Unit tests for _build_structured_context static method."""
+
+    def test_extracts_changed_files(self) -> None:
+        ctx = SupervisorOrchestrator._build_structured_context({
+            "result": {"changedFiles": ["a.py", "b.py"]},
+        })
+        assert "Changed files" in ctx
+        assert "a.py" in ctx
+
+    def test_extracts_tests_run(self) -> None:
+        ctx = SupervisorOrchestrator._build_structured_context({
+            "result": {"testsRun": {"passed": 5, "failed": 1}},
+        })
+        assert "Tests run" in ctx
+        assert "passed" in ctx
+
+    def test_extracts_risks(self) -> None:
+        ctx = SupervisorOrchestrator._build_structured_context({
+            "result": {"risks": ["Breaking change", "Needs migration"]},
+        })
+        assert "Risks" in ctx
+        assert "Breaking change" in ctx
+
+    def test_extracts_artifacts(self) -> None:
+        ctx = SupervisorOrchestrator._build_structured_context({
+            "artifacts": ["report.html"],
+        })
+        assert "Artifacts" in ctx
+
+    def test_empty_dispatch_result(self) -> None:
+        ctx = SupervisorOrchestrator._build_structured_context({})
+        assert ctx == ""
+
+    def test_no_result_key(self) -> None:
+        ctx = SupervisorOrchestrator._build_structured_context({"summary": "done"})
+        assert ctx == ""
+
+
 class TestSupervisorInstanceIsolation:
     def test_review_count_not_shared_across_instances(self) -> None:
         """Two SupervisorOrchestrator instances must have independent review counts."""

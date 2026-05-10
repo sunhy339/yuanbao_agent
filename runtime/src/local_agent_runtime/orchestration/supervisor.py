@@ -20,10 +20,15 @@ You are a supervisor reviewing a sub-task result. Evaluate whether it satisfies 
 **Sub-task**: {title}
 **Description**: {description}
 **Result**: {result}
-
+{structured_context}
 Respond with a JSON object:
 - "approved": true or false
 - "feedback": if not approved, explain what needs to be improved; if approved, leave empty or write "ok"
+
+Additional review criteria:
+- If changed files are listed, verify they are within the expected scope of the task.
+- If no test files are mentioned in changed files, consider flagging as a risk.
+- If risks are listed, evaluate their severity and whether they are acceptable.
 
 Respond ONLY with valid JSON, no other text.
 """
@@ -184,6 +189,7 @@ class SupervisorOrchestrator:
             # Review
             approved, feedback = self._review_result(
                 subtask.title, description, result_text,
+                dispatch_result=dispatch_result,
             )
             self._last_review_count += 1
 
@@ -213,10 +219,14 @@ class SupervisorOrchestrator:
 
     def _review_result(
         self, title: str, description: str, result: str,
+        *,
+        dispatch_result: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
         """Ask LLM to review a sub-task result. Returns (approved, feedback)."""
+        structured_context = self._build_structured_context(dispatch_result or {})
         prompt = _REVIEW_PROMPT.format(
             title=title, description=description, result=result,
+            structured_context=structured_context,
         )
         try:
             response = self._provider.generate(
@@ -228,6 +238,26 @@ class SupervisorOrchestrator:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Review call failed (%s), auto-approving", exc)
             return True, ""
+
+    @staticmethod
+    def _build_structured_context(dispatch_result: dict[str, Any]) -> str:
+        """Build structured context section from dispatch result artifacts."""
+        parts: list[str] = []
+        result_data = dispatch_result.get("result") or {}
+        if isinstance(result_data, dict):
+            changed_files = result_data.get("changedFiles")
+            if changed_files:
+                parts.append(f"**Changed files**: {json.dumps(changed_files)}")
+            tests_run = result_data.get("testsRun")
+            if tests_run:
+                parts.append(f"**Tests run**: {json.dumps(tests_run)}")
+            risks = result_data.get("risks")
+            if risks:
+                parts.append(f"**Risks**: {json.dumps(risks)}")
+        artifacts = dispatch_result.get("artifacts")
+        if artifacts:
+            parts.append(f"**Artifacts**: {json.dumps(artifacts)}")
+        return "\n".join(parts)
 
     @staticmethod
     def _parse_review(text: str) -> tuple[bool, str]:

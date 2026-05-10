@@ -2475,9 +2475,40 @@ class Orchestrator:
                 "detail": final_summary,
             },
         )
+        # Worker role validation: testsRun and risks should be present
+        self._validate_worker_output(session_id=session_id, task=runtime_task)
         if not skip_drain:
             self._drain_session_queue(session_id)
         return runtime_task
+
+    def _validate_worker_output(self, *, session_id: str, task: dict[str, Any]) -> None:
+        """Warn if a worker task completes without testsRun or risks."""
+        role = task.get("role", "root")
+        if role == "root":
+            return
+        root_task_id = task.get("rootTaskId")
+        if not root_task_id or root_task_id == task.get("id"):
+            return
+        missing: list[str] = []
+        if not task.get("testsRun"):
+            missing.append("testsRun")
+        if not task.get("risks"):
+            missing.append("risks")
+        if missing:
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="task.worker.validation",
+                payload={
+                    "taskId": task["id"],
+                    "missingFields": missing,
+                    "warning": f"Worker task completed without required fields: {', '.join(missing)}",
+                },
+            )
+            logger.warning(
+                "Worker task %s completed without %s",
+                task["id"], ", ".join(missing),
+            )
 
     def _reflect_on_result(
         self,
@@ -3078,8 +3109,8 @@ class Orchestrator:
         # 1. Collect changed files from child task metadata
         child_changed_files: dict[str, list[str]] = {}  # file -> [task_ids]
         for subtask in execution.get("subtasks", []):
-            task_id = getattr(subtask, "id", None)
-            changed = getattr(subtask, "changed_files", None) or []
+            task_id = getattr(subtask, "id", None) or (subtask.get("id") if isinstance(subtask, dict) else None)
+            changed = getattr(subtask, "changed_files", None) or (subtask.get("changed_files") if isinstance(subtask, dict) else None) or []
             if isinstance(changed, str):
                 try:
                     changed = json.loads(changed)

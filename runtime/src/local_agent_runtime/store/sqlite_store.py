@@ -758,6 +758,8 @@ class SQLiteStore:
         result_summary: str | None = None,
         error_code: str | None = None,
         active_assistant_message_id: str | None = None,
+        tests_run: list[dict[str, Any]] | None = None,
+        risks: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         assignments: list[str] = ["updated_at = ?"]
         values: list[Any] = [self.now()]
@@ -803,6 +805,12 @@ class SQLiteStore:
         if active_assistant_message_id is not None:
             assignments.append("active_assistant_message_id = ?")
             values.append(active_assistant_message_id)
+        if tests_run is not None:
+            assignments.append("tests_run_json = ?")
+            values.append(json.dumps(tests_run, ensure_ascii=False))
+        if risks is not None:
+            assignments.append("risks_json = ?")
+            values.append(json.dumps(risks, ensure_ascii=False))
 
         values.append(task_id)
         self._conn.execute(
@@ -2395,6 +2403,12 @@ class SQLiteStore:
             result["activeAssistantMessageId"] = row["active_assistant_message_id"]
         if row.get("created_seq") is not None:
             result["createdSeq"] = row["created_seq"]
+        tests_run_raw = row.get("tests_run_json")
+        if tests_run_raw:
+            result["testsRun"] = self._json_list(tests_run_raw)
+        risks_raw = row.get("risks_json")
+        if risks_raw:
+            result["risks"] = self._json_list(risks_raw)
         return result
 
     def _json_list(self, raw: Any) -> list[Any]:
@@ -3227,7 +3241,9 @@ class SQLiteStore:
                 root_task_id TEXT DEFAULT NULL,
                 role TEXT DEFAULT 'root',
                 active_assistant_message_id TEXT DEFAULT NULL,
-                created_seq INTEGER DEFAULT NULL
+                created_seq INTEGER DEFAULT NULL,
+                tests_run_json TEXT DEFAULT NULL,
+                risks_json TEXT DEFAULT NULL
             );
 
             CREATE TABLE IF NOT EXISTS messages (
@@ -3767,6 +3783,8 @@ class SQLiteStore:
             "role": "TEXT DEFAULT 'root'",
             "active_assistant_message_id": "TEXT DEFAULT NULL",
             "created_seq": "INTEGER DEFAULT NULL",
+            "tests_run_json": "TEXT DEFAULT NULL",
+            "risks_json": "TEXT DEFAULT NULL",
         }
         for column, definition in expected.items():
             if column not in columns:

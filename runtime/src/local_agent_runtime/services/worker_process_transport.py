@@ -83,8 +83,8 @@ class WorkerProcessTransport:
     def start(self) -> WorkerProcessTransport:
         self._runtime.start()
         self._stdout_buffer_parts = []
-        self._stdout_drain = self._runtime.open_stream_drain("stdout", chunk_callback=self._handle_stdout_chunk)
-        self._stderr_drain = self._runtime.open_stream_drain("stderr")
+        self._stdout_drain = self._runtime.open_stream_drain("stdout", chunk_callback=self._handle_stdout_chunk, line_mode=True)
+        self._stderr_drain = self._runtime.open_stream_drain("stderr", line_mode=True)
         return self
 
     def close(self) -> None:

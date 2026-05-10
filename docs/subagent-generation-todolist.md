@@ -136,15 +136,15 @@ synthesis should use the system-wide decision framework.
 
 ## P5: Real Process-RPC Child Worker E2E
 
-- [ ] Add an e2e test that uses the process worker instead of a test executor.
-- [ ] Use a file-backed runtime database.
-- [ ] Create parent task and child explorer task.
-- [ ] Allow read-only child tools.
-- [ ] Verify child process can search/read workspace context.
-- [ ] Verify child events bridge into the parent event bus.
-- [ ] Verify child task completes or fails with structured error.
-- [ ] Verify trace events are persisted for the child task.
-- [ ] Verify parent report includes the child execution result.
+- [x] Add an e2e test that uses the process worker instead of a test executor.
+- [x] Use a file-backed runtime database.
+- [x] Create parent task and child explorer task.
+- [x] Allow read-only child tools.
+- [x] Verify child process can search/read workspace context.
+- [x] Verify child events bridge into the parent event bus.
+- [x] Verify child task completes or fails with structured error.
+- [x] Verify trace events are persisted for the child task.
+- [x] Verify parent report includes the child execution result.
 
 ## P6: Failure, Timeout, Cancel, and Retry Observability
 

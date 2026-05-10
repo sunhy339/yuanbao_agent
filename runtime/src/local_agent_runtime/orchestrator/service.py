@@ -2153,6 +2153,7 @@ class Orchestrator:
                     summary=react_result["summary"],
                     context=context,
                     tool_results=react_result.get("tool_results", []),
+                    skip_drain=True,
                 )
                 self._tracer.end_span(span.span_id, status="ok")
                 return {
@@ -2187,6 +2188,7 @@ class Orchestrator:
                 summary=summary,
                 context=context,
                 tool_results=tool_results,
+                skip_drain=True,
             )
             self._tracer.end_span(span.span_id, status="ok")
             return {
@@ -2203,6 +2205,7 @@ class Orchestrator:
                 task=runtime_task,
                 summary=str(exc),
                 error_code=str(getattr(exc, "code", "LOOP_EXECUTION_FAILED")),
+                skip_drain=True,
             )
             raise
 
@@ -2262,6 +2265,7 @@ class Orchestrator:
         context: dict[str, Any] | None = None,
         tool_results: list[dict[str, Any]] | None = None,
         skip_reflection: bool = False,
+        skip_drain: bool = False,
     ) -> dict[str, Any]:
         validation = self._run_post_task_validation(
             session_id=session_id,
@@ -2353,7 +2357,8 @@ class Orchestrator:
                 "detail": final_summary,
             },
         )
-        self._drain_session_queue(session_id)
+        if not skip_drain:
+            self._drain_session_queue(session_id)
         return runtime_task
 
     def _reflect_on_result(
@@ -2435,6 +2440,8 @@ class Orchestrator:
         task: dict[str, Any],
         summary: str,
         error_code: str,
+        *,
+        skip_drain: bool = False,
     ) -> dict[str, Any]:
         logger.warning("Task %s failed: error_code=%s summary=%s", task["id"], error_code, summary[:200])
         task_plan = task.get("plan") or []
@@ -2499,7 +2506,8 @@ class Orchestrator:
                 "errorCode": error_code,
             },
         )
-        self._drain_session_queue(session_id)
+        if not skip_drain:
+            self._drain_session_queue(session_id)
         return runtime_task
 
     def _record_task_metrics(

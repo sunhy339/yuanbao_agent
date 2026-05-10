@@ -262,8 +262,11 @@ def test_worker_process_transport_times_out_when_child_only_streams_partial_outp
         transport.add_stream_callback("stderr", stderr_chunks.append)
         with pytest.raises(WorkerProcessTimeoutError):
             transport.request("partial.call", {}, timeout=0.1)
-        drained_stdout = "".join(transport.take_stream_chunks("stdout"))
-        drained_stderr = "".join(transport.take_stream_chunks("stderr"))
+
+    # After the with-block exits, cleanup() kills the child and joins drains.
+    # readline() returns the partial line on EOF, so chunks are available now.
+    drained_stdout = "".join(transport.take_stream_chunks("stdout"))
+    drained_stderr = "".join(transport.take_stream_chunks("stderr"))
 
     assert "partial-stdout" in "".join(stdout_chunks)
     assert "partial-stderr" in "".join(stderr_chunks)

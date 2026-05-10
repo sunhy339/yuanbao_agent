@@ -124,6 +124,13 @@ class TestDependencyGraphValidator:
         ])
         assert any("self-dependency" in r for r in reasons)
 
+    def test_multi_node_cycle(self):
+        reasons = validate_dependency_graph([
+            {"id": "a", "dependencies": ["b"]},
+            {"id": "b", "dependencies": ["a"]},
+        ])
+        assert any("cycle" in r.lower() for r in reasons)
+
     def test_empty_subtasks(self):
         assert validate_dependency_graph([]) == []
 
@@ -152,6 +159,13 @@ class TestWriteScopeValidator:
         reasons = validate_write_scopes([
             {"id": "a", "ownedScope": ["src/"]},
             {"id": "b", "ownedScope": ["src/"]},
+        ])
+        assert any("Overlapping" in r for r in reasons)
+
+    def test_nested_scope_overlap_detected(self):
+        reasons = validate_write_scopes([
+            {"id": "a", "ownedScope": ["src/"]},
+            {"id": "b", "ownedScope": ["src/ui/"]},
         ])
         assert any("Overlapping" in r for r in reasons)
 
@@ -238,6 +252,15 @@ class TestCompositeValidator:
             "rootAllowedSkills": ["commit"],
         })
         assert any("not installed" in r for r in reasons)
+
+    def test_skill_policy_validates_skill_id_when_skills_list_absent(self):
+        reasons = validate_proposal("skill_policy", {
+            "skillId": "missing-skill",
+            "installedSkills": ["commit"],
+            "role": "root",
+            "rootAllowedSkills": ["commit"],
+        })
+        assert any("missing-skill" in r and "not installed" in r for r in reasons)
 
     def test_skill_policy_root_not_allowed(self):
         reasons = validate_proposal("skill_policy", {

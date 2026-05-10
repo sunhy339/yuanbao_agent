@@ -1,7 +1,10 @@
-import type { AgentEventEnvelope } from "@shared";
+export interface VisibilityRoutedEvent {
+  taskId: string;
+  visibility?: "chat" | "panel" | "trace";
+}
 
 export function isChatVisibleEvent(
-  event: Pick<AgentEventEnvelope, "taskId" | "visibility">,
+  event: VisibilityRoutedEvent,
   childTaskIds: ReadonlySet<string>,
 ): boolean {
   if (event.visibility === "chat") return true;

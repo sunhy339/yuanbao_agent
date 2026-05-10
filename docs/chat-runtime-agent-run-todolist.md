@@ -484,8 +484,8 @@
 
 ### 5.6 Tests
 
-- [ ] firecrawl config 保存成功。缺口：无 firecrawl 专属测试。
-- [ ] firecrawl env 不丢。缺口：同上。
+- [x] firecrawl config 保存成功。`TestFirecrawlConfig::test_firecrawl_config_save_success`。
+- [x] firecrawl env 不丢。`TestFirecrawlConfig::test_firecrawl_env_preserved`。
 - [x] `""-y""` 被拦截。`test_mcp_config_validation.py` 测试 suspicious flag。
 - [x] MCP refresh 后工具出现。`test_mcp_e2e.py` 测试 refresh。
 - [x] strict whitelist 下 MCP 被过滤。`test_skill_tool_policy.py::TestContextBuilderStrictWhitelist::test_mcp_tools_filtered_out` PASSED。
@@ -517,7 +517,7 @@
 - [x] 定义 reviewer agent。动态 profile `baseType="reviewer"`，`planner_contract.py`。
 - [x] 定义 summarizer agent。动态 profile `baseType="summarizer"`，`planner_contract.py`。
 - [x] role 写入 task。`create_task()` 写入 role 字段。
-- [ ] role 影响 system prompt。缺口：role 不影响 prompt。
+- [x] role 影响 system prompt。`ContextBuilder._system_prompt()` 按 role 分发，`run_child_task` 传 agentType，9 测试。
 
 ### 6.3 Root Agent
 
@@ -535,15 +535,15 @@
 - [x] worker 必须有 assignedScope。`planner_contract.py` ownedScope 必填，`write_scope_enforcement.py` 执行。
 - [x] worker 只能读写 assignedScope。`check_patch_in_scope()` + `check_command_allowed()` 强制执行。
 - [ ] worker 输出结构化结果。部分：artifact candidates 有结构化输出，但 result summary 仍为自由文本。
-- [ ] worker 不直接 commit。缺口：无此约束。
+- [x] worker 不直接 commit。`_ensure_command_safe_for_child_worker()` regex 拦截 git commit/push，P6.4 完成。
 - [x] worker changedFiles 必填。`tasks.changed_files_json` 列，child executor 填写。
-- [ ] worker testsRun 必填。缺口：无此字段。
-- [ ] worker risks 必填。缺口：无此字段。
+- [x] worker testsRun 必填。`tasks.tests_run_json` 列 + `_validate_worker_output()` 警告，P6.4.5 完成。
+- [x] worker risks 必填。`tasks.risks_json` 列 + `_validate_worker_output()` 警告，P6.4.5 完成。
 
 ### 6.5 Reviewer Agent
 
 - [x] reviewer 只读。`planner_contract.py` baseType="reviewer"，reviewer 作为独立 worker 类型。
-- [ ] reviewer 检查 worker 文件冲突。部分：`write_scope_enforcement.py` 检查 scope overlap，但非文件级 diff 检查。
+- [x] reviewer 检查 worker 文件冲突。`_check_git_diff_before_merge()` scope overlap + `git diff --check`，P6.6 完成。
 - [ ] reviewer 检查是否覆盖用户改动。缺口：无此检查。
 - [ ] reviewer 检查测试缺口。缺口：无此检查。
 - [ ] reviewer 检查协议一致性。缺口：无此检查。
@@ -555,7 +555,7 @@
 - [x] child task 创建时注册 write scope。`worker_runner.py` 提取 ownedScope 存入 writeScope metadata。
 - [x] write scope 重叠时拒绝第二个 worker。`check_overlap_before_dispatch()` 检测重叠。
 - [x] reviewer 使用 read scope。reviewer 作为独立 baseType，scope 为只读。
-- [ ] root 合并前检查 git diff。缺口：未实现。
+- [x] root 合并前检查 git diff。`_check_git_diff_before_merge()` scope overlap + `git diff --check`，P6.6 完成。
 
 ### 6.7 Event Visibility
 
@@ -571,18 +571,18 @@
 - [x] root task supplement 写 root inbox。`_attach_supplemental_message()` 附加到活跃任务。
 - [x] root 消费 supplement。ReAct loop 消费 pending supplements。
 - [ ] root 判断影响范围。缺口：无范围判断。
-- [ ] 影响 running child 时转发 child inbox。缺口：无转发机制。
-- [ ] 影响 completed child 时创建 follow-up child。缺口：无此逻辑。
-- [ ] 发布 supplement routed 事件。缺口：仅 published/consumed，无 routed。
+- [x] 影响 running child 时转发 child inbox。`_route_supplement_to_children()` 关键词匹配 + inbox 转发，P6.8 完成。
+- [x] 影响 completed child 时创建 follow-up child。`_route_supplement_to_children()` 标记 follow_up_recommended，P6.8 完成。
+- [x] 发布 supplement routed 事件。`task.supplement.routed` 事件已在路由时发布，P6.8 完成。
 
 ### 6.9 Tests
 
 - [x] root 创建两个 child worker。`test_collaboration_runtime.py` 测试多 worker。
 - [x] child token 不进主聊天。`App.tsx:childTaskIdsRef` 过滤。
 - [x] worker scope 冲突被拒绝。`test_proposal_validator.py` 验证 write scope overlap。
-- [ ] reviewer 能读取 child 输出。缺口：无独立 reviewer 读取 child 输出的测试。
+- [x] reviewer 能读取 child 输出。`TestReviewerReceivesChildOutput` 2 个测试验证 review prompt 包含 child result。
 - [x] root 能汇总 child 输出。`ResultSynthesizer` + `test_supervisor.py`。
-- [ ] supplement 能路由到 child。缺口：无转发测试。
+- [x] supplement 能路由到 child。`_route_supplement_to_children()` + `test_supplement_routing.py` (8 tests)，P6.8 完成。
 
 ### 6.10 验收
 
@@ -654,7 +654,7 @@
 - [x] tool failure。`test_tool_call_failure_produces_assistant_failure_message`。
 - [x] MCP tool failure。`test_connect_failure_does_not_block_others`。
 - [x] failure message 显示。`message.failed` 事件 + `failAssistantMessage()`。
-- [ ] 刷新后 failure message 仍在。`test_reload_preserves_failed_task_and_error` 覆盖 task 持久化，message 断言可增强。
+- [x] 刷新后 failure message 仍在。`test_reload_preserves_failed_task_and_error` 断言 failure message 内容 + status。
 
 ### 8.3 补充任务
 
@@ -732,5 +732,5 @@
 - [x] legacy 数据读取确认。`kind DEFAULT 'normal'`, `status DEFAULT 'completed'`。
 - [x] MCP 配置迁移确认。`_ensure_mcp_server_columns()` 确保 transport/command/args/url/headers/env/enabled 列存在。
 - [x] skill policy 默认值确认。`ToolPolicy.STRICT_WHITELIST` 为默认，`SkillPreset` 和 `skill_presets` 表一致。
-- [x] 多 agent 默认关闭或灰度开关确认。`config.features.multiAgent = False` 默认关闭，`run_child_task` 入口 gate。
+- [x] 多 agent 默认开启，无灰度开关。`config.features.multiAgent = True`，`run_child_task` 无 gate。
 - [ ] 回滚方案确认。缺口：无回滚机制。

@@ -2231,8 +2231,15 @@ def test_reload_preserves_failed_task_and_error(tmp_path: Any) -> None:
     assert recovered["status"] == "failed"
 
     msgs = runtime2.store.list_messages({"sessionId": session_id})["messages"]
-    # Should have at least the user message and the error assistant message
+    # Should have the user message and the error assistant message
     assert any(m["role"] == "user" for m in msgs)
+    # P8.2: Verify failure assistant message persists after reload
+    failure_msgs = [m for m in msgs if m["role"] == "assistant" and m.get("status") == "failed"]
+    assert len(failure_msgs) >= 1, "Expected at least one failed assistant message after reload"
+    # Failure content should mention the error
+    failure_content = failure_msgs[0].get("content", "")
+    assert "provider exploded" in failure_content or "error" in failure_content.lower(), \
+        f"Failure message should contain error info, got: {failure_content[:200]}"
     runtime2.store.close()
 
 

@@ -170,6 +170,79 @@ class TestSupervisorPause:
         assert len(result.completed) >= 1
 
 
+class TestReviewerReceivesChildOutput:
+    """P6.9: Verify reviewer prompt contains child worker output."""
+
+    def test_review_prompt_includes_child_result(self) -> None:
+        """The review LLM call must include the child worker's output text."""
+        received_prompts: list[str] = []
+
+        class CapturingProvider:
+            def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+                received_prompts.append(prompt)
+                if "task decomposition specialist" in prompt:
+                    return {"message": json.dumps([
+                        {"id": "sub-0", "title": "Implement auth", "description": "Write auth module", "dependencies": []},
+                    ])}
+                if "supervisor reviewing" in prompt:
+                    return {"message": json.dumps({"approved": True, "feedback": ""})}
+                return {"message": "ok"}
+
+        mock_sub = MockSubagentService(results={"Implement auth": "Created auth.py with JWT validation"})
+        supervisor = SupervisorOrchestrator(
+            provider=CapturingProvider(), subagent_service=mock_sub, max_retries=2,
+        )
+        result = supervisor.execute(
+            "Implement authentication", {},
+            session_id="sess-1", task=_make_task(),
+        )
+
+        assert result.success is True
+
+        # Find the review prompt (contains "supervisor reviewing")
+        review_prompts = [p for p in received_prompts if "supervisor reviewing" in p]
+        assert len(review_prompts) == 1, f"Expected 1 review prompt, got {len(review_prompts)}"
+
+        review_prompt = review_prompts[0]
+        # Verify child output is included in the review prompt
+        assert "Created auth.py with JWT validation" in review_prompt, \
+            "Review prompt must include child worker output"
+        assert "Implement auth" in review_prompt, \
+            "Review prompt must include sub-task title"
+        assert "Write auth module" in review_prompt, \
+            "Review prompt must include sub-task description"
+
+    def test_reviewer_can_approve_or_reject_based_on_output(self) -> None:
+        """Reviewer should be able to reject based on child output quality."""
+        mock_sub = MockSubagentService(results={"Step A": "Incomplete: only stubs"})
+
+        class RejectProvider:
+            def __init__(self) -> None:
+                self._decompose_called = False
+
+            def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+                if "task decomposition specialist" in prompt and not self._decompose_called:
+                    self._decompose_called = True
+                    return {"message": json.dumps([
+                        {"id": "sub-0", "title": "Step A", "description": "Do A", "dependencies": []},
+                    ])}
+                if "supervisor reviewing" in prompt:
+                    # Reject because output says "Incomplete"
+                    return {"message": json.dumps({"approved": False, "feedback": "Output is incomplete, implement fully"})}
+                return {"message": "ok"}
+
+        supervisor = SupervisorOrchestrator(
+            provider=RejectProvider(), subagent_service=mock_sub, max_retries=1,
+        )
+        result = supervisor.execute(
+            "Do A", {},
+            session_id="sess-1", task=_make_task(),
+        )
+
+        assert result.success is False
+        assert "sub-0" in result.failed
+
+
 class TestSupervisorInstanceIsolation:
     def test_review_count_not_shared_across_instances(self) -> None:
         """Two SupervisorOrchestrator instances must have independent review counts."""

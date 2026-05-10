@@ -297,5 +297,5 @@ synthesis should use the system-wide decision framework.
 - [x] Add parent generation report helper.
 - [x] Add focused backend tests.
 - [x] Run `python -m pytest -q -p no:cacheprovider`.
-- [ ] Run `npx tsc --noEmit`.
-- [ ] Run `git diff --check`.
+- [x] Run `npx tsc --noEmit`.
+- [x] Run `git diff --check`.

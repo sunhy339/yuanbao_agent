@@ -1037,7 +1037,7 @@ describe("SessionWorkspace", () => {
             status: "completed",
             taskId: "child_1",
             visibility: "panel",
-            payload: { agentType: "explorer" },
+            agentType: "explorer",
           },
           {
             id: "trace_2",
@@ -1046,7 +1046,7 @@ describe("SessionWorkspace", () => {
             status: "failed",
             taskId: "child_2",
             visibility: "trace",
-            payload: { agentType: "worker" },
+            agentType: "worker",
           },
         ]}
       />,

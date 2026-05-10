@@ -348,7 +348,7 @@
 - [x] 给 memory metadata 增加 `scope`。`MemoryScope` 枚举在 `types.py:32-38`。
 - [x] 给 memory metadata 增加 `confidence`。`_remember_task_result()` 写入 0.4-0.8。
 - [x] 给 memory metadata 增加 `source`。`MemorySource` 枚举在 `types.py:41-47`。
-- [ ] 给 memory metadata 增加 `sourceMessageIds`。缺口：仅跟踪 sourceTaskIds，未跟踪消息 ID。
+- [x] 给 memory metadata 增加 `sourceMessageIds`。`_remember_task_result()` 收集 activeAssistantMessageId + user message IDs，merge 路径合并。
 - [x] 给 memory metadata 增加 `sourceTaskIds`。`_remember_task_result()` 写入。
 - [x] 给 memory metadata 增加 `pinned`。`_adjust_score()` 读取 pinned 做 +0.3 提升。
 - [x] 定义 category：`user_preference/project_convention/workspace_fact/task_learning/decision/open_issue/tooling/implementation_note`。`MemoryCategory` 枚举完整。
@@ -467,7 +467,7 @@
 - [x] 发布 `mcp.tool.started`。`_execute_tool` 中 mcp__ 前缀工具发布，含 toolCallId/toolName/serverId。
 - [x] 发布 `mcp.tool.completed`。`_execute_tool` default path 发布，含 ok 字段。
 - [x] 发布 `mcp.tool.failed`。`_execute_tool` except 块 + `_tool_failed` 分支发布。
-- [ ] tool call timeout 错误可读。缺口：无专属 timeout 事件。
+- [x] tool call timeout 错误可读。`mcp.tool.timeout` 事件 + `asyncio.wait_for` 超时保护。
 - [x] server connect failure 错误可读。`mcp.server.failed` 含 phase/error/transport/command/url。
 
 ### 5.5 Skill Tool Policy

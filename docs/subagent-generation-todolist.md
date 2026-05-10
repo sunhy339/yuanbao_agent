@@ -10,14 +10,13 @@ This checklist is a subagent-focused slice of
 validators, model/skill/tool decisions, risk policy, test strategy, and final
 synthesis should use the system-wide decision framework.
 
-## Remaining Priority Order
+## Completed Follow-Up Priority Order
 
-P0 items unblock the user-facing subagent experience and should be handled
-first. P1 items make recovery and trace inspection testable. P2 items are useful
-polish or cleanup after the core panel and recovery paths are stable.
+The final P10/P11 frontend items were completed in this order. Keep this section
+as a short audit trail for future release notes and regression planning.
 
-1. P0: subagent panel data model and removal of child-task-id heuristics where
-   `visibility` already provides the routing signal.
+1. P0: subagent panel data model and visibility-first routing, with the legacy
+   child-task-id fallback kept only for events that do not provide `visibility`.
 2. P0: child task status, worker, duration, result, and artifact display.
 3. P1: frontend tests for visibility routing and missed-event merge.
 4. P1: trace drawer filters by task id and visibility, plus the child event
@@ -257,7 +256,7 @@ polish or cleanup after the core panel and recovery paths are stable.
 - [x] Route root chat using `visibility = "chat"`.
 - [x] Route collaboration status using `visibility = "panel"`.
 - [x] Route tool/command details using `visibility = "trace"`.
-- [x] P0: Remove child-task-id heuristics where visibility is sufficient.
+- [x] P0: Prefer visibility routing and keep child-task-id fallback only for legacy events without visibility.
 - [x] P0: Add subagent panel data model.
 - [x] P0: Show child task status, worker, duration, result, and artifacts.
 - [x] P1: Add trace drawer filters by task id.

@@ -11,13 +11,13 @@ staged with `git add -f` when they need to be committed.
 
 | Area | Document | Status |
 | --- | --- | --- |
-| System-wide LLM decision layer | `docs/llm-assisted-runtime-decision-plan.md` | Checklist implementation complete; current follow-up is hardening and integration polish |
+| System-wide LLM decision layer | `docs/llm-assisted-runtime-decision-plan.md` | Checklist implementation complete; current follow-up is hardening polish |
 | System-wide LLM decision TODO | `docs/llm-assisted-runtime-decision-todolist.md` | 166 done / 0 open |
 | TDD remediation test suite | `docs/tdd-remediation-test-suite.md` | New test design, use as acceptance gate |
-| Subagent generation | `docs/subagent-generation-remediation-plan.md` | Backend path complete through P9/P12; frontend visibility and recovery remain |
-| Subagent generation TODO | `docs/subagent-generation-todolist.md` | 233 done / 9 open; remaining work prioritized in that checklist |
+| Subagent generation | `docs/subagent-generation-remediation-plan.md` | Checklist implementation complete through backend, frontend visibility, and recovery |
+| Subagent generation TODO | `docs/subagent-generation-todolist.md` | 242 done / 0 open |
 | Multi-agent collaboration backbone | `docs/multi-agent-collaboration-todo.md` | Checklist complete, 22 done / 0 open |
-| Chat runtime agent run | `docs/chat-runtime-agent-run-todolist.md` | Legacy ledger, 323 done / 153 open; needs reconciliation against newer subagent/LLM checklists |
+| Chat runtime agent run | `docs/chat-runtime-agent-run-todolist.md` | Legacy ledger, 404 done / 74 open; needs reconciliation against newer subagent/LLM checklists |
 | Chat runtime architecture plan | `docs/chat-runtime-agent-run-rectification-plan.md` | Design reference, no checklist |
 | Chat runtime detailed remediation | `docs/chat-runtime-agent-run-detailed-remediation.md` | Design reference, no checklist |
 | Memory and context compaction | `docs/memory-and-context-compaction-plan.md` | Older plan, checklist not updated after implementation |
@@ -80,7 +80,7 @@ include:
 ### Chat Runtime Agent Run
 
 `docs/chat-runtime-agent-run-todolist.md` has substantial completed coverage:
-323 checked items and 153 open items.
+404 checked items and 74 open items.
 
 Completed areas include:
 
@@ -107,6 +107,23 @@ Completed areas include:
 Remaining work is concentrated around frontend recovery/polish and deeper
 multi-agent generation behavior, not the basic runtime message/task substrate.
 
+### Subagent Generation
+
+`docs/subagent-generation-todolist.md` is now fully checked off. Completed areas
+include:
+
+- baseline multi-subagent dispatch regression coverage;
+- proposal framework, runtime validators, tool alias normalization, and planner
+  contract;
+- generation report, artifact registry, artifact linking, and synthesis;
+- real process-RPC child worker execution with failure, timeout, cancel, retry,
+  and report observability;
+- DAG scheduling and multi-agent write safety;
+- frontend visibility routing, subagent panel data model, child task status and
+  artifact display, trace filters by task id, visibility, and agent type;
+- frontend tests for visibility routing, missed-event merge, and trace drawer
+  child event-chain coverage.
+
 ### Subagent Backend and Write Safety Audit
 
 The subagent backend checklist is complete through P9 and P12. A 2026-05-10
@@ -125,19 +142,13 @@ The current backend regression gate is:
 - `python -m compileall` passed on modified runtime modules;
 - `git diff --check` passed.
 
+The current frontend gate for the subagent panel/visibility work is:
+
+- `npx.cmd tsc --noEmit` passed from `app/`;
+- `npm.cmd test -- SessionWorkspace.test.tsx visibilityRouting.test.ts` passed
+  with 50 tests.
+
 ## What Is Still Open
-
-### Subagent Generation
-
-The only open items in the subagent checklist are frontend visibility and
-recovery work:
-
-- remove remaining child-task-id heuristics where event `visibility` is enough;
-- add a subagent panel data model;
-- show child task status, worker, duration, result, and artifacts;
-- add trace drawer filters by task id, agent type, and visibility;
-- add frontend tests for visibility routing and missed-event merge;
-- add the acceptance scenario for trace drawer child event chains.
 
 ### Chat Runtime Remaining Items
 
@@ -159,15 +170,14 @@ hardening item after the frontend recovery batch.
 
 ## Recommended Next Batch
 
-1. P0: finish the subagent panel data model and remove child-task-id display
-   heuristics where `visibility` can drive routing.
-2. P0: show child task status, worker, duration, result, and artifacts in the
-   subagent panel.
-3. P1: add frontend tests for visibility routing and missed-event merge.
-4. P1: add trace drawer filters by task id and visibility, then cover the child
-   event-chain acceptance scenario.
-5. P2: add the agent-type trace filter and reconcile the legacy
-   `chat-runtime-agent-run-todolist.md` open items against the newer completed
-   checklists.
-6. P3: harden `run_command` beyond cwd-based write-scope checks if shell
-   command path isolation becomes a release requirement.
+1. P0: reconcile the legacy `chat-runtime-agent-run-todolist.md` open items
+   against the newer completed subagent/LLM checklists, then close or rewrite
+   stale entries.
+2. P0: run the broader frontend regression suite and visual smoke around the
+   session workspace now that subagent panel work is checked off.
+3. P1: harden `run_command` beyond cwd-based write-scope checks if shell command
+   path isolation becomes a release requirement.
+4. P1: add a focused release gate that combines backend subagent tests,
+   frontend visibility tests, typecheck, and diff hygiene.
+5. P2: review memory/context UI gaps from the legacy chat runtime checklist and
+   decide whether they still belong in the current product scope.

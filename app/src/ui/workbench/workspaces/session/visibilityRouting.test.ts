@@ -1,23 +1,9 @@
 import { describe, expect, it } from "vitest";
-
-/**
- * Visibility routing logic mirrors the isChatVisibleEvent function in App.tsx.
- * These tests verify the routing decisions independently of the component tree.
- */
+import { isChatVisibleEvent } from "./visibilityRouting";
 
 interface MockEvent {
   visibility?: "chat" | "panel" | "trace";
   taskId: string;
-}
-
-/** Replicate the isChatVisibleEvent logic for unit testing. */
-function isChatVisibleEvent(
-  event: MockEvent,
-  childTaskIds: Set<string>,
-): boolean {
-  if (event.visibility === "chat") return true;
-  if (event.visibility === "panel" || event.visibility === "trace") return false;
-  return !childTaskIds.has(event.taskId);
 }
 
 describe("visibility routing", () => {
@@ -122,5 +108,13 @@ describe("missed-event merge (childTaskIds accumulation)", () => {
     childTaskIds.add("child_3");
     const newMissedEvent: MockEvent = { visibility: undefined, taskId: "child_3" };
     expect(isChatVisibleEvent(newMissedEvent, childTaskIds)).toBe(false);
+  });
+
+  it("keeps completed child task ids available for late legacy events", () => {
+    const childTaskIds = new Set<string>(["child_1"]);
+
+    // Completion should not delete the id: old-format delayed child events without
+    // visibility still need to stay out of the main chat stream.
+    expect(isChatVisibleEvent({ visibility: undefined, taskId: "child_1" }, childTaskIds)).toBe(false);
   });
 });

@@ -85,6 +85,7 @@ import {
   type SessionWorkspaceCollaboration,
   type SessionWorkspaceContextPreview,
 } from "./ui/workbench/workspaces/session/SessionWorkspace";
+import { isChatVisibleEvent as shouldShowEventInChat } from "./ui/workbench/workspaces/session/visibilityRouting";
 import type { ComposerRuntimeChildTask } from "./ui/workbench/ComposerDock";
 import {
   SettingsWorkspace,
@@ -2360,12 +2361,7 @@ export function App() {
 
   /** Check if event should be routed to chat stream (visibility=chat or no visibility for backward compat). */
   function isChatVisibleEvent(event: AgentEventEnvelope): boolean {
-    // Events with visibility="chat" always go to chat
-    // Events without visibility fall through to legacy childTaskIdsRef logic for backward compat
-    if (event.visibility === "chat") return true;
-    if (event.visibility === "panel" || event.visibility === "trace") return false;
-    // No visibility field: use legacy childTaskIdsRef heuristic
-    return !childTaskIdsRef.current.has(event.taskId);
+    return shouldShowEventInChat(event, childTaskIdsRef.current);
   }
 
   /** Update activeTaskId state and persist it in per-session map. */
@@ -2679,9 +2675,6 @@ export function App() {
           const isChildWorker = (event.payload as Record<string, unknown>)?.childWorker === true;
           if (isChildWorker && event.type === "task.started") {
             childTaskIdsRef.current.add(event.taskId);
-          }
-          if (isChildWorker && event.type === "task.completed") {
-            childTaskIdsRef.current.delete(event.taskId);
           }
           setActiveTaskId((current) => {
             if (isChildWorker) return current;

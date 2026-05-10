@@ -166,17 +166,17 @@ class TestFeatureFlags:
     """Feature flag CRUD via SQLiteStore."""
 
     def test_default_features_in_config(self, tmp_path: Any) -> None:
-        """Default config includes features block with multiAgent=False."""
+        """Default config includes features block with multiAgent=True."""
         store = SQLiteStore(str(tmp_path / "test.sqlite3"))
         config = store.get_config({})
         features = config["config"].get("features", {})
         assert "multiAgent" in features
-        assert features["multiAgent"] is False
+        assert features["multiAgent"] is True
 
     def test_get_feature_flag(self, tmp_path: Any) -> None:
         """get_feature_flag reads from config.features."""
         store = SQLiteStore(str(tmp_path / "test.sqlite3"))
-        assert store.get_feature_flag("multiAgent") is False
+        assert store.get_feature_flag("multiAgent") is True
         assert store.get_feature_flag("nonexistent", default=True) is True
 
     def test_set_feature_flag(self, tmp_path: Any) -> None:
@@ -225,28 +225,3 @@ class TestFeatureFlagsRpc:
         assert "error" in resp
 
 
-class TestMultiAgentFeatureGate:
-    """run_child_task is blocked when multiAgent feature is disabled."""
-
-    def test_child_task_blocked_when_disabled(self, tmp_path: Any) -> None:
-        """run_child_task raises when multiAgent is False (default)."""
-        runtime = _make_runtime(tmp_path)
-        with pytest.raises(ValueError, match="multiAgent"):
-            runtime.orchestrator.run_child_task({
-                "sessionId": "s_fake",
-                "prompt": "do something",
-            })
-
-    def test_child_task_allowed_when_enabled(self, tmp_path: Any) -> None:
-        """run_child_task proceeds past feature gate when multiAgent is enabled."""
-        runtime = _make_runtime(tmp_path)
-        runtime.store.set_feature_flag("multiAgent", True)
-        # Should not raise ValueError about multiAgent
-        # (will likely fail for other reasons like missing session, but that's fine)
-        try:
-            runtime.orchestrator.run_child_task({
-                "sessionId": "s_fake",
-                "prompt": "do something",
-            })
-        except ValueError as e:
-            assert "multiAgent" not in str(e)

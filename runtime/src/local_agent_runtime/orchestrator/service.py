@@ -1402,6 +1402,19 @@ class Orchestrator:
                     except Exception as supp_exc:  # noqa: BLE001
                         logger.warning("Supplement subtask failed: %s", supp_exc)
 
+            # 5. Pre-merge git diff check
+            merge_check = self._check_git_diff_before_merge(
+                session_id=session_id,
+                task=task,
+                execution=execution,
+                workspace_root=context.get("workspace_root") if context else None,
+            )
+            if not merge_check["safe"]:
+                logger.warning(
+                    "Pre-merge check found issues for task=%s: %s",
+                    task["id"], merge_check["warnings"],
+                )
+
             summary = execution["summary"]
 
             self._publish(
@@ -2035,7 +2048,111 @@ class Orchestrator:
             event_type="assistant.message.completed",
             payload={"content": acknowledgement, "supplemental": True},
         )
-        return {"task": runtime_task, "acceptedMode": "supplement"}
+        # Route supplement to child tasks if applicable
+        routing_result = self._route_supplement_to_children(
+            session_id=session_id,
+            root_task=runtime_task,
+            content=content,
+            message_id=user_msg["id"],
+        )
+        result = {"task": runtime_task, "acceptedMode": "supplement"}
+        if routing_result:
+            result["supplementRouting"] = routing_result
+        return result
+
+    def _route_supplement_to_children(
+        self,
+        *,
+        session_id: str,
+        root_task: dict[str, Any],
+        content: str,
+        message_id: str,
+    ) -> dict[str, Any] | None:
+        """Route supplement to child tasks based on goal/scope relevance.
+
+        Returns routing info dict if any children were matched, None otherwise.
+        """
+        # Find child tasks under this root
+        all_tasks = self._store.list_tasks({"sessionId": session_id}).get("tasks", [])
+        root_id = root_task.get("id")
+        children = [
+            t for t in all_tasks
+            if t.get("rootTaskId") == root_id and t.get("id") != root_id
+        ]
+        if not children:
+            return None
+
+        # Extract keywords from supplement content for matching
+        content_lower = content.lower()
+        content_words = set(content_lower.split())
+
+        routed_to: list[dict[str, Any]] = []
+        follow_ups: list[dict[str, Any]] = []
+
+        for child in children:
+            # Score relevance by matching keywords against child goal/scope
+            goal = (child.get("goal") or "").lower()
+            changed_files = child.get("changedFiles") or []
+            scope_text = " ".join(str(f) for f in changed_files).lower()
+
+            # Simple keyword overlap scoring
+            goal_words = set(goal.split())
+            scope_words = set(scope_text.split()) if scope_text else set()
+            overlap = len(content_words & (goal_words | scope_words))
+
+            # Must have at least one keyword overlap to route
+            if overlap == 0:
+                continue
+
+            child_status = child.get("status", "")
+            is_running = child_status in {"running", "planning", "verifying", "waiting_approval", "paused"}
+            is_completed = child_status in {"completed", "failed"}
+
+            if is_running:
+                # Forward supplement to child's inbox
+                inbox_entry = self._store.create_inbox_entry(
+                    task_id=child["id"],
+                    session_id=session_id,
+                    content=content,
+                    message_id=message_id,
+                )
+                routed_to.append({
+                    "childTaskId": child["id"],
+                    "action": "forwarded",
+                    "inboxEntryId": inbox_entry["id"],
+                })
+            elif is_completed:
+                # Mark for potential follow-up
+                follow_ups.append({
+                    "childTaskId": child["id"],
+                    "action": "follow_up_recommended",
+                    "childStatus": child_status,
+                })
+
+        if not routed_to and not follow_ups:
+            return None
+
+        routing_info: dict[str, Any] = {
+            "routedTo": routed_to,
+            "followUps": follow_ups,
+        }
+
+        # Publish routed event
+        self._publish(
+            session_id=session_id,
+            task=root_task,
+            event_type="task.supplement.routed",
+            payload={
+                "messageId": message_id,
+                "content": content,
+                "routedToCount": len(routed_to),
+                "followUpCount": len(follow_ups),
+                "routedTo": routed_to,
+                "followUps": follow_ups,
+            },
+        )
+
+        return routing_info
 
     def _context_with_task_focus(self, context: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
         focused_context = {**context}
@@ -2083,9 +2200,6 @@ class Orchestrator:
         return "\n".join(lines)
 
     def run_child_task(self, params: dict[str, Any]) -> dict[str, Any]:
-        # Feature flag gate: multi-agent disabled by default
-        if not self._store.get_feature_flag("multiAgent", default=False):
-            raise ValueError("multiAgent feature is disabled. Enable via config.features.multiAgent = true")
 
         session_id = params.get("sessionId")
         prompt = params.get("prompt")
@@ -2934,6 +3048,94 @@ class Orchestrator:
                 return True
         return False
 
+    def _check_git_diff_before_merge(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        execution: dict[str, Any],
+        workspace_root: str | None = None,
+    ) -> dict[str, Any]:
+        """Check git diff for conflicts before merging child results.
+
+        Returns a dict with keys:
+          - changed_files: list of file paths changed by child tasks
+          - conflict_markers: list of files with conflict markers
+          - scope_overlaps: list of file paths modified by multiple children
+          - warnings: list of human-readable warning strings
+          - safe: bool — True if no issues detected
+        """
+        import subprocess
+
+        result: dict[str, Any] = {
+            "changed_files": [],
+            "conflict_markers": [],
+            "scope_overlaps": [],
+            "warnings": [],
+            "safe": True,
+        }
+
+        # 1. Collect changed files from child task metadata
+        child_changed_files: dict[str, list[str]] = {}  # file -> [task_ids]
+        for subtask in execution.get("subtasks", []):
+            task_id = getattr(subtask, "id", None)
+            changed = getattr(subtask, "changed_files", None) or []
+            if isinstance(changed, str):
+                try:
+                    changed = json.loads(changed)
+                except (json.JSONDecodeError, TypeError):
+                    changed = []
+            for f in changed:
+                result["changed_files"].append(f)
+                child_changed_files.setdefault(f, []).append(str(task_id))
+
+        # 2. Check scope overlaps (same file modified by multiple children)
+        for filepath, task_ids in child_changed_files.items():
+            if len(task_ids) > 1:
+                result["scope_overlaps"].append(filepath)
+                result["warnings"].append(
+                    f"File {filepath} was modified by multiple child tasks: {', '.join(task_ids)}"
+                )
+                result["safe"] = False
+
+        # 3. Run git diff checks if workspace root is available
+        if workspace_root and self._workspace_has_git_root(workspace_root):
+            try:
+                # Check for conflict markers
+                check_proc = subprocess.run(
+                    ["git", "diff", "--check"],
+                    capture_output=True, text=True, timeout=10,
+                    cwd=workspace_root,
+                )
+                if check_proc.stdout.strip():
+                    conflict_files = set()
+                    for line in check_proc.stdout.strip().splitlines():
+                        parts = line.split(":", 1)
+                        if parts:
+                            conflict_files.add(parts[0])
+                    result["conflict_markers"] = sorted(conflict_files)
+                    result["warnings"].append(
+                        f"Git conflict markers detected in: {', '.join(sorted(conflict_files))}"
+                    )
+                    result["safe"] = False
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+                logger.warning("git diff --check failed: %s", exc)
+
+        # 4. Publish merge check event
+        if result["warnings"]:
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.merge.check",
+                payload={
+                    "safe": result["safe"],
+                    "warnings": result["warnings"],
+                    "changedFileCount": len(result["changed_files"]),
+                    "overlapCount": len(result["scope_overlaps"]),
+                },
+            )
+
+        return result
+
     def _completed_patch_results(self, tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         patches: list[dict[str, Any]] = []
         for tool_result in tool_results:
@@ -3520,6 +3722,19 @@ class Orchestrator:
 
             # Completed — clean up and finalize
             self._clear_pending_dag_state(task["id"])
+
+            # Pre-merge git diff check
+            merge_check = self._check_git_diff_before_merge(
+                session_id=state["session_id"],
+                task=task,
+                execution=execution,
+                workspace_root=(state.get("context") or {}).get("workspace_root"),
+            )
+            if not merge_check["safe"]:
+                logger.warning(
+                    "Pre-merge check found issues for resumed task=%s: %s",
+                    task["id"], merge_check["warnings"],
+                )
 
             coverage = self._coverage_evaluator.evaluate(state["goal"], execution["subtasks"])
             summary = execution["summary"]
@@ -5287,6 +5502,23 @@ class Orchestrator:
             return
         raise ValueError(f"Tool is not allowed in child worker process: {tool_name}")
 
+    def _ensure_command_safe_for_child_worker(self, command: str) -> None:
+        """Block git commit/push in child workers — only root may commit."""
+        allowed = self._child_tool_allowlist()
+        if allowed is None:
+            return  # root task, no restriction
+        import re as _re
+        blocked = (
+            _re.compile(r"\bgit\s+commit\b", _re.IGNORECASE),
+            _re.compile(r"\bgit\s+push\b", _re.IGNORECASE),
+        )
+        for pattern in blocked:
+            if pattern.search(command):
+                raise ValueError(
+                    "Child workers cannot run git commit/push directly. "
+                    "Only the root task may commit changes."
+                )
+
     def _tool_result_message(self, tool_call: dict[str, Any], tool_result: dict[str, Any]) -> dict[str, Any]:
         return {
             "role": "tool",
@@ -5405,6 +5637,11 @@ class Orchestrator:
         budget: WorkerBudget | None = None,
     ) -> dict[str, Any]:
         self._ensure_tool_allowed_for_child_worker(tool_spec["name"])
+        # Child workers cannot run git commit/push via run_command
+        if tool_spec["name"] == "run_command":
+            command = tool_spec.get("arguments", {}).get("command", "")
+            if isinstance(command, str):
+                self._ensure_command_safe_for_child_worker(command)
         tool_call_id = tool_spec.get("id") or self._store.new_id("tc")
         tool_arguments = {
             **tool_spec["arguments"],

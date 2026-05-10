@@ -96,7 +96,7 @@ DEFAULT_CONFIG = {
         "webFetchPreflight": True,
     },
     "features": {
-        "multiAgent": False,
+        "multiAgent": True,
         "streamingDeltaPersist": True,
     },
 }

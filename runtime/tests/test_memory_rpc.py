@@ -164,3 +164,45 @@ class TestMemoryDeleteRpc:
         runtime = _make_runtime(tmp_path)
         resp = _rpc(runtime, "memory.delete", {"entryId": "nope"})
         assert resp["result"]["deleted"] is False
+
+
+class TestMemoryPinRpc:
+    """memory.pin pins a memory entry for priority recall."""
+
+    def test_pin_sets_pinned_flag(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        from local_agent_runtime.memory.store import MemoryStore
+        from local_agent_runtime.memory.types import MemoryKind
+        mem = MemoryStore(runtime.store)
+        entry = mem.create(kind=MemoryKind.LONG_TERM, content="important convention", workspace_id="w1")
+
+        resp = _rpc(runtime, "memory.pin", {"entryId": entry.id})
+        assert resp["result"]["entry"]["metadata"]["pinned"] is True
+
+    def test_unpin_clears_pinned_flag(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        from local_agent_runtime.memory.store import MemoryStore
+        from local_agent_runtime.memory.types import MemoryKind
+        mem = MemoryStore(runtime.store)
+        entry = mem.create(
+            kind=MemoryKind.LONG_TERM, content="pinned item",
+            workspace_id="w1", metadata={"pinned": True},
+        )
+
+        resp = _rpc(runtime, "memory.unpin", {"entryId": entry.id})
+        assert resp["result"]["entry"]["metadata"]["pinned"] is False
+
+    def test_pin_nonexistent_returns_error(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        resp = _rpc(runtime, "memory.pin", {"entryId": "ghost"})
+        assert "error" in resp
+
+    def test_unpin_nonexistent_returns_error(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        resp = _rpc(runtime, "memory.unpin", {"entryId": "ghost"})
+        assert "error" in resp
+
+    def test_pin_without_entry_id_returns_error(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        resp = _rpc(runtime, "memory.pin", {})
+        assert "error" in resp

@@ -112,6 +112,15 @@ class MemoryStore:
             self._store._conn.commit()
         return self.retrieve(entry_id, touch=False)
 
+    def toggle_pin(self, entry_id: str, *, pinned: bool) -> MemoryEntry | None:
+        """Set or clear the pinned flag on a memory entry's metadata."""
+        existing = self.retrieve(entry_id, touch=False)
+        if existing is None:
+            return None
+        meta = dict(existing.metadata or {})
+        meta["pinned"] = pinned
+        return self.update(entry_id, metadata=meta)
+
     def delete(self, entry_id: str) -> bool:
         """Delete an entry. Returns True if something was removed."""
         cursor = self._store._conn.execute(

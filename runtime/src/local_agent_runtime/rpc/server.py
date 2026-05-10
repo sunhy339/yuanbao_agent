@@ -121,6 +121,8 @@ class JsonRpcServer:
             "memory.get": self._memory_get,
             "memory.edit": self._memory_edit,
             "memory.delete": self._memory_delete,
+            "memory.pin": self._memory_pin,
+            "memory.unpin": self._memory_unpin,
             "feature.list": self._feature_list,
             "feature.set": self._feature_set,
         }
@@ -332,6 +334,26 @@ class JsonRpcServer:
             raise ValueError("entryId is required")
         deleted = self._memory_store().delete(entry_id)
         return {"deleted": deleted}
+
+    def _memory_pin(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Pin a memory entry for priority recall."""
+        entry_id = params.get("entryId") or params.get("entry_id", "")
+        if not entry_id:
+            raise ValueError("entryId is required")
+        updated = self._memory_store().toggle_pin(entry_id, pinned=True)
+        if updated is None:
+            raise ValueError(f"Memory entry not found: {entry_id}")
+        return {"entry": _entry_to_dict(updated)}
+
+    def _memory_unpin(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Unpin a memory entry."""
+        entry_id = params.get("entryId") or params.get("entry_id", "")
+        if not entry_id:
+            raise ValueError("entryId is required")
+        updated = self._memory_store().toggle_pin(entry_id, pinned=False)
+        if updated is None:
+            raise ValueError(f"Memory entry not found: {entry_id}")
+        return {"entry": _entry_to_dict(updated)}
 
     # -- Feature flags --
 

@@ -279,3 +279,75 @@ class TestMemorySourceMessageIds:
         merged_task_ids = set(fetched.metadata.get("sourceTaskIds", []))
         assert "tsk_1" in merged_task_ids
         assert "tsk_2" in merged_task_ids
+
+
+class TestPinnedMemoryScoreBoost:
+    """Pinned memories receive a +0.3 score boost in recall."""
+
+    def setup_method(self) -> None:
+        self.store = SQLiteStore(":memory:")
+        self.ms = MemoryStore(self.store)
+        self.retriever = MemoryRetriever(self.ms)
+        self.mgr = MemoryManager(self.ms, self.retriever)
+
+    def test_pinned_memory_scores_higher_than_unpinned(self) -> None:
+        """A pinned memory should score higher than an unpinned one with similar content."""
+        # Create two similar memories — use returned entry objects directly
+        e1 = self.mgr.remember(
+            content="Use snake_case for Python function names",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "project_convention", "confidence": 0.7},
+        )
+        unpinned_id = e1.id
+
+        e2 = self.mgr.remember(
+            content="Use camelCase for JavaScript function names",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "project_convention", "confidence": 0.7},
+        )
+        pinned_id = e2.id
+
+        # Pin the second one
+        self.ms.toggle_pin(pinned_id, pinned=True)
+
+        # Recall both and verify the pinned one scores higher
+        results = self.mgr.recall_with_scores(workspace_id="w1", query="function naming convention")
+
+        # Find scores
+        pinned_score = None
+        unpinned_score = None
+        for entry, score in results:
+            if entry.id == pinned_id:
+                pinned_score = score
+            elif entry.id == unpinned_id:
+                unpinned_score = score
+
+        assert pinned_score is not None, "Pinned memory should be in results"
+        assert unpinned_score is not None, "Unpinned memory should be in results"
+        assert pinned_score > unpinned_score, \
+            f"Pinned ({pinned_score}) should score higher than unpinned ({unpinned_score})"
+
+    def test_unpin_removes_score_boost(self) -> None:
+        """Unpinning a memory removes the score boost."""
+        entry = self.mgr.remember(
+            content="Critical deployment step",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"pinned": True, "category": "task_learning", "confidence": 0.8},
+        )
+
+        # Score while pinned
+        results_pinned = self.mgr.recall_with_scores(workspace_id="w1", query="deployment")
+        pinned_score = next(s for e, s in results_pinned if e.id == entry.id)
+
+        # Unpin
+        self.ms.toggle_pin(entry.id, pinned=False)
+
+        # Score after unpinning
+        results_unpinned = self.mgr.recall_with_scores(workspace_id="w1", query="deployment")
+        unpinned_score = next(s for e, s in results_unpinned if e.id == entry.id)
+
+        assert pinned_score > unpinned_score, \
+            f"Pinned score ({pinned_score}) should be higher than unpinned ({unpinned_score})"

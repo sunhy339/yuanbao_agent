@@ -240,28 +240,28 @@ synthesis should use the system-wide decision framework.
 
 ## P10: Frontend Visibility and Recovery
 
-- [ ] Route root chat using `visibility = "chat"`.
-- [ ] Route collaboration status using `visibility = "panel"`.
-- [ ] Route tool/command details using `visibility = "trace"`.
+- [x] Route root chat using `visibility = "chat"`.
+- [x] Route collaboration status using `visibility = "panel"`.
+- [x] Route tool/command details using `visibility = "trace"`.
 - [ ] Remove child-task-id heuristics where visibility is sufficient.
 - [ ] Add subagent panel data model.
 - [ ] Show child task status, worker, duration, result, and artifacts.
 - [ ] Add trace drawer filters by task id.
 - [ ] Add trace drawer filters by agent type.
 - [ ] Add trace drawer filters by visibility.
-- [ ] Use `events.after` for reconnect or refresh recovery.
+- [x] Use `events.after` for reconnect or refresh recovery.
 - [ ] Add frontend tests for visibility routing.
 - [ ] Add frontend tests for missed-event merge.
 
 ## P11: Acceptance Scenarios
 
-- [ ] Scenario: "Build a UI music player" creates a parent generation report.
-- [ ] Scenario: explorer child produces a scope artifact.
-- [ ] Scenario: worker child proposes file or patch artifacts.
-- [ ] Scenario: reviewer child accepts or rejects artifacts.
+- [x] Scenario: "Build a UI music player" creates a parent generation report.
+- [x] Scenario: explorer child produces a scope artifact.
+- [x] Scenario: worker child proposes file or patch artifacts.
+- [x] Scenario: reviewer child accepts or rejects artifacts.
 - [ ] Scenario: trace drawer shows child event chain.
-- [ ] Scenario: failed child task remains visible in report.
-- [ ] Scenario: refresh restores task, artifact, and trace state.
+- [x] Scenario: failed child task remains visible in report.
+- [x] Scenario: refresh restores task, artifact, and trace state.
 - [x] Scenario: common tool alias such as `rg` does not fail dispatch.
 - [x] Scenario: LLM planner creates task-specific agents, not only fixed roles.
 - [x] Scenario: LLM planner proposes unsafe tools and runtime rejects them.

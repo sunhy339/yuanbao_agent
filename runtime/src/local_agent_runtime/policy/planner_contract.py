@@ -9,6 +9,8 @@ scopes, and risk levels before any child task is created.
 
 from __future__ import annotations
 
+import posixpath
+import re
 from typing import Any
 
 from ..services.worker_environment import (
@@ -240,11 +242,22 @@ def validate_planner_output(output: dict[str, Any]) -> list[str]:
         if not isinstance(scopes, list):
             continue
         for scope in scopes:
-            scope_str = str(scope)
-            if scope_str in scope_map:
+            scope_str = _normalize_relative_path(scope)
+            if _is_invalid_relative_path(scope_str):
+                reasons.append(f"subtasks[{i}]: invalid write scope {scope!r}")
+                continue
+            overlapping = next(
+                (
+                    existing
+                    for existing in scope_map
+                    if _path_contains(existing, scope_str) or _path_contains(scope_str, existing)
+                ),
+                None,
+            )
+            if overlapping is not None:
                 reasons.append(
                     f"Overlapping write scope {scope_str!r} between "
-                    f"{scope_map[scope_str]!r} and {name!r}"
+                    f"{scope_map[overlapping]!r} and {name!r}"
                 )
             else:
                 scope_map[scope_str] = name
@@ -355,3 +368,30 @@ def compute_blocked_downstream(
                 queue.append(downstream)
 
     return blocked
+
+
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+
+def _normalize_relative_path(path: object) -> str:
+    text = str(path).replace("\\", "/").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    normalized = posixpath.normpath(text)
+    return "." if normalized == "" else normalized.rstrip("/")
+
+
+def _is_invalid_relative_path(path: str) -> bool:
+    return (
+        not path
+        or path.startswith("/")
+        or path == ".."
+        or path.startswith("../")
+        or bool(_WINDOWS_DRIVE_RE.match(path))
+    )
+
+
+def _path_contains(scope: str, target: str) -> bool:
+    if scope == ".":
+        return not _is_invalid_relative_path(target)
+    return target == scope or target.startswith(scope.rstrip("/") + "/")

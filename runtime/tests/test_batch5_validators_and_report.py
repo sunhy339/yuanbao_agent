@@ -465,6 +465,13 @@ class TestPatchScopeValidator:
         )
         assert any("outside allowed write scopes" in r for r in reasons)
 
+    def test_patch_scope_rejects_normalized_traversal(self):
+        reasons = validate_patch_in_scope(
+            {"targetPath": "src/ui/../core/engine.py"},
+            allowed_scopes=["src/ui/"],
+        )
+        assert any("outside allowed write scopes" in r for r in reasons)
+
     def test_patch_no_scope(self):
         reasons = validate_patch_in_scope({"targetPath": "src/main.py"})
         assert any("no allowed write scope" in r for r in reasons)

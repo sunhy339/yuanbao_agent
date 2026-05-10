@@ -19,10 +19,12 @@ from typing import Any
 import pytest
 
 from local_agent_runtime.event_bus import EventBus
+from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.services.collaboration_service import CollaborationService
 from local_agent_runtime.services.write_scope_enforcement import WriteScopeEnforcer
 from local_agent_runtime.services.worker_runner import ChildTaskRequest, WorkerRunner
 from local_agent_runtime.store.sqlite_store import SQLiteStore
+from local_agent_runtime.tools import build_builtin_tools
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +39,7 @@ def _store_context(tmp_path: Path) -> tuple[SQLiteStore, dict[str, Any]]:
     workspace = store.upsert_workspace(str(workspace_root))
     session = store.create_session(workspace_id=workspace["id"], title="p9")
     parent_task = store.create_task(session_id=session["id"], task_type="chat", goal="parent", plan=[])
-    return store, {"session": session, "parent_task": parent_task}
+    return store, {"session": session, "parent_task": parent_task, "workspace_root": workspace_root}
 
 
 def _create_child_with_scope(
@@ -62,6 +64,21 @@ def _create_child_with_scope(
         "priority": 3,
         "metadata": metadata,
     })["task"]
+
+
+def _create_runtime_task_for_child(
+    store: SQLiteStore,
+    *,
+    session_id: str,
+    child_task_id: str,
+) -> dict[str, Any]:
+    return store.create_task(
+        session_id=session_id,
+        task_type="subagent",
+        goal="runtime child",
+        plan=[],
+        routing={"childCollaborationTaskId": child_task_id},
+    )
 
 
 class DummyExecutor:
@@ -214,6 +231,46 @@ class TestPatchScopeEnforcement:
         reasons = enforcer.check_patch_in_scope(child["id"], "src/ui/")
         assert reasons == []
 
+    def test_patch_traversal_out_of_scope_rejected(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="scoped worker",
+            write_scope=["src/ui/"],
+        )
+        reasons = enforcer.check_patch_in_scope(child["id"], "src/ui/../engine/audio.py")
+        assert len(reasons) == 1
+        assert "outside" in reasons[0].lower()
+
+    def test_runtime_task_id_resolves_child_write_scope(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="scoped worker",
+            write_scope=["src/ui/"],
+        )
+        runtime_task = _create_runtime_task_for_child(
+            store,
+            session_id=ctx["session"]["id"],
+            child_task_id=child["id"],
+        )
+
+        assert enforcer.get_task_write_scope(runtime_task["id"]) == ["src/ui/"]
+        reasons = enforcer.check_patch_in_scope(runtime_task["id"], "src/engine/audio.py")
+        assert len(reasons) == 1
+
 
 # ---------------------------------------------------------------------------
 # P9.3: Command scope enforcement
@@ -268,6 +325,22 @@ class TestCommandScopeEnforcement:
         reasons = enforcer.check_command_allowed(child["id"])
         assert reasons == []
 
+    def test_scoped_command_without_target_rejected(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="scoped worker",
+            write_scope=["src/ui/"],
+        )
+        reasons = enforcer.check_command_allowed(child["id"])
+        assert len(reasons) == 1
+
 
 # ---------------------------------------------------------------------------
 # P9.4 & P9.9: Overlap and conflict detection
@@ -297,6 +370,18 @@ class TestOverlapAndConflictDetection:
         ]
         reasons = enforcer.check_overlap_before_dispatch(subtasks)
         assert reasons == []
+
+    def test_nested_overlap_detected_before_dispatch(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        enforcer = WriteScopeEnforcer(store)
+
+        subtasks = [
+            {"id": "all_src", "ownedScope": ["src/"]},
+            {"id": "ui_agent", "ownedScope": ["src/ui/"]},
+        ]
+        reasons = enforcer.check_overlap_before_dispatch(subtasks)
+        assert len(reasons) > 0
+        assert any("Overlapping" in r for r in reasons)
 
     def test_patch_conflict_detected(self, tmp_path: Path) -> None:
         store, ctx = _store_context(tmp_path)
@@ -436,6 +521,8 @@ class TestReviewerGate:
             "mergeRequested": True,
         })
         assert len(reasons) > 0
+        with pytest.raises(ValueError, match="Rejected artifacts cannot transition"):
+            store.update_artifact({"artifactId": art_id, "status": "verified"})
 
     def test_review_approval_allows_artifact_finalization(self, tmp_path: Path) -> None:
         """Reviewer approval should allow artifact to reach 'verified' status."""
@@ -454,3 +541,101 @@ class TestReviewerGate:
         # Reviewer approves → artifact goes to verified
         verified = store.update_artifact({"artifactId": art_id, "status": "verified"})
         assert verified["artifact"]["status"] == "verified"
+
+
+class TestWriteScopeToolIntegration:
+    def _scoped_runtime_task(self, tmp_path: Path) -> tuple[SQLiteStore, dict[str, Any]]:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="scoped worker",
+            write_scope=["src/ui/"],
+        )
+        runtime_task = _create_runtime_task_for_child(
+            store,
+            session_id=ctx["session"]["id"],
+            child_task_id=child["id"],
+        )
+        ctx["runtime_task"] = runtime_task
+        return store, ctx
+
+    def test_write_file_rejects_out_of_scope_runtime_task(self, tmp_path: Path) -> None:
+        store, ctx = self._scoped_runtime_task(tmp_path)
+        tools = build_builtin_tools(policy_guard=PolicyGuard(), store=store)
+
+        with pytest.raises(ValueError, match="Write scope violation"):
+            tools["write_file"]({
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["runtime_task"]["id"],
+                "path": "src/engine/audio.py",
+                "content": "x = 1\n",
+            })
+
+    def test_write_file_requires_approval_before_writing(self, tmp_path: Path) -> None:
+        store, ctx = self._scoped_runtime_task(tmp_path)
+        tools = build_builtin_tools(policy_guard=PolicyGuard(), store=store)
+        target = ctx["workspace_root"] / "src" / "ui" / "Button.tsx"
+        params = {
+            "workspaceRoot": str(ctx["workspace_root"]),
+            "taskId": ctx["runtime_task"]["id"],
+            "path": "src/ui/Button.tsx",
+            "content": "export const Button = () => null;\n",
+        }
+
+        result = tools["write_file"](params)
+
+        assert result["status"] == "approval_required"
+        assert not target.exists()
+        approval_id = result["approval"]["id"]
+
+        store.resolve_approval(approval_id, "approved")
+        approved = tools["write_file"]({**params, "approvalId": approval_id})
+
+        assert approved["status"] == "written"
+        assert target.read_text(encoding="utf-8") == params["content"]
+
+    def test_write_file_overwrite_false_rejects_existing_file(self, tmp_path: Path) -> None:
+        store, ctx = self._scoped_runtime_task(tmp_path)
+        tools = build_builtin_tools(policy_guard=PolicyGuard(), store=store)
+        target = ctx["workspace_root"] / "src" / "ui" / "Button.tsx"
+        target.parent.mkdir(parents=True)
+        target.write_text("existing\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="overwrite is false"):
+            tools["write_file"]({
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["runtime_task"]["id"],
+                "path": "src/ui/Button.tsx",
+                "content": "replacement\n",
+                "overwrite": False,
+            })
+
+        assert target.read_text(encoding="utf-8") == "existing\n"
+
+    def test_apply_patch_rejects_out_of_scope_runtime_task(self, tmp_path: Path) -> None:
+        store, ctx = self._scoped_runtime_task(tmp_path)
+        tools = build_builtin_tools(policy_guard=PolicyGuard(), store=store)
+
+        with pytest.raises(ValueError, match="Write scope violation"):
+            tools["apply_patch"]({
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["runtime_task"]["id"],
+                "files": [{"path": "src/engine/audio.py", "content": "x = 1\n"}],
+            })
+
+    def test_run_command_rejects_out_of_scope_cwd_runtime_task(self, tmp_path: Path) -> None:
+        store, ctx = self._scoped_runtime_task(tmp_path)
+        tools = build_builtin_tools(policy_guard=PolicyGuard(), store=store)
+        (ctx["workspace_root"] / "src" / "engine").mkdir(parents=True)
+
+        with pytest.raises(ValueError, match="Write scope violation"):
+            tools["run_command"]({
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["runtime_task"]["id"],
+                "cwd": "src/engine",
+                "command": "Write-Output safe",
+            })

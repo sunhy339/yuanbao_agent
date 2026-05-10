@@ -23,10 +23,39 @@ class WriteScopeEnforcer:
 
     def get_task_write_scope(self, task_id: str) -> list[str]:
         """Return the write scope for a collaboration task, empty if unrestricted."""
-        try:
-            task = self._store.require_collaboration_task(task_id)
-        except Exception:
+        task = self._resolve_collaboration_task(task_id)
+        if task is None:
             return []
+        return self._scope_from_task(task)
+
+    def _resolve_collaboration_task(self, task_id: str) -> dict[str, Any] | None:
+        try:
+            return self._store.require_collaboration_task(task_id)
+        except Exception:
+            pass
+
+        try:
+            runtime_task = self._store.get_task({"taskId": task_id}).get("task", {})
+        except Exception:
+            return None
+
+        routing = runtime_task.get("routing") or {}
+        if not isinstance(routing, dict):
+            return None
+        collaboration_task_id = (
+            routing.get("childCollaborationTaskId")
+            or routing.get("collaborationTaskId")
+            or routing.get("child_task_id")
+            or routing.get("collaboration_task_id")
+        )
+        if not isinstance(collaboration_task_id, str) or not collaboration_task_id.strip():
+            return None
+        try:
+            return self._store.require_collaboration_task(collaboration_task_id)
+        except Exception:
+            return None
+
+    def _scope_from_task(self, task: dict[str, Any]) -> list[str]:
         metadata = task.get("metadata") or {}
         # Check top-level writeScope (set by worker_runner from profile.ownedScope)
         write_scope = metadata.get("writeScope")
@@ -81,6 +110,8 @@ class WriteScopeEnforcer:
                 {"targetPath": command_scope, "path": command_scope},
                 allowed_scopes=scope,
             )
+        if scope and command_scope is None:
+            return ["command scope is required for tasks with declared write scopes"]
         return []
 
     def check_overlap_before_dispatch(

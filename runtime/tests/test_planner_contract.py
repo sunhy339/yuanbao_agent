@@ -198,7 +198,7 @@ class TestPlannerOutput:
                     "baseType": "explorer",
                     "mission": "Explore workspace",
                     "dependencies": [],
-                    "ownedScope": ["src/"],
+                    "ownedScope": ["docs/"],
                 },
                 {
                     "name": "ui_worker",
@@ -270,6 +270,17 @@ class TestPlannerOutput:
             "subtasks": [
                 {"name": "a", "baseType": "worker", "mission": "m1", "ownedScope": ["src/"], "dependencies": []},
                 {"name": "b", "baseType": "worker", "mission": "m2", "ownedScope": ["src/"], "dependencies": []},
+            ],
+        }
+        reasons = validate_planner_output(output)
+        assert any("Overlapping" in r for r in reasons)
+
+    def test_nested_overlapping_scopes(self):
+        output = {
+            "title": "T",
+            "subtasks": [
+                {"name": "a", "baseType": "worker", "mission": "m1", "ownedScope": ["src/"], "dependencies": []},
+                {"name": "b", "baseType": "worker", "mission": "m2", "ownedScope": ["src/ui/"], "dependencies": []},
             ],
         }
         reasons = validate_planner_output(output)

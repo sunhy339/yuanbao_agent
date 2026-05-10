@@ -7,20 +7,20 @@ LLM-assisted proposals guarded by deterministic runtime validators.
 
 ## P0: Inventory
 
-- [ ] Inventory task and mode routing hard-coded decisions.
-- [ ] Inventory subagent planning hard-coded decisions.
-- [ ] Inventory model/provider selection hard-coded decisions.
-- [ ] Inventory skill selection hard-coded decisions.
-- [ ] Inventory tool selection and permission hard-coded decisions.
-- [ ] Inventory MCP selection and configuration hard-coded decisions.
-- [ ] Inventory context assembly and compaction hard-coded decisions.
-- [ ] Inventory memory extraction and recall hard-coded decisions.
-- [ ] Inventory artifact/report hard-coded decisions.
-- [ ] Inventory risk and approval hard-coded decisions.
-- [ ] Inventory retry/failure recovery hard-coded decisions.
-- [ ] Inventory test and verification hard-coded decisions.
-- [ ] Inventory frontend event presentation hard-coded decisions.
-- [ ] Inventory final synthesis and TODO maintenance hard-coded decisions.
+- [x] Inventory task and mode routing hard-coded decisions.
+- [x] Inventory subagent planning hard-coded decisions.
+- [x] Inventory model/provider selection hard-coded decisions.
+- [x] Inventory skill selection hard-coded decisions.
+- [x] Inventory tool selection and permission hard-coded decisions.
+- [x] Inventory MCP selection and configuration hard-coded decisions.
+- [x] Inventory context assembly and compaction hard-coded decisions.
+- [x] Inventory memory extraction and recall hard-coded decisions.
+- [x] Inventory artifact/report hard-coded decisions.
+- [x] Inventory risk and approval hard-coded decisions.
+- [x] Inventory retry/failure recovery hard-coded decisions.
+- [x] Inventory test and verification hard-coded decisions.
+- [x] Inventory frontend event presentation hard-coded decisions.
+- [x] Inventory final synthesis and TODO maintenance hard-coded decisions.
 
 ## P1: Proposal Record Foundation
 
@@ -177,12 +177,12 @@ LLM-assisted proposals guarded by deterministic runtime validators.
 
 ## P10: Event Presentation and Synthesis
 
-- [ ] Let LLM propose trace summary grouping.
-- [ ] Let LLM propose panel summary labels.
-- [ ] Let LLM propose final synthesis structure.
-- [ ] Let LLM propose completed/failed/skipped summary.
-- [ ] Validate raw trace remains available.
-- [ ] Validate source event links.
+- [x] Let LLM propose trace summary grouping.
+- [x] Let LLM propose panel summary labels.
+- [x] Let LLM propose final synthesis structure.
+- [x] Let LLM propose completed/failed/skipped summary.
+- [x] Validate raw trace remains available.
+- [x] Validate source event links.
 - [x] Validate unverified artifacts are not claimed complete.
 - [x] Add tests for trace summary linked to event ranges.
 - [x] Add tests for final synthesis with mixed child outcomes.
@@ -199,14 +199,14 @@ LLM-assisted proposals guarded by deterministic runtime validators.
 
 ## P12: Acceptance Scenarios
 
-- [ ] Scenario: simple question uses no LLM decomposition proposal.
-- [ ] Scenario: medium task receives accepted intent/mode proposal.
-- [ ] Scenario: UI task receives subagent decomposition proposal.
-- [ ] Scenario: planner proposes unsafe tool and runtime rejects it.
-- [ ] Scenario: planner proposes unavailable skill and runtime rejects it.
-- [ ] Scenario: planner proposes relevant test strategy and verifier runs it.
-- [ ] Scenario: high-risk patch proposal requires approval.
-- [ ] Scenario: trace summary links to raw event sequence ranges.
-- [ ] Scenario: final synthesis refuses to claim unverified artifacts.
-- [ ] Scenario: TODO maintenance suggestion requires approval before docs change.
+- [x] Scenario: simple question uses no LLM decomposition proposal.
+- [x] Scenario: medium task receives accepted intent/mode proposal.
+- [x] Scenario: UI task receives subagent decomposition proposal.
+- [x] Scenario: planner proposes unsafe tool and runtime rejects it.
+- [x] Scenario: planner proposes unavailable skill and runtime rejects it.
+- [x] Scenario: planner proposes relevant test strategy and verifier runs it.
+- [x] Scenario: high-risk patch proposal requires approval.
+- [x] Scenario: trace summary links to raw event sequence ranges.
+- [x] Scenario: final synthesis refuses to claim unverified artifacts.
+- [x] Scenario: TODO maintenance suggestion requires approval before docs change.
 

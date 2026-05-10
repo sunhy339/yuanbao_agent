@@ -17,6 +17,7 @@ from ._shared import (
     run_shell,
 )
 from ..services.command_background import BackgroundCommandRequest, get_background_command_service
+from ..services.write_scope_enforcement import WriteScopeEnforcer
 
 
 def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None) -> dict[str, Any]:
@@ -44,6 +45,13 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         request_task_id = task_id or None
         if approval_id and not request_task_id:
             request_task_id = store.get_approval({"approvalId": approval_id})["approval"]["taskId"]
+        if request_task_id:
+            scope_reasons = WriteScopeEnforcer(store).check_command_allowed(
+                request_task_id,
+                command_scope=cwd_rel,
+            )
+            if scope_reasons:
+                raise ValueError("Write scope violation: " + "; ".join(scope_reasons))
         request = approval_request(
             task_id=request_task_id or "",
             command=command,

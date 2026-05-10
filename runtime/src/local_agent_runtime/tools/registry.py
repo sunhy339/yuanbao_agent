@@ -685,6 +685,14 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "description": "If true, allow overwriting existing files.",
                     "default": True,
                 },
+                "taskId": {
+                    "type": "string",
+                    "description": "Runtime task id injected by the orchestrator; models usually omit this.",
+                },
+                "approvalId": {
+                    "type": "string",
+                    "description": "Approval id supplied when retrying an approved file write.",
+                },
             },
             "required": ["workspaceRoot", "path", "content"],
         },

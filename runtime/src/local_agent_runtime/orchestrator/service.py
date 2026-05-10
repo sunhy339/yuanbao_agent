@@ -2085,10 +2085,13 @@ class Orchestrator:
     def run_child_task(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = params.get("sessionId")
         prompt = params.get("prompt")
+        collaboration_task_id = params.get("collaborationTaskId") or params.get("collaboration_task_id")
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("sessionId is required")
         if not isinstance(prompt, str) or not prompt.strip():
             raise ValueError("prompt is required")
+        if collaboration_task_id is not None and not isinstance(collaboration_task_id, str):
+            raise ValueError("collaborationTaskId must be a string")
 
         span = self._tracer.start_span(
             "child_task",
@@ -2107,6 +2110,10 @@ class Orchestrator:
             plan=plan,
             acceptance_criteria=self._default_acceptance_criteria(prompt.strip()),
             out_of_scope=self._default_out_of_scope(),
+            routing={
+                "childCollaborationTaskId": collaboration_task_id,
+                "parentRuntimeTaskId": params.get("parentRuntimeTaskId"),
+            } if collaboration_task_id else None,
         )
         runtime_task = {**task, "plan": plan}
         context = self._context_with_task_focus(context, runtime_task)
@@ -3628,6 +3635,8 @@ class Orchestrator:
             task = self._resume_approved_command(task=task, approval=approval)
         if approval["decision"] == "approved" and approval["kind"] == "apply_patch":
             task = self._resume_approved_patch(task=task, approval=approval)
+        if approval["decision"] == "approved" and approval["kind"] == "write_file":
+            task = self._resume_approved_write_file(task=task, approval=approval)
         if approval["decision"] == "rejected" and approval["kind"] == "plan":
             task = self._fail_task(
                 session_id=task["sessionId"],
@@ -3914,6 +3923,47 @@ class Orchestrator:
                 task={**runtime_task, "sessionId": task["sessionId"]},
                 summary=str(exc),
                 error_code="PATCH_APPLY_FAILED",
+            )
+
+    def _resume_approved_write_file(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
+        request = json.loads(approval.get("requestJson") or "{}")
+        tool_spec = {
+            "name": "write_file",
+            "arguments": {
+                **request,
+                "approvalId": approval["id"],
+            },
+            "plan_step_id": "write-file",
+            "start_token": "Approval accepted. Writing the file now...",
+        }
+        runtime_task = {**task, "plan": task.get("plan") or []}
+        try:
+            tool_result = self._execute_tool(
+                session_id=task["sessionId"],
+                task=runtime_task,
+                tool_spec=tool_spec,
+            )
+            write_result = tool_result.get("result", {})
+            summary = (
+                f"Approved file write finished for {write_result.get('path')} "
+                f"with {write_result.get('bytesWritten')} byte(s) written."
+            )
+            return self._complete_task(
+                session_id=task["sessionId"],
+                task=runtime_task,
+                summary=summary,
+                context=self._context_builder.build(
+                    session_id=task["sessionId"],
+                    goal=task.get("goal") or summary,
+                ),
+                tool_results=[tool_result],
+            )
+        except Exception as exc:  # noqa: BLE001
+            return self._fail_task(
+                session_id=task["sessionId"],
+                task={**runtime_task, "sessionId": task["sessionId"]},
+                summary=str(exc),
+                error_code="WRITE_FILE_FAILED",
             )
 
     def _maybe_publish_tool_filter(self, context: dict[str, Any], skill_id: str | None) -> None:

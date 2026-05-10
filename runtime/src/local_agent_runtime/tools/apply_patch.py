@@ -15,6 +15,7 @@ from ._shared import (
     require_workspace_root,
     validate_patch_request,
 )
+from ..services.write_scope_enforcement import WriteScopeEnforcer
 
 
 def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None) -> dict[str, Any]:
@@ -68,6 +69,12 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 "diffText": patch_request["diffText"],
                 "dryRun": True,
             }
+        scope_reasons: list[str] = []
+        enforcer = WriteScopeEnforcer(store)
+        for changed_path in validated_paths:
+            scope_reasons.extend(enforcer.check_patch_in_scope(task_id, changed_path))
+        if scope_reasons:
+            raise ValueError("Write scope violation: " + "; ".join(scope_reasons))
 
         approval: dict[str, Any] | None = None
         patch: dict[str, Any] | None = None

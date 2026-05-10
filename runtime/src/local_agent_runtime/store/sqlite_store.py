@@ -4206,6 +4206,8 @@ class SQLiteStore:
                 val = params[field]
                 if field == "status" and val not in self.VALID_ARTIFACT_STATUSES:
                     raise ValueError(f"Invalid artifact status: {val!r}")
+                if field == "status" and row["status"] == "rejected" and val != "rejected":
+                    raise ValueError("Rejected artifacts cannot transition to another status")
                 updates.append(f"{col} = ?")
                 args.append(val)
         if "content" in params:

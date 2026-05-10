@@ -6,6 +6,8 @@ reasons.  An empty list means the proposal passes that validator.
 
 from __future__ import annotations
 
+import posixpath
+import re
 from typing import Any
 
 from ..models import ProposalKind
@@ -132,6 +134,35 @@ def validate_dependency_graph(
         deps = st.get("dependencies", [])
         if tid and tid in deps:
             reasons.append(f"subtasks[{i}] has self-dependency: {tid!r}")
+    # Detect longer dependency cycles, not just self-references.
+    graph: dict[str, list[str]] = {}
+    for st in subtasks:
+        if not isinstance(st, dict):
+            continue
+        tid = st.get("id") or st.get("taskId")
+        deps = st.get("dependencies", [])
+        if tid and isinstance(deps, list):
+            graph[str(tid)] = [str(dep) for dep in deps if dep in task_ids]
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str, path: list[str]) -> None:
+        if node in visited:
+            return
+        if node in visiting:
+            cycle_start = path.index(node) if node in path else 0
+            cycle = path[cycle_start:] + [node]
+            reasons.append(f"Dependency cycle detected: {' -> '.join(cycle)}")
+            return
+        visiting.add(node)
+        for dep in graph.get(node, []):
+            visit(dep, [*path, dep])
+        visiting.remove(node)
+        visited.add(node)
+
+    for node in sorted(graph):
+        visit(node, [node])
     return reasons
 
 
@@ -146,7 +177,7 @@ def validate_write_scopes(
     if not isinstance(subtasks, list):
         return ["subtasks must be a list"]
     reasons: list[str] = []
-    scope_map: dict[str, str] = {}  # scope_path -> task_id
+    scope_map: dict[str, str] = {}  # normalized scope_path -> task_id
     for i, st in enumerate(subtasks):
         if not isinstance(st, dict):
             continue
@@ -159,11 +190,22 @@ def validate_write_scopes(
         if not isinstance(scopes, list):
             continue
         for scope in scopes:
-            scope_str = str(scope)
-            if scope_str in scope_map:
+            scope_str = _normalize_relative_path(scope)
+            if _is_invalid_relative_path(scope_str):
+                reasons.append(f"Invalid write scope {scope!r} for {tid!r}")
+                continue
+            overlapping = next(
+                (
+                    existing
+                    for existing in scope_map
+                    if _path_contains(existing, scope_str) or _path_contains(scope_str, existing)
+                ),
+                None,
+            )
+            if overlapping is not None:
                 reasons.append(
                     f"Overlapping write scope {scope_str!r} between "
-                    f"{scope_map[scope_str]!r} and {tid!r}"
+                    f"{scope_map[overlapping]!r} and {tid!r}"
                 )
             else:
                 scope_map[scope_str] = tid
@@ -683,8 +725,16 @@ def validate_patch_in_scope(
     if not allowed_scopes:
         reasons.append(f"Patch target {target_path!r} has no allowed write scope")
         return reasons
-    target_str = str(target_path)
-    in_scope = any(target_str.startswith(str(s).rstrip("/") + "/") or target_str == str(s) for s in allowed_scopes)
+    target_str = _normalize_relative_path(target_path)
+    if _is_invalid_relative_path(target_str):
+        reasons.append(f"Patch target {target_path!r} is not a safe relative path")
+        return reasons
+    normalized_scopes = [
+        scope
+        for scope in (_normalize_relative_path(s) for s in allowed_scopes)
+        if not _is_invalid_relative_path(scope)
+    ]
+    in_scope = any(_path_contains(scope, target_str) for scope in normalized_scopes)
     if not in_scope:
         reasons.append(
             f"Patch target {target_str!r} is outside allowed write scopes: {allowed_scopes}"
@@ -745,13 +795,20 @@ def validate_skill_availability(payload: dict[str, Any]) -> list[str]:
     """
     reasons: list[str] = []
     proposed = payload.get("skills")
-    if not isinstance(proposed, list) or not proposed:
+    if isinstance(proposed, list):
+        proposed_items = list(proposed)
+    else:
+        proposed_items = []
+    skill_id = payload.get("skillId") or payload.get("skill_id")
+    if isinstance(skill_id, str) and skill_id.strip():
+        proposed_items.append(skill_id.strip())
+    if not proposed_items:
         return reasons
     installed = payload.get("installedSkills")
     if not isinstance(installed, (list, set)):
         return reasons
     installed_set = set(installed)
-    for skill in proposed:
+    for skill in proposed_items:
         if isinstance(skill, str) and skill not in installed_set:
             reasons.append(f"Skill {skill!r} is not installed")
     return reasons
@@ -771,16 +828,47 @@ def validate_skill_root_allowlist(payload: dict[str, Any]) -> list[str]:
     if role != "root":
         return reasons
     skills = payload.get("skills")
-    if not isinstance(skills, list) or not skills:
+    proposed_items = list(skills) if isinstance(skills, list) else []
+    skill_id = payload.get("skillId") or payload.get("skill_id")
+    if isinstance(skill_id, str) and skill_id.strip():
+        proposed_items.append(skill_id.strip())
+    if not proposed_items:
         return reasons
     allowed = payload.get("rootAllowedSkills")
     if not isinstance(allowed, (list, set)):
         return reasons
     allowed_set = set(allowed)
-    for skill in skills:
+    for skill in proposed_items:
         if isinstance(skill, str) and skill not in allowed_set:
             reasons.append(
                 f"Skill {skill!r} is not allowed for root agent. "
                 f"Allowed: {sorted(allowed_set)}"
             )
     return reasons
+
+
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+
+def _normalize_relative_path(path: object) -> str:
+    text = str(path).replace("\\", "/").strip()
+    while text.startswith("./"):
+        text = text[2:]
+    normalized = posixpath.normpath(text)
+    return "." if normalized == "" else normalized.rstrip("/")
+
+
+def _is_invalid_relative_path(path: str) -> bool:
+    return (
+        not path
+        or path.startswith("/")
+        or path == ".."
+        or path.startswith("../")
+        or bool(_WINDOWS_DRIVE_RE.match(path))
+    )
+
+
+def _path_contains(scope: str, target: str) -> bool:
+    if scope == ".":
+        return not _is_invalid_relative_path(target)
+    return target == scope or target.startswith(scope.rstrip("/") + "/")

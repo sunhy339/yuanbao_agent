@@ -169,6 +169,7 @@ class BackgroundCommandService:
                     stream_name="stdout",
                     writer=stdout_writer,
                 ),
+                line_mode=True,
             )
             runtime.open_stream_drain(
                 "stderr",
@@ -177,6 +178,7 @@ class BackgroundCommandService:
                     stream_name="stderr",
                     writer=stderr_writer,
                 ),
+                line_mode=True,
             )
 
             deadline = (time.monotonic() + (request.timeout_ms / 1000)) if request.timeout_ms else None

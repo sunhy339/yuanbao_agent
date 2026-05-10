@@ -95,6 +95,10 @@ DEFAULT_CONFIG = {
         "reasoningEffort": "max",
         "webFetchPreflight": True,
     },
+    "features": {
+        "multiAgent": False,
+        "streamingDeltaPersist": True,
+    },
 }
 
 
@@ -2213,6 +2217,33 @@ class SQLiteStore:
         self._persist_config(self._config)
         return {"config": deepcopy(self._config)}
 
+    # -- Feature flags --
+
+    def get_feature_flag(self, key: str, default: bool = False) -> bool:
+        """Read a feature flag value from config.features."""
+        features = self._config.get("features")
+        if not isinstance(features, dict):
+            return default
+        return bool(features.get(key, default))
+
+    def set_feature_flag(self, key: str, value: bool) -> dict[str, Any]:
+        """Set a feature flag value in config.features and persist."""
+        features = self._config.get("features")
+        if not isinstance(features, dict):
+            features = deepcopy(DEFAULT_CONFIG.get("features", {}))
+        features[key] = value
+        self._config["features"] = features
+        self._config_snapshot = None
+        self._persist_config(self._config)
+        return {"features": deepcopy(features)}
+
+    def list_feature_flags(self) -> dict[str, Any]:
+        """Return all feature flags with current values."""
+        features = self._config.get("features")
+        if not isinstance(features, dict):
+            features = deepcopy(DEFAULT_CONFIG.get("features", {}))
+        return {"features": deepcopy(features)}
+
     def update_provider_profile_health(
         self,
         profile_id: str,
@@ -3704,6 +3735,7 @@ class SQLiteStore:
         self._ensure_schedule_columns()
         self._ensure_compaction_columns()
         self._ensure_inbox_columns()
+        self._ensure_mcp_server_columns()
 
     def _ensure_workspace_columns(self) -> None:
         columns = {
@@ -3837,6 +3869,26 @@ class SQLiteStore:
         }
         if "created_seq" not in columns:
             self._conn.execute("ALTER TABLE task_inbox ADD COLUMN created_seq INTEGER DEFAULT NULL")
+        self._conn.commit()
+
+    def _ensure_mcp_server_columns(self) -> None:
+        """Ensure mcp_servers table has all required columns for migration."""
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(mcp_servers)").fetchall()
+        }
+        expected = {
+            "transport": "TEXT NOT NULL DEFAULT 'stdio'",
+            "command": "TEXT",
+            "args": "TEXT DEFAULT '[]'",
+            "url": "TEXT",
+            "headers": "TEXT DEFAULT '{}'",
+            "env": "TEXT DEFAULT '{}'",
+            "enabled": "INTEGER NOT NULL DEFAULT 1",
+        }
+        for column, definition in expected.items():
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE mcp_servers ADD COLUMN {column} {definition}")
         self._conn.commit()
 
     def export_logs(self, params: dict[str, Any]) -> dict[str, Any]:

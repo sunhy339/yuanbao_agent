@@ -2083,6 +2083,10 @@ class Orchestrator:
         return "\n".join(lines)
 
     def run_child_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        # Feature flag gate: multi-agent disabled by default
+        if not self._store.get_feature_flag("multiAgent", default=False):
+            raise ValueError("multiAgent feature is disabled. Enable via config.features.multiAgent = true")
+
         session_id = params.get("sessionId")
         prompt = params.get("prompt")
         collaboration_task_id = params.get("collaborationTaskId") or params.get("collaboration_task_id")

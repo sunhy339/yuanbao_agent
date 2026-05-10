@@ -121,6 +121,8 @@ class JsonRpcServer:
             "memory.get": self._memory_get,
             "memory.edit": self._memory_edit,
             "memory.delete": self._memory_delete,
+            "feature.list": self._feature_list,
+            "feature.set": self._feature_set,
         }
         self._runtime_event_store_path = str(getattr(self._store, "database_path", ":memory:"))
         self._runtime_event_trace_store: SQLiteStore | None = None
@@ -330,6 +332,20 @@ class JsonRpcServer:
             raise ValueError("entryId is required")
         deleted = self._memory_store().delete(entry_id)
         return {"deleted": deleted}
+
+    # -- Feature flags --
+
+    def _feature_list(self, _params: dict[str, Any]) -> dict[str, Any]:
+        """List all feature flags and their values."""
+        return self._store.list_feature_flags()
+
+    def _feature_set(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Set a feature flag value."""
+        key = params.get("key")
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("key is required")
+        value = bool(params.get("value", False))
+        return self._store.set_feature_flag(key.strip(), value)
 
     def _write_event_payload(self, payload: dict[str, Any]) -> None:
         if self._writer is None:

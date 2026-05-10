@@ -728,9 +728,9 @@
 
 ### 9.3 发布前检查
 
-- [ ] 新旧事件兼容路径确认。缺口：`assistant.token` 仍存在作为兼容路径。
+- [x] 新旧事件兼容路径确认。`assistant.token` 同时发布 `message.delta`，3 个测试覆盖。
 - [x] legacy 数据读取确认。`kind DEFAULT 'normal'`, `status DEFAULT 'completed'`。
-- [ ] MCP 配置迁移确认。缺口：无迁移代码。
+- [x] MCP 配置迁移确认。`_ensure_mcp_server_columns()` 确保 transport/command/args/url/headers/env/enabled 列存在。
 - [x] skill policy 默认值确认。`ToolPolicy.STRICT_WHITELIST` 为默认，`SkillPreset` 和 `skill_presets` 表一致。
-- [ ] 多 agent 默认关闭或灰度开关确认。缺口：无 feature flag。
+- [x] 多 agent 默认关闭或灰度开关确认。`config.features.multiAgent = False` 默认关闭，`run_child_task` 入口 gate。
 - [ ] 回滚方案确认。缺口：无回滚机制。

@@ -41,6 +41,7 @@ def _make_runtime(tmp_path: Any, provider: Any, tools: dict[str, Any] | None = N
 def _make_runtime_at_path(database_path: Any, provider: Any, tools: dict[str, Any] | None = None) -> SimpleNamespace:
     event_bus = EventBus()
     store = SQLiteStore(str(database_path))
+    store.set_feature_flag("multiAgent", True)
     tool_registry = ToolRegistry(tools or {})
     orchestrator = Orchestrator(
         store=store,
@@ -57,6 +58,7 @@ def _make_runtime_at_path(database_path: Any, provider: Any, tools: dict[str, An
 def _make_builtin_runtime(tmp_path: Any, provider: Any) -> SimpleNamespace:
     event_bus = EventBus()
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    store.set_feature_flag("multiAgent", True)
     config = store.get_config({})["config"]
     policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
     collaboration = CollaborationService(store, event_bus)

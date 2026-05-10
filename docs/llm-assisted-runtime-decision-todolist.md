@@ -96,36 +96,36 @@ LLM-assisted proposals guarded by deterministic runtime validators.
 
 ## P4: Intent and Mode Routing
 
-- [ ] Let LLM propose whether to answer directly or create a task.
-- [ ] Let LLM propose normal, queued, supplement, or collaboration mode.
-- [ ] Let LLM propose whether clarification is needed.
-- [ ] Validate proposed mode against current session/task state.
-- [ ] Fall back to deterministic routing on planner failure.
-- [ ] Add tests for simple direct answer route.
-- [ ] Add tests for queued task proposal.
-- [ ] Add tests for supplement proposal.
-- [ ] Add tests for invalid mode rejection.
+- [x] Let LLM propose whether to answer directly or create a task.
+- [x] Let LLM propose normal, queued, supplement, or collaboration mode.
+- [x] Let LLM propose whether clarification is needed.
+- [x] Validate proposed mode against current session/task state.
+- [x] Fall back to deterministic routing on planner failure.
+- [x] Add tests for simple direct answer route.
+- [x] Add tests for queued task proposal.
+- [x] Add tests for supplement proposal.
+- [x] Add tests for invalid mode rejection.
 
 ## P5: Model and Provider Policy
 
-- [ ] Let LLM propose model class by complexity.
-- [ ] Let LLM propose stronger model for planning or review.
-- [ ] Let LLM propose cheaper model for summary/classification.
-- [ ] Validate configured provider availability.
-- [ ] Validate workspace model policy.
-- [ ] Validate budget constraints.
-- [ ] Add tests for accepted model proposal.
-- [ ] Add tests for unavailable model rejection.
-- [ ] Add tests for budget rejection.
+- [x] Let LLM propose model class by complexity.
+- [x] Let LLM propose stronger model for planning or review.
+- [x] Let LLM propose cheaper model for summary/classification.
+- [x] Validate configured provider availability.
+- [x] Validate workspace model policy.
+- [x] Validate budget constraints.
+- [x] Add tests for accepted model proposal.
+- [x] Add tests for unavailable model rejection.
+- [x] Add tests for budget rejection.
 
 ## P6: Skill, Tool, and MCP Policy
 
-- [ ] Let LLM propose relevant installed skills.
-- [ ] Let LLM propose no skill when none is needed.
-- [ ] Let LLM propose minimal required tools.
-- [ ] Let LLM propose read-only tool scope.
-- [ ] Let LLM propose write-capable tool scope.
-- [ ] Let LLM propose relevant MCP server/tool.
+- [x] Let LLM propose relevant installed skills.
+- [x] Let LLM propose no skill when none is needed.
+- [x] Let LLM propose minimal required tools.
+- [x] Let LLM propose read-only tool scope.
+- [x] Let LLM propose write-capable tool scope.
+- [x] Let LLM propose relevant MCP server/tool.
 - [x] Validate skill availability.
 - [x] Validate tool aliases and allowlist.
 - [x] Validate unsafe tool rejection.
@@ -137,18 +137,18 @@ LLM-assisted proposals guarded by deterministic runtime validators.
 
 ## P7: Context and Memory Policy
 
-- [ ] Let LLM propose task-relevant context sections.
-- [ ] Let LLM propose context sections to summarize.
-- [ ] Let LLM propose context sections to drop.
-- [ ] Let LLM propose memory recall focus.
-- [ ] Let LLM propose memory extraction from completed work.
-- [ ] Let LLM propose stale memory invalidation.
-- [ ] Validate token budget.
-- [ ] Validate required system/safety sections.
-- [ ] Validate memory source ids.
-- [ ] Add tests for context proposal accepted.
-- [ ] Add tests for over-budget context proposal repaired.
-- [ ] Add tests for invalid memory source rejection.
+- [x] Let LLM propose task-relevant context sections.
+- [x] Let LLM propose context sections to summarize.
+- [x] Let LLM propose context sections to drop.
+- [x] Let LLM propose memory recall focus.
+- [x] Let LLM propose memory extraction from completed work.
+- [x] Let LLM propose stale memory invalidation.
+- [x] Validate token budget.
+- [x] Validate required system/safety sections.
+- [x] Validate memory source ids.
+- [x] Add tests for context proposal accepted.
+- [x] Add tests for over-budget context proposal repaired.
+- [x] Add tests for invalid memory source rejection.
 
 ## P8: Subagent and Task Graph Policy
 
@@ -160,20 +160,20 @@ LLM-assisted proposals guarded by deterministic runtime validators.
 
 ## P9: Risk, Approval, Test, and Recovery Policy
 
-- [ ] Let LLM propose risk level.
-- [ ] Let LLM propose approval gates.
-- [ ] Let LLM propose reviewer requirements.
-- [ ] Let LLM propose verifier requirements.
-- [ ] Let LLM propose test strategy by changed files and risk.
-- [ ] Let LLM propose retry or fallback strategy.
-- [ ] Let LLM propose when to ask the user for clarification.
-- [ ] Validate approval requirements.
+- [x] Let LLM propose risk level.
+- [x] Let LLM propose approval gates.
+- [x] Let LLM propose reviewer requirements.
+- [x] Let LLM propose verifier requirements.
+- [x] Let LLM propose test strategy by changed files and risk.
+- [x] Let LLM propose retry or fallback strategy.
+- [x] Let LLM propose when to ask the user for clarification.
+- [x] Validate approval requirements.
 - [x] Validate test commands.
-- [ ] Validate retry budget.
+- [x] Validate retry budget.
 - [x] Add tests for high-risk proposal requiring reviewer.
 - [x] Add tests for unsafe approval bypass rejection.
 - [x] Add tests for invalid test command rejection.
-- [ ] Add tests for retry budget exhaustion.
+- [x] Add tests for retry budget exhaustion.
 
 ## P10: Event Presentation and Synthesis
 
@@ -189,13 +189,13 @@ LLM-assisted proposals guarded by deterministic runtime validators.
 
 ## P11: TODO and Roadmap Maintenance
 
-- [ ] Let LLM propose completed TODO updates from verified artifacts.
-- [ ] Let LLM propose new TODOs from reviewer findings.
-- [ ] Let LLM propose next-batch priority.
-- [ ] Require approval before editing roadmap docs.
-- [ ] Link TODO suggestions to trace/artifact evidence.
-- [ ] Add tests for roadmap proposal creation.
-- [ ] Add tests for approval-required roadmap application.
+- [x] Let LLM propose completed TODO updates from verified artifacts.
+- [x] Let LLM propose new TODOs from reviewer findings.
+- [x] Let LLM propose next-batch priority.
+- [x] Require approval before editing roadmap docs.
+- [x] Link TODO suggestions to trace/artifact evidence.
+- [x] Add tests for roadmap proposal creation.
+- [x] Add tests for approval-required roadmap application.
 
 ## P12: Acceptance Scenarios
 

@@ -179,21 +179,21 @@ synthesis should use the system-wide decision framework.
 - [x] Allow task-specific names such as `Player UI Agent`.
 - [x] Allow task-specific names such as `Playlist State Agent`.
 - [x] Validate dynamic profiles before dispatch.
-- [ ] Let LLM propose whether subagents are needed.
-- [ ] Let LLM propose number of subagents.
-- [ ] Let LLM propose dynamic agent names.
-- [ ] Let LLM propose agent missions.
-- [ ] Let LLM propose dependencies.
-- [ ] Let LLM propose expected artifacts.
-- [ ] Let LLM propose done criteria.
-- [ ] Let LLM propose owned write scopes.
-- [ ] Let LLM propose allowed tools.
-- [ ] Let LLM propose risk level.
-- [ ] Let LLM propose reviewer requirements.
-- [ ] Let LLM propose verifier requirements.
-- [ ] Let LLM propose fallback plan.
-- [ ] Let LLM propose failure recovery policy.
-- [ ] Let LLM propose final synthesis hints.
+- [x] Let LLM propose whether subagents are needed.
+- [x] Let LLM propose number of subagents.
+- [x] Let LLM propose dynamic agent names.
+- [x] Let LLM propose agent missions.
+- [x] Let LLM propose dependencies.
+- [x] Let LLM propose expected artifacts.
+- [x] Let LLM propose done criteria.
+- [x] Let LLM propose owned write scopes.
+- [x] Let LLM propose allowed tools.
+- [x] Let LLM propose risk level.
+- [x] Let LLM propose reviewer requirements.
+- [x] Let LLM propose verifier requirements.
+- [x] Let LLM propose fallback plan.
+- [x] Let LLM propose failure recovery policy.
+- [x] Let LLM propose final synthesis hints.
 - [x] Define planner output schema.
 - [x] Include title.
 - [x] Include prompt.
@@ -262,30 +262,30 @@ synthesis should use the system-wide decision framework.
 - [ ] Scenario: trace drawer shows child event chain.
 - [ ] Scenario: failed child task remains visible in report.
 - [ ] Scenario: refresh restores task, artifact, and trace state.
-- [ ] Scenario: common tool alias such as `rg` does not fail dispatch.
-- [ ] Scenario: LLM planner creates task-specific agents, not only fixed roles.
-- [ ] Scenario: LLM planner proposes unsafe tools and runtime rejects them.
-- [ ] Scenario: LLM planner proposes conflicting scopes and runtime rejects them.
-- [ ] Scenario: LLM planner proposes test strategy and verifier records results.
-- [ ] Scenario: LLM trace summarizer creates a concise report linked to raw trace.
+- [x] Scenario: common tool alias such as `rg` does not fail dispatch.
+- [x] Scenario: LLM planner creates task-specific agents, not only fixed roles.
+- [x] Scenario: LLM planner proposes unsafe tools and runtime rejects them.
+- [x] Scenario: LLM planner proposes conflicting scopes and runtime rejects them.
+- [x] Scenario: LLM planner proposes test strategy and verifier records results.
+- [x] Scenario: LLM trace summarizer creates a concise report linked to raw trace.
 
 ## P12: LLM-Assisted Reporting and Maintenance
 
-- [ ] Add trace summarizer input contract.
-- [ ] Add trace summarizer output contract.
-- [ ] Link trace summaries to event sequence ranges.
-- [ ] Include failures in trace summaries.
-- [ ] Include retries in trace summaries.
-- [ ] Include generated artifacts in trace summaries.
-- [ ] Include review decisions in trace summaries.
-- [ ] Add parent synthesis input contract.
-- [ ] Add parent synthesis output contract.
-- [ ] Ensure synthesis distinguishes completed, failed, and skipped work.
-- [ ] Ensure synthesis does not claim unverified artifacts as complete.
-- [ ] Add TODO maintenance suggestion contract.
-- [ ] Require approval before roadmap docs are modified from trace state.
-- [ ] Add tests for trace summary generation with raw trace still available.
-- [ ] Add tests for final synthesis from mixed child task outcomes.
+- [x] Add trace summarizer input contract.
+- [x] Add trace summarizer output contract.
+- [x] Link trace summaries to event sequence ranges.
+- [x] Include failures in trace summaries.
+- [x] Include retries in trace summaries.
+- [x] Include generated artifacts in trace summaries.
+- [x] Include review decisions in trace summaries.
+- [x] Add parent synthesis input contract.
+- [x] Add parent synthesis output contract.
+- [x] Ensure synthesis distinguishes completed, failed, and skipped work.
+- [x] Ensure synthesis does not claim unverified artifacts as complete.
+- [x] Add TODO maintenance suggestion contract.
+- [x] Require approval before roadmap docs are modified from trace state.
+- [x] Add tests for trace summary generation with raw trace still available.
+- [x] Add tests for final synthesis from mixed child task outcomes.
 
 ## Suggested First Batch
 

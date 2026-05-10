@@ -1739,6 +1739,7 @@ class Orchestrator:
             if context is None:
                 context = worker._context_builder.build(
                     session_id=session_id, goal=goal, skill_id=skill_id, lightweight=False,
+                    role=task.get("role"),
                 )
                 # Emit tool filter event if skill filtering was applied
                 worker._maybe_publish_tool_filter(context, skill_id)
@@ -2218,7 +2219,8 @@ class Orchestrator:
 
         session = self._store.require_session(session_id)
         budget = WorkerBudget.from_metadata(params.get("budget"), params)
-        context = self._context_builder.build(session_id=session["id"], goal=prompt.strip(), lightweight=False)
+        child_role = params.get("agentType", "worker")
+        context = self._context_builder.build(session_id=session["id"], goal=prompt.strip(), lightweight=False, role=child_role)
         context = self._context_with_worker_budget(context, budget)
         plan = self._planner.plan(prompt.strip(), context=context)
         task = self._store.create_task(
@@ -2228,6 +2230,7 @@ class Orchestrator:
             plan=plan,
             acceptance_criteria=self._default_acceptance_criteria(prompt.strip()),
             out_of_scope=self._default_out_of_scope(),
+            role=child_role,
             routing={
                 "childCollaborationTaskId": collaboration_task_id,
                 "parentRuntimeTaskId": params.get("parentRuntimeTaskId"),

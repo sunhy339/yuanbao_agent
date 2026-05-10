@@ -414,6 +414,7 @@ class WorkerRunner:
                         "budget": deepcopy(context.request.budget) if isinstance(context.request.budget, dict) else {},
                         "parentRuntimeTaskId": context.request.parent_runtime_task_id,
                         "collaborationTaskId": context.task["id"],
+                        "agentType": context.request.agent_type,
                     },
                     timeout=request_timeout,
                     event_callback=lambda event: self._forward_process_event(context, event),

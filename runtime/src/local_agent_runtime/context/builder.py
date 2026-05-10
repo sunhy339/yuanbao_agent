@@ -76,7 +76,7 @@ class ContextBuilder:
         self._cached_tool_schema_tokens: int | None = None
         self._cached_tool_schemas_id: int | None = None
 
-    def build(self, session_id: str, goal: str, *, lightweight: bool = True, skill_id: str | None = None) -> dict[str, object]:
+    def build(self, session_id: str, goal: str, *, lightweight: bool = True, skill_id: str | None = None, role: str | None = None) -> dict[str, object]:
         session = self._store.require_session(session_id)
         workspace = self._load_workspace(session["workspaceId"])
         config = self._load_config()
@@ -147,6 +147,7 @@ class ContextBuilder:
             tool_schema_tokens=tool_schema_tokens,
             lightweight=lightweight,
             skill_preset=skill_preset,
+            role=role,
         )
         return {
             "session_id": session_id,
@@ -201,13 +202,14 @@ class ContextBuilder:
         tool_schema_tokens: int,
         lightweight: bool = True,
         skill_preset: Any | None = None,
+        role: str | None = None,
     ) -> tuple[list[dict[str, str]], dict[str, Any]]:
         max_context_tokens = self._max_context_tokens(config)
         # Use skill's system_prompt if available, otherwise default
         if skill_preset is not None and skill_preset.system_prompt:
             system_text = self._skill_system_prompt(skill_preset, workspace_root=workspace["rootPath"])
         else:
-            system_text = self._system_prompt(workspace_root=workspace["rootPath"])
+            system_text = self._system_prompt(workspace_root=workspace["rootPath"], role=role)
         sections = [
             BudgetSection(
                 name="system_prompt",
@@ -369,19 +371,59 @@ class ContextBuilder:
 
         return sections
 
-    def _system_prompt(self, *, workspace_root: str) -> str:
-        return "\n".join(
-            [
-                "You are a local coding agent operating in a user-controlled desktop runtime.",
-                f"Workspace root: {workspace_root}",
-                "Safety boundaries:",
-                "- stay within the workspace root for file and git operations.",
-                "- write files only through apply_patch and wait for explicit approval before changes are applied.",
-                "- run commands only through run_command and wait for explicit approval before execution.",
-                "- do not bypass the provided tools or approval workflow.",
-                "- do not read secrets or operate outside the workspace unless the user explicitly provides content.",
-            ]
-        )
+    _ROLE_INSTRUCTIONS: dict[str, list[str]] = {
+        "worker": [
+            "You are a worker agent. Your role is to implement changes within your assigned scope.",
+            "Guidelines:",
+            "- Focus only on the files and directories in your assigned scope.",
+            "- Do NOT commit changes. The root agent will handle merging and committing.",
+            "- After completing your work, report: changed files, tests run, and risks found.",
+            "- Keep your changes minimal and focused on the assigned task.",
+        ],
+        "reviewer": [
+            "You are a reviewer agent. Your role is to review changes made by worker agents.",
+            "Guidelines:",
+            "- Read-only access: do NOT modify any files.",
+            "- Check for: correctness, scope compliance, test coverage, and potential risks.",
+            "- Report findings as a structured review with approved/feedback status.",
+            "- Flag any files changed outside the worker's assigned scope.",
+        ],
+        "planner": [
+            "You are a planner agent. Your role is to analyze tasks and create execution plans.",
+            "Guidelines:",
+            "- Break down complex tasks into well-defined subtasks.",
+            "- Assign appropriate roles (worker/reviewer) to each subtask.",
+            "- Define clear scope boundaries for each subtask to prevent conflicts.",
+            "- Consider dependencies between subtasks and order them appropriately.",
+        ],
+        "summarizer": [
+            "You are a summarizer agent. Your role is to synthesize results from multiple agents.",
+            "Guidelines:",
+            "- Combine outputs from all subtasks into a coherent final summary.",
+            "- Highlight key decisions, changes made, and any remaining issues.",
+            "- Keep the summary concise but complete.",
+        ],
+    }
+
+    def _system_prompt(self, *, workspace_root: str, role: str | None = None) -> str:
+        effective_role = (role or "root").lower()
+        lines: list[str] = []
+        if effective_role == "root":
+            lines.append("You are a local coding agent operating in a user-controlled desktop runtime.")
+        else:
+            role_instructions = self._ROLE_INSTRUCTIONS.get(effective_role)
+            if role_instructions:
+                lines.extend(role_instructions)
+            else:
+                lines.append("You are a local coding agent operating in a user-controlled desktop runtime.")
+        lines.append(f"Workspace root: {workspace_root}")
+        lines.append("Safety boundaries:")
+        lines.append("- stay within the workspace root for file and git operations.")
+        lines.append("- write files only through apply_patch and wait for explicit approval before changes are applied.")
+        lines.append("- run commands only through run_command and wait for explicit approval before execution.")
+        lines.append("- do not bypass the provided tools or approval workflow.")
+        lines.append("- do not read secrets or operate outside the workspace unless the user explicitly provides content.")
+        return "\n".join(lines)
 
     def _resolve_skill(self, skill_id: str | None) -> Any | None:
         """Look up a SkillPreset by id via the skill registry."""

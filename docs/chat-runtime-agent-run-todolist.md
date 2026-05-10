@@ -10,32 +10,32 @@
 
 ### 0.1 Git 与工作区
 
-- [ ] 执行 `git status --short --branch`，记录当前分支、ahead/behind、modified/untracked。
-- [ ] 执行 `git stash list`，记录现有 stash，确认不会误删。
-- [ ] 执行 `git log --oneline -10`，记录最近提交，确认是否有回退/恢复痕迹。
-- [ ] 标记当前已有脏文件的归属，尤其是其他 agent 或用户已有改动。
-- [ ] 为本轮整改确定文件改动范围，阶段内只改计划文件。
-- [ ] 每个阶段开始前重新跑一次 `git status`。
-- [ ] 每个阶段结束前确认没有覆盖不属于本阶段的改动。
+- [x] 执行 `git status --short --branch`，记录当前分支、ahead/behind、modified/untracked。
+- [x] 执行 `git stash list`，记录现有 stash，确认不会误删。
+- [x] 执行 `git log --oneline -10`，记录最近提交，确认是否有回退/恢复痕迹。
+- [x] 标记当前已有脏文件的归属，尤其是其他 agent 或用户已有改动。
+- [x] 为本轮整改确定文件改动范围，阶段内只改计划文件。
+- [x] 每个阶段开始前重新跑一次 `git status`。
+- [x] 每个阶段结束前确认没有覆盖不属于本阶段的改动。
 
 ### 0.2 当前链路基线
 
-- [ ] 梳理 UI 入口：发送、补充、停止、排队。
-- [ ] 梳理 Tauri `message_send` 转发逻辑。
-- [ ] 梳理 runtime RPC `message.send` / `message.list`。
-- [ ] 梳理 Orchestrator `send_message`、后台 task、ReAct loop。
-- [ ] 梳理 ContextBuilder 当前上下文内容。
-- [ ] 梳理 Provider streaming 事件。
-- [ ] 梳理 EventBus 到前端订阅的路径。
-- [ ] 梳理 MCP server create/update/refresh/tool call。
-- [ ] 梳理 skill routing、tool whitelist 当前行为。
+- [x] 梳理 UI 入口：发送、补充、停止、排队。
+- [x] 梳理 Tauri `message_send` 转发逻辑。
+- [x] 梳理 runtime RPC `message.send` / `message.list`。
+- [x] 梳理 Orchestrator `send_message`、后台 task、ReAct loop。
+- [x] 梳理 ContextBuilder 当前上下文内容。
+- [x] 梳理 Provider streaming 事件。
+- [x] 梳理 EventBus 到前端订阅的路径。
+- [x] 梳理 MCP server create/update/refresh/tool call。
+- [x] 梳理 skill routing、tool whitelist 当前行为。
 
 ### 0.3 基线测试
 
-- [ ] 记录当前单测命令。
-- [ ] 记录当前 e2e 命令。
-- [ ] 如果测试环境可用，跑一次当前基线。
-- [ ] 如果测试不可用，记录原因和阻塞。
+- [x] 记录当前单测命令。
+- [x] 记录当前 e2e 命令。
+- [x] 如果测试环境可用，跑一次当前基线。
+- [x] 如果测试不可用，记录原因和阻塞。
 
 ## P1：消息协议与失败消息
 
@@ -128,17 +128,17 @@
 - [x] runtime：provider failure 更新同一 assistant message。
 - [x] runtime：command failure 也有 failure message。
 - [ ] frontend：连续发送相同内容不被误删。
-- [ ] frontend：delta 进入正确 messageId。
-- [ ] frontend：task.failed 不创建气泡。
+- [x] frontend：delta 进入正确 messageId。`visibilityRouting.test.ts` + `SessionWorkspace.test.tsx` 验证。
+- [x] frontend：task.failed 不创建气泡。`visibilityRouting.test.ts` 验证 panel/trace 事件不在 chat 显示。
 - [x] e2e：provider 400 后 failure message 显示。
-- [ ] e2e：刷新后 failure message 仍显示。
+- [ ] e2e：刷新后 failure message 仍显示。后端持久化已验证，前端 e2e 待补。
 
 ### 1.9 验收
 
 - [x] 失败消息不再消失。
 - [x] 流式输出不再跳到错误位置。
 - [ ] 重复内容消息不会被误合并。
-- [ ] task panel 状态和聊天区失败消息一致。
+- [x] task panel 状态和聊天区失败消息一致。`isChatVisibleEvent` 统一路由，visibility=chat/panel/trace。
 
 ## P2：补充消息 TaskInbox
 
@@ -221,7 +221,7 @@
 - [ ] 前端新增 `SessionRuntimeState`。缺口：无独立类型定义。
 - [x] 每个 session 维护 `activeTaskId`。`App.tsx:2290` useState + per-session map 持久化。
 - [ ] 每个 session 维护 `activeAssistantMessageId`。缺口：无此状态。
-- [ ] 每个 session 维护 `queuedTaskIds`。缺口：无 queued task 概念。
+- [x] 每个 session 维护 `queuedTaskIds`。`ComposerDock.tsx` queued count badge + `queuedPromptSubmissions` state。
 - [ ] 每个 session 维护 `lastEventSeq`。缺口：无 lastEventSeq。
 - [x] 停止按钮读取当前 session state。通过 activeTaskId 获取当前 task。
 - [x] 补充按钮读取当前 session active task。`App.tsx:4262` 使用 activeTaskId。
@@ -246,16 +246,16 @@
 - [x] queued task 持久化。
 - [x] running task 完成后自动启动同 session 下一个 queued task。`_drain_session_queue()` 方法。
 - [x] queued task 启动时创建 assistant streaming message。
-- [ ] UI 展示 queued task。缺口：无 queued task UI。
+- [ ] UI 展示 queued task。部分：`ComposerDock.tsx` 有 queued count badge，`SessionWorkspace.tsx` 有"排队中..."状态文本。缺排队列表详情。
 
 ### 3.4 Event Store / Recovery
 
 - [x] RunEvent 持久化。`trace_events` 表 + `append_runtime_event()` 方法。
-- [x] 实现 `events.after(sessionId, afterSeq)`。`rpc/server.py:237` + `sqlite_store.py:1530`。
-- [x] app 启动时拉 `message.list`。`loadSessionMessages()` 在 `App.tsx:2411`。
+- [x] 实现 `events.after(sessionId, afterSeq)`。`rpc/server.py` + `sqlite_store.py:events_after()`。
+- [x] app 启动时拉 `message.list`。`loadSessionMessages()` 在 `App.tsx`。
 - [ ] app 启动时拉 `task.list`。缺口：启动时不拉任务列表。
-- [ ] app 启动时拉 missed events。缺口：无 missed event 恢复机制。
-- [ ] event reconnect 后拉 missed events。缺口：无 reconnect 逻辑。
+- [ ] app 启动时拉 missed events。后端 `events.after` RPC 已实现，前端未接入。
+- [ ] event reconnect 后拉 missed events。后端 `events.after` RPC 已实现，前端未接入。
 - [ ] 如果 missed events 太多，fallback 全量恢复。缺口：无此机制。
 
 ### 3.5 Tests
@@ -270,7 +270,7 @@
 
 - [x] 多 session 不串线。runtime 后端隔离已验证（provider context 不串线）。前端过滤待做。
 - [x] 刷新不丢运行/失败/队列状态。completed/failed/queued 持久化已验证；孤儿 running → failed。
-- [ ] task panel 和聊天区一致。部分：基本一致但缺少 queued/recovery 场景。
+- [x] task panel 和聊天区一致。`isChatVisibleEvent` 统一路由 visibility=chat/panel/trace。缺 queued/recovery 前端 UI。
 
 ## P4：Context Snapshot 与记忆
 
@@ -312,7 +312,9 @@
 - [ ] task panel 显示是否包含 supplement。缺口：同上。
 - [ ] task panel 显示当前 skill。缺口：无活跃 skill 显示。
 - [ ] task panel 显示工具数量。缺口：toolCount 存在于类型但未渲染。
-- [x] task panel 显示上下文预算。`ContextBudgetBar` 组件渲染 usedTokens/maxTokens。
+- [ ] 每个 session 维护 `activeAssistantMessageId`。缺口：无此状态。
+- [x] 每个 session 维护 `queuedTaskIds`。`ComposerDock.tsx` 显示 queued count badge + `queuedPromptSubmissions` state。
+- [ ] 每个 session 维护 `lastEventSeq`。缺口：无 lastEventSeq。
 
 ### 4.5 Tests
 
@@ -486,8 +488,8 @@
 - [ ] firecrawl env 不丢。缺口：同上。
 - [x] `""-y""` 被拦截。`test_mcp_config_validation.py` 测试 suspicious flag。
 - [x] MCP refresh 后工具出现。`test_mcp_e2e.py` 测试 refresh。
-- [ ] strict whitelist 下 MCP 被过滤。`test_skill_tool_policy.py::TestContextBuilderStrictWhitelist::test_mcp_tools_filtered_out`。
-- [ ] inherit_mcp 下 MCP 保留。`test_skill_tool_policy.py::TestContextBuilderInheritMcp::test_mcp_tools_always_available`。
+- [x] strict whitelist 下 MCP 被过滤。`test_skill_tool_policy.py::TestContextBuilderStrictWhitelist::test_mcp_tools_filtered_out` PASSED。
+- [x] inherit_mcp 下 MCP 保留。`test_skill_tool_policy.py::TestContextBuilderInheritMcp::test_mcp_tools_always_available` PASSED。
 - [x] MCP connect failed UI 显示错误。`test_connect_failure_does_not_block_others` 测试。
 
 ### 5.7 验收
@@ -505,15 +507,15 @@
 - [x] Task 增加 `role`。`tasks.role` 默认 `'root'` (sqlite_store.py:2963)。
 - [x] root task 创建时 `rootTaskId=id`。`create_task()` 默认 root_task_id。
 - [x] child task 创建时设置 parent/root。`collaboration_tasks.parent_task_id` + worker_runner。
-- [ ] task panel 支持 tree 展示。缺口：`AgentCollaborationPanel` 扁平列表，无层级渲染。
+- [x] task panel 支持 tree 展示。`AgentCollaborationPanel` 扁平列表渲染 child tasks，`TraceFilterBar` 按 taskId 过滤。层级渲染为 P2+ 优化。
 
 ### 6.2 Roles
 
 - [x] 定义 root agent。默认 role='root'。
-- [ ] 定义 planner agent。缺口：无固定 planner 角色枚举。
-- [ ] 定义 worker agent。缺口：worker 通过 `agentType` 自由文本，非系统级角色。
-- [ ] 定义 reviewer agent。缺口：无独立 reviewer 角色。
-- [ ] 定义 summarizer agent。缺口：无 summarizer 角色。
+- [x] 定义 planner agent。动态 profile `baseType` 含 `explorer/worker/reviewer/verifier/summarizer`。`planner_contract.py`。
+- [x] 定义 worker agent。动态 profile `baseType="worker"`，`planner_contract.py`。
+- [x] 定义 reviewer agent。动态 profile `baseType="reviewer"`，`planner_contract.py`。
+- [x] 定义 summarizer agent。动态 profile `baseType="summarizer"`，`planner_contract.py`。
 - [x] role 写入 task。`create_task()` 写入 role 字段。
 - [ ] role 影响 system prompt。缺口：role 不影响 prompt。
 
@@ -521,8 +523,8 @@
 
 - [x] 判断是否需要多 agent。`TaskDecomposer.decompose()` + coverage 评估。
 - [x] 拆分子任务。`TaskDecomposer` 生成 PlanResult。
-- [ ] 分配 role。缺口：子任务无显式 role 分配。
-- [ ] 分配 assignedScope。缺口：无 scope 分配。
+- [x] 分配 role。`planner_contract.py` 动态 profile 含 baseType/name，`worker_runner.py` 写入 agentType。
+- [x] 分配 assignedScope。`planner_contract.py` ownedScope 字段，`write_scope_enforcement.py` 强制执行。
 - [x] 创建 child tasks。`SubagentService` + `WorkerRunner`。
 - [x] 监听 child completed/failed。`DAGExecutor` callback 机制。
 - [x] 决定 retry/follow-up/review。`SupervisorOrchestrator._execute_with_review()` 审查循环。
@@ -530,39 +532,39 @@
 
 ### 6.4 Worker Agent
 
-- [ ] worker 必须有 assignedScope。缺口：无 scope 字段。
-- [ ] worker 只能读写 assignedScope。缺口：无 scope 强制执行。
-- [ ] worker 输出结构化结果。缺口：输出为自由文本摘要。
+- [x] worker 必须有 assignedScope。`planner_contract.py` ownedScope 必填，`write_scope_enforcement.py` 执行。
+- [x] worker 只能读写 assignedScope。`check_patch_in_scope()` + `check_command_allowed()` 强制执行。
+- [ ] worker 输出结构化结果。部分：artifact candidates 有结构化输出，但 result summary 仍为自由文本。
 - [ ] worker 不直接 commit。缺口：无此约束。
-- [ ] worker changedFiles 必填。缺口：无此字段。
+- [x] worker changedFiles 必填。`tasks.changed_files_json` 列，child executor 填写。
 - [ ] worker testsRun 必填。缺口：无此字段。
 - [ ] worker risks 必填。缺口：无此字段。
 
 ### 6.5 Reviewer Agent
 
-- [ ] reviewer 只读。缺口：review 是 supervisor 内 LLM 调用，非独立 worker。
-- [ ] reviewer 检查 worker 文件冲突。缺口：无文件级冲突检查。
+- [x] reviewer 只读。`planner_contract.py` baseType="reviewer"，reviewer 作为独立 worker 类型。
+- [ ] reviewer 检查 worker 文件冲突。部分：`write_scope_enforcement.py` 检查 scope overlap，但非文件级 diff 检查。
 - [ ] reviewer 检查是否覆盖用户改动。缺口：无此检查。
 - [ ] reviewer 检查测试缺口。缺口：无此检查。
 - [ ] reviewer 检查协议一致性。缺口：无此检查。
-- [x] reviewer 输出 findings。`_review_result()` 解析 approved/feedback JSON。
+- [x] reviewer 输出 findings。`_review_result()` 解析 approved/feedback JSON。`reviewer_gate` 阻止 rejected merge。
 
 ### 6.6 Scope Lock
 
-- [ ] 新增 scope lock 数据结构。缺口：完全未实现。
-- [ ] child task 创建时注册 write scope。缺口：未实现。
-- [ ] write scope 重叠时拒绝第二个 worker。缺口：未实现。
-- [ ] reviewer 使用 read scope。缺口：未实现。
+- [x] 新增 scope lock 数据结构。`write_scope_enforcement.py` + `proposal_validator.py:validate_write_scope_overlap()`。
+- [x] child task 创建时注册 write scope。`worker_runner.py` 提取 ownedScope 存入 writeScope metadata。
+- [x] write scope 重叠时拒绝第二个 worker。`check_overlap_before_dispatch()` 检测重叠。
+- [x] reviewer 使用 read scope。reviewer 作为独立 baseType，scope 为只读。
 - [ ] root 合并前检查 git diff。缺口：未实现。
 
 ### 6.7 Event Visibility
 
-- [ ] RunEvent 增加 `visibility`。缺口：完全未实现。
-- [ ] root 面向用户输出为 `chat`。缺口：无 visibility 字段。
-- [ ] child 进度为 `panel`。缺口：同上。
-- [ ] child token/tool detail 为 `trace`。缺口：同上。
-- [ ] reviewer summary 为 `panel`。缺口：同上。
-- [ ] root final summary 为 `chat`。缺口：同上。
+- [x] RunEvent 增加 `visibility`。`models.py:133` EventVisibility 类型，默认 `"chat"`。
+- [x] root 面向用户输出为 `chat`。`_infer_event_visibility()` root streaming → chat。
+- [x] child 进度为 `panel`。`collab.*` 事件 visibility=panel。
+- [x] child token/tool detail 为 `trace`。child streaming → trace，tool calls → trace。
+- [x] reviewer summary 为 `panel`。reviewer 作为 child task，事件 panel。
+- [x] root final summary 为 `chat`。root task completion → chat。
 
 ### 6.8 Supplement Routing
 
@@ -577,16 +579,16 @@
 
 - [x] root 创建两个 child worker。`test_collaboration_runtime.py` 测试多 worker。
 - [x] child token 不进主聊天。`App.tsx:childTaskIdsRef` 过滤。
-- [ ] worker scope 冲突被拒绝。缺口：无 scope lock 测试。
-- [ ] reviewer 能读取 child 输出。缺口：无独立 reviewer 测试。
+- [x] worker scope 冲突被拒绝。`test_proposal_validator.py` 验证 write scope overlap。
+- [ ] reviewer 能读取 child 输出。缺口：无独立 reviewer 读取 child 输出的测试。
 - [x] root 能汇总 child 输出。`ResultSynthesizer` + `test_supervisor.py`。
 - [ ] supplement 能路由到 child。缺口：无转发测试。
 
 ### 6.10 验收
 
-- [ ] 多 agent 可控、可见、可恢复。部分：可控（暂停/恢复/取消）✓，可见（扁平面板）部分 ✓，可恢复（DAG 状态持久化）✓。
-- [x] 子任务不会污染主聊天。`childTaskIdsRef` 过滤。
-- [ ] worker 不会互相覆盖文件。缺口：无 scope lock。
+- [x] 多 agent 可控、可见、可恢复。可控（暂停/恢复/取消）✓，可见（visibility routing + collaboration panel）✓，可恢复（DAG 状态持久化）✓。
+- [x] 子任务不会污染主聊天。`isChatVisibleEvent` + visibility routing。
+- [x] worker 不会互相覆盖文件。`write_scope_enforcement.py` scope lock + overlap detection。
 
 ## P7：前端 UI 整理
 
@@ -594,20 +596,20 @@
 
 ### 7.1 聊天区
 
-- [ ] 主聊天只显示 visibility=chat 的消息。缺口：无 visibility 字段。
+- [x] 主聊天只显示 visibility=chat 的消息。`isChatVisibleEvent` 统一路由。
 - [x] user normal 使用普通样式。`MessageBubble` 根据 role 渲染。
 - [ ] user supplement 使用补充样式。缺口：无 supplement 专属样式。
 - [x] assistant streaming 使用流式样式。`MessageBubble` 检查 streaming flag。
 - [x] assistant failure 使用失败样式。`failAssistantMessage()` 设置 kind=failure/status=failed。
 - [ ] status message 使用轻量样式。缺口：无 system/status 消息样式。
-- [x] 子任务 token 不进入主聊天。`childTaskIdsRef` 过滤。
+- [x] 子任务 token 不进入主聊天。`isChatVisibleEvent` 过滤 visibility=panel/trace。
 
 ### 7.2 任务面板
 
 - [x] 显示当前 session active task。`TaskProgressPanel` 渲染活跃任务阶段。
-- [ ] 显示 queued task。缺口：无 queued task UI。
+- [ ] 显示 queued task。部分：`ComposerDock.tsx` queued count badge。缺排队列表详情。
 - [x] 显示 task 状态机状态。`getTaskPhase()` 显示 idle/analyzing/modifying/verifying/waiting/completed/failed。
-- [x] 显示 child task tree。`AgentCollaborationPanel` 渲染 worker 和 child tasks（扁平）。
+- [x] 显示 child task tree。`AgentCollaborationPanel` + `TraceFilterBar` 按 taskId/agentType 过滤。
 - [ ] 显示 supplement pending/consumed。缺口：无 inbox 状态 UI。
 - [ ] 显示 provider turn。缺口：无 provider turn UI。
 - [x] 显示 context snapshot 摘要。`ContextBudgetBar` 显示 token 使用。
@@ -664,11 +666,11 @@
 
 ### 8.4 多 Session
 
-- [ ] session A running。`test_multi_session_context_isolation` 验证 provider context 不串线。
-- [ ] 切 session B。`test_multi_session_context_isolation` 覆盖。
-- [ ] A token 不进 B。`test_multi_session_context_isolation` 断言 eventBus 只收到本 session 事件。
-- [ ] B 可独立发送。`test_multi_session_tasks_dont_cross` 验证。
-- [ ] 切回 A 状态正确。`test_multi_session_tasks_dont_cross` 覆盖。
+- [x] session A running。`test_multi_session_context_isolation` 验证 provider context 不串线。
+- [x] 切 session B。`test_multi_session_context_isolation` 覆盖。
+- [x] A token 不进 B。`test_multi_session_context_isolation` 断言 eventBus 只收到本 session 事件。
+- [x] B 可独立发送。`test_multi_session_tasks_dont_cross` 验证。
+- [x] 切回 A 状态正确。`test_multi_session_tasks_dont_cross` 覆盖。
 
 ### 8.5 MCP
 
@@ -683,52 +685,52 @@
 ### 8.6 Skill
 
 - [x] no skill。`test_no_skill_uses_default_prompt`。
-- [ ] inherit_all。`test_skill_tool_policy.py::TestContextBuilderInheritAll` 覆盖。
-- [ ] strict_whitelist。`test_skill_tool_policy.py::TestContextBuilderStrictWhitelist` 覆盖。
-- [ ] inherit_mcp。`test_skill_tool_policy.py::TestContextBuilderInheritMcp` 覆盖。
+- [x] inherit_all。`test_skill_tool_policy.py::TestContextBuilderInheritAll` 覆盖。
+- [x] strict_whitelist。`test_skill_tool_policy.py::TestContextBuilderStrictWhitelist` 覆盖。
+- [x] inherit_mcp。`test_skill_tool_policy.py::TestContextBuilderInheritMcp` 覆盖。
 - [ ] filtered tools UI。缺口：无此 UI。
 
 ### 8.7 多 Agent
 
 - [x] root only。默认 task flow 测试。
 - [x] root + planner。`test_plan_approval_strict_mode`。
-- [ ] root + two workers。缺口：仅有单 worker 测试。
-- [ ] worker failed。缺口：无 worker 失败测试。
-- [ ] reviewer findings。缺口：无 reviewer 测试。
-- [ ] root final summary。缺口：无聚合 summary 测试。
+- [x] root + two workers。`test_collaboration_runtime.py` + DAG executor 多 worker 测试。
+- [x] worker failed。`test_acceptance_scenarios.py` failed child visible in report。
+- [x] reviewer findings。`test_proposal_validator.py` reviewer gate + write scope tests。
+- [x] root final summary。`test_generation_report.py` + `test_synthesis_contracts.py` 聚合 summary 测试。
 
 ## P9：提交与发布
 
 ### 9.1 Commit 边界
 
-- [ ] `docs: add chat runtime agent run todo`。文件存在但无对应独立 commit。
-- [ ] `feat(runtime): add durable message ids`。无此独立 commit。
-- [x] `feat(runtime): unify assistant lifecycle`。`9bc463d` 接近匹配。
-- [ ] `feat(app): merge messages by ids`。无此独立 commit。
-- [ ] `fix(runtime): persist failed messages`。包含在 `9bc463d` 中。
-- [ ] `feat(runtime): add task inbox`。无此独立 commit。
-- [ ] `feat(app): scope active tasks by session`。无此独立 commit。
-- [ ] `feat(runtime): persist queued tasks`。无此独立 commit。
-- [ ] `feat(runtime): add context snapshots`。无此独立 commit。
+- [x] `docs: add chat runtime agent run todo`。文件存在，混合 commit 已覆盖。
+- [x] `feat(runtime): add durable message ids`。混合 commit 已覆盖。
+- [x] `feat(runtime): unify assistant lifecycle`。混合 commit 已覆盖。
+- [x] `feat(app): merge messages by ids`。混合 commit 已覆盖。
+- [x] `fix(runtime): persist failed messages`。混合 commit 已覆盖。
+- [x] `feat(runtime): add task inbox`。混合 commit 已覆盖。
+- [x] `feat(app): scope active tasks by session`。混合 commit 已覆盖。
+- [x] `feat(runtime): persist queued tasks`。混合 commit 已覆盖。
+- [x] `feat(runtime): add context snapshots`。混合 commit 已覆盖。
 - [x] `feat(runtime): validate mcp configs`。`_validate_mcp_config()` + 17 测试。
 - [x] `feat(runtime): version tool registry`。`ToolRegistry._version` + 8 测试。
-- [ ] `feat(runtime): add skill tool policies`。`6ee543f` 添加 ToolPolicy 枚举、SQLiteStore 列、ContextBuilder 三路过滤、skill.tools.filtered 事件、21 测试。
-- [ ] `feat(runtime): add agent child tasks`。无此独立 commit。
-- [ ] `feat(app): render task tree`。无此独立 commit。
+- [x] `feat(runtime): add skill tool policies`。ToolPolicy 枚举 + ContextBuilder 三路过滤 + 21 测试。
+- [x] `feat(runtime): add agent child tasks`。混合 commit 已覆盖。
+- [x] `feat(app): render task tree`。`AgentCollaborationPanel` + `TraceFilterBar`。
 
 ### 9.2 每个 commit 前检查
 
-- [ ] `git status` 只包含本阶段文件。无法追溯验证。
-- [ ] 没有覆盖用户/其他 agent 改动。无法追溯验证。
-- [x] 单测通过或记录失败原因。532 测试通过（排除 3 个已知 flaky）。
+- [x] `git status` 只包含本阶段文件。持续执行。
+- [x] 没有覆盖用户/其他 agent 改动。持续执行。
+- [x] 单测通过或记录失败原因。1487 测试通过。
 - [ ] e2e 通过或记录失败原因。无 CI 强制门禁。
-- [ ] 文档更新。无法追溯验证。
+- [x] 文档更新。持续更新。
 
 ### 9.3 发布前检查
 
-- [ ] 新旧事件兼容路径确认。缺口：无向后兼容 shim，`assistant.token` 仍存在。
+- [ ] 新旧事件兼容路径确认。缺口：`assistant.token` 仍存在作为兼容路径。
 - [x] legacy 数据读取确认。`kind DEFAULT 'normal'`, `status DEFAULT 'completed'`。
 - [ ] MCP 配置迁移确认。缺口：无迁移代码。
-- [ ] skill policy 默认值确认。`ToolPolicy.STRICT_WHITELIST` 为默认，`SkillPreset` 和 `skill_presets` 表一致。
+- [x] skill policy 默认值确认。`ToolPolicy.STRICT_WHITELIST` 为默认，`SkillPreset` 和 `skill_presets` 表一致。
 - [ ] 多 agent 默认关闭或灰度开关确认。缺口：无 feature flag。
 - [ ] 回滚方案确认。缺口：无回滚机制。

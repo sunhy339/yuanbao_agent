@@ -1022,4 +1022,85 @@ describe("SessionWorkspace", () => {
     expect(screen.getByRole("button", { name: "批准" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "拒绝" })).toBeDisabled();
   });
+
+  it("renders trace filter bar with task id, visibility, and agent type filters", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Run task", createdAt: 1 }]}
+        traces={[
+          {
+            id: "trace_1",
+            type: "collab.task.created",
+            source: "collab",
+            status: "completed",
+            taskId: "child_1",
+            visibility: "panel",
+            payload: { agentType: "explorer" },
+          },
+          {
+            id: "trace_2",
+            type: "runtime.error",
+            source: "runtime",
+            status: "failed",
+            taskId: "child_2",
+            visibility: "trace",
+            payload: { agentType: "worker" },
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByLabelText("诊断过滤")).toBeInTheDocument();
+    const filterBar = screen.getByLabelText("诊断过滤");
+    expect(within(filterBar).getByText("任务")).toBeInTheDocument();
+    expect(within(filterBar).getByText("可见性")).toBeInTheDocument();
+    expect(within(filterBar).getByText("Agent")).toBeInTheDocument();
+  });
+
+  it("shows child task fields including agentType and duration in the collaboration panel", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_parent",
+          status: "running",
+          goal: "Multi-agent task",
+        }}
+        collaboration={{
+          workers: [],
+          childTasks: [
+            {
+              id: "child_1",
+              title: "Explore workspace",
+              status: "completed",
+              workerId: "w1",
+              workerName: "Explorer Worker",
+              agentType: "explorer",
+              durationMs: 4500,
+              artifactCount: 2,
+            },
+            {
+              id: "child_2",
+              title: "Apply fixes",
+              status: "failed",
+              workerId: "w2",
+              workerName: "Worker 2",
+              agentType: "worker",
+              errorMessage: "CHILD_TASK_TIMEOUT",
+            },
+          ],
+          results: [],
+        }}
+        messages={[{ id: "m1", role: "user", content: "Fix bugs", createdAt: 1 }]}
+      />,
+    );
+
+    const agentPanel = screen.getByLabelText("真实 Agent 任务");
+    expect(within(agentPanel).getByText(/类型: explorer/)).toBeInTheDocument();
+    expect(within(agentPanel).getByText(/4.5s/)).toBeInTheDocument();
+    expect(within(agentPanel).getByText(/2 产物/)).toBeInTheDocument();
+    expect(within(agentPanel).getByText(/CHILD_TASK_TIMEOUT/)).toBeInTheDocument();
+  });
 });

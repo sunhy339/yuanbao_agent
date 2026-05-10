@@ -3103,3 +3103,49 @@
 .runtime-event-v2-card::before {
   display: none;
 }
+
+/* ── Trace filter bar ──────────────────────────────────────────── */
+
+.trace-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(125, 211, 252, 0.1);
+  margin-bottom: 6px;
+}
+
+.trace-filter-bar label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--session-muted);
+}
+
+.trace-filter-bar select {
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  background: transparent;
+  color: inherit;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trace-filter-clear {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(125, 211, 252, 0.2);
+  background: transparent;
+  color: var(--session-muted);
+  cursor: pointer;
+}
+
+.trace-filter-clear:hover {
+  color: inherit;
+  border-color: rgba(125, 211, 252, 0.4);
+}

@@ -1,6 +1,6 @@
 # Subagent Generation TODO
 
-Date: 2026-05-09
+Date: 2026-05-10
 
 This checklist tracks the concrete implementation work for
 `docs/subagent-generation-remediation-plan.md`.
@@ -9,6 +9,20 @@ This checklist is a subagent-focused slice of
 `docs/llm-assisted-runtime-decision-todolist.md`. Shared proposal records,
 validators, model/skill/tool decisions, risk policy, test strategy, and final
 synthesis should use the system-wide decision framework.
+
+## Remaining Priority Order
+
+P0 items unblock the user-facing subagent experience and should be handled
+first. P1 items make recovery and trace inspection testable. P2 items are useful
+polish or cleanup after the core panel and recovery paths are stable.
+
+1. P0: subagent panel data model and removal of child-task-id heuristics where
+   `visibility` already provides the routing signal.
+2. P0: child task status, worker, duration, result, and artifact display.
+3. P1: frontend tests for visibility routing and missed-event merge.
+4. P1: trace drawer filters by task id and visibility, plus the child event
+   chain acceptance scenario.
+5. P2: trace drawer filter by agent type.
 
 ## P0: Baseline and Safety
 
@@ -243,15 +257,15 @@ synthesis should use the system-wide decision framework.
 - [x] Route root chat using `visibility = "chat"`.
 - [x] Route collaboration status using `visibility = "panel"`.
 - [x] Route tool/command details using `visibility = "trace"`.
-- [ ] Remove child-task-id heuristics where visibility is sufficient.
-- [ ] Add subagent panel data model.
-- [ ] Show child task status, worker, duration, result, and artifacts.
-- [ ] Add trace drawer filters by task id.
-- [ ] Add trace drawer filters by agent type.
-- [ ] Add trace drawer filters by visibility.
+- [x] P0: Remove child-task-id heuristics where visibility is sufficient.
+- [x] P0: Add subagent panel data model.
+- [x] P0: Show child task status, worker, duration, result, and artifacts.
+- [x] P1: Add trace drawer filters by task id.
+- [x] P2: Add trace drawer filters by agent type.
+- [x] P1: Add trace drawer filters by visibility.
 - [x] Use `events.after` for reconnect or refresh recovery.
-- [ ] Add frontend tests for visibility routing.
-- [ ] Add frontend tests for missed-event merge.
+- [x] P1: Add frontend tests for visibility routing.
+- [x] P1: Add frontend tests for missed-event merge.
 
 ## P11: Acceptance Scenarios
 
@@ -259,7 +273,7 @@ synthesis should use the system-wide decision framework.
 - [x] Scenario: explorer child produces a scope artifact.
 - [x] Scenario: worker child proposes file or patch artifacts.
 - [x] Scenario: reviewer child accepts or rejects artifacts.
-- [ ] Scenario: trace drawer shows child event chain.
+- [x] P1: Scenario: trace drawer shows child event chain.
 - [x] Scenario: failed child task remains visible in report.
 - [x] Scenario: refresh restores task, artifact, and trace state.
 - [x] Scenario: common tool alias such as `rg` does not fail dispatch.

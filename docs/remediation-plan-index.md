@@ -1,6 +1,6 @@
 # Remediation Plan Index
 
-Date: 2026-05-09
+Date: 2026-05-10
 
 This index consolidates the remediation and TODO documents currently present in
 the repository. Most planning documents live under `docs/`, but `docs/` is
@@ -11,13 +11,13 @@ staged with `git add -f` when they need to be committed.
 
 | Area | Document | Status |
 | --- | --- | --- |
-| System-wide LLM decision layer | `docs/llm-assisted-runtime-decision-plan.md` | Partially implemented: P1, P2, P3 (partial), P8 complete |
-| System-wide LLM decision TODO | `docs/llm-assisted-runtime-decision-todolist.md` | 39 done / 129 open |
+| System-wide LLM decision layer | `docs/llm-assisted-runtime-decision-plan.md` | Checklist implementation complete; current follow-up is hardening and integration polish |
+| System-wide LLM decision TODO | `docs/llm-assisted-runtime-decision-todolist.md` | 166 done / 0 open |
 | TDD remediation test suite | `docs/tdd-remediation-test-suite.md` | New test design, use as acceptance gate |
-| Subagent generation | `docs/subagent-generation-remediation-plan.md` | Partially implemented: P1-P4, P7, P8 backend done |
-| Subagent generation TODO | `docs/subagent-generation-todolist.md` | Batch 6 complete: P6 failure observability, P7 profile persistence, P0.6 dispatch guard done |
+| Subagent generation | `docs/subagent-generation-remediation-plan.md` | Backend path complete through P9/P12; frontend visibility and recovery remain |
+| Subagent generation TODO | `docs/subagent-generation-todolist.md` | 233 done / 9 open; remaining work prioritized in that checklist |
 | Multi-agent collaboration backbone | `docs/multi-agent-collaboration-todo.md` | Checklist complete, 22 done / 0 open |
-| Chat runtime agent run | `docs/chat-runtime-agent-run-todolist.md` | Largely complete, 323 done / 153 open |
+| Chat runtime agent run | `docs/chat-runtime-agent-run-todolist.md` | Legacy ledger, 323 done / 153 open; needs reconciliation against newer subagent/LLM checklists |
 | Chat runtime architecture plan | `docs/chat-runtime-agent-run-rectification-plan.md` | Design reference, no checklist |
 | Chat runtime detailed remediation | `docs/chat-runtime-agent-run-detailed-remediation.md` | Design reference, no checklist |
 | Memory and context compaction | `docs/memory-and-context-compaction-plan.md` | Older plan, checklist not updated after implementation |
@@ -28,6 +28,20 @@ staged with `git add -f` when they need to be committed.
 | Runtime performance | `runtime/PERFORMANCE_PLAN.md` | Runtime-side performance reference outside `docs/` |
 
 ## What Has Been Completed
+
+### System-Wide LLM Decision Layer
+
+`docs/llm-assisted-runtime-decision-todolist.md` is now fully checked off.
+Completed areas include:
+
+- proposal record persistence, validation, application, and events;
+- all 17 proposal kinds;
+- runtime validators for mode, model, skill, MCP, context, memory, risk,
+  approval, retry, test commands, visibility, and roadmap edits;
+- LLM-assisted intent/mode, model/provider, skill/tool/MCP, context/memory,
+  risk/recovery, event presentation, synthesis, and TODO maintenance flows;
+- acceptance scenarios covering rejected unsafe planner output, unverified
+  artifact synthesis, and approval-required roadmap updates.
 
 ### Multi-Agent Collaboration Backbone
 
@@ -93,61 +107,67 @@ Completed areas include:
 Remaining work is concentrated around frontend recovery/polish and deeper
 multi-agent generation behavior, not the basic runtime message/task substrate.
 
+### Subagent Backend and Write Safety Audit
+
+The subagent backend checklist is complete through P9 and P12. A 2026-05-10
+review also fixed issues found in completed backend items:
+
+- write-scope path traversal and nested-scope overlap validation;
+- runtime child task to collaboration task write-scope resolution;
+- `write_file` approval enforcement and `overwrite=false` behavior;
+- rejected artifact status transitions back to `verified`;
+- background command line streaming for real-time output events.
+
+The current backend regression gate is:
+
+- `471 passed` across write safety, proposal/planner validation, artifact,
+  command policy/background, schema, and selected runtime-flow tests;
+- `python -m compileall` passed on modified runtime modules;
+- `git diff --check` passed.
+
 ## What Is Still Open
-
-### System-Wide LLM Decision Remediation
-
-The new system-wide plan is open. It covers all current hard-coded decision
-surfaces that should become LLM-assisted proposals guarded by runtime
-validators:
-
-- intent and mode routing;
-- model/provider selection;
-- skill selection;
-- tool and permission selection;
-- MCP selection;
-- context and memory policy;
-- artifact contracts;
-- risk and approval gates;
-- test and verification strategy;
-- failure recovery;
-- frontend event presentation;
-- final synthesis and TODO maintenance.
 
 ### Subagent Generation
 
-The new subagent plan is also open. It depends on the system decision framework
-and adds subagent-specific work:
+The only open items in the subagent checklist are frontend visibility and
+recovery work:
 
-- dynamic agent profiles;
-- LLM planner proposal schemas;
-- runtime validators for tools, dependencies, and scopes;
-- artifact registry;
-- result-message to artifact linking;
-- real process-RPC child worker e2e;
-- DAG scheduling;
-- multi-agent write safety;
-- subagent panel and trace drawer recovery.
+- remove remaining child-task-id heuristics where event `visibility` is enough;
+- add a subagent panel data model;
+- show child task status, worker, duration, result, and artifacts;
+- add trace drawer filters by task id, agent type, and visibility;
+- add frontend tests for visibility routing and missed-event merge;
+- add the acceptance scenario for trace drawer child event chains.
 
 ### Chat Runtime Remaining Items
 
 The older chat runtime TODO still has open work. The most important remaining
 themes are:
 
-- frontend missed-event recovery through `events.after`;
-- frontend task list recovery;
+- frontend task list recovery and richer task-panel recovery state;
 - frontend tests around streaming merge, supplement UI, queued task UI, and
   task panel behavior;
 - replacing remaining child-task heuristics with first-class event visibility;
-- stronger user-facing task panel state for queued/recovery/context details.
+- memory/context UI gaps from the legacy checklist.
+
+### Residual Backend Risk
+
+`run_command` write-scope enforcement currently validates the command working
+directory. It does not fully parse arbitrary file path arguments embedded inside
+shell command strings. Treat stronger command path sandboxing as a separate
+hardening item after the frontend recovery batch.
 
 ## Recommended Next Batch
 
-1. Implement remaining P3 validators (session/task state, mode, model/provider,
-   skill, MCP, context, memory, retry budget, visibility, roadmap).
-2. Implement P5 real process-RPC child worker e2e with file-backed database.
-3. Implement P6 failure/timeout/cancel/retry observability.
-4. Implement P9 multi-agent write safety (out-of-scope patch rejection,
-   patch conflict detection, reviewer rejection blocking).
-5. Connect LLM planner output to actual dispatch (P7 "Let LLM propose..." items).
-6. Frontend visibility and recovery (P10).
+1. P0: finish the subagent panel data model and remove child-task-id display
+   heuristics where `visibility` can drive routing.
+2. P0: show child task status, worker, duration, result, and artifacts in the
+   subagent panel.
+3. P1: add frontend tests for visibility routing and missed-event merge.
+4. P1: add trace drawer filters by task id and visibility, then cover the child
+   event-chain acceptance scenario.
+5. P2: add the agent-type trace filter and reconcile the legacy
+   `chat-runtime-agent-run-todolist.md` open items against the newer completed
+   checklists.
+6. P3: harden `run_command` beyond cwd-based write-scope checks if shell
+   command path isolation becomes a release requirement.

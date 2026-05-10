@@ -145,6 +145,12 @@ export interface SessionWorkspaceChildTask {
   workerName?: string;
   summary?: string;
   updatedAt?: number;
+  createdAt?: number;
+  completedAt?: number;
+  durationMs?: number;
+  agentType?: string;
+  artifactCount?: number;
+  errorMessage?: string;
 }
 
 export interface SessionWorkspaceChildTaskResult {
@@ -228,6 +234,9 @@ export interface SessionWorkspaceTrace {
   tokenCount?: number;
   stdout?: string;
   stderr?: string;
+  visibility?: "chat" | "panel" | "trace";
+  taskId?: string;
+  agentType?: string;
 }
 
 export interface SessionWorkspaceToolCall {
@@ -344,6 +353,9 @@ interface RuntimeTimelineItem {
   time?: number;
   durationMs?: number;
   diffLines?: DiffLine[];
+  visibility?: "chat" | "panel" | "trace";
+  taskId?: string;
+  agentType?: string;
 }
 
 interface ToolRuntimePresentation {
@@ -1104,10 +1116,15 @@ function buildRuntimeItems({
         trace.source,
         formatDuration(trace.durationMs),
         trace.tokenCount !== undefined ? `${trace.tokenCount} 令牌` : null,
+        trace.visibility,
+        trace.agentType,
       ]),
       code: outputDetail || undefined,
       time: trace.time,
       durationMs: trace.durationMs,
+      visibility: trace.visibility,
+      taskId: trace.taskId,
+      agentType: trace.agentType,
     });
   });
 
@@ -2375,8 +2392,14 @@ function AgentCollaborationPanel({
               <div>
                 <strong>{task.title}</strong>
                 <small>
-                  {compactMeta([task.workerName ? `worker: ${task.workerName}` : null, task.summary]).join(" - ") ||
-                    task.id}
+                  {compactMeta([
+                    task.agentType ? `类型: ${task.agentType}` : null,
+                    task.workerName ? `worker: ${task.workerName}` : null,
+                    task.summary,
+                    task.durationMs != null ? formatDuration(task.durationMs) : null,
+                    task.artifactCount != null && task.artifactCount > 0 ? `${task.artifactCount} 产物` : null,
+                    task.errorMessage,
+                  ]).join(" - ") || task.id}
                 </small>
               </div>
               <StatusBadge
@@ -2420,6 +2443,69 @@ function AgentCollaborationPanel({
         </ul>
       ) : null}
     </section>
+  );
+}
+
+function TraceFilterBar({
+  filter,
+  onChange,
+  taskIds,
+  agentTypes,
+}: {
+  filter: { taskId: string; visibility: "" | "chat" | "panel" | "trace"; agentType: string };
+  onChange: (next: { taskId: string; visibility: "" | "chat" | "panel" | "trace"; agentType: string }) => void;
+  taskIds: string[];
+  agentTypes: string[];
+}) {
+  const hasAnyFilter = filter.taskId || filter.visibility || filter.agentType;
+  return (
+    <div className="trace-filter-bar" aria-label="诊断过滤">
+      <label>
+        <span>任务</span>
+        <select
+          value={filter.taskId}
+          onChange={(e) => onChange({ ...filter, taskId: e.target.value })}
+        >
+          <option value="">全部</option>
+          {taskIds.map((id) => (
+            <option key={id} value={id}>{id}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <span>可见性</span>
+        <select
+          value={filter.visibility}
+          onChange={(e) => onChange({ ...filter, visibility: e.target.value as "" | "chat" | "panel" | "trace" })}
+        >
+          <option value="">全部</option>
+          <option value="chat">chat</option>
+          <option value="panel">panel</option>
+          <option value="trace">trace</option>
+        </select>
+      </label>
+      <label>
+        <span>Agent</span>
+        <select
+          value={filter.agentType}
+          onChange={(e) => onChange({ ...filter, agentType: e.target.value })}
+        >
+          <option value="">全部</option>
+          {agentTypes.map((t) => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+      </label>
+      {hasAnyFilter ? (
+        <button
+          type="button"
+          className="trace-filter-clear"
+          onClick={() => onChange({ taskId: "", visibility: "", agentType: "" })}
+        >
+          清除
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -2482,7 +2568,12 @@ export function SessionWorkspace({
     () => buildConversationActivity(messages, runtimeItems),
     [messages, runtimeItems],
   );
-  const { pendingApprovals, patchCount, commandCount, diagnosticCount, runtimeLanes } = useMemo(() => {
+  const [traceFilter, setTraceFilter] = useState<{
+    taskId: string;
+    visibility: "" | "chat" | "panel" | "trace";
+    agentType: string;
+  }>({ taskId: "", visibility: "", agentType: "" });
+  const { pendingApprovals, patchCount, commandCount, diagnosticCount, runtimeLanes, uniqueTaskIds, uniqueAgentTypes } = useMemo(() => {
     const pendingApprovals = approvals?.filter((approval) => approval.status === "pending").length ?? 0;
     const patchCount = (patches?.length ?? 0) || (visibleActiveTask?.changedFiles?.length ?? 0);
     let commandCount = 0;
@@ -2502,6 +2593,13 @@ export function SessionWorkspace({
         if (item.kind === "trace") diagnosticCount++;
       }
     }
+
+    const filteredTraceItems = traceItems.filter((item) => {
+      if (traceFilter.taskId && item.taskId !== traceFilter.taskId) return false;
+      if (traceFilter.visibility && item.visibility !== traceFilter.visibility) return false;
+      if (traceFilter.agentType && item.agentType !== traceFilter.agentType) return false;
+      return true;
+    });
 
     const runtimeLanes = [
       {
@@ -2526,12 +2624,15 @@ export function SessionWorkspace({
         title: "重要信号",
         emptyTitle: "暂无诊断",
         emptyText: "失败、路由决策和可操作信号会显示在这里。",
-        items: traceItems,
+        items: filteredTraceItems,
       },
     ];
 
-    return { pendingApprovals, patchCount, commandCount, diagnosticCount, runtimeLanes };
-  }, [visibleActiveTask?.changedFiles?.length, approvals, patches, runtimeItems]);
+    const uniqueTaskIds = [...new Set(traceItems.map((i) => i.taskId).filter(Boolean) as string[])];
+    const uniqueAgentTypes = [...new Set(traceItems.map((i) => i.agentType).filter(Boolean) as string[])];
+
+    return { pendingApprovals, patchCount, commandCount, diagnosticCount, runtimeLanes, uniqueTaskIds, uniqueAgentTypes };
+  }, [visibleActiveTask?.changedFiles?.length, approvals, patches, runtimeItems, traceFilter]);
   const activeTaskPhase = getTaskPhase(visibleActiveTask);
   const contextBudgetStats = contextPreview?.budgetStats;
   const contextUsedTokens =
@@ -2685,6 +2786,14 @@ export function SessionWorkspace({
                   </div>
                   <span>{lane.items.length}</span>
                 </header>
+                {lane.id === "trace" ? (
+                  <TraceFilterBar
+                    filter={traceFilter}
+                    onChange={setTraceFilter}
+                    taskIds={uniqueTaskIds}
+                    agentTypes={uniqueAgentTypes}
+                  />
+                ) : null}
                 {lane.items.length > 0 ? (
                   <ul>
                     {lane.items.slice(0, 3).map((item) => (

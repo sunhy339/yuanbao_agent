@@ -1946,6 +1946,12 @@ function buildSessionCollaboration(
       workerId: readRecordString(task, "assignedWorkerId"),
       summary: readResultSummary(task),
       updatedAt: readRecordNumber(task, "updatedAt") ?? time,
+      createdAt: readRecordNumber(task, "createdAt"),
+      completedAt: readRecordNumber(task, "completedAt"),
+      durationMs: readRecordNumber(task, "durationMs"),
+      agentType: readRecordString(task, "agentType") ?? (readChildRecord(task, "metadata") ? readRecordString(readChildRecord(task, "metadata")!, "agentType") : undefined),
+      artifactCount: readRecordNumber(task, "artifactCount"),
+      errorMessage: readRecordString(task, "errorMessage"),
     });
 
     const status = readRecordString(task, "status");
@@ -2350,7 +2356,17 @@ export function App() {
   const pendingAssistantTokenEventsRef = useRef<AgentEventEnvelope[]>([]);
   const assistantTokenFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messageLoadRequestRef = useRef(0);
-  const childTaskIdsRef = useRef<Set<string>>(new Set());
+  const childTaskIdsRef = useRef<Set<string>>(new Set()); // deprecated: kept for backward compat, visibility routing preferred
+
+  /** Check if event should be routed to chat stream (visibility=chat or no visibility for backward compat). */
+  function isChatVisibleEvent(event: AgentEventEnvelope): boolean {
+    // Events with visibility="chat" always go to chat
+    // Events without visibility fall through to legacy childTaskIdsRef logic for backward compat
+    if (event.visibility === "chat") return true;
+    if (event.visibility === "panel" || event.visibility === "trace") return false;
+    // No visibility field: use legacy childTaskIdsRef heuristic
+    return !childTaskIdsRef.current.has(event.taskId);
+  }
 
   /** Update activeTaskId state and persist it in per-session map. */
   function setActiveTaskForSession(taskId: string | null, sessionId?: string | null) {
@@ -2530,7 +2546,7 @@ export function App() {
         // --- New message lifecycle events (P1.3 / P1.4) ---
         // message.delta: streaming token, routed by messageId
         if (event.type === "message.delta") {
-          if (childTaskIdsRef.current.has(event.taskId)) {
+          if (!isChatVisibleEvent(event)) {
             return;
           }
           const payload = event.payload as MessageDeltaPayload;
@@ -2622,7 +2638,7 @@ export function App() {
 
         // --- Legacy assistant.token (kept for backward compat) ---
         if (event.type === "assistant.token") {
-          if (!childTaskIdsRef.current.has(event.taskId)) {
+          if (isChatVisibleEvent(event)) {
             queueAssistantToken(event);
           }
           return;
@@ -2721,8 +2737,8 @@ export function App() {
 
         // Legacy assistant.message.completed (kept for backward compat)
         if (event.type === "assistant.message.completed") {
-          if (childTaskIdsRef.current.has(event.taskId)) {
-            // skip child task completion
+          if (!isChatVisibleEvent(event)) {
+            // skip non-chat event completion
           } else {
             flushPendingAssistantTokens();
             setChatMessages((current) => completeAssistantMessage(current, event));
@@ -4866,6 +4882,9 @@ export function App() {
           tokenCount: readEventNumber(trace.payload, "tokenCount"),
           stdout: readEventText(trace.payload, "stdout"),
           stderr: readEventText(trace.payload, "stderr"),
+          visibility: trace.visibility,
+          taskId: trace.taskId,
+          agentType: (trace.payload as Record<string, unknown> | null)?.agentType as string | undefined,
         })),
     [traceEvents],
   );

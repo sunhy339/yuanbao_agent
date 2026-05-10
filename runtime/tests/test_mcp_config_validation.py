@@ -208,3 +208,89 @@ class TestMcpConfigValidationRpc:
         })
         assert "error" in resp
         assert "env" in resp["error"]["message"]
+
+
+class TestFirecrawlConfig:
+    """Firecrawl MCP server config: save and retrieve with env preserved."""
+
+    def test_firecrawl_config_save_success(self, tmp_path: Any) -> None:
+        """Firecrawl stdio config with API key in env saves correctly."""
+        runtime = _make_runtime(tmp_path)
+        resp = _rpc(runtime, "mcp.server.create", {
+            "name": "Firecrawl",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@anthropic/mcp-server-firecrawl"],
+            "env": {"FIRECRAWL_API_KEY": "fc-test-key-12345"},
+            "enabled": False,
+        })
+        assert "result" in resp, f"Expected success, got error: {resp.get('error')}"
+        server = resp["result"]["server"]
+        assert server["name"] == "Firecrawl"
+        assert server["transport"] == "stdio"
+        assert server["command"] == "npx"
+
+    def test_firecrawl_env_preserved(self, tmp_path: Any) -> None:
+        """API key in env is stored and can be retrieved without loss."""
+        runtime = _make_runtime(tmp_path)
+        resp = _rpc(runtime, "mcp.server.create", {
+            "name": "Firecrawl",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@anthropic/mcp-server-firecrawl"],
+            "env": {"FIRECRAWL_API_KEY": "fc-secret-key"},
+            "enabled": False,
+        })
+        server_id = resp["result"]["server"]["id"]
+
+        # Retrieve via list
+        list_resp = _rpc(runtime, "mcp.server.list", {})
+        servers = list_resp["result"]["servers"]
+        fc = next(s for s in servers if s["id"] == server_id)
+        assert fc["env"] == {"FIRECRAWL_API_KEY": "fc-secret-key"}
+
+    def test_firecrawl_missing_api_key_passes_validation(self, tmp_path: Any) -> None:
+        """Config without FIRECRAWL_API_KEY still validates (env may be empty).
+
+        The API key is typically injected at runtime. Config validation only
+        checks structure, not whether keys are present.
+        """
+        runtime = _make_runtime(tmp_path)
+        resp = _rpc(runtime, "mcp.server.create", {
+            "name": "Firecrawl-no-key",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@anthropic/mcp-server-firecrawl"],
+            "enabled": False,
+        })
+        assert "result" in resp, f"Expected success, got error: {resp.get('error')}"
+
+    def test_firecrawl_update_preserves_env(self, tmp_path: Any) -> None:
+        """Updating firecrawl config with same transport preserves env."""
+        runtime = _make_runtime(tmp_path)
+        create_resp = _rpc(runtime, "mcp.server.create", {
+            "name": "Firecrawl",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@anthropic/mcp-server-firecrawl"],
+            "env": {"FIRECRAWL_API_KEY": "fc-original-key"},
+            "enabled": False,
+        })
+        server_id = create_resp["result"]["server"]["id"]
+
+        # Update name + keep full config (validation requires transport fields)
+        update_resp = _rpc(runtime, "mcp.server.update", {
+            "serverId": server_id,
+            "name": "Firecrawl Renamed",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "@anthropic/mcp-server-firecrawl"],
+            "env": {"FIRECRAWL_API_KEY": "fc-original-key"},
+            "enabled": False,
+        })
+        assert "result" in update_resp
+
+        list_resp = _rpc(runtime, "mcp.server.list", {})
+        fc = next(s for s in list_resp["result"]["servers"] if s["id"] == server_id)
+        assert fc["name"] == "Firecrawl Renamed"
+        assert fc["env"] == {"FIRECRAWL_API_KEY": "fc-original-key"}

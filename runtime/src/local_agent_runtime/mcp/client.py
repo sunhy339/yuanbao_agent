@@ -300,7 +300,12 @@ class McpClientManager:
                 pass
         logger.info("MCP server %s disconnected", server_id)
 
-    async def call_tool(self, namespaced_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def call_tool(
+        self,
+        namespaced_name: str,
+        arguments: dict[str, Any],
+        timeout_seconds: float = 120,
+    ) -> dict[str, Any]:
         """Route a namespaced tool call to the correct MCP server session."""
         entry = self._tool_map.get(namespaced_name)
         if entry is None:
@@ -311,8 +316,17 @@ class McpClientManager:
             return {"status": "failed", "error": f"MCP server {server_id} not connected"}
 
         try:
-            result: CallToolResult = await conn.session.call_tool(raw_name, arguments)
+            result: CallToolResult = await asyncio.wait_for(
+                conn.session.call_tool(raw_name, arguments),
+                timeout=timeout_seconds,
+            )
             return parse_mcp_result(result)
+        except asyncio.TimeoutError:
+            return {
+                "status": "failed",
+                "error": f"MCP tool {namespaced_name} timed out after {timeout_seconds}s",
+                "timeout": True,
+            }
         except Exception as exc:  # noqa: BLE001
             return {"status": "failed", "error": str(exc)}
 

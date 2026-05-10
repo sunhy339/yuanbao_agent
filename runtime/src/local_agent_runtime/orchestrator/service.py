@@ -2646,6 +2646,19 @@ class Orchestrator:
                 category = MemoryCategory.TASK_LEARNING
                 confidence = 0.4
 
+            # Collect source message ids from the task
+            source_message_ids: list[str] = []
+            active_assistant_id = task.get("activeAssistantMessageId")
+            if active_assistant_id:
+                source_message_ids.append(active_assistant_id)
+            try:
+                task_messages = self._store.list_messages_by_task(task.get("id", ""))
+                for msg in task_messages:
+                    if msg.get("role") == "user" and msg.get("id"):
+                        source_message_ids.append(msg["id"])
+            except Exception:  # noqa: BLE001
+                pass
+
             self._memory_manager.remember(
                 session_id=session_id,
                 workspace_id=workspace_id,
@@ -2657,6 +2670,7 @@ class Orchestrator:
                     "confidence": confidence,
                     "source": MemorySource.TASK_RESULT.value,
                     "sourceTaskIds": [task.get("id", "")],
+                    "sourceMessageIds": source_message_ids,
                 },
                 dedup=(task_status == "completed"),
             )
@@ -5438,19 +5452,25 @@ class Orchestrator:
                 result = self._tool_registry.execute(tool_spec["name"], tool_arguments, session_id=session_id)
             self._tracer.end_span(tool_span.span_id, status="ok")
         except Exception as exc:  # noqa: BLE001
+            import asyncio as _asyncio
+            is_timeout = isinstance(exc, _asyncio.TimeoutError)
             result = {
                 "status": "failed",
                 "ok": False,
                 "error": str(exc),
                 "summary": f"Tool {tool_spec['name']} raised an exception: {exc}",
             }
+            if is_timeout:
+                result["timeout"] = True
             self._tracer.end_span(tool_span.span_id, status="error")
             if is_mcp_tool:
-                self._publish_mcp_event("mcp.tool.failed", {
+                event_name = "mcp.tool.timeout" if is_timeout else "mcp.tool.failed"
+                self._publish_mcp_event(event_name, {
                     "toolCallId": tool_call_id,
                     "toolName": tool_spec["name"],
                     "serverId": mcp_server_id,
                     "error": str(exc),
+                    "timeout": is_timeout,
                 })
         if tool_spec["name"] == "run_command":
             command_log = result.get("commandLog") or {}
@@ -5597,11 +5617,14 @@ class Orchestrator:
                 },
             )
             if is_mcp_tool:
-                self._publish_mcp_event("mcp.tool.failed", {
+                is_timeout = bool(result.get("timeout"))
+                event_name = "mcp.tool.timeout" if is_timeout else "mcp.tool.failed"
+                self._publish_mcp_event(event_name, {
                     "toolCallId": tool_call_id,
                     "toolName": tool_spec["name"],
                     "serverId": mcp_server_id,
                     "error": result.get("error", f"Tool returned status: {result.get('status')}"),
+                    "timeout": is_timeout,
                 })
             return tool_result
 

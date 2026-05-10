@@ -64,6 +64,12 @@ class MemoryManager:
                 merged_ids = list(existing_ids | set(new_ids))
                 if merged_ids:
                     merged_meta["sourceTaskIds"] = merged_ids
+                # Merge sourceMessageIds lists
+                existing_msg_ids = set(existing_meta.get("sourceMessageIds") or [])
+                new_msg_ids = new_meta.get("sourceMessageIds") or []
+                merged_msg_ids = list(existing_msg_ids | set(new_msg_ids))
+                if merged_msg_ids:
+                    merged_meta["sourceMessageIds"] = merged_msg_ids
                 return self._store.update(
                     best_entry.id,
                     content=content,

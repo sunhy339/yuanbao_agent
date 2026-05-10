@@ -163,3 +163,67 @@ class TestMcpToolLifecycleEvents:
         started = [e for e in runtime.events if e["type"] == "mcp.tool.started"]
         assert started[0]["payload"]["serverId"] == "my_server"
         assert started[0]["payload"]["toolName"] == "mcp__my_server__my_tool"
+
+
+class TestMcpToolTimeout:
+    """Verify mcp.tool.timeout event is published when tool call times out."""
+
+    def test_mcp_tool_timeout_event(self, tmp_path: Any) -> None:
+        """MCP tool returning timeout=True triggers mcp.tool.timeout event."""
+
+        def _slow_tool(args: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "status": "failed",
+                "ok": False,
+                "error": "MCP tool mcp__db__query timed out after 120s",
+                "timeout": True,
+            }
+
+        runtime = _make_runtime(tmp_path, tools={"mcp__db__query": _slow_tool})
+        session = _open_session(runtime, tmp_path)
+        tool_spec = {
+            "name": "mcp__db__query",
+            "arguments": {"sql": "SELECT SLEEP(999)"},
+            "start_token": "<t>",
+            "end_token": "</t>",
+        }
+        task = {"id": runtime.store.new_id("tsk"), "status": "running"}
+
+        runtime.orchestrator._execute_tool(session["id"], task, tool_spec)
+
+        timeout_events = [e for e in runtime.events if e["type"] == "mcp.tool.timeout"]
+        assert len(timeout_events) == 1
+        payload = timeout_events[0]["payload"]
+        assert payload["toolName"] == "mcp__db__query"
+        assert payload["serverId"] == "db"
+        assert payload["timeout"] is True
+        assert "timed out" in payload["error"]
+
+    def test_mcp_tool_timeout_payload_readable(self, tmp_path: Any) -> None:
+        """Timeout error message is human-readable with duration info."""
+
+        def _timeout_tool(args: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "status": "failed",
+                "ok": False,
+                "error": "MCP tool mcp__api__fetch timed out after 60s",
+                "timeout": True,
+            }
+
+        runtime = _make_runtime(tmp_path, tools={"mcp__api__fetch": _timeout_tool})
+        session = _open_session(runtime, tmp_path)
+        tool_spec = {
+            "name": "mcp__api__fetch",
+            "arguments": {"url": "https://slow.example.com"},
+            "start_token": "<t>",
+            "end_token": "</t>",
+        }
+        task = {"id": runtime.store.new_id("tsk"), "status": "running"}
+
+        runtime.orchestrator._execute_tool(session["id"], task, tool_spec)
+
+        timeout_events = [e for e in runtime.events if e["type"] == "mcp.tool.timeout"]
+        assert len(timeout_events) == 1
+        error_msg = timeout_events[0]["payload"]["error"]
+        assert "timed out" in error_msg
+        assert "60s" in error_msg

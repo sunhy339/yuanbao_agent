@@ -218,3 +218,64 @@ class TestMemoryUserPreferenceRecall:
         results = self.mgr.recall(workspace_id="w1", query="editor theme preference")
         assert len(results) >= 1
         assert "dark mode" in results[0].content
+
+
+class TestMemorySourceMessageIds:
+    """sourceMessageIds are stored in metadata and merged on dedup."""
+
+    def setup_method(self) -> None:
+        self.store = SQLiteStore(":memory:")
+        self.ms = MemoryStore(self.store)
+        self.retriever = MemoryRetriever(self.ms)
+        self.mgr = MemoryManager(self.ms, self.retriever)
+
+    def test_remember_stores_source_message_ids(self) -> None:
+        entry = self.mgr.remember(
+            content="Task completed: fix auth bug",
+            workspace_id="w1",
+            metadata={
+                "sourceTaskIds": ["tsk_1"],
+                "sourceMessageIds": ["msg_assistant_1", "msg_user_1"],
+            },
+        )
+        fetched = self.mgr.retrieve(entry.id)
+        assert fetched is not None
+        msg_ids = fetched.metadata.get("sourceMessageIds")
+        assert set(msg_ids) == {"msg_assistant_1", "msg_user_1"}
+
+    def test_dedup_merges_source_message_ids(self) -> None:
+        # First memory
+        self.mgr.remember(
+            content="Task: implement auth module",
+            workspace_id="w1",
+            metadata={
+                "sourceTaskIds": ["tsk_1"],
+                "sourceMessageIds": ["msg_a1", "msg_u1"],
+                "confidence": 0.8,
+            },
+            dedup=True,
+            dedup_threshold=0.3,
+        )
+        # Similar content with different message ids — dedup should merge
+        entry2 = self.mgr.remember(
+            content="Task: implement auth module",
+            workspace_id="w1",
+            metadata={
+                "sourceTaskIds": ["tsk_2"],
+                "sourceMessageIds": ["msg_a2", "msg_u2"],
+                "confidence": 0.9,
+            },
+            dedup=True,
+            dedup_threshold=0.3,
+        )
+        fetched = self.mgr.retrieve(entry2.id)
+        assert fetched is not None
+        merged_msg_ids = set(fetched.metadata.get("sourceMessageIds", []))
+        assert "msg_a1" in merged_msg_ids
+        assert "msg_u1" in merged_msg_ids
+        assert "msg_a2" in merged_msg_ids
+        assert "msg_u2" in merged_msg_ids
+        # Task IDs should also be merged
+        merged_task_ids = set(fetched.metadata.get("sourceTaskIds", []))
+        assert "tsk_1" in merged_task_ids
+        assert "tsk_2" in merged_task_ids

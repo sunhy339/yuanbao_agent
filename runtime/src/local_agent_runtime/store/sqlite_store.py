@@ -12,6 +12,43 @@ from typing import Any
 
 CONFIG_KEY = "app_config"
 
+DEFAULT_AUTONOMY_PROFILE = {
+    "id": "balanced",
+    "name": "Balanced",
+    "level": "L2",
+    "maxSteps": 20,
+    "maxParallelSubtasks": 4,
+    "allowBackground": True,
+    "allowSubagents": True,
+    "allowFileWrite": "approval_required",
+    "allowShell": "approval_required",
+    "allowNetwork": False,
+    "memoryRecallPolicy": "workspace_first_session_boosted",
+    "retryLimit": 2,
+    "timeoutMs": 600000,
+}
+
+DEFAULT_AGENT_SOUL_PROFILE = {
+    "id": "default",
+    "name": "Default",
+    "description": "Default local coding agent identity.",
+    "identity": "A capable local coding agent that works inside the user's desktop runtime.",
+    "principles": [
+        "Be practical, careful, and transparent about uncertainty.",
+        "Prefer existing project patterns over unnecessary new abstractions.",
+        "Keep the user in control of risky actions.",
+    ],
+    "communicationStyle": "Clear, concise, collaborative.",
+    "reasoningStyle": "Inspect the current workspace before making changes.",
+    "collaborationStyle": "Explain meaningful decisions and keep work scoped to the user's request.",
+    "domainPreferences": [],
+    "customSystemPrompt": "",
+    "enabled": True,
+    "scope": "global",
+    "createdAt": 0,
+    "updatedAt": 0,
+}
+
 
 DEFAULT_CONFIG = {
     "provider": {
@@ -24,7 +61,7 @@ DEFAULT_CONFIG = {
         "temperature": 0.2,
         "maxTokens": 4000,
         "maxOutputTokens": 4000,
-        "maxContextTokens": 120000,
+        "maxContextTokens": 256000,
         "timeout": 30,
         "activeProfileId": "default",
         "profiles": [
@@ -40,7 +77,7 @@ DEFAULT_CONFIG = {
                 "temperature": 0.2,
                 "maxTokens": 4000,
                 "maxOutputTokens": 4000,
-                "maxContextTokens": 120000,
+                "maxContextTokens": 256000,
                 "timeout": 30,
             }
         ],
@@ -64,6 +101,52 @@ DEFAULT_CONFIG = {
         "postTaskValidation": {
             "command": None,
         },
+    },
+    "autonomy": {
+        "activeProfileId": "balanced",
+        "profiles": [
+            {
+                **DEFAULT_AUTONOMY_PROFILE,
+                "id": "locked_down",
+                "name": "Locked Down",
+                "level": "L0",
+                "maxSteps": 4,
+                "maxParallelSubtasks": 1,
+                "allowBackground": False,
+                "allowSubagents": False,
+                "allowFileWrite": "blocked",
+                "allowShell": "blocked",
+                "allowNetwork": False,
+                "retryLimit": 0,
+            },
+            {
+                **DEFAULT_AUTONOMY_PROFILE,
+                "id": "conservative",
+                "name": "Conservative",
+                "level": "L1",
+                "maxSteps": 10,
+                "maxParallelSubtasks": 2,
+                "allowBackground": False,
+                "allowSubagents": True,
+            },
+            deepcopy(DEFAULT_AUTONOMY_PROFILE),
+            {
+                **DEFAULT_AUTONOMY_PROFILE,
+                "id": "autonomous",
+                "name": "Autonomous",
+                "level": "L3",
+                "maxSteps": 40,
+                "maxParallelSubtasks": 6,
+                "allowBackground": True,
+                "allowSubagents": True,
+            },
+        ],
+    },
+    "agentSoul": {
+        "activeProfileId": "default",
+        "workspaceInstructions": "",
+        "sessionOverrideEnabled": False,
+        "profiles": [deepcopy(DEFAULT_AGENT_SOUL_PROFILE)],
     },
     "tools": {
         "runCommand": {
@@ -760,6 +843,7 @@ class SQLiteStore:
         active_assistant_message_id: str | None = None,
         tests_run: list[dict[str, Any]] | None = None,
         risks: list[dict[str, Any]] | None = None,
+        structured_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         assignments: list[str] = ["updated_at = ?"]
         values: list[Any] = [self.now()]
@@ -811,6 +895,9 @@ class SQLiteStore:
         if risks is not None:
             assignments.append("risks_json = ?")
             values.append(json.dumps(risks, ensure_ascii=False))
+        if structured_result is not None:
+            assignments.append("structured_result_json = ?")
+            values.append(json.dumps(structured_result, ensure_ascii=False))
 
         values.append(task_id)
         self._conn.execute(
@@ -2409,6 +2496,9 @@ class SQLiteStore:
         risks_raw = row.get("risks_json")
         if risks_raw:
             result["risks"] = self._json_list(risks_raw)
+        structured_raw = row.get("structured_result_json")
+        if structured_raw:
+            result["structuredResult"] = self._json_dict(structured_raw)
         return result
 
     def _json_list(self, raw: Any) -> list[Any]:
@@ -2696,10 +2786,159 @@ class SQLiteStore:
         provider = normalized.get("provider")
         if not isinstance(provider, dict):
             normalized["provider"] = deepcopy(DEFAULT_CONFIG["provider"])
-            return normalized
+        else:
+            normalized["provider"] = self._normalize_provider_config(provider)
 
-        normalized["provider"] = self._normalize_provider_config(provider)
+        autonomy = normalized.get("autonomy")
+        normalized["autonomy"] = self._normalize_autonomy_config(
+            autonomy if isinstance(autonomy, dict) else {},
+        )
+        agent_soul = normalized.get("agentSoul")
+        normalized["agentSoul"] = self._normalize_agent_soul_config(
+            agent_soul if isinstance(agent_soul, dict) else {},
+        )
         return normalized
+
+    def _normalize_autonomy_config(self, autonomy: dict[str, Any]) -> dict[str, Any]:
+        normalized = deepcopy(DEFAULT_CONFIG["autonomy"])
+        normalized.update(deepcopy(autonomy))
+        raw_profiles = normalized.get("profiles")
+        profiles = [
+            self._normalize_autonomy_profile(item)
+            for item in raw_profiles or []
+            if isinstance(item, dict)
+        ]
+        if not profiles:
+            profiles = [self._normalize_autonomy_profile(DEFAULT_AUTONOMY_PROFILE)]
+        profiles = self._dedupe_profiles(profiles, fallback_prefix="autonomy")
+        active_profile_id = self._valid_active_profile_id(
+            normalized.get("activeProfileId"),
+            profiles,
+        )
+        normalized["activeProfileId"] = active_profile_id
+        normalized["profiles"] = profiles
+        return normalized
+
+    def _normalize_autonomy_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        merged = deepcopy(DEFAULT_AUTONOMY_PROFILE)
+        merged.update(deepcopy(profile))
+        profile_id = self._safe_profile_id(merged.get("id"), "autonomy")
+        name = self._safe_profile_name(merged.get("name"), profile_id)
+        return {
+            **merged,
+            "id": profile_id,
+            "name": name,
+            "level": str(merged.get("level") or "L2"),
+            "maxSteps": self._bounded_int(merged.get("maxSteps"), 1, 200, DEFAULT_AUTONOMY_PROFILE["maxSteps"]),
+            "maxParallelSubtasks": self._bounded_int(
+                merged.get("maxParallelSubtasks"), 1, 32, DEFAULT_AUTONOMY_PROFILE["maxParallelSubtasks"],
+            ),
+            "allowBackground": bool(merged.get("allowBackground")),
+            "allowSubagents": bool(merged.get("allowSubagents")),
+            "allowFileWrite": self._string_or_default(merged.get("allowFileWrite"), "approval_required"),
+            "allowShell": self._string_or_default(merged.get("allowShell"), "approval_required"),
+            "allowNetwork": bool(merged.get("allowNetwork")),
+            "memoryRecallPolicy": self._string_or_default(
+                merged.get("memoryRecallPolicy"), DEFAULT_AUTONOMY_PROFILE["memoryRecallPolicy"],
+            ),
+            "retryLimit": self._bounded_int(merged.get("retryLimit"), 0, 20, DEFAULT_AUTONOMY_PROFILE["retryLimit"]),
+            "timeoutMs": self._bounded_int(merged.get("timeoutMs"), 1000, 86400000, DEFAULT_AUTONOMY_PROFILE["timeoutMs"]),
+        }
+
+    def _normalize_agent_soul_config(self, agent_soul: dict[str, Any]) -> dict[str, Any]:
+        normalized = deepcopy(DEFAULT_CONFIG["agentSoul"])
+        normalized.update(deepcopy(agent_soul))
+        raw_profiles = normalized.get("profiles")
+        profiles = [
+            self._normalize_agent_soul_profile(item)
+            for item in raw_profiles or []
+            if isinstance(item, dict)
+        ]
+        if not profiles:
+            profiles = [self._normalize_agent_soul_profile(DEFAULT_AGENT_SOUL_PROFILE)]
+        profiles = self._dedupe_profiles(profiles, fallback_prefix="soul")
+        active_profile_id = self._valid_active_profile_id(
+            normalized.get("activeProfileId"),
+            profiles,
+        )
+        workspace_instructions = normalized.get("workspaceInstructions")
+        normalized["activeProfileId"] = active_profile_id
+        normalized["workspaceInstructions"] = (
+            workspace_instructions.strip() if isinstance(workspace_instructions, str) else ""
+        )
+        normalized["sessionOverrideEnabled"] = bool(normalized.get("sessionOverrideEnabled", False))
+        normalized["profiles"] = profiles
+        return normalized
+
+    def _normalize_agent_soul_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        merged = deepcopy(DEFAULT_AGENT_SOUL_PROFILE)
+        merged.update(deepcopy(profile))
+        profile_id = self._safe_profile_id(merged.get("id"), "soul")
+        name = self._safe_profile_name(merged.get("name"), profile_id)
+        return {
+            **merged,
+            "id": profile_id,
+            "name": name,
+            "description": self._string_or_default(merged.get("description"), ""),
+            "identity": self._string_or_default(merged.get("identity"), DEFAULT_AGENT_SOUL_PROFILE["identity"]),
+            "principles": self._string_list(merged.get("principles")),
+            "communicationStyle": self._string_or_default(merged.get("communicationStyle"), ""),
+            "reasoningStyle": self._string_or_default(merged.get("reasoningStyle"), ""),
+            "collaborationStyle": self._string_or_default(merged.get("collaborationStyle"), ""),
+            "domainPreferences": self._string_list(merged.get("domainPreferences")),
+            "customSystemPrompt": self._string_or_default(merged.get("customSystemPrompt"), ""),
+            "enabled": bool(merged.get("enabled", True)),
+            "scope": self._string_or_default(merged.get("scope"), "global"),
+            "createdAt": self._bounded_int(merged.get("createdAt"), 0, 9999999999999, 0),
+            "updatedAt": self._bounded_int(merged.get("updatedAt"), 0, 9999999999999, 0),
+        }
+
+    def _dedupe_profiles(self, profiles: list[dict[str, Any]], *, fallback_prefix: str) -> list[dict[str, Any]]:
+        seen: set[str] = set()
+        unique: list[dict[str, Any]] = []
+        for index, profile in enumerate(profiles):
+            profile_id = profile.get("id")
+            if not isinstance(profile_id, str) or not profile_id:
+                profile_id = f"{fallback_prefix}_{index + 1}"
+                profile["id"] = profile_id
+            if profile_id in seen:
+                continue
+            seen.add(profile_id)
+            unique.append(profile)
+        return unique
+
+    def _valid_active_profile_id(self, value: Any, profiles: list[dict[str, Any]]) -> str:
+        profile_ids = {profile["id"] for profile in profiles if isinstance(profile.get("id"), str)}
+        if isinstance(value, str) and value in profile_ids:
+            return value
+        return profiles[0]["id"]
+
+    def _safe_profile_id(self, value: Any, fallback_prefix: str) -> str:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return f"{fallback_prefix}_{uuid.uuid4().hex[:8]}"
+
+    def _safe_profile_name(self, value: Any, fallback: str) -> str:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return fallback
+
+    def _string_or_default(self, value: Any, default: str) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        return default
+
+    def _string_list(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    def _bounded_int(self, value: Any, minimum: int, maximum: int, default: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(minimum, min(parsed, maximum))
 
     def _normalize_provider_config(self, provider: dict[str, Any]) -> dict[str, Any]:
         normalized = deepcopy(provider)
@@ -3243,7 +3482,8 @@ class SQLiteStore:
                 active_assistant_message_id TEXT DEFAULT NULL,
                 created_seq INTEGER DEFAULT NULL,
                 tests_run_json TEXT DEFAULT NULL,
-                risks_json TEXT DEFAULT NULL
+                risks_json TEXT DEFAULT NULL,
+                structured_result_json TEXT DEFAULT NULL
             );
 
             CREATE TABLE IF NOT EXISTS messages (
@@ -3785,6 +4025,7 @@ class SQLiteStore:
             "created_seq": "INTEGER DEFAULT NULL",
             "tests_run_json": "TEXT DEFAULT NULL",
             "risks_json": "TEXT DEFAULT NULL",
+            "structured_result_json": "TEXT DEFAULT NULL",
         }
         for column, definition in expected.items():
             if column not in columns:

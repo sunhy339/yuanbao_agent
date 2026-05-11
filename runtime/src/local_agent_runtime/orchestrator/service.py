@@ -873,6 +873,7 @@ class Orchestrator:
             "reasoning": routing.reasoning,
             "skill_id": routing.skill_id,
         }
+        routing_dict["profile_snapshot"] = self._runtime_profile_snapshot()
         self._tracer.end_span(
             routing_span.span_id,
             status="ok",
@@ -961,6 +962,7 @@ class Orchestrator:
             return {"task": runtime_task, "userMessage": user_msg, "assistantMessage": assistant_msg}
 
         context = self._context_builder.build(session_id=session["id"], goal=goal, skill_id=routing.skill_id, lightweight=False)
+        routing_dict["profile_snapshot"] = self._runtime_profile_snapshot(context)
         # Inject routing decision into context as a plain dict for JSON safety.
         context["routing"] = routing_dict
         # Emit tool filter event if skill filtering was applied
@@ -1330,6 +1332,7 @@ class Orchestrator:
                 plan,
                 session_id=session_id,
                 parent_task_id=task["id"],
+                max_workers=self._max_parallel_subtasks(context),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
                 tracer=self._tracer,
                 on_subtask_callback=_on_subtask_event,
@@ -2419,6 +2422,15 @@ class Orchestrator:
         self._validate_task_transition(task["status"], "completed", task["id"], silent=True)
         if task["status"] in {"completed", "failed", "cancelled"}:
             return {**task, "resultSummary": final_summary}
+        # Build structured result from task fields
+        structured_result = {
+            "summary": final_summary,
+            "status": "success",
+            "changedFiles": task.get("changedFiles") or [],
+            "testsRun": task.get("testsRun") or [],
+            "risks": task.get("risks") or [],
+            "keyFindings": [],
+        }
         completed_task = self._store.update_task(
             task_id=task["id"],
             status="completed",
@@ -2426,6 +2438,7 @@ class Orchestrator:
             summary=final_summary,
             result_summary=final_summary,
             reflection=reflection_data,
+            structured_result=structured_result,
         )
         runtime_task = {
             **completed_task,
@@ -3775,6 +3788,7 @@ class Orchestrator:
                 plan,
                 session_id=state["session_id"],
                 parent_task_id=task["id"],
+                max_workers=self._max_parallel_subtasks(state.get("context") or {}),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
                 completed_ids=set(state["completed"]),
                 failed_ids=set(state["failed"]),
@@ -4316,6 +4330,37 @@ class Orchestrator:
                 "policy": (context.get("routing") or {}).get("tool_policy", "strict_whitelist"),
             },
         )
+
+    def _runtime_profile_snapshot(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Capture active behavior/prompt profiles for task-level audit."""
+        config = context.get("config") if isinstance(context, dict) else None
+        if not isinstance(config, dict):
+            config = self._store.get_config({})["config"]
+        snapshot_meta = context.get("snapshot_metadata") if isinstance(context, dict) else {}
+        if not isinstance(snapshot_meta, dict):
+            snapshot_meta = {}
+        return {
+            "autonomyProfile": self._active_config_profile(config, "autonomy"),
+            "agentSoulProfile": self._active_config_profile(config, "agentSoul"),
+            "promptLayers": snapshot_meta.get("prompt_layers") or [],
+        }
+
+    @staticmethod
+    def _active_config_profile(config: dict[str, Any], key: str) -> dict[str, Any] | None:
+        section = config.get(key)
+        if not isinstance(section, dict):
+            return None
+        profiles = section.get("profiles")
+        if not isinstance(profiles, list):
+            return None
+        active_id = section.get("activeProfileId")
+        for profile in profiles:
+            if isinstance(profile, dict) and profile.get("id") == active_id:
+                return deepcopy(profile)
+        for profile in profiles:
+            if isinstance(profile, dict):
+                return deepcopy(profile)
+        return None
 
     @staticmethod
     def _infer_event_visibility(event_type: str, task: dict[str, Any]) -> str:
@@ -5450,6 +5495,9 @@ class Orchestrator:
         return list(tools_by_name.values())
 
     def _max_task_steps(self, context: dict[str, Any]) -> int:
+        autonomy_steps = self._autonomy_profile_int(context, "maxSteps")
+        if autonomy_steps is not None:
+            return autonomy_steps
         # Prefer routing-level max_steps (scenario-aware) over global config
         routing = context.get("routing")
         if isinstance(routing, dict):
@@ -5467,6 +5515,26 @@ class Orchestrator:
             return max(1, int(raw_value))
         except (TypeError, ValueError):
             return 20
+
+    def _max_parallel_subtasks(self, context: dict[str, Any]) -> int:
+        return self._autonomy_profile_int(context, "maxParallelSubtasks") or 4
+
+    def _autonomy_profile_int(self, context: dict[str, Any], key: str) -> int | None:
+        profile = None
+        routing = context.get("routing")
+        if isinstance(routing, dict):
+            snapshot = routing.get("profile_snapshot")
+            if isinstance(snapshot, dict):
+                profile = snapshot.get("autonomyProfile")
+        if not isinstance(profile, dict):
+            config = context.get("config") if isinstance(context, dict) else {}
+            profile = self._active_config_profile(config, "autonomy") if isinstance(config, dict) else None
+        if not isinstance(profile, dict):
+            return None
+        try:
+            return max(1, int(profile.get(key)))
+        except (TypeError, ValueError):
+            return None
 
     def _context_with_worker_budget(self, context: dict[str, Any], budget: WorkerBudget) -> dict[str, Any]:
         if budget.tokens.limit is None:

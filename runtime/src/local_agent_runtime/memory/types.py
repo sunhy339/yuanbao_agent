@@ -45,6 +45,7 @@ class MemorySource(str, Enum):
     USER_MESSAGE = "user_message"
     ASSISTANT_SUMMARY = "assistant_summary"
     MANUAL = "manual"
+    SUPPLEMENT = "supplement"
 
 
 @dataclass(slots=True)

@@ -73,7 +73,7 @@ class Orchestrator:
         self._event_bus = event_bus
         self._tool_registry = tool_registry
         self._provider = provider
-        self._meta_router = meta_router or MetaRouter()
+        self._meta_router = meta_router or MetaRouter(provider=provider)
         self._memory_manager = memory_manager
         self._planner = Planner()
         self._scratchpad = Scratchpad(store)
@@ -593,7 +593,7 @@ class Orchestrator:
         if not messages:
             return {"tokensBefore": 0, "tokensAfter": 0, "summary": None, "strategy": "none"}
 
-        max_tokens = params.get("maxTokens") or 6000
+        max_tokens = params.get("maxTokens") or 60000
         compacted = self._compactor.compact(
             session_id=session_id,
             messages=messages,
@@ -2827,6 +2827,58 @@ class Orchestrator:
                 dedup=(task_status == "completed"),
             )
 
+    _SUPPLEMENT_MEMORY_PATTERNS: list[str] = [
+        "prefer", "always", "never", "use ", "don't use", "avoid",
+        "make sure", "remember to", "by default", "we use", "we should",
+        "convention", "style", "format", "pattern",
+    ]
+
+    def _remember_supplement_candidates(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        supplements: list[dict[str, Any]],
+    ) -> None:
+        """Write memory candidates from consumed supplements that look like preferences/conventions."""
+        if self._memory_manager is None:
+            return
+        from ..memory.types import MemoryKind, MemoryCategory, MemoryScope, MemorySource
+
+        workspace_id = None
+        try:
+            session = self._store.require_session(session_id)
+            workspace_id = session.get("workspaceId")
+        except Exception:  # noqa: BLE001
+            pass
+
+        for entry in supplements:
+            content = entry.get("content", "")
+            if not content or len(content) < 10:
+                continue
+
+            # Check if supplement content matches preference/convention patterns
+            lower_content = content.lower()
+            is_candidate = any(pattern in lower_content for pattern in self._SUPPLEMENT_MEMORY_PATTERNS)
+            if not is_candidate:
+                continue
+
+            self._memory_manager.remember(
+                session_id=session_id,
+                workspace_id=workspace_id,
+                content=f"[Supplement] {content}",
+                kind=MemoryKind.WORKING,
+                metadata={
+                    "category": MemoryCategory.USER_PREFERENCE.value,
+                    "scope": MemoryScope.SESSION.value,
+                    "confidence": 0.5,
+                    "source": MemorySource.SUPPLEMENT.value,
+                    "sourceTaskIds": [task.get("id", "")],
+                    "sourceMessageIds": [entry.get("message_id", "")],
+                },
+                dedup=True,
+            )
+
     def _task_memory_entry(self, task: dict[str, Any]) -> str:
         status = task.get("status") or "completed"
         goal = self._single_line(task.get("goal") or "")
@@ -4594,6 +4646,12 @@ class Orchestrator:
                     _step_supplement_ids.append(entry["id"])
                 supplement_text = "[User supplement]\n" + "\n".join(supplement_lines)
                 messages.append({"role": "user", "content": supplement_text})
+                # Generate memory candidates from supplements
+                self._remember_supplement_candidates(
+                    session_id=session_id,
+                    task=task,
+                    supplements=pending_supplements,
+                )
                 self._publish(
                     session_id=session_id,
                     task=task,
@@ -4790,12 +4848,14 @@ class Orchestrator:
                     for m in messages[_msg_count_at_last_check:]:
                         _msg_token_total += estimate_tokens(m.get("content", ""))
                     _msg_count_at_last_check = len(messages)
-                    if _msg_token_total > 6000:
+                    compaction_decision = self._compactor.should_compact(messages, 60000)
+                    if compaction_decision.should_compact:
                         compacted = self._compactor.compact(
                             session_id=session_id,
                             messages=messages,
-                            max_tokens=6000,
+                            max_tokens=60000,
                             task_id=task.get("id"),
+                            force=compaction_decision.force,
                         )
                         messages = compacted.kept_messages
                         _msg_token_total = compacted.tokens_after

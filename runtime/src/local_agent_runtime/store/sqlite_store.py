@@ -2665,17 +2665,6 @@ class SQLiteStore:
             raise ValueError(f"{key} must be JSON serializable") from exc
         return deepcopy(value)
 
-    def _string_list(self, value: Any, key: str) -> list[str]:
-        if value is None:
-            return []
-        if not isinstance(value, list):
-            raise ValueError(f"{key} must be a list")
-        result: list[str] = []
-        for item in value:
-            if not isinstance(item, str) or not item.strip():
-                raise ValueError(f"{key} must contain non-empty strings")
-            result.append(item.strip())
-        return result
 
     def _normalize_priority(self, value: Any) -> int:
         try:
@@ -2928,7 +2917,7 @@ class SQLiteStore:
             return value.strip()
         return default
 
-    def _string_list(self, value: Any) -> list[str]:
+    def _string_list(self, value: Any, _key: str = "") -> list[str]:
         if not isinstance(value, list):
             return []
         return [str(item).strip() for item in value if str(item).strip()]

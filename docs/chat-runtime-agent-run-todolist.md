@@ -544,9 +544,9 @@
 
 - [x] reviewer 只读。`planner_contract.py` baseType="reviewer"，reviewer 作为独立 worker 类型。
 - [x] reviewer 检查 worker 文件冲突。`_check_git_diff_before_merge()` scope overlap + `git diff --check`，P6.6 完成。
-- [ ] reviewer 检查是否覆盖用户改动。缺口：无此检查。
-- [ ] reviewer 检查测试缺口。缺口：无此检查。
-- [ ] reviewer 检查协议一致性。缺口：无此检查。
+- [x] reviewer 检查是否覆盖用户改动。`_pre_check_warnings()` 检测 userModified 标记，16 测试覆盖。
+- [x] reviewer 检查测试缺口。`_pre_check_warnings()` 检测 changedFiles 无 testsRun/test_files，16 测试覆盖。
+- [x] reviewer 检查协议一致性。`_pre_check_warnings()` 检测缺失的 summary/status/changedFiles/testsRun/risks/keyFindings 字段，16 测试覆盖。
 - [x] reviewer 输出 findings。`_review_result()` 解析 approved/feedback JSON。`reviewer_gate` 阻止 rejected merge。
 
 ### 6.6 Scope Lock

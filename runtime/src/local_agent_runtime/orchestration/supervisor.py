@@ -21,6 +21,7 @@ You are a supervisor reviewing a sub-task result. Evaluate whether it satisfies 
 **Description**: {description}
 **Result**: {result}
 {structured_context}
+{pre_check_warnings}
 Respond with a JSON object:
 - "approved": true or false
 - "feedback": if not approved, explain what needs to be improved; if approved, leave empty or write "ok"
@@ -29,9 +30,26 @@ Additional review criteria:
 - If changed files are listed, verify they are within the expected scope of the task.
 - If no test files are mentioned in changed files, consider flagging as a risk.
 - If risks are listed, evaluate their severity and whether they are acceptable.
+- If pre-check warnings are shown above, evaluate their severity and whether the result is still acceptable.
 
 Respond ONLY with valid JSON, no other text.
 """
+
+
+# Paths that indicate a test file
+_TEST_PATH_PATTERNS = (
+    "/test_", "\\test_",
+    "/tests/", "\\tests\\",
+    "/__tests__/", "\\__tests__\\",
+    "_test.py", "_test.ts", "_test.tsx", "_test.js",
+    ".test.py", ".test.ts", ".test.tsx", ".test.js",
+    ".spec.ts", ".spec.tsx", ".spec.js", ".spec.py",
+)
+
+
+def _is_test_path(path: str) -> bool:
+    """Return True if the path looks like a test file."""
+    return any(p in path for p in _TEST_PATH_PATTERNS)
 
 
 class SupervisorOrchestrator:
@@ -224,9 +242,11 @@ class SupervisorOrchestrator:
     ) -> tuple[bool, str]:
         """Ask LLM to review a sub-task result. Returns (approved, feedback)."""
         structured_context = self._build_structured_context(dispatch_result or {})
+        pre_check_warnings = self._pre_check_warnings(dispatch_result or {})
         prompt = _REVIEW_PROMPT.format(
             title=title, description=description, result=result,
             structured_context=structured_context,
+            pre_check_warnings=pre_check_warnings,
         )
         try:
             response = self._provider.generate(
@@ -258,6 +278,63 @@ class SupervisorOrchestrator:
         if artifacts:
             parts.append(f"**Artifacts**: {json.dumps(artifacts)}")
         return "\n".join(parts)
+
+    @staticmethod
+    def _pre_check_warnings(dispatch_result: dict[str, Any]) -> str:
+        """Run programmatic pre-checks and return warning text for the review prompt.
+
+        Checks:
+        1. User change overwrite: worker changed files that user had uncommitted.
+        2. Test gap: changedFiles present but testsRun empty.
+        3. Protocol consistency: structured result missing required fields.
+        """
+        warnings: list[str] = []
+        result_data = dispatch_result.get("result")
+        if not isinstance(result_data, dict) or not result_data:
+            return ""
+
+        changed_files = result_data.get("changedFiles") or []
+        tests_run = result_data.get("testsRun") or []
+
+        # --- Check 1: User change overwrite ---
+        user_modified_paths = set(
+            f.get("path", "") for f in changed_files
+            if isinstance(f, dict) and f.get("userModified")
+        )
+        if user_modified_paths:
+            paths_str = ", ".join(sorted(user_modified_paths))
+            warnings.append(
+                f"WARNING: Worker overwrites user's uncommitted changes in: {paths_str}. "
+                "Review whether the worker preserved the user's intent."
+            )
+
+        # --- Check 2: Test gap ---
+        code_files = [
+            f for f in changed_files
+            if isinstance(f, dict) and not _is_test_path(f.get("path", ""))
+        ]
+        test_files = [
+            f for f in changed_files
+            if isinstance(f, dict) and _is_test_path(f.get("path", ""))
+        ]
+        if code_files and not tests_run and not test_files:
+            warnings.append(
+                "WARNING: Changed files found but no tests were run and no test files were changed. "
+                "Consider flagging as a test coverage gap."
+            )
+
+        # --- Check 3: Protocol consistency ---
+        required_fields = ("summary", "status", "changedFiles", "testsRun", "risks", "keyFindings")
+        missing = [f for f in required_fields if f not in result_data]
+        if missing:
+            warnings.append(
+                f"WARNING: Structured result is missing required fields: {', '.join(missing)}. "
+                "Protocol consistency check failed."
+            )
+
+        if not warnings:
+            return ""
+        return "\n**Pre-check warnings:**\n" + "\n".join(f"- {w}" for w in warnings) + "\n"
 
     @staticmethod
     def _parse_review(text: str) -> tuple[bool, str]:

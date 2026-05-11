@@ -1608,6 +1608,196 @@ class SQLiteStore:
         }
 
     # ------------------------------------------------------------------
+    # Autonomy Run Report
+    # ------------------------------------------------------------------
+
+    def get_autonomy_report(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Return a comprehensive autonomy report for a task.
+
+        Aggregates task, metrics, approvals, patches, commands, compactions,
+        subagents, artifacts, decisions, memory recall, context budget,
+        autonomy profile, and soul profile into a single report.
+        """
+        task_id = self._require_non_empty(params, "taskId")
+
+        # 1. Task
+        task_row = self._conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if task_row is None:
+            raise ValueError(f"Task not found: {task_id}")
+        task = self._serialize_task(dict(task_row))
+        session_id = task["sessionId"]
+
+        # 2. Config (autonomy + soul profiles)
+        config = self.get_config({})["config"]
+        autonomy_profile = self._active_profile_from_config(config, "autonomy")
+        soul_profile = self._active_profile_from_config(config, "agentSoul")
+
+        # 3. Metrics
+        metrics_row = self._conn.execute(
+            "SELECT * FROM task_metrics WHERE task_id = ?", (task_id,)
+        ).fetchone()
+        metrics = dict(metrics_row) if metrics_row else None
+
+        # 4. Routing decision from task + proposal
+        routing = task.get("routing") or {}
+        routing_proposal = None
+        if task_id:
+            prop_rows = self._conn.execute(
+                "SELECT * FROM proposal_records WHERE task_id = ? AND kind = 'routing_strategy' ORDER BY created_at DESC LIMIT 1",
+                (task_id,),
+            ).fetchall()
+            if prop_rows:
+                routing_proposal = self._serialize_proposal(dict(prop_rows[0]))
+
+        # 5. Decision trace events
+        decision_rows = self._conn.execute(
+            "SELECT * FROM trace_events WHERE task_id = ? AND type LIKE 'agent.decision.%' ORDER BY created_at ASC, sequence ASC",
+            (task_id,),
+        ).fetchall()
+        decisions = [self._serialize_trace_event(dict(r)) for r in decision_rows]
+
+        # 6. Approvals
+        approval_rows = self._conn.execute(
+            "SELECT * FROM approvals WHERE task_id = ? ORDER BY created_at ASC",
+            (task_id,),
+        ).fetchall()
+        approvals = [self._serialize_approval(dict(r)) for r in approval_rows]
+
+        # 7. Policy gate outcomes (aggregated from approvals)
+        gate_outcomes: dict[str, int] = {
+            "allowed": 0,
+            "approvalRequired": 0,
+            "blocked": 0,
+            "deferred": 0,
+            "sandboxed": 0,
+        }
+        for a in approvals:
+            decision = a.get("decision") or ""
+            if decision == "approved":
+                gate_outcomes["allowed"] += 1
+            elif decision == "rejected":
+                gate_outcomes["blocked"] += 1
+            elif decision in ("deferred", "pending"):
+                gate_outcomes["deferred"] += 1
+            elif decision == "sandboxed":
+                gate_outcomes["sandboxed"] += 1
+            else:
+                # approval_required means decision is still None (pending)
+                gate_outcomes["approvalRequired"] += 1
+        # Count pending approvals as approvalRequired
+        pending = [a for a in approvals if not a.get("decision")]
+        gate_outcomes["approvalRequired"] = len(pending)
+
+        # 8. Patches
+        patch_rows = self._conn.execute(
+            "SELECT * FROM patches WHERE task_id = ? ORDER BY created_at ASC",
+            (task_id,),
+        ).fetchall()
+        patches = [self._serialize_patch(dict(r)) for r in patch_rows]
+
+        # 9. Commands
+        command_rows = self._conn.execute(
+            "SELECT * FROM command_logs WHERE task_id = ? ORDER BY started_at ASC",
+            (task_id,),
+        ).fetchall()
+        commands = [self._serialize_command_log(dict(r)) for r in command_rows]
+
+        # 10. Compactions (by session)
+        compaction_rows = self._conn.execute(
+            "SELECT * FROM compaction_records WHERE session_id = ? ORDER BY created_at DESC LIMIT 20",
+            (session_id,),
+        ).fetchall()
+        compactions = [dict(r) for r in compaction_rows]
+
+        # 11. Subagents
+        subagent_rows = self._conn.execute(
+            "SELECT * FROM collaboration_tasks WHERE parent_task_id = ? ORDER BY created_at ASC",
+            (task_id,),
+        ).fetchall()
+        subagents = [self._serialize_collaboration_task(dict(r)) for r in subagent_rows]
+
+        # 12. Artifacts
+        artifact_rows = self._conn.execute(
+            "SELECT * FROM artifacts WHERE parent_task_id = ? ORDER BY created_at ASC",
+            (task_id,),
+        ).fetchall()
+        artifacts = [self._serialize_artifact(dict(r)) for r in artifact_rows]
+
+        # 13. Memory recall (from context snapshots)
+        snapshot_rows = self._conn.execute(
+            "SELECT * FROM context_snapshots WHERE task_id = ? ORDER BY created_at ASC",
+            (task_id,),
+        ).fetchall()
+        all_memory_ids: list[str] = []
+        for sr in snapshot_rows:
+            sr_dict = dict(sr)
+            raw = sr_dict.get("memory_ids_json")
+            if raw:
+                try:
+                    ids = json.loads(raw)
+                    if isinstance(ids, list):
+                        all_memory_ids.extend(ids)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique_memory_ids: list[str] = []
+        for mid in all_memory_ids:
+            if mid not in seen:
+                seen.add(mid)
+                unique_memory_ids.append(mid)
+
+        # 14. Context budget (latest snapshot)
+        latest_snap_row = self._conn.execute(
+            "SELECT * FROM context_snapshots WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        context_budget = self._serialize_context_snapshot(dict(latest_snap_row)) if latest_snap_row else None
+
+        return {
+            "task": task,
+            "autonomyProfile": autonomy_profile,
+            "agentSoulProfile": soul_profile,
+            "routing": {
+                **routing,
+                "proposal": routing_proposal,
+            },
+            "metrics": metrics,
+            "decisions": decisions,
+            "approvals": approvals,
+            "policyGateOutcomes": gate_outcomes,
+            "patches": patches,
+            "commands": commands,
+            "compactions": compactions,
+            "subagents": subagents,
+            "artifacts": artifacts,
+            "memoryRecall": {
+                "memoryIds": unique_memory_ids,
+                "count": len(unique_memory_ids),
+            },
+            "contextBudget": context_budget,
+        }
+
+    def _active_profile_from_config(self, config: dict[str, Any], key: str) -> dict[str, Any] | None:
+        """Resolve active profile from a config section (autonomy, agentSoul, provider)."""
+        section = config.get(key)
+        if not isinstance(section, dict):
+            return None
+        profiles = section.get("profiles")
+        if not isinstance(profiles, list):
+            return None
+        active_id = section.get("activeProfileId")
+        for profile in profiles:
+            if isinstance(profile, dict) and profile.get("id") == active_id:
+                return deepcopy(profile)
+        for profile in profiles:
+            if isinstance(profile, dict):
+                return deepcopy(profile)
+        return None
+
+    # ------------------------------------------------------------------
     # Trace Events
     # ------------------------------------------------------------------
 

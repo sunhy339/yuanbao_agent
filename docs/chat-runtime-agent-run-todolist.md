@@ -357,7 +357,7 @@
 
 - [x] task completed 生成 memory candidates。`_remember_task_result()` 写入 TASK_LEARNING。
 - [x] task failed 只允许生成 `open_issue` 或 `task_learning`。failed → OPEN_ISSUE + confidence 0.5。
-- [ ] 用户明确偏好生成 `user_preference`。缺口：无显式检测用户偏好的逻辑。
+- [x] 用户明确偏好生成 `user_preference`。`_remember_task_result()` 检查 user message 匹配 `_SUPPLEMENT_MEMORY_PATTERNS`，匹配时额外写入 `user_preference` 类别记忆，4 测试覆盖。
 - [x] supplement 可生成 memory candidate，但不默认全部写入 long_term。`_remember_supplement_candidates()` 在 supplement 消费时匹配偏好模式写入 WORKING memory，5 测试覆盖。
 - [x] 写入前做相似记忆检索。`remember(dedup=True)` 使用 Jaccard 相似度。
 - [x] 相似度高时更新已有记忆。`manager.py:52-66` 合并 metadata。

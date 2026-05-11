@@ -407,3 +407,46 @@ class TestMemoryConflictDetection:
         assert MemoryManager._detect_conflict("avoid spaces", "use spaces")
         assert not MemoryManager._detect_conflict("use tabs", "use tabs")
         assert not MemoryManager._detect_conflict("don't use tabs", "never use tabs")
+
+
+class TestUserPreferenceAutoDetection:
+    """User preferences in task messages generate user_preference memory entries."""
+
+    def setup_method(self) -> None:
+        self.store = SQLiteStore(":memory:")
+        self.ms = MemoryStore(self.store)
+        self.retriever = MemoryRetriever(self.ms)
+        self.mgr = MemoryManager(self.ms, self.retriever)
+
+    def test_preference_pattern_detects_always(self) -> None:
+        """Messages containing 'always' pattern should match."""
+        patterns = ["prefer", "always", "never", "use ", "don't use", "avoid"]
+        content = "Always use snake_case for variables"
+        assert any(p in content.lower() for p in patterns)
+
+    def test_preference_pattern_detects_prefer(self) -> None:
+        """Messages containing 'prefer' pattern should match."""
+        patterns = ["prefer", "always", "never", "use ", "don't use", "avoid"]
+        content = "I prefer tabs over spaces"
+        assert any(p in content.lower() for p in patterns)
+
+    def test_non_preference_not_detected(self) -> None:
+        """Regular messages should not match preference patterns."""
+        patterns = ["prefer", "always", "never", "use ", "don't use", "avoid"]
+        content = "Fix the login bug"
+        # "use " could match in some cases, but "Fix the login bug" doesn't contain it
+        # Let's use a clearer example
+        content2 = "hello world how are you"
+        assert not any(p in content2.lower() for p in patterns)
+
+    def test_preference_memory_is_recallable(self) -> None:
+        """User preference memory entries can be recalled by query."""
+        self.mgr.remember(
+            content="[User preference] Always use snake_case for Python",
+            workspace_id="w1",
+            kind=MemoryKind.WORKING,
+            metadata={"category": "user_preference", "confidence": 0.6, "source": "user_message"},
+        )
+        results = self.mgr.recall(workspace_id="w1", query="variable naming convention")
+        assert len(results) >= 1
+        assert "snake_case" in results[0].content

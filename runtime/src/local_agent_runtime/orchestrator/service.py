@@ -2840,6 +2840,35 @@ class Orchestrator:
                 dedup=(task_status == "completed"),
             )
 
+            # Detect explicit user preferences from user messages
+            if task_status == "completed" and source_message_ids:
+                user_contents = []
+                try:
+                    task_messages = self._store.list_messages_by_task(task.get("id", ""))
+                    for msg in task_messages:
+                        if msg.get("role") == "user" and msg.get("content"):
+                            user_contents.append(msg["content"])
+                except Exception:  # noqa: BLE001
+                    pass
+                for uc in user_contents:
+                    lower_uc = uc.lower()
+                    if any(p in lower_uc for p in self._SUPPLEMENT_MEMORY_PATTERNS):
+                        self._memory_manager.remember(
+                            session_id=session_id,
+                            workspace_id=workspace_id,
+                            content=f"[User preference] {uc[:200]}",
+                            kind=MemoryKind.WORKING,
+                            metadata={
+                                "category": MemoryCategory.USER_PREFERENCE.value,
+                                "scope": MemoryScope.WORKSPACE.value if workspace_id else MemoryScope.SESSION.value,
+                                "confidence": 0.6,
+                                "source": MemorySource.USER_MESSAGE.value,
+                                "sourceTaskIds": [task.get("id", "")],
+                                "sourceMessageIds": source_message_ids,
+                            },
+                            dedup=True,
+                        )
+
     _SUPPLEMENT_MEMORY_PATTERNS: list[str] = [
         "prefer", "always", "never", "use ", "don't use", "avoid",
         "make sure", "remember to", "by default", "we use", "we should",

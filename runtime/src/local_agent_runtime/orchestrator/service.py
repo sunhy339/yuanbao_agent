@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from copy import deepcopy
 from pathlib import Path
@@ -2064,6 +2065,104 @@ class Orchestrator:
             result["supplementRouting"] = routing_result
         return result
 
+    @staticmethod
+    def _extract_file_paths(text: str) -> list[str]:
+        """Extract plausible file paths from free-form text.
+
+        Matches patterns like `src/foo.py`, `dir/bar.tsx`, `path/to/file.js`, etc.
+        """
+        pattern = r'(?:^|[\s`"\'(])([\w./\\-]+\.(?:py|ts|tsx|js|jsx|json|yaml|yml|toml|md|rs|go|java|c|cpp|h|hpp|cs|rb|php|sh|bash|sql|html|css|scss|vue|svelte|graphql|proto))(?=[\s`"\')\],;]|$)'
+        matches = re.findall(pattern, text)
+        return [m for m in matches if len(m) >= 3]
+
+    @staticmethod
+    def _assess_supplement_impact(
+        content: str,
+        children: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Assess which files, modules, and child tasks are affected by a supplement.
+
+        Returns a structured impact scope:
+        - affectedFiles: file paths extracted from the supplement
+        - affectedChildTasks: list of {childTaskId, matchedFiles, matchType}
+        - summary: brief human-readable summary
+        """
+        affected_files = Orchestrator._extract_file_paths(content)
+
+        # Build a mapping: file path -> [child tasks that touch that file]
+        file_to_children: dict[str, list[str]] = {}
+        child_id_to_title: dict[str, str] = {}
+
+        for child in children:
+            child_id = child.get("id", "")
+            child_id_to_title[child_id] = child.get("goal") or child.get("title") or child_id
+
+            # Collect all file paths associated with this child
+            child_files: set[str] = set()
+            for cf in child.get("changedFiles") or []:
+                if isinstance(cf, dict):
+                    child_files.add(cf.get("path", ""))
+                elif isinstance(cf, str):
+                    child_files.add(cf)
+
+            # Also check goal text for file references
+            goal = child.get("goal") or ""
+            child_files.update(Orchestrator._extract_file_paths(goal))
+
+            for f in child_files:
+                if f:
+                    file_to_children.setdefault(f, []).append(child_id)
+
+        # Match supplement files to child tasks
+        affected_child_tasks: list[dict[str, Any]] = []
+        matched_child_ids: set[str] = set()
+
+        for sf in affected_files:
+            # Direct match
+            if sf in file_to_children:
+                for cid in file_to_children[sf]:
+                    if cid not in matched_child_ids:
+                        matched_child_ids.add(cid)
+                        affected_child_tasks.append({
+                            "childTaskId": cid,
+                            "matchedFiles": [sf],
+                            "matchType": "direct",
+                        })
+                    else:
+                        # Append to existing entry
+                        for entry in affected_child_tasks:
+                            if entry["childTaskId"] == cid and sf not in entry["matchedFiles"]:
+                                entry["matchedFiles"].append(sf)
+
+            # Directory prefix match (supplement file is under a child's scope dir)
+            for child_file, cids in file_to_children.items():
+                child_dir = "/".join(child_file.split("/")[:-1])
+                if child_dir and sf.startswith(child_dir + "/") and sf != child_file:
+                    for cid in cids:
+                        if cid not in matched_child_ids:
+                            matched_child_ids.add(cid)
+                            affected_child_tasks.append({
+                                "childTaskId": cid,
+                                "matchedFiles": [sf],
+                                "matchType": "directory_prefix",
+                            })
+                        else:
+                            for entry in affected_child_tasks:
+                                if entry["childTaskId"] == cid and sf not in entry["matchedFiles"]:
+                                    entry["matchedFiles"].append(sf)
+
+        summary_parts: list[str] = []
+        if affected_files:
+            summary_parts.append(f"Supplement references {len(affected_files)} file(s): {', '.join(affected_files[:5])}")
+        if affected_child_tasks:
+            summary_parts.append(f"Impacts {len(affected_child_tasks)} child task(s)")
+
+        return {
+            "affectedFiles": affected_files,
+            "affectedChildTasks": affected_child_tasks,
+            "summary": "; ".join(summary_parts) if summary_parts else "No specific file or task impact detected",
+        }
+
     def _route_supplement_to_children(
         self,
         *,
@@ -2072,7 +2171,7 @@ class Orchestrator:
         content: str,
         message_id: str,
     ) -> dict[str, Any] | None:
-        """Route supplement to child tasks based on goal/scope relevance.
+        """Route supplement to child tasks based on goal/scope/file relevance.
 
         Returns routing info dict if any children were matched, None otherwise.
         """
@@ -2086,6 +2185,14 @@ class Orchestrator:
         if not children:
             return None
 
+        # Assess impact scope
+        impact = self._assess_supplement_impact(content, children)
+
+        # Build quick lookup: child_id -> match info from impact assessment
+        impact_child_ids: set[str] = set()
+        for entry in impact.get("affectedChildTasks", []):
+            impact_child_ids.add(entry["childTaskId"])
+
         # Extract keywords from supplement content for matching
         content_lower = content.lower()
         content_words = set(content_lower.split())
@@ -2094,19 +2201,30 @@ class Orchestrator:
         follow_ups: list[dict[str, Any]] = []
 
         for child in children:
+            child_id = child.get("id", "")
             # Score relevance by matching keywords against child goal/scope
             goal = (child.get("goal") or "").lower()
             changed_files = child.get("changedFiles") or []
             scope_text = " ".join(str(f) for f in changed_files).lower()
 
-            # Simple keyword overlap scoring
+            # Keyword overlap scoring
             goal_words = set(goal.split())
             scope_words = set(scope_text.split()) if scope_text else set()
-            overlap = len(content_words & (goal_words | scope_words))
+            keyword_overlap = len(content_words & (goal_words | scope_words))
 
-            # Must have at least one keyword overlap to route
-            if overlap == 0:
+            # File-path-based match from impact assessment
+            file_match = child_id in impact_child_ids
+
+            # Must have at least one keyword overlap OR a file-path match to route
+            if keyword_overlap == 0 and not file_match:
                 continue
+
+            # Determine match reason
+            match_reasons: list[str] = []
+            if file_match:
+                match_reasons.append("file_path_match")
+            if keyword_overlap > 0:
+                match_reasons.append("keyword_overlap")
 
             child_status = child.get("status", "")
             is_running = child_status in {"running", "planning", "verifying", "waiting_approval", "paused"}
@@ -2124,6 +2242,7 @@ class Orchestrator:
                     "childTaskId": child["id"],
                     "action": "forwarded",
                     "inboxEntryId": inbox_entry["id"],
+                    "matchReasons": match_reasons,
                 })
             elif is_completed:
                 # Mark for potential follow-up
@@ -2131,6 +2250,7 @@ class Orchestrator:
                     "childTaskId": child["id"],
                     "action": "follow_up_recommended",
                     "childStatus": child_status,
+                    "matchReasons": match_reasons,
                 })
 
         if not routed_to and not follow_ups:
@@ -2139,6 +2259,7 @@ class Orchestrator:
         routing_info: dict[str, Any] = {
             "routedTo": routed_to,
             "followUps": follow_ups,
+            "impactScope": impact,
         }
 
         # Publish routed event
@@ -2153,6 +2274,7 @@ class Orchestrator:
                 "followUpCount": len(follow_ups),
                 "routedTo": routed_to,
                 "followUps": follow_ups,
+                "impactScope": impact,
             },
         )
 

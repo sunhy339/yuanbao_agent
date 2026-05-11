@@ -570,7 +570,7 @@
 
 - [x] root task supplement 写 root inbox。`_attach_supplemental_message()` 附加到活跃任务。
 - [x] root 消费 supplement。ReAct loop 消费 pending supplements。
-- [ ] root 判断影响范围。缺口：无范围判断。
+- [x] root 判断影响范围。`_assess_supplement_impact()` 提取文件路径 + 目录前缀匹配，19 测试覆盖。
 - [x] 影响 running child 时转发 child inbox。`_route_supplement_to_children()` 关键词匹配 + inbox 转发，P6.8 完成。
 - [x] 影响 completed child 时创建 follow-up child。`_route_supplement_to_children()` 标记 follow_up_recommended，P6.8 完成。
 - [x] 发布 supplement routed 事件。`task.supplement.routed` 事件已在路由时发布，P6.8 完成。

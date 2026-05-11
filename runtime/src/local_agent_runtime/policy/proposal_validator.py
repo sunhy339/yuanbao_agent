@@ -23,6 +23,7 @@ from ..services.worker_environment import (
 
 REQUIRED_FIELDS_BY_KIND: dict[str, list[str]] = {
     "intent_mode": ["mode"],
+    "routing_strategy": ["strategy"],
     "decomposition": ["subtasks"],
     "agent_profile": ["name", "baseType", "mission"],
     "model_policy": ["model"],

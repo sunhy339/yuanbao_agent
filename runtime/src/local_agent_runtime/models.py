@@ -30,6 +30,7 @@ EventVisibility = Literal["chat", "panel", "trace"]
 # Proposal kinds — P2 of llm-assisted-runtime-decision-todolist
 ProposalKind = Literal[
     "intent_mode",
+    "routing_strategy",
     "decomposition",
     "agent_profile",
     "model_policy",

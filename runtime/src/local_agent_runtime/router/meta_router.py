@@ -2,18 +2,24 @@
 
 Two-phase routing:
   1. Rule-based keyword matching (zero cost, deterministic).
-  2. Optional LLM-based classification when rule confidence is low.
+  2. Optional LLM-based classification via DecisionAdvisor when rule confidence is low.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from .defaults import SCENARIO_STRATEGY_MAP, lookup_keyword
 from .types import ExecutionStrategy, RoutingDecision, Scenario
+
+if TYPE_CHECKING:
+    from ..policy.decision_advisor import AdviceResult, DecisionAdvisor
+
+logger = logging.getLogger(__name__)
 
 _RULE_CONFIDENCE_THRESHOLD = 0.80
 _LLM_CONFIDENCE_THRESHOLD = 0.60
@@ -34,8 +40,15 @@ def _tokenize(text: str) -> list[str]:
 class MetaRouter:
     """Analyse a user goal and produce a :class:`RoutingDecision`."""
 
-    def __init__(self, provider: Any | None = None) -> None:
+    def __init__(
+        self,
+        provider: Any | None = None,
+        decision_advisor: DecisionAdvisor | None = None,
+    ) -> None:
         self._provider = provider
+        self._decision_advisor = decision_advisor
+        # Keep last advisor result for caller inspection (proposal recording)
+        self._last_advice: AdviceResult | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -98,7 +111,26 @@ class MetaRouter:
     # Phase 2 – LLM-based routing (optional)
     # ------------------------------------------------------------------
 
+    @property
+    def last_advice(self) -> AdviceResult | None:
+        """Return the last DecisionAdvisor result from the most recent route() call."""
+        return self._last_advice
+
     def _llm_route(self, goal: str, context: dict[str, Any] | None) -> RoutingDecision | None:
+        self._last_advice = None
+
+        # Prefer DecisionAdvisor path — creates durable proposal records
+        if self._decision_advisor is not None:
+            result = self._decision_advisor.advise("routing_strategy", {"goal": goal})
+            self._last_advice = result
+            if result.accepted and result.payload:
+                routing = self._advisor_payload_to_decision(result.payload, result.rationale)
+                if routing is not None:
+                    return routing
+            # Advisor rejected or malformed — fall through to direct provider call
+            logger.debug("DecisionAdvisor routing rejected: %s", result.fallback_reason)
+
+        # Legacy direct provider path (used when no advisor is configured)
         if self._provider is None:
             return None
         if not hasattr(self._provider, "generate"):
@@ -171,6 +203,60 @@ class MetaRouter:
             scenario=scenario,
             confidence=confidence,
             reasoning=f"llm-match: {reasoning}",
+        )
+
+    def _advisor_payload_to_decision(
+        self, payload: dict[str, Any], rationale: str,
+    ) -> RoutingDecision | None:
+        """Convert a DecisionAdvisor payload into a RoutingDecision."""
+        # Try scenario first, then infer from strategy
+        scenario_str = payload.get("scenario", "")
+        scenario: Scenario | None = None
+        if scenario_str:
+            try:
+                scenario = Scenario(scenario_str)
+            except ValueError:
+                pass
+
+        strategy_str = payload.get("strategy", "")
+        strategy: ExecutionStrategy | None = None
+        if strategy_str:
+            try:
+                strategy = ExecutionStrategy(strategy_str)
+            except ValueError:
+                pass
+
+        # If we have a strategy but no scenario, look up the scenario from the map
+        if scenario is None and strategy is not None:
+            for scen, cfg in SCENARIO_STRATEGY_MAP.items():
+                if cfg.get("strategy") == strategy:
+                    scenario = scen
+                    break
+
+        # If we have a scenario but no strategy, look up from the map
+        if strategy is None and scenario is not None:
+            cfg = SCENARIO_STRATEGY_MAP.get(scenario, SCENARIO_STRATEGY_MAP[Scenario.FREE_FORM])
+            strategy = cfg["strategy"]
+
+        if scenario is None:
+            scenario = Scenario.FREE_FORM
+        if strategy is None:
+            cfg = SCENARIO_STRATEGY_MAP.get(scenario, SCENARIO_STRATEGY_MAP[Scenario.FREE_FORM])
+            strategy = cfg["strategy"]
+
+        cfg = SCENARIO_STRATEGY_MAP.get(scenario, SCENARIO_STRATEGY_MAP[Scenario.FREE_FORM])
+        skill_id = payload.get("skill_id") or cfg.get("skill_id")
+
+        return RoutingDecision(
+            scenario=scenario,
+            strategy=strategy,
+            confidence=0.7,  # advisor-accepted confidence
+            skill_id=skill_id,
+            max_steps=cfg.get("max_steps", 20),
+            enable_reflection=cfg.get("enable_reflection", False),
+            enable_planning=cfg.get("enable_planning", False),
+            reasoning=f"advisor-match: {rationale}",
+            metadata={"decision_id": uuid.uuid4().hex[:12], "advisor_source": "decision_advisor"},
         )
 
 

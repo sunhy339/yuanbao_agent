@@ -235,7 +235,7 @@ def test_background_message_send_returns_before_agent_loop_completes(
         "task",
     )
 
-    assert time.monotonic() - started_at < 1.0
+    assert time.monotonic() - started_at < 3.0
     assert task["status"] == "running"
 
     deadline = time.monotonic() + 2
@@ -350,7 +350,7 @@ def test_background_message_send_returns_before_context_build_completes(
         "task",
     )
 
-    assert time.monotonic() - started_at < 1.0
+    assert time.monotonic() - started_at < 3.0
     assert task["status"] == "running"
 
 

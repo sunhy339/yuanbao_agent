@@ -30,6 +30,7 @@ from ..services.worker_budget import WorkerBudget, WorkerBudgetExceededError
 from ..services.worker_environment import normalize_child_tool_allowlist
 from ..services.worker_runner import WorkerRunner
 from ..router import MetaRouter, RoutingDecision
+from ..policy.decision_advisor import DecisionAdvisor
 from ..skills.registry import SkillRegistry
 from ..mcp.client import McpClientManager, McpServerConfig, summarize_mcp_exception
 from ..reflection.evaluator import ReflectionEvaluator
@@ -68,13 +69,18 @@ class Orchestrator:
         meta_router: MetaRouter | None = None,
         memory_manager: MemoryManager | None = None,
         *,
+        decision_advisor: DecisionAdvisor | None = None,
         _skip_orphan_cleanup: bool = False,
     ) -> None:
         self._store = store
         self._event_bus = event_bus
         self._tool_registry = tool_registry
         self._provider = provider
-        self._meta_router = meta_router or MetaRouter(provider=provider)
+        self._decision_advisor = decision_advisor
+        self._meta_router = meta_router or MetaRouter(
+            provider=provider,
+            decision_advisor=decision_advisor,
+        )
         self._memory_manager = memory_manager
         self._planner = Planner()
         self._scratchpad = Scratchpad(store)
@@ -545,6 +551,73 @@ class Orchestrator:
                 task_id=task_id, session_id=session_id, skill_id=skill_id,
             )
 
+    def _record_routing_proposal(
+        self,
+        *,
+        session_id: str,
+        task_id: str,
+        goal: str,
+        routing: RoutingDecision,
+        routing_dict: dict[str, Any],
+    ) -> None:
+        """Create a proposal record when routing used LLM advisory."""
+        advice = self._meta_router.last_advice
+        if advice is None:
+            return
+        try:
+            proposal_payload = {
+                "scenario": routing.scenario.value,
+                "strategy": routing.strategy.value,
+                "skill_id": routing.skill_id,
+            }
+            source = {
+                "type": advice.source,
+                "confidence": advice.confidence,
+                "rationale": advice.rationale,
+            }
+            if advice.model_id:
+                source["model_id"] = advice.model_id
+            status = "accepted" if advice.accepted else "rejected"
+            record = self._store.create_proposal({
+                "kind": "routing_strategy",
+                "sessionId": session_id,
+                "taskId": task_id,
+                "proposal": proposal_payload,
+                "source": source,
+                "inputSummary": goal[:500],
+                "modelId": advice.model_id,
+            })
+            proposal_id = record["proposal"]["id"]
+            if status == "accepted":
+                self._store.validate_proposal({
+                    "proposalId": proposal_id,
+                    "status": "accepted",
+                    "reasons": [],
+                })
+            else:
+                self._store.validate_proposal({
+                    "proposalId": proposal_id,
+                    "status": "rejected",
+                    "reasons": advice.validation_reasons or [advice.fallback_reason or "advisor rejected"],
+                })
+            # Publish decision event
+            self._publish(
+                session_id=session_id,
+                task={"id": task_id},
+                event_type="agent.decision.routing_strategy",
+                payload={
+                    "proposalId": proposal_id,
+                    "outcome": status,
+                    "scenario": routing.scenario.value,
+                    "strategy": routing.strategy.value,
+                    "source": advice.source,
+                    "confidence": advice.confidence,
+                    "rationale": advice.rationale,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to record routing proposal", exc_info=True)
+
     # ------------------------------------------------------------------
     # MCP Server management
     # ------------------------------------------------------------------
@@ -923,6 +996,13 @@ class Orchestrator:
                 active_assistant_message_id=assistant_msg["id"],
             )
             runtime_task["activeAssistantMessageId"] = assistant_msg["id"]
+            self._record_routing_proposal(
+                session_id=session["id"],
+                task_id=runtime_task["id"],
+                goal=goal,
+                routing=routing,
+                routing_dict=routing_dict,
+            )
             self._publish(
                 session_id=session["id"],
                 task=runtime_task,
@@ -1008,6 +1088,14 @@ class Orchestrator:
         )
         runtime_task["activeAssistantMessageId"] = assistant_msg["id"]
         context = self._context_with_task_focus(context, runtime_task)
+
+        self._record_routing_proposal(
+            session_id=session["id"],
+            task_id=runtime_task["id"],
+            goal=goal,
+            routing=routing,
+            routing_dict=routing_dict,
+        )
 
         self._record_skill_usage(
             task_id=runtime_task["id"],

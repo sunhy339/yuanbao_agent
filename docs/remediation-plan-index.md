@@ -22,6 +22,7 @@ staged with `git add -f` when they need to be committed.
 | Chat runtime detailed remediation | `docs/chat-runtime-agent-run-detailed-remediation.md` | Design reference, no checklist |
 | Memory and context compaction | `docs/memory-and-context-compaction-plan.md` | Older plan, checklist not updated after implementation |
 | Frontend V2 follow-up | `docs/frontend-v2-followup-plan.md` | Checklist complete, 46 done / 0 open |
+| Agent runtime maturity roadmap | `docs/agent-runtime-maturity-roadmap.md` | New post-plan roadmap for effective config, decision trace, budget panel, reports, parallel safety, and replay |
 | LLM material decision advisory | `docs/remediation-plan-index.md` | New top-level batch for making every material runtime decision request an LLM proposal before validator/policy裁决 |
 | Agent autonomy governance | `docs/remediation-plan-index.md` | New cross-cutting batch for configurable, auditable, replayable, and permission-bounded autonomy |
 | Agent soul and prompt profiles | `docs/remediation-plan-index.md` | New cross-cutting batch for configurable agent identity, system prompts, and prompt layering |

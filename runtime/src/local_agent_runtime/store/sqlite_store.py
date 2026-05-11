@@ -4316,7 +4316,7 @@ class SQLiteStore:
         }
 
     VALID_PROPOSAL_KINDS = frozenset({
-        "intent_mode", "decomposition", "agent_profile", "model_policy",
+        "intent_mode", "routing_strategy", "decomposition", "agent_profile", "model_policy",
         "skill_policy", "tool_policy", "mcp_policy", "context_policy",
         "memory_policy", "artifact_contract", "risk_policy", "approval_policy",
         "test_strategy", "failure_recovery", "event_presentation",

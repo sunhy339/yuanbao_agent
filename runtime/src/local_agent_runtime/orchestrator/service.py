@@ -740,6 +740,19 @@ class Orchestrator:
             messages=messages,
             max_tokens=max_tokens,
         )
+        # --- Decision trace: context compaction ---
+        self._publish(
+            session_id=session_id,
+            task={"id": "system"},
+            event_type="agent.decision.context_policy",
+            payload={
+                "decision": "compacted",
+                "tokensBefore": compacted.tokens_before,
+                "tokensAfter": compacted.tokens_after,
+                "strategy": compacted.strategy,
+                "compactionId": compacted.compaction_id,
+            },
+        )
         return {
             "tokensBefore": compacted.tokens_before,
             "tokensAfter": compacted.tokens_after,
@@ -1418,6 +1431,16 @@ class Orchestrator:
                     "executionOrder": plan.execution_order,
                 },
             )
+            # --- Decision trace: decomposition ---
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="agent.decision.decomposition",
+                payload={
+                    "decision": "decomposed",
+                    "subtaskCount": len(plan.subtasks),
+                    "parallel": plan.execution_order != [list(range(len(plan.subtasks)))],
+                },
+            )
 
             # 1b. Plan approval gate (strict mode)
             config = self._store.get_config({})["config"]
@@ -1729,6 +1752,17 @@ class Orchestrator:
                     "mode": "supervisor",
                 },
             )
+            # --- Decision trace: decomposition (supervisor) ---
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="agent.decision.decomposition",
+                payload={
+                    "decision": "decomposed",
+                    "subtaskCount": len(plan.subtasks),
+                    "parallel": True,
+                    "mode": "supervisor",
+                },
+            )
             approval_response = self._check_plan_approval(
                 session_id=session_id, task=task, goal=goal, context=context,
                 orchestration_mode="supervisor", plan=plan, span=span,
@@ -1805,6 +1839,17 @@ class Orchestrator:
                 payload={
                     "subtaskCount": len(plan.subtasks),
                     "executionOrder": plan.execution_order,
+                    "mode": "swarm",
+                },
+            )
+            # --- Decision trace: decomposition (swarm) ---
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="agent.decision.decomposition",
+                payload={
+                    "decision": "decomposed",
+                    "subtaskCount": len(plan.subtasks),
+                    "parallel": True,
                     "mode": "swarm",
                 },
             )
@@ -2745,6 +2790,21 @@ class Orchestrator:
         self._consolidate_working_memories(session_id)
         self._clear_pending_react_state(task["id"])
         self._record_task_metrics(session_id=session_id, task=runtime_task, tool_results=tool_results, task_status="completed")
+        # --- Decision trace: completion ---
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
+            event_type="agent.decision.completion",
+            payload={
+                "decision": "completed",
+                "whyComplete": final_summary[:500],
+                "changedFiles": runtime_task.get("changedFiles") or [],
+                "commands": runtime_task.get("commands") or [],
+                "testsRun": runtime_task.get("verification") or [],
+                "reflection": reflection_data,
+                "remainingRisks": runtime_task.get("risks") or [],
+            },
+        )
         self._publish(
             session_id=session_id,
             task=runtime_task,
@@ -2925,6 +2985,17 @@ class Orchestrator:
         self._promote_scratchpad_to_memory(session_id)
         self._clear_pending_react_state(task["id"])
         self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="failed")
+        # --- Decision trace: failure ---
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
+            event_type="agent.decision.completion",
+            payload={
+                "decision": "failed",
+                "whyFailed": runtime_task.get("failureReason") or summary[:500],
+                "errorCode": error_code,
+            },
+        )
         self._publish(
             session_id=session_id,
             task=runtime_task,

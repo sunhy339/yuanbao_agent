@@ -81,6 +81,8 @@ class JsonRpcServer:
             "stats.summary": self._store.get_stats_summary,
             "stats.trace": self._store.get_trace_spans,
             "trace.list": self._store.list_trace_events,
+            "decision.list": self._store.list_decision_events,
+            "proposal.list": self._store.list_proposals,
             "schedule.create": self._schedule.create,
             "schedule.list": self._schedule.list,
             "schedule.update": self._schedule.update,

@@ -1670,6 +1670,36 @@ class SQLiteStore:
         ).fetchall()
         return {"traceEvents": [self._serialize_trace_event(dict(row)) for row in rows]}
 
+    def list_decision_events(self, params: dict[str, Any]) -> dict[str, Any]:
+        """List agent decision events for a task or session.
+
+        Filters by ``type LIKE 'agent.decision.%'`` plus optional
+        taskId, sessionId, or kind filters.
+        """
+        task_id = params.get("taskId") or params.get("task_id")
+        session_id = params.get("sessionId") or params.get("session_id")
+        kind = params.get("kind")
+        limit = min(int(params.get("limit") or 200), 1000)
+
+        conditions = ["type LIKE 'agent.decision.%'"]
+        args: list[Any] = []
+        if task_id:
+            conditions.append("task_id = ?")
+            args.append(task_id)
+        if session_id:
+            conditions.append("session_id = ?")
+            args.append(session_id)
+        if kind:
+            conditions.append("type = ?")
+            args.append(f"agent.decision.{kind}")
+        args.append(limit)
+
+        rows = self._conn.execute(
+            f"SELECT * FROM trace_events WHERE {' AND '.join(conditions)} ORDER BY created_at ASC, sequence ASC LIMIT ?",
+            args,
+        ).fetchall()
+        return {"decisions": [self._serialize_trace_event(dict(row)) for row in rows]}
+
     def events_after(self, session_id: str, after_seq: int, *, limit: int = 500) -> dict[str, Any]:
         """Return trace events for a session after a given sequence number.
 

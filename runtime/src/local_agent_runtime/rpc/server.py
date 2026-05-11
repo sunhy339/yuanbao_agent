@@ -121,6 +121,7 @@ class JsonRpcServer:
             "provider_turn.list": self._provider_turn_list,
             "context_snapshot.list": self._context_snapshot_list,
             "context_snapshot.get": self._context_snapshot_get,
+            "context.budget": self._store.get_context_budget,
             "memory.list": self._memory_list,
             "memory.get": self._memory_get,
             "memory.edit": self._memory_edit,

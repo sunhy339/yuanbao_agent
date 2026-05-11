@@ -1468,6 +1468,8 @@ class SQLiteStore:
         tool_count: int | None = None,
         skill_id: str | None = None,
         token_estimate: int | None = None,
+        max_context_tokens: int | None = None,
+        prompt_layers: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         snap_id = self.new_id("cs")
         now = self.now()
@@ -1478,8 +1480,9 @@ class SQLiteStore:
                  included_sections_json, trimmed_sections_json, dropped_sections_json,
                  recent_message_ids_json, summarized_message_ids_json,
                  memory_ids_json, supplement_inbox_ids_json,
-                 tool_count, skill_id, token_estimate, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 tool_count, skill_id, token_estimate, created_at,
+                 max_context_tokens, prompt_layers_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 snap_id, session_id, task_id, provider_turn_id,
@@ -1491,6 +1494,8 @@ class SQLiteStore:
                 json.dumps(memory_ids or [], ensure_ascii=False),
                 json.dumps(supplement_inbox_ids or [], ensure_ascii=False),
                 tool_count, skill_id, token_estimate, now,
+                max_context_tokens,
+                json.dumps(prompt_layers or [], ensure_ascii=False),
             ),
         )
         self._conn.commit()
@@ -1507,6 +1512,100 @@ class SQLiteStore:
             (task_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def _serialize_context_snapshot(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Serialize a context_snapshots row for API responses."""
+        return {
+            "id": row["id"],
+            "taskId": row["task_id"],
+            "sessionId": row["session_id"],
+            "providerTurnId": row.get("provider_turn_id"),
+            "tokenEstimate": row.get("token_estimate"),
+            "maxContextTokens": row.get("max_context_tokens"),
+            "includedSections": json.loads(row.get("included_sections_json") or "[]"),
+            "trimmedSections": json.loads(row.get("trimmed_sections_json") or "[]"),
+            "droppedSections": json.loads(row.get("dropped_sections_json") or "[]"),
+            "memoryIds": json.loads(row.get("memory_ids_json") or "[]"),
+            "toolCount": row.get("tool_count"),
+            "skillId": row.get("skill_id"),
+            "createdAt": row["created_at"],
+        }
+
+    def get_context_budget(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Return context budget summary for a task or session."""
+        task_id = params.get("taskId")
+        session_id = params.get("sessionId")
+
+        # 1. Resolve maxContextTokens from config
+        config = self.get_config({})["config"]
+        provider_config = config.get("provider") or {}
+        max_context = provider_config.get("maxContextTokens") or config.get("maxContextTokens")
+        if max_context is not None:
+            try:
+                max_context = max(1, int(max_context))
+            except (TypeError, ValueError):
+                max_context = 256000
+        else:
+            max_context = 256000
+
+        # 2. Get latest context snapshot
+        snapshot = None
+        if task_id:
+            rows = self._conn.execute(
+                "SELECT * FROM context_snapshots WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
+                (task_id,),
+            ).fetchall()
+            snapshot = dict(rows[0]) if rows else None
+        elif session_id:
+            rows = self._conn.execute(
+                "SELECT * FROM context_snapshots WHERE session_id = ? ORDER BY created_at DESC LIMIT 1",
+                (session_id,),
+            ).fetchall()
+            snapshot = dict(rows[0]) if rows else None
+
+        # 3. Get compaction records for the session
+        effective_session = session_id
+        if not effective_session and task_id:
+            task_row = self._conn.execute(
+                "SELECT session_id FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if task_row:
+                effective_session = task_row["session_id"]
+        compactions: list[dict[str, Any]] = []
+        if effective_session:
+            rows = self._conn.execute(
+                "SELECT * FROM compaction_records WHERE session_id = ? ORDER BY created_at DESC LIMIT 20",
+                (effective_session,),
+            ).fetchall()
+            compactions = [dict(r) for r in rows]
+
+        # 4. Get all snapshots for historical trend (if task_id)
+        trend: list[dict[str, Any]] = []
+        if task_id:
+            rows = self._conn.execute(
+                "SELECT id, token_estimate, created_at FROM context_snapshots WHERE task_id = ? ORDER BY created_at ASC",
+                (task_id,),
+            ).fetchall()
+            trend = [
+                {"snapshotId": r["id"], "tokenEstimate": r["token_estimate"], "createdAt": r["created_at"]}
+                for r in rows
+            ]
+
+        # 5. Build result
+        prompt_layers: list[dict[str, Any]] = []
+        if snapshot and snapshot.get("prompt_layers_json"):
+            try:
+                prompt_layers = json.loads(snapshot["prompt_layers_json"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return {
+            "maxContextTokens": max_context,
+            "latestSnapshot": self._serialize_context_snapshot(snapshot) if snapshot else None,
+            "compactions": compactions,
+            "tokenTrend": trend,
+            "promptLayers": prompt_layers,
+        }
 
     # ------------------------------------------------------------------
     # Trace Events
@@ -4016,6 +4115,7 @@ class SQLiteStore:
         self._ensure_collaboration_task_columns()
         self._ensure_schedule_columns()
         self._ensure_compaction_columns()
+        self._ensure_context_snapshot_columns()
         self._ensure_inbox_columns()
         self._ensure_mcp_server_columns()
 
@@ -4144,6 +4244,21 @@ class SQLiteStore:
         for column, definition in expected.items():
             if column not in columns:
                 self._conn.execute(f"ALTER TABLE compaction_records ADD COLUMN {column} {definition}")
+        self._conn.commit()
+
+    def _ensure_context_snapshot_columns(self) -> None:
+        """Add budget columns to context_snapshots if missing."""
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(context_snapshots)").fetchall()
+        }
+        expected = {
+            "max_context_tokens": "INTEGER",
+            "prompt_layers_json": "TEXT",
+        }
+        for column, definition in expected.items():
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE context_snapshots ADD COLUMN {column} {definition}")
         self._conn.commit()
 
     def _ensure_inbox_columns(self) -> None:

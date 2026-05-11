@@ -5171,6 +5171,8 @@ class Orchestrator:
                 tool_count=len(cached_provider_tools),
                 skill_id=context.get("routing", {}).get("skill_id") or snapshot_meta.get("skill_id"),
                 token_estimate=_msg_token_total,
+                max_context_tokens=context.get("budgetStats", {}).get("maxContextTokens"),
+                prompt_layers=snapshot_meta.get("prompt_layers"),
             )
             try:
                 response = self._request_provider_response(

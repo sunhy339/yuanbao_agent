@@ -10,6 +10,7 @@ from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestrator.service import Orchestrator
 from local_agent_runtime.provider.adapter import ProviderAdapter
 from local_agent_runtime.policy.guard import PolicyGuard
+from local_agent_runtime.router.meta_router import MetaRouter
 from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
@@ -48,6 +49,7 @@ def _make_runtime_at_path(database_path: Any, provider: Any, tools: dict[str, An
         event_bus=event_bus,
         tool_registry=tool_registry,
         provider=provider,
+        meta_router=MetaRouter(provider=None),
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
     events: list[dict[str, Any]] = []
@@ -71,6 +73,7 @@ def _make_builtin_runtime(tmp_path: Any, provider: Any) -> SimpleNamespace:
         event_bus=event_bus,
         tool_registry=tool_registry,
         provider=provider,
+        meta_router=MetaRouter(provider=None),
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
     events: list[dict[str, Any]] = []
@@ -1150,7 +1153,10 @@ def test_react_loop_fails_when_max_steps_are_exceeded(tmp_path: Any) -> None:
         ]
     )
     runtime = _make_runtime(tmp_path, provider, {"read_file": lambda _params: {"content": "alpha"}})
-    runtime.store.update_config({"config": {"policy": {"maxTaskSteps": 1}}})
+    runtime.store.update_config({"config": {
+        "policy": {"maxTaskSteps": 1},
+        "autonomy": {"activeProfileId": "test", "profiles": [{"id": "test", "maxSteps": 1}]},
+    }})
     # Patch the router to also return max_steps=1 (routing now takes priority)
     original_route = runtime.server._orchestrator._meta_router.route  # noqa: SLF001
     def patched_route(goal: str):  # noqa: ANN001

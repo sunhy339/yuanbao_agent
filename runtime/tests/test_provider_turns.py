@@ -21,6 +21,7 @@ import pytest
 
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestrator.service import Orchestrator
+from local_agent_runtime.router.meta_router import MetaRouter
 from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.registry import ToolRegistry
@@ -71,6 +72,7 @@ def _make_runtime(tmp_path: Any, provider: Any, tools: dict[str, Any] | None = N
         event_bus=event_bus,
         tool_registry=tool_registry,
         provider=provider,
+        meta_router=MetaRouter(provider=None),
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
     events: list[dict[str, Any]] = []

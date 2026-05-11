@@ -167,6 +167,17 @@ def _tool_call_response(arguments: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _routing_response() -> dict[str, Any]:
+    """Response consumed by MetaRouter._llm_route() for scenario classification."""
+    return _chat_response(
+        {
+            "role": "assistant",
+            "content": '{"scenario": "code_edit", "confidence": 0.95, "reasoning": "file edit task"}',
+        },
+        finish_reason="stop",
+    )
+
+
 def _final_response() -> dict[str, Any]:
     return _chat_response(
         {"role": "assistant", "content": "Patch applied after approval."},
@@ -296,6 +307,7 @@ def _run_patch_approval_smoke(runtime: SimpleNamespace, workspace_root: Path) ->
 def test_non_streaming_openai_compatible_e2e_smoke_applies_approved_patch(tmp_path: Path) -> None:
     provider = ScriptedHttpPostProvider(
         [
+            _routing_response(),
             _tool_call_response({"files": [{"path": "todo.txt", "content": "status: new\n"}]}),
             _final_response(),
         ]
@@ -306,10 +318,11 @@ def test_non_streaming_openai_compatible_e2e_smoke_applies_approved_patch(tmp_pa
     finally:
         runtime.store.close()
 
-    assert len(provider.requests) == 2
+    assert len(provider.requests) == 3
     assert "stream" not in provider.requests[0]["json"]
-    assert provider.requests[0]["json"]["tools"]
-    assert provider.requests[1]["json"]["messages"][-1]["role"] == "tool"
+    assert provider.requests[0]["json"]["messages"][0]["content"].startswith("You are a task classifier")
+    assert provider.requests[1]["json"]["tools"]
+    assert provider.requests[2]["json"]["messages"][-1]["role"] == "tool"
 
 
 def test_streaming_openai_compatible_e2e_smoke_applies_approved_patch(tmp_path: Path) -> None:

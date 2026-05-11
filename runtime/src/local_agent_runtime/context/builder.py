@@ -49,9 +49,25 @@ COMMON_GOAL_TERMS = {
     "with",
 }
 
-DEFAULT_MAX_CONTEXT_TOKENS = 8000
+DEFAULT_MAX_CONTEXT_TOKENS = 256000
 
 DEFAULT_TOOL_SCHEMAS = BUILTIN_TOOL_SCHEMAS
+
+DEFAULT_AGENT_SOUL_BASELINE = {
+    "id": "default",
+    "name": "Default",
+    "identity": "A capable local coding agent that works inside the user's desktop runtime.",
+    "principles": [
+        "Be practical, careful, and transparent about uncertainty.",
+        "Prefer existing project patterns over unnecessary new abstractions.",
+        "Keep the user in control of risky actions.",
+    ],
+    "communicationStyle": "Clear, concise, collaborative.",
+    "reasoningStyle": "Inspect the current workspace before making changes.",
+    "collaborationStyle": "Explain meaningful decisions and keep work scoped to the user's request.",
+    "domainPreferences": [],
+    "customSystemPrompt": "",
+}
 
 
 class ContextBuilder:
@@ -178,6 +194,9 @@ class ContextBuilder:
                 "token_estimate": budget_stats.get("estimatedTokens", 0),
                 "filtered_tool_names": filtered_tool_names,
                 "original_tool_names": original_tool_names,
+                "autonomy_profile": self._active_autonomy_profile(config),
+                "agent_soul_profile": self._active_agent_soul_profile(config),
+                "prompt_layers": budget_stats.get("promptLayers", []),
             },
             "lightweight": lightweight,
         }
@@ -205,11 +224,12 @@ class ContextBuilder:
         role: str | None = None,
     ) -> tuple[list[dict[str, str]], dict[str, Any]]:
         max_context_tokens = self._max_context_tokens(config)
-        # Use skill's system_prompt if available, otherwise default
-        if skill_preset is not None and skill_preset.system_prompt:
-            system_text = self._skill_system_prompt(skill_preset, workspace_root=workspace["rootPath"])
-        else:
-            system_text = self._system_prompt(workspace_root=workspace["rootPath"], role=role)
+        system_text, prompt_layers = self._compose_system_prompt(
+            workspace_root=workspace["rootPath"],
+            config=config,
+            role=role,
+            skill_preset=skill_preset,
+        )
         sections = [
             BudgetSection(
                 name="system_prompt",
@@ -283,12 +303,13 @@ class ContextBuilder:
 
         # Compaction: if messages exceed budget, compress via three-segment strategy
         if self._compactor is not None:
-            total_msg_tokens = sum(estimate_tokens(m.get("content", "")) for m in messages)
-            if total_msg_tokens > max_context_tokens:
+            decision = self._compactor.should_compact(messages, max_context_tokens)
+            if decision.should_compact:
                 result = self._compactor.compact(
                     session_id=session["id"],
                     messages=messages,
                     max_tokens=max_context_tokens,
+                    force=decision.force,
                 )
                 messages = result.kept_messages  # type: ignore[assignment]
 
@@ -297,6 +318,7 @@ class ContextBuilder:
             **budget_result.stats,
             "toolSchemaTokens": tool_schema_tokens,
             "messageTokens": message_tokens,
+            "promptLayers": prompt_layers,
         }
         return (
             messages,
@@ -406,6 +428,63 @@ class ContextBuilder:
     }
 
     def _system_prompt(self, *, workspace_root: str, role: str | None = None) -> str:
+        return "\n".join([
+            self._role_prompt(role),
+            "",
+            self._safety_prompt(workspace_root=workspace_root),
+        ])
+
+    def _compose_system_prompt(
+        self,
+        *,
+        workspace_root: str,
+        config: dict[str, Any],
+        role: str | None = None,
+        skill_preset: Any | None = None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Compose runtime-owned safety with user-configurable soul layers."""
+        sections: list[tuple[str, str, dict[str, Any]]] = []
+        sections.append(("role", self._role_prompt(role), {"role": (role or "root").lower()}))
+
+        soul_profile = self._active_agent_soul_profile(config)
+        soul_prompt = self._agent_soul_prompt(soul_profile)
+        if soul_prompt:
+            sections.append((
+                "agent_soul",
+                soul_prompt,
+                {
+                    "profileId": soul_profile.get("id"),
+                    "profileName": soul_profile.get("name"),
+                },
+            ))
+
+        workspace_instructions = self._workspace_instructions(config)
+        if workspace_instructions:
+            sections.append(("workspace_instructions", workspace_instructions, {}))
+
+        if skill_preset is not None and getattr(skill_preset, "system_prompt", None):
+            sections.append((
+                "skill",
+                str(skill_preset.system_prompt).strip(),
+                {
+                    "skillId": getattr(skill_preset, "id", None),
+                    "skillName": getattr(skill_preset, "name", None),
+                },
+            ))
+
+        sections.append(("runtime_safety", self._safety_prompt(workspace_root=workspace_root), {"locked": True}))
+        prompt_layers: list[dict[str, Any]] = [
+            {
+                "name": name,
+                "tokenEstimate": estimate_tokens(text),
+                **metadata,
+            }
+            for name, text, metadata in sections
+            if text
+        ]
+        return "\n\n".join(text for _name, text, _metadata in sections if text), prompt_layers
+
+    def _role_prompt(self, role: str | None = None) -> str:
         effective_role = (role or "root").lower()
         lines: list[str] = []
         if effective_role == "root":
@@ -416,14 +495,105 @@ class ContextBuilder:
                 lines.extend(role_instructions)
             else:
                 lines.append("You are a local coding agent operating in a user-controlled desktop runtime.")
-        lines.append(f"Workspace root: {workspace_root}")
-        lines.append("Safety boundaries:")
-        lines.append("- stay within the workspace root for file and git operations.")
-        lines.append("- write files only through apply_patch and wait for explicit approval before changes are applied.")
-        lines.append("- run commands only through run_command and wait for explicit approval before execution.")
-        lines.append("- do not bypass the provided tools or approval workflow.")
-        lines.append("- do not read secrets or operate outside the workspace unless the user explicitly provides content.")
         return "\n".join(lines)
+
+    def _safety_prompt(self, *, workspace_root: str) -> str:
+        return "\n".join([
+            f"Workspace root: {workspace_root}",
+            "Safety boundaries:",
+            "- stay within the workspace root for file and git operations.",
+            "- write files only through apply_patch and wait for explicit approval before changes are applied.",
+            "- run commands only through run_command and wait for explicit approval before execution.",
+            "- do not bypass the provided tools or approval workflow.",
+            "- do not read secrets or operate outside the workspace unless the user explicitly provides content.",
+        ])
+
+    def _active_autonomy_profile(self, config: dict[str, Any]) -> dict[str, Any] | None:
+        autonomy = config.get("autonomy") if isinstance(config, dict) else None
+        if not isinstance(autonomy, dict):
+            return None
+        profiles = autonomy.get("profiles")
+        if not isinstance(profiles, list):
+            return None
+        active_id = autonomy.get("activeProfileId")
+        for profile in profiles:
+            if isinstance(profile, dict) and profile.get("id") == active_id:
+                return dict(profile)
+        for profile in profiles:
+            if isinstance(profile, dict):
+                return dict(profile)
+        return None
+
+    def _active_agent_soul_profile(self, config: dict[str, Any]) -> dict[str, Any]:
+        agent_soul = config.get("agentSoul") if isinstance(config, dict) else None
+        if not isinstance(agent_soul, dict):
+            return {}
+        profiles = agent_soul.get("profiles")
+        if not isinstance(profiles, list):
+            return {}
+        active_id = agent_soul.get("activeProfileId")
+        for profile in profiles:
+            if isinstance(profile, dict) and profile.get("id") == active_id:
+                return dict(profile)
+        for profile in profiles:
+            if isinstance(profile, dict):
+                return dict(profile)
+        return {}
+
+    def _agent_soul_prompt(self, profile: dict[str, Any]) -> str:
+        if not profile or profile.get("enabled") is False:
+            return ""
+        if self._is_default_agent_soul_baseline(profile):
+            return ""
+        lines = ["Agent soul:"]
+        for label, key in (
+            ("Identity", "identity"),
+            ("Communication style", "communicationStyle"),
+            ("Reasoning style", "reasoningStyle"),
+            ("Collaboration style", "collaborationStyle"),
+        ):
+            value = profile.get(key)
+            if isinstance(value, str) and value.strip():
+                lines.append(f"- {label}: {value.strip()}")
+        principles = profile.get("principles")
+        if isinstance(principles, list):
+            cleaned = [str(item).strip() for item in principles if str(item).strip()]
+            if cleaned:
+                lines.append("- Principles:")
+                lines.extend(f"  - {item}" for item in cleaned)
+        domain_preferences = profile.get("domainPreferences")
+        if isinstance(domain_preferences, list):
+            cleaned = [str(item).strip() for item in domain_preferences if str(item).strip()]
+            if cleaned:
+                lines.append(f"- Domain preferences: {', '.join(cleaned)}")
+        custom_prompt = profile.get("customSystemPrompt")
+        if isinstance(custom_prompt, str) and custom_prompt.strip():
+            lines.append("Custom system prompt:")
+            lines.append(custom_prompt.strip())
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    def _is_default_agent_soul_baseline(self, profile: dict[str, Any]) -> bool:
+        if profile.get("id") != DEFAULT_AGENT_SOUL_BASELINE["id"]:
+            return False
+        for key, expected in DEFAULT_AGENT_SOUL_BASELINE.items():
+            value = profile.get(key)
+            if isinstance(expected, list):
+                normalized = [str(item).strip() for item in value or [] if str(item).strip()] if isinstance(value, list) else []
+                if normalized != expected:
+                    return False
+                continue
+            if str(value or "").strip() != str(expected).strip():
+                return False
+        return True
+
+    def _workspace_instructions(self, config: dict[str, Any]) -> str:
+        agent_soul = config.get("agentSoul") if isinstance(config, dict) else None
+        if not isinstance(agent_soul, dict):
+            return ""
+        value = agent_soul.get("workspaceInstructions")
+        if not isinstance(value, str) or not value.strip():
+            return ""
+        return f"Workspace instructions:\n{value.strip()}"
 
     def _resolve_skill(self, skill_id: str | None) -> Any | None:
         """Look up a SkillPreset by id via the skill registry."""

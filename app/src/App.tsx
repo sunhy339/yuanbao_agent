@@ -4,6 +4,10 @@ import type {
   ApprovalResolvedPayload,
   AgentEventEnvelope,
   AppConfig,
+  AgentSoulConfig,
+  AgentSoulProfile,
+  AutonomyConfig,
+  AutonomyProfile,
   AssistantTokenPayload,
   CommandLogRecord,
   McpServerRecord,
@@ -92,6 +96,7 @@ import {
   type SettingsComputerUseConfig,
   type SettingsGeneralConfig,
   type SettingsIMConfig,
+  type SettingsAgentBehaviorConfig,
   type SettingsProvider,
   type SettingsProviderFeedback,
   type SettingsProviderPayload,
@@ -109,9 +114,91 @@ const DEFAULT_PROVIDER_MODEL = "gpt-5-codex";
 const DEFAULT_PROVIDER_API_KEY_ENV_VAR = "LOCAL_AGENT_PROVIDER_API_KEY";
 const DEFAULT_PROVIDER_TEMPERATURE = 0.2;
 const DEFAULT_PROVIDER_MAX_TOKENS = 4000;
-const DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS = 120000;
+const DEFAULT_PROVIDER_MAX_CONTEXT_TOKENS = 256000;
 const DEFAULT_PROVIDER_TIMEOUT = 30;
 const DEFAULT_ALLOWED_SHELL: ToolRuntimeConfig["allowedShell"] = "powershell";
+const DEFAULT_AUTONOMY_PROFILES: AutonomyProfile[] = [
+  {
+    id: "locked_down",
+    name: "Locked Down",
+    level: "L0",
+    maxSteps: 4,
+    maxParallelSubtasks: 1,
+    allowBackground: false,
+    allowSubagents: false,
+    allowFileWrite: "blocked",
+    allowShell: "blocked",
+    allowNetwork: false,
+    memoryRecallPolicy: "workspace_first_session_boosted",
+    retryLimit: 0,
+    timeoutMs: 600_000,
+  },
+  {
+    id: "conservative",
+    name: "Conservative",
+    level: "L1",
+    maxSteps: 10,
+    maxParallelSubtasks: 2,
+    allowBackground: false,
+    allowSubagents: true,
+    allowFileWrite: "approval_required",
+    allowShell: "approval_required",
+    allowNetwork: false,
+    memoryRecallPolicy: "workspace_first_session_boosted",
+    retryLimit: 1,
+    timeoutMs: 600_000,
+  },
+  {
+    id: "balanced",
+    name: "Balanced",
+    level: "L2",
+    maxSteps: 20,
+    maxParallelSubtasks: 4,
+    allowBackground: true,
+    allowSubagents: true,
+    allowFileWrite: "approval_required",
+    allowShell: "approval_required",
+    allowNetwork: false,
+    memoryRecallPolicy: "workspace_first_session_boosted",
+    retryLimit: 2,
+    timeoutMs: 600_000,
+  },
+  {
+    id: "autonomous",
+    name: "Autonomous",
+    level: "L3",
+    maxSteps: 40,
+    maxParallelSubtasks: 6,
+    allowBackground: true,
+    allowSubagents: true,
+    allowFileWrite: "approval_required",
+    allowShell: "approval_required",
+    allowNetwork: false,
+    memoryRecallPolicy: "workspace_first_session_boosted",
+    retryLimit: 2,
+    timeoutMs: 600_000,
+  },
+];
+const DEFAULT_AGENT_SOUL_PROFILE: AgentSoulProfile = {
+  id: "default",
+  name: "Default",
+  description: "Default local coding agent identity.",
+  identity: "A capable local coding agent that works inside the user's desktop runtime.",
+  principles: [
+    "Be practical, careful, and transparent about uncertainty.",
+    "Prefer existing project patterns over unnecessary new abstractions.",
+    "Keep the user in control of risky actions.",
+  ],
+  communicationStyle: "Clear, concise, collaborative.",
+  reasoningStyle: "Inspect the current workspace before making changes.",
+  collaborationStyle: "Explain meaningful decisions and keep work scoped to the user's request.",
+  domainPreferences: [],
+  customSystemPrompt: "",
+  enabled: true,
+  scope: "global",
+  createdAt: 0,
+  updatedAt: 0,
+};
 const TRACE_LIMIT = 50;
 const TRACE_AUTO_REFRESH_STATUSES = new Set<TaskRecord["status"]>([
   "completed",
@@ -205,6 +292,8 @@ function normalizeRuntimeConfig(config: AppConfig | RuntimeConfig): RuntimeConfi
   return {
     ...config,
     provider: normalizeProviderConfig(config.provider),
+    autonomy: normalizeAutonomyConfig(config.autonomy),
+    agentSoul: normalizeAgentSoulConfig(config.agentSoul),
     search: config.search ?? {
       glob: [],
       ignore: config.workspace.ignore,
@@ -213,6 +302,101 @@ function normalizeRuntimeConfig(config: AppConfig | RuntimeConfig): RuntimeConfi
       ...config.tools,
       runCommand: normalizeRunCommandConfig(config.tools.runCommand),
     },
+  };
+}
+
+function normalizeAutonomyConfig(autonomy?: Partial<AutonomyConfig>): AutonomyConfig {
+  const rawProfiles = autonomy?.profiles?.length ? autonomy.profiles : DEFAULT_AUTONOMY_PROFILES;
+  const profiles = rawProfiles.map((profile, index) => normalizeAutonomyProfile(profile, index));
+  const activeProfileId = autonomy?.activeProfileId && profiles.some((item) => item.id === autonomy.activeProfileId)
+    ? autonomy.activeProfileId
+    : profiles.find((item) => item.id === "balanced")?.id ?? profiles[0].id;
+  return { activeProfileId, profiles };
+}
+
+function normalizeAutonomyProfile(profile: Partial<AutonomyProfile>, index: number): AutonomyProfile {
+  const fallback = DEFAULT_AUTONOMY_PROFILES[index] ?? DEFAULT_AUTONOMY_PROFILES[2];
+  const merged = { ...fallback, ...profile };
+  return {
+    ...merged,
+    id: merged.id?.trim() || `autonomy_${index + 1}`,
+    name: merged.name?.trim() || `Autonomy ${index + 1}`,
+    level: merged.level || fallback.level,
+    maxSteps: Number(merged.maxSteps || fallback.maxSteps),
+    maxParallelSubtasks: Number(merged.maxParallelSubtasks || fallback.maxParallelSubtasks),
+    allowBackground: Boolean(merged.allowBackground),
+    allowSubagents: Boolean(merged.allowSubagents),
+    allowFileWrite: merged.allowFileWrite || fallback.allowFileWrite,
+    allowShell: merged.allowShell || fallback.allowShell,
+    allowNetwork: Boolean(merged.allowNetwork),
+    memoryRecallPolicy: merged.memoryRecallPolicy || fallback.memoryRecallPolicy,
+    retryLimit: Number(merged.retryLimit ?? fallback.retryLimit),
+    timeoutMs: Number(merged.timeoutMs || fallback.timeoutMs),
+  };
+}
+
+function normalizeAgentSoulConfig(agentSoul?: Partial<AgentSoulConfig>): AgentSoulConfig {
+  const rawProfiles = agentSoul?.profiles?.length ? agentSoul.profiles : [DEFAULT_AGENT_SOUL_PROFILE];
+  const profiles = rawProfiles.map((profile, index) => normalizeAgentSoulProfile(profile, index));
+  const activeProfileId = agentSoul?.activeProfileId && profiles.some((item) => item.id === agentSoul.activeProfileId)
+    ? agentSoul.activeProfileId
+    : profiles[0].id;
+  return {
+    activeProfileId,
+    workspaceInstructions: agentSoul?.workspaceInstructions ?? "",
+    sessionOverrideEnabled: Boolean(agentSoul?.sessionOverrideEnabled),
+    profiles,
+  };
+}
+
+function normalizeAgentSoulProfile(profile: Partial<AgentSoulProfile>, index: number): AgentSoulProfile {
+  const merged = { ...DEFAULT_AGENT_SOUL_PROFILE, ...profile };
+  return {
+    ...merged,
+    id: merged.id?.trim() || `soul_${index + 1}`,
+    name: merged.name?.trim() || `Soul ${index + 1}`,
+    description: merged.description ?? "",
+    identity: merged.identity || DEFAULT_AGENT_SOUL_PROFILE.identity,
+    principles: Array.isArray(merged.principles) ? merged.principles.map(String).filter(Boolean) : [],
+    communicationStyle: merged.communicationStyle ?? "",
+    reasoningStyle: merged.reasoningStyle ?? "",
+    collaborationStyle: merged.collaborationStyle ?? "",
+    domainPreferences: Array.isArray(merged.domainPreferences)
+      ? merged.domainPreferences.map(String).filter(Boolean)
+      : [],
+    customSystemPrompt: merged.customSystemPrompt ?? "",
+    enabled: merged.enabled !== false,
+    scope: merged.scope || "global",
+    createdAt: merged.createdAt ?? 0,
+    updatedAt: merged.updatedAt ?? 0,
+  };
+}
+
+function buildSettingsAgentBehaviorConfig(config: RuntimeConfig | null): SettingsAgentBehaviorConfig {
+  const autonomy = normalizeAutonomyConfig(config?.autonomy);
+  const agentSoul = normalizeAgentSoulConfig(config?.agentSoul);
+  const activeSoul = agentSoul.profiles.find((profile) => profile.id === agentSoul.activeProfileId)
+    ?? agentSoul.profiles[0]
+    ?? DEFAULT_AGENT_SOUL_PROFILE;
+  return {
+    autonomyActiveProfileId: autonomy.activeProfileId,
+    autonomyProfiles: autonomy.profiles.map((profile) => ({
+      id: profile.id,
+      name: profile.name,
+      level: String(profile.level),
+      maxSteps: profile.maxSteps,
+      maxParallelSubtasks: profile.maxParallelSubtasks,
+      allowBackground: profile.allowBackground,
+      allowSubagents: profile.allowSubagents,
+    })),
+    soulActiveProfileId: activeSoul.id,
+    soulName: activeSoul.name,
+    soulIdentity: activeSoul.identity,
+    soulCommunicationStyle: activeSoul.communicationStyle,
+    soulReasoningStyle: activeSoul.reasoningStyle,
+    soulCollaborationStyle: activeSoul.collaborationStyle,
+    soulCustomSystemPrompt: activeSoul.customSystemPrompt,
+    workspaceInstructions: agentSoul.workspaceInstructions,
   };
 }
 
@@ -3785,6 +3969,54 @@ export function App() {
     }
   }
 
+  async function handleAgentBehaviorChange(next: SettingsAgentBehaviorConfig) {
+    if (!config) {
+      return;
+    }
+
+    setError(null);
+
+    try {
+      const autonomy = normalizeAutonomyConfig({
+        ...config.autonomy,
+        activeProfileId: next.autonomyActiveProfileId,
+      });
+      const agentSoul = normalizeAgentSoulConfig(config.agentSoul);
+      const activeSoulId = next.soulActiveProfileId || agentSoul.activeProfileId;
+      const now = Date.now();
+      const profiles = agentSoul.profiles.map((profile) =>
+        profile.id === activeSoulId
+          ? {
+              ...profile,
+              name: next.soulName.trim() || profile.name,
+              identity: next.soulIdentity,
+              communicationStyle: next.soulCommunicationStyle,
+              reasoningStyle: next.soulReasoningStyle,
+              collaborationStyle: next.soulCollaborationStyle,
+              customSystemPrompt: next.soulCustomSystemPrompt,
+              updatedAt: now,
+            }
+          : profile,
+      );
+      const result = await runtimeClient.updateConfig({
+        config: {
+          autonomy,
+          agentSoul: {
+            ...agentSoul,
+            activeProfileId: activeSoulId,
+            workspaceInstructions: next.workspaceInstructions,
+            profiles,
+          },
+        },
+      });
+      const normalized = normalizeRuntimeConfig(result.config);
+      setConfig(normalized);
+      addToast("success", "Agent behavior settings saved");
+    } catch (reason) {
+      toastError(reason);
+    }
+  }
+
   async function refreshSkills() {
     setError(null);
     try {
@@ -4803,6 +5035,10 @@ export function App() {
       };
     });
   }, [config, providerTestResult]);
+  const settingsAgentBehavior = useMemo(
+    () => buildSettingsAgentBehaviorConfig(config),
+    [config],
+  );
   const sessionTaskCount = useMemo(() => {
     if (!activeSessionRecord) {
       return undefined;
@@ -5164,6 +5400,8 @@ export function App() {
         providerFeedback={providerFeedback}
         permissionMode={approvalModeToSettingsMode(config?.policy.approvalMode)}
         onPermissionModeChange={handlePermissionModeChange}
+        agentBehavior={settingsAgentBehavior}
+        onAgentBehaviorChange={handleAgentBehaviorChange}
         general={generalSettings}
         onGeneralChange={handleGeneralSettingsChange}
         im={imSettings}

@@ -128,15 +128,19 @@ class MemoryRetriever:
         session_id: str | None = None,
         limit: int = 10,
         threshold: float = 0.15,
+        session_boost: float = 0.05,
     ) -> list[tuple[MemoryEntry, float]]:
-        """Search memories and return (entry, score) pairs above *threshold*."""
+        """Search workspace memories and return (entry, score) pairs above *threshold*.
+
+        Workspace scope is primary. ``session_id`` is only used as a relevance
+        boost for memories from the active session, not as a hard filter.
+        """
         query_tokens = _filter_stop(_tokenize(query))
         if not query_tokens:
             return []
 
         candidates = self._store.query_all(
             workspace_id=workspace_id,
-            session_id=session_id,
             kind=kind,
             limit=50,
         )
@@ -149,6 +153,8 @@ class MemoryRetriever:
                 doc_text += " " + " ".join(entry.keywords)
             doc_tokens = _filter_stop(_tokenize(doc_text))
             score = _jaccard_weighted(query_tokens, doc_tokens)
+            if session_id and entry.session_id == session_id:
+                score += session_boost
             if score >= threshold:
                 scored.append((entry, score))
 

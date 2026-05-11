@@ -358,10 +358,10 @@
 - [x] task completed 生成 memory candidates。`_remember_task_result()` 写入 TASK_LEARNING。
 - [x] task failed 只允许生成 `open_issue` 或 `task_learning`。failed → OPEN_ISSUE + confidence 0.5。
 - [ ] 用户明确偏好生成 `user_preference`。缺口：无显式检测用户偏好的逻辑。
-- [ ] supplement 可生成 memory candidate，但不默认全部写入 long_term。缺口：supplement 不触发 memory 写入。
+- [x] supplement 可生成 memory candidate，但不默认全部写入 long_term。`_remember_supplement_candidates()` 在 supplement 消费时匹配偏好模式写入 WORKING memory，5 测试覆盖。
 - [x] 写入前做相似记忆检索。`remember(dedup=True)` 使用 Jaccard 相似度。
 - [x] 相似度高时更新已有记忆。`manager.py:52-66` 合并 metadata。
-- [ ] 冲突时保留冲突标记。缺口：无冲突检测或标记机制。
+- [x] 冲突时保留冲突标记。`MemoryManager._detect_conflict()` 否定模式检测 + `_check_and_mark_conflicts()` 双向标记 `conflictingIds`/`hasConflict`，3 测试覆盖。
 - [x] pinned memory 不自动覆盖。`remember()` dedup 路径不会覆盖 pinned 条目。
 
 ### 4.5.4 记忆召回策略
@@ -534,7 +534,7 @@
 
 - [x] worker 必须有 assignedScope。`planner_contract.py` ownedScope 必填，`write_scope_enforcement.py` 执行。
 - [x] worker 只能读写 assignedScope。`check_patch_in_scope()` + `check_command_allowed()` 强制执行。
-- [ ] worker 输出结构化结果。部分：artifact candidates 有结构化输出，但 result summary 仍为自由文本。
+- [x] worker 输出结构化结果。`structured_result_json` 列 + `_finalize_task()` 构建 summary/status/changedFiles/testsRun/risks/keyFindings，6 测试覆盖。
 - [x] worker 不直接 commit。`_ensure_command_safe_for_child_worker()` regex 拦截 git commit/push，P6.4 完成。
 - [x] worker changedFiles 必填。`tasks.changed_files_json` 列，child executor 填写。
 - [x] worker testsRun 必填。`tasks.tests_run_json` 列 + `_validate_worker_output()` 警告，P6.4.5 完成。

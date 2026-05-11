@@ -62,6 +62,54 @@ export interface PolicyConfig {
   allowNetwork: boolean;
 }
 
+export type AutonomyLevel = "L0" | "L1" | "L2" | "L3" | "L4";
+export type AuthorityPolicy = "blocked" | "approval_required" | "allowed";
+
+export interface AutonomyProfile {
+  id: string;
+  name: string;
+  level: AutonomyLevel | string;
+  maxSteps: number;
+  maxParallelSubtasks: number;
+  allowBackground: boolean;
+  allowSubagents: boolean;
+  allowFileWrite: AuthorityPolicy | string;
+  allowShell: AuthorityPolicy | string;
+  allowNetwork: boolean;
+  memoryRecallPolicy: string;
+  retryLimit: number;
+  timeoutMs: number;
+}
+
+export interface AutonomyConfig {
+  activeProfileId: string;
+  profiles: AutonomyProfile[];
+}
+
+export interface AgentSoulProfile {
+  id: string;
+  name: string;
+  description?: string;
+  identity: string;
+  principles: string[];
+  communicationStyle: string;
+  reasoningStyle: string;
+  collaborationStyle: string;
+  domainPreferences: string[];
+  customSystemPrompt: string;
+  enabled: boolean;
+  scope: string;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface AgentSoulConfig {
+  activeProfileId: string;
+  workspaceInstructions: string;
+  sessionOverrideEnabled?: boolean;
+  profiles: AgentSoulProfile[];
+}
+
 export interface ToolRuntimeConfig {
   allowedShell: "powershell" | "bash" | "zsh";
   allowedCommands?: string[];
@@ -91,6 +139,8 @@ export interface AppConfig {
   workspace: WorkspaceConfig;
   search: SearchConfig;
   policy: PolicyConfig;
+  autonomy: AutonomyConfig;
+  agentSoul: AgentSoulConfig;
   tools: {
     runCommand: ToolRuntimeConfig;
   };
@@ -109,7 +159,7 @@ export const defaultAppConfig: AppConfig = {
     temperature: 0.2,
     maxTokens: 4000,
     maxOutputTokens: 4000,
-    maxContextTokens: 120000,
+    maxContextTokens: 256000,
     timeout: 30,
     activeProfileId: "default",
     profiles: [
@@ -126,7 +176,7 @@ export const defaultAppConfig: AppConfig = {
         temperature: 0.2,
         maxTokens: 4000,
         maxOutputTokens: 4000,
-        maxContextTokens: 120000,
+        maxContextTokens: 256000,
         timeout: 30,
       },
     ],
@@ -147,6 +197,98 @@ export const defaultAppConfig: AppConfig = {
     maxPatchRepairAttempts: 2,
     maxFilesPerPatch: 20,
     allowNetwork: false,
+  },
+  autonomy: {
+    activeProfileId: "balanced",
+    profiles: [
+      {
+        id: "locked_down",
+        name: "Locked Down",
+        level: "L0",
+        maxSteps: 4,
+        maxParallelSubtasks: 1,
+        allowBackground: false,
+        allowSubagents: false,
+        allowFileWrite: "blocked",
+        allowShell: "blocked",
+        allowNetwork: false,
+        memoryRecallPolicy: "workspace_first_session_boosted",
+        retryLimit: 0,
+        timeoutMs: 600_000,
+      },
+      {
+        id: "conservative",
+        name: "Conservative",
+        level: "L1",
+        maxSteps: 10,
+        maxParallelSubtasks: 2,
+        allowBackground: false,
+        allowSubagents: true,
+        allowFileWrite: "approval_required",
+        allowShell: "approval_required",
+        allowNetwork: false,
+        memoryRecallPolicy: "workspace_first_session_boosted",
+        retryLimit: 1,
+        timeoutMs: 600_000,
+      },
+      {
+        id: "balanced",
+        name: "Balanced",
+        level: "L2",
+        maxSteps: 20,
+        maxParallelSubtasks: 4,
+        allowBackground: true,
+        allowSubagents: true,
+        allowFileWrite: "approval_required",
+        allowShell: "approval_required",
+        allowNetwork: false,
+        memoryRecallPolicy: "workspace_first_session_boosted",
+        retryLimit: 2,
+        timeoutMs: 600_000,
+      },
+      {
+        id: "autonomous",
+        name: "Autonomous",
+        level: "L3",
+        maxSteps: 40,
+        maxParallelSubtasks: 6,
+        allowBackground: true,
+        allowSubagents: true,
+        allowFileWrite: "approval_required",
+        allowShell: "approval_required",
+        allowNetwork: false,
+        memoryRecallPolicy: "workspace_first_session_boosted",
+        retryLimit: 2,
+        timeoutMs: 600_000,
+      },
+    ],
+  },
+  agentSoul: {
+    activeProfileId: "default",
+    workspaceInstructions: "",
+    sessionOverrideEnabled: false,
+    profiles: [
+      {
+        id: "default",
+        name: "Default",
+        description: "Default local coding agent identity.",
+        identity: "A capable local coding agent that works inside the user's desktop runtime.",
+        principles: [
+          "Be practical, careful, and transparent about uncertainty.",
+          "Prefer existing project patterns over unnecessary new abstractions.",
+          "Keep the user in control of risky actions.",
+        ],
+        communicationStyle: "Clear, concise, collaborative.",
+        reasoningStyle: "Inspect the current workspace before making changes.",
+        collaborationStyle: "Explain meaningful decisions and keep work scoped to the user's request.",
+        domainPreferences: [],
+        customSystemPrompt: "",
+        enabled: true,
+        scope: "global",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+    ],
   },
   tools: {
     runCommand: {

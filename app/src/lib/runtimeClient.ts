@@ -289,7 +289,7 @@ function buildMockRuntimeConfig(): RuntimeConfig {
     temperature: config.provider.temperature,
     maxTokens: config.provider.maxOutputTokens,
     maxOutputTokens: config.provider.maxOutputTokens,
-    maxContextTokens: 120000,
+    maxContextTokens: 256000,
     timeout: 30,
   };
   return {
@@ -631,6 +631,20 @@ function mergeRuntimeConfig(current: RuntimeConfig, next: ConfigUpdateParams): R
     policy: {
       ...current.policy,
       ...patch.policy,
+    },
+    autonomy: {
+      ...current.autonomy,
+      ...patch.autonomy,
+      activeProfileId: patch.autonomy?.activeProfileId ?? current.autonomy.activeProfileId,
+      profiles: patch.autonomy?.profiles ?? current.autonomy.profiles,
+    },
+    agentSoul: {
+      ...current.agentSoul,
+      ...patch.agentSoul,
+      activeProfileId: patch.agentSoul?.activeProfileId ?? current.agentSoul.activeProfileId,
+      workspaceInstructions: patch.agentSoul?.workspaceInstructions ?? current.agentSoul.workspaceInstructions,
+      sessionOverrideEnabled: patch.agentSoul?.sessionOverrideEnabled ?? current.agentSoul.sessionOverrideEnabled,
+      profiles: patch.agentSoul?.profiles ?? current.agentSoul.profiles,
     },
     tools: {
       ...current.tools,

@@ -13,6 +13,7 @@ summary of the older turns and retains only the recent tail verbatim.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -34,6 +35,18 @@ class CompactionResult:
     summary: str | None = None
     strategy: str = "primer_summary_recent"
     compaction_id: str | None = None
+
+
+@dataclass(slots=True)
+class CompactionDecision:
+    """Decision about whether a context should be compacted."""
+
+    should_compact: bool
+    reason: str
+    tokens_before: int
+    max_tokens: int
+    source: str = "rule"
+    force: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +89,7 @@ class ContextCompactor:
         *,
         message_ids: list[str] | None = None,
         task_id: str | None = None,
+        force: bool = False,
     ) -> CompactionResult:
         """Compact *messages* to fit within *max_tokens*.
 
@@ -89,7 +103,7 @@ class ContextCompactor:
         # Compute per-message tokens once
         msg_tokens = [estimate_tokens(m.get("content", "")) for m in messages]
         tokens_before = sum(msg_tokens)
-        if tokens_before <= max_tokens:
+        if tokens_before <= max_tokens and not force:
             return CompactionResult(
                 kept_messages=list(messages),
                 tokens_before=tokens_before,
@@ -171,6 +185,60 @@ class ContextCompactor:
             compaction_id=compaction_id,
         )
 
+    def should_compact(
+        self,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+        *,
+        near_budget_ratio: float = 0.80,
+        force_budget_ratio: float = 1.0,
+    ) -> CompactionDecision:
+        """Decide whether to compact now.
+
+        Runtime rules keep hard safety boundaries deterministic:
+        over budget always compacts, well below budget never asks the model,
+        and near-budget contexts may use the provider as an advisory signal.
+        """
+        tokens_before = sum(estimate_tokens(m.get("content", "")) for m in messages)
+        if max_tokens <= 0:
+            return CompactionDecision(
+                should_compact=True,
+                reason="invalid or exhausted token budget",
+                tokens_before=tokens_before,
+                max_tokens=max_tokens,
+                source="rule",
+                force=True,
+            )
+        if tokens_before >= int(max_tokens * force_budget_ratio):
+            return CompactionDecision(
+                should_compact=True,
+                reason="context exceeds token budget",
+                tokens_before=tokens_before,
+                max_tokens=max_tokens,
+                source="rule",
+            )
+        if tokens_before < int(max_tokens * near_budget_ratio):
+            return CompactionDecision(
+                should_compact=False,
+                reason="context is comfortably within token budget",
+                tokens_before=tokens_before,
+                max_tokens=max_tokens,
+                source="rule",
+            )
+
+        llm_decision = self._llm_compaction_decision(messages, tokens_before, max_tokens)
+        if llm_decision is not None:
+            return llm_decision
+
+        return CompactionDecision(
+            should_compact=tokens_before >= int(max_tokens * 0.90),
+            reason="near token budget; provider unavailable or undecidable",
+            tokens_before=tokens_before,
+            max_tokens=max_tokens,
+            source="rule_fallback",
+            force=tokens_before < max_tokens,
+        )
+
     # -- internals --
 
     def _split_segments(
@@ -229,6 +297,48 @@ class ContextCompactor:
         head = history_text[: max_chars // 2]
         tail = history_text[len(history_text) - max_chars // 2 :]
         return f"{head}\n…[truncated]…\n{tail}"
+
+    def _llm_compaction_decision(
+        self,
+        messages: list[dict[str, Any]],
+        tokens_before: int,
+        max_tokens: int,
+    ) -> CompactionDecision | None:
+        if self._provider is None:
+            return None
+        preview = "\n".join(
+            f"[{m.get('role', '?')}] {str(m.get('content', ''))[:500]}"
+            for m in messages[-8:]
+        )
+        prompt = (
+            "Decide whether to compact this conversation context before the next model call.\n"
+            "Return ONLY JSON: {\"shouldCompact\": true|false, \"reason\": \"short reason\"}.\n"
+            "Prefer compaction when older details can be summarized safely; avoid compaction "
+            "when exact recent tool outputs or code snippets are still critical.\n\n"
+            f"Estimated tokens: {tokens_before}\n"
+            f"Max tokens: {max_tokens}\n"
+            f"Recent context preview:\n{preview}"
+        )
+        try:
+            result = self._provider.generate(prompt, {})
+            raw = result.get("message") or result.get("content") or ""
+            match_start = raw.find("{")
+            match_end = raw.rfind("}")
+            if match_start < 0 or match_end <= match_start:
+                return None
+            payload = json.loads(raw[match_start:match_end + 1])
+            should = bool(payload.get("shouldCompact", False))
+            reason = str(payload.get("reason") or "provider compaction proposal").strip()
+            return CompactionDecision(
+                should_compact=should,
+                reason=reason[:240],
+                tokens_before=tokens_before,
+                max_tokens=max_tokens,
+                source="llm",
+                force=should and tokens_before < max_tokens,
+            )
+        except Exception:
+            return None
 
     @staticmethod
     def _hash_primers(primers: list[dict]) -> str:

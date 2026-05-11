@@ -6,6 +6,7 @@ import type {
   TaskRecord,
   WorkspaceRef,
 } from "@shared";
+import { defaultAppConfig } from "@shared";
 
 const now = Date.now();
 
@@ -94,7 +95,7 @@ export function buildMockConfig(): AppConfig {
       temperature: 0.2,
       maxTokens: 4000,
       maxOutputTokens: 4000,
-      maxContextTokens: 120000,
+      maxContextTokens: 256000,
       timeout: 30,
       activeProfileId: "default",
       profiles: [
@@ -110,7 +111,7 @@ export function buildMockConfig(): AppConfig {
           temperature: 0.2,
           maxTokens: 4000,
           maxOutputTokens: 4000,
-          maxContextTokens: 120000,
+          maxContextTokens: 256000,
           timeout: 30,
           lastCheckedAt: now,
           lastStatus: "mocked",
@@ -118,6 +119,8 @@ export function buildMockConfig(): AppConfig {
         },
       ],
     },
+    autonomy: defaultAppConfig.autonomy,
+    agentSoul: defaultAppConfig.agentSoul,
     workspace: {
       rootPath: DEFAULT_WORKSPACE_PATH,
       ignore: [".git", "node_modules", "dist", ".venv", "target"],

@@ -69,6 +69,8 @@ class JsonRpcServer:
             "approval.submit": self._orchestrator.submit_approval,
             "config.get": self._store.get_config,
             "config.update": self._store.update_config,
+            "config.effective": self._orchestrator.config_effective,
+            "prompt.preview": self._orchestrator.prompt_preview,
             "provider.test": self._orchestrator.test_provider,
             "diff.get": self._store.get_patch,
             "command_log.get": self._store.get_command_log,

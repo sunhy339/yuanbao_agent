@@ -208,6 +208,72 @@ class Orchestrator:
                 redacted = redacted.replace(env_value, "[redacted]")
         return redacted
 
+    def config_effective(self, _params: dict[str, Any]) -> dict[str, Any]:
+        """Return the fully resolved runtime configuration."""
+        config = self._store.get_config({})["config"]
+        provider_profile = self._active_config_profile(config, "provider")
+        autonomy_profile = self._active_config_profile(config, "autonomy")
+        agent_soul_profile = self._active_config_profile(config, "agentSoul")
+
+        provider_config = config.get("provider") if isinstance(config, dict) else {}
+        streaming_mode = (
+            str((provider_config or {}).get("mode") or "").strip().lower()
+            in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}
+            if hasattr(self._provider, "stream") else False
+        )
+
+        return {
+            "providerProfile": provider_profile or {},
+            "autonomyProfile": autonomy_profile,
+            "agentSoulProfile": agent_soul_profile,
+            "contextBudget": {
+                "maxContextTokens": self._context_builder._max_context_tokens(config),
+            },
+            "toolPolicy": (config.get("policy") or {}).get("toolPolicy", "strict_whitelist"),
+            "memoryPolicy": (config.get("memory") or {}).get("policy", {}),
+            "searchMode": config.get("search", {}).get("mode", "hybrid"),
+            "streamingEnabled": streaming_mode,
+            "activeProfileIds": {
+                "provider": (provider_config or {}).get("activeProfileId"),
+                "autonomy": (config.get("autonomy") or {}).get("activeProfileId"),
+                "agentSoul": (config.get("agentSoul") or {}).get("activeProfileId"),
+            },
+        }
+
+    def prompt_preview(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Preview effective prompt layers without executing a task."""
+        config = self._store.get_config({})["config"]
+        # Resolve workspace_root: sessionId → workspace, or direct workspaceRoot param
+        session_id = params.get("sessionId")
+        if session_id:
+            session = self._store.require_session(session_id)
+            workspace = self._store.require_workspace(session["workspaceId"])
+            workspace_root = workspace.get("rootPath", "")
+        else:
+            workspace_root = params.get("workspaceRoot", "/unknown")
+        role = params.get("role")
+        skill_id = params.get("skillId")
+        skill_preset = self._context_builder._resolve_skill(skill_id) if skill_id else None
+
+        system_text, prompt_layers = self._context_builder._compose_system_prompt(
+            workspace_root=workspace_root,
+            config=config,
+            role=role,
+            skill_preset=skill_preset,
+        )
+
+        # Mark runtime-owned layers as locked
+        for layer in prompt_layers:
+            if layer.get("name") == "runtime_safety":
+                layer["locked"] = True
+                layer["editable"] = False
+
+        return {
+            "systemPrompt": system_text,
+            "layers": prompt_layers,
+            "totalTokenEstimate": sum(l.get("tokenEstimate", 0) for l in prompt_layers),
+        }
+
     def test_provider(self, params: dict[str, Any]) -> dict[str, Any]:
         params = params if isinstance(params, dict) else {}
         provider_patch = params.get("provider") if isinstance(params, dict) else None

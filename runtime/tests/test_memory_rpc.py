@@ -206,3 +206,112 @@ class TestMemoryPinRpc:
         runtime = _make_runtime(tmp_path)
         resp = _rpc(runtime, "memory.pin", {})
         assert "error" in resp
+
+
+class TestMemoryPromoteRpc:
+    """memory.promote upgrades a candidate to LONG_TERM."""
+
+    def test_promote_single_entry(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        from local_agent_runtime.memory.store import MemoryStore
+        from local_agent_runtime.memory.types import MemoryKind
+        mem = MemoryStore(runtime.store)
+        entry = mem.create(
+            kind=MemoryKind.SESSION, content="Always use type hints",
+            workspace_id="w1",
+            metadata={"source": "supplement", "category": "user_preference"},
+        )
+
+        resp = _rpc(runtime, "memory.promote", {"entryId": entry.id})
+        assert resp["result"]["entry"]["kind"] == "long_term"
+        assert resp["result"]["entry"]["id"] == entry.id
+
+    def test_promote_batch(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        from local_agent_runtime.memory.store import MemoryStore
+        from local_agent_runtime.memory.types import MemoryKind
+        mem = MemoryStore(runtime.store)
+        e1 = mem.create(kind=MemoryKind.SESSION, content="pref-1", workspace_id="w1")
+        e2 = mem.create(kind=MemoryKind.SESSION, content="pref-2", workspace_id="w1")
+
+        resp = _rpc(runtime, "memory.promote", {"entryIds": [e1.id, e2.id]})
+        assert resp["result"]["promoted"] == 2
+
+    def test_promote_nonexistent_returns_error(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        resp = _rpc(runtime, "memory.promote", {"entryId": "ghost"})
+        assert "error" in resp
+
+    def test_promote_without_id_returns_error(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        resp = _rpc(runtime, "memory.promote", {})
+        assert "error" in resp
+
+
+class TestMemoryCandidatesRpc:
+    """memory.candidates lists entries eligible for promotion."""
+
+    def test_candidates_returns_supplement_entries(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        from local_agent_runtime.memory.store import MemoryStore
+        from local_agent_runtime.memory.types import MemoryKind
+        mem = MemoryStore(runtime.store)
+        mem.create(
+            kind=MemoryKind.SESSION, content="Always prefer snake_case",
+            workspace_id="w1",
+            metadata={"source": "supplement", "category": "user_preference"},
+        )
+        mem.create(
+            kind=MemoryKind.SESSION, content="Regular task result",
+            workspace_id="w1",
+            metadata={"source": "task_result"},
+        )
+
+        resp = _rpc(runtime, "memory.candidates", {"workspaceId": "w1"})
+        entries = resp["result"]["entries"]
+        assert len(entries) == 1
+        assert "snake_case" in entries[0]["content"]
+
+    def test_candidates_returns_user_preference_entries(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        from local_agent_runtime.memory.store import MemoryStore
+        from local_agent_runtime.memory.types import MemoryKind
+        mem = MemoryStore(runtime.store)
+        mem.create(
+            kind=MemoryKind.SESSION, content="We use tabs not spaces",
+            workspace_id="w1",
+            metadata={"category": "project_convention"},
+        )
+
+        resp = _rpc(runtime, "memory.candidates", {"workspaceId": "w1"})
+        entries = resp["result"]["entries"]
+        assert len(entries) == 1
+
+    def test_candidates_excludes_long_term(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        from local_agent_runtime.memory.store import MemoryStore
+        from local_agent_runtime.memory.types import MemoryKind
+        mem = MemoryStore(runtime.store)
+        mem.create(
+            kind=MemoryKind.LONG_TERM, content="Already promoted",
+            workspace_id="w1",
+            metadata={"source": "supplement"},
+        )
+
+        resp = _rpc(runtime, "memory.candidates", {"workspaceId": "w1"})
+        entries = resp["result"]["entries"]
+        assert len(entries) == 0
+
+    def test_candidates_empty_when_no_matches(self, tmp_path: Any) -> None:
+        runtime = _make_runtime(tmp_path)
+        from local_agent_runtime.memory.store import MemoryStore
+        from local_agent_runtime.memory.types import MemoryKind
+        mem = MemoryStore(runtime.store)
+        mem.create(
+            kind=MemoryKind.SESSION, content="Some task note",
+            workspace_id="w1",
+            metadata={"source": "task_result"},
+        )
+
+        resp = _rpc(runtime, "memory.candidates", {"workspaceId": "w1"})
+        assert resp["result"]["entries"] == []

@@ -123,6 +123,8 @@ class JsonRpcServer:
             "memory.delete": self._memory_delete,
             "memory.pin": self._memory_pin,
             "memory.unpin": self._memory_unpin,
+            "memory.promote": self._memory_promote,
+            "memory.candidates": self._memory_candidates,
             "feature.list": self._feature_list,
             "feature.set": self._feature_set,
         }
@@ -354,6 +356,67 @@ class JsonRpcServer:
         if updated is None:
             raise ValueError(f"Memory entry not found: {entry_id}")
         return {"entry": _entry_to_dict(updated)}
+
+    def _memory_promote(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Promote a memory candidate to LONG_TERM.
+
+        Optionally accepts a list of entryIds for batch promotion.
+        """
+        entry_ids = params.get("entryIds") or []
+        single_id = params.get("entryId") or params.get("entry_id", "")
+        if single_id:
+            entry_ids = [single_id]
+        if not entry_ids:
+            raise ValueError("entryId or entryIds is required")
+
+        mem_store = self._memory_store()
+        target_kind = MemoryKind.LONG_TERM
+        kind_str = params.get("targetKind")
+        if kind_str:
+            target_kind = MemoryKind(kind_str)
+
+        if len(entry_ids) == 1:
+            updated = mem_store.promote(entry_ids[0], target_kind)
+            if updated is None:
+                raise ValueError(f"Memory entry not found: {entry_ids[0]}")
+            return {"entry": _entry_to_dict(updated)}
+
+        count = mem_store.promote_batch(entry_ids, target_kind)
+        return {"promoted": count}
+
+    def _memory_candidates(self, params: dict[str, Any]) -> dict[str, Any]:
+        """List memory candidates (WORKING/SESSION entries eligible for promotion).
+
+        Candidates are entries with source=supplement or category in
+        (user_preference, project_convention) that have not yet been promoted
+        to LONG_TERM.
+        """
+        mem_store = self._memory_store()
+        workspace_id = params.get("workspaceId") or None
+        session_id = params.get("sessionId") or None
+        limit = int(params.get("limit", 50))
+
+        # Query WORKING + SESSION memories for the given scope
+        candidates: list[MemoryEntry] = []
+        for kind in (MemoryKind.WORKING, MemoryKind.SESSION):
+            entries = mem_store.query_all(
+                workspace_id=workspace_id,
+                session_id=session_id,
+                kind=kind,
+                limit=limit,
+            )
+            candidates.extend(entries)
+
+        # Filter to only include entries with candidate markers
+        _CANDIDATE_SOURCES = {"supplement", "user_message"}
+        _CANDIDATE_CATEGORIES = {"user_preference", "project_convention"}
+        filtered: list[MemoryEntry] = []
+        for entry in candidates:
+            meta = entry.metadata or {}
+            if meta.get("source") in _CANDIDATE_SOURCES or meta.get("category") in _CANDIDATE_CATEGORIES:
+                filtered.append(entry)
+
+        return {"entries": [_entry_to_dict(e) for e in filtered[:limit]]}
 
     # -- Feature flags --
 

@@ -363,6 +363,7 @@ class TestAutonomyReportRpc:
         assert result["memoryRecall"]["count"] == 0
         assert result["contextBudget"] is None
         assert result["policyGateOutcomes"]["allowed"] == 0
+        assert result["hookExecutions"] == []
 
     def test_raises_on_missing_task_id(self, tmp_path: Any) -> None:
         """autonomy.report raises error when taskId is missing."""

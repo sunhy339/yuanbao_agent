@@ -1395,6 +1395,8 @@ class SQLiteStore:
         usage: dict | None = None,
         tool_call_count: int | None = None,
         snapshot_id: str | None = None,
+        turn_decision: str | None = None,
+        thought_summary: str | None = None,
     ) -> dict[str, Any]:
         now = self.now()
         usage_json = json.dumps(usage, ensure_ascii=False) if usage else None
@@ -1406,10 +1408,13 @@ class SQLiteStore:
                 response_usage_json = ?,
                 response_tool_call_count = ?,
                 context_snapshot_id = ?,
+                turn_decision = ?,
+                thought_summary = ?,
                 completed_at = ?
             WHERE id = ?
             """,
-            (finish_reason, usage_json, tool_call_count, snapshot_id, now, turn_id),
+            (finish_reason, usage_json, tool_call_count, snapshot_id,
+             turn_decision, thought_summary, now, turn_id),
         )
         self._conn.commit()
         row = self._conn.execute("SELECT * FROM provider_turns WHERE id = ?", (turn_id,)).fetchone()
@@ -3865,6 +3870,8 @@ class SQLiteStore:
                 response_usage_json TEXT,
                 response_tool_call_count INTEGER,
                 context_snapshot_id TEXT,
+                turn_decision TEXT,
+                thought_summary TEXT,
                 created_at INTEGER NOT NULL,
                 completed_at INTEGER
             )
@@ -4321,6 +4328,7 @@ class SQLiteStore:
         "memory_policy", "artifact_contract", "risk_policy", "approval_policy",
         "test_strategy", "failure_recovery", "event_presentation",
         "synthesis_strategy", "todo_maintenance",
+        "react_turn_decision", "completion_decision",
     })
 
     VALID_PROPOSAL_STATUSES = frozenset({"pending", "accepted", "rejected", "applied"})
@@ -4582,5 +4590,14 @@ class SQLiteStore:
         if proposal_columns and "model_id" not in proposal_columns:
             self._conn.execute("ALTER TABLE proposal_records ADD COLUMN model_id TEXT")
             self._conn.execute("ALTER TABLE proposal_records ADD COLUMN turn_id TEXT")
+
+        # provider_turns: add turn_decision and thought_summary columns
+        pt_columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(provider_turns)").fetchall()
+        }
+        if pt_columns and "turn_decision" not in pt_columns:
+            self._conn.execute("ALTER TABLE provider_turns ADD COLUMN turn_decision TEXT")
+            self._conn.execute("ALTER TABLE provider_turns ADD COLUMN thought_summary TEXT")
 
         self._conn.commit()

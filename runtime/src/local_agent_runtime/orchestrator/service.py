@@ -31,6 +31,7 @@ from ..services.worker_environment import normalize_child_tool_allowlist
 from ..services.worker_runner import WorkerRunner
 from ..router import MetaRouter, RoutingDecision
 from ..policy.decision_advisor import DecisionAdvisor
+from ..react.types import ProviderTurnResult, TurnDecision
 from ..skills.registry import SkillRegistry
 from ..mcp.client import McpClientManager, McpServerConfig, summarize_mcp_exception
 from ..reflection.evaluator import ReflectionEvaluator
@@ -5050,7 +5051,13 @@ class Orchestrator:
                 allow_fallback=not react_started and steps == 0,
                 allow_plain_message_final=react_started,
             )
-            # --- ProviderTurn: mark completed ---
+            # --- Structured turn result for decision tracing ---
+            turn_result = self._parse_turn_result(
+                response,
+                allow_fallback=not react_started and steps == 0,
+                allow_plain_message_final=react_started,
+            )
+            # --- ProviderTurn: mark completed with turn decision ---
             raw_usage = response.get("usage") or {}
             self._store.complete_provider_turn(
                 turn_id=provider_turn["id"],
@@ -5058,6 +5065,21 @@ class Orchestrator:
                 usage=raw_usage,
                 tool_call_count=len(parsed.get("tool_calls") or []),
                 snapshot_id=snapshot["id"],
+                turn_decision=turn_result.decision.value,
+                thought_summary=turn_result.thought_summary[:500] if turn_result.thought_summary else None,
+            )
+            # --- Publish agent.decision.react_turn event ---
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="agent.decision.react_turn",
+                payload={
+                    "step": steps,
+                    "decision": turn_result.decision.value,
+                    "thought_summary": turn_result.thought_summary[:500],
+                    "tool_count": len(parsed.get("tool_calls") or []),
+                    "turn_id": provider_turn["id"],
+                },
             )
             if parsed["status"] == "fallback":
                 return parsed
@@ -5697,6 +5719,73 @@ class Orchestrator:
 
     def _has_deterministic_fallback(self) -> bool:
         return hasattr(self._provider, "choose_tool_sequence") and hasattr(self._provider, "summarize_findings")
+
+    def _parse_turn_result(
+        self,
+        response: Any,
+        *,
+        allow_fallback: bool,
+        allow_plain_message_final: bool,
+    ) -> ProviderTurnResult:
+        """Parse a provider response into a structured :class:`ProviderTurnResult`.
+
+        This is the structured companion to ``_parse_provider_response``.  It
+        extracts the same information plus an explicit :class:`TurnDecision`,
+        ``thought_summary``, ``why_complete``, and ``remaining_risks``.
+        """
+        if not isinstance(response, dict):
+            return ProviderTurnResult(
+                decision=TurnDecision.FAILED,
+                thought_summary="Provider returned non-dict output",
+                message="",
+                raw_response=response if isinstance(response, dict) else None,
+            )
+
+        tool_calls = response.get("tool_calls")
+        message = self._assistant_text(response)
+        thought_summary = response.get("thought_summary") or response.get("thoughtSummary") or message[:200]
+        why_complete = response.get("why_complete") or response.get("whyComplete")
+        remaining_risks = response.get("remaining_risks") or response.get("remainingRisks") or []
+        policy_needs = response.get("policy_needs") or response.get("policyNeeds")
+
+        # Check for explicit decision field from structured provider output
+        explicit_decision = response.get("decision") or response.get("turn_decision")
+        decision: TurnDecision | None = None
+        if explicit_decision and isinstance(explicit_decision, str):
+            try:
+                decision = TurnDecision(explicit_decision)
+            except ValueError:
+                logger.debug("Unknown turn decision %r, inferring from response", explicit_decision)
+
+        # Infer decision from response shape if no explicit value
+        if decision is None:
+            if isinstance(tool_calls, list) and tool_calls:
+                decision = TurnDecision.CONTINUE_WITH_TOOLS
+            else:
+                final_answer = self._final_answer(response, allow_plain_message=allow_plain_message_final)
+                if final_answer is not None:
+                    decision = TurnDecision.FINAL_ANSWER
+                elif allow_fallback and self._has_deterministic_fallback():
+                    decision = TurnDecision.FAILED
+                else:
+                    # No tool calls, no final answer — treat as failed
+                    decision = TurnDecision.FAILED
+
+        final_answer: str | None = None
+        if decision == TurnDecision.FINAL_ANSWER:
+            final_answer = self._final_answer(response, allow_plain_message=allow_plain_message_final) or message
+
+        return ProviderTurnResult(
+            decision=decision,
+            thought_summary=thought_summary,
+            message=message,
+            tool_calls=tool_calls if isinstance(tool_calls, list) else [],
+            final_answer=final_answer,
+            why_complete=why_complete,
+            remaining_risks=remaining_risks if isinstance(remaining_risks, list) else [],
+            policy_needs=policy_needs,
+            raw_response=response,
+        )
 
     def _initial_react_messages(self, context: dict[str, Any], goal: str) -> list[dict[str, Any]]:
         messages = context.get("messages")

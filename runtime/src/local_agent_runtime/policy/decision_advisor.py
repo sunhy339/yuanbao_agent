@@ -116,6 +116,22 @@ register_decision(DecisionKindEntry(
     fallback="single-agent execution",
     trace_event="agent.decision.decomposition",
 ))
+register_decision(DecisionKindEntry(
+    kind="react_turn_decision",
+    description="Decide whether to continue with tools, provide final answer, ask user, seek approval, or stop",
+    required_input_fields=("goal", "step", "tool_results_summary"),
+    allowed_proposal_schema=("decision", "thought_summary", "why_complete", "remaining_risks"),
+    fallback="continue if tool_calls present, final_answer otherwise",
+    trace_event="agent.decision.react_turn",
+))
+register_decision(DecisionKindEntry(
+    kind="completion_decision",
+    description="Validate whether the task is truly complete before marking it done",
+    required_input_fields=("goal", "summary", "changed_files"),
+    allowed_proposal_schema=("is_complete", "why_complete", "remaining_risks"),
+    fallback="accept provider's final answer",
+    trace_event="agent.decision.completion",
+))
 
 
 # ---------------------------------------------------------------------------

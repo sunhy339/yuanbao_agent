@@ -14,6 +14,11 @@ from .types import MemoryEntry, MemoryKind
 class MemoryManager:
     """High-level memory API: remember / recall / consolidate."""
 
+    # Negation patterns that flip meaning when present in one text but not the other
+    _NEGATION_PATTERNS: list[str] = [
+        "don't ", "do not ", "never ", "not ", "avoid ", "no ",
+    ]
+
     def __init__(self, store: MemoryStore, retriever: MemoryRetriever) -> None:
         self._store = store
         self._retriever = retriever
@@ -34,7 +39,9 @@ class MemoryManager:
         """Store a memory entry with auto-extracted keywords.
 
         When *dedup* is True, checks for similar existing entries and merges
-        with the best match instead of creating a duplicate.
+        with the best match instead of creating a duplicate.  If the content
+        conflicts with an existing entry (similar topic but opposite meaning),
+        both entries are marked with ``conflictingIds`` in their metadata.
         """
         keywords = extract_keywords(content)
 
@@ -48,6 +55,9 @@ class MemoryManager:
             )
             if similar:
                 best_entry, best_score = similar[0]
+                # Detect conflict before merge
+                if self._detect_conflict(content, best_entry.content):
+                    self._mark_conflict(best_entry.id, content, metadata)
                 # Merge: update content and metadata, keep higher confidence
                 existing_meta = best_entry.metadata or {}
                 new_meta = metadata or {}
@@ -77,7 +87,7 @@ class MemoryManager:
                     metadata=merged_meta,
                 )
 
-        return self._store.create(
+        new_entry = self._store.create(
             kind=kind,
             content=content,
             session_id=session_id,
@@ -85,6 +95,12 @@ class MemoryManager:
             keywords=keywords,
             metadata=metadata,
         )
+
+        # Even when not merging, check for conflicts with existing entries
+        if workspace_id:
+            self._check_and_mark_conflicts(new_entry, workspace_id)
+
+        return new_entry
 
     def recall(
         self,
@@ -94,10 +110,11 @@ class MemoryManager:
         query: str,
         limit: int = 10,
     ) -> list[MemoryEntry]:
-        """Three-path recall: recent + semantic search.
+        """Recall relevant memories with workspace-first semantic search.
 
-        1. **Recent**: most recently accessed memories for the workspace/session.
-        2. **Semantic**: keyword similarity search against all memory entries.
+        1. **Semantic**: keyword search across the workspace, with current
+           session memories boosted but not used as a hard filter.
+        2. **Recent**: most recently accessed memories for the workspace/session.
 
         Results are deduplicated, boosted by pinned status and confidence,
         then returned in relevance order.
@@ -181,6 +198,70 @@ class MemoryManager:
             score -= 0.1
 
         return max(score, 0.0)
+
+    @classmethod
+    def _detect_conflict(cls, text_a: str, text_b: str) -> bool:
+        """Detect if two texts express conflicting preferences.
+
+        Returns True when one text contains negation patterns while the
+        other does not, suggesting opposite meaning on the same topic.
+        """
+        a_lower = text_a.lower()
+        b_lower = text_b.lower()
+        a_has_negation = any(p in a_lower for p in cls._NEGATION_PATTERNS)
+        b_has_negation = any(p in b_lower for p in cls._NEGATION_PATTERNS)
+        return a_has_negation != b_has_negation
+
+    def _mark_conflict(
+        self,
+        existing_id: str,
+        new_content: str,
+        new_metadata: dict | None,
+    ) -> None:
+        """Add conflictingIds to the existing entry's metadata."""
+        existing = self._store.retrieve(existing_id, touch=False)
+        if existing is None:
+            return
+        meta = dict(existing.metadata or {})
+        conflict_ids: list[str] = list(meta.get("conflictingIds") or [])
+        # Store a placeholder; the new entry's ID is not yet known
+        meta["conflictingIds"] = conflict_ids
+        meta["hasConflict"] = True
+        self._store.update(existing_id, metadata=meta)
+
+    def _check_and_mark_conflicts(
+        self,
+        new_entry: MemoryEntry,
+        workspace_id: str,
+    ) -> None:
+        """Search for conflicting existing entries and mark both sides."""
+        similar = self._retriever.search(
+            workspace_id=workspace_id,
+            query=new_entry.content,
+            limit=5,
+            threshold=0.3,
+        )
+        for existing, score in similar:
+            if existing.id == new_entry.id:
+                continue
+            if self._detect_conflict(new_entry.content, existing.content):
+                # Mark existing entry
+                existing_meta = dict(existing.metadata or {})
+                existing_conflicts = list(existing_meta.get("conflictingIds") or [])
+                if new_entry.id not in existing_conflicts:
+                    existing_conflicts.append(new_entry.id)
+                existing_meta["conflictingIds"] = existing_conflicts
+                existing_meta["hasConflict"] = True
+                self._store.update(existing.id, metadata=existing_meta)
+
+                # Mark new entry
+                new_meta = dict(new_entry.metadata or {})
+                new_conflicts = list(new_meta.get("conflictingIds") or [])
+                if existing.id not in new_conflicts:
+                    new_conflicts.append(existing.id)
+                new_meta["conflictingIds"] = new_conflicts
+                new_meta["hasConflict"] = True
+                self._store.update(new_entry.id, metadata=new_meta)
 
     def consolidate(self, session_id: str) -> int:
         """Promote WORKING memories to SESSION after session ends.

@@ -351,3 +351,59 @@ class TestPinnedMemoryScoreBoost:
 
         assert pinned_score > unpinned_score, \
             f"Pinned score ({pinned_score}) should be higher than unpinned ({unpinned_score})"
+
+
+class TestMemoryConflictDetection:
+    """Conflict detection marks entries with conflictingIds."""
+
+    def setup_method(self) -> None:
+        self.store = SQLiteStore(":memory:")
+        self.ms = MemoryStore(self.store)
+        self.retriever = MemoryRetriever(self.ms)
+        self.mgr = MemoryManager(self.ms, self.retriever)
+
+    def test_conflicting_preferences_are_marked(self) -> None:
+        """Two entries about the same topic with opposite meaning get conflict markers."""
+        e1 = self.mgr.remember(
+            content="Always use tabs for indentation",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+        )
+        e2 = self.mgr.remember(
+            content="Never use tabs for indentation",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+        )
+
+        # Reload to get fresh metadata
+        r1 = self.ms.retrieve(e1.id, touch=False)
+        r2 = self.ms.retrieve(e2.id, touch=False)
+        assert r1 is not None and r2 is not None
+        assert r1.metadata.get("hasConflict") is True
+        assert r2.metadata.get("hasConflict") is True
+        assert e2.id in r1.metadata.get("conflictingIds", [])
+        assert e1.id in r2.metadata.get("conflictingIds", [])
+
+    def test_non_conflicting_entries_not_marked(self) -> None:
+        """Entries about different topics don't get conflict markers."""
+        self.mgr.remember(
+            content="Always use type hints",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+        )
+        e2 = self.mgr.remember(
+            content="Prefer snake_case naming",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+        )
+
+        r2 = self.ms.retrieve(e2.id, touch=False)
+        assert r2 is not None
+        assert r2.metadata.get("hasConflict") is not True
+
+    def test_detect_conflict_util(self) -> None:
+        """_detect_conflict correctly identifies negation-based conflicts."""
+        assert MemoryManager._detect_conflict("use tabs", "don't use tabs")
+        assert MemoryManager._detect_conflict("avoid spaces", "use spaces")
+        assert not MemoryManager._detect_conflict("use tabs", "use tabs")
+        assert not MemoryManager._detect_conflict("don't use tabs", "never use tabs")

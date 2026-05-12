@@ -45,6 +45,7 @@ from ..store.sqlite_store import SQLiteStore
 from ..tools import build_builtin_tools
 from ..tools.registry import BUILTIN_TOOL_SCHEMAS, ToolRegistry
 from ..observability.tracer import Tracer
+from ..state.task_state_machine import TaskStateMachine
 from .approval_flow import ApprovalFlowMixin
 from .memory_flow import MemoryFlowMixin
 from .react_runner import ReactRunnerMixin
@@ -61,17 +62,7 @@ class Orchestrator(
 ):
     """Coordinates the first-pass agent loop for Sprint 1."""
 
-    _VALID_TASK_TRANSITIONS: dict[str, set[str]] = {
-        "queued": {"running", "cancelled"},
-        "running": {"completed", "failed", "cancelled", "paused", "waiting_approval"},
-        "paused": {"running", "cancelled"},
-        "waiting_approval": {"running", "cancelled", "failed", "paused"},
-        "planning": {"running", "failed", "cancelled"},
-        "verifying": {"running", "failed", "cancelled"},
-        "completed": set(),
-        "failed": set(),
-        "cancelled": set(),
-    }
+    _VALID_TASK_TRANSITIONS = TaskStateMachine.VALID_TRANSITIONS
 
     def __init__(
         self,
@@ -92,6 +83,7 @@ class Orchestrator(
         self._provider = provider
         self._decision_advisor = decision_advisor
         self._hook_service = hook_service
+        self._task_state_machine = TaskStateMachine()
         self._meta_router = meta_router or MetaRouter(
             provider=provider,
             decision_advisor=decision_advisor,
@@ -181,25 +173,10 @@ class Orchestrator(
             raise ValueError("'headers' must be an object with string keys and values.")
 
     def _validate_task_transition(self, current_status: str, target_status: str, task_id: str, *, silent: bool = False) -> None:
-        """Validate task status transition.
-
-        Args:
-            silent: If True, log warning instead of raising. Used by internal
-                methods (_complete_task, _fail_task) that may be called from
-                error handlers where the task is already terminal.
-        """
-        allowed = self._VALID_TASK_TRANSITIONS.get(current_status, set())
-        if target_status in allowed:
-            return
-        logger.warning(
-            "Illegal task transition: %s -> %s for task %s (allowed: %s)",
-            current_status, target_status, task_id, allowed or "none (terminal)",
+        """Validate task status transition. Delegates to TaskStateMachine."""
+        self._task_state_machine.assert_transition(
+            current_status, target_status, task_id, silent=silent,
         )
-        if not silent:
-            raise ValueError(
-                f"Task {task_id} cannot transition from '{current_status}' to '{target_status}'. "
-                f"Allowed: {sorted(allowed) or 'none (terminal state)'}"
-            )
 
     def open_workspace(self, params: dict[str, Any]) -> dict[str, Any]:
         workspace = self._store.upsert_workspace(path=params["path"])

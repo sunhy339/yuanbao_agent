@@ -12,6 +12,11 @@ from .types import PlanResult, Subtask
 
 logger = logging.getLogger(__name__)
 
+# Type alias for the scope overlap checker callable.
+# Receives a list of subtask dicts (each with id + ownedScope/writeScope),
+# returns a list of overlap reason strings (empty = no overlaps).
+ScopeChecker = Callable[[list[dict[str, Any]]], list[str]]
+
 
 class DAGExecutor:
     """Execute sub-tasks in topological order via SubagentService.
@@ -40,6 +45,7 @@ class DAGExecutor:
         prior_results: dict[str, str] | None = None,
         tracer: Tracer | None = None,
         on_subtask_callback: Callable[[str, str, dict[str, Any]], None] | None = None,
+        scope_checker: ScopeChecker | None = None,
     ) -> dict[str, Any]:
         """Execute all sub-tasks, parallelising independent tasks per level.
 
@@ -101,12 +107,33 @@ class DAGExecutor:
             if not runnable:
                 continue
 
-            # Execute level — parallel if multiple tasks, serial if single
-            if len(runnable) == 1:
-                self._execute_subtask(
-                    subtask_index, runnable[0], completed, failed, results,
-                    session_id, parent_task_id, lock, tracer, on_subtask_callback,
-                )
+            # Check for scope overlaps among parallel candidates
+            force_serial = False
+            if scope_checker is not None and len(runnable) > 1:
+                scope_subtasks = []
+                for sid in runnable:
+                    st = subtask_index.get(sid)
+                    if st is None:
+                        continue
+                    scope_subtasks.append({
+                        "id": st.id,
+                        "ownedScope": getattr(st, "owned_scope", None) or getattr(st, "write_scope", None),
+                    })
+                overlaps = scope_checker(scope_subtasks)
+                if overlaps:
+                    force_serial = True
+                    logger.info(
+                        "Level %d: scope overlaps detected, downgrading to serial: %s",
+                        level_idx, overlaps,
+                    )
+
+            # Execute level — parallel if multiple tasks, serial if single or scope conflict
+            if len(runnable) == 1 or force_serial:
+                for sid in runnable:
+                    self._execute_subtask(
+                        subtask_index, sid, completed, failed, results,
+                        session_id, parent_task_id, lock, tracer, on_subtask_callback,
+                    )
             else:
                 logger.info("Level %d: executing %d subtasks in parallel", level_idx, len(runnable))
                 with ThreadPoolExecutor(max_workers=min(max_workers, len(runnable))) as pool:

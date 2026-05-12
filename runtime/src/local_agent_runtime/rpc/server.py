@@ -129,6 +129,8 @@ class JsonRpcServer:
             "hook.list": self._store.list_hooks,
             "hook.get": self._store.get_hook,
             "hook.listExecutions": self._store.list_hook_executions,
+            "scope.checkDispatch": self._store.check_dispatch_scope,
+            "scope.conflictHistory": self._store.list_scope_conflict_checks,
             "memory.list": self._memory_list,
             "memory.get": self._memory_get,
             "memory.edit": self._memory_edit,

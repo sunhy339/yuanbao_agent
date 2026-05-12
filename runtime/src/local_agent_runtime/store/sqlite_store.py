@@ -1763,6 +1763,13 @@ class SQLiteStore:
         ).fetchall()
         hook_executions = [self._serialize_hook_execution(dict(r)) for r in hook_exec_rows]
 
+        # 16. Scope conflict checks
+        scope_conflict_rows = self._conn.execute(
+            "SELECT * FROM scope_conflict_checks WHERE task_id = ? ORDER BY created_at ASC",
+            (task_id,),
+        ).fetchall()
+        scope_conflicts = [self._serialize_scope_conflict_check(dict(r)) for r in scope_conflict_rows]
+
         return {
             "task": task,
             "autonomyProfile": autonomy_profile,
@@ -1786,6 +1793,7 @@ class SQLiteStore:
             },
             "contextBudget": context_budget,
             "hookExecutions": hook_executions,
+            "scopeConflicts": scope_conflicts,
         }
 
     def _active_profile_from_config(self, config: dict[str, Any], key: str) -> dict[str, Any] | None:
@@ -4358,6 +4366,26 @@ class SQLiteStore:
             "CREATE INDEX IF NOT EXISTS idx_hook_executions_hook ON hook_executions(hook_id)"
         )
 
+        # -- scope_conflict_checks --
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS scope_conflict_checks (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                session_id TEXT,
+                check_type TEXT NOT NULL,
+                subtask_ids_json TEXT NOT NULL DEFAULT '[]',
+                scope_map_json TEXT NOT NULL DEFAULT '{}',
+                overlaps_json TEXT NOT NULL DEFAULT '[]',
+                resolution TEXT NOT NULL DEFAULT 'none',
+                serialized_order_json TEXT,
+                safe INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scope_conflict_checks_task ON scope_conflict_checks(task_id)"
+        )
+
         self._conn.execute(
             "INSERT OR IGNORE INTO seq_counter (id, val) VALUES (1, 0)"
         )
@@ -5209,3 +5237,102 @@ class SQLiteStore:
             f"SELECT * FROM hook_executions{where} ORDER BY created_at ASC LIMIT ?", args + [limit]
         ).fetchall()]
         return {"hookExecutions": [self._serialize_hook_execution(r) for r in rows]}
+
+    # ------------------------------------------------------------------
+    # ScopeConflictCheck
+    # ------------------------------------------------------------------
+
+    def _serialize_scope_conflict_check(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "taskId": row["task_id"],
+            "sessionId": row.get("session_id"),
+            "checkType": row["check_type"],
+            "subtaskIds": json.loads(row.get("subtask_ids_json") or "[]"),
+            "scopeMap": json.loads(row.get("scope_map_json") or "{}"),
+            "overlaps": json.loads(row.get("overlaps_json") or "[]"),
+            "resolution": row["resolution"],
+            "serializedOrder": json.loads(row["serialized_order_json"]) if row.get("serialized_order_json") else None,
+            "safe": bool(row["safe"]),
+            "createdAt": row["created_at"],
+        }
+
+    def create_scope_conflict_check(self, params: dict[str, Any]) -> dict[str, Any]:
+        task_id = self._require_non_empty(params, "taskId")
+        check_type = self._require_non_empty(params, "checkType")
+        now = self.now()
+        check_id = self.new_id("scc")
+        self._conn.execute(
+            """INSERT INTO scope_conflict_checks
+               (id, task_id, session_id, check_type, subtask_ids_json,
+                scope_map_json, overlaps_json, resolution, serialized_order_json,
+                safe, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (check_id, task_id,
+             params.get("sessionId"), check_type,
+             json.dumps(params.get("subtaskIds") or [], ensure_ascii=False),
+             json.dumps(params.get("scopeMap") or {}, ensure_ascii=False),
+             json.dumps(params.get("overlaps") or [], ensure_ascii=False),
+             params.get("resolution", "none"),
+             json.dumps(params["serializedOrder"], ensure_ascii=False) if params.get("serializedOrder") else None,
+             1 if params.get("safe", True) else 0,
+             now),
+        )
+        self._conn.commit()
+        row = dict(self._conn.execute("SELECT * FROM scope_conflict_checks WHERE id = ?", (check_id,)).fetchone())
+        return {"scopeConflictCheck": self._serialize_scope_conflict_check(row)}
+
+    def list_scope_conflict_checks(self, params: dict[str, Any]) -> dict[str, Any]:
+        filters: list[str] = []
+        args: list[Any] = []
+        if params.get("taskId"):
+            filters.append("task_id = ?")
+            args.append(params["taskId"])
+        if params.get("checkType"):
+            filters.append("check_type = ?")
+            args.append(params["checkType"])
+        limit = min(int(params.get("limit", 100)), 500)
+        where = f" WHERE {' AND '.join(filters)}" if filters else ""
+        rows = [dict(r) for r in self._conn.execute(
+            f"SELECT * FROM scope_conflict_checks{where} ORDER BY created_at ASC LIMIT ?", args + [limit]
+        ).fetchall()]
+        return {"scopeConflictChecks": [self._serialize_scope_conflict_check(r) for r in rows]}
+
+    def check_dispatch_scope(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Pre-dispatch scope overlap check for a set of subtasks.
+
+        Returns {overlaps: [...], safe: bool, resolution: str, checkId: str}.
+        Records the check in scope_conflict_checks table.
+        """
+        from ..policy.proposal_validator import validate_write_scope_overlap
+        subtasks = params.get("subtasks", [])
+        task_id = params.get("taskId", "")
+        session_id = params.get("sessionId")
+        overlaps = validate_write_scope_overlap(subtasks) if subtasks else []
+        safe = len(overlaps) == 0
+        resolution = "none" if safe else "serialized"
+        serialized_order = None
+        if not safe:
+            serialized_order = [st.get("id") or st.get("taskId") or f"sub_{i}" for i, st in enumerate(subtasks)]
+
+        check = self.create_scope_conflict_check({
+            "taskId": task_id,
+            "sessionId": session_id,
+            "checkType": "pre_dispatch",
+            "subtaskIds": serialized_order or [],
+            "scopeMap": {
+                (st.get("id") or st.get("taskId") or f"sub_{i}"): (st.get("ownedScope") or st.get("writeScope") or [])
+                for i, st in enumerate(subtasks) if isinstance(st, dict)
+            },
+            "overlaps": overlaps,
+            "resolution": resolution,
+            "serializedOrder": serialized_order,
+            "safe": safe,
+        })
+        return {
+            "overlaps": overlaps,
+            "safe": safe,
+            "resolution": resolution,
+            "serializedOrder": serialized_order,
+            "checkId": check["scopeConflictCheck"]["id"],
+        }

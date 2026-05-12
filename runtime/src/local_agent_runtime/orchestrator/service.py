@@ -1515,6 +1515,9 @@ class Orchestrator:
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
                 tracer=self._tracer,
                 on_subtask_callback=_on_subtask_event,
+                scope_checker=lambda subtasks: self._store.check_dispatch_scope(
+                    {"subtasks": subtasks, "taskId": task["id"], "sessionId": session_id}
+                ).get("overlaps", []),
             )
 
             # Handle DAG cooperative pause
@@ -3573,6 +3576,34 @@ class Orchestrator:
                     f"File {filepath} was modified by multiple child tasks: {', '.join(task_ids)}"
                 )
                 result["safe"] = False
+
+        # 2b. Record scope conflict check when overlaps detected
+        if result["scope_overlaps"]:
+            task_id_val = task.get("id", "")
+            overlap_subtask_ids = sorted({tid for f, tids in child_changed_files.items() if len(tids) > 1 for tid in tids})
+            scope_map = {tid: [f for f, tids in child_changed_files.items() if tid in tids and len(tids) > 1] for tid in overlap_subtask_ids}
+            try:
+                self._store.create_scope_conflict_check({
+                    "taskId": task_id_val,
+                    "sessionId": session_id,
+                    "checkType": "pre_merge",
+                    "subtaskIds": overlap_subtask_ids,
+                    "scopeMap": scope_map,
+                    "overlaps": result["scope_overlaps"],
+                    "resolution": "merge_required",
+                    "safe": False,
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to record scope_conflict_check: %s", exc)
+            self._publish(
+                session_id=session_id, task=task,
+                event_type="task.scope.merge.warning",
+                payload={
+                    "overlaps": result["scope_overlaps"],
+                    "overlapCount": len(result["scope_overlaps"]),
+                    "resolution": "merge_required",
+                },
+            )
 
         # 3. Run git diff checks if workspace root is available
         if workspace_root and self._workspace_has_git_root(workspace_root):

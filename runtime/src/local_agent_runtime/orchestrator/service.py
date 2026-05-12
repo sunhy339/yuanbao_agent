@@ -45,6 +45,7 @@ from ..store.sqlite_store import SQLiteStore
 from ..tools import build_builtin_tools
 from ..tools.registry import BUILTIN_TOOL_SCHEMAS, ToolRegistry
 from ..observability.tracer import Tracer
+from ..execution.tool_pipeline import ToolExecutionMixin
 from ..state.task_state_machine import TaskStateMachine
 from .approval_flow import ApprovalFlowMixin
 from .memory_flow import MemoryFlowMixin
@@ -59,6 +60,7 @@ class Orchestrator(
     MemoryFlowMixin,
     ResumeFlowMixin,
     ApprovalFlowMixin,
+    ToolExecutionMixin,
 ):
     """Coordinates the first-pass agent loop for Sprint 1."""
 

@@ -37,7 +37,8 @@ from .child_task import ChildTaskMixin
 from .config_flow import ConfigFlowMixin
 from .memory_flow import MemoryFlowMixin
 from .mcp_flow import McpFlowMixin
-from .message_flow import MessageFlowMixin
+from .message_routing import MessageRoutingMixin
+from .message_execution import MessageExecutionMixin
 from .publishing import PublishingMixin
 from .supplement_flow import SupplementFlowMixin
 from .skill_flow import SkillFlowMixin
@@ -62,7 +63,8 @@ class Orchestrator(
     ConfigFlowMixin,
     ToolExecutionMixin,
     McpFlowMixin,
-    MessageFlowMixin,
+    MessageExecutionMixin,
+    MessageRoutingMixin,
     PublishingMixin,
     SkillFlowMixin,
     SupplementFlowMixin,

@@ -5255,6 +5255,7 @@ class Orchestrator:
                 max_context_tokens=context.get("budgetStats", {}).get("maxContextTokens"),
                 prompt_layers=snapshot_meta.get("prompt_layers"),
             )
+            self._fire_hooks("on_context_snapshot", session_id, task, extra_context={"snapshotId": snapshot.get("id"), "tokenEstimate": _msg_token_total})
             try:
                 response = self._request_provider_response(
                     session_id=session_id,
@@ -6382,6 +6383,8 @@ class Orchestrator:
             },
         )
         self._fire_hooks("before_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"]})
+        if tool_spec["name"] == "apply_patch":
+            self._fire_hooks("before_patch_apply", session_id, task, extra_context={"toolCallId": tool_call_id, "patchArguments": tool_spec.get("arguments", {})})
         # MCP-specific lifecycle event
         is_mcp_tool = tool_spec["name"].startswith("mcp__")
         if is_mcp_tool:
@@ -6400,7 +6403,17 @@ class Orchestrator:
         )
         try:
             if tool_spec["name"] == "task":
-                result = self._subagent_service.dispatch(tool_arguments)
+                self._fire_hooks("before_subagent_start", session_id, task, extra_context={"toolArguments": tool_arguments})
+                try:
+                    result = self._subagent_service.dispatch(tool_arguments)
+                    sub_status = result.get("status", "")
+                    if sub_status == "failed":
+                        self._fire_hooks("on_subagent_failed", session_id, task, extra_context={"subagentResult": result})
+                    else:
+                        self._fire_hooks("after_subagent_complete", session_id, task, extra_context={"subagentResult": result})
+                except Exception as sub_exc:
+                    self._fire_hooks("on_subagent_failed", session_id, task, extra_context={"subagentError": str(sub_exc)})
+                    raise
             else:
                 result = self._tool_registry.execute(tool_spec["name"], tool_arguments, session_id=session_id)
             self._tracer.end_span(tool_span.span_id, status="ok")
@@ -6625,6 +6638,7 @@ class Orchestrator:
                 },
             )
             self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"})
+            self._fire_hooks("after_patch_apply", session_id, task, extra_context={"toolCallId": tool_call_id, "patchResult": result})
             return tool_result
 
         tool_result = {
@@ -6652,6 +6666,8 @@ class Orchestrator:
                 "ok": result.get("ok", True),
             })
         self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"})
+        if tool_spec["name"] == "memory.remember" and result.get("ok", True):
+            self._fire_hooks("on_memory_write", session_id, task, extra_context={"toolCallId": tool_call_id, "memoryResult": result})
         return tool_result
 
     def _consume_budget_from_provider_response(

@@ -7,6 +7,7 @@ from typing import Any, Callable, TextIO
 
 from ..models import RpcEnvelope
 from ..services.collaboration_service import CollaborationService
+from ..services.replay_service import ReplayService
 from ..services.command_background import cancel_background_command, get_background_command_event_bridge, get_background_command_service
 from ..services.schedule_service import ScheduleService
 from ..store.sqlite_store import SQLiteStore
@@ -46,6 +47,7 @@ class JsonRpcServer:
         self._event_bus = event_bus
         self._schedule = ScheduleService(store)
         self._collaboration = CollaborationService(store, event_bus)
+        self._replay = ReplayService(store)
         self._writer: TextIO | None = None
         self._writer_lock = threading.Lock()
         self._handlers: dict[str, RpcHandler] = {
@@ -131,6 +133,8 @@ class JsonRpcServer:
             "hook.listExecutions": self._store.list_hook_executions,
             "scope.checkDispatch": self._store.check_dispatch_scope,
             "scope.conflictHistory": self._store.list_scope_conflict_checks,
+            "replay.audit": self._replay.audit_replay,
+            "replay.dryRun": self._replay.dry_run_replay,
             "memory.list": self._memory_list,
             "memory.get": self._memory_get,
             "memory.edit": self._memory_edit,

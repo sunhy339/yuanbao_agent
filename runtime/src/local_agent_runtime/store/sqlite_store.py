@@ -4386,6 +4386,28 @@ class SQLiteStore:
             "CREATE INDEX IF NOT EXISTS idx_scope_conflict_checks_task ON scope_conflict_checks(task_id)"
         )
 
+        # replay_sessions table — P2 Replay And Dry-Run Replay
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS replay_sessions (
+                id TEXT PRIMARY KEY,
+                source_task_id TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                config_overrides_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'pending',
+                timeline_json TEXT,
+                warnings_json TEXT NOT NULL DEFAULT '[]',
+                gate_evaluations_json TEXT,
+                summary TEXT,
+                error_summary TEXT,
+                started_at INTEGER,
+                completed_at INTEGER,
+                created_at INTEGER NOT NULL
+            )
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_replay_sessions_task ON replay_sessions(source_task_id)"
+        )
+
         self._conn.execute(
             "INSERT OR IGNORE INTO seq_counter (id, val) VALUES (1, 0)"
         )
@@ -5336,3 +5358,125 @@ class SQLiteStore:
             "serializedOrder": serialized_order,
             "checkId": check["scopeConflictCheck"]["id"],
         }
+
+    # ------------------------------------------------------------------
+    # ReplaySession
+    # ------------------------------------------------------------------
+
+    def _serialize_replay_session(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "sourceTaskId": row["source_task_id"],
+            "mode": row["mode"],
+            "configOverrides": json.loads(row.get("config_overrides_json") or "{}"),
+            "status": row["status"],
+            "timeline": json.loads(row["timeline_json"]) if row.get("timeline_json") else None,
+            "warnings": json.loads(row.get("warnings_json") or "[]"),
+            "gateEvaluations": json.loads(row["gate_evaluations_json"]) if row.get("gate_evaluations_json") else None,
+            "summary": row.get("summary"),
+            "errorSummary": row.get("error_summary"),
+            "startedAt": row.get("started_at"),
+            "completedAt": row.get("completed_at"),
+            "createdAt": row["created_at"],
+        }
+
+    def create_replay_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Create a replay session record."""
+        replay_id = self.new_id("replay")
+        task_id = self._require_non_empty(params, "sourceTaskId")
+        mode = params.get("mode", "audit")
+        now_ms = self.now()
+
+        config_overrides = params.get("configOverrides") or {}
+        status = params.get("status", "pending")
+        timeline = params.get("timeline")
+        warnings = params.get("warnings") or []
+        gate_evaluations = params.get("gateEvaluations")
+        summary = params.get("summary")
+        error_summary = params.get("errorSummary")
+        started_at = params.get("startedAt")
+        completed_at = params.get("completedAt")
+
+        self._conn.execute(
+            """INSERT INTO replay_sessions
+               (id, source_task_id, mode, config_overrides_json, status,
+                timeline_json, warnings_json, gate_evaluations_json,
+                summary, error_summary, started_at, completed_at, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                replay_id, task_id, mode,
+                json.dumps(config_overrides, ensure_ascii=False),
+                status,
+                json.dumps(timeline, ensure_ascii=False) if timeline is not None else None,
+                json.dumps(warnings, ensure_ascii=False),
+                json.dumps(gate_evaluations, ensure_ascii=False) if gate_evaluations is not None else None,
+                summary, error_summary, started_at, completed_at, now_ms,
+            ),
+        )
+        self._conn.commit()
+        row = dict(self._conn.execute("SELECT * FROM replay_sessions WHERE id = ?", (replay_id,)).fetchone())
+        return {"replaySession": self._serialize_replay_session(row)}
+
+    def get_replay_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Get a single replay session by ID."""
+        replay_id = self._require_non_empty(params, "replayId")
+        row = self._conn.execute("SELECT * FROM replay_sessions WHERE id = ?", (replay_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Replay session not found: {replay_id}")
+        return {"replaySession": self._serialize_replay_session(dict(row))}
+
+    def list_replay_sessions(self, params: dict[str, Any]) -> dict[str, Any]:
+        """List replay sessions, optionally filtered by sourceTaskId or mode."""
+        conditions: list[str] = []
+        args: list[Any] = []
+        task_id = params.get("sourceTaskId") or params.get("taskId")
+        mode = params.get("mode")
+        if task_id:
+            conditions.append("source_task_id = ?")
+            args.append(task_id)
+        if mode:
+            conditions.append("mode = ?")
+            args.append(mode)
+
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        limit = min(int(params.get("limit") or 100), 500)
+        rows = [
+            dict(r) for r in self._conn.execute(
+                f"SELECT * FROM replay_sessions{where} ORDER BY created_at DESC LIMIT ?", args + [limit],
+            ).fetchall()
+        ]
+        return {"replaySessions": [self._serialize_replay_session(r) for r in rows]}
+
+    def update_replay_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Update a replay session's mutable fields."""
+        replay_id = self._require_non_empty(params, "replayId")
+        updates: list[str] = []
+        args: list[Any] = []
+
+        for col, key in [
+            ("status", "status"),
+            ("timeline_json", "timeline"),
+            ("warnings_json", "warnings"),
+            ("gate_evaluations_json", "gateEvaluations"),
+            ("summary", "summary"),
+            ("error_summary", "errorSummary"),
+            ("started_at", "startedAt"),
+            ("completed_at", "completedAt"),
+        ]:
+            if key in params:
+                val = params[key]
+                if key in ("timeline", "gateEvaluations", "warnings"):
+                    val = json.dumps(val, ensure_ascii=False)
+                updates.append(f"{col} = ?")
+                args.append(val)
+
+        if not updates:
+            raise ValueError("No fields to update")
+
+        args.append(replay_id)
+        self._conn.execute(
+            f"UPDATE replay_sessions SET {', '.join(updates)} WHERE id = ?", args,
+        )
+        self._conn.commit()
+        row = dict(self._conn.execute("SELECT * FROM replay_sessions WHERE id = ?", (replay_id,)).fetchone())
+        return {"replaySession": self._serialize_replay_session(row)}

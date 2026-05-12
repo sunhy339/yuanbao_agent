@@ -41,12 +41,18 @@ from .message_flow import MessageFlowMixin
 from .publishing import PublishingMixin
 from .supplement_flow import SupplementFlowMixin
 from .skill_flow import SkillFlowMixin
+from .provider_turn import ProviderTurnMixin
 from .react_runner import ReactRunnerMixin
+from .react_resume import ReactResumeMixin
+from .react_tool_helpers import ReactToolHelpersMixin
 from .resume_flow import ResumeFlowMixin
 from .task_lifecycle import TaskLifecycleMixin
 
 
 class Orchestrator(
+    ProviderTurnMixin,
+    ReactToolHelpersMixin,
+    ReactResumeMixin,
     ReactRunnerMixin,
     TaskLifecycleMixin,
     MemoryFlowMixin,

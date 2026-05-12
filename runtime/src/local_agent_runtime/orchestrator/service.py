@@ -40,6 +40,7 @@ from ..planner.decomposer import TaskDecomposer
 from ..planner.dag_executor import DAGExecutor
 from ..planner.coverage import CoverageEvaluator
 from ..orchestration import OrchestrationMode, SupervisorOrchestrator, SwarmOrchestrator
+from ..services.hook_service import HookService
 from ..store.sqlite_store import SQLiteStore
 from ..tools import build_builtin_tools
 from ..tools.registry import BUILTIN_TOOL_SCHEMAS, ToolRegistry
@@ -71,6 +72,7 @@ class Orchestrator:
         memory_manager: MemoryManager | None = None,
         *,
         decision_advisor: DecisionAdvisor | None = None,
+        hook_service: HookService | None = None,
         _skip_orphan_cleanup: bool = False,
     ) -> None:
         self._store = store
@@ -78,6 +80,7 @@ class Orchestrator:
         self._tool_registry = tool_registry
         self._provider = provider
         self._decision_advisor = decision_advisor
+        self._hook_service = hook_service
         self._meta_router = meta_router or MetaRouter(
             provider=provider,
             decision_advisor=decision_advisor,
@@ -735,6 +738,7 @@ class Orchestrator:
             return {"tokensBefore": 0, "tokensAfter": 0, "summary": None, "strategy": "none"}
 
         max_tokens = params.get("maxTokens") or 60000
+        self._fire_hooks("before_compaction", session_id, {"id": "system"}, extra_context={"sessionId": session_id, "maxTokens": max_tokens})
         compacted = self._compactor.compact(
             session_id=session_id,
             messages=messages,
@@ -753,6 +757,7 @@ class Orchestrator:
                 "compactionId": compacted.compaction_id,
             },
         )
+        self._fire_hooks("after_compaction", session_id, {"id": "system"}, extra_context={"sessionId": session_id, "tokensBefore": compacted.tokens_before, "tokensAfter": compacted.tokens_after, "compactionId": compacted.compaction_id})
         return {
             "tokensBefore": compacted.tokens_before,
             "tokensAfter": compacted.tokens_after,
@@ -1213,6 +1218,7 @@ class Orchestrator:
                 "routing": context["routing"],
             },
         )
+        self._fire_hooks("before_task_start", session["id"], runtime_task, extra_context={"routing": context.get("routing")})
         self._publish(
             session_id=session["id"],
             task=runtime_task,
@@ -1494,6 +1500,7 @@ class Orchestrator:
                         },
                     },
                 )
+                self._fire_hooks("on_approval_required", session_id, task, extra_context={"approvalId": approval["id"], "kind": "plan"})
                 self._publish(
                     session_id=session_id, task=task,
                     event_type="task.waiting_approval",
@@ -1712,6 +1719,7 @@ class Orchestrator:
                 },
             },
         )
+        self._fire_hooks("on_approval_required", session_id, task, extra_context={"approvalId": approval["id"], "kind": "plan"})
         self._publish(
             session_id=session_id, task=task,
             event_type="task.waiting_approval",
@@ -2831,6 +2839,8 @@ class Orchestrator:
                 "detail": final_summary,
             },
         )
+        # Fire after_task_complete hooks
+        self._fire_hooks("after_task_complete", session_id, runtime_task)
         # Worker role validation: testsRun and risks should be present
         self._validate_worker_output(session_id=session_id, task=runtime_task)
         if not skip_drain:
@@ -3022,6 +3032,8 @@ class Orchestrator:
                 "errorCode": error_code,
             },
         )
+        # Fire on_task_failed hooks
+        self._fire_hooks("on_task_failed", session_id, runtime_task, extra_context={"errorCode": error_code})
         if not skip_drain:
             self._drain_session_queue(session_id)
         return runtime_task
@@ -4023,6 +4035,7 @@ class Orchestrator:
             event_type="task.cancelled",
             payload={"status": task["status"]},
         )
+        self._fire_hooks("on_task_cancel", task["sessionId"], task)
         return {"task": task}
 
     def pause_task(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -4036,6 +4049,7 @@ class Orchestrator:
             event_type="task.paused",
             payload={"status": paused_task["status"], "previousStatus": task["status"]},
         )
+        self._fire_hooks("on_task_pause", paused_task["sessionId"], paused_task, extra_context={"previousStatus": task["status"]})
         self._tracer.end_span(span.span_id, status="ok")
         return {"task": paused_task}
 
@@ -4055,6 +4069,7 @@ class Orchestrator:
                 event_type="task.resumed",
                 payload={"status": "running", "detail": "Resuming paused DAG execution."},
             )
+            self._fire_hooks("on_task_resume", running_task["sessionId"], running_task, extra_context={"resumePath": "dag"})
             resumed_task = self._resume_dag_execution(task=running_task, state=dag_state)
             self._tracer.end_span(span.span_id, status="ok", attributes={"path": "dag"})
             return {"task": resumed_task}
@@ -4071,6 +4086,7 @@ class Orchestrator:
                     event_type="task.resumed",
                     payload={"status": "running", "detail": "Resuming cooperative paused ReAct task."},
                 )
+                self._fire_hooks("on_task_resume", running_task["sessionId"], running_task, extra_context={"resumePath": "react_cooperative"})
                 resumed_task = self._resume_cooperative_react(task=running_task, state=pending_state)
                 self._tracer.end_span(span.span_id, status="ok", attributes={"path": "react_cooperative"})
                 return {"task": resumed_task}
@@ -4084,6 +4100,7 @@ class Orchestrator:
                     event_type="task.resumed",
                     payload={"status": "running", "detail": "Resuming approved pending ReAct task."},
                 )
+                self._fire_hooks("on_task_resume", running_task["sessionId"], running_task, extra_context={"resumePath": "react_approved"})
                 resumed_task = self._resume_react_after_approval(task=running_task, approval=approval)
                 self._tracer.end_span(span.span_id, status="ok", attributes={"path": "react_approved"})
                 return {"task": resumed_task}
@@ -4121,6 +4138,7 @@ class Orchestrator:
             event_type="task.resumed",
             payload={"status": running_task["status"]},
         )
+        self._fire_hooks("on_task_resume", running_task["sessionId"], running_task, extra_context={"resumePath": "fallback"})
         self._tracer.end_span(span.span_id, status="ok", attributes={"path": "fallback"})
         return {"task": running_task}
 
@@ -4834,6 +4852,37 @@ class Orchestrator:
         )
         self._event_bus.publish(event)
 
+    def _fire_hooks(
+        self,
+        hook_event: str,
+        session_id: str,
+        task: dict[str, Any],
+        *,
+        extra_context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fire matching hooks for a lifecycle event. No-op if no hook service."""
+        if self._hook_service is None:
+            return []
+        # Resolve workspaceId from session
+        session = self._store.get_session(session_id)
+        workspace_id = ""
+        if isinstance(session, dict):
+            workspace_id = session.get("workspaceId") or session.get("workspace_id") or ""
+        context: dict[str, Any] = {
+            "workspaceId": workspace_id,
+            "sessionId": session_id,
+            "taskId": task.get("id", ""),
+            "taskStatus": task.get("status", ""),
+            "changedFiles": task.get("changedFiles") or [],
+        }
+        if extra_context:
+            context.update(extra_context)
+        try:
+            return self._hook_service.invoke_hooks(hook_event, context)
+        except Exception:
+            logger.warning("Hook execution failed for %s", hook_event, exc_info=True)
+            return []
+
     def _publish_mcp_event(self, event_type: str, payload: dict[str, Any]) -> None:
         """Publish an MCP lifecycle event (no task/session context)."""
         event = RuntimeEvent(
@@ -5187,6 +5236,7 @@ class Orchestrator:
                 request_tool_count=len(cached_provider_tools),
                 request_token_estimate=_msg_token_total,
             )
+            self._fire_hooks("before_provider_turn", session_id, task, extra_context={"turnIndex": steps, "providerTurnId": provider_turn["id"]})
             # --- ContextSnapshot: capture what the model will see ---
             snapshot_meta = (context.get("_build_result") or context).get("snapshot_metadata", {}) or {}
             snapshot = self._store.create_context_snapshot(
@@ -5238,6 +5288,7 @@ class Orchestrator:
                 turn_decision=turn_result.decision.value,
                 thought_summary=turn_result.thought_summary[:500] if turn_result.thought_summary else None,
             )
+            self._fire_hooks("after_provider_turn", session_id, task, extra_context={"providerTurnId": provider_turn["id"], "turnDecision": turn_result.decision.value, "step": steps})
             # --- Publish agent.decision.react_turn event ---
             self._publish(
                 session_id=session_id,
@@ -6330,6 +6381,7 @@ class Orchestrator:
                 "arguments": tool_arguments,
             },
         )
+        self._fire_hooks("before_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"]})
         # MCP-specific lifecycle event
         is_mcp_tool = tool_spec["name"].startswith("mcp__")
         if is_mcp_tool:
@@ -6448,6 +6500,7 @@ class Orchestrator:
                     "patchId": result.get("patch", {}).get("id"),
                 },
             )
+            self._fire_hooks("on_approval_required", session_id, task, extra_context={"approvalId": approval.get("id"), "kind": approval.get("kind", tool_spec["name"])})
             self._publish(
                 session_id=session_id,
                 task=task,
@@ -6517,6 +6570,7 @@ class Orchestrator:
                     "result": result,
                 },
             )
+            self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "failed"})
             if is_mcp_tool:
                 is_timeout = bool(result.get("timeout"))
                 event_name = "mcp.tool.timeout" if is_timeout else "mcp.tool.failed"
@@ -6548,6 +6602,7 @@ class Orchestrator:
                     "result": result,
                 },
             )
+            self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"})
             return tool_result
 
         if tool_spec["name"] == "apply_patch":
@@ -6569,6 +6624,7 @@ class Orchestrator:
                     "result": result,
                 },
             )
+            self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"})
             return tool_result
 
         tool_result = {
@@ -6595,6 +6651,7 @@ class Orchestrator:
                 "serverId": mcp_server_id,
                 "ok": result.get("ok", True),
             })
+        self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"})
         return tool_result
 
     def _consume_budget_from_provider_response(

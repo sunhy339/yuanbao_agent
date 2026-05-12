@@ -5057,7 +5057,14 @@ class SQLiteStore:
     # -----------------------------------------------------------------------
 
     VALID_HOOK_EVENTS = frozenset({
-        "after_task_complete", "on_task_failed", "on_approval_required",
+        # P0: Minimum Local Development Loop
+        "before_task_start", "after_task_complete", "on_task_failed",
+        "on_task_cancel", "on_task_pause", "on_approval_required",
+        "before_tool_call", "after_tool_call",
+        # P1: Agent Loop Control
+        "before_provider_turn", "after_provider_turn",
+        "before_compaction", "after_compaction",
+        "on_task_resume",
     })
     VALID_HOOK_ACTIONS = frozenset({"audit_note", "notification", "run_command"})
     VALID_HOOK_FAILURE_MODES = frozenset({"warn", "block", "retry", "ignore", "ask_user"})

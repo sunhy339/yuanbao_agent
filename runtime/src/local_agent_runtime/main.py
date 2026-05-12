@@ -11,6 +11,7 @@ from .provider.adapter import ProviderAdapter
 from .router import MetaRouter
 from .rpc.server import JsonRpcServer
 from .services import CollaborationService, SubagentService
+from .services.hook_service import HookService
 from .store.sqlite_store import SQLiteStore
 from .tools import build_builtin_tools
 from .tools.registry import ToolRegistry
@@ -55,6 +56,7 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
         provider=provider,
         meta_router=meta_router,
         memory_manager=memory_manager,
+        hook_service=HookService(store, event_bus),
     )
     return JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
 

@@ -265,7 +265,7 @@ class HookService:
             })
             return exec_result["hookExecution"]
         else:
-            # Allowed — record as completed (no actual execution in this slice)
+            # Allowed — record as deferred (no actual execution in this slice)
             exec_result = self._store.create_hook_execution({
                 "hookId": hook["id"],
                 "event": event,
@@ -274,7 +274,7 @@ class HookService:
                 "triggerEventId": context.get("triggerEventId"),
                 "conditionResult": "matched",
                 "policyOutcome": "allowed",
-                "status": "completed",
+                "status": "deferred",
                 "startedAt": now,
                 "finishedAt": self._store.now(),
                 "durationMs": self._store.now() - now,

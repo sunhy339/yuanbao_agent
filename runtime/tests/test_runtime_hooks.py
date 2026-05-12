@@ -246,7 +246,7 @@ class TestHookService:
 
         assert len(results) == 1
         assert results[0]["policyOutcome"] == "allowed"
-        assert results[0]["status"] == "completed"
+        assert results[0]["status"] == "deferred"
 
     def test_invoke_run_command_hook_approval_required(self, tmp_path: Any) -> None:
         store, event_bus = _make_store(tmp_path)

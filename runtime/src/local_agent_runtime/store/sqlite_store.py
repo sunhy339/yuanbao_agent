@@ -15,6 +15,8 @@ from .config_store import ConfigStoreMixin
 from .event_store import EventStoreMixin
 from .extension_store import ExtensionStoreMixin
 from .proposal_store import ProposalStoreMixin
+from .repositories.hook_repository import HookStoreMixin
+from .repositories.worktree_repository import WorktreeStoreMixin
 from .session_store import SessionStoreMixin
 from .task_store import TaskStoreMixin
 
@@ -27,6 +29,8 @@ class SQLiteStore(
     ConfigStoreMixin,
     ProposalStoreMixin,
     ExtensionStoreMixin,
+    HookStoreMixin,
+    WorktreeStoreMixin,
 ):
     """Small SQLite wrapper for the MVP scaffold."""
 

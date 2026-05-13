@@ -26,6 +26,7 @@ export interface SkillsWorkspaceProps {
   onUpdateSkill?: (skillId: string, draft: SkillDraft) => void | Promise<void>;
   onDeleteSkill?: (skillId: string) => void | Promise<void>;
   onImportSkills?: (filePath: string) => void | Promise<void>;
+  onOpenSkillsFolder?: () => void | Promise<void>;
 }
 
 const emptySkillDraft: SkillDraft = {
@@ -94,6 +95,7 @@ export function SkillsWorkspace({
   onUpdateSkill,
   onDeleteSkill,
   onImportSkills,
+  onOpenSkillsFolder,
 }: SkillsWorkspaceProps) {
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [editorMode, setEditorMode] = useState<"create" | "edit" | null>(null);
@@ -136,15 +138,32 @@ export function SkillsWorkspace({
     setEditorMode("create");
   }
 
-  async function handleImportClick() {
+  function normalizeDialogPath(selected: string | string[] | null): string | null {
+    return Array.isArray(selected) ? selected[0] ?? null : selected;
+  }
+
+  async function handleImportFileClick() {
     const selected = await openDialog({
       multiple: false,
-      filters: [{ name: "JSON", extensions: ["json"] }],
+      filters: [{ name: "Skill package", extensions: ["json", "zip"] }],
     });
-    if (!selected) {
+    const selectedPath = normalizeDialogPath(selected);
+    if (!selectedPath) {
       return;
     }
-    await onImportSkills?.(selected);
+    await onImportSkills?.(selectedPath);
+  }
+
+  async function handleImportFolderClick() {
+    const selected = await openDialog({
+      directory: true,
+      multiple: false,
+    });
+    const selectedPath = normalizeDialogPath(selected);
+    if (!selectedPath) {
+      return;
+    }
+    await onImportSkills?.(selectedPath);
   }
 
   function openEditEditor(skill: SettingsSkillConfig) {
@@ -204,12 +223,29 @@ export function SkillsWorkspace({
         </Button>
         <Button
           variant="secondary"
-          onClick={() => void handleImportClick()}
+          onClick={() => void handleImportFileClick()}
           disabled={!onImportSkills || busySkillId === "import"}
           loading={busySkillId === "import"}
-          disabledReason="技能导入尚未接入"
+          disabledReason="技能导入需要桌面运行时"
         >
-          导入技能
+          导入 JSON/ZIP
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => void handleImportFolderClick()}
+          disabled={!onImportSkills || busySkillId === "import"}
+          loading={busySkillId === "import"}
+          disabledReason="技能导入需要桌面运行时"
+        >
+          导入文件夹
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => void onOpenSkillsFolder?.()}
+          disabled={!onOpenSkillsFolder}
+          disabledReason="打开技能目录需要桌面 shell 桥接"
+        >
+          打开目录
         </Button>
       </section>
 

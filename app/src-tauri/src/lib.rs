@@ -436,6 +436,20 @@ fn resolve_data_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
     }
 }
 
+fn resolve_skills_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(codex_home) = env::var("CODEX_HOME") {
+        let trimmed = codex_home.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed).join("skills"));
+        }
+    }
+
+    match app_handle.path().home_dir() {
+        Ok(dir) => Ok(dir.join(".codex").join("skills")),
+        Err(reason) => Err(format!("Failed to resolve home directory: {reason}")),
+    }
+}
+
 /// Resolve the runtime source directory for PYTHONPATH.
 ///
 /// In dev mode uses `repo_root()/runtime/src`.
@@ -874,6 +888,12 @@ fn open_app_path(app_handle: AppHandle, kind: String) -> Result<Value, String> {
             fs::create_dir_all(&logs_dir)
                 .map_err(|reason| format!("Failed to create logs directory: {reason}"))?;
             logs_dir
+        }
+        "skills" => {
+            let skills_dir = resolve_skills_dir(&app_handle)?;
+            fs::create_dir_all(&skills_dir)
+                .map_err(|reason| format!("Failed to create skills directory: {reason}"))?;
+            skills_dir
         }
         _ => return Err(format!("Unsupported app path kind: {kind}")),
     };

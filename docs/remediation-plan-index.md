@@ -23,6 +23,15 @@ staged with `git add -f` when they need to be committed.
 | Memory and context compaction | `docs/memory-and-context-compaction-plan.md` | Older plan, checklist not updated after implementation |
 | Frontend V2 follow-up | `docs/frontend-v2-followup-plan.md` | Checklist complete, 46 done / 0 open |
 | Agent runtime maturity roadmap | `docs/agent-runtime-maturity-roadmap.md` | New post-plan roadmap for effective config, decision trace, budget panel, reports, parallel safety, and replay |
+| LLM decision closure | `docs/llm-decision-closure-plan.md` | New code-verified closure plan for default advisor wiring, proposal records, completion decision, and context policy |
+| Runtime hooks design | `docs/runtime-hooks-design-plan.md` | New detailed design for policy-gated, auditable lifecycle hooks |
+| Permission Policy V2 Lite | `docs/permission-policy-v2-lite-plan.md` | New focused plan for capability-based permission presets, unified runtime evaluation, approval gating, and audit records |
+| Provider API format support | `docs/provider-api-format-support-plan.md` | New plan to align provider settings options with runtime adapter support for OpenAI Chat, Responses, Anthropic, and future native formats |
+| Worktree isolation | `docs/worktree-isolation-design-plan.md` | New near-term isolation plan for task branches, worktrees, review, merge, cleanup, and code-verified closure gaps |
+| GitHub PR and CI workflow | `docs/github-pr-ci-workflow-plan.md` | New plan for issue/branch/PR/CI workflow, publish approvals, and review feedback loops |
+| Frontend observability and settings | `docs/frontend-observability-settings-plan.md` | New plan for decision/proposal UI, context budget, memory, hooks, worktrees, and settings depth |
+| Background and long-running tasks | `docs/background-long-running-task-plan.md` | New plan for durable checkpoints, pause/resume/cancel, heartbeats, and recovery |
+| Code refactoring design | `docs/code-refactoring-design-plan.md` | New refactoring plan for facades, repositories, state machines, pipelines, adapters, and frontend module splits |
 | LLM material decision advisory | `docs/remediation-plan-index.md` | New top-level batch for making every material runtime decision request an LLM proposal before validator/policy裁决 |
 | Agent autonomy governance | `docs/remediation-plan-index.md` | New cross-cutting batch for configurable, auditable, replayable, and permission-bounded autonomy |
 | Agent soul and prompt profiles | `docs/remediation-plan-index.md` | New cross-cutting batch for configurable agent identity, system prompts, and prompt layering |
@@ -169,7 +178,7 @@ themes are:
 
 `run_command` write-scope enforcement currently validates the command working
 directory. It does not fully parse arbitrary file path arguments embedded inside
-shell command strings. Treat stronger command path sandboxing as a separate
+shell command strings. Treat stronger command path isolation as a separate
 hardening item after the frontend recovery batch.
 
 ### LLM Material Decision Advisory
@@ -217,24 +226,27 @@ Out of scope decisions:
 Current state:
 
 - validators and proposal records already exist for many proposal kinds;
-- `MetaRouter` can ask the provider for low-confidence routing classification;
+- `DecisionAdvisor` and the material decision registry exist for routing,
+  context policy, decomposition, ReAct turn, and completion decisions;
+- `MetaRouter` can ask `DecisionAdvisor` or the provider for low-confidence
+  routing classification;
 - tests show LLM proposals can be accepted or rejected by validators;
-- default runtime paths still call rules or inline logic at many decision
-  points without creating a durable LLM proposal record;
-- there is no single `DecisionAdvisor` interface that every material decision
-  must pass through.
+- code review on 2026-05-13 found the default `build_server()` path still
+  constructs `MetaRouter(provider=provider)` without a `DecisionAdvisor`, so the
+  production-style default entry can bypass proposal-record routing;
+- default runtime paths still call rules or inline logic at several decision
+  points without creating a durable LLM proposal record.
 
 Rectification order:
 
-1. P0: define a `DecisionAdvisor` interface with `advise(kind, input,
-   context)`, returning proposal payload, confidence, rationale, model/provider
-   metadata, and fallback reason.
-2. P0: define a material decision registry that lists each decision kind,
-   required inputs, allowed proposal schema, validator, policy gate, fallback
-   behavior, and trace event name.
-3. P0: route the first four default runtime decisions through
-   `DecisionAdvisor`: conversation mode, routing strategy, context policy, and
-   decomposition.
+1. P0: wire `DecisionAdvisor(provider=provider)` into the default
+   `build_server()` path and stop passing a router instance that lacks the
+   advisor unless a test explicitly needs rule-only routing.
+2. P0: make default routing create proposal records for accepted, rejected,
+   malformed-provider, provider-unavailable, and rule-fallback decisions.
+3. P0: route the first default runtime decisions through `DecisionAdvisor`:
+   conversation mode, routing strategy, context policy, decomposition, ReAct
+   turn, and completion.
 4. P1: automatically create proposal records for every `DecisionAdvisor`
    response, including rejected, malformed, fallback, and rule-only decisions.
 5. P1: add `agent.decision` trace events linked to proposal records and policy
@@ -262,29 +274,38 @@ wiring.
 
 Current state:
 
-- default routing is being wired so low-confidence `MetaRouter` decisions can
-  ask the configured provider instead of staying purely rule-based;
-- context compaction is being moved toward "runtime hard budget plus LLM
-  advisory decision" instead of a fixed small threshold;
+- `DecisionAdvisor` tests cover accepted/rejected routing proposals, but the
+  default runtime entry still needs to pass the advisor into `MetaRouter`;
+- context builder uses a default context budget of `256000`, but the ReAct loop
+  still calls compaction with a hard-coded `60000` threshold;
+- `ContextCompactor.should_compact()` can ask the provider near budget, but that
+  advisory path does not yet create `context_policy` proposal records;
+- `completion_decision` is registered and completion trace events are emitted,
+  but `_complete_task()` does not yet ask the advisor before marking a task
+  complete;
 - default runtime paths do not yet consistently create durable proposal records
   for key decisions such as `intent_mode`, `context_policy`, `decomposition`,
-  `model_policy`, `tool_policy`, `risk_policy`, and `test_strategy`;
+  `completion_decision`, `model_policy`, `tool_policy`, `risk_policy`, and
+  `test_strategy`;
 - runtime validators and approval gates must remain the final authority. LLM
   output should propose decisions, not grant permissions, apply patches, run
   commands, or bypass write-scope policy.
 
 Rectification order:
 
-1. P0: finish provider wiring for `MetaRouter`, with tests covering low-rule
-   confidence LLM routing and malformed-provider fallback.
+1. P0: finish default `MetaRouter` advisor wiring in `build_server()`, with
+   tests proving the normal `message.send` path records a `routing_strategy`
+   proposal when low-confidence routing asks the advisor.
 2. P0: finalize context-compaction decision policy: default context budget
-   `256000`, ReAct compaction threshold `60000`, LLM advisory decisions near the
-   threshold, and hard runtime compaction over budget.
+   `256000`, configurable ReAct compaction threshold from the active autonomy
+   profile, LLM advisory decisions near the threshold, and hard runtime
+   compaction over budget.
 3. P1: add a proposal-record helper used by runtime decision points so each
    LLM-assisted decision can be recorded as created, accepted or rejected, and
    applied when applicable.
 4. P1: wire automatic proposal records for the first four default decisions:
-   `intent_mode`, `context_policy`, `decomposition`, and `test_strategy`.
+   `intent_mode`, `context_policy`, `decomposition`, and
+   `completion_decision`.
 5. P2: extend proposal recording to model/tool/MCP/risk/failure-recovery
    decisions after the first four are stable.
 6. P2: expose proposal trace summaries in the session UI so users can inspect
@@ -332,7 +353,7 @@ Rectification order:
    appropriate, starting with routing, context policy, decomposition, tool
    policy, risk policy, retry policy, and test strategy.
 5. P1: add a runtime policy gate result model with `allowed`,
-   `approval_required`, `blocked`, `deferred`, and `sandboxed`, and ensure LLM
+   `approval_required`, `blocked`, `deferred`, and `worktree_isolated`, and ensure LLM
    output can only propose actions while validators and approval gates remain
    the final authority.
 6. P2: build an autonomy run report that summarizes selected profile, routing
@@ -351,6 +372,47 @@ Rectification order:
 10. P3: add an autonomy release gate covering profile snapshot persistence,
     default decision trace creation, approval-blocked paths, replay integrity,
     and report rendering.
+
+### Permission Policy V2 Lite
+
+The current permission model is useful but coarse. Settings can update
+`policy.approvalMode`, and tools such as `run_command`, `apply_patch`, and
+`write_file` consult the runtime policy before requesting approval. The missing
+piece is a single capability-based permission contract that also covers network,
+subagents, hooks, future Computer Use, and audit reporting.
+
+Target execution chain:
+
+`tool request -> PermissionEngine.evaluate -> allow | deny | approval_required -> audit record -> execute/block/wait`
+
+Current state:
+
+- `approvalMode` is persisted and affects high-risk tool approvals;
+- command/path validation and approval records already exist;
+- authority decisions are still distributed across individual tools;
+- there is no top-level `permissions` config layer;
+- there is no unified policy decision record explaining why an action was
+  allowed, blocked, or sent to approval;
+- Computer Use/browser automation are UI placeholders and should remain blocked
+  until implemented.
+
+Rectification order:
+
+1. P0: add a `permissions` config layer with presets `safe`, `balanced`, and
+   `autonomous`, while keeping `policy.approvalMode` as a compatibility field.
+2. P0: implement `PermissionEngine.evaluate()` with capability, actor, task,
+   workspace/worktree scope, matched rule, reason, and decision.
+3. P0: route `run_command`, `apply_patch`, `write_file`, `web_fetch`, and child
+   task dispatch through the permission engine.
+4. P0: persist or trace `policy_decision` records for `allow`,
+   `approval_required`, and `blocked` outcomes.
+5. P1: expose permission presets and a capability summary in settings, without
+   building a full policy editor yet.
+6. P1: add task permission snapshots and include policy decisions in
+   `autonomy.report`.
+7. P1: make hook side effects and worktree-bound writes use the same engine.
+8. P2: add temporary grants, URL/domain policy, replay re-evaluation, and
+   Computer Use/browser automation details after those capabilities exist.
 
 ### Agent Soul and Prompt Profiles
 
@@ -417,31 +479,72 @@ Rectification order:
 10. P3: include prompt profile checks in the autonomy release gate so broader
     autonomy cannot ship with untraceable or policy-overriding system prompts.
 
+## Code-Verified Open Loops
+
+Date checked: 2026-05-13.
+
+These items were found by reading the current runtime/UI code, not by relying
+on commit history or checklist state.
+
+| Area | Current code state | Open loop | Completion criteria |
+| --- | --- | --- | --- |
+| ~~Default LLM routing advisory~~ | **Closed** (`18e3be1`). `build_server()` wires `DecisionAdvisor(provider=provider)` into `MetaRouter`; proposal records and `agent.decision.routing_strategy` events created on low-confidence routes. | — | — |
+| ~~Completion decision~~ | **Closed** (`18e3be1`). `_complete_task()` consults `DecisionAdvisor("completion_decision")` before final status commit; accepted/rejected/fallback outcomes persisted. | — | — |
+| ~~ReAct context compaction~~ | **Closed** (`18e3be1`). ReAct compaction reads `compactionThreshold` from autonomy profile snapshot via `_autonomy_profile_int()`, falls back to `60000`. | — | — |
+| ~~Context policy proposal records~~ | **Closed** (`18e3be1`). `_consult_context_policy_advisor()` creates proposal records with token budget, threshold, and trace linkage via `agent.decision.context_policy` events. | — | — |
+| ~~Worktree RPC and service~~ | **Closed** (`18e3be1`). `worktree.create/status/diff/cleanup` route through `WorktreeService`; `worktree.merge` RPC added. | — | — |
+| Task-worktree binding | `task_worktrees` records exist. | Write-capable tasks are not automatically bound to a task branch/worktree record. | Planning/edit tasks can allocate or resolve a worktree, write tools execute in the correct worktree root, and task reports show worktree id/path/branch. See `docs/worktree-isolation-design-plan.md`. |
+| ~~Worktree hooks~~ | **Closed** (`18e3be1`). `WorktreeService.create_for_task()` fires `before/after_worktree_create`; `merge()` fires `before/after_worktree_merge`. `HookService` shared between Orchestrator and WorktreeService. | — | — |
+| ~~Memory Chinese recall quality~~ | **Closed** (`18e3be1`). Mojibake tokenizer constants replaced with valid Unicode/CJK ranges; Chinese recall regression tests added. | — | — |
+| Settings/Soul management depth | Settings page exposes basic Autonomy and Soul fields. | Full profile lifecycle is not complete: create/duplicate/disable/reset/preview audit UX is still shallow. | UI supports profile CRUD, active profile switching, prompt preview, reset to default, and tests for serialization into runtime config. See `docs/frontend-observability-settings-plan.md`. |
+| Provider API formats | Settings form exposes `openai-chat`, `openai-responses`, and `anthropic-messages`; runtime adapter only supports `openai-chat`/`chat-completions` today. | UI can imply support for formats that runtime will reject; provider helper extraction also needs a shared `DEFAULT_PROVIDER_API_FORMAT` import/type source. | Add a shared provider API format type, normalize aliases, mark unsupported formats in UI, and implement/test `openai-responses` and `anthropic-messages` adapters in priority order. See `docs/provider-api-format-support-plan.md`. |
+| Permission Policy V2 Lite | `approvalMode` is persisted and affects approval checks for core write/command tools. | Permission decisions are still tool-local and coarse; there is no capability config, unified evaluator, or durable policy decision audit. | Add `permissions` defaults, `PermissionEngine.evaluate()`, decision records, and first integrations for command, file write, web fetch, subagents, and hook side effects. See `docs/permission-policy-v2-lite-plan.md`. |
+| Large-file follow-up | Backend `service.py`/`sqlite_store.py` have been split; frontend remains large. | `App.tsx`, `SessionWorkspace.tsx`, `runtimeClient.ts`, and `SettingsWorkspace.tsx` remain above the desired long-term size. | Add a large-file budget gate and split frontend modules without changing behavior. |
+| GitHub PR and CI workflow | Git/diff tools exist, but there is no issue/PR/CI workflow service. | Completed local work cannot yet become an approval-gated branch/PR with CI feedback inside the runtime. | Add a GitHub workflow service, publish proposal, approval-gated draft PR creation, CI status ingestion, and report linkage. See `docs/github-pr-ci-workflow-plan.md`. |
+| Background and long-running tasks | Background execution, queues, pause/cancel statuses, and partial pending-state persistence exist. | Lifecycle semantics are not yet one explicit contract across ReAct, DAG, supervisor/swarm, approvals, restart recovery, and UI controls. | Define one lifecycle/checkpoint contract with heartbeat, stale detection, recovery, pause/resume/cancel/retry semantics, and tests. See `docs/background-long-running-task-plan.md`. |
+
 ## Recommended Next Batch
 
-1. P0: implement the LLM Material Decision Advisory foundation:
-   `DecisionAdvisor`, material decision registry, and advisor routing for
-   conversation mode, routing strategy, context policy, and decomposition.
-2. P0: complete the LLM decision wiring gap above, especially `MetaRouter`
-   provider routing, compaction decision policy, and proposal-record creation
-   for default runtime paths.
-3. P0: start Agent Autonomy Governance with `AutonomyProfile` definitions,
+1. ~~P0: close the default LLM routing advisory loop~~ — **Done**.
+2. ~~P0: close the completion decision loop~~ — **Done**.
+3. ~~P0: close the context policy loop~~ — **Done**.
+4. ~~P0: finish Worktree Isolation P0~~ — **Done**.
+5. P0: establish Permission Policy V2 Lite:
+   add capability-based permission presets, a unified permission engine,
+   policy decision audit records, and first integrations for command/file
+   writes, web fetch, child task dispatch, and hook side effects.
+   Also treat provider API format alignment as a P0 settings/runtime consistency
+   item: keep `apiFormat` explicit during provider setup, fix the shared
+   default/type source after provider helper extraction, mark unsupported formats
+   in UI, and implement `openai-responses` then `anthropic-messages` in the
+   runtime adapter. See `docs/provider-api-format-support-plan.md`.
+6. ~~P0: fix memory Chinese recall quality~~ — **Done**.
+7. ~~P0: finish Runtime Hooks lifecycle hardening~~ — **Done** (worktree hook points wired, 25 hook tests passing).
+8. ~~P0: establish the refactoring protection layer~~ — **Done** (R1-R9 refactoring completed with 1841 tests as protection).
+9. P0: continue Agent Autonomy Governance with `AutonomyProfile` definitions,
    per-task profile snapshots, and runtime reads for router, compaction, memory,
    ReAct max steps, background execution, and subagent dispatch.
-4. P0: start Agent Soul and Prompt Profiles with schema, config persistence,
-   prompt-layer composition, and non-editable runtime safety boundaries.
-5. P1: add structured `agent.decision` events and policy gate outcomes so each
-   autonomous choice can be audited before the UI/replay work starts.
-6. P1: snapshot active autonomy and soul profiles into each task so later audits
-   and replay can explain both capability limits and prompt identity.
-7. P0: reconcile the legacy `chat-runtime-agent-run-todolist.md` open items
+10. P0: deepen Agent Soul and Prompt Profiles beyond the current base config:
+   full profile lifecycle UI, prompt preview/audit, safety validation, and
+   subagent inheritance behavior.
+11. ~~P1: add structured `agent.decision` events and policy gate outcomes~~ — **Done** (routing, completion, context_policy, decomposition, react_turn events all emitted).
+12. ~~P1: snapshot active autonomy and soul profiles into each task~~ — **Done** (`_runtime_profile_snapshot()` captures autonomyProfile, agentSoulProfile, promptLayers in routing context).
+13. ~~P1: start Code Refactoring R1/R2~~ — **Done** (R1-R9 all completed: TaskStateMachine, HookRepository, ToolPipeline, mixins, message_flow split, react_runner split, patch/schema/context extraction).
+14. P1: continue large-file reduction after the initial backend split:
+    split `app/src/App.tsx`, `SessionWorkspace.tsx`, `runtimeClient.ts`, and
+    the new `orchestrator/react_runner.py` into feature modules, hooks,
+    client submodules, and smaller provider/tool/compaction runners.
+15. P1: add a large-file regression budget to the release gate:
+    flag runtime/frontend files above 1500 lines and require a split plan for
+    files above 2500 lines.
+16. P0: reconcile the legacy `chat-runtime-agent-run-todolist.md` open items
    against the newer completed subagent/LLM checklists, then close or rewrite
    stale entries.
-8. P0: run the broader frontend regression suite and visual smoke around the
+17. P0: run the broader frontend regression suite and visual smoke around the
    session workspace now that subagent panel work is checked off.
-9. P1: harden `run_command` beyond cwd-based write-scope checks if shell command
+18. P1: harden `run_command` beyond cwd-based write-scope checks if shell command
    path isolation becomes a release requirement.
-10. P1: add a focused release gate that combines backend subagent tests,
+19. P1: add a focused release gate that combines backend subagent tests,
    frontend visibility tests, typecheck, and diff hygiene.
-11. P2: review memory/context UI gaps from the legacy chat runtime checklist and
+20. P2: review memory/context UI gaps from the legacy chat runtime checklist and
    decide whether they still belong in the current product scope.

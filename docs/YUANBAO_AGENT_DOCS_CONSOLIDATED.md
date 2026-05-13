@@ -1,0 +1,759 @@
+# Yuanbao Agent 文档合并校正版
+
+> 校验日期：2026-05-11  
+> 校验范围：2026-05-10 在 `docs/` 下生成、文件名为大写的文档。
+
+## 0. 阅读方式与事实基线
+
+这份文档的定位是“当前项目总导引 + 昨日文档校正版”。后续讨论架构、执行流、记忆、上下文、工具、MCP、多 agent、Autonomy、AgentSoul 时，优先以本文件为入口。
+
+建议阅读顺序：
+
+1. 先看第 1 节，确认昨日文档哪些地方是对的、哪些地方需要校正。
+2. 再看第 2 到第 5 节，理解桌面应用、RPC、事件、Agent 执行链路。
+3. 接着看第 6 到第 10 节，理解上下文、记忆、Prompt、工具和并行。
+4. 最后看第 11 到第 15 节，明确当前问题、已接通能力、待补齐能力和后续推进优先级。
+
+代码事实锚点：
+
+| 主题 | 代码位置 | 当前事实 |
+| --- | --- | --- |
+| RPC handler | `runtime/src/local_agent_runtime/rpc/server.py` | `JsonRpcServer` 当前注册 90 个 handler。 |
+| 默认配置 | `runtime/src/local_agent_runtime/store/sqlite_store.py` | 默认 provider mode 是 `mock`，默认 `maxContextTokens` 是 256000，默认 autonomy profile 是 `balanced`。 |
+| 前端配置模型 | `shared/src/config.ts`, `app/src/lib/runtimeClient.ts` | 前后端都已有 `autonomy` 与 `agentSoul` 配置结构。 |
+| 上下文构建 | `runtime/src/local_agent_runtime/context/builder.py` | 会记录 `autonomy_profile`、`agent_soul_profile`、`prompt_layers`、预算统计。 |
+| 压缩判断 | `runtime/src/local_agent_runtime/context/compactor.py` | 支持规则判断与 provider advisory；ReAct 循环内当前使用 60000 阈值。 |
+| 路由决策 | `runtime/src/local_agent_runtime/router/meta_router.py` | 规则路由为基础；配置了 DecisionAdvisor 时可让 LLM 给 routing proposal。 |
+| LLM 决策接口 | `runtime/src/local_agent_runtime/policy/decision_advisor.py` | 已注册 routing/context/decomposition/react/completion 等决策类型，但并非每个默认路径都已经完整强制接入。 |
+| Proposal 审计 | `runtime/src/local_agent_runtime/store/sqlite_store.py` | 已有 `proposal_records` 表和 create/validate/apply/list 能力。 |
+| 工具 registry | `runtime/src/local_agent_runtime/tools/registry.py` | 当前 13 个基础工具，再加 memory/scratchpad 共 17 个内置工具。 |
+| MCP | `runtime/src/local_agent_runtime/mcp/client.py` | 支持 `stdio`、`sse`、`streamable_http`，工具名按 `mcp__server__tool` 命名。 |
+
+## 1. 本次合并的原始文档
+
+| 原文档 | 当前判断 | 需要校正的点 |
+| --- | --- | --- |
+| `ARCHITECTURE_OVERVIEW.md` | 主体正确 | RPC 方法数不是 120+，当前 `JsonRpcServer` 注册 90 个 handler；工具数应按 17 个内置工具口径描述。 |
+| `HOW_TO_RUN.md` | 主体正确 | 启动链路正确：React/Vite + Tauri 2 + Python runtime；测试命令可保留，但建议注明按前端/运行时分别执行。 |
+| `TOOLS_MCP.md` | 主体正确 | 文档标题写 16 个内置工具，但当前代码实际是 17 个：13 个基础工具 + 2 个 memory 工具 + 2 个 scratchpad 工具。 |
+| `DAG_PLANNING.md` | 主体正确 | DAG 独立节点可并行；Supervisor/Swarm 更偏受控编排，不应误解为所有拆分任务都会天然并行。 |
+| `API_EVENTS.md` | 主体正确 | RPC handler 数需要从 120+ 改为 90；事件通道和 `events.after` 口径正确。 |
+| `CONTEXT_MEMORY.md` | 需要明显更新 | 记忆系统不是 `MEMORY.md` frontmatter，而是 SQLite 结构化 memory；ReAct 压缩阈值是 60000，默认上下文预算是 256000。 |
+| `AGENT_EXECUTION_FLOW.md` | 主体正确 | `maxSteps` 是上限，不是必跑次数；无 final/无工具时不一定 fallback，只有存在 deterministic fallback provider 时才 fallback，否则任务失败。 |
+
+## 2. 项目总体架构
+
+Yuanbao Agent 当前是一个桌面智能助手项目，核心由三层组成：
+
+1. 前端应用：`app/`，React 18 + TypeScript + Vite，负责会话、任务、审批、设置、运行状态和可视化。
+2. 桌面壳：`app/src-tauri/`，Tauri 2 + Rust，负责启动 Python runtime，并把前端请求转成 JSON-RPC。
+3. Python 运行时：`runtime/`，Python 3.11+，负责路由、上下文构建、ReAct 执行、工具调用、记忆、MCP、任务状态、日志与审计。
+
+基础链路：
+
+```text
+用户输入
+  -> React UI
+  -> Tauri invoke
+  -> Python JSON-RPC over stdio
+  -> Orchestrator / MetaRouter / ContextBuilder / ReAct loop
+  -> 工具、MCP、Memory、SQLite Store
+  -> runtime event
+  -> Tauri agent://event
+  -> React UI 更新
+```
+
+总体架构图：
+
+```mermaid
+flowchart LR
+  U["用户"] --> UI["React / TypeScript UI"]
+  UI --> T["Tauri 2 / Rust Shell"]
+  T -->|JSON-RPC over stdio| R["Python Runtime"]
+  R --> O["Orchestrator"]
+  O --> MR["MetaRouter"]
+  O --> CB["ContextBuilder"]
+  O --> RA["ReAct Loop"]
+  RA --> TG["ToolRegistry / Validator"]
+  TG --> PG["PolicyGuard / Approval Gate"]
+  PG --> BT["Built-in Tools"]
+  PG --> MCP["MCP Tools"]
+  O --> MEM["MemoryManager / MemoryStore"]
+  O --> DB[("SQLite Store")]
+  R -->|runtime event| T
+  T -->|agent://event| UI
+```
+
+## 3. 启动与运行
+
+完整桌面应用：
+
+```powershell
+cd app
+npm install
+npm run tauri:dev
+```
+
+仅前端开发：
+
+```powershell
+cd app
+npm run dev
+```
+
+仅 Python runtime：
+
+```powershell
+cd runtime
+python -m local_agent_runtime.main
+```
+
+常用校验：
+
+```powershell
+cd app
+npm run typecheck
+npm test
+```
+
+```powershell
+cd runtime
+python -m pytest -q -p no:cacheprovider
+```
+
+Tauri 启动 Python runtime 时，会读取 `LOCAL_AGENT_PYTHON`，默认使用 `python`，并执行 `python -u -m local_agent_runtime.main`。同时会设置 runtime 的 `PYTHONPATH` 与 `LOCAL_AGENT_DB_PATH`。
+
+## 4. RPC 与事件系统
+
+当前 `runtime/src/local_agent_runtime/rpc/server.py` 中，`JsonRpcServer` 注册了 90 个 JSON-RPC handler。主要分组如下：
+
+| 分组 | 代表方法 |
+| --- | --- |
+| workspace | `workspace.open`, `workspace.focus.update`, `workspace.memory.clear` |
+| session/message/task | `session.create`, `message.send`, `task.cancel`, `task.pause`, `task.resume` |
+| approval/config/provider | `approval.submit`, `config.get`, `config.update`, `provider.test` |
+| trace/proposal/decision | `trace.list`, `decision.list`, `proposal.list`, `provider_turn.list` |
+| schedule/collab | `schedule.create`, `collab.task.create`, `collab.worker.heartbeat` |
+| skill/mcp | `skill.list`, `skill.create`, `mcp.server.create`, `mcp.tools.refresh` |
+| context/memory/feature | `context_snapshot.get`, `memory.list`, `memory.promote`, `feature.set` |
+| hooks | `hook.create`, `hook.update`, `hook.list`, `hook.listExecutions` |
+| events | `events.after` |
+
+事件口径：
+
+```text
+Python stdout JSON line
+  {"kind": "event", "payload": {...}}
+    -> Tauri
+    -> agent://event
+    -> 前端订阅并更新状态
+```
+
+RPC 与事件流：
+
+```mermaid
+sequenceDiagram
+  participant UI as React UI
+  participant Tauri as Tauri Shell
+  participant RPC as JsonRpcServer
+  participant Orch as Orchestrator
+  participant Store as SQLite Store
+
+  UI->>Tauri: invoke("message.send")
+  Tauri->>RPC: JSON-RPC request
+  RPC->>Orch: send_message(params)
+  Orch->>Store: create message / task / trace
+  Orch-->>RPC: response
+  RPC-->>Tauri: JSON-RPC response
+  RPC-->>Tauri: {"kind":"event","payload":...}
+  Tauri-->>UI: agent://event
+  UI->>Tauri: events.after(afterSeq)
+  Tauri->>RPC: JSON-RPC request
+  RPC->>Store: events_after(...)
+  Store-->>RPC: missed events
+  RPC-->>UI: replay events
+```
+
+`events.after` 用于按序号补拉事件，适合 UI 断线、刷新、后台命令恢复后追平状态。
+
+## 5. Agent 执行流程
+
+默认请求从 `message.send` 进入，由 Orchestrator 创建/更新消息和任务，再经 MetaRouter 选择执行策略。
+
+当前执行权边界是合理的：
+
+1. LLM 可以参与路由建议、任务规划、压缩判断、工具调用建议和最终回答生成。
+2. 真正执行工具前仍经过 runtime validator、policy guard、approval gate、预算限制和任务状态检查。
+3. LLM 不应直接越权写文件、执行命令、绕过审批或修改权限边界。
+
+ReAct 主循环可以理解为：
+
+```text
+构建上下文
+  -> LLM 思考并输出 final 或 tool_calls
+  -> runtime 校验工具调用
+  -> 必要时请求审批
+  -> 执行工具
+  -> 观察结果写回上下文
+  -> 判断是否继续、压缩、暂停、取消或完成
+```
+
+ReAct 状态图：
+
+```mermaid
+stateDiagram-v2
+  [*] --> BuildContext
+  BuildContext --> ProviderTurn
+  ProviderTurn --> Completed: final / final_answer / answer
+  ProviderTurn --> ToolValidation: tool_calls
+  ProviderTurn --> Fallback: first turn empty + deterministic fallback available
+  ProviderTurn --> Failed: no final and no tools
+  ToolValidation --> ApprovalRequired: policy requires approval
+  ToolValidation --> ExecuteTool: approved or safe
+  ApprovalRequired --> Paused: waiting for user
+  ApprovalRequired --> ExecuteTool: approved
+  ApprovalRequired --> Failed: rejected
+  ExecuteTool --> Observe
+  Observe --> Compact: context over threshold
+  Observe --> ProviderTurn: continue
+  Compact --> ProviderTurn
+  ProviderTurn --> Failed: maxSteps reached
+  Paused --> ProviderTurn: resume
+  Paused --> Cancelled: cancel
+  Completed --> [*]
+  Failed --> [*]
+  Cancelled --> [*]
+```
+
+`maxSteps` 是安全上限，不是必须执行的次数。当前默认配置里常见值是 20；如果 LLM 给出明确 final answer，或者没有必要继续调用工具，任务可以提前结束。若达到上限仍没有 final answer，会失败并提示达到 `maxTaskSteps`。
+
+无 final/无 tool_calls 的情况需要区分：
+
+1. 如果已经进入 ReAct 且允许 plain message 作为最终答案，普通文本可以作为 final。
+2. 如果第一轮没有 final、没有工具调用，只有在 deterministic fallback provider 可用时才走 fallback。
+3. 如果没有 fallback，runtime 会认为 provider 没有返回可执行结果，任务失败。
+
+暂停/取消/恢复：
+
+1. `task.cancel` 用于终止任务，后续不会继续执行剩余工具。
+2. `task.pause` 会保存 pending state，包括待执行工具和上下文状态。
+3. `task.resume` 会从保存的 pending state 恢复执行。
+4. 后续再次提问时，历史会话消息、结构化 memory、trace/proposal/context snapshot 可作为上下文来源，但是否进入当前 prompt 取决于 ContextBuilder、memory recall 与预算。
+
+## 6. 上下文与压缩
+
+当前默认上下文预算是 256000 tokens，对应 `DEFAULT_MAX_CONTEXT_TOKENS` 与默认配置 `maxContextTokens`。
+
+ReAct 过程中，工具结果累积后会调用 `ContextCompactor.should_compact(messages, 60000)` 做滚动压缩判断。因此这里有两个不同口径：
+
+| 口径 | 当前值 | 含义 |
+| --- | --- | --- |
+| 默认最大上下文预算 | 256000 | 构建任务上下文时的 provider/context 预算上限。 |
+| ReAct 滚动压缩阈值 | 60000 | 工具观察结果累积后，为避免循环上下文膨胀而使用的压缩阈值。 |
+
+压缩不等于删除信息。正确目标是把较早的交互、工具观察、阶段性结论压成可继续推理的摘要，同时保留当前任务所需的关键事实、约束、文件路径、审批状态和未完成动作。
+
+上下文构建与压缩位置：
+
+```mermaid
+flowchart TD
+  A["用户消息 / 当前任务"] --> B["ContextBuilder"]
+  W["Workspace Instructions"] --> B
+  S["AgentSoul / System Prompt"] --> B
+  M["Memory Recall"] --> B
+  SK["Selected Skills"] --> B
+  B --> C["Provider Messages"]
+  C --> D["LLM Turn"]
+  D --> E{"有工具调用?"}
+  E -->|否，给出 final| F["任务完成"]
+  E -->|是| G["执行工具并写入 observation"]
+  G --> H{"超过 ReAct 压缩阈值 60000?"}
+  H -->|是| I["ContextCompactor"]
+  H -->|否| D
+  I --> D
+```
+
+## 7. 记忆系统
+
+原 `CONTEXT_MEMORY.md` 中把 memory 描述成 `MEMORY.md` + frontmatter，这与当前代码不一致。当前记忆系统是 SQLite 结构化存储，核心类型在 `runtime/src/local_agent_runtime/memory/types.py`。
+
+当前 memory 主要字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `kind` | `working`, `session`, `long_term`, `semantic` |
+| `category` | `user_preference`, `project_convention`, `workspace_fact`, `task_learning`, `decision`, `open_issue`, `tooling`, `implementation_note` |
+| `scope` | `session`, `workspace`, `user`, `global` |
+| `source` | `task_result`, `user_message`, `assistant_summary`, `manual`, `supplement` |
+
+当前更合理的 recall 口径是 workspace 优先、session 加权，而不是 workspace + session 同时硬过滤。也就是说：
+
+1. 同一 workspace 的长期事实、项目约定、决策记录优先进入候选。
+2. 当前 session 相关记忆增加权重，但不应排除跨 session 的 workspace 记忆。
+3. 用户级和全局级 memory 可以作为补充，但需要受 relevance、scope 和预算约束。
+
+ReAct 当前会在第一步附近调用结构化 recall，将相关 memory 作为系统上下文注入。任务结束后也可以把阶段性结果沉淀成 working/session/long_term memory。
+
+记忆召回优先级：
+
+```mermaid
+flowchart LR
+  Q["当前问题"] --> R["Memory Recall"]
+  WS["workspace scope"] -->|优先候选| R
+  SS["current session"] -->|加权提升| R
+  US["user / global scope"] -->|相关时补充| R
+  R --> Rank["相关性 + scope + recency + access score"]
+  Rank --> Inject["注入当前上下文"]
+```
+
+## 8. Prompt Layering 与 Agent Soul
+
+当前比较合理的 prompt 分层应保持为：
+
+```text
+runtime safety / policy
+  -> role / capability profile
+  -> AgentSoul / custom system prompt
+  -> workspace instructions
+  -> selected skills / tool instructions
+  -> recalled memory
+  -> task snapshot
+  -> user message
+```
+
+这里的关键原则是：用户可配置的 Soul 和系统提示词可以影响风格、偏好、工作习惯和角色倾向，但不应覆盖 runtime safety、权限边界、审批策略、工具 schema 和预算限制。
+
+任务 snapshot 应记录本次任务实际使用的配置，包括：
+
+1. autonomy profile。
+2. role 或动态生成的 role。
+3. AgentSoul/system prompt 版本。
+4. 工具 allowlist 与审批策略。
+5. 上下文预算、压缩阈值、maxSteps。
+
+这样后续才能审计、复现和回放。
+
+## 9. 工具与 MCP
+
+当前内置工具总数是 17 个：
+
+| 类型 | 工具 |
+| --- | --- |
+| 文件读取/搜索 | `list_dir`, `search_files`, `read_file` |
+| 任务与执行 | `task`, `run_command`, `apply_patch` |
+| Git | `git_status`, `git_diff` |
+| 文件写入 | `write_file` |
+| 网络/代码/浏览器 | `web_fetch`, `code_search`, `notebook`, `browser` |
+| Memory | `memory.remember`, `memory.recall` |
+| Scratchpad | `scratchpad.write`, `scratchpad.read` |
+
+MCP 工具通过 server 配置动态接入，支持的 transport 包括 `stdio`、`sse`、`streamable_http`。接入后的工具名采用命名空间格式：
+
+```text
+mcp__{server_id}__{tool_name}
+```
+
+工具执行安全链路：
+
+```mermaid
+flowchart LR
+  LLM["LLM tool_calls"] --> V["Schema / Validator"]
+  V --> P["PolicyGuard"]
+  P --> A{"需要审批?"}
+  A -->|是| U["用户审批"]
+  A -->|否| B["Budget Check"]
+  U -->|通过| B
+  U -->|拒绝| X["停止该工具调用"]
+  B --> T["Built-in Tool / MCP Tool"]
+  T --> O["Observation"]
+  O --> R["回写 ReAct 上下文"]
+```
+
+安全边界：
+
+1. 工具 schema 负责参数结构。
+2. ToolRegistry/validator 负责基本校验。
+3. PolicyGuard/approval gate 决定是否需要用户批准。
+4. Worker budget 限制工具调用次数、时间、成本等维度。
+5. 对子任务应使用 allowlist，默认倾向只给读工具，只有明确需要时才给 `run_command` 或 `apply_patch`。
+
+## 10. DAG、多 Agent 与并行
+
+DAG 规划适合处理有明确依赖关系的任务。当前 DAG 执行器可以把无依赖或同一依赖层级的节点并行执行；有依赖的节点必须等待上游完成。
+
+```text
+A: 读取需求
+  -> B: 修改后端
+  -> C: 修改前端
+  -> D: 测试验证
+```
+
+DAG 并行示意：
+
+```mermaid
+flowchart TD
+  A["A: 读取需求 / 明确契约"] --> B["B: 后端实现"]
+  A --> C["C: 前端实现"]
+  B --> D["D: 集成测试"]
+  C --> D
+  D --> E["E: Reviewer / Validator"]
+  E --> F["F: 合并结论"]
+```
+
+如果 B 和 C 没有共享写入文件、接口契约已经明确，它们可以并行；如果 B 的输出会影响 C 的实现，则需要串行或先产出契约再并行。
+
+Supervisor/Swarm 更适合多 agent 协作，但应满足：
+
+1. 每个 worker 有明确任务边界和写入范围。
+2. reviewer/planner/summarizer 等角色可以由 LLM 建议生成，但最终要落成可审计的 role snapshot。
+3. 多 agent 并行前必须检查文件写入冲突、共享上下文、预算和取消/暂停传播。
+4. 合并结果必须经过 validator/test/review，不应直接采纳任一 worker 的输出。
+
+## 11. 当前已知偏差与建议修正
+
+| 问题 | 影响 | 建议 |
+| --- | --- | --- |
+| 原文档 RPC 数量写 120+ | 会误导 API 覆盖判断 | 改为“当前 90 个 handler，以代码为准”。 |
+| 原文档工具数量写 16 | 与当前 registry 不一致 | 改为 17，并列出 memory/scratchpad 工具。 |
+| 原文档 memory 描述为 `MEMORY.md` | 与 SQLite 结构化 memory 不一致 | 改为 MemoryStore/MemoryManager/MemoryEntry 口径。 |
+| 原文档压缩阈值有 6000 的旧口径 | 与当前配置不一致 | 改为默认上下文 256000，ReAct 滚动压缩 60000。 |
+| 原文档把 `maxSteps` 容易读成固定步数 | 会误解 agent 结束条件 | 明确它是上限，final answer 可提前结束。 |
+| 原文档 fallback 描述过宽 | 会误解 provider 无输出时的行为 | 明确只有 deterministic fallback provider 可用才 fallback。 |
+
+## 12. 当前能力状态矩阵
+
+| 能力 | 当前状态 | 判断 |
+| --- | --- | --- |
+| 桌面应用启动 | 已有 | Tauri 启动 Python runtime，前端通过 JSON-RPC 调用。 |
+| 会话/任务/消息 | 已有 | session、message、task RPC 已接入，任务状态可追踪。 |
+| 事件回放 | 已有 | runtime event + `events.after` 可支撑 UI 追平。 |
+| ReAct 工具循环 | 已有 | 支持工具调用、观察结果、压缩、maxSteps、失败处理。 |
+| 暂停/恢复/取消 | 已有运行时能力 | `task.pause`、`task.resume`、`task.cancel` 存在；前端体验还可以继续打磨。 |
+| Autonomy 配置 | 已有基础 | 默认 L0/L1/L2/L3 配置存在，设置页已有基础入口。 |
+| AgentSoul 配置 | 已有基础 | 支持 identity、principles、style、custom system prompt、workspace instructions。 |
+| Prompt layering | 已有基础 | context snapshot 中记录 prompt layers，AgentSoul 不覆盖 safety。 |
+| 结构化 memory | 已有基础 | SQLite memory 类型、scope、source、recall 能力存在。 |
+| 跨 session workspace memory | 部分接通 | memory 数据模型支持；实际召回质量还需要持续验证和调参。 |
+| LLM routing proposal | 部分接通 | MetaRouter 可走 DecisionAdvisor；默认 provider 是 mock，真实 LLM 需要配置 provider。 |
+| LLM 上下文压缩建议 | 部分接通 | compactor 支持 provider advisory；ReAct 当前仍有固定 60000 阈值。 |
+| LLM 拆任务/并行建议 | 规划/部分基础 | DecisionAdvisor 有 `decomposition` 类型，DAG/worker 基础存在，但默认完整闭环还需补齐。 |
+| Proposal 审计 | 已有基础 | proposal_records 已存在；需要保证所有关键默认路径都写入 proposal record。 |
+| 通用 Hooks | 部分接通 | runtime hooks 的 CRUD、执行记录、HookService、hook RPC 已有；任务生命周期和工具 pipeline 已开始调用 hooks，但 pause 事件名存在 `on_task_paused`/`on_task_pause` 不一致，前端设置入口也未看到完整接入。 |
+
+状态总览图：
+
+```mermaid
+flowchart LR
+  Done["已接通\nRPC / Events / ReAct / Tools / Basic Memory"] --> Partial["部分接通\nAutonomy / AgentSoul / LLM Routing / Proposal Audit"]
+  Partial --> Todo["待补齐\nDefault LLM decisions / Hook lifecycle wiring / Replay / Parallel governance"]
+```
+
+## 13. 默认配置速查
+
+| 配置 | 当前默认值 | 含义 |
+| --- | --- | --- |
+| provider mode | `mock` | 默认不一定真实调用 LLM；需要配置 provider/API key 后才是实际 LLM 决策。 |
+| provider model | `gpt-5-codex` | 默认模型配置字段，实际可按 provider profile 调整。 |
+| max output tokens | `4000` | 单次输出预算。 |
+| max context tokens | `256000` | 默认上下文预算。 |
+| approval mode | `on_write_or_command` | 写文件或执行命令需要审批。 |
+| max task steps | `20` | ReAct/task 步数上限，不是固定步数。 |
+| patch repair attempts | `2` | patch 自动修复尝试次数上限。 |
+| command timeout | `600000ms` | 命令默认超时 10 分钟。 |
+| active autonomy | `balanced` / L2 | 默认允许子 agent、后台、写入/命令需审批。 |
+| max parallel subtasks | `4` | 默认并行子任务上限。 |
+| memory recall policy | `workspace_first_session_boosted` | workspace 优先，session 加权。 |
+| agent soul | `default` | 默认启用，但默认 baseline 不额外注入个性化 prompt。 |
+
+Autonomy 默认层级：
+
+| Profile | Level | maxSteps | maxParallelSubtasks | 适用场景 |
+| --- | --- | --- | --- | --- |
+| locked_down | L0 | 4 | 1 | 高风险环境，只做很小范围动作。 |
+| conservative | L1 | 10 | 2 | 需要更多用户确认的日常任务。 |
+| balanced | L2 | 20 | 4 | 当前默认，适合大多数开发任务。 |
+| autonomous | L3 | 40 | 6 | 较长任务，仍保留关键安全边界。 |
+
+## 14. LLM 决策接入矩阵
+
+核心原则：LLM 给建议，runtime 做验证和执行。也就是说，LLM 可以提出 proposal，但不能绕过 validator、policy、approval、budget 和 workspace 边界。
+
+| 决策点 | 当前接入情况 | 应补齐的标准 |
+| --- | --- | --- |
+| intent mode | DecisionAdvisor 已定义 | 默认入口要记录 proposal 或明确 rule fallback。 |
+| routing strategy | MetaRouter 已可接 DecisionAdvisor | 确保真实 provider 配置后默认 runtime 会生成可审计 proposal。 |
+| context policy | DecisionAdvisor 已定义，ContextBuilder 有预算/层级 | 让 LLM 建议 include/drop/compact，但 hard budget 仍由 runtime 执行。 |
+| decomposition | DecisionAdvisor 已定义 | LLM 可建议是否拆任务、DAG、并行度；runtime 校验依赖、写入范围和预算。 |
+| react turn decision | DecisionAdvisor 已定义 | 每轮继续/停止/提问/审批建议应可记录，但 final authority 仍在 ReAct parser 与 runtime 状态机。 |
+| completion decision | DecisionAdvisor 已定义 | LLM 可判断是否完成；runtime 结合测试、文件状态、审批状态做最终落库。 |
+| tool scope | validator/policy 已有 | LLM 只能建议工具集合，实际工具 allowlist 和审批由 runtime 控制。 |
+| memory recall | memory recall 已有基础 | LLM 可建议 recall focus；runtime 用 scope/relevance/budget 控制注入。 |
+
+LLM 决策闭环：
+
+```mermaid
+flowchart TD
+  A["需要决策的 runtime 节点"] --> B["DecisionAdvisor"]
+  B --> C["LLM proposal"]
+  C --> D["ProposalValidator"]
+  D -->|accepted| E["写入 proposal_records"]
+  D -->|rejected| F["rule fallback"]
+  E --> G["Runtime policy / budget / approval"]
+  F --> G
+  G --> H["执行或停止"]
+  H --> I["trace / decision / context snapshot"]
+```
+
+## 15. Hooks 与扩展点规划
+
+这里的 hooks 不是简单的 webhook，而是 agent 生命周期中的可配置扩展点。它应该服务于审计、自动验证、外部通知、策略加固和团队流程。
+
+当前代码已支持创建的 hook 事件只有 3 个：
+
+```text
+after_task_complete
+on_task_failed
+on_approval_required
+```
+
+它们已经有存储、RPC、`HookService` 和测试，但还没有在默认任务生命周期里自动触发。完整 hook 体系建议补到 20 个左右，按三阶段推进。
+
+P0 最小本地开发闭环：8 个。
+
+| Hook | 触发时机 | 典型用途 |
+| --- | --- | --- |
+| `before_task_start` | 任务创建后、执行前 | 注入项目规则、检查权限、记录审计上下文。 |
+| `after_task_complete` | 任务完成后 | 自动验证、生成总结、写入 memory、更新计划表。 |
+| `on_task_failed` | 任务失败时 | 记录失败原因、通知用户、创建 follow-up。 |
+| `on_task_cancel` | 任务取消时 | 清理 pending state、标记未完成原因。 |
+| `on_task_pause` | 任务暂停时 | 保存 resume snapshot、通知 UI。 |
+| `on_approval_required` | 需要用户审批时 | 发送通知、记录审批上下文、阻断高风险动作。 |
+| `before_tool_call` | 工具执行前 | 权限检查、审批、路径限制、命令风险扫描。 |
+| `after_tool_call` | 工具执行后 | 记录结果、抽取 memory、触发测试建议。 |
+
+P1 Agent loop 控制：累计 13 个。
+
+| Hook | 触发时机 | 典型用途 |
+| --- | --- | --- |
+| `before_provider_turn` | 每次 LLM 调用前 | 追加安全提示、做 prompt 审计、统计 token。 |
+| `after_provider_turn` | LLM 返回后 | 记录 proposal、检测格式、拦截异常输出。 |
+| `before_compaction` | 上下文压缩前 | 选择保留内容、记录压缩原因。 |
+| `after_compaction` | 上下文压缩后 | 记录摘要质量、压缩 token、保留/丢弃内容。 |
+| `on_task_resume` | 任务恢复时 | 恢复审计、校验 pending state、通知 UI。 |
+
+P2 高级执行与隔离：长期累计约 20 个。
+
+| Hook | 触发时机 | 典型用途 |
+| --- | --- | --- |
+| `before_subagent_start` | 子 agent 启动前 | 校验写入范围、预算、角色、工具 allowlist。 |
+| `after_subagent_complete` | 子 agent 完成后 | 合并结果、生成 reviewer 输入、记录 artifact。 |
+| `on_subagent_failed` | 子 agent 失败时 | 降级、重试、通知、创建修复任务。 |
+| `before_worktree_create` | 创建任务 worktree 前 | 校验 workspace trust、分支命名、base ref。 |
+| `after_worktree_create` | 创建任务 worktree 后 | 记录 worktree path、branch、通知 UI。 |
+| `before_worktree_merge` | worktree 合并前 | 冲突检测、验证命令、审批检查。 |
+| `after_worktree_merge` | worktree 合并后 | 记录 merge 结果、更新任务报告。 |
+| `before_patch_apply` | patch 应用到真实 workspace 前 | 做 diff 风险检查、审批、冲突检测。 |
+| `after_patch_apply` | patch 应用后 | 记录变更、触发测试、更新任务报告。 |
+| `on_memory_write` | 写入结构化 memory 时 | 校验 scope/category/source，避免污染长期记忆。 |
+| `on_context_snapshot` | 生成上下文快照时 | 记录 prompt layers、预算、配置快照，支持回放。 |
+
+当前阶段优先用 Git worktree 做文件改动隔离，确保 agent 不直接改乱主 workspace。
+
+Hooks 设计边界：
+
+1. hook 可以观察、建议、补充 metadata。
+2. hook 要修改执行行为时，必须走同样的 validator/policy/approval。
+3. hook 的输入输出需要结构化，方便审计和回放。
+4. hook 失败不能默认破坏主流程，除非配置为 blocking hook。
+5. hook 配置应该进入 settings，并进入 task snapshot。
+
+Hooks 位置图：
+
+```mermaid
+flowchart TD
+  A["task created"] --> H1["before_task_start"]
+  H1 --> B["build context"]
+  B --> H2["before_provider_turn"]
+  H2 --> C["provider turn"]
+  C --> H3["after_provider_turn"]
+  H3 --> D{"tool_calls?"}
+  D -->|yes| H4["before_tool_call"]
+  H4 --> E["execute tool"]
+  E --> H5["after_tool_call"]
+  H5 --> F{"compact?"}
+  F -->|yes| H6["before_compaction"]
+  H6 --> B
+  F -->|no| B
+  D -->|final| H7["after_task_complete"]
+```
+
+## 16. Worktree 隔离路线
+
+近期隔离策略以 Git worktree 为主。
+
+原因：
+
+1. worktree 能直接解决 agent 改乱主 workspace、并行任务互相覆盖的问题。
+2. worktree 天然适合 diff、review、pause/resume、cancel cleanup、merge approval。
+3. worktree 能在当前 Git 项目里更快落地，不需要额外运行环境。
+
+详细设计见：
+
+`docs/worktree-isolation-design-plan.md`
+
+推荐默认流程：
+
+```text
+main workspace
+  -> task branch
+  -> task worktree
+  -> agent edits/tests inside worktree
+  -> diff/report
+  -> validation + approval
+  -> merge/apply back to main workspace
+```
+
+优先实现：
+
+| 阶段 | 目标 |
+| --- | --- |
+| P0 | `task_worktrees` 存储 + worktree store CRUD/RPC 已出现；继续补 service-backed `status/diff/cleanup` 和任务绑定。 |
+| P1 | 写入类任务自动创建 worktree，工具和命令默认在 worktree cwd 执行。 |
+| P2 | merge preview、验证命令、approval-required merge。 |
+| P3 | 多 agent/子任务独立 worktree，合并前冲突检测和 reviewer 流程。 |
+
+完成标准：
+
+1. 写入类任务默认不直接修改 main workspace。
+2. pause/resume 保留 worktree 现场。
+3. cancel 不自动删除 dirty worktree。
+4. merge 前必须有 diff、冲突检查、验证结果和用户审批。
+5. task trace/report 能看到 worktree path、branch、base ref 和 merge/cleanup 记录。
+
+## 17. 代码重构路线
+
+当前代码已经出现若干超大文件。它们还能运行，但会逐渐拖慢需求推进、测试定位和多人协作。后续重构应作为独立工程推进，不建议夹在功能实现里顺手大改。
+
+详细重构设计见：
+
+`docs/code-refactoring-design-plan.md`
+
+当前大文件快照（2026-05-13 更新）：
+
+| 文件 | 当前行数约 | 状态 |
+| --- | ---: | --- |
+| `app/src/ui/workbench/workspaces/session/session.css` | 3151 | 超过 2500，需优先拆分样式域。 |
+| `app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx` | 2824 | 超过 2500，需拆 message list、task timeline、context panel、approval/composer 等。 |
+| `app/src/lib/runtimeClient.ts` | 1886 | 超过 1500，需拆 RPC client facade 与 domain clients。 |
+| `app/src/ui/workbench/workspaces/settings/SettingsWorkspace.tsx` | 1698 | 超过 1500，需拆 provider/autonomy/soul/permissions/skills/MCP 子面板。 |
+| `runtime/src/local_agent_runtime/context/builder.py` | 955 | 已降到可控范围。 |
+| `runtime/src/local_agent_runtime/orchestrator/react_runner.py` | 722 | 已降到可控范围。 |
+| `app/src/App.tsx` | 652 | 已从 5493 行拆到约 650 行，大文件问题已解决。 |
+| `runtime/src/local_agent_runtime/orchestrator/service.py` | 346 | 已从 6722 行拆到约 350 行，作为兼容 facade。 |
+| `runtime/src/local_agent_runtime/store/sqlite_store.py` | 451 | 已从 5671 行拆到约 450 行，作为兼容 facade。 |
+| `runtime/src/local_agent_runtime/tools/registry.py` | 201 | 已降到可控范围。 |
+
+2026-05-13 当前状态：后端 `service.py`（346行）、`sqlite_store.py`（451行）、
+前端 `App.tsx`（652行）均已大幅拆分完成。仍需继续拆分的前端大文件：
+`session.css`（3151行）、`SessionWorkspace.tsx`（2824行）、`runtimeClient.ts`（1886行）、`SettingsWorkspace.tsx`（1698行）。
+
+重构目标不是“变短”本身，而是形成稳定边界：
+
+1. 每个模块有明确 owner 和职责。
+2. 运行时状态机、策略决策、存储访问、工具执行、UI 展示互相解耦。
+3. 重构前后行为可回放、可测试、可对比。
+4. 每次拆分都应有小提交、小测试面，避免一次性迁移造成不可定位回归。
+
+建议分阶段推进：
+
+| 阶段 | 优先级 | 目标 | 建议拆分 |
+| --- | --- | --- | --- |
+| R0 | P0 | 建立防回归保护 | 给 ReAct、pause/resume、memory recall、routing proposal、settings config 加聚焦测试和 trace fixture。 |
+| R1 | P0 | 拆 `orchestrator/service.py` | 拆出 `task_lifecycle.py`、`react_runner.py`、`approval_flow.py`、`memory_flow.py`、`resume_flow.py`、`proposal_flow.py`。 |
+| R2 | P0 | 拆 `sqlite_store.py` | 按 repository 拆成 `session_store.py`、`task_store.py`、`event_store.py`、`config_store.py`、`proposal_store.py`、`memory_store_adapter.py`，保留门面兼容旧 RPC。 |
+| R3 | ~~Done~~ | ~~拆 `App.tsx`~~ | ~~已完成：5493→652 行，hooks + WorkspaceRouter 已拆出。~~ |
+| R4 | P1 | 拆 `SessionWorkspace.tsx` | 拆成 message list、task timeline、context panel、approval panel、composer、runtime status。 |
+| R5 | P1 | 拆工具系统 | tool schema、tool handler、policy metadata 分文件；工具测试按工具族组织。 |
+| R6 | P2 | 拆 settings | Provider、Autonomy、AgentSoul、MCP、IM/Webhook 各自独立 section + schema validator。 |
+
+重构顺序图：
+
+```mermaid
+flowchart TD
+  A["R0: 防回归测试 / trace fixture"] --> B["R1: Orchestrator 拆分"]
+  B --> C["R2: Store repository 拆分"]
+  C --> D["R3: App shell 状态拆分"]
+  D --> E["R4: SessionWorkspace 组件拆分"]
+  E --> F["R5: Tools schema/handler/policy 拆分"]
+  F --> G["R6: Settings 分区拆分"]
+```
+
+每次重构的完成标准：
+
+1. 公共 RPC 方法名不变，除非同步更新 `shared/src/rpc.ts` 和前端调用。
+2. SQLite schema 迁移只前进，不破坏旧数据。
+3. 关键任务 trace 可以在重构前后对比。
+4. 相关单测、类型检查通过。
+5. 文档中的代码锚点同步更新。
+
+## 18. 2026-05-13 当前代码态扫描补记
+
+本节记录 2026-05-13 对当前工作区代码态的扫描结论，口径以实际代码、类型检查和聚焦测试为准，不只看提交记录。
+
+### 当前已确认进展
+
+| 领域 | 当前状态 | 代码/文档锚点 |
+| --- | --- | --- |
+| 前端入口拆分 | `App.tsx` 已从超大入口拆到约 500 行，入口大文件问题初步缓解。 | `app/src/App.tsx`, `app/src/hooks/*`, `app/src/ui/workbench/workspaces/WorkspaceRouter.tsx` |
+| Skills 设置入口 | Skills 页面已支持导入 JSON/ZIP、导入文件夹、打开 skills 目录。 | `app/src/ui/workbench/workspaces/skills/SkillsWorkspace.tsx`, `app/src-tauri/src/lib.rs` |
+| LLM 决策闭环 | 默认 routing、completion、context policy、decomposition、ReAct turn 等路径已有 `DecisionAdvisor`/`agent.decision` 接入迹象。 | `runtime/src/local_agent_runtime/main.py`, `runtime/src/local_agent_runtime/policy/decision_advisor.py`, `runtime/src/local_agent_runtime/router/meta_router.py` |
+| Hooks/Worktree | `HookService`、`HookStoreMixin`、`WorktreeService`、worktree RPC/hook points 已存在并通过聚焦测试。 | `runtime/src/local_agent_runtime/services/hook_service.py`, `runtime/src/local_agent_runtime/services/worktree_service.py`, `runtime/src/local_agent_runtime/store/repositories/hook_repository.py` |
+| PermissionEngine | 统一权限评估器已出现，核心工具和 web/subagent 等路径已有接入。 | `runtime/src/local_agent_runtime/policy/permission_engine.py`, `runtime/src/local_agent_runtime/tools/*` |
+
+### 本次验证结果
+
+- `npx.cmd tsc --noEmit` 通过。
+- `cargo check` 通过。
+- `npm.cmd test -- SkillsWorkspace.test.tsx` 通过，3 passed。
+- `python -m pytest -q -p no:cacheprovider --basetemp D:\py\yuanbao_agent\runtime\pytest_tmp runtime/tests/test_worktree_isolation.py runtime/tests/test_runtime_hooks.py runtime/tests/test_permission_engine.py runtime/tests/test_permission_integration.py` 通过，89 passed。
+- 注意：Windows 默认 pytest temp 目录 `C:\Users\ADMIN\AppData\Local\Temp\pytest-of-ADMIN` 当前权限异常；运行后端测试时应指定 workspace 内 `--basetemp`，否则会出现 setup 阶段 PermissionError，不能视为业务失败。
+
+### 当前必须注意的问题
+
+| 优先级 | 问题 | 影响 | 建议 |
+| --- | --- | --- | --- |
+| P0 | `runtime/src/local_agent_runtime/store/repositories/hook_repository.py` 当前是未跟踪文件，但 `sqlite_store.py` 已 import 它。 | 如果提交时漏掉该文件，干净 checkout 会 runtime import 失败。 | 下一次提交必须包含该文件，或者先调整引用关系。 |
+| P0 | Provider API format UI 与 runtime 支持度不完全一致。 | 设置页暴露 `openai-responses`、`anthropic-messages`，但 runtime adapter 主要仍是 `openai-chat`/`chat-completions`。 | 标记未支持格式或补 adapter；优先补 `openai-responses`，再补 `anthropic-messages`。 |
+| P0 | ~~Permission Policy V2 Lite~~ — **已闭环** (`5cca5e8`)。 | PermissionEngine 已有 3 presets、config normalizer、5 tool integrations、tool.blocked pipeline、56 专项测试。 | 后续 P1+ 可扩展到 hook side effects、Computer Use、temporary grants。 |
+| P1 | Worktree 尚未完成写任务自动隔离。 | service/RPC/hooks 已有，但写入型任务自动绑定 worktree、工具默认在 worktree cwd 执行、UI 展示 path/diff/status 还未完全闭环。 | 继续推进 task-worktree binding、write tool cwd routing、task report/UI 展示。 |
+| P1 | 大文件仍需继续拆。 | `SessionWorkspace.tsx`、`session.css`、`runtimeClient.ts`、`SettingsWorkspace.tsx` 仍超过长期维护目标。 | 建立 1500/2500 行预算 gate，继续拆 Session、runtime client、settings。 |
+
+### 当前大文件快照
+
+| 文件 | 当前行数约 | 判断 |
+| --- | ---: | --- |
+| `app/src/ui/workbench/workspaces/session/session.css` | 2714 | 超过 2500，需优先拆分样式域。 |
+| `app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx` | 2611 | 超过 2500，需拆 message list、task timeline、context panel、approval/composer 等。 |
+| `app/src/lib/runtimeClient.ts` | 1707 | 超过 1500，需拆 RPC client facade 与 domain clients。 |
+| `app/src/ui/workbench/workspaces/settings/SettingsWorkspace.tsx` | 1619 | 超过 1500，需拆 provider/autonomy/soul/permissions/skills/MCP 子面板。 |
+| `app/src/App.tsx` | 约 500 | 已明显改善，不再是当前最大文件。 |
+
+### 下一步建议顺序
+
+1. ~~先保证提交完整性~~ — **Done** (`6af8d93`)。`hook_repository.py` 已提交。
+2. ~~更新总计划中陈旧描述~~ — **Done**。App.tsx 和 Permission Policy V2 Lite 状态已更新。
+3. ~~P0 Permission Policy V2 Lite~~ — **Done** (`5cca5e8`)。后续 P1+ 扩展到 hook side effects、Computer Use。
+4. P0/P1 对齐 Provider API format，避免设置页让用户选择 runtime 尚不能执行的格式。
+5. P1 推进 task-worktree binding，让写入型任务默认在隔离 worktree 中执行。
+6. P1 继续大文件治理，优先 `SessionWorkspace.tsx`、`session.css`、`runtimeClient.ts`、`SettingsWorkspace.tsx`。
+
+## 19. 后续文档维护建议
+
+后续建议把这份文档作为总入口，旧文档可以保留为专题说明，但需要在开头注明“以合并校正版为准”。
+
+优先维护顺序：
+
+1. 先维护本合并文档的事实口径：数量、阈值、默认值、执行边界。
+2. 再维护专题文档：工具、MCP、上下文、DAG、API events。
+3. 每次改 runtime 配置、工具 registry、RPC handler、memory schema、approval policy，都同步更新本文件。
+4. 对流程类文档，建议加“代码锚点”，比如 `rpc/server.py`, `orchestrator/service.py`, `context/builder.py`, `tools/registry.py`，避免文档和实现继续漂移。

@@ -498,8 +498,8 @@ on commit history or checklist state.
 | ~~Memory Chinese recall quality~~ | **Closed** (`18e3be1`). Mojibake tokenizer constants replaced with valid Unicode/CJK ranges; Chinese recall regression tests added. | — | — |
 | Settings/Soul management depth | Settings page exposes basic Autonomy and Soul fields. | Full profile lifecycle is not complete: create/duplicate/disable/reset/preview audit UX is still shallow. | UI supports profile CRUD, active profile switching, prompt preview, reset to default, and tests for serialization into runtime config. See `docs/frontend-observability-settings-plan.md`. |
 | Provider API formats | Settings form exposes `openai-chat`, `openai-responses`, and `anthropic-messages`; runtime adapter only supports `openai-chat`/`chat-completions` today. | UI can imply support for formats that runtime will reject; provider helper extraction also needs a shared `DEFAULT_PROVIDER_API_FORMAT` import/type source. | Add a shared provider API format type, normalize aliases, mark unsupported formats in UI, and implement/test `openai-responses` and `anthropic-messages` adapters in priority order. See `docs/provider-api-format-support-plan.md`. |
-| Permission Policy V2 Lite | `approvalMode` is persisted and affects approval checks for core write/command tools. | Permission decisions are still tool-local and coarse; there is no capability config, unified evaluator, or durable policy decision audit. | Add `permissions` defaults, `PermissionEngine.evaluate()`, decision records, and first integrations for command, file write, web fetch, subagents, and hook side effects. See `docs/permission-policy-v2-lite-plan.md`. |
-| Large-file follow-up | Backend `service.py`/`sqlite_store.py` have been split; frontend remains large. | `App.tsx`, `SessionWorkspace.tsx`, `runtimeClient.ts`, and `SettingsWorkspace.tsx` remain above the desired long-term size. | Add a large-file budget gate and split frontend modules without changing behavior. |
+| ~~Permission Policy V2 Lite~~ | **Closed** (`5cca5e8`). `PermissionEngine` with `evaluate()`, 3 presets, config normalizer, 5 tool integrations, `tool.blocked` pipeline status, and 56 dedicated tests. | — | — |
+| Large-file follow-up | Backend `service.py`/`sqlite_store.py` have been split; `App.tsx` has been split from 5493 to 652 lines. | `session.css` (3151), `SessionWorkspace.tsx` (2824), `runtimeClient.ts` (1886), `SettingsWorkspace.tsx` (1698) remain above the desired long-term size. | Add a large-file budget gate and split remaining frontend modules without changing behavior. |
 | GitHub PR and CI workflow | Git/diff tools exist, but there is no issue/PR/CI workflow service. | Completed local work cannot yet become an approval-gated branch/PR with CI feedback inside the runtime. | Add a GitHub workflow service, publish proposal, approval-gated draft PR creation, CI status ingestion, and report linkage. See `docs/github-pr-ci-workflow-plan.md`. |
 | Background and long-running tasks | Background execution, queues, pause/cancel statuses, and partial pending-state persistence exist. | Lifecycle semantics are not yet one explicit contract across ReAct, DAG, supervisor/swarm, approvals, restart recovery, and UI controls. | Define one lifecycle/checkpoint contract with heartbeat, stale detection, recovery, pause/resume/cancel/retry semantics, and tests. See `docs/background-long-running-task-plan.md`. |
 
@@ -509,12 +509,11 @@ on commit history or checklist state.
 2. ~~P0: close the completion decision loop~~ — **Done**.
 3. ~~P0: close the context policy loop~~ — **Done**.
 4. ~~P0: finish Worktree Isolation P0~~ — **Done**.
-5. P0: establish Permission Policy V2 Lite:
-   add capability-based permission presets, a unified permission engine,
-   policy decision audit records, and first integrations for command/file
-   writes, web fetch, child task dispatch, and hook side effects.
-   Also treat provider API format alignment as a P0 settings/runtime consistency
-   item: keep `apiFormat` explicit during provider setup, fix the shared
+5. ~~P0: establish Permission Policy V2 Lite~~ — **Done** (`5cca5e8`).
+   PermissionEngine with 3 presets, config normalizer, 5 tool integrations,
+   tool.blocked pipeline status, and 56 dedicated tests all merged.
+   Provider API format alignment remains a P0 item:
+   keep `apiFormat` explicit during provider setup, fix the shared
    default/type source after provider helper extraction, mark unsupported formats
    in UI, and implement `openai-responses` then `anthropic-messages` in the
    runtime adapter. See `docs/provider-api-format-support-plan.md`.
@@ -530,10 +529,10 @@ on commit history or checklist state.
 11. ~~P1: add structured `agent.decision` events and policy gate outcomes~~ — **Done** (routing, completion, context_policy, decomposition, react_turn events all emitted).
 12. ~~P1: snapshot active autonomy and soul profiles into each task~~ — **Done** (`_runtime_profile_snapshot()` captures autonomyProfile, agentSoulProfile, promptLayers in routing context).
 13. ~~P1: start Code Refactoring R1/R2~~ — **Done** (R1-R9 all completed: TaskStateMachine, HookRepository, ToolPipeline, mixins, message_flow split, react_runner split, patch/schema/context extraction).
-14. P1: continue large-file reduction after the initial backend split:
-    split `app/src/App.tsx`, `SessionWorkspace.tsx`, `runtimeClient.ts`, and
-    the new `orchestrator/react_runner.py` into feature modules, hooks,
-    client submodules, and smaller provider/tool/compaction runners.
+14. P1: continue large-file reduction:
+    `App.tsx` (5493→652) and backend splits are done; remaining targets are
+    `session.css` (3151), `SessionWorkspace.tsx` (2824), `runtimeClient.ts` (1886),
+    and `SettingsWorkspace.tsx` (1698).
 15. P1: add a large-file regression budget to the release gate:
     flag runtime/frontend files above 1500 lines and require a split plan for
     files above 2500 lines.

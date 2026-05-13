@@ -115,7 +115,7 @@ export interface CommandCancelResult {
   cancelled?: boolean;
 }
 
-export type AppPathKind = "logs" | "data";
+export type AppPathKind = "logs" | "data" | "skills";
 
 export interface AppPathOpenResult {
   path: string;
@@ -645,6 +645,13 @@ function mergeRuntimeConfig(current: RuntimeConfig, next: ConfigUpdateParams): R
       workspaceInstructions: patch.agentSoul?.workspaceInstructions ?? current.agentSoul.workspaceInstructions,
       sessionOverrideEnabled: patch.agentSoul?.sessionOverrideEnabled ?? current.agentSoul.sessionOverrideEnabled,
       profiles: patch.agentSoul?.profiles ?? current.agentSoul.profiles,
+    },
+    permissions: {
+      preset: patch.permissions?.preset ?? current.permissions.preset,
+      capabilities: {
+        ...current.permissions.capabilities,
+        ...patch.permissions?.capabilities,
+      },
     },
     tools: {
       ...current.tools,

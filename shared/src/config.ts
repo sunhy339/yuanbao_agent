@@ -134,6 +134,29 @@ export interface UiConfig {
   webFetchPreflight?: boolean;
 }
 
+export type CapabilityMode = "allow" | "ask" | "blocked";
+export type CapabilityName =
+  | "readFile"
+  | "writeFile"
+  | "runCommand"
+  | "webFetch"
+  | "network"
+  | "subagents"
+  | "memoryWrite"
+  | "gitWrite"
+  | "browserAutomation"
+  | "computerUse"
+  | "hooksExecute";
+export type PermissionPreset = "safe" | "balanced" | "autonomous";
+export interface CapabilityRule {
+  mode: CapabilityMode;
+  scope: string;
+}
+export interface PermissionsConfig {
+  preset: PermissionPreset;
+  capabilities: Partial<Record<CapabilityName, CapabilityRule>>;
+}
+
 export interface AppConfig {
   provider: ProviderConfig;
   workspace: WorkspaceConfig;
@@ -141,6 +164,7 @@ export interface AppConfig {
   policy: PolicyConfig;
   autonomy: AutonomyConfig;
   agentSoul: AgentSoulConfig;
+  permissions: PermissionsConfig;
   tools: {
     runCommand: ToolRuntimeConfig;
   };
@@ -289,6 +313,10 @@ export const defaultAppConfig: AppConfig = {
         updatedAt: 0,
       },
     ],
+  },
+  permissions: {
+    preset: "balanced",
+    capabilities: {},
   },
   tools: {
     runCommand: {

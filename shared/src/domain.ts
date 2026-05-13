@@ -24,7 +24,8 @@ export type ApprovalKind =
   | "apply_patch"
   | "run_command"
   | "delete_file"
-  | "network_access";
+  | "network_access"
+  | "subagent_dispatch";
 export type ApprovalDecision = "approved" | "rejected";
 export type ToolCallStatus = "started" | "completed" | "failed";
 export type CommandStatus =
@@ -60,6 +61,7 @@ export type TraceEventType =
   | "tool.started"
   | "tool.completed"
   | "tool.failed"
+  | "tool.blocked"
   | "approval.requested"
   | "approval.resolved"
   | "patch.proposed"
@@ -70,6 +72,7 @@ export type TraceEventType =
   | "command.output"
   | "command.completed"
   | "command.failed"
+  | "policy.decision"
   | string;
 
 export interface GitStatusChange {

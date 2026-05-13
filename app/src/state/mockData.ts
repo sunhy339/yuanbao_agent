@@ -121,6 +121,7 @@ export function buildMockConfig(): AppConfig {
     },
     autonomy: defaultAppConfig.autonomy,
     agentSoul: defaultAppConfig.agentSoul,
+    permissions: defaultAppConfig.permissions,
     workspace: {
       rootPath: DEFAULT_WORKSPACE_PATH,
       ignore: [".git", "node_modules", "dist", ".venv", "target"],

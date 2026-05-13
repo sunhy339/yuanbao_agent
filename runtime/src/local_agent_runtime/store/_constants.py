@@ -174,4 +174,8 @@ DEFAULT_CONFIG = {
         "multiAgent": True,
         "streamingDeltaPersist": True,
     },
+    "permissions": {
+        "preset": "balanced",
+        "capabilities": {},
+    },
 }

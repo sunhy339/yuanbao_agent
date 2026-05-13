@@ -202,25 +202,11 @@ import {
   buildSessionBackgroundJobs,
   mergeSessionBackgroundJobs,
 } from "./state/sessionDerivedViews";
-
-function buildComputerUseStatus(): string {
-  const clipboardAvailable =
-    typeof navigator !== "undefined" &&
-    typeof navigator.clipboard?.writeText === "function";
-  const desktopBridgeAvailable = runtimeClient.canOpenLocalAppPaths();
-  const ready = [
-    clipboardAvailable ? "剪贴板" : null,
-    desktopBridgeAvailable ? "桌面 shell 桥接" : null,
-    "敏感动作确认",
-  ].filter(Boolean);
-  const pending = [
-    "屏幕观察",
-    "浏览器自动化",
-    "系统快捷键",
-  ];
-
-  return `${new Date().toLocaleTimeString("zh-CN", { hour12: false })} 已检查：${ready.join("、")} 可用；${pending.join("、")} 的权限探测尚未接入。`;
-}
+import { useProviderConfig, type UseProviderConfigDeps } from "./hooks/useProviderConfig";
+import { useMcpServers } from "./hooks/useMcpServers";
+import { useSkills } from "./hooks/useSkills";
+import { useScheduledTasks } from "./hooks/useScheduledTasks";
+import { useSettings, type UseSettingsDeps } from "./hooks/useSettings";
 
 function describeMode(hostStatus: HostStatus | null): string {
   if (!hostStatus) {
@@ -268,17 +254,6 @@ function RuntimeUnavailableWorkspace({ errorMessage }: { errorMessage: string })
 export function App() {
   const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
-  const [providerSettings, setProviderSettings] = useState<ProviderSettingsForm>(() =>
-    buildProviderSettingsForm(null),
-  );
-  const [commandPolicySettings, setCommandPolicySettings] = useState<CommandPolicyForm>(() =>
-    buildCommandPolicyForm(null),
-  );
-  const [activeProviderProfileId, setActiveProviderProfileId] = useState("default");
-  const [providerTestResult, setProviderTestResult] = useState<ProviderTestResult | null>(null);
-  const [providerFeedback, setProviderFeedback] = useState<SettingsProviderFeedback | null>(null);
-  const [searchGlob, setSearchGlob] = useState(DEFAULT_SEARCH_GLOB_TEXT);
-  const [searchIgnoreText, setSearchIgnoreText] = useState("");
   const [workspacePath, setWorkspacePath] = useState(DEFAULT_WORKSPACE_PATH);
   const [sessionTitle, setSessionTitle] = useState(DEFAULT_SESSION_TITLE);
   const [workspace, setWorkspace] = useState<WorkspaceRef | null>(null);
@@ -304,10 +279,6 @@ export function App() {
   const [messageBusy, setMessageBusy] = useState(false);
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [sessionListBusy, setSessionListBusy] = useState(false);
-  const [providerConfigBusy, setProviderConfigBusy] = useState(false);
-  const [providerTestBusy, setProviderTestBusy] = useState(false);
-  const [commandPolicyBusy, setCommandPolicyBusy] = useState(false);
-  const [searchConfigBusy, setSearchConfigBusy] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [patchBusyId, setPatchBusyId] = useState<string | null>(null);
   const [commandJobBusyId, setCommandJobBusyId] = useState<string | null>(null);
@@ -317,18 +288,13 @@ export function App() {
   const [taskControlError, setTaskControlError] = useState<string | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const sessionActiveTaskMapRef = useRef<Map<string, string>>(new Map());
-  const [scheduledRecords, setScheduledRecords] = useState<ScheduledTaskRecord[]>([]);
-  const [scheduledLogs, setScheduledLogs] = useState<ScheduledTaskRunRecord[]>([]);
-  const [selectedScheduledTaskId, setSelectedScheduledTaskId] = useState<string | null>(null);
-  const [scheduledBusyTaskId, setScheduledBusyTaskId] = useState<string | null>(null);
-  const [scheduledCreateBusy, setScheduledCreateBusy] = useState(false);
-  const [skills, setSkills] = useState<SkillPresetRecord[]>([]);
-  const [skillBusyId, setSkillBusyId] = useState<string | null>(null);
-  const [mcpServers, setMcpServers] = useState<McpServerRecord[]>([]);
-  const [mcpBusyServerId, setMcpBusyServerId] = useState<string | null>(null);
-  const [mcpLoading, setMcpLoading] = useState(false);
-  const [mcpLastRefresh, setMcpLastRefresh] = useState<{ refreshed: number; tools: string[] } | null>(null);
-  const [mcpError, setMcpError] = useState<string | null>(null);
+
+  // ── Extracted custom hooks ──────────────────────────────────────────
+  const providerHook = useProviderConfig({ addToast, toastError, setError, config, setConfig });
+  const settingsHook = useSettings({ addToast, toastError, setError, config, setConfig });
+  const scheduledHook = useScheduledTasks({ addToast, toastError, setError });
+  const skillsHook = useSkills({ addToast, toastError, setError });
+  const mcpHook = useMcpServers({ addToast, toastError, setError });
 
   function addToast(kind: ToastEntry["kind"], message: string) {
     setToasts((current) => [...current.slice(-4), createToast(kind, message)]);
@@ -342,37 +308,82 @@ export function App() {
     addToast("error", getErrorMessage(reason));
   }
 
+  function buildComputerUseStatus(): string {
+    const clipboardAvailable =
+      typeof navigator !== "undefined" &&
+      typeof navigator.clipboard?.writeText === "function";
+    const desktopBridgeAvailable = runtimeClient.canOpenLocalAppPaths();
+    const ready = [
+      clipboardAvailable ? "clipboard" : null,
+      desktopBridgeAvailable ? "desktop bridge" : null,
+      "manual confirmation",
+    ].filter(Boolean);
+    const pending = ["screenshot capture", "computer-use action runtime", "permission audit"];
+
+    return `${new Date().toLocaleTimeString("zh-CN", { hour12: false })} ready: ${ready.join(", ")}; pending: ${pending.join(", ")}`;
+  }
+
   function dismissToast(id: string) {
     setToasts((current) => current.filter((t) => t.id !== id));
   }
 
-  const [generalSettings, setGeneralSettings] = useState<SettingsGeneralConfig>({
-    theme: "dark",
-    density: "comfortable",
-    radius: "md",
-    motion: "subtle",
-    accentColor: "cyan",
-    transparency: 0.78,
-    fontScale: 1,
-    language: "en",
-    reasoningEffort: "max",
-    webFetchPreflight: true,
-  });
-  const [imSettings, setIMSettings] = useState<SettingsIMConfig>({
-    enabled: false,
-    provider: "feishu",
-    webhookUrl: "",
-    signingSecretSet: false,
-    defaultReplyMode: "manual",
-  });
-  const [computerUseSettings, setComputerUseSettings] = useState<SettingsComputerUseConfig>({
-    screenshot: false,
-    browserAutomation: false,
-    clipboardAccess: true,
-    systemKeyCombos: false,
-    sensitiveActionConfirm: true,
-    status: "",
-  });
+  // Destructure hook returns for convenience
+  const {
+    providerSettings, setProviderSettings,
+    commandPolicySettings, setCommandPolicySettings,
+    activeProviderProfileId, setActiveProviderProfileId,
+    providerTestResult, setProviderTestResult,
+    providerFeedback, setProviderFeedback,
+    searchGlob, setSearchGlob,
+    searchIgnoreText, setSearchIgnoreText,
+    providerConfigBusy, setProviderConfigBusy,
+    providerTestBusy,
+    commandPolicyBusy, searchConfigBusy,
+    activeProviderProfile,
+    buildProviderProfileFromForm,
+    updateProviderSetting, updateCommandPolicySetting,
+    selectProviderProfile,
+    handleSaveSearchConfig, handleSaveProviderConfig, handleSaveCommandPolicyConfig,
+    handleTestProvider, handleTestSelectedProvider,
+    handleTestProviderConfigFromSettings,
+    handleAddProviderFromSettings, handleEditProviderFromSettings,
+    persistSearchConfig,
+  } = providerHook;
+  const {
+    generalSettings, setGeneralSettings,
+    imSettings, setIMSettings,
+    computerUseSettings, setComputerUseSettings,
+    handleGeneralSettingsChange, handleAgentBehaviorChange,
+    handlePermissionModeChange, handleOpenAppPath,
+    handleCopyRuntimeText, handleRecheckComputerUse,
+  } = settingsHook;
+  const {
+    scheduledRecords, setScheduledRecords,
+    scheduledLogs, setScheduledLogs,
+    selectedScheduledTaskId, setSelectedScheduledTaskId,
+    scheduledBusyTaskId, setScheduledBusyTaskId,
+    scheduledCreateBusy, setScheduledCreateBusy,
+    refreshScheduledRecords,
+    handleRunScheduledTask, handleToggleScheduledTask,
+    handleSelectScheduledTask, handleCreateScheduledTask,
+  } = scheduledHook;
+  const {
+    skills, setSkills,
+    skillBusyId, setSkillBusyId,
+    refreshSkills,
+    handleCreateSkill, handleUpdateSkill, handleDeleteSkill, handleImportSkills,
+  } = skillsHook;
+  const {
+    mcpServers, setMcpServers,
+    mcpBusyServerId, setMcpBusyServerId,
+    mcpLoading, setMcpLoading,
+    mcpLastRefresh, setMcpLastRefresh,
+    mcpError, setMcpError,
+    refreshMcpServers,
+    handleCreateMcpServer, handleImportMcpServers, handleUpdateMcpServer,
+    handleToggleMcpServer, handleRefreshMcpTools, handleDeleteMcpServer,
+  } = mcpHook;
+
   const [openTabs, setOpenTabs] = useState<WorkbenchTab[]>(() => getInitialTabs());
   const [activeTabId, setActiveTabId] = useState<WorkbenchTab["id"]>("system:overview");
   const pendingAssistantTokenEventsRef = useRef<AgentEventEnvelope[]>([]);
@@ -521,34 +532,6 @@ export function App() {
       disposed = true;
     };
   }, []);
-
-  useEffect(() => {
-    let disposed = false;
-
-    if (!selectedScheduledTaskId) {
-      setScheduledLogs([]);
-      return () => {
-        disposed = true;
-      };
-    }
-
-    runtimeClient
-      .listScheduledTaskLogs({ taskId: selectedScheduledTaskId, limit: 50 })
-      .then((result) => {
-        if (!disposed) {
-          setScheduledLogs(result.logs);
-        }
-      })
-      .catch((reason) => {
-        if (!disposed) {
-          toastError(reason);
-        }
-      });
-
-    return () => {
-      disposed = true;
-    };
-  }, [selectedScheduledTaskId]);
 
   useEffect(() => {
     let active = true;
@@ -836,10 +819,6 @@ export function App() {
     setTaskControlError(null);
   }, [task?.id, task?.status]);
 
-  const activeProviderProfile = useMemo(
-    () => config?.provider.profiles?.find((profile) => profile.id === activeProviderProfileId),
-    [activeProviderProfileId, config],
-  );
   const providerStatusView = getProviderStatusView(providerSettings, providerTestResult);
   const providerRuntimeNotice = getProviderRuntimeNotice(providerSettings, providerTestResult);
   const providerHealthView = getProviderHealthView(activeProviderProfile, providerTestResult);
@@ -1206,142 +1185,6 @@ export function App() {
     setActiveTaskForSession(nextTask.id);
   }
 
-  function updateProviderSetting<K extends keyof ProviderSettingsForm>(
-    key: K,
-    value: ProviderSettingsForm[K],
-  ) {
-    setProviderSettings((current) => ({
-      ...current,
-      [key]: value,
-    }));
-    setProviderTestResult(null);
-  }
-
-  function updateCommandPolicySetting<K extends keyof CommandPolicyForm>(
-    key: K,
-    value: CommandPolicyForm[K],
-  ) {
-    setCommandPolicySettings((current) => ({
-      ...current,
-      [key]: value,
-    }));
-  }
-
-  function buildProviderProfileFromForm(profileId = activeProviderProfileId): ProviderProfile {
-    const existingProfile = config?.provider.profiles?.find((item) => item.id === profileId);
-    const model = providerSettings.model.trim();
-    const baseUrl = providerSettings.baseUrl.trim();
-    const apiKeyEnvVarName = providerSettings.apiKeyEnvVarName.trim() || DEFAULT_PROVIDER_API_KEY_ENV_VAR;
-    const profileName = providerSettings.name.trim() || "供应商配置";
-
-    if (!model) {
-      throw new Error("必须填写供应商模型。");
-    }
-    if (providerSettings.mode === "openai-compatible" && !baseUrl) {
-      throw new Error("OpenAI 兼容模式必须填写基础 URL。");
-    }
-
-    const temperature = parseProviderNumber(providerSettings.temperature, "温度", {
-      min: 0,
-      max: 2,
-    });
-    const maxTokens = parseProviderNumber(providerSettings.maxTokens, "最大输出令牌", {
-      integer: true,
-      min: 1,
-    });
-    const maxContextTokens = parseProviderNumber(providerSettings.maxContextTokens, "最大上下文令牌", {
-      integer: true,
-      min: 1,
-    });
-    const timeout = parseProviderNumber(providerSettings.timeout, "超时时间", {
-      min: 1,
-    });
-
-    return {
-      id: profileId,
-      name: profileName,
-      mode: providerSettings.mode,
-      baseUrl: baseUrl || DEFAULT_PROVIDER_BASE_URL,
-      model,
-      defaultModel: model,
-      fallbackModel: config?.provider.fallbackModel,
-      apiKeyEnvVarName,
-      temperature,
-      maxTokens,
-      maxOutputTokens: maxTokens,
-      maxContextTokens,
-      timeout,
-      lastCheckedAt: existingProfile?.lastCheckedAt,
-      lastStatus: existingProfile?.lastStatus,
-      lastErrorSummary: existingProfile?.lastErrorSummary,
-    };
-  }
-
-  function buildProviderPatchFromForm(profileId = activeProviderProfileId): AppConfig["provider"] {
-    const profile = buildProviderProfileFromForm(profileId);
-    const model = profile.model ?? DEFAULT_PROVIDER_MODEL;
-    const currentProfiles = config?.provider.profiles ?? [];
-    const profiles = currentProfiles.some((item) => item.id === profile.id)
-      ? currentProfiles.map((item) => (item.id === profile.id ? profile : item))
-      : [...currentProfiles, profile];
-
-    return {
-      ...profile,
-      model,
-      defaultModel: profile.defaultModel ?? model,
-      fallbackModel: config?.provider.fallbackModel,
-      temperature: profile.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
-      maxOutputTokens: profile.maxOutputTokens ?? profile.maxTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
-      activeProfileId: profile.id,
-      profiles,
-    };
-  }
-
-  function selectProviderProfile(profileId: string) {
-    if (!config) {
-      return;
-    }
-    const normalized = normalizeProviderConfig({
-      ...config.provider,
-      activeProfileId: profileId,
-    });
-    setActiveProviderProfileId(normalized.activeProfileId ?? profileId);
-    setProviderSettings(buildProviderSettingsForm({ ...config, provider: normalized }));
-    setProviderTestResult(null);
-    setProviderFeedback(null);
-  }
-
-  function showProviderSavedFeedback(normalized: RuntimeConfig, fallbackProfileId: string) {
-    const provider = normalizeProviderConfig(normalized.provider);
-    const activeProfile =
-      provider.profiles?.find((profile) => profile.id === provider.activeProfileId) ??
-      provider.profiles?.find((profile) => profile.id === fallbackProfileId);
-
-    setProviderFeedback({
-      providerId: activeProfile?.id ?? fallbackProfileId,
-      tone: "success",
-      title: "已保存并启用",
-      message: `${activeProfile?.name ?? "供应商"} 已设为当前供应商。`,
-      detail: `模型：${activeProfile?.model ?? provider.model ?? DEFAULT_PROVIDER_MODEL}`,
-    });
-  }
-
-  function showProviderTestFeedback(result: ProviderTestResult, profileId: string) {
-    setProviderFeedback({
-      providerId: result.profileId ?? profileId,
-      tone: result.ok ? "success" : "danger",
-      title: result.ok ? "测试通过" : "测试失败",
-      message: result.ok
-        ? `运行时可连接 ${result.model ?? DEFAULT_PROVIDER_MODEL}。`
-        : result.lastErrorSummary ?? result.message,
-      detail: result.ok
-        ? result.lastStatus ?? result.status
-        : result.checkedEnvVarName
-          ? `检查环境变量：${result.checkedEnvVarName}`
-          : undefined,
-    });
-  }
-
   async function refreshSessionHistory(preferredSessionId?: string) {
     setSessionListBusy(true);
     setError(null);
@@ -1384,104 +1227,6 @@ export function App() {
     } finally {
       setSessionListBusy(false);
     }
-  }
-
-  async function persistProviderConfig(): Promise<RuntimeConfig | null> {
-    if (!config) {
-      return null;
-    }
-
-    const providerPatch = buildProviderPatchFromForm();
-    const result = await runtimeClient.updateConfig({
-      config: {
-        provider: providerPatch,
-      },
-    });
-    const normalized = normalizeRuntimeConfig(result.config);
-    setConfig(normalized);
-    setProviderSettings(buildProviderSettingsForm(normalized));
-    setActiveProviderProfileId(normalized.provider.activeProfileId ?? activeProviderProfileId);
-    showProviderSavedFeedback(normalized, providerPatch.activeProfileId ?? activeProviderProfileId);
-    return normalized;
-  }
-
-  async function runProviderTest(provider?: AppConfig["provider"], profileId = activeProviderProfileId) {
-    setProviderTestBusy(true);
-    setProviderTestResult(null);
-
-    try {
-      const result = await runtimeClient.testProvider(provider ? { profileId, provider } : { profileId });
-      setProviderTestResult(result);
-      showProviderTestFeedback(result, profileId);
-      if (!provider) {
-        const nextConfig = await runtimeClient.getConfig();
-        const normalized = normalizeRuntimeConfig(nextConfig.config);
-        setConfig(normalized);
-        setProviderSettings(buildProviderSettingsForm(normalized));
-        setActiveProviderProfileId(normalized.provider.activeProfileId ?? profileId);
-      }
-      return result;
-    } finally {
-      setProviderTestBusy(false);
-    }
-  }
-
-  async function persistSearchConfig(): Promise<RuntimeConfig | null> {
-    if (!config) {
-      return null;
-    }
-
-    const nextSearch = {
-      ...config.search,
-      glob: parsePatternText(searchGlob),
-      ignore: parsePatternText(searchIgnoreText),
-    };
-    const result = await runtimeClient.updateConfig({
-      config: {
-        search: {
-          ...nextSearch,
-        },
-      },
-    });
-    const normalized = normalizeRuntimeConfig(result.config);
-    setConfig(normalized);
-    setSearchGlob(serializePatternList(normalized.search.glob));
-    setSearchIgnoreText(serializePatternList(normalized.search.ignore));
-    return normalized;
-  }
-
-  function buildRunCommandPatchFromForm(): ToolRuntimeConfig {
-    const allowedCommands = parsePatternText(commandPolicySettings.allowedCommands);
-    const deniedCommands = parsePatternText(commandPolicySettings.deniedCommands);
-    return {
-      allowedShell: commandPolicySettings.allowedShell,
-      allowedCommands,
-      allowlist: [...allowedCommands],
-      deniedCommands,
-      denylist: [...deniedCommands],
-      blockedPatterns: parsePatternText(commandPolicySettings.blockedPatterns),
-      allowedCwdRoots: parsePatternText(commandPolicySettings.allowedCwdRoots),
-    };
-  }
-
-  async function persistCommandPolicyConfig(): Promise<RuntimeConfig | null> {
-    if (!config) {
-      return null;
-    }
-
-    await runtimeClient.updateConfig({
-      config: {
-        tools: {
-          runCommand: buildRunCommandPatchFromForm(),
-        },
-      },
-    });
-
-    const refreshed = await runtimeClient.getConfig();
-    const normalized = normalizeRuntimeConfig(refreshed.config);
-    setConfig(normalized);
-    setCommandPolicySettings(buildCommandPolicyForm(normalized));
-    return normalized;
   }
 
   async function handleOpenWorkspace() {
@@ -1576,695 +1321,6 @@ export function App() {
       toastError(reason);
     } finally {
       setSessionBusy(false);
-    }
-  }
-
-  async function handleSaveSearchConfig() {
-    setSearchConfigBusy(true);
-    setError(null);
-
-    try {
-      await persistSearchConfig();
-      addToast("success", "搜索设置已保存");
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setSearchConfigBusy(false);
-    }
-  }
-
-  async function handleSaveProviderConfig() {
-    setProviderConfigBusy(true);
-    setError(null);
-    setProviderTestResult(null);
-
-    try {
-      const normalized = await persistProviderConfig();
-      if (normalized) {
-        await runProviderTest(undefined, normalized.provider.activeProfileId);
-        addToast("success", "模型供应商设置已保存");
-      }
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setProviderConfigBusy(false);
-    }
-  }
-
-  async function handleSaveCommandPolicyConfig() {
-    setCommandPolicyBusy(true);
-    setError(null);
-
-    try {
-      await persistCommandPolicyConfig();
-      addToast("success", "命令策略已保存");
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setCommandPolicyBusy(false);
-    }
-  }
-
-  async function handleTestProvider() {
-    setError(null);
-
-    try {
-      const providerPatch = buildProviderPatchFromForm();
-      await runProviderTest(providerPatch, activeProviderProfileId);
-    } catch (reason) {
-      toastError(reason);
-    }
-  }
-
-  async function handleTestSelectedProvider(profileId?: string) {
-    setError(null);
-
-    try {
-      await runProviderTest(undefined, profileId ?? activeProviderProfileId);
-    } catch (reason) {
-      toastError(reason);
-    }
-  }
-
-  async function handleTestProviderConfigFromSettings(payload: SettingsProviderPayload) {
-    if (!config) {
-      return;
-    }
-
-    setError(null);
-
-    try {
-      const profile = buildProviderProfileFromPayload(
-        payload,
-        activeProviderProfileId,
-        config,
-        activeProviderProfile,
-      );
-      return await runProviderTest(
-        {
-          ...profile,
-          defaultModel: profile.defaultModel ?? profile.model ?? DEFAULT_PROVIDER_MODEL,
-          temperature: profile.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
-          maxOutputTokens: profile.maxOutputTokens ?? profile.maxTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
-        },
-        profile.id,
-      );
-    } catch (reason) {
-      toastError(reason);
-    }
-  }
-
-  async function handleAddProviderFromSettings(payload: SettingsProviderPayload) {
-    if (!config) {
-      return;
-    }
-
-    setProviderConfigBusy(true);
-    setError(null);
-    setProviderTestResult(null);
-
-    try {
-      const profileId = `profile_${Date.now()}`;
-      const profile = buildProviderProfileFromPayload(payload, profileId, config);
-      const provider = normalizeProviderConfig({
-        ...config.provider,
-        ...profile,
-        activeProfileId: profile.id,
-        profiles: [...(config.provider.profiles ?? []), profile],
-      });
-      const result = await runtimeClient.updateConfig({
-        config: {
-          provider,
-        },
-      });
-      const normalized = normalizeRuntimeConfig(result.config);
-      setConfig(normalized);
-      setActiveProviderProfileId(normalized.provider.activeProfileId ?? profile.id);
-      setProviderSettings(buildProviderSettingsForm(normalized));
-      showProviderSavedFeedback(normalized, profile.id);
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setProviderConfigBusy(false);
-    }
-  }
-
-  async function handleEditProviderFromSettings(providerId: string, payload: SettingsProviderPayload) {
-    if (!config) {
-      return;
-    }
-
-    setProviderConfigBusy(true);
-    setError(null);
-    setProviderTestResult(null);
-
-    try {
-      const existingProfile = config.provider.profiles?.find((profile) => profile.id === providerId);
-      const profile = buildProviderProfileFromPayload(payload, providerId, config, existingProfile);
-      const nextProfiles = (config.provider.profiles ?? []).some((item) => item.id === providerId)
-        ? (config.provider.profiles ?? []).map((item) => (item.id === providerId ? profile : item))
-        : [...(config.provider.profiles ?? []), profile];
-      const provider = normalizeProviderConfig({
-        ...config.provider,
-        ...profile,
-        activeProfileId: profile.id,
-        profiles: nextProfiles,
-      });
-      const result = await runtimeClient.updateConfig({
-        config: {
-          provider,
-        },
-      });
-      const normalized = normalizeRuntimeConfig(result.config);
-      setConfig(normalized);
-      setActiveProviderProfileId(normalized.provider.activeProfileId ?? profile.id);
-      setProviderSettings(buildProviderSettingsForm(normalized));
-      showProviderSavedFeedback(normalized, profile.id);
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setProviderConfigBusy(false);
-    }
-  }
-
-  async function handlePermissionModeChange(mode: string) {
-    if (!config) {
-      return;
-    }
-
-    setError(null);
-
-    try {
-      const result = await runtimeClient.updateConfig({
-        config: {
-          policy: {
-            approvalMode: settingsModeToApprovalMode(mode),
-          },
-        },
-      });
-      const normalized = normalizeRuntimeConfig(result.config);
-      setConfig(normalized);
-      addToast("success", "权限模式已保存");
-    } catch (reason) {
-      toastError(reason);
-    }
-  }
-
-  async function handleGeneralSettingsChange(next: SettingsGeneralConfig) {
-    setGeneralSettings(next);
-
-    if (!config) {
-      return;
-    }
-
-    setError(null);
-
-    try {
-      const result = await runtimeClient.updateConfig({
-        config: {
-          ui: {
-            ...config.ui,
-            language: settingsLanguageToConfig(next.language),
-            theme: next.theme,
-            density: next.density,
-            radius: next.radius,
-            motion: next.motion,
-            accentColor: next.accentColor,
-            transparency: next.transparency,
-            fontScale: next.fontScale,
-            reasoningEffort: next.reasoningEffort,
-            webFetchPreflight: next.webFetchPreflight,
-          },
-        },
-      });
-      const normalized = normalizeRuntimeConfig(result.config);
-      setConfig(normalized);
-      setGeneralSettings(buildSettingsGeneralConfig(normalized));
-      addToast("success", "外观设置已保存");
-    } catch (reason) {
-      toastError(reason);
-    }
-  }
-
-  async function handleAgentBehaviorChange(next: SettingsAgentBehaviorConfig) {
-    if (!config) {
-      return;
-    }
-
-    setError(null);
-
-    try {
-      const autonomy = normalizeAutonomyConfig({
-        ...config.autonomy,
-        activeProfileId: next.autonomyActiveProfileId,
-      });
-      const agentSoul = normalizeAgentSoulConfig(config.agentSoul);
-      const activeSoulId = next.soulActiveProfileId || agentSoul.activeProfileId;
-      const now = Date.now();
-      const profiles = agentSoul.profiles.map((profile) =>
-        profile.id === activeSoulId
-          ? {
-              ...profile,
-              name: next.soulName.trim() || profile.name,
-              identity: next.soulIdentity,
-              communicationStyle: next.soulCommunicationStyle,
-              reasoningStyle: next.soulReasoningStyle,
-              collaborationStyle: next.soulCollaborationStyle,
-              customSystemPrompt: next.soulCustomSystemPrompt,
-              updatedAt: now,
-            }
-          : profile,
-      );
-      const result = await runtimeClient.updateConfig({
-        config: {
-          autonomy,
-          agentSoul: {
-            ...agentSoul,
-            activeProfileId: activeSoulId,
-            workspaceInstructions: next.workspaceInstructions,
-            profiles,
-          },
-        },
-      });
-      const normalized = normalizeRuntimeConfig(result.config);
-      setConfig(normalized);
-      addToast("success", "Agent behavior settings saved");
-    } catch (reason) {
-      toastError(reason);
-    }
-  }
-
-  async function refreshSkills() {
-    setError(null);
-    try {
-      const result = await runtimeClient.listSkills();
-      setSkills(result.skills);
-      addToast("success", "技能已刷新");
-    } catch (reason) {
-      toastError(reason);
-    }
-  }
-
-  async function handleCreateSkill(draft: SkillDraft) {
-    setSkillBusyId("create");
-    setError(null);
-    try {
-      const result = await runtimeClient.createSkill(buildSkillPayload(draft));
-      setSkills((current) => [result.skill, ...current.filter((skill) => skill.id !== result.skill.id)]);
-      addToast("success", `技能已创建：${result.skill.name}`);
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setSkillBusyId(null);
-    }
-  }
-
-  async function handleUpdateSkill(skillId: string, draft: SkillDraft) {
-    setSkillBusyId(skillId);
-    setError(null);
-    try {
-      const result = await runtimeClient.updateSkill({
-        skillId,
-        ...buildSkillPayload(draft),
-      });
-      setSkills((current) =>
-        current.map((skill) => skill.id === result.skill.id ? result.skill : skill),
-      );
-      addToast("success", `技能已更新：${result.skill.name}`);
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setSkillBusyId(null);
-    }
-  }
-
-  async function handleDeleteSkill(skillId: string) {
-    setSkillBusyId(skillId);
-    setError(null);
-    try {
-      await runtimeClient.deleteSkill({ skillId });
-      setSkills((current) => current.filter((skill) => skill.id !== skillId));
-      addToast("success", "技能已删除");
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setSkillBusyId(null);
-    }
-  }
-
-  async function handleImportSkills(filePath: string) {
-    setSkillBusyId("import");
-    setError(null);
-    try {
-      const result = await runtimeClient.importSkills({ filePath });
-      if (result.imported.length > 0) {
-        await refreshSkills();
-        addToast("success", `已导入 ${result.imported.length} 个技能`);
-      }
-      if (result.skipped.length > 0) {
-        addToast("info", `已跳过 ${result.skipped.length} 个同名技能：${result.skipped.join("、")}`);
-      }
-      if (result.errors.length > 0) {
-        const errorNames = result.errors.map((e) => e.name || "未知").join("、");
-        addToast("error", `导入失败：${errorNames}`);
-      }
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setSkillBusyId(null);
-    }
-  }
-
-  async function handleOpenAppPath(kind: "logs" | "data" | "skills") {
-    setError(null);
-    try {
-      const result = await runtimeClient.openAppPath(kind);
-      const label = kind === "logs" ? "日志" : kind === "skills" ? "技能目录" : "数据目录";
-      addToast("success", `已打开${label}：${result.path}`);
-    } catch (reason) {
-      toastError(reason);
-    }
-  }
-
-  async function handleCopyRuntimeText(label: string, text: string) {
-    try {
-      await navigator.clipboard?.writeText(text);
-      addToast("success", `${label}已复制`);
-    } catch (reason) {
-      toastError(reason);
-    }
-  }
-
-  function handleRecheckComputerUse() {
-    const status = buildComputerUseStatus();
-    setComputerUseSettings((current) => ({
-      ...current,
-      status,
-    }));
-    addToast("info", "电脑操作能力已检查");
-  }
-
-  async function refreshMcpServers() {
-    setMcpLoading(true);
-    setError(null);
-    try {
-      const result = await runtimeClient.listMcpServers();
-      setMcpServers(result.servers);
-      setMcpError(null);
-    } catch (reason) {
-      setMcpError(getErrorMessage(reason));
-      toastError(reason);
-    } finally {
-      setMcpLoading(false);
-    }
-  }
-
-  async function handleCreateMcpServer(draft: McpServerDraft) {
-    setMcpLoading(true);
-    setError(null);
-    try {
-      const result = await runtimeClient.createMcpServer(buildMcpServerPayload(draft));
-      setMcpServers((current) => [
-        result.server,
-        ...current.filter((server) => server.id !== result.server.id),
-      ]);
-      setMcpError(null);
-      addToast("success", "MCP 服务器已创建");
-    } catch (reason) {
-      setMcpError(getErrorMessage(reason));
-      toastError(reason);
-      throw reason;
-    } finally {
-      setMcpLoading(false);
-    }
-  }
-
-  async function handleImportMcpServers(drafts: McpServerDraft[]) {
-    setMcpLoading(true);
-    setError(null);
-    try {
-      const imported: McpServerRecord[] = [];
-      for (const draft of drafts) {
-        const result = await runtimeClient.createMcpServer(buildMcpServerPayload(draft));
-        imported.push(result.server);
-      }
-      setMcpServers((current) => [
-        ...imported,
-        ...current.filter((server) => !imported.some((item) => item.id === server.id)),
-      ]);
-      setMcpError(null);
-      addToast("success", `Imported ${imported.length} MCP server${imported.length === 1 ? "" : "s"}`);
-    } catch (reason) {
-      setMcpError(getErrorMessage(reason));
-      toastError(reason);
-      throw reason;
-    } finally {
-      setMcpLoading(false);
-    }
-  }
-
-  async function handleUpdateMcpServer(serverId: string, draft: McpServerDraft) {
-    setMcpBusyServerId(serverId);
-    setError(null);
-    try {
-      const result = await runtimeClient.updateMcpServer({
-        serverId,
-        ...buildMcpServerPayload(draft),
-      });
-      setMcpServers((current) =>
-        current.map((server) => (server.id === result.server.id ? result.server : server)),
-      );
-      setMcpError(null);
-      addToast("success", "MCP 服务器已更新");
-    } catch (reason) {
-      setMcpError(getErrorMessage(reason));
-      toastError(reason);
-      throw reason;
-    } finally {
-      setMcpBusyServerId(null);
-    }
-  }
-
-  async function handleToggleMcpServer(serverId: string, enabled: boolean) {
-    setMcpBusyServerId(serverId);
-    setError(null);
-    try {
-      const result = await runtimeClient.updateMcpServer({ serverId, enabled });
-      setMcpServers((current) =>
-        current.map((server) => (server.id === result.server.id ? result.server : server)),
-      );
-      setMcpError(null);
-      addToast("success", enabled ? "MCP 服务器已启用" : "MCP 服务器已停用");
-    } catch (reason) {
-      setMcpError(getErrorMessage(reason));
-      toastError(reason);
-    } finally {
-      setMcpBusyServerId(null);
-    }
-  }
-
-  async function handleRefreshMcpTools(serverId?: string) {
-    setMcpBusyServerId(serverId ?? "__all__");
-    setError(null);
-    try {
-      const result = await runtimeClient.refreshMcpTools(serverId ? { serverId } : {});
-      setMcpLastRefresh(result);
-      await refreshMcpServers();
-      setMcpError(null);
-      addToast("success", `已刷新 ${result.refreshed} 个 MCP 工具`);
-    } catch (reason) {
-      setMcpError(getErrorMessage(reason));
-      toastError(reason);
-    } finally {
-      setMcpBusyServerId(null);
-    }
-  }
-
-  async function handleDeleteMcpServer(serverId: string) {
-    setMcpBusyServerId(serverId);
-    setError(null);
-    try {
-      await runtimeClient.deleteMcpServer({ serverId });
-      setMcpServers((current) => current.filter((server) => server.id !== serverId));
-      setMcpError(null);
-      addToast("success", "MCP 服务器已删除");
-    } catch (reason) {
-      setMcpError(getErrorMessage(reason));
-      toastError(reason);
-    } finally {
-      setMcpBusyServerId(null);
-    }
-  }
-
-  async function refreshScheduledRecords(preferredTaskId?: string) {
-    const result = await runtimeClient.listScheduledTasks();
-    setScheduledRecords(result.tasks);
-    const nextSelectedTaskId =
-      preferredTaskId && result.tasks.some((item) => item.id === preferredTaskId)
-        ? preferredTaskId
-        : selectedScheduledTaskId && result.tasks.some((item) => item.id === selectedScheduledTaskId)
-          ? selectedScheduledTaskId
-          : result.tasks[0]?.id ?? null;
-    setSelectedScheduledTaskId(nextSelectedTaskId);
-    return result.tasks;
-  }
-
-  async function handleRunScheduledTask(taskId: string) {
-    setScheduledBusyTaskId(taskId);
-    setError(null);
-
-    try {
-      const result = await runtimeClient.runScheduledTaskNow({ taskId });
-      await refreshScheduledRecords(taskId);
-      const logs = await runtimeClient.listScheduledTaskLogs({ taskId, limit: 50 });
-      setScheduledLogs(logs.logs);
-      setSelectedScheduledTaskId(taskId);
-      if (result.run.summary) {
-        setError(result.run.summary);
-      }
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setScheduledBusyTaskId(null);
-    }
-  }
-
-  async function handleToggleScheduledTask(taskId: string) {
-    const current = scheduledRecords.find((item) => item.id === taskId);
-    if (!current) {
-      return;
-    }
-
-    setScheduledBusyTaskId(taskId);
-    setError(null);
-
-    try {
-      await runtimeClient.toggleScheduledTask({
-        taskId,
-        enabled: !current.enabled,
-      });
-      await refreshScheduledRecords(taskId);
-      setSelectedScheduledTaskId(taskId);
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setScheduledBusyTaskId(null);
-    }
-  }
-
-  async function handleCreateProviderProfile() {
-    if (!config) {
-      return;
-    }
-
-    setProviderConfigBusy(true);
-    setError(null);
-    setProviderTestResult(null);
-
-    try {
-      const profileId = `profile_${Date.now()}`;
-      const profile = {
-        ...buildProviderProfileFromForm(profileId),
-        name: `配置 ${(config.provider.profiles?.length ?? 0) + 1}`,
-      };
-      const result = await runtimeClient.updateConfig({
-        config: {
-          provider: {
-            ...profile,
-            defaultModel: profile.defaultModel ?? profile.model,
-            temperature: profile.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
-            maxOutputTokens: profile.maxOutputTokens ?? profile.maxTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
-            fallbackModel: config.provider.fallbackModel,
-            activeProfileId: profile.id,
-            profiles: [...(config.provider.profiles ?? []), profile],
-          },
-        },
-      });
-      const normalized = normalizeRuntimeConfig(result.config);
-      setConfig(normalized);
-      setActiveProviderProfileId(normalized.provider.activeProfileId ?? profile.id);
-      setProviderSettings(buildProviderSettingsForm(normalized));
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setProviderConfigBusy(false);
-    }
-  }
-
-  async function handleCopyProviderProfile() {
-    if (!config) {
-      return;
-    }
-
-    setProviderConfigBusy(true);
-    setError(null);
-    setProviderTestResult(null);
-
-    try {
-      const source = activeProviderProfile ?? buildProviderProfileFromForm(activeProviderProfileId);
-      const profileId = `profile_${Date.now()}`;
-      const profile: ProviderProfile = {
-        ...source,
-        id: profileId,
-        name: `${source.name || "供应商配置"} 副本`,
-      };
-      delete profile.lastCheckedAt;
-      delete profile.lastStatus;
-      delete profile.lastErrorSummary;
-
-      const provider = normalizeProviderConfig({
-        ...config.provider,
-        activeProfileId: profileId,
-        profiles: [...(config.provider.profiles ?? []), profile],
-      });
-      const result = await runtimeClient.updateConfig({
-        config: {
-          provider,
-        },
-      });
-      const normalized = normalizeRuntimeConfig(result.config);
-      setConfig(normalized);
-      setActiveProviderProfileId(normalized.provider.activeProfileId ?? profileId);
-      setProviderSettings(buildProviderSettingsForm(normalized));
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setProviderConfigBusy(false);
-    }
-  }
-
-  async function handleDeleteProviderProfile() {
-    if (!config) {
-      return;
-    }
-
-    setProviderConfigBusy(true);
-    setError(null);
-    setProviderTestResult(null);
-
-    try {
-      const currentProfiles = config.provider.profiles ?? [];
-      const remainingProfiles = currentProfiles.filter((profile) => profile.id !== activeProviderProfileId);
-      const nextProfiles = remainingProfiles.length ? remainingProfiles : [buildDefaultProviderProfile()];
-      const nextActiveProfileId = nextProfiles[0]?.id ?? "default";
-      const provider = normalizeProviderConfig({
-        ...config.provider,
-        activeProfileId: nextActiveProfileId,
-        profiles: nextProfiles,
-      });
-      const result = await runtimeClient.updateConfig({
-        config: {
-          provider,
-        },
-      });
-      const normalized = normalizeRuntimeConfig(result.config);
-      setConfig(normalized);
-      setActiveProviderProfileId(normalized.provider.activeProfileId ?? nextActiveProfileId);
-      setProviderSettings(buildProviderSettingsForm(normalized));
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setProviderConfigBusy(false);
     }
   }
 
@@ -3002,35 +2058,7 @@ export function App() {
     [activeTaskId, commandLogCacheById, events, traceEvents],
   );
 
-  function handleSelectScheduledTask(taskId: string) {
-    setSelectedScheduledTaskId(taskId);
-  }
 
-  async function handleCreateScheduledTask(draft?: ScheduledTaskDraft) {
-    if (!draft) {
-      return;
-    }
-
-    setScheduledCreateBusy(true);
-    setError(null);
-
-    try {
-      const prompt = draft.description ? `${draft.description}\n\n${draft.prompt}` : draft.prompt;
-      const result = await runtimeClient.createScheduledTask({
-        name: draft.name,
-        prompt,
-        schedule: draft.schedule,
-        enabled: draft.enabled,
-      });
-      await refreshScheduledRecords(result.task.id);
-      setSelectedScheduledTaskId(result.task.id);
-      addToast("success", "定时任务已创建");
-    } catch (reason) {
-      toastError(reason);
-    } finally {
-      setScheduledCreateBusy(false);
-    }
-  }
 
   const workspaceContent = (() => {
     if (!runtimeReady && !loading) {

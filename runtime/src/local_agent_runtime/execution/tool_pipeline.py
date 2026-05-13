@@ -221,6 +221,24 @@ class ToolExecutionMixin:
             )
             return tool_result
 
+        if result.get("status") == "blocked":
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="tool.blocked",
+                payload={
+                    "toolCallId": tool_call_id,
+                    "toolName": tool_spec["name"],
+                    "reason": result.get("error", "Blocked by permission policy."),
+                },
+            )
+            return {
+                "id": tool_call_id,
+                "name": tool_spec["name"],
+                "arguments": tool_arguments,
+                "result": result,
+            }
+
         if result.get("status") == "approval_required":
             approval = result.get("approval", {})
             self._validate_task_transition(task["status"], "waiting_approval", task["id"])

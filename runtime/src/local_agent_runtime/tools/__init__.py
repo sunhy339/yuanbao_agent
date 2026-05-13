@@ -28,6 +28,7 @@ def build_builtin_tools(
     *,
     memory_manager: Any | None = None,
     scratchpad: Any | None = None,
+    permission_engine: Any | None = None,
 ) -> dict[str, Any]:
     """Build all built-in tools, returning a name -> handler mapping."""
     builders = [
@@ -46,8 +47,12 @@ def build_builtin_tools(
         ("browser", build_browser_tool),
     ]
     tools: dict[str, Any] = {}
+    _engine_tools = {"run_command", "apply_patch", "write_file", "web_fetch", "task"}
     for name, builder in builders:
-        tools[name] = builder(policy_guard, store, subagent_service)["handler"]
+        if name in _engine_tools:
+            tools[name] = builder(policy_guard, store, subagent_service, permission_engine=permission_engine)["handler"]
+        else:
+            tools[name] = builder(policy_guard, store, subagent_service)["handler"]
 
     # Memory tools (optional – only registered when memory_manager is provided)
     if memory_manager is not None:

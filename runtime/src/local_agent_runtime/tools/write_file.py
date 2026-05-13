@@ -11,10 +11,11 @@ from ._shared import (
     resolve_workspace_path,
     to_relative_path,
 )
+from ..policy.permission_engine import PermissionRequest as PermRequest
 from ..services.write_scope_enforcement import WriteScopeEnforcer
 
 
-def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None) -> dict[str, Any]:
+def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None, *, permission_engine: Any | None = None) -> dict[str, Any]:
     def write_file(params: dict[str, Any]) -> dict[str, Any]:
         workspace_root = require_workspace_root(params)
         file_path = resolve_workspace_path(policy_guard, workspace_root, params["path"])
@@ -54,6 +55,31 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
             if stored_request != request:
                 raise ValueError("Approval request does not match the write_file request")
             if approval.get("decision") != "approved":
+                return {
+                    "status": "approval_required",
+                    "approval": approval,
+                    "path": relative_path,
+                    "bytesWritten": 0,
+                    "created": not file_path.is_file(),
+                    "encoding": encoding,
+                }
+        elif permission_engine is not None:
+            decision = permission_engine.evaluate(PermRequest(capability="writeFile", tool_name="write_file"))
+            if decision.decision == "deny":
+                return {
+                    "status": "blocked",
+                    "error": decision.reason,
+                    "path": relative_path,
+                    "bytesWritten": 0,
+                }
+            if decision.decision == "approval_required":
+                if not task_id:
+                    raise ValueError("taskId is required when write approval is needed")
+                approval = store.create_approval(
+                    task_id=task_id,
+                    kind="write_file",
+                    request=request,
+                )
                 return {
                     "status": "approval_required",
                     "approval": approval,

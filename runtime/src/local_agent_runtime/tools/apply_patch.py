@@ -15,10 +15,11 @@ from ._shared import (
     require_workspace_root,
     validate_patch_request,
 )
+from ..policy.permission_engine import PermissionRequest as PermRequest
 from ..services.write_scope_enforcement import WriteScopeEnforcer
 
 
-def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None) -> dict[str, Any]:
+def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None, *, permission_engine: Any | None = None) -> dict[str, Any]:
     def apply_patch(params: dict[str, Any]) -> dict[str, Any]:
         workspace_root = require_workspace_root(params)
         active_command_policy = current_command_policy(store)
@@ -118,7 +119,24 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
                     "dryRun": dry_run,
                 }
         else:
-            if not policy_guard.requires_approval("apply_patch", approval_mode=active_command_policy["approvalMode"]):
+            # PermissionEngine path (new) or legacy PolicyGuard path
+            _skip_approval = False
+            if permission_engine is not None:
+                decision = permission_engine.evaluate(PermRequest(capability="writeFile", tool_name="apply_patch"))
+                if decision.decision == "deny":
+                    return {
+                        "status": "blocked",
+                        "error": decision.reason,
+                        "summary": summary,
+                        "filesChanged": patch_request["filesChanged"],
+                        "diffText": patch_request["diffText"],
+                        "dryRun": dry_run,
+                    }
+                _skip_approval = decision.decision == "allow"
+            else:
+                _skip_approval = not policy_guard.requires_approval("apply_patch", approval_mode=active_command_policy["approvalMode"])
+
+            if _skip_approval:
                 patch = store.create_patch(
                     task_id=task_id,
                     workspace_id=str(workspace_root),

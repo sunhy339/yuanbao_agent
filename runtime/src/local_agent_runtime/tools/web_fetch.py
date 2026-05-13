@@ -7,12 +7,14 @@ import urllib.request
 import urllib.error
 from typing import Any
 
+from ..policy.permission_engine import PermissionRequest as PermRequest
+
 
 _DEFAULT_TIMEOUT = 30
 _MAX_RESPONSE_BYTES = 512 * 1024  # 512 KB
 
 
-def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None) -> dict[str, Any]:
+def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None, *, permission_engine: Any | None = None) -> dict[str, Any]:
     def web_fetch(params: dict[str, Any]) -> dict[str, Any]:
         url = str(params.get("url", "")).strip()
         if not url:
@@ -20,6 +22,30 @@ def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | 
 
         if not url.startswith(("http://", "https://")):
             raise ValueError(f"Only http/https URLs are supported: {url}")
+
+        # PermissionEngine gate
+        if permission_engine is not None:
+            decision = permission_engine.evaluate(PermRequest(capability="webFetch", tool_name="web_fetch"))
+            if decision.decision == "deny":
+                return {
+                    "status": "blocked",
+                    "error": decision.reason,
+                    "url": url,
+                }
+            if decision.decision == "approval_required":
+                task_id = str(params.get("taskId") or params.get("task_id") or "").strip()
+                if not task_id:
+                    raise ValueError("taskId is required when web fetch approval is needed")
+                approval = store.create_approval(
+                    task_id=task_id,
+                    kind="network_access",
+                    request={"url": url, "method": str(params.get("method", "GET")).upper()},
+                )
+                return {
+                    "status": "approval_required",
+                    "approval": approval,
+                    "url": url,
+                }
 
         method = str(params.get("method", "GET")).upper()
         headers = params.get("headers") or {}

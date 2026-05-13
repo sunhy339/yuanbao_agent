@@ -9,6 +9,7 @@ from .memory import MemoryManager, MemoryRetriever, MemoryStore
 from .orchestrator.service import Orchestrator
 from .policy.decision_advisor import DecisionAdvisor
 from .policy.guard import PolicyGuard
+from .policy.permission_engine import PermissionEngine
 from .provider.adapter import ProviderAdapter
 from .router import MetaRouter
 from .rpc.server import JsonRpcServer
@@ -33,6 +34,7 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
     store = SQLiteStore(database_path)
     config = store.get_config({})["config"]
     policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
+    permission_engine = PermissionEngine(config=config, store=store)
     collaboration = CollaborationService(store, event_bus)
     subagent_service = SubagentService(store, collaboration)
     provider = ProviderAdapter()
@@ -51,6 +53,7 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
             subagent_service=subagent_service,
             memory_manager=memory_manager,
             scratchpad=scratchpad,
+            permission_engine=permission_engine,
         )
     )
     hook_service = HookService(store, event_bus)

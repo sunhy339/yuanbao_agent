@@ -16,11 +16,12 @@ from ._shared import (
     require_workspace_root,
     run_shell,
 )
+from ..policy.permission_engine import PermissionRequest as PermRequest
 from ..services.command_background import BackgroundCommandRequest, get_background_command_service
 from ..services.write_scope_enforcement import WriteScopeEnforcer
 
 
-def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None) -> dict[str, Any]:
+def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None, *, permission_engine: Any | None = None) -> dict[str, Any]:
     def run_command(params: dict[str, Any]) -> dict[str, Any]:
         workspace_root = require_workspace_root(params)
         command = str(params.get("command", "")).strip()
@@ -39,6 +40,17 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         timeout_ms = max(1000, min(timeout_ms, 1_800_000))
 
         policy_guard.validate_command(command, active_run_command_config)
+
+        # PermissionEngine gate (new path)
+        if permission_engine is not None:
+            decision = permission_engine.evaluate(PermRequest(capability="runCommand", tool_name="run_command"))
+            if decision.decision == "deny":
+                return {
+                    "status": "blocked",
+                    "error": decision.reason,
+                    "command": command,
+                    "cwd": cwd_rel,
+                }
 
         cwd_path = Path(cwd_rel)
         cwd_abs = cwd_path.resolve() if cwd_path.is_absolute() else (workspace_root / cwd_path).resolve()
@@ -78,7 +90,10 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 }
         elif (
             not internal_validation
-            and policy_guard.requires_approval("run_command", approval_mode=active_command_policy["approvalMode"])
+            and (
+                (permission_engine is not None and permission_engine.evaluate(PermRequest(capability="runCommand", tool_name="run_command")).decision == "approval_required")
+                or (permission_engine is None and policy_guard.requires_approval("run_command", approval_mode=active_command_policy["approvalMode"]))
+            )
         ):
             if not request_task_id:
                 raise ValueError("taskId is required when command approval is needed")

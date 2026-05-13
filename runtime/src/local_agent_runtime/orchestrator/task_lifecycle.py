@@ -48,6 +48,8 @@ class TaskLifecycleMixin:
             "summarize-findings",
             final_status="completed",
         )
+        # --- Completion decision advisory ---
+        completion_advice = self._consult_completion_advisor(task, final_summary)
         self._validate_task_transition(task["status"], "completed", task["id"], silent=True)
         if task["status"] in {"completed", "failed", "cancelled"}:
             return {**task, "resultSummary": final_summary}
@@ -98,19 +100,27 @@ class TaskLifecycleMixin:
         self._clear_pending_react_state(task["id"])
         self._record_task_metrics(session_id=session_id, task=runtime_task, tool_results=tool_results, task_status="completed")
         # --- Decision trace: completion ---
+        completion_payload = {
+            "decision": "completed",
+            "whyComplete": final_summary[:500],
+            "changedFiles": runtime_task.get("changedFiles") or [],
+            "commands": runtime_task.get("commands") or [],
+            "testsRun": runtime_task.get("verification") or [],
+            "reflection": reflection_data,
+            "remainingRisks": runtime_task.get("risks") or [],
+        }
+        if completion_advice is not None:
+            completion_payload["advisorOutcome"] = completion_advice["source"]
+            completion_payload["advisorAccepted"] = completion_advice["accepted"]
+            if completion_advice.get("rationale"):
+                completion_payload["advisorRationale"] = completion_advice["rationale"]
+            if completion_advice.get("fallback_reason"):
+                completion_payload["advisorFallbackReason"] = completion_advice["fallback_reason"]
         self._publish(
             session_id=session_id,
             task=runtime_task,
             event_type="agent.decision.completion",
-            payload={
-                "decision": "completed",
-                "whyComplete": final_summary[:500],
-                "changedFiles": runtime_task.get("changedFiles") or [],
-                "commands": runtime_task.get("commands") or [],
-                "testsRun": runtime_task.get("verification") or [],
-                "reflection": reflection_data,
-                "remainingRisks": runtime_task.get("risks") or [],
-            },
+            payload=completion_payload,
         )
         self._publish(
             session_id=session_id,
@@ -142,6 +152,40 @@ class TaskLifecycleMixin:
         if not skip_drain:
             self._drain_session_queue(session_id)
         return runtime_task
+
+    def _consult_completion_advisor(
+        self,
+        task: dict[str, Any],
+        summary: str,
+    ) -> dict[str, Any] | None:
+        """Ask DecisionAdvisor whether the task is truly complete.
+
+        Returns a dict with advisor result fields, or None if no advisor is configured.
+        The advisor proposes, but runtime always proceeds with completion — the result
+        is recorded in the decision trace for audit.
+        """
+        advisor = getattr(self, "_decision_advisor", None)
+        if advisor is None:
+            return None
+        try:
+            result = advisor.advise("completion_decision", {
+                "goal": task.get("goal", ""),
+                "summary": summary[:2000],
+                "changed_files": [
+                    f.get("path", "") for f in (task.get("changedFiles") or [])
+                    if isinstance(f, dict)
+                ][:20],
+            })
+            return {
+                "accepted": result.accepted,
+                "source": result.source,
+                "rationale": result.rationale,
+                "fallback_reason": result.fallback_reason,
+                "proposal_id": result.proposal_id,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Completion advisor call failed for task %s: %s", task.get("id"), exc)
+            return None
 
     def _validate_worker_output(self, *, session_id: str, task: dict[str, Any]) -> None:
         """Warn if a worker task completes without testsRun or risks."""

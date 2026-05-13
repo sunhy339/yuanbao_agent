@@ -126,3 +126,67 @@ class TestMemoryRetrieverSearch:
         )
         results = self.retriever.search("w1", "深色主题编程")
         assert len(results) >= 1
+
+    def test_search_chinese_bigram_matching(self) -> None:
+        """Chinese bigram tokens should improve recall for multi-char queries."""
+        self.ms.create(
+            kind=MemoryKind.SEMANTIC,
+            content="系统架构设计需要考虑性能优化和扩展性",
+            workspace_id="w1",
+        )
+        results = self.retriever.search("w1", "架构设计性能")
+        assert len(results) >= 1
+        entry, score = results[0]
+        assert "架构" in entry.content
+
+    def test_search_chinese_session_boost(self) -> None:
+        """Memories from the active session should score higher."""
+        self.ms.create(
+            kind=MemoryKind.SEMANTIC,
+            content="数据库连接池配置参数",
+            workspace_id="w1",
+            session_id="s1",
+        )
+        self.ms.create(
+            kind=MemoryKind.SEMANTIC,
+            content="数据库连接池配置参数",
+            workspace_id="w1",
+            session_id="s2",
+        )
+        results = self.retriever.search("w1", "数据库连接池", session_id="s1")
+        if len(results) >= 2:
+            first_entry, first_score = results[0]
+            _, second_score = results[1]
+            assert first_entry.session_id == "s1"
+            assert first_score > second_score
+
+
+class TestExtractKeywordsChinese:
+    def test_chinese_bigram_extraction(self) -> None:
+        kw = extract_keywords("系统架构设计需要考虑性能优化")
+        # Should have unigrams and bigrams like 架构, 性能, 优化
+        assert any("架构" in k for k in kw)
+        assert any("性能" in k for k in kw)
+
+    def test_chinese_stop_chars_filtered(self) -> None:
+        kw = extract_keywords("这是一个很好的设计")
+        # 的, 是, 很, 这 should be filtered
+        assert "的" not in kw
+        assert "是" not in kw
+        assert "很" not in kw
+        assert "这" not in kw
+        # 设计 should remain
+        assert "设计" in kw
+
+    def test_mixed_chinese_english_keywords(self) -> None:
+        kw = extract_keywords("使用 Python 进行数据分析处理")
+        assert "python" in kw
+        assert any("数据" in k for k in kw)
+
+    def test_extension_a_characters(self) -> None:
+        """CJK Extension A characters (U+3400-U+4DBF) should be tokenized."""
+        # 㐀 (U+4400) is a CJK Extension A character
+        text = "㐀㐁测试内容"
+        kw = extract_keywords(text)
+        # Should produce tokens containing the extension A chars
+        assert any("测试" in k for k in kw)

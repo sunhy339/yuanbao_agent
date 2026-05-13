@@ -34,7 +34,10 @@ _ZH_STOP: frozenset[str] = frozenset({
 })
 
 _WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]*")
-_ZH_CHAR_RE = re.compile(r"[一-鿿]+")
+# Broad CJK range matching Unified Ideographs + Extension A + Compatibility + radicals
+_ZH_CHAR_RE = re.compile(
+    r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+"
+)
 
 
 def _tokenize(text: str) -> list[str]:

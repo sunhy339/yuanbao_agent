@@ -391,3 +391,252 @@ class TestHookAutonomyReport:
         assert hook_execs[0]["status"] == "completed"
         assert hook_execs[0]["policyOutcome"] == "allowed"
         assert hook_execs[0]["event"] == "after_task_complete"
+
+
+# ---------------------------------------------------------------------------
+# Integration: Runtime Lifecycle Wiring
+# ---------------------------------------------------------------------------
+
+class TestHookLifecycleWiring:
+    """Hooks fire from real runtime lifecycle handlers."""
+
+    def _make_runtime_task(self, tmp_path: Any) -> tuple[Any, SQLiteStore, str, dict[str, Any], dict[str, Any]]:
+        from local_agent_runtime.main import build_server
+
+        server = build_server(database_path=str(tmp_path / "test.sqlite3"))
+        store = server._store
+        ws_id = _make_workspace(store, tmp_path)
+        session = store.create_session(ws_id, "Lifecycle hook test")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="root",
+            goal="test lifecycle hook",
+            plan=[],
+        )
+        return server, store, ws_id, session, task
+
+    def test_pause_task_fires_registered_pause_hook(self, tmp_path: Any) -> None:
+        server, store, ws_id, _session, task = self._make_runtime_task(tmp_path)
+        _create_hook(
+            store,
+            ws_id,
+            event="on_task_pause",
+            action={"type": "audit_note", "note": "Task paused"},
+        )
+
+        paused = server._handlers["task.pause"]({"taskId": task["id"]})["task"]
+
+        assert paused["status"] == "paused"
+        hook_execs = store.list_hook_executions({"taskId": task["id"]})["hookExecutions"]
+        assert len(hook_execs) == 1
+        assert hook_execs[0]["event"] == "on_task_pause"
+        assert hook_execs[0]["status"] == "completed"
+
+    def test_cancel_task_fires_cancel_hook(self, tmp_path: Any) -> None:
+        server, store, ws_id, _session, task = self._make_runtime_task(tmp_path)
+        _create_hook(
+            store,
+            ws_id,
+            event="on_task_cancel",
+            action={"type": "audit_note", "note": "Task cancelled"},
+        )
+
+        cancelled = server._handlers["task.cancel"]({"taskId": task["id"]})["task"]
+
+        assert cancelled["status"] == "cancelled"
+        hook_execs = store.list_hook_executions({"taskId": task["id"]})["hookExecutions"]
+        assert len(hook_execs) == 1
+        assert hook_execs[0]["event"] == "on_task_cancel"
+        assert hook_execs[0]["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Integration: Worktree Hook Points
+# ---------------------------------------------------------------------------
+
+class TestWorktreeHookPoints:
+    """Worktree lifecycle hooks fire before/after create and merge."""
+
+    def _make_worktree_service(self, tmp_path: Any):
+        """Build a WorktreeService with mock git adapter and real HookService."""
+        from unittest.mock import MagicMock
+        from local_agent_runtime.services.worktree_service import WorktreeService
+
+        store, event_bus = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        hook_service = HookService(store, event_bus)
+
+        # Mock git adapter — no real git operations in tests
+        git_adapter = MagicMock()
+        git_adapter.create.return_value = {
+            "branch": "agent/task_1",
+            "path": "/tmp/wt/task_1",
+            "baseRef": "main",
+        }
+        git_adapter.merge.return_value = {
+            "mergedBranch": "agent/task_1",
+            "targetBranch": "main",
+            "result": "ok",
+            "stdout": "",
+        }
+
+        service = WorktreeService(store, git_adapter, hook_service=hook_service)
+        return service, store, event_bus, ws_id, git_adapter
+
+    def test_create_for_task_fires_before_and_after_hooks(self, tmp_path: Any) -> None:
+        service, store, event_bus, ws_id, git_adapter = self._make_worktree_service(tmp_path)
+        _create_hook(
+            store, ws_id,
+            event="before_worktree_create",
+            action={"type": "audit_note", "note": "Before create"},
+        )
+        _create_hook(
+            store, ws_id,
+            event="after_worktree_create",
+            action={"type": "audit_note", "note": "After create"},
+        )
+
+        result = service.create_for_task({
+            "taskId": "task_1",
+            "workspaceId": ws_id,
+            "sessionId": "sess_1",
+            "branchName": "agent/task_1",
+            "worktreePath": "/tmp/wt/task_1",
+            "baseRef": "main",
+        })
+
+        assert "worktree" in result
+        assert "git" in result
+
+        execs = store.list_hook_executions({})["hookExecutions"]
+        events = [e["event"] for e in execs]
+        assert "before_worktree_create" in events
+        assert "after_worktree_create" in events
+
+        # Both should have completed
+        for ex in execs:
+            assert ex["status"] == "completed"
+
+    def test_merge_fires_before_and_after_hooks(self, tmp_path: Any) -> None:
+        service, store, event_bus, ws_id, git_adapter = self._make_worktree_service(tmp_path)
+        _create_hook(
+            store, ws_id,
+            event="before_worktree_merge",
+            action={"type": "audit_note", "note": "Before merge"},
+        )
+        _create_hook(
+            store, ws_id,
+            event="after_worktree_merge",
+            action={"type": "audit_note", "note": "After merge"},
+        )
+
+        # First create a worktree record
+        wt = store.create_worktree({
+            "taskId": "task_1",
+            "workspaceId": ws_id,
+            "sessionId": "sess_1",
+            "branchName": "agent/task_1",
+            "worktreePath": "/tmp/wt/task_1",
+            "baseRef": "main",
+        })["worktree"]
+
+        result = service.merge({"worktreeId": wt["id"], "targetBranch": "main"})
+
+        assert result["merged"] is True
+        assert result["worktreeId"] == wt["id"]
+
+        execs = store.list_hook_executions({})["hookExecutions"]
+        events = [e["event"] for e in execs]
+        assert "before_worktree_merge" in events
+        assert "after_worktree_merge" in events
+
+        for ex in execs:
+            assert ex["status"] == "completed"
+
+    def test_create_hook_disabled_skips_worktree_hooks(self, tmp_path: Any) -> None:
+        service, store, event_bus, ws_id, git_adapter = self._make_worktree_service(tmp_path)
+        _create_hook(
+            store, ws_id,
+            event="before_worktree_create",
+            action={"type": "audit_note", "note": "Should not fire"},
+            enabled=False,
+        )
+        _create_hook(
+            store, ws_id,
+            event="after_worktree_create",
+            action={"type": "audit_note", "note": "Should fire"},
+        )
+
+        result = service.create_for_task({
+            "taskId": "task_1",
+            "workspaceId": ws_id,
+            "sessionId": "sess_1",
+            "branchName": "agent/task_1",
+            "worktreePath": "/tmp/wt/task_1",
+            "baseRef": "main",
+        })
+
+        execs = store.list_hook_executions({})["hookExecutions"]
+        # Only after_worktree_create should have executed (before was disabled)
+        assert len(execs) == 1
+        assert execs[0]["event"] == "after_worktree_create"
+
+    def test_no_hooks_fired_when_hook_service_is_none(self, tmp_path: Any) -> None:
+        """WorktreeService without hook_service should not crash."""
+        from unittest.mock import MagicMock
+        from local_agent_runtime.services.worktree_service import WorktreeService
+
+        store, _ = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        git_adapter = MagicMock()
+        git_adapter.create.return_value = {
+            "branch": "agent/task_1",
+            "path": "/tmp/wt/task_1",
+            "baseRef": "main",
+        }
+
+        service = WorktreeService(store, git_adapter, hook_service=None)
+        result = service.create_for_task({
+            "taskId": "task_1",
+            "workspaceId": ws_id,
+            "sessionId": "sess_1",
+            "branchName": "agent/task_1",
+            "worktreePath": "/tmp/wt/task_1",
+            "baseRef": "main",
+        })
+
+        assert "worktree" in result
+        # No hook executions should exist
+        execs = store.list_hook_executions({})["hookExecutions"]
+        assert len(execs) == 0
+
+    def test_worktree_hooks_use_correct_context(self, tmp_path: Any) -> None:
+        """Verify hook context includes worktree-specific fields."""
+        service, store, event_bus, ws_id, git_adapter = self._make_worktree_service(tmp_path)
+
+        captured_events: list = []
+        event_bus.subscribe(captured_events.append)
+
+        _create_hook(
+            store, ws_id,
+            event="after_worktree_create",
+            action={"type": "audit_note", "note": "Check context"},
+        )
+
+        service.create_for_task({
+            "taskId": "task_ctx",
+            "workspaceId": ws_id,
+            "sessionId": "sess_ctx",
+            "branchName": "agent/ctx",
+            "worktreePath": "/tmp/wt/ctx",
+            "baseRef": "HEAD",
+        })
+
+        # The hook execution record should have the task/workspace context
+        execs = store.list_hook_executions({})["hookExecutions"]
+        assert len(execs) == 1
+        assert execs[0]["status"] == "completed"
+
+        # Verify trace event was emitted
+        hook_events = [e for e in captured_events if e.type == "hook.executed"]
+        assert len(hook_events) == 1

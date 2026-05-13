@@ -127,7 +127,7 @@ class PublishingMixin:
             event_type="task.paused",
             payload={"status": paused_task["status"], "previousStatus": task["status"]},
         )
-        self._fire_hooks("on_task_paused", paused_task["sessionId"], paused_task)
+        self._fire_hooks("on_task_pause", paused_task["sessionId"], paused_task)
         return {"task": paused_task}
 
     def _maybe_publish_tool_filter(self, context: dict[str, Any], skill_id: str | None) -> None:
@@ -260,8 +260,13 @@ class PublishingMixin:
         """Fire matching hooks for a lifecycle event. No-op if no hook service."""
         if self._hook_service is None:
             return []
-        # Resolve workspaceId from session
-        session = self._store.get_session(session_id)
+        # Resolve workspaceId from session. Hook dispatch must not break the
+        # task lifecycle if the session has already disappeared.
+        try:
+            session = self._store.require_session(session_id)
+        except Exception:
+            logger.warning("Hook context session lookup failed for %s", session_id, exc_info=True)
+            return []
         workspace_id = ""
         if isinstance(session, dict):
             workspace_id = session.get("workspaceId") or session.get("workspace_id") or ""

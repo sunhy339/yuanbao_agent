@@ -83,6 +83,20 @@ class GitWorktreeAdapter:
             entries.append(current)
         return entries
 
+    def merge(self, branch_name: str, target_branch: str = "main") -> dict[str, Any]:
+        """Merge *branch_name* into *target_branch* in the main repo.
+
+        Returns dict with ``mergedBranch``, ``targetBranch``, ``result``.
+        """
+        self._run_git("checkout", target_branch)
+        result = self._run_git("merge", branch_name, check=False)
+        return {
+            "mergedBranch": branch_name,
+            "targetBranch": target_branch,
+            "result": "ok" if result.returncode == 0 else "conflict",
+            "stdout": result.stdout.strip(),
+        }
+
     def has_clean_branch(self, target_path: str) -> bool:
         """Return True if the worktree has no uncommitted changes."""
         return self.status(target_path)["dirtyFiles"] == 0

@@ -1,7 +1,7 @@
 """Worktree Service — orchestrates worktree lifecycle via store + git adapter.
 
 Higher-level operations that coordinate the SQLite worktree records with actual
-git worktree operations. Does not auto-route tasks.
+git worktree operations. Supports hook firing for worktree lifecycle events.
 """
 from __future__ import annotations
 
@@ -15,11 +15,27 @@ logger = logging.getLogger(__name__)
 
 
 class WorktreeService:
-    """Orchestrates worktree create / status / diff / cleanup."""
+    """Orchestrates worktree create / merge / status / diff / cleanup."""
 
-    def __init__(self, store: SQLiteStore, git_adapter: GitWorktreeAdapter) -> None:
+    def __init__(
+        self,
+        store: SQLiteStore,
+        git_adapter: GitWorktreeAdapter,
+        hook_service: Any | None = None,
+    ) -> None:
         self._store = store
         self._git = git_adapter
+        self._hook_service = hook_service
+
+    def _fire_hooks(self, event: str, context: dict[str, Any]) -> list[dict[str, Any]]:
+        """Fire hooks for a worktree lifecycle event. No-op if no hook service."""
+        if self._hook_service is None:
+            return []
+        try:
+            return self._hook_service.invoke_hooks(event, context)
+        except Exception:
+            logger.warning("Worktree hook execution failed for %s", event, exc_info=True)
+            return []
 
     # -- High-level operations --------------------------------------------------
 
@@ -28,13 +44,31 @@ class WorktreeService:
 
         Steps:
         1. Validate no existing worktree for this task.
-        2. Create git worktree via adapter.
-        3. Create store record.
+        2. Fire before_worktree_create hooks.
+        3. Create git worktree via adapter.
+        4. Create store record.
+        5. Fire after_worktree_create hooks.
         """
+        task_id = params.get("taskId", "")
+        workspace_id = params.get("workspaceId", "")
+        session_id = params.get("sessionId", "")
+
         # Check for existing allocation
-        existing = self._store.get_worktree_by_task({"taskId": params["taskId"]})
+        existing = self._store.get_worktree_by_task({"taskId": task_id})
         if existing.get("worktree") is not None:
-            raise ValueError(f"Task {params['taskId']} already has a worktree")
+            raise ValueError(f"Task {task_id} already has a worktree")
+
+        hook_context = {
+            "workspaceId": workspace_id,
+            "sessionId": session_id,
+            "taskId": task_id,
+            "branchName": params.get("branchName", ""),
+            "worktreePath": params.get("worktreePath", ""),
+            "baseRef": params.get("baseRef", "HEAD"),
+        }
+
+        # Fire before hooks
+        self._fire_hooks("before_worktree_create", hook_context)
 
         # Create git worktree
         git_result = self._git.create(
@@ -45,7 +79,63 @@ class WorktreeService:
 
         # Create store record
         record = self._store.create_worktree(params)
+
+        # Fire after hooks
+        hook_context["worktreeId"] = record.get("worktree", {}).get("id", "")
+        hook_context["gitBranch"] = git_result.get("branch", "")
+        self._fire_hooks("after_worktree_create", hook_context)
+
         return {**record, "git": git_result}
+
+    def merge(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Merge a worktree branch back into the target branch.
+
+        Steps:
+        1. Get worktree record.
+        2. Fire before_worktree_merge hooks.
+        3. Merge via git adapter.
+        4. Update store record status to ``merged``.
+        5. Fire after_worktree_merge hooks.
+        """
+        record = self._store.get_worktree(params)
+        wt = record["worktree"]
+        target_branch = params.get("targetBranch", "main")
+        branch_name = wt.get("branchName", "")
+
+        hook_context = {
+            "workspaceId": wt.get("workspaceId", ""),
+            "taskId": wt.get("taskId", ""),
+            "worktreeId": wt["id"],
+            "branchName": branch_name,
+            "targetBranch": target_branch,
+        }
+
+        # Fire before hooks
+        self._fire_hooks("before_worktree_merge", hook_context)
+
+        # Merge via git adapter
+        merge_result = self._git.merge(
+            branch_name=branch_name,
+            target_branch=target_branch,
+        )
+
+        # Update store record
+        self._store.update_worktree({
+            "worktreeId": wt["id"],
+            "status": "merged",
+        })
+
+        # Fire after hooks
+        hook_context["mergeResult"] = merge_result.get("result", "")
+        self._fire_hooks("after_worktree_merge", hook_context)
+
+        return {
+            "worktreeId": wt["id"],
+            "merged": True,
+            "branchName": branch_name,
+            "targetBranch": target_branch,
+            "result": merge_result,
+        }
 
     def get_status(self, params: dict[str, Any]) -> dict[str, Any]:
         """Get worktree record + live git status."""

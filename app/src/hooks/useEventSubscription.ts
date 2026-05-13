@@ -1,0 +1,337 @@
+import { useEffect, useRef } from "react";
+import type {
+  AgentEventEnvelope,
+  MessageDeltaPayload,
+  MessageCreatedPayload,
+  MessageCompletedPayload,
+  MessageFailedPayload,
+  SessionUpdatedPayload,
+  SessionRecord,
+  TaskRecord,
+  TraceEventRecord,
+} from "@shared";
+import { RuntimeClient } from "../lib/runtimeClient";
+import { isOperationalAssistantDelta } from "../state/chatMessages";
+import {
+  appendAssistantToken,
+  completeAssistantMessage,
+  failAssistantMessageForEvent,
+  messageRecordToChatMessageLocal,
+} from "../state/chatTokenHelpers";
+import {
+  updateAssistantMessageByMessageId,
+  reconcileBackendMessage,
+  failAssistantMessage,
+} from "../state/chatMessages";
+import { isChatVisibleEvent as shouldShowEventInChat } from "../ui/workbench/workspaces/session/visibilityRouting";
+import {
+  applyEventToTask,
+  taskRecordFromEvent,
+  upsertRecord,
+  sortByUpdatedAtDesc,
+} from "../state/eventRecordViews";
+import { shouldPromoteTaskToActive } from "../state/sessionDerivedViews";
+
+const runtimeClient = new RuntimeClient();
+
+export interface UseEventSubscriptionDeps {
+  setActiveTaskForSession: (taskId: string | null, sessionId?: string | null) => void;
+
+  // State setters
+  setEvents: React.Dispatch<React.SetStateAction<any[]>>;
+  setSession: React.Dispatch<React.SetStateAction<SessionRecord | null>>;
+  setSessions: React.Dispatch<React.SetStateAction<SessionRecord[]>>;
+  setTask: React.Dispatch<React.SetStateAction<TaskRecord | null>>;
+  setActiveTaskId: React.Dispatch<React.SetStateAction<string | null>>;
+  setTaskHistory: React.Dispatch<React.SetStateAction<TaskRecord[]>>;
+  setChatMessages: React.Dispatch<React.SetStateAction<any[]>>;
+  setTraceEvents: React.Dispatch<React.SetStateAction<TraceEventRecord[]>>;
+  setCommandLogCacheById: React.Dispatch<React.SetStateAction<Record<string, any>>>;
+  setTraceError: React.Dispatch<React.SetStateAction<string | null>>;
+  setPatchCacheById: React.Dispatch<React.SetStateAction<Record<string, any>>>;
+  setPatchBusyId: React.Dispatch<React.SetStateAction<string | null>>;
+  setApprovalBusyId: React.Dispatch<React.SetStateAction<string | null>>;
+  setError: (error: string | null) => void;
+
+  // Refs
+  sessionActiveTaskMapRef: React.MutableRefObject<Map<string, string>>;
+  childTaskIdsRef: React.MutableRefObject<Set<string>>;
+  pendingAssistantTokenEventsRef: React.MutableRefObject<AgentEventEnvelope[]>;
+  assistantTokenFlushTimerRef: React.MutableRefObject<ReturnType<typeof setTimeout> | null>;
+}
+
+export function useEventSubscription(deps: UseEventSubscriptionDeps) {
+  const {
+    setActiveTaskForSession,
+    setEvents,
+    setSession, setSessions,
+    setTask, setActiveTaskId, setTaskHistory,
+    setChatMessages,
+    setError,
+    sessionActiveTaskMapRef,
+    childTaskIdsRef,
+    pendingAssistantTokenEventsRef,
+    assistantTokenFlushTimerRef,
+  } = deps;
+
+  function isChatVisibleEvent(event: AgentEventEnvelope): boolean {
+    return shouldShowEventInChat(event, childTaskIdsRef.current);
+  }
+
+  function flushPendingAssistantTokens() {
+    const pendingEvents = pendingAssistantTokenEventsRef.current;
+    if (!pendingEvents.length) return;
+    pendingAssistantTokenEventsRef.current = [];
+    if (assistantTokenFlushTimerRef.current !== null) {
+      clearTimeout(assistantTokenFlushTimerRef.current);
+      assistantTokenFlushTimerRef.current = null;
+    }
+    setChatMessages((current) =>
+      pendingEvents.reduce((nextMessages, event) => appendAssistantToken(nextMessages, event), current),
+    );
+  }
+
+  function queueAssistantToken(event: AgentEventEnvelope) {
+    const payload = event.payload as any;
+    const delta = payload.delta ?? "";
+    if (!delta || isOperationalAssistantDelta(delta)) return;
+    pendingAssistantTokenEventsRef.current.push(event);
+    if (assistantTokenFlushTimerRef.current !== null) return;
+    assistantTokenFlushTimerRef.current = setTimeout(() => {
+      assistantTokenFlushTimerRef.current = null;
+      flushPendingAssistantTokens();
+    }, 33);
+  }
+
+  useEffect(() => {
+    let active = true;
+    let dispose: (() => void) | undefined;
+
+    runtimeClient
+      .subscribeEvents((event) => {
+        if (!active) {
+          return;
+        }
+
+        // --- New message lifecycle events (P1.3 / P1.4) ---
+        // message.delta: streaming token, routed by messageId
+        if (event.type === "message.delta") {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          const payload = event.payload as MessageDeltaPayload;
+          const delta = payload.delta ?? "";
+          if (!delta || isOperationalAssistantDelta(delta)) {
+            return;
+          }
+          const messageId = payload.messageId;
+          if (messageId) {
+            setChatMessages((current) =>
+              updateAssistantMessageByMessageId(current, messageId, (msg) => ({
+                ...msg,
+                taskId: event.taskId,
+                content: msg.placeholder ? delta : `${msg.content}${delta}`,
+                updatedAt: event.ts,
+                placeholder: false,
+              })),
+            );
+          } else {
+            // Fallback: no messageId, use legacy behavior
+            queueAssistantToken(event);
+          }
+          return;
+        }
+
+        // message.created: reconcile local pending message with backend message
+        if (event.type === "message.created") {
+          const payload = event.payload as MessageCreatedPayload;
+          const msg = payload.message;
+          if (!msg) return;
+          // Only process user/assistant messages
+          if (msg.role !== "user" && msg.role !== "assistant") return;
+          const chatMsg = messageRecordToChatMessageLocal(msg);
+          if (!chatMsg) return;
+          setChatMessages((current) => reconcileBackendMessage(current, chatMsg));
+          setEvents((current) => [...current, event].slice(-500));
+          return;
+        }
+
+        // message.completed: finalize assistant message by messageId
+        if (event.type === "message.completed") {
+          const payload = event.payload as MessageCompletedPayload;
+          flushPendingAssistantTokens();
+          if (payload.messageId) {
+            setChatMessages((current) =>
+              updateAssistantMessageByMessageId(current, payload.messageId!, (msg) => {
+                // Prefer existing streaming content if richer
+                const streamingContent = msg.content || "";
+                const isPlaceholder = msg.placeholder === true || streamingContent === "\u601d\u8003\u4e2d..." || streamingContent.length < 5;
+                return {
+                  ...msg,
+                  taskId: event.taskId || msg.taskId,
+                  content: isPlaceholder ? (payload.content || streamingContent) : streamingContent,
+                  updatedAt: event.ts,
+                  streaming: false,
+                  placeholder: false,
+                  status: "completed",
+                };
+              }),
+            );
+          } else {
+            // Fallback: no messageId, use legacy completion
+            setChatMessages((current) => completeAssistantMessage(current, event));
+          }
+          setEvents((current) => [...current, event].slice(-500));
+          return;
+        }
+
+        // message.failed: mark assistant message as failed by messageId
+        if (event.type === "message.failed") {
+          const payload = event.payload as MessageFailedPayload;
+          flushPendingAssistantTokens();
+          if (payload.messageId) {
+            setChatMessages((current) =>
+              failAssistantMessage(current, {
+                messageId: payload.messageId,
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                content: payload.content || "任务失败，未返回具体错误。",
+                now: event.ts,
+              }),
+            );
+          } else {
+            setChatMessages((current) => failAssistantMessageForEvent(current, event));
+          }
+          setEvents((current) => [...current, event].slice(-500));
+          return;
+        }
+
+        // --- Legacy assistant.token (kept for backward compat) ---
+        if (event.type === "assistant.token") {
+          if (isChatVisibleEvent(event)) {
+            queueAssistantToken(event);
+          }
+          return;
+        }
+
+        setEvents((current) => [...current, event].slice(-500));
+
+        if (event.type === "session.updated") {
+          const payload = (event.payload ?? {}) as SessionUpdatedPayload;
+          setSession((current) =>
+            current && current.id === event.sessionId
+              ? {
+                  ...current,
+                  title: payload.title ?? current.title,
+                  status: (payload.status as SessionRecord["status"] | undefined) ?? current.status,
+                  summary: payload.summary ?? current.summary,
+                  updatedAt: event.ts,
+                }
+              : current,
+          );
+          setSessions((current) =>
+            current.map((item) =>
+              item.id === event.sessionId
+                ? {
+                    ...item,
+                    title: payload.title ?? item.title,
+                    status: (payload.status as SessionRecord["status"] | undefined) ?? item.status,
+                    summary: payload.summary ?? item.summary,
+                    updatedAt: event.ts,
+                  }
+                : item,
+            ),
+          );
+        }
+
+        if (event.type.startsWith("task.")) {
+          const eventTask = taskRecordFromEvent(event);
+          const isChildWorker = (event.payload as Record<string, unknown>)?.childWorker === true;
+          if (isChildWorker && event.type === "task.started") {
+            childTaskIdsRef.current.add(event.taskId);
+          }
+          setActiveTaskId((current) => {
+            if (isChildWorker) return current;
+            if (event.type === "task.started") {
+              const next = eventTask && shouldPromoteTaskToActive(eventTask, current) ? event.taskId : current;
+              if (next && next !== current) sessionActiveTaskMapRef.current.set(event.sessionId, next);
+              return next;
+            }
+            const next = !current && eventTask && shouldPromoteTaskToActive(eventTask, current) ? event.taskId : current;
+            if (next && next !== current) sessionActiveTaskMapRef.current.set(event.sessionId, next);
+            return next;
+          });
+          setTask((current) => {
+            if (event.type === "task.started" && isChildWorker) {
+              return current;
+            }
+            if (event.type === "task.started" && eventTask && !shouldPromoteTaskToActive(eventTask, current?.id ?? null)) {
+              return current;
+            }
+            if (!current && event.type !== "task.started") {
+              return current;
+            }
+            if (current && current.id !== event.taskId && event.type !== "task.started") {
+              return current;
+            }
+            return applyEventToTask(current, event) ?? eventTask ?? current;
+          });
+          setTaskHistory((current) => {
+            const existing = current.find((item) => item.id === event.taskId);
+            const updated = existing ? applyEventToTask(existing, event) : eventTask;
+            if (!updated) {
+              return current;
+            }
+
+            return upsertRecord(current, updated);
+          });
+          setSession((current) =>
+            current && current.id === event.sessionId
+              ? { ...current, updatedAt: event.ts }
+              : current,
+          );
+          setSessions((current) =>
+            current.map((item) => (item.id === event.sessionId ? { ...item, updatedAt: event.ts } : item)),
+          );
+          // task.failed: only update task panel, don't create chat bubble
+          // (message.failed handles the chat bubble now)
+          if (event.type === "task.failed" && !isChildWorker) {
+            flushPendingAssistantTokens();
+            // Legacy fallback: only create failure bubble if no message.failed was received
+            // (handled by message.failed event now)
+          }
+        }
+
+        // Legacy assistant.message.completed (kept for backward compat)
+        if (event.type === "assistant.message.completed") {
+          if (!isChatVisibleEvent(event)) {
+            // skip non-chat event completion
+          } else {
+            flushPendingAssistantTokens();
+            setChatMessages((current) => completeAssistantMessage(current, event));
+          }
+        }
+      })
+      .then((unlisten) => {
+        dispose = unlisten;
+      })
+      .catch((reason) => {
+        if (active) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+      });
+
+    return () => {
+      active = false;
+      // Clear pending tokens
+      pendingAssistantTokenEventsRef.current = [];
+      if (assistantTokenFlushTimerRef.current !== null) {
+        clearTimeout(assistantTokenFlushTimerRef.current);
+        assistantTokenFlushTimerRef.current = null;
+      }
+      dispose?.();
+    };
+  }, []);
+
+  return { flushPendingAssistantTokens };
+}

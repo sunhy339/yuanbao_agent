@@ -6,6 +6,7 @@ import sys
 from .event_bus import EventBus
 from .memory import MemoryManager, MemoryRetriever, MemoryStore
 from .orchestrator.service import Orchestrator
+from .policy.decision_advisor import DecisionAdvisor
 from .policy.guard import PolicyGuard
 from .provider.adapter import ProviderAdapter
 from .router import MetaRouter
@@ -33,7 +34,8 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
     collaboration = CollaborationService(store, event_bus)
     subagent_service = SubagentService(store, collaboration)
     provider = ProviderAdapter()
-    meta_router = MetaRouter(provider=provider)
+    decision_advisor = DecisionAdvisor(provider=provider)
+    meta_router = MetaRouter(provider=provider, decision_advisor=decision_advisor)
     memory_manager = MemoryManager(
         store=MemoryStore(store),
         retriever=MemoryRetriever(MemoryStore(store)),
@@ -57,6 +59,7 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
         meta_router=meta_router,
         memory_manager=memory_manager,
         hook_service=HookService(store, event_bus),
+        decision_advisor=decision_advisor,
     )
     return JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
 

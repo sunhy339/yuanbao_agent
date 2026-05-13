@@ -83,6 +83,18 @@ class ReactRunnerMixin:
         patch_repair_attempts: int,
     ) -> dict[str, Any]:
 
+        # --- Context policy advisory: consult DecisionAdvisor for compaction threshold ---
+        ctx_threshold = self._compaction_threshold(context)
+        ctx_policy_advice = self._consult_context_policy_advisor(task, goal, ctx_threshold, context)
+        if ctx_policy_advice is not None:
+            advised_threshold = ctx_policy_advice.get("compaction_threshold")
+            if isinstance(advised_threshold, int) and advised_threshold > 0:
+                ctx_threshold = advised_threshold
+                # Store the advisor-provided threshold in context so subsequent turns use it
+                context = dict(context)
+                context["_advised_compaction_threshold"] = ctx_threshold
+        # --- End context policy advisory ---
+
         # Cache provider tools list — it does not change within the loop
         cached_provider_tools: list[dict[str, Any]] | None = None
         read_file_cache: dict[str, dict[str, Any]] = {}
@@ -359,12 +371,13 @@ class ReactRunnerMixin:
                     for m in messages[_msg_count_at_last_check:]:
                         _msg_token_total += estimate_tokens(m.get("content", ""))
                     _msg_count_at_last_check = len(messages)
-                    compaction_decision = self._compactor.should_compact(messages, 60000)
+                    threshold = context.get("_advised_compaction_threshold") or self._compaction_threshold(context)
+                    compaction_decision = self._compactor.should_compact(messages, threshold)
                     if compaction_decision.should_compact:
                         compacted = self._compactor.compact(
                             session_id=session_id,
                             messages=messages,
-                            max_tokens=60000,
+                            max_tokens=threshold,
                             task_id=task.get("id"),
                             force=compaction_decision.force,
                         )
@@ -489,6 +502,54 @@ class ReactRunnerMixin:
 
     def _max_parallel_subtasks(self, context: dict[str, Any]) -> int:
         return self._autonomy_profile_int(context, "maxParallelSubtasks") or 4
+
+    def _compaction_threshold(self, context: dict[str, Any]) -> int:
+        """Get compaction threshold from autonomy profile, falling back to 60000."""
+        threshold = self._autonomy_profile_int(context, "compactionThreshold")
+        if threshold is not None:
+            return threshold
+        return 60000
+
+    def _consult_context_policy_advisor(
+        self,
+        task: dict[str, Any],
+        goal: str,
+        current_threshold: int,
+        context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        advisor = getattr(self, "_decision_advisor", None)
+        if advisor is None:
+            return None
+        try:
+            result = advisor.advise("context_policy", {
+                "goal": goal[:2000],
+                "token_budget": current_threshold,
+            })
+            # Emit trace event for the decision
+            if hasattr(self._store, "append_trace_event"):
+                self._store.append_trace_event(
+                    task_id=task["id"],
+                    session_id=task.get("sessionId"),
+                    event_type="agent.decision.context_policy",
+                    source="advisor",
+                    related_id=result.proposal_id,
+                    payload={
+                        "proposalId": result.proposal_id,
+                        "accepted": result.accepted,
+                        "source": result.source,
+                        "rationale": result.rationale,
+                        "confidence": result.confidence,
+                        "currentThreshold": current_threshold,
+                        "advisedThreshold": result.payload.get("compaction_threshold") if result.accepted else None,
+                        "fallbackReason": result.fallback_reason,
+                    },
+                )
+            if result.accepted:
+                return result.payload
+            return None
+        except Exception as exc:
+            logger.warning("Context policy advisor call failed for task %s: %s", task.get("id"), exc)
+            return None
 
     def _autonomy_profile_int(self, context: dict[str, Any], key: str) -> int | None:
         profile = None

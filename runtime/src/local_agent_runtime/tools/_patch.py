@@ -1,7 +1,6 @@
 """Patch parsing and application helpers for builtin tools.
 
-Extracted from build_builtin_tools() closure in builtin.py.
-These operate as pure functions (module-level) with explicit parameters.
+Extracted from _shared.py. These operate as pure functions with explicit parameters.
 """
 from __future__ import annotations
 
@@ -12,11 +11,10 @@ from typing import Any
 
 
 def normalize_patch_path(
+    policy_guard: Any,
     workspace_root: Path,
     candidate_path: str,
-    policy_guard: Any,
 ) -> tuple[str, Path]:
-    """Normalize and validate a patch path, returning (relative, absolute)."""
     raw_path = str(candidate_path).strip()
     if not raw_path:
         raise ValueError("Patch path is required")
@@ -34,7 +32,6 @@ def normalize_patch_path(
 
 
 def strip_git_prefix(path_text: str) -> str:
-    """Strip the a/ or b/ prefix from git diff paths."""
     text = path_text.strip()
     if text in {"/dev/null", "dev/null"}:
         return "/dev/null"
@@ -44,7 +41,6 @@ def strip_git_prefix(path_text: str) -> str:
 
 
 def parse_hunk_header(header: str) -> tuple[int, int, int, int]:
-    """Parse a unified diff hunk header like @@ -1,3 +1,4 @@."""
     match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", header)
     if match is None:
         raise ValueError(f"Invalid hunk header: {header}")
@@ -56,7 +52,6 @@ def parse_hunk_header(header: str) -> tuple[int, int, int, int]:
 
 
 def parse_unified_diff(diff_text: str) -> list[dict[str, Any]]:
-    """Parse a unified diff string into a list of file patch dicts."""
     lines = diff_text.splitlines()
     file_patches: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
@@ -148,29 +143,28 @@ def parse_unified_diff(diff_text: str) -> list[dict[str, Any]]:
 
 
 def apply_unified_diff_to_file(
+    policy_guard: Any,
     workspace_root: Path,
     file_patch: dict[str, Any],
     *,
-    policy_guard: Any,
     dry_run: bool = False,
 ) -> tuple[str | None, bool]:
-    """Apply a single file patch. Returns (relative_path, was_changed)."""
     old_path = str(file_patch.get("old_path") or "")
     new_path = str(file_patch.get("new_path") or "")
     hunks = list(file_patch.get("hunks") or [])
 
     if old_path == "/dev/null":
-        relative_path, absolute_path = normalize_patch_path(workspace_root, new_path, policy_guard)
+        relative_path, absolute_path = normalize_patch_path(policy_guard, workspace_root, new_path)
         original_lines: list[str] = []
         is_new_file = True
     elif new_path == "/dev/null":
-        relative_path, absolute_path = normalize_patch_path(workspace_root, old_path, policy_guard)
+        relative_path, absolute_path = normalize_patch_path(policy_guard, workspace_root, old_path)
         if not absolute_path.exists():
             raise ValueError(f"File does not exist: {relative_path}")
         original_lines = absolute_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
         is_new_file = False
     else:
-        relative_path, absolute_path = normalize_patch_path(workspace_root, new_path or old_path, policy_guard)
+        relative_path, absolute_path = normalize_patch_path(policy_guard, workspace_root, new_path or old_path)
         if not absolute_path.exists():
             raise ValueError(f"File does not exist: {relative_path}")
         original_lines = absolute_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
@@ -230,21 +224,17 @@ def apply_unified_diff_to_file(
 
 
 def validate_patch_request(
+    policy_guard: Any,
     workspace_root: Path,
     diff_text: str,
-    *,
-    policy_guard: Any,
 ) -> list[str]:
-    """Validate a patch by dry-running it. Returns list of changed paths."""
     applied_paths: list[str] = []
     parsed_patch = parse_unified_diff(diff_text)
     for file_patch in parsed_patch:
         if not file_patch.get("hunks"):
             candidate = file_patch.get("new_path") or file_patch.get("old_path") or "unknown file"
             raise ValueError(f"Invalid unified diff: no hunks for {candidate}")
-        relative_path, changed = apply_unified_diff_to_file(
-            workspace_root, file_patch, policy_guard=policy_guard, dry_run=True,
-        )
+        relative_path, changed = apply_unified_diff_to_file(policy_guard, workspace_root, file_patch, dry_run=True)
         if changed and relative_path and relative_path not in applied_paths:
             applied_paths.append(relative_path)
     if not applied_paths:
@@ -253,7 +243,6 @@ def validate_patch_request(
 
 
 def build_patch_summary(paths: list[str]) -> str:
-    """Build a human-readable summary of changed paths."""
     if not paths:
         return "No file changes detected."
     if len(paths) == 1:
@@ -264,12 +253,10 @@ def build_patch_summary(paths: list[str]) -> str:
 
 
 def build_patch_from_files(
+    policy_guard: Any,
     workspace_root: Path,
     files: Any,
-    *,
-    policy_guard: Any,
 ) -> tuple[str, list[str], int]:
-    """Build a unified diff from a list of file specs. Returns (diff_text, changed_paths, count)."""
     if not isinstance(files, list) or not files:
         raise ValueError("files must be a non-empty array")
 
@@ -278,9 +265,7 @@ def build_patch_from_files(
     for item in files:
         if not isinstance(item, dict):
             raise ValueError("files must contain objects")
-        relative_path, absolute_path = normalize_patch_path(
-            workspace_root, str(item.get("path") or ""), policy_guard,
-        )
+        relative_path, absolute_path = normalize_patch_path(policy_guard, workspace_root, str(item.get("path") or ""))
         delete_file = bool(item.get("delete", False))
         if delete_file:
             original_text = absolute_path.read_text(encoding="utf-8", errors="replace") if absolute_path.exists() else ""
@@ -316,12 +301,10 @@ def build_patch_from_files(
 
 
 def build_patch_request(
+    policy_guard: Any,
     params: dict[str, Any],
     workspace_root: Path,
-    *,
-    policy_guard: Any,
 ) -> dict[str, Any]:
-    """Build a patch request dict from user params. Returns patch metadata."""
     patch_text = params.get("patchText") or params.get("patch_text")
     files = params.get("files")
     if patch_text and files:
@@ -346,9 +329,7 @@ def build_patch_request(
             "patchMode": "patchText",
         }
 
-    diff_text, changed_paths, files_changed = build_patch_from_files(
-        workspace_root, files, policy_guard=policy_guard,
-    )
+    diff_text, changed_paths, files_changed = build_patch_from_files(policy_guard, workspace_root, files)
     return {
         "diffText": diff_text,
         "filesChanged": files_changed,
@@ -368,7 +349,6 @@ def build_patch_request_payload(
     patch_text: str | None = None,
     files: Any = None,
 ) -> dict[str, Any]:
-    """Build the approval request payload for a patch."""
     payload: dict[str, Any] = {
         "taskId": task_id,
         "workspaceRoot": str(workspace_root),

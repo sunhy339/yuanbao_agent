@@ -41,10 +41,11 @@ class JsonRpcServer:
     ``{"kind": "event", "payload": ...}``.
     """
 
-    def __init__(self, orchestrator: Any, store: Any, event_bus: Any) -> None:
+    def __init__(self, orchestrator: Any, store: Any, event_bus: Any, *, worktree_service: Any = None) -> None:
         self._orchestrator = orchestrator
         self._store = store
         self._event_bus = event_bus
+        self._worktree_service = worktree_service
         self._schedule = ScheduleService(store)
         self._collaboration = CollaborationService(store, event_bus)
         self._replay = ReplayService(store)
@@ -131,10 +132,13 @@ class JsonRpcServer:
             "hook.list": self._store.list_hooks,
             "hook.get": self._store.get_hook,
             "hook.listExecutions": self._store.list_hook_executions,
-            "worktree.create": self._store.create_worktree,
+            "worktree.create": self._worktree_create,
             "worktree.get": self._store.get_worktree,
             "worktree.getByTask": self._store.get_worktree_by_task,
             "worktree.list": self._store.list_worktrees,
+            "worktree.status": self._worktree_status,
+            "worktree.diff": self._worktree_diff,
+            "worktree.cleanup": self._worktree_cleanup,
             "worktree.update": self._store.update_worktree,
             "worktree.delete": self._store.delete_worktree,
             "scope.checkDispatch": self._store.check_dispatch_scope,
@@ -240,6 +244,29 @@ class JsonRpcServer:
             self._orchestrator._memory_manager.consolidate(session_id)
             self._orchestrator._memory_manager.forget_working(session_id)
         return self._store.delete_session(params)
+
+    # -- Worktree RPCs ---------------------------------------------------------
+
+    def _require_worktree_service(self) -> Any:
+        if self._worktree_service is None:
+            raise ValueError("WorktreeService not configured")
+        return self._worktree_service
+
+    def _worktree_create(self, params: dict[str, Any]) -> dict[str, Any]:
+        if self._worktree_service is not None:
+            return self._worktree_service.create_for_task(params)
+        return self._store.create_worktree(params)
+
+    def _worktree_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._require_worktree_service().get_status(params)
+
+    def _worktree_diff(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._require_worktree_service().get_diff(params)
+
+    def _worktree_cleanup(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self._require_worktree_service().cleanup(params)
+
+    # -- Command RPCs ----------------------------------------------------------
 
     def _cancel_command(self, params: dict[str, Any]) -> dict[str, Any]:
         command_id = params.get("commandId") or params.get("command_id")

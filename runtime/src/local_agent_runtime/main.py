@@ -4,6 +4,7 @@ import os
 import sys
 
 from .event_bus import EventBus
+from .git.worktree_adapter import GitWorktreeAdapter
 from .memory import MemoryManager, MemoryRetriever, MemoryStore
 from .orchestrator.service import Orchestrator
 from .policy.decision_advisor import DecisionAdvisor
@@ -13,6 +14,7 @@ from .router import MetaRouter
 from .rpc.server import JsonRpcServer
 from .services import CollaborationService, SubagentService
 from .services.hook_service import HookService
+from .services.worktree_service import WorktreeService
 from .store.sqlite_store import SQLiteStore
 from .tools import build_builtin_tools
 from .tools.registry import ToolRegistry
@@ -61,7 +63,17 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
         hook_service=HookService(store, event_bus),
         decision_advisor=decision_advisor,
     )
-    return JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    # WorktreeService requires a git repo root; only create when env var is set
+    worktree_service = None
+    repo_root = os.environ.get("LOCAL_AGENT_REPO_ROOT")
+    if repo_root:
+        worktree_service = WorktreeService(store, GitWorktreeAdapter(repo_root))
+    return JsonRpcServer(
+        orchestrator=orchestrator,
+        store=store,
+        event_bus=event_bus,
+        worktree_service=worktree_service,
+    )
 
 
 def main() -> int:

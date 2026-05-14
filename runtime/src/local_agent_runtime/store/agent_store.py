@@ -276,6 +276,7 @@ class AgentStoreMixin:
         prompt_layers: list[dict[str, Any]] | None = None,
         tool_policy_decision: dict[str, Any] | None = None,
         role_snapshot: dict[str, Any] | None = None,
+        active_worktree: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         snap_id = self.new_id("cs")
         now = self.now()
@@ -288,8 +289,8 @@ class AgentStoreMixin:
                  memory_ids_json, supplement_inbox_ids_json,
                  tool_count, skill_id, token_estimate, created_at,
                  max_context_tokens, prompt_layers_json,
-                 tool_policy_decision_json, role_snapshot_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 tool_policy_decision_json, role_snapshot_json, active_worktree_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 snap_id, session_id, task_id, provider_turn_id,
@@ -305,6 +306,7 @@ class AgentStoreMixin:
                 json.dumps(prompt_layers or [], ensure_ascii=False),
                 json.dumps(tool_policy_decision or {}, ensure_ascii=False, sort_keys=True),
                 json.dumps(role_snapshot or {}, ensure_ascii=False, sort_keys=True),
+                json.dumps(active_worktree or {}, ensure_ascii=False, sort_keys=True),
             ),
         )
         self._conn.commit()
@@ -340,6 +342,7 @@ class AgentStoreMixin:
             "promptLayers": json.loads(row.get("prompt_layers_json") or "[]"),
             "toolPolicyDecision": json.loads(row.get("tool_policy_decision_json") or "{}"),
             "roleSnapshot": json.loads(row.get("role_snapshot_json") or "{}"),
+            "activeWorktree": json.loads(row.get("active_worktree_json") or "{}"),
             "createdAt": row["created_at"],
         }
 

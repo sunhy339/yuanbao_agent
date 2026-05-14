@@ -244,6 +244,10 @@ class ReactRunnerMixin:
             self._fire_hooks("before_provider_turn", session_id, task, extra_context={"turnIndex": steps, "providerTurnId": provider_turn["id"]})
             # --- ContextSnapshot: capture what the model will see ---
             snapshot_meta = (context.get("_build_result") or context).get("snapshot_metadata", {}) or {}
+            active_worktree = context.get("active_worktree")
+            if not isinstance(active_worktree, dict):
+                routing_for_snapshot = context.get("routing") if isinstance(context.get("routing"), dict) else {}
+                active_worktree = routing_for_snapshot.get("activeWorktree") if isinstance(routing_for_snapshot, dict) else None
             snapshot = self._store.create_context_snapshot(
                 session_id=session_id,
                 task_id=task["id"],
@@ -261,6 +265,7 @@ class ReactRunnerMixin:
                 prompt_layers=snapshot_meta.get("prompt_layers"),
                 tool_policy_decision=tool_policy_decision.to_dict(),
                 role_snapshot=tool_policy_decision.role_snapshot,
+                active_worktree=active_worktree if isinstance(active_worktree, dict) else None,
             )
             self._fire_hooks("on_context_snapshot", session_id, task, extra_context={"snapshotId": snapshot.get("id"), "tokenEstimate": _msg_token_total})
             try:

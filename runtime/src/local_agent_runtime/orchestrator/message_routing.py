@@ -29,6 +29,47 @@ _WRITE_WORKTREE_SCENARIOS = {
 class MessageRoutingMixin:
     """Mixin providing message routing and background dispatch."""
 
+    def _routing_dict_from_decision(self, routing: Any, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {
+            "scenario": routing.scenario.value,
+            "strategy": routing.strategy.value,
+            "confidence": routing.confidence,
+            "max_steps": routing.max_steps,
+            "enable_reflection": routing.enable_reflection,
+            "enable_planning": routing.enable_planning,
+            "reasoning": routing.reasoning,
+            "skill_id": routing.skill_id,
+            "profile_snapshot": self._runtime_profile_snapshot(context),
+            "roleSnapshot": {
+                "runtimeRole": "root",
+                "agentType": "root",
+                "profileId": None,
+                "profileVersion": 1,
+                "agentProfile": {
+                    "agentType": "root",
+                    "baseRuntimeRole": "root",
+                    "toolPolicy": "routing",
+                    "capabilities": ["orchestrate", "delegate", "synthesize"],
+                    "scopes": [],
+                    "riskLevel": "medium",
+                    "source": "runtime_default",
+                    "version": 1,
+                },
+                "toolPolicy": "routing",
+                "scopes": [],
+                "riskLevel": "medium",
+                "budget": {},
+            },
+        }
+
+    def _persist_task_routing(
+        self,
+        task: dict[str, Any],
+        routing: dict[str, Any],
+    ) -> dict[str, Any]:
+        updated = self._store.update_task(task_id=task["id"], routing=routing)
+        return {**task, "routing": updated.get("routing") or routing}
+
     def _maybe_bind_task_worktree(
         self,
         *,
@@ -199,12 +240,15 @@ class MessageRoutingMixin:
         if params.get("mode") == "queued":
             active_task = self._find_open_session_task(session["id"])
             if active_task is not None:
+                routing = self._route_goal(goal)
+                routing_dict = self._routing_dict_from_decision(routing)
                 queued_task = self._store.create_task(
                     session_id=session["id"],
                     task_type="edit",
                     goal=goal,
                     plan=[],
                     status="queued",
+                    routing=routing_dict,
                 )
                 user_msg = self._store.create_message(
                     session_id=session["id"],
@@ -215,9 +259,23 @@ class MessageRoutingMixin:
                     kind="normal",
                     status="completed",
                 )
+                worktree = self._maybe_bind_task_worktree(
+                    session=session,
+                    task=queued_task,
+                    routing=routing_dict,
+                )
+                if worktree is not None:
+                    routing_dict["activeWorktree"] = worktree
+                    queued_task = self._persist_task_routing(queued_task, routing_dict)
                 self._publish(session["id"], queued_task, "message.created", {"message": user_msg})
                 self._publish(session["id"], queued_task, "task.created", {"status": "queued", "goal": goal})
                 self._publish(session["id"], queued_task, "task.queued", {"status": "queued", "goal": goal})
+                self._publish(
+                    session["id"],
+                    queued_task,
+                    "task.routing.decided",
+                    {**routing_dict, "latency_ms": 0},
+                )
                 return {"task": queued_task, "userMessage": user_msg}
 
         # --- Phase 0: MetaRouter scenario classification ---
@@ -230,37 +288,7 @@ class MessageRoutingMixin:
             self._tracer.end_span(routing_span.span_id, status="error")
             raise
         _route_latency_ms = int((_time.monotonic() - _route_t0) * 1000)
-        routing_dict = {
-            "scenario": routing.scenario.value,
-            "strategy": routing.strategy.value,
-            "confidence": routing.confidence,
-            "max_steps": routing.max_steps,
-            "enable_reflection": routing.enable_reflection,
-            "enable_planning": routing.enable_planning,
-            "reasoning": routing.reasoning,
-            "skill_id": routing.skill_id,
-        }
-        routing_dict["profile_snapshot"] = self._runtime_profile_snapshot()
-        routing_dict["roleSnapshot"] = {
-            "runtimeRole": "root",
-            "agentType": "root",
-            "profileId": None,
-            "profileVersion": 1,
-            "agentProfile": {
-                "agentType": "root",
-                "baseRuntimeRole": "root",
-                "toolPolicy": "routing",
-                "capabilities": ["orchestrate", "delegate", "synthesize"],
-                "scopes": [],
-                "riskLevel": "medium",
-                "source": "runtime_default",
-                "version": 1,
-            },
-            "toolPolicy": "routing",
-            "scopes": [],
-            "riskLevel": "medium",
-            "budget": {},
-        }
+        routing_dict = self._routing_dict_from_decision(routing)
         self._tracer.end_span(
             routing_span.span_id,
             status="ok",
@@ -316,6 +344,7 @@ class MessageRoutingMixin:
             )
             if worktree is not None:
                 routing_dict["activeWorktree"] = worktree
+                runtime_task = self._persist_task_routing(runtime_task, routing_dict)
             self._record_routing_proposal(
                 session_id=session["id"],
                 task_id=runtime_task["id"],
@@ -415,6 +444,7 @@ class MessageRoutingMixin:
         )
         if worktree is not None:
             routing_dict["activeWorktree"] = worktree
+            runtime_task = self._persist_task_routing(runtime_task, routing_dict)
             context["routing"] = routing_dict
             context = self._context_with_worktree_binding(context, worktree)
 

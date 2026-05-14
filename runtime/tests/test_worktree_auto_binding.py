@@ -106,6 +106,7 @@ def test_code_edit_task_auto_binds_worktree_and_routes_workspace_tools(tmp_path:
     worktree = runtime.store.get_worktree_by_task({"taskId": task["id"]})["worktree"]
 
     assert worktree is not None
+    assert task["routing"]["activeWorktree"]["id"] == worktree["id"]
     assert runtime.worktree_service.created[0]["taskId"] == task["id"]
     assert worktree["status"] == "active"
     assert seen_write_args
@@ -115,6 +116,47 @@ def test_code_edit_task_auto_binds_worktree_and_routes_workspace_tools(tmp_path:
 
     bound_events = [event for event in runtime.events if event["type"] == "task.worktree.bound"]
     assert bound_events
+
+    persisted_task = runtime.store.get_task({"taskId": task["id"]})["task"]
+    assert persisted_task["routing"]["activeWorktree"]["worktreePath"] == worktree["worktreePath"]
+
+    snapshots = runtime.store.list_context_snapshots(task["id"])
+    assert snapshots
+    snapshot = runtime.store._serialize_context_snapshot(snapshots[0])
+    assert snapshot["activeWorktree"]["path"] == worktree["worktreePath"]
+    assert snapshot["activeWorktree"]["id"] == worktree["id"]
+
+
+def test_queued_code_edit_persists_active_worktree_before_execution(tmp_path: Any) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]), {})
+
+    workspace = _rpc(runtime, "workspace.open", {"path": str(workspace_root)})["result"]["workspace"]
+    session = _rpc(runtime, "session.create", {"workspaceId": workspace["id"], "title": "Queued worktree"})["result"]["session"]
+    runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="already running",
+        plan=[],
+        status="running",
+    )
+
+    result = _rpc(
+        runtime,
+        "message.send",
+        {"sessionId": session["id"], "content": "fix code later", "mode": "queued"},
+    )
+    queued_task = result["result"]["task"]
+    worktree = runtime.store.get_worktree_by_task({"taskId": queued_task["id"]})["worktree"]
+
+    assert queued_task["status"] == "queued"
+    assert worktree is not None
+    assert queued_task["routing"]["activeWorktree"]["id"] == worktree["id"]
+
+    persisted_task = runtime.store.get_task({"taskId": queued_task["id"]})["task"]
+    assert persisted_task["routing"]["scenario"] == "code_edit"
+    assert persisted_task["routing"]["activeWorktree"]["worktreePath"] == worktree["worktreePath"]
 
 
 def test_worktree_segment_sanitizer_does_not_escape_path_root(tmp_path: Any) -> None:

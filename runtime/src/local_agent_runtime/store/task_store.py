@@ -242,6 +242,7 @@ class TaskStoreMixin:
         tests_run: list[dict[str, Any]] | None = None,
         risks: list[dict[str, Any]] | None = None,
         structured_result: dict[str, Any] | None = None,
+        routing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         assignments: list[str] = ["updated_at = ?"]
         values: list[Any] = [self.now()]
@@ -296,6 +297,9 @@ class TaskStoreMixin:
         if structured_result is not None:
             assignments.append("structured_result_json = ?")
             values.append(json.dumps(structured_result, ensure_ascii=False))
+        if routing is not None:
+            assignments.append("routing_json = ?")
+            values.append(json.dumps(routing, ensure_ascii=False))
 
         values.append(task_id)
         self._conn.execute(

@@ -1218,10 +1218,12 @@ flowchart TD
 | 命令 | 结果 |
 | --- | --- |
 | `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worktree_auto_binding.py runtime/tests/test_worktree_isolation.py runtime/tests/test_orchestrator_react_loop.py::test_react_loop_executes_tool_call_and_returns_result_to_provider runtime/tests/test_meta_router.py runtime/tests/test_decision_advisor_routing.py` | 69 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worktree_auto_binding.py runtime/tests/test_worktree_isolation.py runtime/tests/test_meta_router.py runtime/tests/test_decision_advisor_routing.py runtime/tests/test_provider_turns.py::TestContextSnapshotCRUD runtime/tests/test_tool_policy_resolver.py` | 79 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_runtime_flows.py::test_background_task_preserves_routing_fields runtime/tests/test_runtime_flows.py::test_routing_emits_decided_event runtime/tests/test_runtime_flows.py::test_routing_creates_trace_span runtime/tests/test_worktree_auto_binding.py` | 6 passed |
 
 剩余 worktree 后续：
 
-1. 队列任务、恢复任务、跨进程后台任务需要把 `activeWorktree` 持久化进 task routing/snapshot，避免只依赖当前内存参数。
+1. ~~队列任务、恢复任务、跨进程后台任务需要把 `activeWorktree` 持久化进 task routing/snapshot，避免只依赖当前内存参数。~~ **Done**：`activeWorktree` 已写回 task routing，queued 写入任务会在排队阶段完成 worktree 绑定，context snapshot 记录 `activeWorktree` 以支持 provider turn 回放。
 2. UI 需要展示 task worktree path、branch、status、diff，并提供 merge/cleanup 入口。
 3. merge 前需要接入 diff、验证命令、reviewer、approval gate，dirty worktree 的 cancel/cleanup 不应自动删除。
 4. 子任务/多 agent 是否共享 root worktree、还是各自 worktree，需要结合任务依赖和 merge 策略做第二阶段设计。

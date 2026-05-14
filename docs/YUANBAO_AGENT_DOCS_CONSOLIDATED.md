@@ -994,14 +994,14 @@ main workspace
 
 `docs/code-refactoring-design-plan.md`
 
-当前大文件快照（2026-05-13 更新）：
+当前大文件快照（2026-05-14 更新）：
 
 | 文件 | 当前行数约 | 状态 |
 | --- | ---: | --- |
-| `app/src/ui/workbench/workspaces/session/session.css` | 3151 | 超过 2500，需优先拆分样式域。 |
-| `app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx` | 2824 | 超过 2500，需拆 message list、task timeline、context panel、approval/composer 等。 |
-| `app/src/lib/runtimeClient.ts` | 1886 | 超过 1500，需拆 RPC client facade 与 domain clients。 |
-| `app/src/ui/workbench/workspaces/settings/SettingsWorkspace.tsx` | 1698 | 超过 1500，需拆 provider/autonomy/soul/permissions/skills/MCP 子面板。 |
+| `app/src/ui/workbench/workspaces/session/session.css` | 10 | ~~3151~~ → 已拆为 9 个子 CSS 文件，入口仅保留 `@import`。 |
+| `app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx` | 359 | ~~2824~~ → 已拆为 types + hooks + 子组件，主文件仅含布局和路由。 |
+| `app/src/lib/runtimeClient.ts` | 620 | ~~1886~~ → 已移除全部 mock 基础设施，仅保留 Tauri IPC 真实路径。 |
+| `app/src/ui/workbench/workspaces/settings/SettingsWorkspace.tsx` | 312 | ~~1698~~ → 已拆为 settingsTypes + providerUtils + 10 个子面板。 |
 | `runtime/src/local_agent_runtime/context/builder.py` | 955 | 已降到可控范围。 |
 | `runtime/src/local_agent_runtime/orchestrator/react_runner.py` | 722 | 已降到可控范围。 |
 | `app/src/App.tsx` | 652 | 已从 5493 行拆到约 650 行，大文件问题已解决。 |
@@ -1009,9 +1009,10 @@ main workspace
 | `runtime/src/local_agent_runtime/store/sqlite_store.py` | 451 | 已从 5671 行拆到约 450 行，作为兼容 facade。 |
 | `runtime/src/local_agent_runtime/tools/registry.py` | 201 | 已降到可控范围。 |
 
-2026-05-13 当前状态：后端 `service.py`（346行）、`sqlite_store.py`（451行）、
-前端 `App.tsx`（652行）均已大幅拆分完成。仍需继续拆分的前端大文件：
-`session.css`（3151行）、`SessionWorkspace.tsx`（2824行）、`runtimeClient.ts`（1886行）、`SettingsWorkspace.tsx`（1698行）。
+2026-05-14 当前状态：后端 `service.py`（346行）、`sqlite_store.py`（451行）、
+前端 `App.tsx`（652行）、`session.css`（10行）、`SessionWorkspace.tsx`（359行）、
+`runtimeClient.ts`（620行）、`SettingsWorkspace.tsx`（312行）均已大幅拆分完成。
+前端四大文件治理已全部完成，不再有超过阈值的文件。
 
 重构目标不是“变短”本身，而是形成稳定边界：
 
@@ -1028,9 +1029,9 @@ main workspace
 | R1 | P0 | 拆 `orchestrator/service.py` | 拆出 `task_lifecycle.py`、`react_runner.py`、`approval_flow.py`、`memory_flow.py`、`resume_flow.py`、`proposal_flow.py`。 |
 | R2 | P0 | 拆 `sqlite_store.py` | 按 repository 拆成 `session_store.py`、`task_store.py`、`event_store.py`、`config_store.py`、`proposal_store.py`、`memory_store_adapter.py`，保留门面兼容旧 RPC。 |
 | R3 | ~~Done~~ | ~~拆 `App.tsx`~~ | ~~已完成：5493→652 行，hooks + WorkspaceRouter 已拆出。~~ |
-| R4 | P1 | 拆 `SessionWorkspace.tsx` | 拆成 message list、task timeline、context panel、approval panel、composer、runtime status。 |
+| R4 | ~~Done~~ | ~~拆 `SessionWorkspace.tsx`~~ | ~~已完成：2824→359 行，types + hooks + 子组件已拆出。~~ |
 | R5 | P1 | 拆工具系统 | tool schema、tool handler、policy metadata 分文件；工具测试按工具族组织。 |
-| R6 | P2 | 拆 settings | Provider、Autonomy、AgentSoul、MCP、IM/Webhook 各自独立 section + schema validator。 |
+| R6 | ~~Done~~ | ~~拆 settings~~ | ~~已完成：1698→312 行，settingsTypes + providerUtils + 10 个子面板已拆出。~~ |
 
 重构顺序图：
 
@@ -1084,16 +1085,16 @@ flowchart TD
 | P0 | Dynamic Agent Profile 与固定 runtime role 的分层还未完整落库和审计。 | 当前已允许未知 `agentType` 映射到 `worker`，但 profile 的 capabilities、scope、prompt layers、risk、tool policy 还没有形成统一 snapshot。 | 固定 runtime role 作为权限桶；动态 `agentType/profile` 作为身份与能力描述；任务创建时保存 role snapshot，并由 ToolPolicyResolver/PermissionEngine 执行限权。 |
 | P0 | ~~Permission Policy V2 Lite~~ — **已闭环** (`5cca5e8`)。 | PermissionEngine 已有 3 presets、config normalizer、5 tool integrations、tool.blocked pipeline、56 专项测试。 | 后续 P1+ 可扩展到 hook side effects、Computer Use、temporary grants。 |
 | P1 | Worktree 尚未完成写任务自动隔离。 | service/RPC/hooks 已有，但写入型任务自动绑定 worktree、工具默认在 worktree cwd 执行、UI 展示 path/diff/status 还未完全闭环。 | 继续推进 task-worktree binding、write tool cwd routing、task report/UI 展示。 |
-| P1 | 大文件仍需继续拆。 | `SessionWorkspace.tsx`、`session.css`、`runtimeClient.ts`、`SettingsWorkspace.tsx` 仍超过长期维护目标。 | 建立 1500/2500 行预算 gate，继续拆 Session、runtime client、settings。 |
+| P1 | ~~大文件治理~~ — **已闭环**。 | `SessionWorkspace.tsx`(359)、`session.css`(10)、`runtimeClient.ts`(620)、`SettingsWorkspace.tsx`(312) 均已拆分完成。 | 前端大文件治理全部完成，后续关注新生成的大文件。 |
 
 ### 当前大文件快照
 
 | 文件 | 当前行数约 | 判断 |
 | --- | ---: | --- |
-| `app/src/ui/workbench/workspaces/session/session.css` | 2714 | 超过 2500，需优先拆分样式域。 |
-| `app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx` | 2611 | 超过 2500，需拆 message list、task timeline、context panel、approval/composer 等。 |
-| `app/src/lib/runtimeClient.ts` | 1707 | 超过 1500，需拆 RPC client facade 与 domain clients。 |
-| `app/src/ui/workbench/workspaces/settings/SettingsWorkspace.tsx` | 1619 | 超过 1500，需拆 provider/autonomy/soul/permissions/skills/MCP 子面板。 |
+| `app/src/ui/workbench/workspaces/session/session.css` | 10 | ~~2714~~ → 已拆为 9 个子 CSS，仅保留 `@import`。 |
+| `app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx` | 359 | ~~2611~~ → 已拆为 types + hooks + 子组件。 |
+| `app/src/lib/runtimeClient.ts` | 620 | ~~1707~~ → 已移除全部 mock，仅保留 Tauri IPC。 |
+| `app/src/ui/workbench/workspaces/settings/SettingsWorkspace.tsx` | 312 | ~~1619~~ → 已拆为 12 个子文件。 |
 | `app/src/App.tsx` | 约 500 | 已明显改善，不再是当前最大文件。 |
 
 ### 下一步建议顺序
@@ -1104,7 +1105,7 @@ flowchart TD
 4. P0 实现 ToolPolicyResolver 与 Dynamic Agent Profile 分层：固定 runtime role 管权限桶，动态 `agentType/profile` 管身份、能力、scope 和 prompt，并记录 provider turn/role snapshot 审计快照。
 5. P0/P1 对齐 Provider API format，避免设置页让用户选择 runtime 尚不能执行的格式。
 6. P1 推进 task-worktree binding，让写入型任务默认在隔离 worktree 中执行。
-7. P1 继续大文件治理，优先 `SessionWorkspace.tsx`、`session.css`、`runtimeClient.ts`、`SettingsWorkspace.tsx`。
+7. ~~P1 继续大文件治理~~ — **Done**。`SessionWorkspace.tsx`(359)、`session.css`(10)、`runtimeClient.ts`(620)、`SettingsWorkspace.tsx`(312) 均已拆分完成。
 
 ## 19. 后续文档维护建议
 
@@ -1191,7 +1192,7 @@ flowchart TD
 | 优先级 | 任务 | 当前状态 | 下一步 |
 | --- | --- | --- | --- |
 | P0/P1 | Completion / Stop 判断强化 | 部分完成。已有 maxSteps、final、工具结果和 completion advisor；但验收硬条件还不够系统。 | 将 acceptance criteria、changed files、测试结果、工具执行结果纳入完成判定；没有 final 时生成受控总结而不是继续空转。 |
-| P1 | Worktree 自动绑定写入型任务 | 基础 service/RPC/hooks 已有，尚未成为默认写入路径。 | 写入型任务自动创建/绑定 worktree；write tool 和 command 默认 cwd 指向 task worktree；合并前必须 diff + approval。 |
+| P1 | Worktree 后续闭环 | 自动绑定写入型任务、工具 cwd 路由、桌面端 path/status/diff 展示、formal merge approval gate 已完成。 | 下一步接入 merge 前验证命令、reviewer/用户批准摘要、dirty cancel/cleanup 策略细化，以及多 agent 共享/独立 worktree 设计。 |
 | P1 | Hooks 生命周期补齐 | 基础 hook 能力已有，但生命周期触发点和权限边界还需统一。 | 补齐 before/after task、before/after tool、before/after provider turn、pause/cancel/resume、compaction、worktree merge 等事件，并纳入 PermissionEngine。 |
 | P1 | ToolPolicyResolver 第二阶段 | P0 最小闭环已完成。 | 将 Skill policy、MCP server policy、PermissionEngine、child allowlist 合并进统一 resolver；提供 provider turn 回放解释。 |
 | P1 | Dynamic Agent Profile 设置页/RPC | runtime snapshot 已有，profile CRUD 未完成。 | 增加 profile list/create/update/delete/validate/previewTools RPC；设置页接入 profile 管理和工具预览。 |
@@ -1212,6 +1213,9 @@ flowchart TD
 | runtime 默认配置 | Done | `DEFAULT_CONFIG.worktree` 新增 `autoBindWriteTasks`、`baseRef`、`branchPrefix`、`pathRoot`、`cleanupPolicy`、`mergePolicy`，默认开启写入型任务隔离。 |
 | WorktreeService 状态 | Done | `create_for_task` 创建父目录，git worktree 创建成功后将 store 记录从 `creating` 推进到 `active`。 |
 | 路由关键词修正 | Done | 英文 `edit/change/modify/update/implement/add/fix/write` 已纳入 `CODE_EDIT`，避免常见英文写入请求掉到 `free_form` 而绕过 worktree 绑定。 |
+| 桌面端 Worktree 可视化 | Done | `TaskRecord.routing.activeWorktree` 已进入前端事件折叠；会话页展示 task worktree path、branch、status、diff，并通过 Tauri/RPC 接入 `worktree.status` / `worktree.diff` / `worktree.requestMergeApproval` / `worktree.merge` / `worktree.cleanup`。 |
+| merge/cleanup 第一层保护 | Done | `worktree.merge` 默认要求正式 approval record，先拒绝 dirty worktree，冲突时不标记 merged；cleanup 默认只允许 clean worktree。 |
+| formal merge approval gate | Done | `worktree.requestMergeApproval` 会基于 clean status + diff 创建/复用 `worktree_merge` approval；前端只负责请求审批，`approval.submit` 批准后由 runtime 执行 merge，并发布 `task.worktree.merged` / `task.worktree.merge_failed`。 |
 
 验证：
 
@@ -1220,10 +1224,19 @@ flowchart TD
 | `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worktree_auto_binding.py runtime/tests/test_worktree_isolation.py runtime/tests/test_orchestrator_react_loop.py::test_react_loop_executes_tool_call_and_returns_result_to_provider runtime/tests/test_meta_router.py runtime/tests/test_decision_advisor_routing.py` | 69 passed |
 | `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worktree_auto_binding.py runtime/tests/test_worktree_isolation.py runtime/tests/test_meta_router.py runtime/tests/test_decision_advisor_routing.py runtime/tests/test_provider_turns.py::TestContextSnapshotCRUD runtime/tests/test_tool_policy_resolver.py` | 79 passed |
 | `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_runtime_flows.py::test_background_task_preserves_routing_fields runtime/tests/test_runtime_flows.py::test_routing_emits_decided_event runtime/tests/test_runtime_flows.py::test_routing_creates_trace_span runtime/tests/test_worktree_auto_binding.py` | 6 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worktree_isolation.py runtime/tests/test_worktree_auto_binding.py` | 31 passed |
+| `npm.cmd test -- SessionWorkspace.test.tsx eventRecordViews.test.ts` in `app/` | 41 passed |
+| `npm.cmd run typecheck` in `app/` | passed |
+| `cargo check` in `app/src-tauri` | passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worktree_isolation.py runtime/tests/test_worktree_auto_binding.py` | 34 passed |
+| `npm.cmd test -- SessionWorkspace.test.tsx eventRecordViews.test.ts` in `app/` | 43 passed |
+| `npm.cmd run typecheck` in `app/` | passed |
+| `cargo check` in `app/src-tauri` | passed |
 
 剩余 worktree 后续：
 
 1. ~~队列任务、恢复任务、跨进程后台任务需要把 `activeWorktree` 持久化进 task routing/snapshot，避免只依赖当前内存参数。~~ **Done**：`activeWorktree` 已写回 task routing，queued 写入任务会在排队阶段完成 worktree 绑定，context snapshot 记录 `activeWorktree` 以支持 provider turn 回放。
-2. UI 需要展示 task worktree path、branch、status、diff，并提供 merge/cleanup 入口。
-3. merge 前需要接入 diff、验证命令、reviewer、approval gate，dirty worktree 的 cancel/cleanup 不应自动删除。
-4. 子任务/多 agent 是否共享 root worktree、还是各自 worktree，需要结合任务依赖和 merge 策略做第二阶段设计。
+2. ~~UI 需要展示 task worktree path、branch、status、diff，并提供 merge/cleanup 入口。~~ **Done**：会话页已有 Worktree 面板，事件折叠会保留 `activeWorktree`，并接入 status/diff/merge/cleanup 调用。
+3. ~~merge 前需要正式 approval record。~~ **Done**：第一层已从前端二次确认升级为 `worktree_merge` approval record；审批通过后 runtime 才执行 merge，失败会返回结构化错误并发布 merge_failed 事件。
+4. merge 前还需要继续增强：接入验证命令、reviewer、approval gate 的 review 结果摘要，以及 diff 截断/完整 diff 展示策略。
+5. 子任务/多 agent 是否共享 root worktree、还是各自 worktree，需要结合任务依赖和 merge 策略做第二阶段设计。

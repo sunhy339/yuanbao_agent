@@ -274,6 +274,8 @@ class AgentStoreMixin:
         token_estimate: int | None = None,
         max_context_tokens: int | None = None,
         prompt_layers: list[dict[str, Any]] | None = None,
+        tool_policy_decision: dict[str, Any] | None = None,
+        role_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         snap_id = self.new_id("cs")
         now = self.now()
@@ -285,8 +287,9 @@ class AgentStoreMixin:
                  recent_message_ids_json, summarized_message_ids_json,
                  memory_ids_json, supplement_inbox_ids_json,
                  tool_count, skill_id, token_estimate, created_at,
-                 max_context_tokens, prompt_layers_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 max_context_tokens, prompt_layers_json,
+                 tool_policy_decision_json, role_snapshot_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 snap_id, session_id, task_id, provider_turn_id,
@@ -300,6 +303,8 @@ class AgentStoreMixin:
                 tool_count, skill_id, token_estimate, now,
                 max_context_tokens,
                 json.dumps(prompt_layers or [], ensure_ascii=False),
+                json.dumps(tool_policy_decision or {}, ensure_ascii=False, sort_keys=True),
+                json.dumps(role_snapshot or {}, ensure_ascii=False, sort_keys=True),
             ),
         )
         self._conn.commit()
@@ -332,6 +337,9 @@ class AgentStoreMixin:
             "memoryIds": json.loads(row.get("memory_ids_json") or "[]"),
             "toolCount": row.get("tool_count"),
             "skillId": row.get("skill_id"),
+            "promptLayers": json.loads(row.get("prompt_layers_json") or "[]"),
+            "toolPolicyDecision": json.loads(row.get("tool_policy_decision_json") or "{}"),
+            "roleSnapshot": json.loads(row.get("role_snapshot_json") or "{}"),
             "createdAt": row["created_at"],
         }
 

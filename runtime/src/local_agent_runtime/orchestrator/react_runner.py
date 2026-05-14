@@ -11,6 +11,7 @@ from copy import deepcopy
 from typing import Any
 
 from ..context.token_budget import estimate_tokens
+from ..policy.tool_policy_resolver import ToolPolicyDecision, ToolPolicyResolver
 from ..services.worker_budget import WorkerBudget, WorkerBudgetExceededError
 
 logger = logging.getLogger(__name__)
@@ -212,12 +213,21 @@ class ReactRunnerMixin:
 
             if cached_provider_tools is None:
                 cached_provider_tools = self._provider_tools(context)
+            tool_policy_decision = self._tool_policy_decision_for_turn(
+                task=task,
+                context=context,
+                tool_results=tool_results,
+                cached_provider_tools=cached_provider_tools,
+            )
+            provider_tools = tool_policy_decision.allowed_tools
             provider_context = {
                 **context,
                 "messages": messages,
-                "tools": cached_provider_tools,
-                "openai_tools": context.get("openai_tools") or cached_provider_tools,
+                "tools": provider_tools,
+                "openai_tools": provider_tools,
                 "tool_results": tool_results,
+                "tool_policy_decision": tool_policy_decision.to_dict(),
+                "role_snapshot": tool_policy_decision.role_snapshot,
                 "step": steps + 1,
                 "max_steps": max_steps,
             }
@@ -228,7 +238,7 @@ class ReactRunnerMixin:
                 turn_index=steps,
                 model=context.get("config", {}).get("provider", {}).get("model"),
                 request_message_count=len(messages),
-                request_tool_count=len(cached_provider_tools),
+                request_tool_count=len(provider_tools),
                 request_token_estimate=_msg_token_total,
             )
             self._fire_hooks("before_provider_turn", session_id, task, extra_context={"turnIndex": steps, "providerTurnId": provider_turn["id"]})
@@ -244,11 +254,13 @@ class ReactRunnerMixin:
                 recent_message_ids=[m.get("id") for m in messages if m.get("id")],
                 memory_ids=_step_memory_ids or None,
                 supplement_inbox_ids=_step_supplement_ids or None,
-                tool_count=len(cached_provider_tools),
+                tool_count=len(provider_tools),
                 skill_id=context.get("routing", {}).get("skill_id") or snapshot_meta.get("skill_id"),
                 token_estimate=_msg_token_total,
                 max_context_tokens=context.get("budgetStats", {}).get("maxContextTokens"),
                 prompt_layers=snapshot_meta.get("prompt_layers"),
+                tool_policy_decision=tool_policy_decision.to_dict(),
+                role_snapshot=tool_policy_decision.role_snapshot,
             )
             self._fire_hooks("on_context_snapshot", session_id, task, extra_context={"snapshotId": snapshot.get("id"), "tokenEstimate": _msg_token_total})
             try:
@@ -478,6 +490,57 @@ class ReactRunnerMixin:
                 tools_by_name.pop("task", None)
         return list(tools_by_name.values())
 
+    def _provider_tools_for_turn(
+        self,
+        *,
+        context: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+        cached_provider_tools: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        decision = self._tool_policy_decision_for_turn(
+            task={"role": context.get("runtimeRole") or "root"},
+            context=context,
+            tool_results=tool_results,
+            cached_provider_tools=cached_provider_tools,
+        )
+        return decision.allowed_tools
+
+    def _tool_policy_decision_for_turn(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+        cached_provider_tools: list[dict[str, Any]],
+    ) -> ToolPolicyDecision:
+        resolver = getattr(self, "_tool_policy_resolver", None)
+        if resolver is None:
+            resolver = ToolPolicyResolver()
+            self._tool_policy_resolver = resolver
+        return resolver.resolve(
+            task=task,
+            context=context,
+            tool_results=tool_results,
+            registered_tools=cached_provider_tools,
+        )
+
+    def _should_synthesize_after_task_results(
+        self,
+        context: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+    ) -> bool:
+        if not tool_results:
+            return False
+        if context.get("_allow_tools_after_task_results") is True:
+            return False
+        last_result = tool_results[-1]
+        if last_result.get("name") != "task":
+            return False
+        result = last_result.get("result")
+        if isinstance(result, dict) and result.get("status") == "waiting_approval":
+            return False
+        return True
+
     def _max_task_steps(self, context: dict[str, Any]) -> int:
         autonomy_steps = self._autonomy_profile_int(context, "maxSteps")
         if autonomy_steps is not None:
@@ -520,11 +583,17 @@ class ReactRunnerMixin:
         advisor = getattr(self, "_decision_advisor", None)
         if advisor is None:
             return None
+        if not self._should_consult_context_policy_advisor(task, current_threshold, context):
+            return None
         try:
-            result = advisor.advise("context_policy", {
+            input_context: dict[str, Any] = {
                 "goal": goal[:2000],
                 "token_budget": current_threshold,
-            })
+            }
+            config = context.get("config") if isinstance(context, dict) else None
+            if isinstance(config, dict):
+                input_context["config"] = config
+            result = advisor.advise("context_policy", input_context)
             # Emit trace event for the decision
             if hasattr(self._store, "append_trace_event"):
                 self._store.append_trace_event(
@@ -550,6 +619,48 @@ class ReactRunnerMixin:
         except Exception as exc:
             logger.warning("Context policy advisor call failed for task %s: %s", task.get("id"), exc)
             return None
+
+    def _should_consult_context_policy_advisor(
+        self,
+        task: dict[str, Any],
+        current_threshold: int,
+        context: dict[str, Any],
+    ) -> bool:
+        if context.get("_skip_context_policy_advisor") is True:
+            return False
+        if context.get("_child_worker") is True or task.get("role") != "root":
+            return bool(self._advisor_config(context).get("enableChildContextPolicyAdvisor"))
+        budget_stats = context.get("budgetStats") if isinstance(context, dict) else None
+        estimated_tokens = budget_stats.get("estimatedTokens") if isinstance(budget_stats, dict) else None
+        try:
+            estimated = int(estimated_tokens)
+            threshold = max(1, int(current_threshold))
+        except (TypeError, ValueError):
+            return False
+        near_budget_ratio = self._advisor_context_policy_near_budget_ratio(context)
+        return estimated >= int(threshold * near_budget_ratio)
+
+    def _advisor_context_policy_near_budget_ratio(self, context: dict[str, Any]) -> float:
+        raw_ratio = self._advisor_config(context).get("contextPolicyNearBudgetRatio", 0.75)
+        try:
+            ratio = float(raw_ratio)
+        except (TypeError, ValueError):
+            return 0.75
+        return min(0.95, max(0.1, ratio))
+
+    def _advisor_config(self, context: dict[str, Any]) -> dict[str, Any]:
+        config = context.get("config") if isinstance(context, dict) else None
+        if not isinstance(config, dict):
+            return {}
+        advisor = config.get("advisor")
+        if isinstance(advisor, dict):
+            return advisor
+        autonomy = config.get("autonomy")
+        if isinstance(autonomy, dict):
+            advisor = autonomy.get("advisor")
+            if isinstance(advisor, dict):
+                return advisor
+        return {}
 
     def _autonomy_profile_int(self, context: dict[str, Any], key: str) -> int | None:
         profile = None

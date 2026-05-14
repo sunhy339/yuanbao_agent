@@ -99,8 +99,8 @@ class TestRoleSystemPrompt:
             assert "Safety boundaries" in system_msg, f"Role {role} missing safety boundaries"
             assert "stay within the workspace root" in system_msg, f"Role {role} missing workspace constraint"
 
-    def test_run_child_task_passes_role_to_build(self, tmp_path: Any) -> None:
-        """run_child_task passes agentType as role to create_task and context builder."""
+    def test_run_child_task_passes_builtin_agent_type_as_runtime_role(self, tmp_path: Any) -> None:
+        """run_child_task keeps built-in agentType roles as runtime roles."""
         store = SQLiteStore(str(tmp_path / "test.sqlite3"))
         workspace = store.upsert_workspace(str(tmp_path))
         session = store.create_session(workspace_id=workspace["id"], title="test")
@@ -124,6 +124,36 @@ class TestRoleSystemPrompt:
 
         task = result["task"]
         assert task["role"] == "worker"
+
+    def test_run_child_task_maps_dynamic_agent_type_to_worker_role(self, tmp_path: Any) -> None:
+        """LLM-generated agentType names are metadata, not task-store roles."""
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        workspace = store.upsert_workspace(str(tmp_path))
+        session = store.create_session(workspace_id=workspace["id"], title="test")
+        event_bus = EventBus()
+        tool_registry = ToolRegistry()
+
+        class DummyProvider:
+            def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+                return {"final_answer": "structure report done"}
+
+        orchestrator = Orchestrator(
+            store=store, event_bus=event_bus,
+            tool_registry=tool_registry, provider=DummyProvider(),
+        )
+
+        result = orchestrator.run_child_task({
+            "sessionId": session["id"],
+            "prompt": "Inspect project structure",
+            "agentType": "structure-agent",
+            "collaborationTaskId": "ctask_dynamic",
+            "parentRuntimeTaskId": "task_parent",
+        })
+
+        task = result["task"]
+        assert task["role"] == "worker"
+        assert task["routing"]["agentType"] == "structure-agent"
+        assert task["routing"]["runtimeRole"] == "worker"
 
     def test_run_child_task_default_role(self, tmp_path: Any) -> None:
         """run_child_task defaults to 'worker' when agentType not specified."""
@@ -149,3 +179,70 @@ class TestRoleSystemPrompt:
 
         task = result["task"]
         assert task["role"] == "worker"
+
+    def test_context_policy_advisor_skips_when_context_is_well_under_budget(self, tmp_path: Any) -> None:
+        """Context policy advice is only needed near compaction pressure."""
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        event_bus = EventBus()
+        tool_registry = ToolRegistry()
+
+        class RecordingAdvisor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, Any]]] = []
+
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                self.calls.append((kind, input_context))
+                raise AssertionError("advisor should not be called")
+
+        advisor = RecordingAdvisor()
+        orchestrator = Orchestrator(
+            store=store,
+            event_bus=event_bus,
+            tool_registry=tool_registry,
+            provider=SimpleNamespace(generate=lambda _prompt, _context: {"final_answer": "done"}),
+            decision_advisor=advisor,
+        )
+        task = {"id": "task_root", "role": "root", "sessionId": "session_1"}
+
+        result = orchestrator._consult_context_policy_advisor(  # noqa: SLF001
+            task,
+            "small task",
+            60000,
+            {"budgetStats": {"estimatedTokens": 1200}},
+        )
+
+        assert result is None
+        assert advisor.calls == []
+
+    def test_child_worker_skips_completion_advisor_by_default(self, tmp_path: Any) -> None:
+        """Child workers should not spend an extra LLM call just to audit completion."""
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        event_bus = EventBus()
+        tool_registry = ToolRegistry()
+
+        class RecordingAdvisor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, Any]]] = []
+
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                self.calls.append((kind, input_context))
+                raise AssertionError("advisor should not be called")
+
+        advisor = RecordingAdvisor()
+        orchestrator = Orchestrator(
+            store=store,
+            event_bus=event_bus,
+            tool_registry=tool_registry,
+            provider=SimpleNamespace(generate=lambda _prompt, _context: {"final_answer": "done"}),
+            decision_advisor=advisor,
+        )
+        task = {"id": "task_child", "role": "worker", "goal": "inspect tests"}
+
+        result = orchestrator._consult_completion_advisor(  # noqa: SLF001
+            task,
+            "done",
+            {"_child_worker": True},
+        )
+
+        assert result is None
+        assert advisor.calls == []

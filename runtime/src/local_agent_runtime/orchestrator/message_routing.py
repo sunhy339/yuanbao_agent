@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import threading
 from copy import deepcopy
+from inspect import Parameter, signature
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ class MessageRoutingMixin:
         _route_t0 = _time.monotonic()
         routing_span = self._tracer.start_span("routing_decision", attributes={"goal": goal[:200]})
         try:
-            routing = self._meta_router.route(goal)
+            routing = self._route_goal(goal)
         except Exception:
             self._tracer.end_span(routing_span.span_id, status="error")
             raise
@@ -86,6 +87,26 @@ class MessageRoutingMixin:
             "skill_id": routing.skill_id,
         }
         routing_dict["profile_snapshot"] = self._runtime_profile_snapshot()
+        routing_dict["roleSnapshot"] = {
+            "runtimeRole": "root",
+            "agentType": "root",
+            "profileId": None,
+            "profileVersion": 1,
+            "agentProfile": {
+                "agentType": "root",
+                "baseRuntimeRole": "root",
+                "toolPolicy": "routing",
+                "capabilities": ["orchestrate", "delegate", "synthesize"],
+                "scopes": [],
+                "riskLevel": "medium",
+                "source": "runtime_default",
+                "version": 1,
+            },
+            "toolPolicy": "routing",
+            "scopes": [],
+            "riskLevel": "medium",
+            "budget": {},
+        }
         self._tracer.end_span(
             routing_span.span_id,
             status="ok",
@@ -291,6 +312,21 @@ class MessageRoutingMixin:
             goal=goal,
             context=context,
         )
+
+    def _route_goal(self, goal: str) -> Any:
+        route_context = {"config": self._store.get_config({})["config"]}
+        route = self._meta_router.route
+        try:
+            params = signature(route).parameters
+            accepts_context = (
+                len(params) >= 2
+                or any(param.kind == Parameter.VAR_KEYWORD for param in params.values())
+            )
+        except (TypeError, ValueError):
+            accepts_context = True
+        if accepts_context:
+            return route(goal, route_context)
+        return route(goal)
 
     def _start_background_message(
         self,

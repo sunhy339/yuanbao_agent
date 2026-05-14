@@ -18,6 +18,8 @@ from ..tools.registry import BUILTIN_TOOL_SCHEMAS
 class ChildTaskMixin:
     """Mixin providing child task execution and worker management."""
 
+    _CHILD_RUNTIME_ROLES = frozenset({"planner", "worker", "reviewer", "summarizer"})
+
     def run_child_task(self, params: dict[str, Any]) -> dict[str, Any]:
 
         session_id = params.get("sessionId")
@@ -37,10 +39,48 @@ class ChildTaskMixin:
 
         session = self._store.require_session(session_id)
         budget = WorkerBudget.from_metadata(params.get("budget"), params)
-        child_role = params.get("agentType", "worker")
+        agent_type = self._child_agent_type(params.get("agentType"))
+        child_role = self._child_runtime_role(agent_type)
         context = self._context_builder.build(session_id=session["id"], goal=prompt.strip(), lightweight=False, role=child_role)
+        context["agentType"] = agent_type
+        context["runtimeRole"] = child_role
+        context["_child_worker"] = True
+        context["_skip_context_policy_advisor"] = True
+        context["_skip_completion_advisor"] = True
+        context["_worker_budget"] = params.get("budget") if isinstance(params.get("budget"), dict) else {}
+        child_allowlist = self._child_tool_allowlist_from_params(params)
+        if child_allowlist is not None:
+            context["_child_tool_allowlist"] = list(child_allowlist)
         context = self._context_with_worker_budget(context, budget)
         plan = self._planner.plan(prompt.strip(), context=context)
+        role_snapshot = {
+            "runtimeRole": child_role,
+            "agentType": agent_type,
+            "profileId": None,
+            "profileVersion": 1,
+            "agentProfile": {
+                "agentType": agent_type,
+                "baseRuntimeRole": child_role,
+                "toolPolicy": "child_allowlist" if child_allowlist is not None else "read_only",
+                "capabilities": [],
+                "scopes": [],
+                "riskLevel": "low",
+                "source": "runtime_default",
+                "version": 1,
+            },
+            "toolPolicy": "child_allowlist" if child_allowlist is not None else "read_only",
+            "scopes": [],
+            "riskLevel": "low",
+            "budget": params.get("budget") if isinstance(params.get("budget"), dict) else {},
+        }
+        child_routing = {
+            "parentRuntimeTaskId": params.get("parentRuntimeTaskId"),
+            "agentType": agent_type,
+            "runtimeRole": child_role,
+            "roleSnapshot": role_snapshot,
+        }
+        if collaboration_task_id:
+            child_routing["childCollaborationTaskId"] = collaboration_task_id
         task = self._store.create_task(
             session_id=session["id"],
             task_type="subagent",
@@ -49,10 +89,7 @@ class ChildTaskMixin:
             acceptance_criteria=self._default_acceptance_criteria(prompt.strip()),
             out_of_scope=self._default_out_of_scope(),
             role=child_role,
-            routing={
-                "childCollaborationTaskId": collaboration_task_id,
-                "parentRuntimeTaskId": params.get("parentRuntimeTaskId"),
-            } if collaboration_task_id else None,
+            routing=child_routing,
         )
         runtime_task = {**task, "plan": plan}
         context = self._context_with_task_focus(context, runtime_task)
@@ -165,6 +202,18 @@ class ChildTaskMixin:
             "budget": budget.to_metadata(),
         }
 
+    def _child_agent_type(self, value: Any) -> str:
+        if not isinstance(value, str):
+            return "worker"
+        stripped = value.strip()
+        return stripped or "worker"
+
+    def _child_runtime_role(self, agent_type: str) -> str:
+        normalized = agent_type.strip().lower()
+        if normalized in self._CHILD_RUNTIME_ROLES:
+            return normalized
+        return "worker"
+
     def _latest_pending_approval(self, task_id: str) -> dict[str, Any] | None:
         if not hasattr(self._store, "_conn"):
             return None
@@ -191,6 +240,20 @@ class ChildTaskMixin:
 
     def _child_tool_allowlist(self) -> list[str] | None:
         raw = os.environ.get("LOCAL_AGENT_CHILD_TOOL_ALLOWLIST")
+        if raw is None:
+            return None
+        return normalize_child_tool_allowlist(raw)
+
+    def _child_tool_allowlist_from_params(self, params: dict[str, Any]) -> tuple[str, ...] | None:
+        budget = params.get("budget") if isinstance(params.get("budget"), dict) else {}
+        raw = (
+            params.get("childToolAllowlist")
+            or params.get("child_tool_allowlist")
+            or budget.get("childToolAllowlist")
+            or budget.get("child_tool_allowlist")
+            or budget.get("toolAllowlist")
+            or budget.get("tool_allowlist")
+        )
         if raw is None:
             return None
         return normalize_child_tool_allowlist(raw)

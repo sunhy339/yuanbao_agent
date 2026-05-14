@@ -485,6 +485,10 @@ class SchemaBootstrapMixin:
                 tool_count INTEGER,
                 skill_id TEXT,
                 token_estimate INTEGER,
+                max_context_tokens INTEGER,
+                prompt_layers_json TEXT,
+                tool_policy_decision_json TEXT,
+                role_snapshot_json TEXT,
                 created_at INTEGER NOT NULL
             )
         """)
@@ -841,6 +845,8 @@ class SchemaBootstrapMixin:
         expected = {
             "max_context_tokens": "INTEGER",
             "prompt_layers_json": "TEXT",
+            "tool_policy_decision_json": "TEXT",
+            "role_snapshot_json": "TEXT",
         }
         for column, definition in expected.items():
             if column not in columns:

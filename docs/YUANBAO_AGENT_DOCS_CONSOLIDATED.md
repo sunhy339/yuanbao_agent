@@ -377,6 +377,362 @@ flowchart LR
 4. Worker budget 限制工具调用次数、时间、成本等维度。
 5. 对子任务应使用 allowlist，默认倾向只给读工具，只有明确需要时才给 `run_command` 或 `apply_patch`。
 
+### 9.1 ToolPolicyResolver：动态工具裁剪设计
+
+当前工具暴露方式的主要问题是：ContextBuilder/ToolRegistry 会构建一份较完整的工具集合，ReAct loop 又在多个 provider turn 中复用它。这样虽然能降低“模型需要工具但缺工具”的概率，但会带来四类风险：
+
+1. **速度与成本**：每轮都携带 17 个内置工具加 MCP 动态工具，prompt 体积变大，真实 LLM 的响应延迟明显增加。
+2. **流程误导**：root 已经收到子任务结果、只需要 synthesis 时，模型仍看到 `task`、写文件和命令工具，容易继续发起动作而不是总结。
+3. **权限边界变模糊**：reviewer/summarizer/child worker 看到过多工具时，容易误以为自己可以执行写入或命令。
+4. **审计困难**：trace 只能看到工具调用结果，不容易解释“为什么这一轮给了这些工具”。
+
+因此后续应引入 `ToolPolicyResolver`，把“有哪些工具注册在系统里”和“这一轮允许暴露给 LLM 的工具”分开。
+
+设计目标：
+
+1. **按阶段裁剪**：不同 ReAct phase 暴露不同工具，而不是全量工具常驻。
+2. **按角色裁剪**：root/worker/reviewer/planner/summarizer 以及 LLM 生成的动态 agentType，都必须落到可审计 runtime role 与 tool scope。
+3. **按权限裁剪**：PermissionEngine、approval mode、child allowlist、skill policy、MCP server policy 都参与最终结果。
+4. **按任务状态裁剪**：任务已经完成、取消、暂停、等待审批、或子任务结果已经返回时，不再给无关工具。
+5. **可审计可回放**：每个 provider turn 记录最终暴露的 tool names、裁剪原因、策略版本和输入快照。
+
+建议接口：
+
+```python
+class ToolPolicyResolver:
+    def resolve(self, *, task, context, phase, role, routing, permission_profile, skill_policy, child_allowlist, tool_registry):
+        return ToolPolicyDecision(
+            tools=[...],
+            phase=phase,
+            role=role,
+            allowed_names=[...],
+            denied_names=[...],
+            reasons={...},
+            policy_version="tool-policy-v1",
+        )
+```
+
+阶段建议：
+
+| phase | 触发条件 | 默认工具策略 |
+| --- | --- | --- |
+| `planning` | 初始路由、拆任务、制定执行计划 | root 可见 `task`、只读工具；不默认给写工具。 |
+| `investigation` | 需要理解项目、查文件、查状态 | `list_dir`、`search_files`、`read_file`、`git_status`、`git_diff`，必要时给受限 MCP 只读工具。 |
+| `execution` | 明确需要改文件或跑命令 | 在 PermissionEngine/approval/worktree 约束下给 `write_file`、`apply_patch`、`run_command`。 |
+| `review` | 检查结果、找问题、验收 | 默认只读；除非是专门的修复 worker，否则不给写工具。 |
+| `synthesis` | 汇总子任务结果、给最终结论 | 默认不给 tools；只允许模型基于已有 observation 总结。 |
+| `approval_waiting` | 等用户审批 | 不给新工具；只保留恢复/审批后的 pending state。 |
+| `recovery` | 工具失败、超时、格式错误后修复 | 只给恢复所需的最小工具，例如重新读取、重新应用小补丁。 |
+
+角色默认策略：
+
+runtime role 应保持少量、稳定、偏底层，主要表达权限桶和执行边界；它不应该承担所有业务身份、专家类型或个性配置。LLM 或用户可以生成动态 agent profile，但最终执行必须映射到一个可审计的 runtime role。
+
+| runtime role | 默认工具范围 | 说明 |
+| --- | --- | --- |
+| `root` | routing 决定；planning 可用 `task`，synthesis 无工具 | root 负责任务编排和最终汇总，不应在汇总轮继续全量带工具。 |
+| `worker` | child allowlist + PermissionEngine | 动态 agentType 只是 metadata，runtime role 默认落到 `worker`。 |
+| `reviewer` | 只读工具 | 负责找问题、验收和风险提示，不默认写入。 |
+| `planner` | 只读 + `task` proposal 能力 | 负责拆解，不直接执行高风险写入。 |
+| `summarizer` | 默认无工具或只读 | 负责压缩和归纳，不发起新动作。 |
+
+推荐分层：
+
+```text
+runtimeRole = 系统权限桶 / 执行模式
+agentType = LLM 或用户生成的具体身份名称
+agentProfile = 能力、提示词、工具偏好、范围、风险等级的结构化快照
+```
+
+示例：
+
+```yaml
+runtimeRole: worker
+agentType: structure-agent
+agentProfile:
+  displayName: Structure Agent
+  capabilities:
+    - read_project
+    - summarize_modules
+  toolPolicy: read_only
+  scopes:
+    - runtime/src
+    - runtime/tests
+  riskLevel: low
+```
+
+设计原则：
+
+1. 固定 runtime role 不等于固定 agent 种类；它只负责把权限、安全、工具裁剪和审计落到稳定边界上。
+2. 动态 agentType/profile 可以由 LLM proposal 生成，也可以由用户在设置页保存成 profile。
+3. runtime 必须保存 role snapshot：`runtimeRole`、`agentType`、`agentProfile`、tool policy、prompt layers、scope、risk、budget。
+4. 未知 agentType 不应导致任务失败；默认映射到 `worker`，并通过 profile/allowlist/PermissionEngine 限权。
+5. 如果 LLM 建议的 agent profile 请求更高权限，必须经过 validator、policy guard 或用户审批，不允许 profile 自己扩大权限。
+
+#### 9.1.1 详细设计：Dynamic Agent Profile
+
+目标是把“动态智能体身份”做成可配置、可审计、可回放的结构，而不是把所有身份都硬塞进 `runtimeRole` enum。
+
+核心对象：
+
+```python
+@dataclass
+class AgentProfile:
+    id: str
+    display_name: str
+    agent_type: str
+    base_runtime_role: Literal["worker", "planner", "reviewer", "summarizer"]
+    description: str
+    capabilities: list[str]
+    scopes: list[str]
+    tool_policy: str
+    prompt_layers: list[dict[str, Any]]
+    risk_level: Literal["low", "medium", "high"]
+    budget: dict[str, Any]
+    source: Literal["user_saved", "llm_proposed", "system_default"]
+    version: int
+```
+
+任务执行时必须冻结成 snapshot，避免后续设置变更影响历史回放：
+
+```python
+@dataclass
+class RoleSnapshot:
+    runtime_role: str
+    agent_type: str
+    profile_id: str | None
+    profile_version: int | None
+    profile: dict[str, Any]
+    resolved_tool_policy: dict[str, Any]
+    prompt_layers: list[dict[str, Any]]
+    scopes: list[str]
+    risk_level: str
+    budget: dict[str, Any]
+```
+
+建议落库位置：
+
+| 数据 | 建议位置 | 说明 |
+| --- | --- | --- |
+| 可复用 profile | `agent_profiles` 表或 config JSON | 用户在设置页保存的 profiles。 |
+| 单次任务 snapshot | `tasks.routing.roleSnapshot` 或独立 `task_role_snapshots` | 执行时冻结，作为审计依据。 |
+| 每轮工具决策 | `provider_turns.tool_policy_decision` 或 context snapshot metadata | 回放“这一轮为什么给这些工具”。 |
+| LLM proposal | `proposal_records` | LLM 生成 profile 时必须记录 proposal、validator 结果和 fallback。 |
+
+LLM 生成 profile 的流程：
+
+```mermaid
+flowchart TD
+  U["用户任务"] --> R["MetaRouter 判断是否需要子任务/多 agent"]
+  R --> A{"需要动态 agent profile?"}
+  A -->|否| D["使用默认 runtime role/profile"]
+  A -->|是| L["DecisionAdvisor: agent_profile proposal"]
+  L --> V["Validator 校验 schema/scope/tool/risk"]
+  V -->|通过| S["保存 proposal record + role snapshot"]
+  V -->|拒绝| F["fallback 到 worker + read_only profile"]
+  S --> T["ToolPolicyResolver 计算本轮 tools"]
+  F --> T
+```
+
+`agent_profile` proposal schema 建议：
+
+```json
+{
+  "agentType": "structure-agent",
+  "displayName": "Structure Agent",
+  "baseRuntimeRole": "worker",
+  "description": "Inspect project layout and summarize module boundaries.",
+  "capabilities": ["read_project", "summarize_modules"],
+  "scopes": ["runtime/src", "runtime/tests"],
+  "toolPolicy": "read_only",
+  "riskLevel": "low",
+  "budget": {
+    "maxToolCalls": 6,
+    "timeoutSeconds": 120
+  },
+  "promptHints": [
+    "Focus on structure and risk, do not edit files."
+  ]
+}
+```
+
+Validator 规则：
+
+1. `baseRuntimeRole` 必须落在固定 runtime role 集合中；未知值 fallback 到 `worker`。
+2. `agentType` 可以自由命名，但必须是短字符串，不能包含路径、命令、密钥或提示注入文本。
+3. `toolPolicy` 只能引用已有 policy preset，例如 `read_only`、`write_with_approval`、`review_only`。
+4. `scopes` 必须落在 workspace 内，不能包含 `..`、绝对系统目录或未授权路径。
+5. `riskLevel=high` 或请求写工具/命令工具时，必须进入 approval 或降级为只读。
+6. `promptHints` 只能作为 profile layer，不能覆盖 runtime safety、PermissionEngine、approval policy 和 budget。
+
+权限提升规则：
+
+| 请求 | 默认处理 |
+| --- | --- |
+| 动态 profile 请求只读工具 | 可自动接受，但仍记录 proposal。 |
+| 请求 `write_file` / `apply_patch` | 需要 PermissionEngine 允许；默认走审批或 worktree。 |
+| 请求 `run_command` | 需要命令策略允许；高风险命令必须审批。 |
+| 请求 MCP 工具 | 必须匹配 MCP server policy 和 tool allowlist。 |
+| 请求扩大 workspace scope | 默认拒绝或要求用户批准。 |
+| 请求修改自己的权限/profile | 拒绝，profile 不能自我提权。 |
+
+#### 9.1.2 详细设计：ToolPolicyResolver
+
+Resolver 的职责不是注册工具，而是在每一轮 provider turn 前计算“本轮允许暴露给 LLM 的工具”。
+
+输入：
+
+| 输入 | 来源 | 用途 |
+| --- | --- | --- |
+| `task` | store | task status、role、routing、root/child 关系。 |
+| `context` | ContextBuilder/ReAct state | workspace、skill、budget、messages、tool results。 |
+| `phase` | ReAct phase detector | 决定 planning/investigation/execution/review/synthesis。 |
+| `roleSnapshot` | task routing/snapshot | runtimeRole、agentType、profile、scope、risk。 |
+| `permissionProfile` | PermissionEngine/config | 判断工具是否允许、审批、拒绝。 |
+| `skillPolicy` | Skill registry | skill 白名单、MCP 继承策略。 |
+| `childAllowlist` | subagent request/budget | 限制 child worker 可见工具。 |
+| `toolRegistry` | ToolRegistry/MCP manager | 所有已注册工具 schema。 |
+
+输出：
+
+```python
+@dataclass
+class ToolPolicyDecision:
+    phase: str
+    runtime_role: str
+    agent_type: str
+    allowed_tools: list[dict[str, Any]]
+    allowed_tool_names: list[str]
+    denied_tool_names: list[str]
+    reasons: dict[str, str]
+    requires_approval: list[str]
+    policy_version: str
+```
+
+决策顺序：
+
+```text
+all registered tools
+  -> phase filter
+  -> runtime role filter
+  -> agent profile tool policy
+  -> child allowlist
+  -> skill policy
+  -> MCP server policy
+  -> PermissionEngine
+  -> approval/worktree/budget constraints
+  -> final provider tools
+```
+
+phase 推断规则：
+
+| 条件 | phase |
+| --- | --- |
+| 任务刚开始，routing strategy 是 plan/swarm | `planning` |
+| 模型需要理解项目，最近没有写工具结果 | `investigation` |
+| 用户目标或计划明确要求修改文件/运行命令 | `execution` |
+| role 是 `reviewer` 或任务处于验收环节 | `review` |
+| 上一轮最后一个 observation 是 `task` 且没有 waiting approval | `synthesis` |
+| task status 是 `waiting_approval` | `approval_waiting` |
+| 上一轮工具失败、patch 校验失败、provider 格式失败 | `recovery` |
+
+默认工具矩阵：
+
+| phase / role | root | worker | reviewer | planner | summarizer |
+| --- | --- | --- | --- | --- | --- |
+| `planning` | `task`, read tools | read tools | read tools | `task`, read tools | none |
+| `investigation` | read tools | allowlist read tools | read tools | read tools | read tools |
+| `execution` | write/command with approval | allowlist + permission | read only | read only | none |
+| `review` | read tools | read tools | read tools | read tools | read tools |
+| `synthesis` | none | none | read tools if needed | none | none |
+| `approval_waiting` | none | none | none | none | none |
+| `recovery` | minimal repair tools | minimal allowlist tools | read tools | read tools | none |
+
+审计 payload 示例：
+
+```json
+{
+  "phase": "synthesis",
+  "runtimeRole": "root",
+  "agentType": "root",
+  "policyVersion": "tool-policy-v1",
+  "allowedToolNames": [],
+  "deniedToolNames": ["task", "read_file", "write_file", "run_command"],
+  "reasons": {
+    "task": "phase=synthesis after child task results",
+    "write_file": "phase=synthesis denies write tools"
+  }
+}
+```
+
+#### 9.1.3 设置页与 RPC 设计
+
+设置页不应该直接让用户编辑底层 runtime role enum，而应该提供 profile 管理。
+
+建议 RPC：
+
+| RPC | 用途 |
+| --- | --- |
+| `agent.profile.list` | 列出用户保存和系统默认 profiles。 |
+| `agent.profile.create` | 创建自定义 profile。 |
+| `agent.profile.update` | 更新 profile，新版本号递增。 |
+| `agent.profile.delete` | 删除未被锁定的 profile。 |
+| `agent.profile.previewTools` | 选择 role/phase/permission/scope 后预览最终工具集合。 |
+| `agent.profile.validate` | 保存前校验 schema、scope、tool policy、prompt 安全。 |
+
+设置页字段：
+
+1. Profile 名称、描述、默认 runtime role。
+2. Capabilities 标签。
+3. Scope 限制。
+4. Tool policy preset。
+5. Prompt hints / style / domain instructions。
+6. Risk level 与默认 budget。
+7. “预览工具”面板：展示不同 phase 下最终可见工具。
+
+#### 9.1.4 迁移步骤与验收
+
+P0 最小闭环：
+
+1. 增加 `ToolPolicyResolver`，先覆盖 root synthesis、child worker、reviewer 只读三类高价值路径。
+2. 增加 `RoleSnapshot` 生成逻辑，任务创建时冻结 `runtimeRole/agentType/profile/toolPolicy/scope/risk/budget`。
+3. provider turn/context snapshot 写入 `toolPolicyDecision`。
+4. 新增测试：root 第一轮可见 `task`，task result 后 synthesis 轮 tools 为 0。
+5. 新增测试：未知 `agentType=structure-agent` 不失败，runtime role 映射为 `worker`，profile 被保存进 snapshot。
+6. 新增测试：reviewer 不可见写工具；child worker 只能看到 allowlist + PermissionEngine 允许的交集。
+7. 真实 GLM smoke：两个 child worker 完成后 root 汇总，不再携带 17 tools。
+
+P1 扩展：
+
+1. 接入 settings profile CRUD。
+2. 接入 LLM `agent_profile` proposal。
+3. 接入 MCP server policy 和 skill tool policy。
+4. 做 provider turn 回放页，能解释每轮工具暴露原因。
+
+第一阶段实现边界：
+
+1. 在 `runtime/src/local_agent_runtime/orchestrator/react_runner.py` 中替换当前 `_provider_tools(context)` 的直接使用，增加 `_provider_tools_for_turn(...)` 到独立 resolver 的迁移路径。
+2. 当上一轮最后一个 observation 是 `task` 结果且没有等待审批时，下一轮强制进入 `synthesis`，`tools/openai_tools=[]`。
+3. child worker 默认跳过 context/completion 这类辅助 advisor，除非配置显式开启。
+4. context policy advisor 只有在接近 compaction threshold 时才调用，避免每次 ReAct 都多打一轮 LLM。
+5. provider turn / context snapshot 记录 `toolPolicyDecision`，至少包含 `phase`、`role`、`allowedToolNames`、`deniedToolNames`、`reason`。
+
+第二阶段实现边界：
+
+1. 将 skill tool policy、MCP tool policy、PermissionEngine、child allowlist 合并进统一 resolver。
+2. 给设置页增加“工具暴露策略”只读预览：选择 role/phase/permission 后展示最终工具集合。
+3. 增加真实 LLM smoke：root 第一轮带 `task`，两个 child worker 只拿只读工具，root synthesis 轮工具数为 0，最终完成。
+4. 增加回放测试：从 provider_turn/context_snapshot 还原当时为什么给了这些工具。
+
+当前已完成的止血修复：
+
+1. root 收到 `task` 子任务结果后，下一轮进入 synthesis，不再携带全量 tools。
+2. context policy advisor 改为接近上下文压力时才调用。
+3. child worker 默认不跑辅助 context/completion advisor。
+4. 聚焦测试和真实 GLM-5.1 子 worker smoke 已通过。
+
+这块应列为 P0，因为它同时影响稳定性、性能、权限、安全和可审计性。
+
 ## 10. DAG、多 Agent 与并行
 
 DAG 规划适合处理有明确依赖关系的任务。当前 DAG 执行器可以把无依赖或同一依赖层级的节点并行执行；有依赖的节点必须等待上游完成。
@@ -724,6 +1080,8 @@ flowchart TD
 | --- | --- | --- | --- |
 | P0 | `runtime/src/local_agent_runtime/store/repositories/hook_repository.py` 当前是未跟踪文件，但 `sqlite_store.py` 已 import 它。 | 如果提交时漏掉该文件，干净 checkout 会 runtime import 失败。 | 下一次提交必须包含该文件，或者先调整引用关系。 |
 | P0 | Provider API format UI 与 runtime 支持度不完全一致。 | 设置页暴露 `openai-responses`、`anthropic-messages`，但 runtime adapter 主要仍是 `openai-chat`/`chat-completions`。 | 标记未支持格式或补 adapter；优先补 `openai-responses`，再补 `anthropic-messages`。 |
+| P0 | ToolPolicyResolver 尚未系统化实现。 | 当前工具暴露仍主要来自 ContextBuilder/ToolRegistry 的全量集合，虽然已对 `task` 结果后的 synthesis 轮做止血，但还没有按 phase/role/permission/skill/MCP 统一裁剪和审计。 | 实现统一 resolver；每个 provider turn 记录 phase、role、allowed/denied tools 和裁剪原因；root synthesis 轮默认 0 tools。 |
+| P0 | Dynamic Agent Profile 与固定 runtime role 的分层还未完整落库和审计。 | 当前已允许未知 `agentType` 映射到 `worker`，但 profile 的 capabilities、scope、prompt layers、risk、tool policy 还没有形成统一 snapshot。 | 固定 runtime role 作为权限桶；动态 `agentType/profile` 作为身份与能力描述；任务创建时保存 role snapshot，并由 ToolPolicyResolver/PermissionEngine 执行限权。 |
 | P0 | ~~Permission Policy V2 Lite~~ — **已闭环** (`5cca5e8`)。 | PermissionEngine 已有 3 presets、config normalizer、5 tool integrations、tool.blocked pipeline、56 专项测试。 | 后续 P1+ 可扩展到 hook side effects、Computer Use、temporary grants。 |
 | P1 | Worktree 尚未完成写任务自动隔离。 | service/RPC/hooks 已有，但写入型任务自动绑定 worktree、工具默认在 worktree cwd 执行、UI 展示 path/diff/status 还未完全闭环。 | 继续推进 task-worktree binding、write tool cwd routing、task report/UI 展示。 |
 | P1 | 大文件仍需继续拆。 | `SessionWorkspace.tsx`、`session.css`、`runtimeClient.ts`、`SettingsWorkspace.tsx` 仍超过长期维护目标。 | 建立 1500/2500 行预算 gate，继续拆 Session、runtime client、settings。 |
@@ -743,9 +1101,10 @@ flowchart TD
 1. ~~先保证提交完整性~~ — **Done** (`6af8d93`)。`hook_repository.py` 已提交。
 2. ~~更新总计划中陈旧描述~~ — **Done**。App.tsx 和 Permission Policy V2 Lite 状态已更新。
 3. ~~P0 Permission Policy V2 Lite~~ — **Done** (`5cca5e8`)。后续 P1+ 扩展到 hook side effects、Computer Use。
-4. P0/P1 对齐 Provider API format，避免设置页让用户选择 runtime 尚不能执行的格式。
-5. P1 推进 task-worktree binding，让写入型任务默认在隔离 worktree 中执行。
-6. P1 继续大文件治理，优先 `SessionWorkspace.tsx`、`session.css`、`runtimeClient.ts`、`SettingsWorkspace.tsx`。
+4. P0 实现 ToolPolicyResolver 与 Dynamic Agent Profile 分层：固定 runtime role 管权限桶，动态 `agentType/profile` 管身份、能力、scope 和 prompt，并记录 provider turn/role snapshot 审计快照。
+5. P0/P1 对齐 Provider API format，避免设置页让用户选择 runtime 尚不能执行的格式。
+6. P1 推进 task-worktree binding，让写入型任务默认在隔离 worktree 中执行。
+7. P1 继续大文件治理，优先 `SessionWorkspace.tsx`、`session.css`、`runtimeClient.ts`、`SettingsWorkspace.tsx`。
 
 ## 19. 后续文档维护建议
 
@@ -757,3 +1116,72 @@ flowchart TD
 2. 再维护专题文档：工具、MCP、上下文、DAG、API events。
 3. 每次改 runtime 配置、工具 registry、RPC handler、memory schema、approval policy，都同步更新本文件。
 4. 对流程类文档，建议加“代码锚点”，比如 `rpc/server.py`, `orchestrator/service.py`, `context/builder.py`, `tools/registry.py`，避免文档和实现继续漂移。
+## 20. 真实 GLM-5.1 接入烟测问题与修复记录
+
+日期：2026-05-13
+
+本轮用真实 GLM-5.1 进行“小型静态音乐播放器”端到端烟测，目标是让 agent 在空 workspace 中创建 `index.html`、`styles.css`、`app.js`，并覆盖播放/暂停、上一首/下一首、音量、进度和播放列表。测试结论：provider 网络可以打通，但完整 agent 开发闭环尚未稳定通过。
+
+已确认问题：
+
+| 优先级 | 问题 | 影响 | 当前处理 |
+| --- | --- | --- | --- |
+| P0 | 裸 `baseUrl` 直接拼 `/chat/completions` 会返回 405。 | 用户填写 `https://df.dawnloadai.com:9888` 这类 OpenAI-compatible 根地址时，runtime 不能自动命中 `/v1/chat/completions`。 | 已修复：裸域名 base URL 自动使用 `/v1/chat/completions`。 |
+| P0 | `LOCAL_AGENT_PROVIDER_*` 环境变量会被默认 `mock/gpt-5-codex` 配置覆盖。 | smoke、部署和调试场景明明设置了 `GLM-5.1`，runtime trace 仍可能显示默认模型，导致真实 LLM 主流程没有按预期接入。 | 已修复：显式 provider 环境变量优先于存储默认配置。 |
+| P0 | GLM 对 DecisionAdvisor JSON-only 输出不稳定。 | routing/context/completion proposal 可能因为非 JSON 被拒绝，进入 rule fallback；仍可运行，但 LLM 决策审计闭环不稳定。 | 待修复：需要加强 advisor prompt、JSON 提取/修复、失败记录和模型能力标记。 |
+| P0 | 流式工具调用可能长时间输出超大参数。 | ReAct 主流程会停在 assistant streaming，任务保持 running，文件不落盘。 | 已初步修复：增加 provider stream 总时长与单个 tool arguments 字符上限；后续仍需更细的分片写文件策略。 |
+| P1 | 完成条件仍需结合验收项强校验。 | 如果 provider 没有真正创建目标文件，不能仅凭自然语言总结或 fallback 误判 completed。 | 待修复：completion decision 需要读取 changed files、目标文件、测试结果和 acceptance criteria 后再落库。 |
+
+后续优先级：
+
+1. P0：继续修 DecisionAdvisor JSON 兼容，保证 GLM 输出可被提取为 proposal record。
+2. P0：为 ReAct 写文件类工具调用增加“大内容分片/多文件分步写入”策略，避免一次 tool call 塞完整页面代码导致流式卡住。
+3. P0：完成条件必须以 acceptance criteria + workspace 文件状态 + 工具执行结果为准。
+4. P1：provider 设置页明确提示 base URL 规范，保存时可自动规范化或预检 `/v1/chat/completions`。
+5. P1：将真实 LLM smoke 固化为可选测试脚本，不写入密钥，只从环境变量读取。
+
+2026-05-14 后端链路修复进展：
+
+- 已增强 DecisionAdvisor JSON 提取：支持 markdown fence、前后夹杂说明文字、顶层 proposal 字段、`reasoning/explanation` 作为 rationale，以及 `assistant_message.content` 兜底。
+- 已增强 ReAct provider turn：streaming 超时、超大 tool arguments、无 final 等情况下会记录 `provider.stream.fallback_non_stream`，然后自动降级为非流式请求继续执行，不再直接让任务长时间卡在 assistant streaming。
+- 已移除 provider streaming 单一布尔缓存的影响，避免运行期配置从 mock/非流式切到 OpenAI-compatible 后仍沿用旧判断。
+- 已补回归测试：DecisionAdvisor 解析、provider env/base URL、streaming 参数保护、streaming 失败降级到非流式后继续完成 patch approval 链路。
+
+## 21. 2026-05-14 非大文件任务进展快照
+
+本节只记录非“大文件拆分”任务。大文件治理仍保留在专门计划中，不作为本轮执行范围。
+
+### 已完成并提交
+
+| 任务 | 状态 | 提交 | 说明 |
+| --- | --- | --- | --- |
+| ToolPolicyResolver + Dynamic Agent Profile 最小闭环 | Done | `840d948` | 新增 runtime tool policy resolver；provider turn 使用动态工具裁剪；context snapshot 记录 `toolPolicyDecision` 与 `roleSnapshot`；root synthesis 轮默认不再暴露工具；reviewer 只读；动态 `agentType` 映射到稳定 runtime role。 |
+| 真实 provider 链路加固 + Provider API format 对齐 | Done | `489d3b9` | shared 层统一 `ProviderApiFormat` 默认值/归一化；设置页将 `openai-responses`、`anthropic-messages` 标记为 planned 且不可新选；runtime 对 planned 格式明确拒绝；修复 provider env 覆盖、裸 baseUrl `/v1/chat/completions`、stream timeout、超大 tool arguments、stream 失败降级、DecisionAdvisor JSON 提取。 |
+| 多 agent synthesis 验收测试 | Done | `11d9c8d` | 新增两 child worker 场景回归：root 第一轮可调用 `task`，两个动态 child agent 完成后，root synthesis 第二轮 `tools` 为空，并能形成最终总结。 |
+
+### 本轮验证
+
+| 验证 | 结果 |
+| --- | --- |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local runtime/tests/test_tool_policy_resolver.py runtime/tests/test_role_system_prompt.py runtime/tests/test_provider_turns.py::TestContextSnapshotCRUD` | 22 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local runtime/tests/test_decision_advisor.py runtime/tests/test_provider_adapter.py runtime/tests/test_provider_streaming.py runtime/tests/test_e2e_smoke.py` | 59 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local runtime/tests/test_runtime_flows.py::test_background_task_preserves_routing_fields runtime/tests/test_runtime_flows.py::test_routing_emits_decided_event runtime/tests/test_runtime_flows.py::test_routing_creates_trace_span` | 3 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local runtime/tests/test_multi_agent_health_report.py` | 1 passed |
+| `npm.cmd test -- SettingsWorkspace.test.tsx` in `app/` | 14 passed |
+| `npx.cmd tsc --noEmit` in `app/` | passed |
+
+### 当前剩余非大文件任务
+
+| 优先级 | 任务 | 当前状态 | 下一步 |
+| --- | --- | --- | --- |
+| P0/P1 | Completion / Stop 判断强化 | 部分完成。已有 maxSteps、final、工具结果和 completion advisor；但验收硬条件还不够系统。 | 将 acceptance criteria、changed files、测试结果、工具执行结果纳入完成判定；没有 final 时生成受控总结而不是继续空转。 |
+| P1 | Worktree 自动绑定写入型任务 | 基础 service/RPC/hooks 已有，尚未成为默认写入路径。 | 写入型任务自动创建/绑定 worktree；write tool 和 command 默认 cwd 指向 task worktree；合并前必须 diff + approval。 |
+| P1 | Hooks 生命周期补齐 | 基础 hook 能力已有，但生命周期触发点和权限边界还需统一。 | 补齐 before/after task、before/after tool、before/after provider turn、pause/cancel/resume、compaction、worktree merge 等事件，并纳入 PermissionEngine。 |
+| P1 | ToolPolicyResolver 第二阶段 | P0 最小闭环已完成。 | 将 Skill policy、MCP server policy、PermissionEngine、child allowlist 合并进统一 resolver；提供 provider turn 回放解释。 |
+| P1 | Dynamic Agent Profile 设置页/RPC | runtime snapshot 已有，profile CRUD 未完成。 | 增加 profile list/create/update/delete/validate/previewTools RPC；设置页接入 profile 管理和工具预览。 |
+| P1 | Provider API format 扩展 | P0 已避免 UI 误选未实现格式。 | 真正实现 `openai-responses`；再实现 native `anthropic-messages`；provider test 记录 effective `apiFormat`、request path 和失败原因。 |
+| P1 | Real LLM smoke 固化 | 手工和回归测试已有，尚未变成安全脚本。 | 新增可选 smoke runner，只从环境变量读取 key，不落库、不写文档、不提交生成物。 |
+
+### 当前重点
+
+下一阶段最值得先做的是 **Completion / Stop 判断强化**。原因是 ToolPolicyResolver 已经能避免 synthesis 轮继续乱拿工具，provider 链路也更稳；接下来要保证任务什么时候“真的完成”有硬依据，否则 agent 仍可能出现自然语言说完成但工作区状态未满足验收项的问题。

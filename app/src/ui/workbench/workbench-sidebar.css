@@ -1,0 +1,209 @@
+.workbench-sidebar {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 10px;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px 10px;
+  border-right: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--wb-ink);
+  backdrop-filter: blur(14px) saturate(1.08);
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px 10px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.brand-seal {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 30% 22%, rgba(255, 255, 255, 0.62), transparent 38%),
+    linear-gradient(135deg, var(--wb-primary), #0f766e);
+  color: #ffffff;
+  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.18);
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.sidebar-brand strong,
+.sidebar-brand span {
+  display: block;
+}
+
+.sidebar-brand strong {
+  color: var(--wb-ink);
+  font-size: 15px;
+}
+
+.sidebar-brand span {
+  margin-top: 3px;
+  color: var(--wb-muted);
+  font-family: var(--wb-font-mono);
+  font-size: 11px;
+}
+
+.sidebar-primary,
+.sidebar-footer {
+  display: grid;
+  gap: 8px;
+}
+
+.sidebar-primary button,
+.sidebar-footer button {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--wb-surface);
+  color: var(--wb-ink);
+  text-align: left;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.sidebar-primary button span,
+.sidebar-footer button span {
+  display: block;
+  font-size: 15px;
+  font-weight: 760;
+}
+
+.sidebar-primary button small,
+.sidebar-footer button small {
+  display: block;
+  margin-top: 3px;
+  color: var(--wb-muted-soft);
+  font-size: 11px;
+}
+
+.sidebar-primary button:hover,
+.sidebar-footer button:hover {
+  border-color: rgba(37, 99, 235, 0.2);
+  background: var(--wb-surface-muted);
+  transform: translateY(-1px);
+}
+
+.sidebar-session-section {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 10px;
+  background: var(--wb-surface-muted);
+}
+
+.sidebar-section-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sidebar-section-heading h2 {
+  margin: 0;
+  color: var(--wb-ink);
+  font-size: 15px;
+}
+
+.sidebar-section-heading span,
+.sidebar-search {
+  color: var(--wb-muted-soft);
+  font-size: 12px;
+}
+
+.sidebar-section-heading span {
+  font-family: var(--wb-font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.sidebar-search {
+  display: grid;
+  gap: 7px;
+}
+
+.sidebar-search input {
+  width: 100%;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--wb-surface);
+  color: var(--wb-ink);
+  font-family: var(--wb-font-mono);
+  font-size: 12px;
+}
+
+.sidebar-search input::placeholder {
+  color: var(--wb-muted-soft);
+}
+
+.session-rail {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  padding-right: 2px;
+}
+
+.session-rail-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px;
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 7px 8px;
+  background: transparent;
+  color: var(--wb-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-rail-item[data-active="true"],
+.session-rail-item:hover {
+  border-color: rgba(37, 99, 235, 0.18);
+  background: var(--wb-surface);
+}
+
+.session-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--wb-green);
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12);
+}
+
+.session-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-meta {
+  grid-column: 2;
+  color: var(--wb-muted-soft);
+  font-family: var(--wb-font-mono);
+  font-size: 11px;
+}
+
+.sidebar-empty {
+  margin: 0;
+  color: var(--wb-muted-soft);
+  line-height: 1.6;
+}

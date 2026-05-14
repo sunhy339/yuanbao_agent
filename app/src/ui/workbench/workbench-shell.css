@@ -1,0 +1,33 @@
+.workbench-shell {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: 30px minmax(0, 1fr);
+  background:
+    radial-gradient(circle at 8% 0%, rgba(37, 99, 235, 0.08), transparent 28%),
+    linear-gradient(180deg, #f8fafc 0%, var(--wb-bg) 100%);
+  color: var(--wb-ink);
+  font-family: var(--wb-font-ui);
+}
+
+.workbench-body {
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+}
+
+.workbench-shell button,
+.workbench-shell input,
+.workbench-shell textarea,
+.workbench-shell select {
+  font: inherit;
+}
+
+.workbench-shell :where(button, input, textarea, select, a, [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--wb-focus-outline);
+  outline-offset: 2px;
+  box-shadow: var(--wb-focus-ring);
+}

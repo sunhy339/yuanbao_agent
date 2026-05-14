@@ -426,6 +426,11 @@ class TestProviderTurnRPC:
         assert len(turns) >= 1
         assert turns[0]["id"].startswith("pt_")
         assert turns[0]["status"] == "completed"
+        assert turns[0]["toolPolicyDecision"]["policyVersion"] == "tool-policy-v2"
+        assert turns[0]["roleSnapshot"]["runtimeRole"] == "root"
+        explanation = turns[0]["toolPolicyExplanation"]
+        assert explanation["allowedCount"] == turns[0]["request_tool_count"]
+        assert explanation["summary"]
 
     def test_rpc_context_snapshot_list(self, tmp_path: Any) -> None:
         provider = ScriptedProvider([{"final": "Done."}])

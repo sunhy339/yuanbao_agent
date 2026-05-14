@@ -148,12 +148,11 @@ class ReplayService:
             })
 
         # 3. Provider turns
-        turns = self._store._conn.execute(
-            "SELECT * FROM provider_turns WHERE task_id = ? ORDER BY created_at ASC",
-            (task_id,),
-        ).fetchall()
-        for row in turns:
-            r = dict(row)
+        turns = sorted(
+            self._store.list_provider_turns(task_id),
+            key=lambda item: item.get("created_at") or 0,
+        )
+        for r in turns:
             timeline.append({
                 "step": "provider_turn",
                 "timestamp": r.get("created_at"),
@@ -162,6 +161,9 @@ class ReplayService:
                 "status": r.get("status"),
                 "turnDecision": r.get("turn_decision"),
                 "thoughtSummary": r.get("thought_summary"),
+                "toolPolicyDecision": r.get("toolPolicyDecision") or {},
+                "roleSnapshot": r.get("roleSnapshot") or {},
+                "toolPolicyExplanation": r.get("toolPolicyExplanation") or {},
                 "replayable": False,  # LLM output not reproducible
                 "unavailableReason": "LLM response content not stored",
             })

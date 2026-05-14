@@ -254,7 +254,83 @@ class AgentStoreMixin:
             "SELECT * FROM provider_turns WHERE task_id = ? ORDER BY turn_index",
             (task_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [self._serialize_provider_turn(dict(r)) for r in rows]
+
+    def _serialize_provider_turn(self, row: dict[str, Any]) -> dict[str, Any]:
+        serialized = dict(row)
+        tool_policy_decision = self._json_object(row.get("tool_policy_decision_json"))
+        role_snapshot = self._json_object(row.get("role_snapshot_json"))
+        serialized["toolPolicyDecision"] = tool_policy_decision
+        serialized["roleSnapshot"] = role_snapshot
+        serialized["toolPolicyExplanation"] = self._tool_policy_explanation(
+            tool_policy_decision,
+            role_snapshot,
+        )
+        return serialized
+
+    def _json_object(self, raw: Any) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if not isinstance(raw, str) or not raw.strip():
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _tool_policy_explanation(
+        self,
+        decision: dict[str, Any],
+        role_snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        allowed = self._string_list_value(decision.get("allowedToolNames"))
+        denied = self._string_list_value(decision.get("deniedToolNames"))
+        details = decision.get("decisionDetails")
+        detail_items = details if isinstance(details, list) else []
+        requires_approval = [
+            str(item.get("toolName"))
+            for item in detail_items
+            if isinstance(item, dict)
+            and item.get("requiresApproval") is True
+            and isinstance(item.get("toolName"), str)
+        ]
+        reasons = decision.get("reasons")
+        reason_items = [
+            {"toolName": str(name), "reason": str(reason)}
+            for name, reason in (reasons.items() if isinstance(reasons, dict) else [])
+            if isinstance(name, str) and isinstance(reason, str) and name != "*"
+        ]
+        phase = str(decision.get("phase") or "")
+        runtime_role = str(role_snapshot.get("runtimeRole") or decision.get("runtimeRole") or "")
+        agent_type = str(role_snapshot.get("agentType") or decision.get("agentType") or "")
+        summary_parts = []
+        if phase:
+            summary_parts.append(f"phase={phase}")
+        if runtime_role:
+            summary_parts.append(f"runtimeRole={runtime_role}")
+        if agent_type:
+            summary_parts.append(f"agentType={agent_type}")
+        summary_parts.append(f"allowed={len(allowed)}")
+        summary_parts.append(f"denied={len(denied)}")
+        return {
+            "phase": phase or None,
+            "runtimeRole": runtime_role or None,
+            "agentType": agent_type or None,
+            "policyVersion": decision.get("policyVersion"),
+            "allowedCount": len(allowed),
+            "deniedCount": len(denied),
+            "allowedTools": allowed,
+            "deniedTools": denied,
+            "requiresApprovalTools": requires_approval,
+            "denyReasons": reason_items,
+            "summary": ", ".join(summary_parts),
+        }
+
+    def _string_list_value(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, str) and item]
 
     # ------------------------------------------------------------------
     # ContextSnapshot

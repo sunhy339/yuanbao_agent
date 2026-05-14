@@ -62,13 +62,22 @@ def _seed_proposal(store: SQLiteStore, task: dict[str, Any], session: dict[str, 
     return result["proposal"]["id"]
 
 
-def _seed_provider_turn(store: SQLiteStore, task: dict[str, Any], session: dict[str, Any]) -> str:
+def _seed_provider_turn(
+    store: SQLiteStore,
+    task: dict[str, Any],
+    session: dict[str, Any],
+    *,
+    tool_policy_decision: dict[str, Any] | None = None,
+    role_snapshot: dict[str, Any] | None = None,
+) -> str:
     """Insert a provider turn record."""
     result = store.create_provider_turn(
         task_id=task["id"],
         session_id=session["id"],
         turn_index=0,
         model="test-model",
+        tool_policy_decision=tool_policy_decision,
+        role_snapshot=role_snapshot,
     )
     turn_id = result["id"]
     # Complete it to set status/thought
@@ -204,6 +213,42 @@ class TestAuditReplay:
         assert len(pt) == 1
         assert pt[0]["replayable"] is False
         assert len(result["warnings"]) == 1
+
+    def test_provider_turn_timeline_includes_tool_policy_explanation(self, tmp_path: Path) -> None:
+        store, ctx = _store_with_context(tmp_path)
+        _seed_provider_turn(
+            store,
+            ctx["task"],
+            ctx["session"],
+            tool_policy_decision={
+                "phase": "investigation",
+                "runtimeRole": "root",
+                "agentType": "root",
+                "allowedToolNames": ["read_file"],
+                "deniedToolNames": ["run_command"],
+                "reasons": {"run_command": "blocked by PermissionEngine"},
+                "decisionDetails": [
+                    {"toolName": "read_file", "finalDecision": "allowed"},
+                    {"toolName": "run_command", "finalDecision": "denied", "reason": "blocked by PermissionEngine"},
+                ],
+                "policyVersion": "tool-policy-v2",
+            },
+            role_snapshot={"runtimeRole": "root", "agentType": "root"},
+        )
+        service = ReplayService(store)
+
+        result = service.audit_replay({"taskId": ctx["task"]["id"]})
+        provider_turn = next(entry for entry in result["timeline"] if entry["step"] == "provider_turn")
+
+        assert provider_turn["toolPolicyDecision"]["allowedToolNames"] == ["read_file"]
+        assert provider_turn["roleSnapshot"]["runtimeRole"] == "root"
+        explanation = provider_turn["toolPolicyExplanation"]
+        assert explanation["phase"] == "investigation"
+        assert explanation["allowedTools"] == ["read_file"]
+        assert explanation["deniedTools"] == ["run_command"]
+        assert explanation["denyReasons"] == [
+            {"toolName": "run_command", "reason": "blocked by PermissionEngine"}
+        ]
 
     def test_summary_format(self, tmp_path: Path) -> None:
         store, ctx = _store_with_context(tmp_path)

@@ -60,13 +60,17 @@ class AgentProfileFlowMixin:
             context["permissionMode"] = permission_mode
 
         tool_policy = params.get("toolPolicy")
-        if tool_policy:
-            context["skillPolicy"] = tool_policy
+        skill_policy = self._skill_policy_from_profile_tool_policy(tool_policy)
+        if skill_policy:
+            context["skillPolicy"] = skill_policy
 
         # Get registered tools from tool registry
         registered_tools: list[dict[str, Any]] = []
         if hasattr(self, "_tool_registry") and self._tool_registry is not None:
-            schemas = self._tool_registry.get_tool_schemas()
+            if hasattr(self._tool_registry, "get_tool_schemas"):
+                schemas = self._tool_registry.get_tool_schemas()
+            else:
+                schemas = getattr(self._tool_registry, "schemas", [])
             if isinstance(schemas, list):
                 registered_tools = schemas
 
@@ -83,8 +87,47 @@ class AgentProfileFlowMixin:
             tool_results=[],
             registered_tools=registered_tools,
         )
+        allowed_tools, denied_tools = self._apply_profile_tool_policy(
+            decision.allowed_tool_names,
+            decision.denied_tool_names,
+            tool_policy,
+        )
 
         return {
-            "allowedTools": decision.allowed_tool_names,
-            "deniedTools": decision.denied_tool_names,
+            "allowedTools": allowed_tools,
+            "deniedTools": denied_tools,
         }
+
+    def _skill_policy_from_profile_tool_policy(self, tool_policy: Any) -> dict[str, Any] | None:
+        if not isinstance(tool_policy, dict):
+            return None
+        if "toolWhitelist" in tool_policy or "tool_whitelist" in tool_policy:
+            return tool_policy
+        allowed_tools = tool_policy.get("allowedTools") or tool_policy.get("allowed_tools")
+        if isinstance(allowed_tools, list):
+            return {
+                "skillId": "agent_profile_preview",
+                "toolPolicy": "strict_whitelist",
+                "toolWhitelist": [item for item in allowed_tools if isinstance(item, str) and item],
+            }
+        return None
+
+    def _apply_profile_tool_policy(
+        self,
+        allowed_tools: list[str],
+        denied_tools: list[str],
+        tool_policy: Any,
+    ) -> tuple[list[str], list[str]]:
+        if not isinstance(tool_policy, dict):
+            return allowed_tools, denied_tools
+        denied = list(dict.fromkeys(denied_tools))
+        allowed = list(dict.fromkeys(allowed_tools))
+        denied_policy = {
+            item
+            for item in (tool_policy.get("deniedTools") or tool_policy.get("denied_tools") or [])
+            if isinstance(item, str) and item
+        }
+        if denied_policy:
+            allowed = [name for name in allowed if name not in denied_policy]
+            denied = list(dict.fromkeys([*denied, *sorted(denied_policy)]))
+        return allowed, denied

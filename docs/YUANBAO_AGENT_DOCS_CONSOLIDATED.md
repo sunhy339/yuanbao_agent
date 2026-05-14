@@ -1232,6 +1232,22 @@ flowchart TD
 | --- | --- |
 | `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp_toolpolicy runtime/tests/test_tool_policy_resolver.py runtime/tests/test_provider_turns.py runtime/tests/test_replay.py` | 65 passed |
 
+### 2026-05-14 Dynamic Agent Profile backend/RPC 收尾
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| profile store/schema | Done | runtime 新增 `agent_profiles` 表与 `AgentProfileStoreMixin`，支持 profile list/get/create/update/delete，序列化 `skillIds`、`mcpServerIds`、`toolPolicy` 和系统提示等字段。 |
+| profile RPC flow | Done | `agent.profile.list/create/update/delete/validate/previewTools` 已注册到 JSON-RPC；validate 覆盖基础字段与 tool policy 结构；previewTools 通过 `ToolPolicyResolver` 预览允许/拒绝工具。 |
+| shared RPC/domain 类型 | Done | shared 层补齐 `AgentProfileRecord` 与 `AgentProfile*Params/Result` 类型，前端调用可以使用稳定 RPC 类型。 |
+| 设置页 profile 管理 | Pending | Settings 的 Agents panel 目前仍是只读占位；下一步需要接入 `agent.profile.*` RPC，补 profile 列表、新建/编辑/删除、工具预览和表单校验。 |
+
+验证结果：
+
+| 验证 | 结果 |
+| --- | --- |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp_agent_profile runtime/tests/test_agent_profile_rpc.py runtime/tests/test_tool_policy_resolver.py` | 12 passed |
+| `npm.cmd run typecheck` in `app/` | passed |
+
 ### 当前剩余非大文件任务
 
 | 优先级 | 任务 | 当前状态 | 下一步 |
@@ -1239,7 +1255,7 @@ flowchart TD
 | P0/P1 | Completion / Stop 判断强化 | 硬 gate 第一/二/三/四/五层已完成：写入/验证型 `summary_only` 会进入 `completion_review`；失败验证会直接失败；有工作区变更证据但缺少 passed verification 会进入 `needs_verification`；结构化 acceptance failed/缺项会进入 `needs_acceptance_review`；unresolved tool failures 会进入 `needs_tool_review`；代码/测试文件变更如果只有结构性 git 检查也会进入 `needs_verification`；基础 completion review 证据展示已接入 UI。 | 下一步继续细化语言/框架测试匹配规则，并把 reviewer/approval 结论纳入更完整的完成审计。 |
 | P1 | Worktree 后续闭环 | 自动绑定写入型任务、工具 cwd 路由、桌面端 path/status/diff 展示、formal merge approval gate 已完成。 | 下一步接入 merge 前验证命令、reviewer/用户批准摘要、dirty cancel/cleanup 策略细化，以及多 agent 共享/独立 worktree 设计。 |
 | P1 | Hooks 生命周期补齐 | 基础 hook 能力已有，但生命周期触发点和权限边界还需统一。 | 补齐 before/after task、before/after tool、before/after provider turn、pause/cancel/resume、compaction、worktree merge 等事件，并纳入 PermissionEngine。 |
-| P1 | Dynamic Agent Profile 设置页/RPC | runtime snapshot 已有，profile CRUD 未完成。 | 增加 profile list/create/update/delete/validate/previewTools RPC；设置页接入 profile 管理和工具预览。 |
+| P1 | Dynamic Agent Profile 设置页 | backend store/RPC、shared 类型、validate 与 previewTools 已完成；Settings UI 仍是只读占位。 | 设置页接入 `agent.profile.*`，实现 profile 列表、新建/编辑/删除、工具预览和表单校验。 |
 | P1 | Real LLM smoke 固化 | 手工和回归测试已有，尚未变成安全脚本。 | 新增可选 smoke runner，只从环境变量读取 key，不落库、不写文档、不提交生成物。 |
 
 ### 当前重点
@@ -1251,6 +1267,8 @@ flowchart TD
 2026-05-14 更新：Provider API format 扩展已完成 `openai-responses` 与 native `anthropic-messages` 收尾；当前剩余重点转向 Hooks 生命周期、ToolPolicyResolver 第二阶段、Dynamic Agent Profile CRUD/设置页，以及 Real LLM smoke 固化。
 
 2026-05-14 更新：ToolPolicyResolver 第二阶段已完成到 provider turn / audit replay 可解释层；当前剩余重点转向 Hooks 生命周期核对补齐、Dynamic Agent Profile CRUD/设置页（另行推进），以及 Real LLM smoke 固化。
+
+2026-05-14 更新：Dynamic Agent Profile backend/RPC 已完成并补验证；当前剩余的是 Settings UI profile 管理入口与 Real LLM smoke 固化。
 
 ### 2026-05-14 Worktree 自动绑定首段闭环
 

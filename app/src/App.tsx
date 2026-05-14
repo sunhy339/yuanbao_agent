@@ -15,7 +15,7 @@ import {
   replaceSessionMessages,
   type ChatMessageView,
 } from "./state/chatMessages";
-import { DEFAULT_PROMPT, DEFAULT_WORKSPACE_PATH } from "./state/mockData";
+import { DEFAULT_PROMPT, DEFAULT_WORKSPACE_PATH } from "./state/constants";
 import { AppShell } from "./ui/workbench/AppShell";
 import { getSidebarActiveSessionId, resolveSessionForTab } from "./ui/workbench/sessionRouting";
 import { getInitialTabs } from "./ui/workbench/tabModel";

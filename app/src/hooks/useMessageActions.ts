@@ -16,7 +16,7 @@ import {
 import { formatRuntimeModeLabel, formatStatusLabel } from "../ui/copy";
 import {
   DEFAULT_SESSION_TITLE,
-} from "../state/mockData";
+} from "../state/constants";
 import { dispatchSlashCommand, SLASH_COMMANDS } from "../state/slashCommands";
 import { openSessionTab } from "../ui/workbench/tabModel";
 import {

@@ -8,7 +8,7 @@ import { RuntimeClient, type RuntimeConfig } from "../lib/runtimeClient";
 import {
   DEFAULT_SESSION_TITLE,
   DEFAULT_WORKSPACE_PATH,
-} from "../state/mockData";
+} from "../state/constants";
 import {
   normalizeWorkspacePathForCompare,
 } from "../state/providerConfig";

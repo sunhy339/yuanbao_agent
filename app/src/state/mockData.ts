@@ -1,88 +1,7 @@
-import type {
-  AgentEventEnvelope,
-  AppConfig,
-  PlanStep,
-  SessionRecord,
-  TaskRecord,
-  WorkspaceRef,
-} from "@shared";
+import type { AppConfig } from "@shared";
 import { defaultAppConfig } from "@shared";
 
-const now = Date.now();
-
-export const DEFAULT_WORKSPACE_PATH = "D:/py/yuanbao_agent";
-export const DEFAULT_SESSION_TITLE = "New Session";
-export const DEFAULT_PROMPT = "";
-
-export function buildMockWorkspace(path: string): WorkspaceRef {
-  return {
-    id: `ws_${Date.now()}`,
-    name: path.split(/[\\/]/).filter(Boolean).pop() ?? "workspace",
-    rootPath: path,
-    focus: null,
-    summary: null,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  };
-}
-
-export function buildMockSession(workspaceId: string, title: string, workspace?: WorkspaceRef | null): SessionRecord {
-  return {
-    id: `sess_${Date.now()}`,
-    workspaceId,
-    workspaceName: workspace?.name,
-    workspaceRoot: workspace?.rootPath,
-    title,
-    status: "active",
-    summary: "Browser preview session for the local coding agent shell.",
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  };
-}
-
-export function buildMockPlan(goal: string): PlanStep[] {
-  return [
-    {
-      id: "collect-context",
-      title: "Collect workspace context",
-      status: "completed",
-      detail: "Read the workspace shell and the initial configuration payload.",
-    },
-    {
-      id: "inspect-request",
-      title: "Inspect the task request",
-      status: "active",
-      detail: `Analyze the request: ${goal}`,
-    },
-    {
-      id: "prepare-next-step",
-      title: "Prepare the next action",
-      status: "pending",
-      detail: "Wait for tool results or more runtime events.",
-    },
-  ];
-}
-
-export function buildMockTask(sessionId: string, content: string): TaskRecord {
-  const plan = buildMockPlan(content);
-  return {
-    id: `task_${Date.now()}`,
-    sessionId,
-    type: "edit",
-    status: "queued",
-    goal: content,
-    acceptanceCriteria: ["Understand the request", "Make a focused change", "Report verification results"],
-    outOfScope: ["Unrelated refactors", "Provider configuration changes"],
-    currentStep: plan.find((step) => step.status === "active")?.title ?? plan[0]?.title,
-    changedFiles: [],
-    commands: [],
-    verification: [],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    plan,
-  };
-}
-
+// Test-only mock config builder — used by App.test.tsx
 export function buildMockConfig(): AppConfig {
   return {
     provider: {
@@ -113,7 +32,7 @@ export function buildMockConfig(): AppConfig {
           maxOutputTokens: 4000,
           maxContextTokens: 256000,
           timeout: 30,
-          lastCheckedAt: now,
+          lastCheckedAt: Date.now(),
           lastStatus: "mocked",
           lastErrorSummary: "Local preview does not contact a remote model.",
         },
@@ -123,9 +42,9 @@ export function buildMockConfig(): AppConfig {
     agentSoul: defaultAppConfig.agentSoul,
     permissions: defaultAppConfig.permissions,
     workspace: {
-      rootPath: DEFAULT_WORKSPACE_PATH,
+      rootPath: "D:/py/yuanbao_agent",
       ignore: [".git", "node_modules", "dist", ".venv", "target"],
-      writableRoots: [DEFAULT_WORKSPACE_PATH],
+      writableRoots: ["D:/py/yuanbao_agent"],
     },
     search: {
       glob: [],
@@ -156,46 +75,3 @@ export function buildMockConfig(): AppConfig {
     },
   };
 }
-
-export function buildMockEvent<TPayload>(
-  sessionId: string,
-  taskId: string,
-  type: AgentEventEnvelope<TPayload>["type"],
-  payload: TPayload,
-): AgentEventEnvelope<TPayload> {
-  return {
-    eventId: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    sessionId,
-    taskId,
-    type,
-    ts: Date.now(),
-    payload,
-  };
-}
-
-export const seedSession: SessionRecord = {
-  id: "sess_demo",
-  workspaceId: "ws_demo",
-  title: "Fix pytest failure",
-  status: "active",
-  summary: "Browser preview demo session.",
-  createdAt: now,
-  updatedAt: now,
-};
-
-export const seedTask: TaskRecord = {
-  id: "task_demo",
-  sessionId: seedSession.id,
-  type: "edit",
-  status: "running",
-  goal: "Run tests, inspect key files, then prepare a reviewable patch.",
-  acceptanceCriteria: ["Inspect relevant files", "Prepare a reviewable patch", "Run the configured verification"],
-  outOfScope: ["Rewrite unrelated UI"],
-  currentStep: "Inspect the task request",
-  changedFiles: [],
-  commands: [],
-  verification: [],
-  createdAt: now,
-  updatedAt: now,
-  plan: buildMockPlan("Run tests, inspect key files, then prepare a reviewable patch."),
-};

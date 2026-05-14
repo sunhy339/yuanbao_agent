@@ -48,6 +48,13 @@ export function WorktreePanel({
   const hasReviewedDiff = Boolean(diff && !diff.error && (diff.diffStat || diff.diff || diff.files?.length));
   const canMerge = Boolean(onMerge) && hasReviewedDiff && dirtyFiles === 0 && !status?.error;
   const canCleanup = Boolean(onCleanup) && dirtyFiles === 0 && !status?.error;
+  const mergeVerification = worktree.lastStatus?.mergeVerification ?? [];
+  const failedVerification = mergeVerification.find((item) => item.status === "failed");
+  const verificationSummary = !mergeVerification.length
+    ? "Not run"
+    : failedVerification
+      ? failedVerification.summary || failedVerification.command || "Failed"
+      : `${mergeVerification.length} passed`;
 
   return (
     <section className="worktree-panel" aria-label="Task worktree">
@@ -93,6 +100,19 @@ export function WorktreePanel({
         <article>
           <span>Diff</span>
           <strong>{diffSummary}</strong>
+        </article>
+        <article>
+          <span>Verification</span>
+          <strong>{verificationSummary}</strong>
+          {mergeVerification.length ? (
+            <ul>
+              {mergeVerification.slice(0, 3).map((item, index) => (
+                <li key={`${item.command ?? "verification"}:${index}`}>
+                  <code>{compactMeta([item.status, item.command]).join(" - ")}</code>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </article>
       </div>
 

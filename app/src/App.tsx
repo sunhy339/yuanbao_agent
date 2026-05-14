@@ -143,11 +143,16 @@ export function App() {
       addToast("info", "Clean or commit the worktree changes before requesting merge approval.");
       return;
     }
-    const result = await runWorktreeAction("requestMergeApproval", () => runtimeClient.worktreeRequestMergeApproval({ worktreeId }));
+    const result = await runWorktreeAction("requestMergeApproval", () => runtimeClient.worktreeRequestMergeApproval({
+      worktreeId,
+      verificationCommands: config?.worktree?.mergeVerificationCommands,
+      verificationTimeoutMs: config?.worktree?.mergeVerificationTimeoutMs,
+    }));
     if (result?.approval) {
       setWorktreeStatus(normalizeWorktreeStatus(result.gitStatus));
       setWorktreeDiff(result.diff ?? worktreeDiff);
-      addToast("info", "Worktree merge approval requested.");
+      const passedVerification = result.verification?.length ? ` after ${result.verification.length} verification check${result.verification.length === 1 ? "" : "s"}` : "";
+      addToast("info", `Worktree merge approval requested${passedVerification}.`);
     }
   }
 

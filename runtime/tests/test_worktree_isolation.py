@@ -19,6 +19,7 @@ Covers:
 from __future__ import annotations
 
 from typing import Any
+import json
 
 import pytest
 
@@ -369,6 +370,63 @@ class TestWorktreeServiceMergeGate:
         assert wt["id"] in request
         assert result["diff"]["diffStat"] == "file.py | 1 +"
 
+    def test_request_merge_approval_runs_verification_commands(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+        wt = _create_worktree(
+            store,
+            ws_id,
+            task_id=task["id"],
+            session_id=task["sessionId"],
+            worktree_path=str(worktree_path),
+        )
+        git = FakeGitWorktreeAdapter()
+        service = WorktreeService(store, git)
+
+        result = service.request_merge_approval({
+            "worktreeId": wt["id"],
+            "verificationCommands": ["python -c \"print('merge ok')\""],
+        })
+
+        verification = result["verification"]
+        assert verification[0]["status"] == "passed"
+        assert verification[0]["command"].startswith("python -c")
+        assert verification[0]["cwd"] == str(worktree_path)
+        request = json.loads(result["approval"]["requestJson"])
+        assert request["verificationStatus"] == "passed"
+        assert request["verification"][0]["status"] == "passed"
+        stored = store.get_worktree({"worktreeId": wt["id"]})["worktree"]
+        assert stored["lastStatus"]["mergeVerification"][0]["status"] == "passed"
+
+    def test_request_merge_approval_blocks_failed_verification(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+        wt = _create_worktree(
+            store,
+            ws_id,
+            task_id=task["id"],
+            session_id=task["sessionId"],
+            worktree_path=str(worktree_path),
+        )
+        git = FakeGitWorktreeAdapter()
+        service = WorktreeService(store, git)
+
+        with pytest.raises(ValueError, match="verification failed"):
+            service.request_merge_approval({
+                "worktreeId": wt["id"],
+                "verificationCommands": ["python -c \"import sys; print('bad'); sys.exit(3)\""],
+            })
+
+        assert store.find_latest_approval(task_id=task["id"]) is None
+        stored = store.get_worktree({"worktreeId": wt["id"]})["worktree"]
+        assert stored["lastStatus"]["mergeVerification"][0]["status"] == "failed"
+
     def test_merge_rejects_dirty_worktree(self, tmp_path: Any) -> None:
         store = _make_store(tmp_path)
         ws_id = _make_workspace(store, tmp_path)
@@ -427,6 +485,33 @@ class TestWorktreeServiceMergeGate:
         merge_payload = orchestrator.published[-1]["payload"]
         assert merge_payload["worktreeId"] == wt["id"]
         assert merge_payload["routing"]["activeWorktree"]["id"] == wt["id"]
+
+    def test_submit_worktree_merge_approval_publishes_verification(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+        wt = _create_worktree(
+            store,
+            ws_id,
+            task_id=task["id"],
+            session_id=task["sessionId"],
+            worktree_path=str(worktree_path),
+        )
+        git = FakeGitWorktreeAdapter()
+        service = WorktreeService(store, git)
+        orchestrator = FakeApprovalOrchestrator(store, service)
+        approval = service.request_merge_approval({
+            "worktreeId": wt["id"],
+            "verificationCommands": ["python -c \"print('ready')\""],
+        })["approval"]
+
+        result = orchestrator.submit_approval({"approvalId": approval["id"], "decision": "approved"})
+
+        assert result["worktreeMerge"]["verification"][0]["status"] == "passed"
+        merge_payload = orchestrator.published[-1]["payload"]
+        assert merge_payload["verification"][0]["status"] == "passed"
 
     def test_submit_worktree_merge_approval_reports_failed_merge(self, tmp_path: Any) -> None:
         store = _make_store(tmp_path)

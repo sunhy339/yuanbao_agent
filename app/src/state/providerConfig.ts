@@ -201,6 +201,7 @@ export function normalizeRuntimeConfig(config: AppConfig | RuntimeConfig): Runti
       ...config.tools,
       runCommand: normalizeRunCommandConfig(config.tools.runCommand),
     },
+    worktree: config.worktree,
   };
 }
 

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,9 @@ from ..git.worktree_adapter import GitWorktreeAdapter
 from ..store.sqlite_store import SQLiteStore
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_MERGE_VERIFICATION_TIMEOUT_MS = 120_000
+_VERIFICATION_OUTPUT_LIMIT = 4000
 
 
 class WorktreeService:
@@ -53,6 +58,24 @@ class WorktreeService:
         if status.get("dirtyFiles", 0):
             raise ValueError("Worktree has uncommitted changes; review and commit or clean before merge")
         diff = self._git.diff(wt["worktreePath"], wt.get("baseRef", "HEAD"))
+        verification = self._run_merge_verification(wt, params)
+        if verification:
+            self._store.update_worktree({
+                "worktreeId": wt["id"],
+                "lastStatus": {
+                    "mergeVerification": verification,
+                    "dirtyFiles": status.get("dirtyFiles", 0),
+                    "diffStat": diff.get("diffStat") or "",
+                },
+            })
+        failed_verification = next((item for item in verification if item.get("status") == "failed"), None)
+        if failed_verification is not None:
+            raise ValueError(
+                "Worktree merge verification failed: "
+                f"{failed_verification.get('command')}: {failed_verification.get('summary')}"
+            )
+        if verification:
+            wt = self._store.get_worktree({"worktreeId": wt["id"]})["worktree"]
         request = {
             "worktreeId": wt["id"],
             "taskId": wt.get("taskId", ""),
@@ -65,6 +88,10 @@ class WorktreeService:
             "files": status.get("files") or diff.get("files") or [],
             "risk": "write merge worktree changes into target branch",
         }
+        if verification:
+            request["verification"] = verification
+            request["verificationCommands"] = [item.get("command") for item in verification if item.get("command")]
+            request["verificationStatus"] = "passed"
 
         existing = self._store.find_approval(
             task_id=wt["taskId"],
@@ -81,6 +108,7 @@ class WorktreeService:
             "worktree": wt,
             "gitStatus": status,
             "diff": diff,
+            "verification": verification,
         }
 
     def create_for_task(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -152,10 +180,14 @@ class WorktreeService:
         wt = record["worktree"]
         target_branch = params.get("targetBranch", "main")
         branch_name = wt.get("branchName", "")
+        approval: dict[str, Any] | None = None
+        approved_request: dict[str, Any] = {}
         if wt.get("mergePolicy") == "manual_only":
             raise ValueError("Worktree merge policy is manual_only")
         if wt.get("mergePolicy") == "approval_required":
-            self._require_approved_merge_record(wt, params, target_branch)
+            approval = self._require_approved_merge_record(wt, params, target_branch)
+            approved_request = self._approval_request(approval)
+        verification = approved_request.get("verification") if isinstance(approved_request.get("verification"), list) else []
         status = self._git.status(wt["worktreePath"])
         if status.get("dirtyFiles", 0):
             raise ValueError("Worktree has uncommitted changes; review and commit or clean before merge")
@@ -168,6 +200,7 @@ class WorktreeService:
             "branchName": branch_name,
             "targetBranch": target_branch,
             "diff": diff,
+            "verification": verification,
         }
 
         # Fire before hooks
@@ -184,6 +217,7 @@ class WorktreeService:
                 "status": "failed",
                 "lastStatus": {
                     "mergeResult": merge_result,
+                    "mergeVerification": verification,
                     "dirtyFiles": status.get("dirtyFiles", 0),
                 },
             })
@@ -195,6 +229,7 @@ class WorktreeService:
                 "branchName": branch_name,
                 "targetBranch": target_branch,
                 "result": merge_result,
+                "verification": verification,
             }
 
         # Update store record
@@ -203,6 +238,7 @@ class WorktreeService:
             "status": "merged",
             "lastStatus": {
                 "mergeResult": merge_result,
+                "mergeVerification": verification,
                 "dirtyFiles": status.get("dirtyFiles", 0),
             },
         })
@@ -217,6 +253,7 @@ class WorktreeService:
             "branchName": branch_name,
             "targetBranch": target_branch,
             "result": merge_result,
+            "verification": verification,
         }
 
     def _require_approved_merge_record(
@@ -245,6 +282,160 @@ class WorktreeService:
         if approved_target != target_branch:
             raise ValueError("Worktree merge approval target branch does not match")
         return approval
+
+    def _approval_request(self, approval: dict[str, Any]) -> dict[str, Any]:
+        try:
+            request = json.loads(approval.get("requestJson") or "{}")
+        except json.JSONDecodeError as exc:
+            raise ValueError("Worktree merge approval request is invalid") from exc
+        return request if isinstance(request, dict) else {}
+
+    def _worktree_config(self) -> dict[str, Any]:
+        try:
+            config = self._store.get_config({}).get("config", {})
+        except Exception:  # noqa: BLE001
+            return {}
+        worktree = config.get("worktree") if isinstance(config, dict) else {}
+        return worktree if isinstance(worktree, dict) else {}
+
+    def _merge_verification_commands(self, params: dict[str, Any]) -> list[str]:
+        raw = params.get("verificationCommands")
+        if raw is None:
+            raw = params.get("mergeVerificationCommands")
+        if raw is None:
+            config = self._worktree_config()
+            raw = config.get("mergeVerificationCommands")
+            if raw is None:
+                raw = config.get("verificationCommands")
+        return self._normalize_verification_commands(raw)
+
+    def _merge_verification_timeout_ms(self, params: dict[str, Any]) -> int:
+        config = self._worktree_config()
+        raw = (
+            params.get("verificationTimeoutMs")
+            or params.get("mergeVerificationTimeoutMs")
+            or config.get("mergeVerificationTimeoutMs")
+            or config.get("verificationTimeoutMs")
+            or _DEFAULT_MERGE_VERIFICATION_TIMEOUT_MS
+        )
+        try:
+            timeout_ms = int(raw)
+        except (TypeError, ValueError):
+            timeout_ms = _DEFAULT_MERGE_VERIFICATION_TIMEOUT_MS
+        return max(1000, timeout_ms)
+
+    def _normalize_verification_commands(self, raw: Any) -> list[str]:
+        if isinstance(raw, str):
+            candidates: list[Any] = [raw]
+        elif isinstance(raw, list):
+            candidates = raw
+        else:
+            candidates = []
+        commands: list[str] = []
+        for item in candidates:
+            command: str | None = None
+            if isinstance(item, str):
+                command = item
+            elif isinstance(item, dict) and isinstance(item.get("command"), str):
+                command = item["command"]
+            if command is not None and command.strip():
+                commands.append(command.strip())
+        return commands
+
+    def _run_merge_verification(self, wt: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:
+        commands = self._merge_verification_commands(params)
+        if not commands:
+            return []
+        timeout_ms = self._merge_verification_timeout_ms(params)
+        timeout_seconds = timeout_ms / 1000
+        results: list[dict[str, Any]] = []
+        for command in commands:
+            started_at = int(time.time() * 1000)
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=wt["worktreePath"],
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                    check=False,
+                )
+                finished_at = int(time.time() * 1000)
+                status = "passed" if completed.returncode == 0 else "failed"
+                stdout = self._truncate_output(completed.stdout)
+                stderr = self._truncate_output(completed.stderr)
+                result = {
+                    "command": command,
+                    "cwd": wt["worktreePath"],
+                    "status": status,
+                    "exitCode": completed.returncode,
+                    "durationMs": max(0, finished_at - started_at),
+                    "summary": self._verification_summary(
+                        status=status,
+                        exit_code=completed.returncode,
+                        stdout=stdout,
+                        stderr=stderr,
+                    ),
+                    "startedAt": started_at,
+                    "finishedAt": finished_at,
+                }
+                if stdout:
+                    result["stdout"] = stdout
+                if stderr:
+                    result["stderr"] = stderr
+                results.append(result)
+                if status == "failed":
+                    break
+            except subprocess.TimeoutExpired as exc:
+                finished_at = int(time.time() * 1000)
+                stdout = self._truncate_output(exc.stdout)
+                stderr = self._truncate_output(exc.stderr)
+                result = {
+                    "command": command,
+                    "cwd": wt["worktreePath"],
+                    "status": "failed",
+                    "exitCode": None,
+                    "durationMs": max(0, finished_at - started_at),
+                    "summary": f"Verification timed out after {timeout_ms}ms.",
+                    "startedAt": started_at,
+                    "finishedAt": finished_at,
+                }
+                if stdout:
+                    result["stdout"] = stdout
+                if stderr:
+                    result["stderr"] = stderr
+                results.append(result)
+                break
+            except Exception as exc:  # noqa: BLE001
+                finished_at = int(time.time() * 1000)
+                results.append({
+                    "command": command,
+                    "cwd": wt.get("worktreePath", ""),
+                    "status": "failed",
+                    "exitCode": None,
+                    "durationMs": max(0, finished_at - started_at),
+                    "summary": str(exc),
+                    "startedAt": started_at,
+                    "finishedAt": finished_at,
+                })
+                break
+        return results
+
+    def _verification_summary(self, *, status: str, exit_code: int, stdout: str, stderr: str) -> str:
+        output = (stderr if status == "failed" else stdout).strip()
+        if not output:
+            output = (stdout or stderr).strip()
+        if output:
+            return output.splitlines()[0][:240]
+        return "Verification passed." if status == "passed" else f"Verification failed with exit code {exit_code}."
+
+    def _truncate_output(self, value: Any) -> str:
+        text = value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value or "")
+        text = text.strip()
+        if len(text) <= _VERIFICATION_OUTPUT_LIMIT:
+            return text
+        return f"{text[:_VERIFICATION_OUTPUT_LIMIT]}... [truncated]"
 
     def get_status(self, params: dict[str, Any]) -> dict[str, Any]:
         """Get worktree record + live git status."""

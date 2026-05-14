@@ -154,6 +154,17 @@ export interface ToolRuntimeConfig {
   allowedCwdRoots?: string[];
 }
 
+export interface WorktreeConfig {
+  autoBindWriteTasks: boolean;
+  baseRef: string;
+  branchPrefix: string;
+  pathRoot: string;
+  cleanupPolicy: string;
+  mergePolicy: string;
+  mergeVerificationCommands: string[];
+  mergeVerificationTimeoutMs: number;
+}
+
 export interface UiConfig {
   language: string;
   showRawEvents: boolean;
@@ -202,6 +213,7 @@ export interface AppConfig {
   tools: {
     runCommand: ToolRuntimeConfig;
   };
+  worktree: WorktreeConfig;
   ui: UiConfig;
 }
 
@@ -362,6 +374,16 @@ export const defaultAppConfig: AppConfig = {
       blockedPatterns: ["rm -rf", "shutdown", "format"],
       allowedCwdRoots: [],
     },
+  },
+  worktree: {
+    autoBindWriteTasks: true,
+    baseRef: "HEAD",
+    branchPrefix: "agent",
+    pathRoot: "",
+    cleanupPolicy: "ask_user",
+    mergePolicy: "approval_required",
+    mergeVerificationCommands: [],
+    mergeVerificationTimeoutMs: 120_000,
   },
   ui: {
     language: "zh-CN",

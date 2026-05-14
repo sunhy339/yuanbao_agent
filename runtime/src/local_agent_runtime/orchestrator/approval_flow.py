@@ -172,6 +172,7 @@ class ApprovalFlowMixin:
 
         worktree_id = request.get("worktreeId")
         target_branch = request.get("targetBranch") or "main"
+        request_verification = request.get("verification") if isinstance(request.get("verification"), list) else []
         worktree_service = getattr(self, "_worktree_service", None)
         if worktree_service is None:
             merge_result = {
@@ -179,6 +180,7 @@ class ApprovalFlowMixin:
                 "merged": False,
                 "targetBranch": target_branch,
                 "error": "WorktreeService not configured",
+                "verification": request_verification,
             }
         else:
             try:
@@ -193,6 +195,7 @@ class ApprovalFlowMixin:
                     "merged": False,
                     "targetBranch": target_branch,
                     "error": str(exc),
+                    "verification": request_verification,
                 }
 
         worktree = None
@@ -209,6 +212,7 @@ class ApprovalFlowMixin:
             "error": merge_result.get("error"),
             "targetBranch": merge_result.get("targetBranch") or target_branch,
             "branchName": merge_result.get("branchName"),
+            "verification": merge_result.get("verification") or request_verification,
         }
         if worktree is not None:
             payload.update({

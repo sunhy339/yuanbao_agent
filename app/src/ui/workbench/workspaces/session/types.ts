@@ -26,6 +26,16 @@ export interface SessionWorkspaceWorktree {
   status?: string;
   cleanupPolicy?: string | null;
   mergePolicy?: string | null;
+  lastStatus?: {
+    mergeVerification?: Array<{
+      command?: string;
+      status?: string;
+      exitCode?: number | null;
+      summary?: string;
+      durationMs?: number | null;
+    }>;
+    [key: string]: unknown;
+  } | null;
   createdAt?: number;
   updatedAt?: number;
 }

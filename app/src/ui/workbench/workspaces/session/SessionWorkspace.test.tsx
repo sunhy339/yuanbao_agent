@@ -1169,6 +1169,16 @@ describe("SessionWorkspace", () => {
             status: "active",
             mergePolicy: "approval_required",
             cleanupPolicy: "ask_user",
+            lastStatus: {
+              mergeVerification: [
+                {
+                  command: "npm test",
+                  status: "passed",
+                  exitCode: 0,
+                  summary: "43 passed",
+                },
+              ],
+            },
           },
         }}
         messages={[{ id: "m1", role: "user", content: "Change the runtime.", createdAt: 1 }]}
@@ -1186,6 +1196,8 @@ describe("SessionWorkspace", () => {
     expect(within(panel).getByText("D:/py/yuanbao_agent.worktrees/task_1")).toBeInTheDocument();
     expect(within(panel).getByText("1 dirty file")).toBeInTheDocument();
     expect(within(panel).getByText("app/src/App.tsx | 12 ++++++++++++")).toBeInTheDocument();
+    expect(within(panel).getByText("1 passed")).toBeInTheDocument();
+    expect(within(panel).getByText("passed - npm test")).toBeInTheDocument();
 
     await user.click(within(panel).getByRole("button", { name: "Refresh" }));
     await user.click(within(panel).getByRole("button", { name: "Diff" }));

@@ -101,6 +101,8 @@ struct WorktreeMergePayload {
     approved: Option<bool>,
     approval_id: Option<String>,
     target_branch: Option<String>,
+    verification_commands: Option<Vec<String>>,
+    verification_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -767,6 +769,8 @@ async fn worktree_merge(
             "approved": payload.approved.unwrap_or(false),
             "approvalId": payload.approval_id,
             "targetBranch": payload.target_branch,
+            "verificationCommands": payload.verification_commands,
+            "verificationTimeoutMs": payload.verification_timeout_ms,
         }),
     ).await
 }
@@ -783,6 +787,8 @@ async fn worktree_request_merge_approval(
         json!({
             "worktreeId": payload.worktree_id,
             "targetBranch": payload.target_branch,
+            "verificationCommands": payload.verification_commands,
+            "verificationTimeoutMs": payload.verification_timeout_ms,
         }),
     ).await
 }

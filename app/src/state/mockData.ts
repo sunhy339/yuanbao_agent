@@ -69,6 +69,7 @@ export function buildMockConfig(): AppConfig {
         allowedCwdRoots: [],
       },
     },
+    worktree: defaultAppConfig.worktree,
     ui: {
       language: "en",
       showRawEvents: false,

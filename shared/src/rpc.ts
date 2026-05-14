@@ -16,6 +16,7 @@ import type {
   SkillPresetRecord,
   SkillUsageRecord,
   TaskRecord,
+  TaskVerificationRecord,
   TraceEventRecord,
   WorktreeGitDiffRecord,
   WorktreeGitStatusRecord,
@@ -316,6 +317,8 @@ export interface WorktreeMergeParams {
   approved?: boolean;
   approvalId?: Identifier;
   targetBranch?: string;
+  verificationCommands?: string[];
+  verificationTimeoutMs?: number;
 }
 
 export interface WorktreeGetResult {
@@ -337,6 +340,7 @@ export interface WorktreeMergeApprovalResult {
   worktree: WorktreeRecord;
   gitStatus?: WorktreeGitStatusRecord | GitStatusRecord | { error?: string };
   diff?: WorktreeGitDiffRecord | GitDiffRecord | { error?: string; diff?: string; files?: unknown[] };
+  verification?: TaskVerificationRecord[];
 }
 
 export interface WorktreeMergeResult {
@@ -346,6 +350,7 @@ export interface WorktreeMergeResult {
   targetBranch?: string;
   error?: string;
   result?: Record<string, unknown>;
+  verification?: TaskVerificationRecord[];
 }
 
 export interface WorktreeCleanupResult {

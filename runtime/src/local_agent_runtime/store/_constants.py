@@ -158,6 +158,8 @@ DEFAULT_CONFIG = {
         "pathRoot": "",
         "cleanupPolicy": "ask_user",
         "mergePolicy": "approval_required",
+        "mergeVerificationCommands": [],
+        "mergeVerificationTimeoutMs": 120_000,
     },
     "reflection": {
         "enabled": False,

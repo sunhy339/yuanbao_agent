@@ -212,10 +212,13 @@ export interface TaskCommandRun {
 export interface TaskVerificationRecord {
   id?: Identifier;
   command?: string;
+  cwd?: string;
   status: "not_run" | "running" | "passed" | "failed" | "skipped" | string;
   exitCode?: number | null;
   durationMs?: number | null;
   summary?: string;
+  stdout?: string;
+  stderr?: string;
   startedAt?: number;
   finishedAt?: number | null;
 }

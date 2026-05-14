@@ -1228,6 +1228,7 @@ flowchart TD
 | 桌面端 Worktree 可视化 | Done | `TaskRecord.routing.activeWorktree` 已进入前端事件折叠；会话页展示 task worktree path、branch、status、diff，并通过 Tauri/RPC 接入 `worktree.status` / `worktree.diff` / `worktree.requestMergeApproval` / `worktree.merge` / `worktree.cleanup`。 |
 | merge/cleanup 第一层保护 | Done | `worktree.merge` 默认要求正式 approval record，先拒绝 dirty worktree，冲突时不标记 merged；cleanup 默认只允许 clean worktree。 |
 | formal merge approval gate | Done | `worktree.requestMergeApproval` 会基于 clean status + diff 创建/复用 `worktree_merge` approval；前端只负责请求审批，`approval.submit` 批准后由 runtime 执行 merge，并发布 `task.worktree.merged` / `task.worktree.merge_failed`。 |
+| merge 前验证命令 | Done | `worktree.requestMergeApproval` 支持显式 `verificationCommands` 或 `DEFAULT_CONFIG.worktree.mergeVerificationCommands`；会在 task worktree cwd 中执行验证，失败则阻止创建 merge approval，成功则把 `verification` 写入 approval request、worktree `lastStatus.mergeVerification` 和 merge event。 |
 
 验证：
 
@@ -1244,11 +1245,14 @@ flowchart TD
 | `npm.cmd test -- SessionWorkspace.test.tsx eventRecordViews.test.ts` in `app/` | 43 passed |
 | `npm.cmd run typecheck` in `app/` | passed |
 | `cargo check` in `app/src-tauri` | passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worktree_isolation.py::TestWorktreeServiceMergeGate` | 9 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worktree_isolation.py runtime/tests/test_worktree_auto_binding.py` | 37 passed |
 
 剩余 worktree 后续：
 
 1. ~~队列任务、恢复任务、跨进程后台任务需要把 `activeWorktree` 持久化进 task routing/snapshot，避免只依赖当前内存参数。~~ **Done**：`activeWorktree` 已写回 task routing，queued 写入任务会在排队阶段完成 worktree 绑定，context snapshot 记录 `activeWorktree` 以支持 provider turn 回放。
 2. ~~UI 需要展示 task worktree path、branch、status、diff，并提供 merge/cleanup 入口。~~ **Done**：会话页已有 Worktree 面板，事件折叠会保留 `activeWorktree`，并接入 status/diff/merge/cleanup 调用。
 3. ~~merge 前需要正式 approval record。~~ **Done**：第一层已从前端二次确认升级为 `worktree_merge` approval record；审批通过后 runtime 才执行 merge，失败会返回结构化错误并发布 merge_failed 事件。
-4. merge 前还需要继续增强：接入验证命令、reviewer、approval gate 的 review 结果摘要，以及 diff 截断/完整 diff 展示策略。
-5. 子任务/多 agent 是否共享 root worktree、还是各自 worktree，需要结合任务依赖和 merge 策略做第二阶段设计。
+4. ~~merge 前接入验证命令。~~ **Done**：merge approval 请求会先执行配置/参数指定的验证命令，失败不创建 approval，成功把验证证据进入 approval request 和 merge event。
+5. merge 前还需要继续增强：接入 reviewer、approval gate 的 review 结果摘要，以及 diff 截断/完整 diff 展示策略。
+6. 子任务/多 agent 是否共享 root worktree、还是各自 worktree，需要结合任务依赖和 merge 策略做第二阶段设计。

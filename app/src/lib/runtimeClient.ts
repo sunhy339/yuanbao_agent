@@ -264,6 +264,10 @@ function mergeRuntimeConfig(current: RuntimeConfig, next: ConfigUpdateParams): R
         ...patch.tools?.runCommand,
       },
     },
+    worktree: {
+      ...current.worktree,
+      ...patch.worktree,
+    },
     ui: {
       ...current.ui,
       ...patch.ui,

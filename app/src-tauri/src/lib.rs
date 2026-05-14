@@ -90,6 +90,34 @@ struct TaskListPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct WorktreeIdPayload {
+    worktree_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreeMergePayload {
+    worktree_id: String,
+    approved: Option<bool>,
+    approval_id: Option<String>,
+    target_branch: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreeByTaskPayload {
+    task_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreeCleanupPayload {
+    worktree_id: String,
+    force: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ScheduledTaskCreatePayload {
     name: String,
     prompt: String,
@@ -674,6 +702,105 @@ async fn task_list(
 }
 
 #[tauri::command]
+async fn worktree_get(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: WorktreeIdPayload,
+) -> Result<Value, String> {
+    state.call_async(
+        app_handle,
+        "worktree.get".to_string(),
+        json!({ "worktreeId": payload.worktree_id }),
+    ).await
+}
+
+#[tauri::command]
+async fn worktree_get_by_task(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: WorktreeByTaskPayload,
+) -> Result<Value, String> {
+    state.call_async(
+        app_handle,
+        "worktree.getByTask".to_string(),
+        json!({ "taskId": payload.task_id }),
+    ).await
+}
+
+#[tauri::command]
+async fn worktree_status(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: WorktreeIdPayload,
+) -> Result<Value, String> {
+    state.call_async(
+        app_handle,
+        "worktree.status".to_string(),
+        json!({ "worktreeId": payload.worktree_id }),
+    ).await
+}
+
+#[tauri::command]
+async fn worktree_diff(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: WorktreeIdPayload,
+) -> Result<Value, String> {
+    state.call_async(
+        app_handle,
+        "worktree.diff".to_string(),
+        json!({ "worktreeId": payload.worktree_id }),
+    ).await
+}
+
+#[tauri::command]
+async fn worktree_merge(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: WorktreeMergePayload,
+) -> Result<Value, String> {
+    state.call_async(
+        app_handle,
+        "worktree.merge".to_string(),
+        json!({
+            "worktreeId": payload.worktree_id,
+            "approved": payload.approved.unwrap_or(false),
+            "approvalId": payload.approval_id,
+            "targetBranch": payload.target_branch,
+        }),
+    ).await
+}
+
+#[tauri::command]
+async fn worktree_request_merge_approval(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: WorktreeMergePayload,
+) -> Result<Value, String> {
+    state.call_async(
+        app_handle,
+        "worktree.requestMergeApproval".to_string(),
+        json!({
+            "worktreeId": payload.worktree_id,
+            "targetBranch": payload.target_branch,
+        }),
+    ).await
+}
+
+#[tauri::command]
+async fn worktree_cleanup(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: WorktreeCleanupPayload,
+) -> Result<Value, String> {
+    state.call_async(
+        app_handle,
+        "worktree.cleanup".to_string(),
+        json!({ "worktreeId": payload.worktree_id, "force": payload.force.unwrap_or(false) }),
+    ).await
+}
+
+#[tauri::command]
 async fn schedule_create(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -1107,6 +1234,13 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             task_pause,
             task_resume,
             task_list,
+            worktree_get,
+            worktree_get_by_task,
+            worktree_status,
+            worktree_diff,
+            worktree_merge,
+            worktree_request_merge_approval,
+            worktree_cleanup,
             schedule_create,
             schedule_list,
             schedule_update,

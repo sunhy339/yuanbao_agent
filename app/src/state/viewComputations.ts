@@ -10,6 +10,7 @@ import type {
   ToolLifecyclePayload,
 } from "@shared";
 import type {
+  ApprovalCompletionEvidenceView,
   ApprovalCardView,
   PatchCardView,
   ToolTimelineItem,
@@ -101,8 +102,28 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
       const filesChanged = readRequestOptionalNumber(request, ["filesChanged", "files_changed"]);
       const changedFiles = readRequestStringList(request, ["files", "filesChangedList", "paths"]);
       const patchId = payload.kind === "apply_patch" ? payload.patchId ?? readRequestPatchId(request) : undefined;
-      const patchSummary = readRequestText(request, "summary", readRequestText(request, "patchSummary", "patch approval request"));
-      const command = readRequestText(request, "command", payload.kind === "apply_patch" ? "apply_patch" : "command");
+      const isWorktreeMerge = payload.kind === "worktree_merge";
+      const isCompletionReview = payload.kind === "completion_review";
+      const completionEvidence = isCompletionReview ? buildCompletionEvidenceView(request) : undefined;
+      const worktreeBranch = readRequestText(request, "branchName", "worktree");
+      const worktreeTarget = readRequestText(request, "targetBranch", "main");
+      const patchSummary = isWorktreeMerge
+        ? `Worktree merge ${worktreeBranch} -> ${worktreeTarget}`
+        : isCompletionReview
+          ? "Completion review required"
+        : readRequestText(request, "summary", readRequestText(request, "patchSummary", "patch approval request"));
+      const command = readRequestText(
+        request,
+        "command",
+        payload.kind === "apply_patch"
+          ? "apply_patch"
+          : isWorktreeMerge
+            ? `merge ${worktreeBranch} -> ${worktreeTarget}`
+            : isCompletionReview
+              ? "review completion evidence"
+              : "command",
+      );
+      const cwd = readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", readRequestText(request, "worktreePath", ".")));
       cards.set(payload.approvalId, {
         approvalId: payload.approvalId,
         taskId: payload.taskId,
@@ -111,17 +132,30 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
         patchSummary,
         filesChanged,
         command,
-        cwd: readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", ".")),
+        cwd,
         shell: readRequestText(request, "shell", "system default"),
         timeoutMs: readRequestNumber(request, "timeoutMs", 0),
-        risk: readRequestText(request, "risk", payload.kind === "apply_patch" ? "writes files" : "executes command"),
+        risk: readRequestText(
+          request,
+          "risk",
+          payload.kind === "apply_patch"
+            ? "writes files"
+            : isCompletionReview
+              ? completionEvidence?.gateStatus ?? "completion evidence requires review"
+              : "executes command",
+        ),
         requestJson: stringifyRequestJson(request),
         requestSummary:
           payload.kind === "apply_patch"
             ? `${patchSummary}${filesChanged !== undefined ? ` | ${filesChanged} file(s)` : ""}${
                 changedFiles.length > 0 ? ` | ${changedFiles.slice(0, 3).join(", ")}` : ""
               }`
-            : `${command} | cwd ${readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", "."))}`,
+            : isWorktreeMerge
+              ? `${command} | ${readRequestText(request, "diffStat", "diff reviewed")}`
+              : isCompletionReview
+                ? completionEvidence?.summary ?? `${readRequestText(request, "reason", "completion evidence requires review")} | ${readRequestText(request, "summary", "").slice(0, 120)}`
+              : `${command} | cwd ${cwd}`,
+        completionEvidence,
         status: "pending",
         requestedAt: event.ts,
         updatedAt: event.ts,
@@ -165,6 +199,129 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
   }
 
   return sortByUpdatedAtDesc(Array.from(cards.values()));
+}
+
+function buildCompletionEvidenceView(request: Record<string, unknown>): ApprovalCompletionEvidenceView | undefined {
+  const evidence = readRecord(request["completionEvidence"]);
+  if (!evidence) return undefined;
+  const structuredResult = readRecord(request["structuredResult"]);
+  const completionGate = readRecord(structuredResult?.["completionGate"]);
+  const counts = readRecord(evidence["counts"]);
+  const reason = readString(request["reason"]) ?? readString(completionGate?.["reason"]);
+  const risk = readString(request["risk"]);
+  const gateStatus = readString(completionGate?.["status"]) ?? inferCompletionGateStatus(counts, reason, risk, evidence);
+  const evidenceLevel = readString(evidence["evidenceLevel"]);
+  const status = readString(evidence["status"]);
+
+  const metrics = [
+    countMetric(counts, "changedFiles", "files"),
+    countMetric(counts, "passedVerification", "verified"),
+    countMetric(counts, "failedVerification", "failed checks"),
+    countMetric(counts, "failedAcceptanceCriteria", "failed criteria"),
+    countMetric(counts, "unverifiedAcceptanceCriteria", "unverified criteria"),
+    countMetric(counts, "failedToolResults", "tool failures"),
+  ].filter((item): item is { label: string; value: string } => Boolean(item));
+
+  const issues = [
+    ...summarizeAcceptanceIssues(evidence["acceptance"]),
+    ...summarizeToolFailures(evidence["unresolvedToolFailures"]),
+    ...summarizeVerificationGap(gateStatus, evidence),
+  ].slice(0, 5);
+
+  return {
+    gateStatus,
+    evidenceLevel,
+    status,
+    summary: compactCompletionSummary(reason, gateStatus, evidenceLevel),
+    metrics,
+    issues,
+  };
+}
+
+function inferCompletionGateStatus(
+  counts: Record<string, unknown> | undefined,
+  reason: string | undefined,
+  risk: string | undefined,
+  evidence: Record<string, unknown>,
+): string | undefined {
+  const text = `${reason ?? ""} ${risk ?? ""}`.toLowerCase();
+  if (
+    countMetric(counts, "failedToolResults", "tool failures") ||
+    (Array.isArray(evidence["unresolvedToolFailures"]) && evidence["unresolvedToolFailures"].length > 0)
+  ) {
+    return "needs_tool_review";
+  }
+  if (countMetric(counts, "failedAcceptanceCriteria", "failed criteria") || countMetric(counts, "unverifiedAcceptanceCriteria", "unverified criteria")) {
+    return "needs_acceptance_review";
+  }
+  if (text.includes("acceptance")) {
+    return "needs_acceptance_review";
+  }
+  if (text.includes("tool")) {
+    return "needs_tool_review";
+  }
+  if (text.includes("verification") || text.includes("verified")) {
+    return "needs_verification";
+  }
+  return "needs_user_review";
+}
+
+function countMetric(counts: Record<string, unknown> | undefined, key: string, label: string): { label: string; value: string } | null {
+  const value = counts?.[key];
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  return { label, value: String(value) };
+}
+
+function summarizeAcceptanceIssues(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item) => {
+      const record = readRecord(item);
+      const status = readString(record?.["status"]);
+      return status === "failed" || status === "unsupported" || status === "unverified";
+    })
+    .map((item) => {
+      const record = readRecord(item);
+      const criterion = readString(record?.["criterion"]) ?? "criterion";
+      const status = readString(record?.["status"]) ?? "needs review";
+      return `${status}: ${criterion}`;
+    });
+}
+
+function summarizeToolFailures(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const record = readRecord(item);
+    const name = readString(record?.["name"]) ?? "tool";
+    const summary = readString(record?.["summary"]) ?? readString(record?.["status"]) ?? "failed";
+    return `${name}: ${summary}`;
+  });
+}
+
+function summarizeVerificationGap(gateStatus: string | undefined, evidence: Record<string, unknown>): string[] {
+  if (gateStatus !== "needs_verification") return [];
+  const changedFiles = Array.isArray(evidence["changedFiles"]) ? evidence["changedFiles"].length : 0;
+  const verification = Array.isArray(evidence["verification"]) ? evidence["verification"].length : 0;
+  if (changedFiles > 0 && verification > 0) {
+    return ["Code/test changes need targeted test, build, or typecheck verification."];
+  }
+  return ["Write evidence needs passing verification before completion."];
+}
+
+function compactCompletionSummary(reason: string | undefined, gateStatus: string | undefined, evidenceLevel: string | undefined): string {
+  const gate = gateStatus ? gateStatus.replace(/^needs_/, "").replace(/_/g, " ") : "review";
+  const level = evidenceLevel ? `evidence: ${evidenceLevel}` : "evidence review";
+  const text = reason?.trim();
+  if (!text) return `${gate} required | ${level}`;
+  return `${gate} required | ${text}`;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 export function computeApprovalByPatchId(approvalCards: ApprovalCardView[]): Map<string, ApprovalCardView> {

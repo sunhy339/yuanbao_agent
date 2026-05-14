@@ -17,6 +17,32 @@ export interface SessionWorkspacePlanStep {
   durationMs?: number;
 }
 
+export interface SessionWorkspaceWorktree {
+  id: string;
+  taskId?: string;
+  baseRef?: string;
+  branchName?: string;
+  worktreePath: string;
+  status?: string;
+  cleanupPolicy?: string | null;
+  mergePolicy?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+export interface SessionWorkspaceWorktreeStatus {
+  dirtyFiles?: number;
+  files?: string[];
+  error?: string;
+}
+
+export interface SessionWorkspaceWorktreeDiff {
+  diffStat?: string;
+  diff?: string;
+  files?: unknown[];
+  error?: string;
+}
+
 export interface SessionWorkspaceActiveTask {
   id: string;
   status?: string;
@@ -58,6 +84,7 @@ export interface SessionWorkspaceActiveTask {
   summary?: string;
   resultSummary?: string;
   planSteps?: SessionWorkspacePlanStep[];
+  activeWorktree?: SessionWorkspaceWorktree | null;
 }
 
 export interface SessionWorkspaceCollaborator {
@@ -136,6 +163,14 @@ export interface SessionWorkspaceApproval {
   fullInput?: string;
   command?: string;
   cwd?: string;
+  completionEvidence?: {
+    gateStatus?: string;
+    evidenceLevel?: string;
+    status?: string;
+    summary: string;
+    metrics: Array<{ label: string; value: string }>;
+    issues: string[];
+  };
 }
 
 export interface SessionWorkspacePatchFile {
@@ -266,8 +301,16 @@ export interface SessionWorkspaceProps {
   onRefreshTask?(): void | Promise<void>;
   onStopTask?(taskId: string): void | Promise<void>;
   onRefreshTrace?(): void | Promise<void>;
+  onRefreshWorktree?(worktreeId: string): void | Promise<void>;
+  onLoadWorktreeDiff?(worktreeId: string): void | Promise<void>;
+  onMergeWorktree?(worktreeId: string): void | Promise<void>;
+  onCleanupWorktree?(worktreeId: string, force?: boolean): void | Promise<void>;
+  worktreeStatus?: SessionWorkspaceWorktreeStatus | null;
+  worktreeDiff?: SessionWorkspaceWorktreeDiff | null;
   taskBusyAction?: "refresh" | "stop" | null;
   busyId?: string | null;
+  worktreeBusyAction?: "status" | "diff" | "requestMergeApproval" | "merge" | "cleanup" | null;
+  worktreeError?: string | null;
   messagesLoading?: boolean;
 }
 
@@ -287,6 +330,7 @@ export interface RuntimeTimelineItem {
   riskLevel?: "low" | "medium" | "high";
   code?: string;
   rawDetail?: string;
+  completionEvidence?: SessionWorkspaceApproval["completionEvidence"];
   time?: number;
   durationMs?: number;
   diffLines?: DiffLine[];

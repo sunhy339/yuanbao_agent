@@ -136,6 +136,7 @@ class JsonRpcServer:
             "worktree.get": self._store.get_worktree,
             "worktree.getByTask": self._store.get_worktree_by_task,
             "worktree.list": self._store.list_worktrees,
+            "worktree.requestMergeApproval": self._worktree_request_merge_approval,
             "worktree.status": self._worktree_status,
             "worktree.diff": self._worktree_diff,
             "worktree.cleanup": self._worktree_cleanup,
@@ -263,6 +264,11 @@ class JsonRpcServer:
 
     def _worktree_diff(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._require_worktree_service().get_diff(params)
+
+    def _worktree_request_merge_approval(self, params: dict[str, Any]) -> dict[str, Any]:
+        if hasattr(self._orchestrator, "request_worktree_merge_approval"):
+            return self._orchestrator.request_worktree_merge_approval(params)
+        return self._require_worktree_service().request_merge_approval(params)
 
     def _worktree_cleanup(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._require_worktree_service().cleanup(params)

@@ -22,6 +22,9 @@ from typing import Any
 
 import pytest
 
+from local_agent_runtime.git.worktree_adapter import GitWorktreeAdapter
+from local_agent_runtime.orchestrator.approval_flow import ApprovalFlowMixin
+from local_agent_runtime.services.worktree_service import WorktreeService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 
 
@@ -37,6 +40,17 @@ def _make_store(tmp_path: Any) -> SQLiteStore:
 def _make_workspace(store: SQLiteStore, tmp_path: Any) -> str:
     ws = store.upsert_workspace(str(tmp_path / "project"))
     return ws["id"]
+
+
+def _create_task(store: SQLiteStore, workspace_id: str) -> dict[str, Any]:
+    session = store.create_session(workspace_id, "Worktree merge gate")
+    return store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="merge isolated worktree",
+        plan=[],
+        status="completed",
+    )
 
 
 def _create_worktree(
@@ -64,6 +78,15 @@ def _create_worktree(
         params["sessionId"] = session_id
     result = store.create_worktree(params)
     return result["worktree"]
+
+
+def _approve_worktree_merge(store: SQLiteStore, wt: dict[str, Any], target_branch: str = "main") -> dict[str, Any]:
+    approval = store.create_approval(
+        wt["taskId"],
+        "worktree_merge",
+        {"worktreeId": wt["id"], "targetBranch": target_branch},
+    )
+    return store.resolve_approval(approval["id"], "approved")
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +275,11 @@ class TestWorktreeRPC:
             "worktree.get",
             "worktree.getByTask",
             "worktree.list",
+            "worktree.status",
+            "worktree.diff",
+            "worktree.requestMergeApproval",
+            "worktree.merge",
+            "worktree.cleanup",
             "worktree.update",
             "worktree.delete",
         ]
@@ -277,3 +305,143 @@ class TestWorktreeStatusTransitions:
 
         updated = store.update_worktree({"worktreeId": wt["id"], "status": status})
         assert updated["worktree"]["status"] == status
+
+
+class FakeGitWorktreeAdapter(GitWorktreeAdapter):
+    def __init__(self) -> None:
+        self.status_result: dict[str, Any] = {"dirtyFiles": 0, "files": []}
+        self.diff_result: dict[str, Any] = {"diffStat": "file.py | 1 +"}
+        self.merge_result: dict[str, Any] = {"result": "ok", "returnCode": 0}
+        self.merged: list[tuple[str, str]] = []
+
+    def status(self, target_path: str) -> dict[str, Any]:
+        return self.status_result
+
+    def diff(self, target_path: str, base_ref: str = "HEAD") -> dict[str, Any]:
+        return self.diff_result
+
+    def merge(self, branch_name: str, target_branch: str = "main") -> dict[str, Any]:
+        self.merged.append((branch_name, target_branch))
+        return self.merge_result
+
+
+class FakeApprovalOrchestrator(ApprovalFlowMixin):
+    def __init__(self, store: SQLiteStore, worktree_service: WorktreeService) -> None:
+        self._store = store
+        self._worktree_service = worktree_service
+        self.published: list[dict[str, Any]] = []
+        self.hooks: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def _publish(self, **kwargs: Any) -> None:
+        self.published.append(kwargs)
+
+    def _fire_hooks(self, *args: Any, **kwargs: Any) -> None:
+        self.hooks.append((args, kwargs))
+
+
+class TestWorktreeServiceMergeGate:
+    def test_merge_requires_explicit_approval(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        wt = _create_worktree(store, ws_id)
+        git = FakeGitWorktreeAdapter()
+        service = WorktreeService(store, git)
+
+        with pytest.raises(ValueError, match="approved approval record"):
+            service.merge({"worktreeId": wt["id"]})
+
+        assert git.merged == []
+
+    def test_request_merge_approval_creates_formal_approval(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        wt = _create_worktree(store, ws_id, task_id=task["id"], session_id=task["sessionId"])
+        git = FakeGitWorktreeAdapter()
+        service = WorktreeService(store, git)
+
+        result = service.request_merge_approval({"worktreeId": wt["id"]})
+
+        approval = result["approval"]
+        request = approval["requestJson"]
+        assert approval["kind"] == "worktree_merge"
+        assert approval["decision"] is None
+        assert wt["id"] in request
+        assert result["diff"]["diffStat"] == "file.py | 1 +"
+
+    def test_merge_rejects_dirty_worktree(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        wt = _create_worktree(store, ws_id, task_id=task["id"], session_id=task["sessionId"])
+        approval = _approve_worktree_merge(store, wt)
+        git = FakeGitWorktreeAdapter()
+        git.status_result = {"dirtyFiles": 1, "files": ["M file.py"]}
+        service = WorktreeService(store, git)
+
+        with pytest.raises(ValueError, match="uncommitted changes"):
+            service.merge({"worktreeId": wt["id"], "approvalId": approval["id"]})
+
+        assert git.merged == []
+
+    def test_merge_conflict_does_not_mark_merged(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        wt = _create_worktree(store, ws_id, task_id=task["id"], session_id=task["sessionId"])
+        approval = _approve_worktree_merge(store, wt)
+        git = FakeGitWorktreeAdapter()
+        git.merge_result = {"result": "conflict", "returnCode": 1, "stdout": "conflict"}
+        service = WorktreeService(store, git)
+
+        result = service.merge({"worktreeId": wt["id"], "approvalId": approval["id"]})
+
+        assert result["merged"] is False
+        assert store.get_worktree({"worktreeId": wt["id"]})["worktree"]["status"] == "failed"
+
+    def test_submit_worktree_merge_approval_runs_merge(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        wt = _create_worktree(
+            store,
+            ws_id,
+            task_id=task["id"],
+            session_id=task["sessionId"],
+            branch_name=f"agent/{task['id']}",
+        )
+        git = FakeGitWorktreeAdapter()
+        service = WorktreeService(store, git)
+        orchestrator = FakeApprovalOrchestrator(store, service)
+        approval = service.request_merge_approval({"worktreeId": wt["id"]})["approval"]
+
+        result = orchestrator.submit_approval({"approvalId": approval["id"], "decision": "approved"})
+
+        assert result["worktreeMerge"]["merged"] is True
+        assert git.merged == [(f"agent/{task['id']}", "main")]
+        assert store.get_worktree({"worktreeId": wt["id"]})["worktree"]["status"] == "merged"
+        assert [event["event_type"] for event in orchestrator.published] == [
+            "approval.resolved",
+            "task.worktree.merged",
+        ]
+        merge_payload = orchestrator.published[-1]["payload"]
+        assert merge_payload["worktreeId"] == wt["id"]
+        assert merge_payload["routing"]["activeWorktree"]["id"] == wt["id"]
+
+    def test_submit_worktree_merge_approval_reports_failed_merge(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        wt = _create_worktree(store, ws_id, task_id=task["id"], session_id=task["sessionId"])
+        git = FakeGitWorktreeAdapter()
+        service = WorktreeService(store, git)
+        orchestrator = FakeApprovalOrchestrator(store, service)
+        approval = service.request_merge_approval({"worktreeId": wt["id"]})["approval"]
+        git.status_result = {"dirtyFiles": 1, "files": ["M file.py"]}
+
+        result = orchestrator.submit_approval({"approvalId": approval["id"], "decision": "approved"})
+
+        assert result["worktreeMerge"]["merged"] is False
+        assert "uncommitted changes" in result["worktreeMerge"]["error"]
+        assert git.merged == []
+        assert orchestrator.published[-1]["event_type"] == "task.worktree.merge_failed"

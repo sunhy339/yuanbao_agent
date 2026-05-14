@@ -1023,6 +1023,48 @@ describe("SessionWorkspace", () => {
     expect(screen.getByRole("button", { name: "拒绝" })).toBeDisabled();
   });
 
+  it("renders completion review evidence on approval cards", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_1",
+          status: "completion_review",
+          goal: "Finish guarded completion",
+        }}
+        messages={[{ id: "m1", role: "assistant", content: "Completion needs review.", createdAt: 1 }]}
+        approvals={[
+          {
+            id: "approval_completion",
+            title: "Completion review",
+            status: "pending",
+            kind: "completion_review",
+            summary: "Completion requires verification.",
+            risk: "medium",
+            completionEvidence: {
+              gateStatus: "needs_verification",
+              evidenceLevel: "verified",
+              status: "review",
+              summary: "Code files changed without targeted verification.",
+              metrics: [
+                { label: "files", value: "2" },
+                { label: "verified", value: "1" },
+              ],
+              issues: ["Code/test changes need targeted test, build, or typecheck verification."],
+            },
+          },
+        ]}
+      />,
+    );
+
+    const evidence = screen.getByLabelText("Completion evidence");
+    expect(within(evidence).getByText("needs_verification")).toBeInTheDocument();
+    expect(within(evidence).getAllByText("verified").length).toBeGreaterThan(0);
+    expect(within(evidence).getByText("files")).toBeInTheDocument();
+    expect(within(evidence).getByText("2")).toBeInTheDocument();
+    expect(within(evidence).getByText("Code/test changes need targeted test, build, or typecheck verification.")).toBeInTheDocument();
+  });
+
   it("renders trace filter bar with task id, visibility, and agent type filters", () => {
     render(
       <SessionWorkspace
@@ -1102,5 +1144,96 @@ describe("SessionWorkspace", () => {
     expect(within(agentPanel).getByText(/4.5s/)).toBeInTheDocument();
     expect(within(agentPanel).getByText(/2 产物/)).toBeInTheDocument();
     expect(within(agentPanel).getByText(/CHILD_TASK_TIMEOUT/)).toBeInTheDocument();
+  });
+
+  it("shows active worktree details and guarded lifecycle actions", async () => {
+    const user = userEvent.setup();
+    const onRefreshWorktree = vi.fn();
+    const onLoadWorktreeDiff = vi.fn();
+    const onMergeWorktree = vi.fn();
+    const onCleanupWorktree = vi.fn();
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_1",
+          status: "running",
+          goal: "Edit files in isolation",
+          activeWorktree: {
+            id: "wt_1",
+            taskId: "task_1",
+            branchName: "agent/task_1",
+            baseRef: "HEAD",
+            worktreePath: "D:/py/yuanbao_agent.worktrees/task_1",
+            status: "active",
+            mergePolicy: "approval_required",
+            cleanupPolicy: "ask_user",
+          },
+        }}
+        messages={[{ id: "m1", role: "user", content: "Change the runtime.", createdAt: 1 }]}
+        worktreeStatus={{ dirtyFiles: 1, files: ["M app/src/App.tsx"] }}
+        worktreeDiff={{ diffStat: "app/src/App.tsx | 12 ++++++++++++" }}
+        onRefreshWorktree={onRefreshWorktree}
+        onLoadWorktreeDiff={onLoadWorktreeDiff}
+        onMergeWorktree={onMergeWorktree}
+        onCleanupWorktree={onCleanupWorktree}
+      />,
+    );
+
+    const panel = screen.getByLabelText("Task worktree");
+    expect(within(panel).getByText("agent/task_1")).toBeInTheDocument();
+    expect(within(panel).getByText("D:/py/yuanbao_agent.worktrees/task_1")).toBeInTheDocument();
+    expect(within(panel).getByText("1 dirty file")).toBeInTheDocument();
+    expect(within(panel).getByText("app/src/App.tsx | 12 ++++++++++++")).toBeInTheDocument();
+
+    await user.click(within(panel).getByRole("button", { name: "Refresh" }));
+    await user.click(within(panel).getByRole("button", { name: "Diff" }));
+    await user.click(within(panel).getByRole("button", { name: "Request merge" }));
+
+    expect(onRefreshWorktree).toHaveBeenCalledWith("wt_1");
+    expect(onLoadWorktreeDiff).toHaveBeenCalledWith("wt_1");
+    expect(onMergeWorktree).not.toHaveBeenCalled();
+    expect(within(panel).getByRole("button", { name: "Request merge" })).toBeDisabled();
+    expect(within(panel).getByRole("button", { name: "Cleanup" })).toBeDisabled();
+    expect(onCleanupWorktree).not.toHaveBeenCalled();
+  });
+
+  it("allows merge approval requests after a clean diff review", async () => {
+    const user = userEvent.setup();
+    const onMergeWorktree = vi.fn();
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_1",
+          status: "running",
+          goal: "Edit files in isolation",
+          activeWorktree: {
+            id: "wt_1",
+            taskId: "task_1",
+            branchName: "agent/task_1",
+            baseRef: "HEAD",
+            worktreePath: "D:/py/yuanbao_agent.worktrees/task_1",
+            status: "active",
+            mergePolicy: "approval_required",
+            cleanupPolicy: "ask_user",
+          },
+        }}
+        messages={[{ id: "m1", role: "user", content: "Change the runtime.", createdAt: 1 }]}
+        worktreeStatus={{ dirtyFiles: 0, files: [] }}
+        worktreeDiff={{ diffStat: "app/src/App.tsx | 12 ++++++++++++" }}
+        onMergeWorktree={onMergeWorktree}
+      />,
+    );
+
+    const panel = screen.getByLabelText("Task worktree");
+    const mergeButton = within(panel).getByRole("button", { name: "Request merge" });
+
+    expect(mergeButton).toBeEnabled();
+    await user.click(mergeButton);
+
+    expect(onMergeWorktree).toHaveBeenCalledWith("wt_1");
   });
 });

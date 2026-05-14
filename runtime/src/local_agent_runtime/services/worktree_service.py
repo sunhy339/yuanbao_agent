@@ -5,6 +5,7 @@ git worktree operations. Supports hook firing for worktree lifecycle events.
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,48 @@ class WorktreeService:
             return []
 
     # -- High-level operations --------------------------------------------------
+
+    def request_merge_approval(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Create a formal approval record for a worktree merge request."""
+        record = self._store.get_worktree(params)
+        wt = record["worktree"]
+        target_branch = params.get("targetBranch", "main")
+        if wt.get("mergePolicy") == "manual_only":
+            raise ValueError("Worktree merge policy is manual_only")
+
+        status = self._git.status(wt["worktreePath"])
+        if status.get("dirtyFiles", 0):
+            raise ValueError("Worktree has uncommitted changes; review and commit or clean before merge")
+        diff = self._git.diff(wt["worktreePath"], wt.get("baseRef", "HEAD"))
+        request = {
+            "worktreeId": wt["id"],
+            "taskId": wt.get("taskId", ""),
+            "branchName": wt.get("branchName", ""),
+            "targetBranch": target_branch,
+            "baseRef": wt.get("baseRef", "HEAD"),
+            "worktreePath": wt.get("worktreePath", ""),
+            "diffStat": diff.get("diffStat") or "",
+            "dirtyFiles": status.get("dirtyFiles", 0),
+            "files": status.get("files") or diff.get("files") or [],
+            "risk": "write merge worktree changes into target branch",
+        }
+
+        existing = self._store.find_approval(
+            task_id=wt["taskId"],
+            kind="worktree_merge",
+            request=request,
+        )
+        if existing is not None and existing.get("decision") is None:
+            approval = existing
+        else:
+            approval = self._store.create_approval(wt["taskId"], "worktree_merge", request)
+
+        return {
+            "approval": approval,
+            "worktree": wt,
+            "gitStatus": status,
+            "diff": diff,
+        }
 
     def create_for_task(self, params: dict[str, Any]) -> dict[str, Any]:
         """Create a worktree record AND a git worktree for a task.
@@ -109,6 +152,14 @@ class WorktreeService:
         wt = record["worktree"]
         target_branch = params.get("targetBranch", "main")
         branch_name = wt.get("branchName", "")
+        if wt.get("mergePolicy") == "manual_only":
+            raise ValueError("Worktree merge policy is manual_only")
+        if wt.get("mergePolicy") == "approval_required":
+            self._require_approved_merge_record(wt, params, target_branch)
+        status = self._git.status(wt["worktreePath"])
+        if status.get("dirtyFiles", 0):
+            raise ValueError("Worktree has uncommitted changes; review and commit or clean before merge")
+        diff = self._git.diff(wt["worktreePath"], wt.get("baseRef", "HEAD"))
 
         hook_context = {
             "workspaceId": wt.get("workspaceId", ""),
@@ -116,6 +167,7 @@ class WorktreeService:
             "worktreeId": wt["id"],
             "branchName": branch_name,
             "targetBranch": target_branch,
+            "diff": diff,
         }
 
         # Fire before hooks
@@ -126,11 +178,33 @@ class WorktreeService:
             branch_name=branch_name,
             target_branch=target_branch,
         )
+        if merge_result.get("result") != "ok":
+            self._store.update_worktree({
+                "worktreeId": wt["id"],
+                "status": "failed",
+                "lastStatus": {
+                    "mergeResult": merge_result,
+                    "dirtyFiles": status.get("dirtyFiles", 0),
+                },
+            })
+            hook_context["mergeResult"] = merge_result.get("result", "")
+            self._fire_hooks("after_worktree_merge", hook_context)
+            return {
+                "worktreeId": wt["id"],
+                "merged": False,
+                "branchName": branch_name,
+                "targetBranch": target_branch,
+                "result": merge_result,
+            }
 
         # Update store record
         self._store.update_worktree({
             "worktreeId": wt["id"],
             "status": "merged",
+            "lastStatus": {
+                "mergeResult": merge_result,
+                "dirtyFiles": status.get("dirtyFiles", 0),
+            },
         })
 
         # Fire after hooks
@@ -144,6 +218,33 @@ class WorktreeService:
             "targetBranch": target_branch,
             "result": merge_result,
         }
+
+    def _require_approved_merge_record(
+        self,
+        wt: dict[str, Any],
+        params: dict[str, Any],
+        target_branch: str,
+    ) -> dict[str, Any]:
+        approval_id = params.get("approvalId")
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("Worktree merge requires approved approval record")
+        approval = self._store.get_approval({"approvalId": approval_id})["approval"]
+        if approval.get("kind") != "worktree_merge":
+            raise ValueError("Approval record is not for worktree merge")
+        if approval.get("decision") != "approved":
+            raise ValueError("Worktree merge approval has not been approved")
+        if approval.get("taskId") != wt.get("taskId"):
+            raise ValueError("Worktree merge approval does not belong to this task")
+        try:
+            request = json.loads(approval.get("requestJson") or "{}")
+        except json.JSONDecodeError as exc:
+            raise ValueError("Worktree merge approval request is invalid") from exc
+        if request.get("worktreeId") != wt.get("id"):
+            raise ValueError("Worktree merge approval does not match this worktree")
+        approved_target = request.get("targetBranch") or "main"
+        if approved_target != target_branch:
+            raise ValueError("Worktree merge approval target branch does not match")
+        return approval
 
     def get_status(self, params: dict[str, Any]) -> dict[str, Any]:
         """Get worktree record + live git status."""

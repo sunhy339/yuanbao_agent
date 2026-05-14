@@ -302,6 +302,20 @@ def test_completed_task_updates_session_memory_for_next_context(tmp_path: Any) -
         "task",
     )
 
+    assert first_task["status"] == "waiting_approval"
+    completion_review = next(
+        event for event in runtime.events
+        if event["type"] == "approval.requested"
+        and event["payload"].get("kind") == "completion_review"
+    )
+    _rpc(
+        runtime,
+        "approval.submit",
+        {"approvalId": completion_review["payload"]["approvalId"], "decision": "approved"},
+    )
+    first_task = _call_result(_rpc(runtime, "task.get", {"taskId": first_task["id"]}), "task")
+    assert first_task["status"] == "completed"
+
     remembered_session = runtime.store.require_session(session["id"])
     assert "Task memory:" in remembered_session["summary"]
     assert "completed: add a focused project checklist" in remembered_session["summary"]

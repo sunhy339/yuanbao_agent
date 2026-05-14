@@ -205,6 +205,73 @@
   white-space: nowrap;
 }
 
+.yb-approval-evidence {
+  display: grid;
+  gap: 9px;
+  border: 1px solid var(--yb-line);
+  border-radius: var(--yb-radius-md);
+  padding: 10px;
+  background: rgba(2, 6, 23, 0.2);
+}
+
+.yb-approval-evidence-head,
+.yb-approval-evidence-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.yb-approval-evidence-head span,
+.yb-approval-evidence-metrics div {
+  min-width: 0;
+  border: 1px solid var(--yb-line);
+  border-radius: 999px;
+  padding: 4px 7px;
+  color: var(--yb-muted);
+  font-family: var(--yb-font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.yb-approval-evidence p {
+  color: var(--yb-ink);
+  font-size: 12px;
+  text-wrap: pretty;
+}
+
+.yb-approval-evidence-metrics {
+  margin: 0;
+}
+
+.yb-approval-evidence-metrics div {
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+}
+
+.yb-approval-evidence-metrics dt,
+.yb-approval-evidence-metrics dd {
+  margin: 0;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.yb-approval-evidence-metrics dd {
+  color: var(--yb-ink);
+}
+
+.yb-approval-evidence-issues {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 16px;
+  color: var(--yb-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .yb-routing-card small {
   color: var(--yb-warning);
 }
@@ -351,6 +418,7 @@
 
 .yb-v2[data-theme="light"] .yb-context-budget-track,
 .yb-v2[data-theme="light"] .yb-routing-card dd,
+.yb-v2[data-theme="light"] .yb-approval-evidence,
 .yb-v2[data-theme="light"] .yb-patch-plan li {
   background: rgba(241, 245, 249, 0.82);
 }

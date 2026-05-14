@@ -6,7 +6,6 @@ This adapter does not know about tasks or the store; it only manages git state.
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -94,7 +93,9 @@ class GitWorktreeAdapter:
             "mergedBranch": branch_name,
             "targetBranch": target_branch,
             "result": "ok" if result.returncode == 0 else "conflict",
+            "returnCode": result.returncode,
             "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
         }
 
     def has_clean_branch(self, target_path: str) -> bool:

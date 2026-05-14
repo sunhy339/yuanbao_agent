@@ -25,7 +25,11 @@ export type ApprovalKind =
   | "run_command"
   | "delete_file"
   | "network_access"
-  | "subagent_dispatch";
+  | "subagent_dispatch"
+  | "plan"
+  | "write_file"
+  | "worktree_merge"
+  | "completion_review";
 export type ApprovalDecision = "approved" | "rejected";
 export type ToolCallStatus = "started" | "completed" | "failed";
 export type CommandStatus =
@@ -105,6 +109,36 @@ export interface GitDiffRecord {
   path?: string | null;
   files: GitDiffFile[];
   diff: string;
+}
+
+export interface WorktreeRecord {
+  id: Identifier;
+  taskId: Identifier;
+  sessionId?: Identifier | null;
+  workspaceId?: Identifier | null;
+  baseRef: string;
+  branchName: string;
+  worktreePath: string;
+  status: string;
+  cleanupPolicy?: string | null;
+  mergePolicy?: string | null;
+  lastStatus?: Record<string, unknown> | null;
+  createdAt?: number;
+  updatedAt?: number;
+  cleanedAt?: number | null;
+}
+
+export interface WorktreeGitStatusRecord {
+  dirtyFiles: number;
+  files: string[];
+  error?: string;
+}
+
+export interface WorktreeGitDiffRecord {
+  diffStat?: string;
+  diff?: string;
+  files?: GitDiffFile[];
+  error?: string;
 }
 
 export interface WorkspaceRef {
@@ -201,6 +235,10 @@ export interface TaskRecord {
   verification?: TaskVerificationRecord[];
   summary?: string;
   resultSummary?: string;
+  routing?: {
+    activeWorktree?: WorktreeRecord | null;
+    [key: string]: unknown;
+  } | null;
   errorCode?: string;
   createdAt: number;
   updatedAt: number;

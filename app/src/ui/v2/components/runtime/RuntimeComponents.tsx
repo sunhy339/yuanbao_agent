@@ -249,6 +249,14 @@ export interface ApprovalRecordView {
   command?: string;
   cwd?: string;
   requestedAt?: string | number;
+  completionEvidence?: {
+    gateStatus?: string;
+    evidenceLevel?: string;
+    status?: string;
+    summary: string;
+    metrics: Array<{ label: string; value: string }>;
+    issues: string[];
+  };
 }
 
 export interface ApprovalCardProps {
@@ -273,6 +281,7 @@ export function ApprovalCard({ approval, busy = false, onApprove, onReject, onVi
         <StatusBadge label={formatStatusLabel(approval.risk ? `${approval.risk} risk` : "low risk")} tone={riskTone} compact />
       </header>
       {approval.summary ? <p>{approval.summary}</p> : null}
+      {approval.completionEvidence ? <CompletionEvidencePanel evidence={approval.completionEvidence} /> : null}
       <dl>
         {approval.command ? (
           <div>
@@ -301,6 +310,40 @@ export function ApprovalCard({ approval, busy = false, onApprove, onReject, onVi
         {onViewDetails ? <Button size="sm" variant="ghost" onClick={() => onViewDetails(approval.id)}>详情</Button> : null}
       </footer>
     </article>
+  );
+}
+
+function CompletionEvidencePanel({
+  evidence,
+}: {
+  evidence: NonNullable<ApprovalRecordView["completionEvidence"]>;
+}) {
+  return (
+    <section className="yb-approval-evidence" aria-label="Completion evidence">
+      <div className="yb-approval-evidence-head">
+        <span>{evidence.gateStatus ?? "review"}</span>
+        {evidence.evidenceLevel ? <span>{evidence.evidenceLevel}</span> : null}
+        {evidence.status ? <span>{evidence.status}</span> : null}
+      </div>
+      <p>{evidence.summary}</p>
+      {evidence.metrics.length ? (
+        <dl className="yb-approval-evidence-metrics">
+          {evidence.metrics.slice(0, 6).map((metric) => (
+            <div key={`${metric.label}:${metric.value}`}>
+              <dt>{metric.label}</dt>
+              <dd>{metric.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {evidence.issues.length ? (
+        <ul className="yb-approval-evidence-issues">
+          {evidence.issues.slice(0, 4).map((issue) => (
+            <li key={issue}>{issue}</li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
   );
 }
 

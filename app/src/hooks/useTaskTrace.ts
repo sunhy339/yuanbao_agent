@@ -213,11 +213,25 @@ export function useTaskTrace(deps: UseTaskTraceDeps) {
     setError(null);
 
     try {
-      await runtimeClient.approvalSubmit({
+      const result = await runtimeClient.approvalSubmit({
         approvalId,
         decision,
       });
-      deps.addToast("success", decision === "approved" ? "已批准" : "已拒绝");
+      if (result.worktreeMerge) {
+        const merge = result.worktreeMerge;
+        const message = merge.merged
+          ? "Worktree merged."
+          : merge.error
+            ? `Worktree merge failed: ${merge.error}`
+            : "Worktree merge did not complete.";
+        deps.addToast(merge.merged ? "success" : "error", message);
+        const refreshed = await runtimeClient.getTask(result.approval.taskId);
+        setTask(refreshed.task);
+        setTaskHistory((current) => upsertRecord(current, refreshed.task));
+        await loadTraceForTask(result.approval.taskId);
+        return;
+      }
+      deps.addToast("success", decision === "approved" ? "Approved." : "Rejected.");
     } catch (reason) {
       toastError(reason);
     } finally {

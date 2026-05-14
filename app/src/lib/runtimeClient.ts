@@ -77,6 +77,16 @@ import type {
   TraceEventRecord,
   TraceListParams,
   TraceListResult,
+  WorktreeCleanupParams,
+  WorktreeCleanupResult,
+  WorktreeDiffResult,
+  WorktreeGetByTaskParams,
+  WorktreeGetParams,
+  WorktreeGetResult,
+  WorktreeMergeApprovalResult,
+  WorktreeMergeParams,
+  WorktreeMergeResult,
+  WorktreeStatusResult,
   WorkspaceFocusUpdateParams,
   WorkspaceFocusUpdateResult,
   WorkspaceMemoryClearParams,
@@ -427,6 +437,34 @@ export class RuntimeClient {
 
   async listTasks(payload: TaskListParams = {}): Promise<TaskListResult> {
     return invokePayloadOrReject<TaskListResult>("task_list", payload);
+  }
+
+  async worktreeGet(payload: WorktreeGetParams): Promise<WorktreeGetResult> {
+    return invokePayloadOrReject<WorktreeGetResult>("worktree_get", payload);
+  }
+
+  async worktreeGetByTask(payload: WorktreeGetByTaskParams): Promise<WorktreeGetResult> {
+    return invokePayloadOrReject<WorktreeGetResult>("worktree_get_by_task", payload);
+  }
+
+  async worktreeStatus(payload: WorktreeGetParams): Promise<WorktreeStatusResult> {
+    return invokePayloadOrReject<WorktreeStatusResult>("worktree_status", payload);
+  }
+
+  async worktreeDiff(payload: WorktreeGetParams): Promise<WorktreeDiffResult> {
+    return invokePayloadOrReject<WorktreeDiffResult>("worktree_diff", payload);
+  }
+
+  async worktreeMerge(payload: WorktreeMergeParams): Promise<WorktreeMergeResult> {
+    return invokePayloadOrReject<WorktreeMergeResult>("worktree_merge", payload);
+  }
+
+  async worktreeRequestMergeApproval(payload: WorktreeMergeParams): Promise<WorktreeMergeApprovalResult> {
+    return invokePayloadOrReject<WorktreeMergeApprovalResult>("worktree_request_merge_approval", payload);
+  }
+
+  async worktreeCleanup(payload: WorktreeCleanupParams): Promise<WorktreeCleanupResult> {
+    return invokePayloadOrReject<WorktreeCleanupResult>("worktree_cleanup", payload);
   }
 
   async createScheduledTask(payload: ScheduledTaskCreateParams): Promise<ScheduledTaskResult> {

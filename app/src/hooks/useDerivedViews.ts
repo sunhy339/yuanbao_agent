@@ -194,6 +194,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
         fullInput: approval.requestJson,
         command: approval.command,
         cwd: approval.cwd,
+        completionEvidence: approval.completionEvidence,
       })),
     [approvalCards],
   );

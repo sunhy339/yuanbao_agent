@@ -263,6 +263,7 @@
 
 .task-progress-steps,
 .task-result-grid,
+.worktree-state-grid,
 .agent-worker-strip {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -342,6 +343,8 @@
   .session-runtime-dashboard dl,
   .task-progress-steps,
   .task-result-grid,
+  .worktree-meta,
+  .worktree-state-grid,
   .session-runtime-lanes {
     grid-template-columns: 1fr;
   }

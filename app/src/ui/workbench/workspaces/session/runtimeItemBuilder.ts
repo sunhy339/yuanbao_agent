@@ -437,6 +437,7 @@ export function buildRuntimeItems({
       riskLevel: approval.risk,
       code: approval.command || approval.parametersPreview,
       rawDetail: approval.fullInput,
+      completionEvidence: approval.completionEvidence,
       time: approval.requestedAt,
     });
   });

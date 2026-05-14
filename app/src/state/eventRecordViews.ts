@@ -4,6 +4,7 @@ import type {
   TaskContextPreviewPayload,
   TaskRecord,
   TaskUpdatedPayload,
+  WorktreeRecord,
 } from "@shared";
 
 export interface ApprovalCardView {
@@ -20,12 +21,22 @@ export interface ApprovalCardView {
   risk: string;
   requestJson: string;
   requestSummary: string;
+  completionEvidence?: ApprovalCompletionEvidenceView;
   status: "pending" | "approved" | "rejected";
   requestedAt: number;
   updatedAt: number;
   resolvedAt?: number;
   requestedEventId?: string;
   resolvedEventId?: string;
+}
+
+export interface ApprovalCompletionEvidenceView {
+  gateStatus?: string;
+  evidenceLevel?: string;
+  status?: string;
+  summary: string;
+  metrics: Array<{ label: string; value: string }>;
+  issues: string[];
 }
 
 export interface PatchCardView {
@@ -166,6 +177,51 @@ export function coerceTaskStatus(
   return fallback;
 }
 
+function readEventWorktree(event: AgentEventEnvelope, payload: Partial<TaskUpdatedPayload>): WorktreeRecord | null | undefined {
+  if (payload.activeWorktree !== undefined) {
+    return payload.activeWorktree;
+  }
+  if (payload.routing?.activeWorktree !== undefined) {
+    return payload.routing.activeWorktree;
+  }
+  if (event.type !== "task.worktree.bound") {
+    return undefined;
+  }
+
+  const raw = (event.payload ?? {}) as Record<string, unknown>;
+  const worktreePath = typeof raw.worktreePath === "string" ? raw.worktreePath : "";
+  const worktreeId = typeof raw.worktreeId === "string" ? raw.worktreeId : "";
+  if (!worktreeId || !worktreePath) {
+    return undefined;
+  }
+  return {
+    id: worktreeId,
+    taskId: event.taskId,
+    baseRef: typeof raw.baseRef === "string" ? raw.baseRef : "HEAD",
+    branchName: typeof raw.branchName === "string" ? raw.branchName : "",
+    worktreePath,
+    status: typeof raw.status === "string" ? raw.status : "active",
+  };
+}
+
+function mergeTaskRouting(
+  currentRouting: TaskRecord["routing"] | undefined | null,
+  payloadRouting: TaskRecord["routing"] | undefined | null,
+  activeWorktree: WorktreeRecord | null | undefined,
+): TaskRecord["routing"] | undefined | null {
+  if (payloadRouting === null) {
+    return null;
+  }
+  if (payloadRouting !== undefined || activeWorktree !== undefined) {
+    return {
+      ...(currentRouting ?? {}),
+      ...(payloadRouting ?? {}),
+      ...(activeWorktree !== undefined ? { activeWorktree } : {}),
+    };
+  }
+  return currentRouting;
+}
+
 export function applyEventToTask(current: TaskRecord | null, event: AgentEventEnvelope): TaskRecord | null {
   if (!current || current.id !== event.taskId || !event.type.startsWith("task.")) {
     return current;
@@ -176,6 +232,7 @@ export function applyEventToTask(current: TaskRecord | null, event: AgentEventEn
     errorCode?: string;
     detail?: string;
   };
+  const activeWorktree = readEventWorktree(event, payload);
 
   return {
     ...current,
@@ -189,6 +246,7 @@ export function applyEventToTask(current: TaskRecord | null, event: AgentEventEn
     verification: payload.verification ?? current.verification,
     summary: payload.summary ?? current.summary,
     resultSummary: payload.detail ?? payload.resultSummary ?? payload.summary ?? current.resultSummary,
+    routing: mergeTaskRouting(current.routing, payload.routing, activeWorktree),
     errorCode: payload.errorCode ?? current.errorCode,
     updatedAt: event.ts,
   };
@@ -207,6 +265,7 @@ export function taskRecordFromEvent(event: AgentEventEnvelope): TaskRecord | nul
     errorCode?: string;
   };
   const status = payload.status ?? coerceTaskStatus(event, "running");
+  const activeWorktree = readEventWorktree(event, payload);
   return {
     id: event.taskId,
     sessionId: event.sessionId,
@@ -222,6 +281,7 @@ export function taskRecordFromEvent(event: AgentEventEnvelope): TaskRecord | nul
     verification: payload.verification,
     summary: payload.summary,
     resultSummary: payload.detail ?? payload.resultSummary ?? payload.summary,
+    routing: mergeTaskRouting(undefined, payload.routing, activeWorktree),
     errorCode: payload.errorCode,
     createdAt: event.ts,
     updatedAt: event.ts,

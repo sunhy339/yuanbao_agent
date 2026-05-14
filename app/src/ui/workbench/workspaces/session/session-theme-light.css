@@ -11,6 +11,7 @@
 .yb-v2[data-theme="light"] .session-runtime-dashboard,
 .yb-v2[data-theme="light"] .session-task-panel,
 .yb-v2[data-theme="light"] .task-progress-panel,
+.yb-v2[data-theme="light"] .worktree-panel,
 .yb-v2[data-theme="light"] .session-console,
 .yb-v2[data-theme="light"] .conversation-task-plan,
 .yb-v2[data-theme="light"] .message-bubble,
@@ -66,6 +67,8 @@
 .yb-v2[data-theme="light"] .agent-task-list li,
 .yb-v2[data-theme="light"] .agent-worker-strip article,
 .yb-v2[data-theme="light"] .agent-result-list li,
+.yb-v2[data-theme="light"] .worktree-meta div,
+.yb-v2[data-theme="light"] .worktree-state-grid article,
 .yb-v2[data-theme="light"] .conversation-task-plan li,
 .yb-v2[data-theme="light"] .task-result-grid article,
 .yb-v2[data-theme="light"] .session-runtime-lane li,
@@ -75,6 +78,11 @@
 .yb-v2[data-theme="light"] .message-bubble-head em,
 .yb-v2[data-theme="light"] .runtime-patch-files button {
   background: rgba(241, 245, 249, 0.76);
+}
+
+.yb-v2[data-theme="light"] .worktree-error {
+  color: #9f1239;
+  background: rgba(255, 241, 242, 0.86);
 }
 
 .yb-v2[data-theme="light"] .runtime-event-code-summary,
@@ -492,4 +500,3 @@
     transform: translateY(0);
   }
 }
-

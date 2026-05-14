@@ -19,6 +19,7 @@ class TaskLifecycleMixin:
         tool_results: list[dict[str, Any]] | None = None,
         skip_reflection: bool = False,
         skip_drain: bool = False,
+        force_complete_after_review: bool = False,
     ) -> dict[str, Any]:
         validation = self._run_post_task_validation(
             session_id=session_id,
@@ -70,6 +71,33 @@ class TaskLifecycleMixin:
             "keyFindings": [],
             "completionEvidence": completion_evidence,
         }
+        completion_gate = self._completion_gate_decision(
+            task=task,
+            context=context or {},
+            completion_evidence=completion_evidence,
+            force_complete_after_review=force_complete_after_review,
+        )
+        if completion_gate["action"] == "review":
+            return self._request_completion_review(
+                session_id=session_id,
+                task=task,
+                summary=final_summary,
+                structured_result=structured_result,
+                completion_evidence=completion_evidence,
+                reason=completion_gate["reason"],
+                risk=completion_gate.get("risk"),
+                gate_status=completion_gate.get("gateStatus"),
+                decision=completion_gate.get("decision"),
+                skip_drain=skip_drain,
+            )
+        if completion_gate["action"] == "fail":
+            return self._fail_task(
+                session_id=session_id,
+                task=task,
+                summary=completion_gate["reason"],
+                error_code="COMPLETION_EVIDENCE_INSUFFICIENT",
+                skip_drain=skip_drain,
+            )
         completed_task = self._store.update_task(
             task_id=task["id"],
             status="completed",
@@ -163,6 +191,408 @@ class TaskLifecycleMixin:
             self._drain_session_queue(session_id)
         return runtime_task
 
+    def _completion_gate_decision(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        completion_evidence: dict[str, Any],
+        force_complete_after_review: bool,
+    ) -> dict[str, str]:
+        if force_complete_after_review:
+            return {"action": "complete", "reason": "Completion review was approved."}
+        if context.get("_allow_summary_only_completion") is True:
+            return {"action": "complete", "reason": "Summary-only completion explicitly allowed."}
+        counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
+        failed_verification_count = self._completion_evidence_count(counts, "failedVerification")
+        if completion_evidence.get("evidenceLevel") == "failed_verification" or failed_verification_count > 0:
+            return {
+                "action": "fail",
+                "reason": (
+                    "Completion blocked because verification failed. "
+                    "Fix the failed checks before marking the task completed."
+                ),
+            }
+        is_write_or_verification_task = self._is_write_or_verification_task(task=task, context=context)
+        if not is_write_or_verification_task:
+            return {"action": "complete", "reason": "Read-only completion is allowed."}
+        tool_failure_gate = self._completion_tool_failure_gate(completion_evidence)
+        if tool_failure_gate is not None:
+            return tool_failure_gate
+        acceptance_gate = self._completion_acceptance_gate(completion_evidence)
+        if acceptance_gate is not None:
+            return acceptance_gate
+        verification_match_gate = self._completion_verification_match_gate(completion_evidence)
+        if verification_match_gate is not None:
+            return verification_match_gate
+        if self._completion_needs_verification_review(completion_evidence):
+            return {
+                "action": "review",
+                "decision": "needs_verification",
+                "gateStatus": "needs_verification",
+                "risk": "write-oriented task has runtime evidence without passing verification",
+                "reason": (
+                    "Write-oriented task produced runtime evidence but no passing verification. "
+                    "Run verification or approve the completion evidence before marking it completed."
+                ),
+            }
+        if completion_evidence.get("evidenceLevel") != "summary_only":
+            return {"action": "complete", "reason": "Runtime evidence is present."}
+        return {
+            "action": "review",
+            "decision": "needs_user_review",
+            "gateStatus": "needs_user_review",
+            "risk": "summary-only completion for write-oriented task",
+            "reason": (
+                "Write-oriented task produced only a natural-language summary. "
+                "Verification or user review is required before marking it completed."
+            ),
+        }
+
+    def _completion_tool_failure_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
+        counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
+        failed_tool_count = self._completion_evidence_count(counts, "failedToolResults")
+        if failed_tool_count <= 0:
+            return None
+        return {
+            "action": "review",
+            "decision": "needs_tool_review",
+            "gateStatus": "needs_tool_review",
+            "risk": "tool results include unresolved failures",
+            "reason": (
+                "Completion blocked because tool results include unresolved failures. "
+                "Resolve the failed tool result or approve the completion evidence before marking it completed."
+            ),
+        }
+
+    def _completion_acceptance_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
+        counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
+        failed_count = self._completion_evidence_count(counts, "failedAcceptanceCriteria")
+        unverified_count = self._completion_evidence_count(counts, "unverifiedAcceptanceCriteria")
+        if failed_count <= 0 and unverified_count <= 0:
+            return None
+        if failed_count > 0:
+            reason = (
+                "Completion blocked because explicit acceptance evidence reports unmet criteria. "
+                "Resolve or review the failed criteria before marking the task completed."
+            )
+        else:
+            reason = (
+                "Completion blocked because explicit acceptance evidence does not cover every criterion. "
+                "Provide coverage or approve the completion evidence before marking the task completed."
+            )
+        return {
+            "action": "review",
+            "decision": "needs_acceptance_review",
+            "gateStatus": "needs_acceptance_review",
+            "risk": "acceptance criteria require review",
+            "reason": reason,
+        }
+
+    def _completion_verification_match_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
+        if not self._completion_has_code_or_test_changes(completion_evidence):
+            return None
+        if not self._completion_has_any_passing_verification_signal(completion_evidence):
+            return None
+        if self._completion_has_targeted_verification(completion_evidence):
+            return None
+        return {
+            "action": "review",
+            "decision": "needs_verification",
+            "gateStatus": "needs_verification",
+            "risk": "code changes lack targeted test or build verification",
+            "reason": (
+                "Completion blocked because code or test files changed, but the passing verification "
+                "does not include a targeted test, build, or typecheck signal."
+            ),
+        }
+
+    def _completion_needs_verification_review(self, completion_evidence: dict[str, Any]) -> bool:
+        if completion_evidence.get("evidenceLevel") != "runtime_evidence":
+            return False
+        counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
+        if self._completion_has_any_passing_verification_signal(completion_evidence):
+            return False
+        if self._completion_evidence_count(counts, "failedVerification") > 0:
+            return False
+        workspace_evidence_count = sum(
+            self._completion_evidence_count(counts, key)
+            for key in ("changedFiles", "patches")
+        )
+        return workspace_evidence_count > 0 or self._completion_has_workspace_tool_evidence(completion_evidence)
+
+    def _completion_evidence_count(self, counts: dict[str, Any], key: str) -> int:
+        value = counts.get(key)
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        return 0
+
+    def _completion_has_workspace_tool_evidence(self, completion_evidence: dict[str, Any]) -> bool:
+        tool_results = completion_evidence.get("toolResults")
+        if not isinstance(tool_results, list):
+            return False
+        for item in tool_results:
+            if not isinstance(item, dict):
+                continue
+            if item.get("name") in {"apply_patch", "write_file"}:
+                changed_paths = item.get("changedPaths")
+                if item["name"] == "write_file":
+                    return True
+                if isinstance(changed_paths, list) and changed_paths:
+                    return True
+        return False
+
+    def _completion_has_code_or_test_changes(self, completion_evidence: dict[str, Any]) -> bool:
+        changed_files = completion_evidence.get("changedFiles")
+        if not isinstance(changed_files, list):
+            return False
+        return any(
+            self._completion_path_requires_targeted_verification(self._completion_changed_file_path(item))
+            for item in changed_files
+            if isinstance(item, dict)
+        )
+
+    def _completion_changed_file_path(self, item: dict[str, Any]) -> str:
+        value = item.get("path") or item.get("file") or item.get("name")
+        return str(value or "").replace("\\", "/").strip()
+
+    def _completion_path_requires_targeted_verification(self, path: str) -> bool:
+        if not path:
+            return False
+        normalized = path.casefold()
+        if normalized.endswith((".md", ".mdx", ".txt", ".rst", ".adoc")):
+            return False
+        if normalized.startswith(("docs/", "doc/", "documentation/")):
+            return False
+        return normalized.endswith(
+            (
+                ".py",
+                ".pyw",
+                ".js",
+                ".jsx",
+                ".ts",
+                ".tsx",
+                ".mjs",
+                ".cjs",
+                ".java",
+                ".kt",
+                ".kts",
+                ".go",
+                ".rs",
+                ".c",
+                ".cc",
+                ".cpp",
+                ".h",
+                ".hpp",
+                ".cs",
+                ".rb",
+                ".php",
+                ".swift",
+                ".vue",
+                ".svelte",
+            )
+        ) or "/test" in normalized or normalized.startswith(("test/", "tests/"))
+
+    def _completion_has_any_passing_verification_signal(self, completion_evidence: dict[str, Any]) -> bool:
+        counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
+        return (
+            self._completion_evidence_count(counts, "passedVerification") > 0
+            or self._completion_evidence_count(counts, "passedTestsRun") > 0
+        )
+
+    def _completion_has_targeted_verification(self, completion_evidence: dict[str, Any]) -> bool:
+        verification_items = completion_evidence.get("verification")
+        if isinstance(verification_items, list):
+            for item in verification_items:
+                if not isinstance(item, dict) or item.get("status") != "passed":
+                    continue
+                if self._completion_verification_item_is_targeted(item):
+                    return True
+        tests_run = completion_evidence.get("testsRun")
+        if isinstance(tests_run, list):
+            for item in tests_run:
+                if not isinstance(item, dict) or item.get("status") not in {"passed", "success", "completed"}:
+                    continue
+                if self._completion_tests_run_item_is_targeted(item):
+                    return True
+        return False
+
+    def _completion_verification_item_is_targeted(self, item: dict[str, Any]) -> bool:
+        command = " ".join(
+            str(item.get(key) or "")
+            for key in ("command", "name", "summary")
+        ).casefold()
+        if not command.strip():
+            return False
+        return self._completion_text_mentions_targeted_verification(command)
+
+    def _completion_tests_run_item_is_targeted(self, item: dict[str, Any]) -> bool:
+        text = " ".join(
+            str(item.get(key) or "")
+            for key in ("command", "name", "summary", "suite")
+        ).casefold()
+        return self._completion_text_mentions_targeted_verification(text) or bool(text.strip())
+
+    def _completion_text_mentions_targeted_verification(self, text: str) -> bool:
+        normalized = text.casefold()
+        if not normalized.strip():
+            return False
+        structural_only = {"git status", "git_status", "git diff", "git_diff"}
+        if normalized.strip() in structural_only:
+            return False
+        targeted_tokens = (
+            "pytest",
+            "unittest",
+            "tox",
+            "jest",
+            "vitest",
+            "playwright",
+            "cypress",
+            "npm test",
+            "pnpm test",
+            "yarn test",
+            "bun test",
+            "npm run test",
+            "pnpm run test",
+            "yarn run test",
+            "cargo test",
+            "go test",
+            "mvn test",
+            "gradle test",
+            "dotnet test",
+            "test:",
+            "typecheck",
+            "type check",
+            "tsc",
+            "mypy",
+            "pyright",
+            "ruff",
+            "eslint",
+            "cargo check",
+            "npm run build",
+            "pnpm build",
+            "yarn build",
+            "cargo build",
+            "go build",
+            "dotnet build",
+        )
+        return any(token in normalized for token in targeted_tokens)
+
+    def _is_write_or_verification_task(self, *, task: dict[str, Any], context: dict[str, Any]) -> bool:
+        routing = task.get("routing") if isinstance(task.get("routing"), dict) else {}
+        context_routing = context.get("routing") if isinstance(context.get("routing"), dict) else {}
+        scenario = str(routing.get("scenario") or context_routing.get("scenario") or "").strip().lower()
+        if scenario in {"code_edit", "debug", "test_write", "doc_write"}:
+            return True
+        if task.get("type") == "validate":
+            return True
+        if routing.get("activeWorktree") or context_routing.get("activeWorktree"):
+            return True
+        return bool(task.get("changedFiles") or task.get("commands") or task.get("verification"))
+
+    def _request_completion_review(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        summary: str,
+        structured_result: dict[str, Any],
+        completion_evidence: dict[str, Any],
+        reason: str,
+        risk: str | None,
+        gate_status: str | None,
+        decision: str | None,
+        skip_drain: bool,
+    ) -> dict[str, Any]:
+        approval = self._store.create_approval(
+            task["id"],
+            "completion_review",
+            {
+                "summary": summary,
+                "risk": risk or "completion evidence requires review",
+                "reason": reason,
+                "completionEvidence": completion_evidence,
+                "structuredResult": structured_result,
+            },
+        )
+        review_structured_result = {
+            **structured_result,
+            "status": "needs_review",
+            "completionGate": {
+                "status": gate_status or "needs_user_review",
+                "reason": reason,
+                "approvalId": approval["id"],
+            },
+        }
+        self._validate_task_transition(task["status"], "waiting_approval", task["id"], silent=True)
+        review_task = self._store.update_task(
+            task_id=task["id"],
+            status="waiting_approval",
+            plan=task.get("plan") or [],
+            summary=summary,
+            result_summary=summary,
+            structured_result=review_structured_result,
+        )
+        runtime_task = {
+            **review_task,
+            "plan": task.get("plan") or [],
+            "resultSummary": summary,
+        }
+        active_msg_id = runtime_task.get("activeAssistantMessageId")
+        if active_msg_id:
+            self._store.update_message(
+                active_msg_id,
+                content=summary,
+                status="streaming",
+            )
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
+            event_type="approval.requested",
+            payload={
+                "approvalId": approval["id"],
+                "taskId": task["id"],
+                "kind": "completion_review",
+                "request": json.loads(approval.get("requestJson") or "{}"),
+            },
+        )
+        self._fire_hooks(
+            "on_approval_required",
+            session_id,
+            runtime_task,
+            extra_context={"approvalId": approval["id"], "kind": "completion_review"},
+        )
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
+            event_type="agent.decision.completion",
+            payload={
+                "decision": decision or "needs_user_review",
+                "whyBlocked": reason,
+                "completionEvidence": completion_evidence,
+                "approvalId": approval["id"],
+            },
+        )
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
+            event_type="task.waiting_approval",
+            payload={
+                "status": "waiting_approval",
+                "detail": reason,
+                "approvalId": approval["id"],
+                "completionEvidence": completion_evidence,
+            },
+        )
+        self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="waiting_approval")
+        if not skip_drain:
+            self._drain_session_queue(session_id)
+        return runtime_task
+
     def _consult_completion_advisor(
         self,
         task: dict[str, Any],
@@ -243,8 +673,17 @@ class TaskLifecycleMixin:
             dict(item) for item in (task.get("verification") or [])
             if isinstance(item, dict)
         ]
+        tests_run = [
+            dict(item) for item in (task.get("testsRun") or [])
+            if isinstance(item, dict)
+        ]
         patches = self._completed_patch_results(tool_results)
         tool_evidence = self._completion_tool_evidence(tool_results)
+        failed_tool_results = self._unresolved_failed_tool_results(tool_evidence)
+        resolved_failed_tool_results = [
+            item for item in tool_evidence
+            if item.get("failed") is True and item not in failed_tool_results
+        ]
         validation_checks = [
             dict(item) for item in ((validation or {}).get("checks") or [])
             if isinstance(item, dict)
@@ -255,6 +694,14 @@ class TaskLifecycleMixin:
             if item.get("status") in {"failed", "timeout", "killed", "validation_failed"}
         ]
         passed_verification = [item for item in verification if item.get("status") == "passed"]
+        passed_tests_run = [
+            item for item in tests_run
+            if item.get("status") in {"passed", "success", "completed"}
+        ]
+        failed_tests_run = [
+            item for item in tests_run
+            if item.get("status") in {"failed", "timeout", "killed", "validation_failed"}
+        ]
         failed_validation_checks = [
             item for item in validation_checks
             if item.get("status") in {"failed", "timeout", "killed", "validation_failed"}
@@ -277,13 +724,20 @@ class TaskLifecycleMixin:
             status = "unverified"
             evidence_level = "summary_only"
 
-        acceptance = [
-            {
-                "criterion": criterion,
-                "status": "supported" if evidence_level != "summary_only" else "unverified",
-                "evidenceLevel": evidence_level,
-            }
-            for criterion in criteria
+        acceptance = self._completion_acceptance_evidence(
+            criteria=criteria,
+            evidence_level=evidence_level,
+            task=task,
+            validation=validation or {},
+            tool_results=tool_results,
+        )
+        failed_acceptance = [
+            item for item in acceptance
+            if item.get("status") in {"failed", "unsupported"}
+        ]
+        unverified_acceptance = [
+            item for item in acceptance
+            if item.get("status") == "unverified" and item.get("source") != "inferred_summary_only"
         ]
 
         return {
@@ -295,8 +749,10 @@ class TaskLifecycleMixin:
             "changedFiles": changed_files,
             "commands": commands,
             "verification": verification,
+            "testsRun": tests_run,
             "patches": patches,
             "toolResults": tool_evidence,
+            "unresolvedToolFailures": failed_tool_results,
             "validation": {
                 "checks": validation_checks,
                 "summary": (validation or {}).get("summary"),
@@ -308,12 +764,180 @@ class TaskLifecycleMixin:
                 "commands": len(commands),
                 "verification": len(verification),
                 "passedVerification": len(passed_verification),
-                "failedVerification": len(failed_verification) + len(failed_validation_checks),
+                "failedVerification": len(failed_verification) + len(failed_validation_checks) + len(failed_tests_run),
+                "testsRun": len(tests_run),
+                "passedTestsRun": len(passed_tests_run),
+                "failedTestsRun": len(failed_tests_run),
                 "patches": len(patches),
                 "toolResults": len(tool_evidence),
+                "failedToolResults": len(failed_tool_results),
+                "resolvedFailedToolResults": len(resolved_failed_tool_results),
+                "acceptedAcceptanceCriteria": len([
+                    item for item in acceptance
+                    if item.get("status") == "supported" and item.get("source") != "inferred_runtime_evidence"
+                ]),
+                "failedAcceptanceCriteria": len(failed_acceptance),
+                "unverifiedAcceptanceCriteria": len(unverified_acceptance),
+                "explicitAcceptanceCriteria": len([
+                    item for item in acceptance
+                    if str(item.get("source") or "").startswith("explicit")
+                ]),
             },
             "summaryPreview": summary[:500],
         }
+
+    def _completion_acceptance_evidence(
+        self,
+        *,
+        criteria: list[str],
+        evidence_level: str,
+        task: dict[str, Any],
+        validation: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not criteria:
+            return []
+
+        explicit_records = self._completion_explicit_acceptance_records(
+            task=task,
+            validation=validation,
+            tool_results=tool_results,
+        )
+        has_explicit_acceptance = bool(explicit_records)
+        matched: dict[int, dict[str, Any]] = {}
+        for record in explicit_records:
+            match_index = self._completion_acceptance_match_index(record, criteria)
+            if match_index is None or match_index in matched:
+                continue
+            matched[match_index] = record
+
+        acceptance: list[dict[str, Any]] = []
+        for index, criterion in enumerate(criteria):
+            record = matched.get(index)
+            if record is not None:
+                acceptance.append(
+                    {
+                        "criterion": criterion,
+                        "status": record["status"],
+                        "evidenceLevel": evidence_level,
+                        "source": record["source"],
+                    }
+                )
+            elif has_explicit_acceptance:
+                acceptance.append(
+                    {
+                        "criterion": criterion,
+                        "status": "unverified",
+                        "evidenceLevel": evidence_level,
+                        "source": "explicit_missing",
+                    }
+                )
+            else:
+                acceptance.append(
+                    {
+                        "criterion": criterion,
+                        "status": "supported" if evidence_level != "summary_only" else "unverified",
+                        "evidenceLevel": evidence_level,
+                        "source": "inferred_runtime_evidence" if evidence_level != "summary_only" else "inferred_summary_only",
+                    }
+                )
+        return acceptance
+
+    def _completion_explicit_acceptance_records(
+        self,
+        *,
+        task: dict[str, Any],
+        validation: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for source_name, source in (
+            ("explicit_task", task),
+            ("explicit_validation", validation),
+        ):
+            records.extend(self._completion_acceptance_records_from_source(source, source_name))
+        for tool_result in tool_results:
+            if not isinstance(tool_result, dict):
+                continue
+            tool_name = str(tool_result.get("name") or "tool")
+            result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+            records.extend(self._completion_acceptance_records_from_source(result, f"explicit_tool:{tool_name}"))
+        return records
+
+    def _completion_acceptance_records_from_source(self, source: Any, source_name: str) -> list[dict[str, Any]]:
+        if not isinstance(source, dict):
+            return []
+        raw_items: Any = None
+        for key in ("acceptance", "acceptanceResults", "acceptanceCriteriaResults", "criteriaResults"):
+            if key in source:
+                raw_items = source.get(key)
+                break
+        if raw_items is None:
+            return []
+        if isinstance(raw_items, dict):
+            raw_iterable = [
+                {**value, "criterion": value.get("criterion") or raw_key}
+                if isinstance(value, dict)
+                else {"criterion": raw_key, "status": value}
+                for raw_key, value in raw_items.items()
+            ]
+        elif isinstance(raw_items, list):
+            raw_iterable = raw_items
+        else:
+            return []
+
+        records: list[dict[str, Any]] = []
+        for item in raw_iterable:
+            if not isinstance(item, dict):
+                continue
+            status = self._normalize_acceptance_status(item.get("status") or item.get("result") or item.get("state"))
+            if status is None:
+                continue
+            criterion = (
+                item.get("criterion")
+                or item.get("criteria")
+                or item.get("text")
+                or item.get("name")
+            )
+            index_value = item.get("index") if "index" in item else item.get("criterionIndex")
+            index = index_value if isinstance(index_value, int) else None
+            records.append(
+                {
+                    "criterion": str(criterion).strip() if criterion is not None else "",
+                    "index": index,
+                    "status": status,
+                    "source": source_name,
+                }
+            )
+        return records
+
+    def _completion_acceptance_match_index(self, record: dict[str, Any], criteria: list[str]) -> int | None:
+        index = record.get("index")
+        if isinstance(index, int) and 0 <= index < len(criteria):
+            return index
+        criterion = str(record.get("criterion") or "").strip()
+        if not criterion:
+            return None
+        normalized = self._normalize_acceptance_text(criterion)
+        for idx, candidate in enumerate(criteria):
+            if self._normalize_acceptance_text(candidate) == normalized:
+                return idx
+        return None
+
+    def _normalize_acceptance_status(self, value: Any) -> str | None:
+        normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+        if not normalized:
+            return None
+        if normalized in {"supported", "passed", "pass", "complete", "completed", "verified", "satisfied", "success", "ok"}:
+            return "supported"
+        if normalized in {"failed", "fail", "unsupported", "unmet", "not_met", "missing", "blocked"}:
+            return "failed"
+        if normalized in {"unverified", "unknown", "pending", "not_run", "skipped", "incomplete", "partial"}:
+            return "unverified"
+        return None
+
+    def _normalize_acceptance_text(self, value: str) -> str:
+        return " ".join(value.split()).casefold()
 
     def _completion_tool_evidence(self, tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
         evidence: list[dict[str, Any]] = []
@@ -330,6 +954,7 @@ class TaskLifecycleMixin:
                 "status": status,
                 "ok": result.get("ok"),
                 "summary": result.get("summary") or result.get("error"),
+                "failed": self._completion_tool_result_failed(result),
             }
             if name == "run_command":
                 item["exitCode"] = result.get("exitCode")
@@ -346,6 +971,29 @@ class TaskLifecycleMixin:
                 item["agentType"] = result.get("agentType") or subagent.get("agentType")
             evidence.append({key: value for key, value in item.items() if value not in (None, [], "")})
         return evidence
+
+    def _unresolved_failed_tool_results(self, tool_evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        unresolved: list[dict[str, Any]] = []
+        for index, item in enumerate(tool_evidence):
+            if item.get("failed") is not True:
+                continue
+            tool_name = item.get("name")
+            has_later_success = any(
+                later.get("name") == tool_name and later.get("failed") is not True
+                for later in tool_evidence[index + 1 :]
+            )
+            if not has_later_success:
+                unresolved.append(item)
+        return unresolved
+
+    def _completion_tool_result_failed(self, result: dict[str, Any]) -> bool:
+        status = str(result.get("status") or "").strip().lower()
+        if status in {"failed", "timeout", "killed", "validation_failed"}:
+            return True
+        if result.get("ok") is False:
+            return True
+        exit_code = result.get("exitCode")
+        return isinstance(exit_code, int) and exit_code != 0
 
     def _validate_worker_output(self, *, session_id: str, task: dict[str, Any]) -> None:
         """Warn if a worker task completes without testsRun or risks."""

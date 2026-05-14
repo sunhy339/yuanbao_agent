@@ -1176,6 +1176,12 @@ flowchart TD
 | 任务 | 状态 | 说明 |
 | --- | --- | --- |
 | Completion / Stop 判断强化第一阶段 | Done | `_complete_task` 会构建 `completionEvidence`，汇总 acceptance criteria、changed files、commands、verification、patches 和 tool results，并写入 `structuredResult.completionEvidence` 与 `agent.decision.completion` 事件。验证通过时标记 `evidenceLevel=verified`；只有自然语言总结时标记 `summary_only/unverified`，为后续硬 gate 留出明确输入。 |
+| Completion / Stop 硬 gate 第一层 | Done | 明确写入/调试/测试/文档类任务、validate 任务、active worktree 任务，或已有 changedFiles/commands/verification 的任务，如果最终只有 `summary_only` 证据，不再直接 `completed`；runtime 会创建 `completion_review` approval，把任务停在 `waiting_approval`。用户批准后才强制完成，拒绝则 `failed/COMPLETION_REVIEW_REJECTED`。 |
+| Completion / Stop 硬 gate 第二层 | Done | `failed_verification` 证据现在会直接阻止完成并落到 `failed/COMPLETION_EVIDENCE_INSUFFICIENT`；写入型任务如果已有 changed files、patch 或 write_file/apply_patch 变更证据但没有 passed verification，会进入 `completion_review`，`completionGate.status=needs_verification`。普通 command-only 任务不会被误判为需要验证。 |
+| Completion / Stop 硬 gate 第三层 | Done | `completionEvidence.acceptance` 现在支持结构化验收项状态：`acceptance`、`acceptanceResults`、`acceptanceCriteriaResults` 或 `criteriaResults` 可以来自 task、validation 或 tool result。写入型任务如果显式验收证据报告 failed/unsupported，或只覆盖部分 acceptance criteria，会进入 `completion_review`，`completionGate.status=needs_acceptance_review`；没有显式逐项结果时不会用自然语言 summary 猜测。 |
+| Completion / Stop 硬 gate 第四层 | Done | `completionEvidence.toolResults` 现在会标记 failed tool result，并把最后仍未被同工具后续成功结果覆盖的失败写入 `unresolvedToolFailures`。写入型任务如果存在 unresolved tool failures，会进入 `completion_review`，`completionGate.status=needs_tool_review`；失败后修复成功的 patch/command 链路不会被误拦。 |
+| Completion / Stop 硬 gate 第五层 | Done | `completionEvidence.testsRun` 现在纳入证据计数；代码/测试类文件发生变更时，如果 passing verification 只有 `git_status/git_diff` 这类结构检查、没有 pytest/npm test/cargo check/typecheck/build 等目标验证信号，会进入 `completion_review`，`completionGate.status=needs_verification`。文档类改动不会被这条规则误拦。 |
+| Completion Review 证据展示 | Done | 桌面端 approval card 现在会展示 `completion_review` 的 gate status、evidence level、status、指标计数和 acceptance/tool/verification issue 摘要；事件折叠层会把 `completionEvidence` 透传到会话 runtime activity。 |
 
 验证结果：
 
@@ -1184,14 +1190,20 @@ flowchart TD
 | `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local runtime/tests/test_orchestrator_react_loop.py::test_patch_completion_runs_post_task_validation_and_records_trace runtime/tests/test_decision_trace.py::TestCompletionDecisionEvent::test_completion_event_on_success runtime/tests/test_worker_structured_output.py` | 8 passed |
 | `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local-react runtime/tests/test_orchestrator_react_loop.py runtime/tests/test_structured_react_turn.py runtime/tests/test_decision_trace.py` | 87 passed, 1 skipped |
 | `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local-provider runtime/tests/test_provider_turns.py::TestContextSnapshotCRUD runtime/tests/test_multi_agent_health_report.py runtime/tests/test_e2e_smoke.py` | 11 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worker_structured_output.py` | 20 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_orchestrator_react_loop.py::test_patch_completion_runs_post_task_validation_and_records_trace runtime/tests/test_decision_trace.py::TestCompletionDecisionEvent::test_completion_event_on_success runtime/tests/test_worker_structured_output.py` | 11 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_orchestrator_react_loop.py runtime/tests/test_structured_react_turn.py runtime/tests/test_decision_trace.py runtime/tests/test_worker_structured_output.py` | 107 passed, 1 skipped |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worktree_isolation.py runtime/tests/test_worktree_auto_binding.py` | 34 passed |
+| `npm.cmd test -- viewComputations.test.ts SessionWorkspace.test.tsx` in `app/` | 43 passed |
+| `npm.cmd run typecheck` in `app/` | passed |
 
-剩余边界：当前阶段先做“证据结构化与可审计”，暂不直接阻断 summary-only completion；下一阶段可以基于 `completionEvidence.evidenceLevel` 和任务风险等级，把写入型任务的 `summary_only` 完成升级为 `needs_user_review`、`needs_verification` 或失败。
+剩余边界：当前硬 gate 已覆盖明确写入型/验证型任务的 `summary_only`、失败验证、有工作区变更证据但缺少 passed verification、结构化 acceptance criteria failed/缺项、unresolved tool failures、以及代码/测试文件变更但缺少目标验证的情况；基础 `completion_review` 证据摘要已经进入 UI，后续重点是继续细化更具体的语言/框架测试匹配规则，并把 reviewer/approval 结论串到更完整的完成审计里。
 
 ### 当前剩余非大文件任务
 
 | 优先级 | 任务 | 当前状态 | 下一步 |
 | --- | --- | --- | --- |
-| P0/P1 | Completion / Stop 判断强化 | 部分完成。已有 maxSteps、final、工具结果和 completion advisor；但验收硬条件还不够系统。 | 将 acceptance criteria、changed files、测试结果、工具执行结果纳入完成判定；没有 final 时生成受控总结而不是继续空转。 |
+| P0/P1 | Completion / Stop 判断强化 | 硬 gate 第一/二/三/四/五层已完成：写入/验证型 `summary_only` 会进入 `completion_review`；失败验证会直接失败；有工作区变更证据但缺少 passed verification 会进入 `needs_verification`；结构化 acceptance failed/缺项会进入 `needs_acceptance_review`；unresolved tool failures 会进入 `needs_tool_review`；代码/测试文件变更如果只有结构性 git 检查也会进入 `needs_verification`；基础 completion review 证据展示已接入 UI。 | 下一步继续细化语言/框架测试匹配规则，并把 reviewer/approval 结论纳入更完整的完成审计。 |
 | P1 | Worktree 后续闭环 | 自动绑定写入型任务、工具 cwd 路由、桌面端 path/status/diff 展示、formal merge approval gate 已完成。 | 下一步接入 merge 前验证命令、reviewer/用户批准摘要、dirty cancel/cleanup 策略细化，以及多 agent 共享/独立 worktree 设计。 |
 | P1 | Hooks 生命周期补齐 | 基础 hook 能力已有，但生命周期触发点和权限边界还需统一。 | 补齐 before/after task、before/after tool、before/after provider turn、pause/cancel/resume、compaction、worktree merge 等事件，并纳入 PermissionEngine。 |
 | P1 | ToolPolicyResolver 第二阶段 | P0 最小闭环已完成。 | 将 Skill policy、MCP server policy、PermissionEngine、child allowlist 合并进统一 resolver；提供 provider turn 回放解释。 |

@@ -17,6 +17,9 @@ import type {
   SkillUsageRecord,
   TaskRecord,
   TraceEventRecord,
+  WorktreeGitDiffRecord,
+  WorktreeGitStatusRecord,
+  WorktreeRecord,
   WorkspaceRef,
 } from "./domain";
 
@@ -101,7 +104,19 @@ export type RpcMethod =
   | "command.cancel"
   | "stats.summary"
   | "stats.trace"
-  | "worker.run_child_task";
+  | "worker.run_child_task"
+  | "worktree.get"
+  | "worktree.getByTask"
+  | "worktree.list"
+  | "worktree.status"
+  | "worktree.diff"
+  | "worktree.requestMergeApproval"
+  | "worktree.merge"
+  | "worktree.cleanup"
+  | "worktree.update"
+  | "worktree.delete";
+
+export type WorktreeOperationStatus = "status" | "diff" | "requestMergeApproval" | "merge" | "cleanup";
 
 export interface WorkspaceOpenParams {
   path: string;
@@ -283,6 +298,61 @@ export interface TaskListResult {
   tasks: TaskRecord[];
 }
 
+export interface WorktreeGetParams {
+  worktreeId: Identifier;
+}
+
+export interface WorktreeGetByTaskParams {
+  taskId: Identifier;
+}
+
+export interface WorktreeCleanupParams {
+  worktreeId: Identifier;
+  force?: boolean;
+}
+
+export interface WorktreeMergeParams {
+  worktreeId: Identifier;
+  approved?: boolean;
+  approvalId?: Identifier;
+  targetBranch?: string;
+}
+
+export interface WorktreeGetResult {
+  worktree?: WorktreeRecord | null;
+}
+
+export interface WorktreeStatusResult {
+  worktree: WorktreeRecord;
+  gitStatus?: WorktreeGitStatusRecord | GitStatusRecord | { error?: string };
+}
+
+export interface WorktreeDiffResult {
+  worktree: WorktreeRecord;
+  diff?: WorktreeGitDiffRecord | GitDiffRecord | { error?: string; diff?: string; files?: unknown[] };
+}
+
+export interface WorktreeMergeApprovalResult {
+  approval: ApprovalRecord;
+  worktree: WorktreeRecord;
+  gitStatus?: WorktreeGitStatusRecord | GitStatusRecord | { error?: string };
+  diff?: WorktreeGitDiffRecord | GitDiffRecord | { error?: string; diff?: string; files?: unknown[] };
+}
+
+export interface WorktreeMergeResult {
+  worktreeId?: Identifier | null;
+  merged: boolean;
+  branchName?: string;
+  targetBranch?: string;
+  error?: string;
+  result?: Record<string, unknown>;
+}
+
+export interface WorktreeCleanupResult {
+  worktreeId: Identifier;
+  cleaned: boolean;
+}
+
 export interface TaskControlResult {
   task: TaskRecord;
 }
@@ -306,6 +376,7 @@ export interface ScheduledTaskLogsResult {
 
 export interface ApprovalSubmitResult {
   approval: ApprovalRecord;
+  worktreeMerge?: WorktreeMergeResult;
 }
 
 export interface ConfigGetResult {

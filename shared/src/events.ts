@@ -10,6 +10,7 @@ import type {
   TaskVerificationRecord,
   TaskStatus,
   EventVisibility,
+  WorktreeRecord,
 } from "./domain";
 
 export type AgentEventType =
@@ -25,6 +26,10 @@ export type AgentEventType =
   | "task.resumed"
   | "task.created"
   | "task.routing.decided"
+  | "task.worktree.bound"
+  | "task.worktree.bind_failed"
+  | "task.worktree.merged"
+  | "task.worktree.merge_failed"
   | "task.planning.subtask.started"
   | "task.planning.subtask.completed"
   | "provider.request"
@@ -70,6 +75,11 @@ export interface TaskUpdatedPayload {
   verification?: TaskVerificationRecord[];
   summary?: string;
   resultSummary?: string;
+  routing?: {
+    activeWorktree?: WorktreeRecord | null;
+    [key: string]: unknown;
+  } | null;
+  activeWorktree?: WorktreeRecord | null;
   errorCode?: string;
   context?: TaskContextPreviewPayload;
 }

@@ -7,6 +7,8 @@ import type {
   SkillPresetRecord,
   TaskRecord,
   TraceEventRecord,
+  WorktreeDiffResult,
+  WorktreeStatusResult,
 } from "@shared";
 import { RuntimeClient, type HostStatus, type RuntimeConfig } from "./lib/runtimeClient";
 import {
@@ -38,6 +40,7 @@ import {
 } from "./state/chatTokenHelpers";
 import { WorkspaceRouter } from "./ui/workbench/workspaces/WorkspaceRouter";
 import { approvalModeToSettingsMode } from "./state/providerPayloadParsing";
+import type { SessionWorkspaceWorktreeStatus } from "./ui/workbench/workspaces/session/SessionWorkspace";
 
 // Hooks
 import { useProviderConfig } from "./hooks/useProviderConfig";
@@ -63,6 +66,10 @@ export function App() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [promptAttachments, setPromptAttachments] = useState<string[]>([]);
   const [queuedPromptSubmissions, setQueuedPromptSubmissions] = useState<QueuedPromptSubmission[]>([]);
+  const [worktreeStatus, setWorktreeStatus] = useState<SessionWorkspaceWorktreeStatus | null>(null);
+  const [worktreeDiff, setWorktreeDiff] = useState<WorktreeDiffResult["diff"] | null>(null);
+  const [worktreeBusyAction, setWorktreeBusyAction] = useState<"status" | "diff" | "requestMergeApproval" | "merge" | "cleanup" | null>(null);
+  const [worktreeError, setWorktreeError] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessageView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
@@ -80,6 +87,76 @@ export function App() {
   }
   function toastError(reason: unknown) {
     addToast("error", getErrorMessage(reason));
+  }
+
+  function normalizeWorktreeStatus(value: WorktreeStatusResult["gitStatus"] | null | undefined): SessionWorkspaceWorktreeStatus | null {
+    if (!value) return null;
+    if ("dirtyFiles" in value || "error" in value) {
+      return value as SessionWorkspaceWorktreeStatus;
+    }
+    const changes = Array.isArray((value as any).changes) ? (value as any).changes : [];
+    return {
+      dirtyFiles: changes.length,
+      files: changes
+        .map((change: any) => [change.status, change.path].filter(Boolean).join(" ").trim())
+        .filter(Boolean),
+    };
+  }
+
+  async function runWorktreeAction<T>(
+    action: "status" | "diff" | "requestMergeApproval" | "merge" | "cleanup",
+    operation: () => Promise<T>,
+  ): Promise<T | null> {
+    setWorktreeBusyAction(action);
+    setWorktreeError(null);
+    try {
+      return await operation();
+    } catch (reason) {
+      const message = getErrorMessage(reason);
+      setWorktreeError(message);
+      addToast("error", message);
+      return null;
+    } finally {
+      setWorktreeBusyAction(null);
+    }
+  }
+
+  async function handleRefreshWorktree(worktreeId: string) {
+    const result = await runWorktreeAction("status", () => runtimeClient.worktreeStatus({ worktreeId }));
+    if (result) setWorktreeStatus(normalizeWorktreeStatus(result.gitStatus));
+  }
+
+  async function handleLoadWorktreeDiff(worktreeId: string) {
+    const result = await runWorktreeAction("diff", () => runtimeClient.worktreeDiff({ worktreeId }));
+    if (result) setWorktreeDiff(result.diff ?? null);
+  }
+
+  async function handleMergeWorktree(worktreeId: string) {
+    const diffError = worktreeDiff && "error" in worktreeDiff ? worktreeDiff.error : undefined;
+    if (!worktreeDiff || diffError) {
+      setWorktreeError("Review the worktree diff before merging.");
+      addToast("info", "Review the worktree diff before merging.");
+      return;
+    }
+    if ((worktreeStatus?.dirtyFiles ?? 0) > 0) {
+      setWorktreeError("Worktree merge approval is blocked while there are uncommitted changes.");
+      addToast("info", "Clean or commit the worktree changes before requesting merge approval.");
+      return;
+    }
+    const result = await runWorktreeAction("requestMergeApproval", () => runtimeClient.worktreeRequestMergeApproval({ worktreeId }));
+    if (result?.approval) {
+      setWorktreeStatus(normalizeWorktreeStatus(result.gitStatus));
+      setWorktreeDiff(result.diff ?? worktreeDiff);
+      addToast("info", "Worktree merge approval requested.");
+    }
+  }
+
+  async function handleCleanupWorktree(worktreeId: string, force = false) {
+    const result = await runWorktreeAction("cleanup", () => runtimeClient.worktreeCleanup({ worktreeId, force }));
+    if (result?.cleaned) {
+      addToast("success", "Worktree cleaned.");
+      await handleRefreshTask();
+    }
   }
 
   // ── Streaming refs ─────────────────────────────────────────────────
@@ -445,6 +522,13 @@ export function App() {
     setTaskControlError(null);
   }, [task?.id, task?.status]);
 
+  useEffect(() => {
+    setWorktreeStatus(null);
+    setWorktreeDiff(null);
+    setWorktreeError(null);
+    setWorktreeBusyAction(null);
+  }, [task?.routing?.activeWorktree?.id]);
+
   // ── Queued prompt auto-send useEffect ───────────────────────────────
   useEffect(() => {
     if (
@@ -584,6 +668,14 @@ export function App() {
         handleRefreshTask={handleRefreshTask}
         handleTaskControl={handleTaskControl}
         handleRefreshTrace={handleRefreshTrace}
+        handleRefreshWorktree={handleRefreshWorktree}
+        handleLoadWorktreeDiff={handleLoadWorktreeDiff}
+        handleMergeWorktree={handleMergeWorktree}
+        handleCleanupWorktree={handleCleanupWorktree}
+        worktreeStatus={worktreeStatus ?? null}
+        worktreeDiff={worktreeDiff ?? null}
+        worktreeBusyAction={worktreeBusyAction}
+        worktreeError={worktreeError}
         refreshBusy={refreshBusy}
         taskControlBusyAction={taskControlBusyAction}
         approvalBusyId={approvalBusyId}

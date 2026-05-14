@@ -12,6 +12,7 @@ import { buildConversationActivity, ConversationActivity } from "./ConversationA
 import { TaskProgressPanel } from "./TaskProgressPanel";
 import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
 import { TraceFilterBar } from "./TraceFilterBar";
+import { WorktreePanel } from "./WorktreePanel";
 import "./session.css";
 
 // Re-export types for backward compatibility with external consumers
@@ -19,6 +20,8 @@ export type {
   SessionWorkspaceCollaboration,
   SessionWorkspaceBackgroundJob,
   SessionWorkspaceContextPreview,
+  SessionWorkspaceWorktreeDiff,
+  SessionWorkspaceWorktreeStatus,
   SessionWorkspaceProps,
 } from "./types";
 
@@ -43,8 +46,16 @@ export function SessionWorkspace({
   onRefreshTask,
   onStopTask,
   onRefreshTrace,
+  onRefreshWorktree,
+  onLoadWorktreeDiff,
+  onMergeWorktree,
+  onCleanupWorktree,
+  worktreeStatus,
+  worktreeDiff,
   taskBusyAction,
   busyId,
+  worktreeBusyAction,
+  worktreeError,
   messagesLoading,
   taskCount,
   composerContext,
@@ -216,6 +227,17 @@ export function SessionWorkspace({
               <span>{activityItems.length} 个事件</span>
             </header>
             <div className="message-stream message-stream-chat-only" aria-label="会话消息">
+              <WorktreePanel
+                worktree={visibleActiveTask?.activeWorktree}
+                status={worktreeStatus}
+                diff={worktreeDiff}
+                busyAction={worktreeBusyAction}
+                error={worktreeError}
+                onRefresh={onRefreshWorktree}
+                onLoadDiff={onLoadWorktreeDiff}
+                onMerge={onMergeWorktree}
+                onCleanup={onCleanupWorktree}
+              />
               {messagesLoading && activityItems.length === 0 ? (
                 <div className="message-stream-loading" aria-label="加载消息">
                   <div className="message-stream-loading-bar" />

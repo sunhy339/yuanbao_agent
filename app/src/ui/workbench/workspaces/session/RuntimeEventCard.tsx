@@ -163,6 +163,7 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
             command: item.code,
             cwd: item.meta?.find((entry) => /^[A-Z]:|^\//.test(entry)),
             requestedAt: item.time,
+            completionEvidence: item.completionEvidence,
           }}
           busy={isBusy}
           onApprove={(approvalId) => {

@@ -9,12 +9,43 @@ logger = logging.getLogger(__name__)
 
 
 class ApprovalFlowMixin:
+    def request_worktree_merge_approval(self, params: dict[str, Any]) -> dict[str, Any]:
+        worktree_service = getattr(self, "_worktree_service", None)
+        if worktree_service is None:
+            raise ValueError("WorktreeService not configured")
+        result = worktree_service.request_merge_approval(params)
+        approval = result["approval"]
+        task = self._store.get_task({"taskId": approval["taskId"]})["task"]
+        request = json.loads(approval.get("requestJson") or "{}")
+        self._publish(
+            session_id=task["sessionId"],
+            task=task,
+            event_type="approval.requested",
+            payload={
+                "approvalId": approval["id"],
+                "taskId": task["id"],
+                "kind": approval["kind"],
+                "request": request,
+            },
+        )
+        self._fire_hooks(
+            "on_approval_required",
+            task["sessionId"],
+            task,
+            extra_context={"approvalId": approval["id"], "kind": approval["kind"]},
+        )
+        return result
+
     def submit_approval(self, params: dict[str, Any]) -> dict[str, Any]:
         approval = self._store.resolve_approval(
             approval_id=params["approvalId"],
             decision=params["decision"],
         )
         task = self._store.get_task({"taskId": approval["taskId"]})["task"]
+        if approval.get("kind") == "worktree_merge":
+            return self._submit_worktree_merge_approval(approval=approval, task=task)
+        if approval.get("kind") == "completion_review":
+            return self._submit_completion_review_approval(approval=approval, task=task)
         if task["status"] in {"cancelled", "completed", "failed"}:
             self._publish(
                 session_id=task["sessionId"],
@@ -108,6 +139,145 @@ class ApprovalFlowMixin:
                 error_code="PLAN_REJECTED",
             )
         return {"approval": approval}
+
+    def _submit_worktree_merge_approval(
+        self,
+        *,
+        approval: dict[str, Any],
+        task: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._publish(
+            session_id=task["sessionId"],
+            task=task,
+            event_type="approval.resolved",
+            payload={
+                "approvalId": approval["id"],
+                "taskId": task["id"],
+                "decision": approval["decision"],
+            },
+        )
+        if approval.get("decision") != "approved":
+            return {"approval": approval}
+
+        try:
+            request = json.loads(approval.get("requestJson") or "{}")
+        except json.JSONDecodeError as exc:
+            return {
+                "approval": approval,
+                "worktreeMerge": {
+                    "merged": False,
+                    "error": f"Worktree merge approval request is invalid: {exc}",
+                },
+            }
+
+        worktree_id = request.get("worktreeId")
+        target_branch = request.get("targetBranch") or "main"
+        worktree_service = getattr(self, "_worktree_service", None)
+        if worktree_service is None:
+            merge_result = {
+                "worktreeId": worktree_id,
+                "merged": False,
+                "targetBranch": target_branch,
+                "error": "WorktreeService not configured",
+            }
+        else:
+            try:
+                merge_result = worktree_service.merge({
+                    "worktreeId": worktree_id,
+                    "targetBranch": target_branch,
+                    "approvalId": approval["id"],
+                })
+            except Exception as exc:  # noqa: BLE001
+                merge_result = {
+                    "worktreeId": worktree_id,
+                    "merged": False,
+                    "targetBranch": target_branch,
+                    "error": str(exc),
+                }
+
+        worktree = None
+        if merge_result.get("worktreeId"):
+            try:
+                worktree = self._store.get_worktree({"worktreeId": merge_result["worktreeId"]})["worktree"]
+            except Exception:  # noqa: BLE001
+                worktree = None
+        event_type = "task.worktree.merged" if merge_result.get("merged") else "task.worktree.merge_failed"
+        payload = {
+            "status": task.get("status"),
+            "worktreeId": merge_result.get("worktreeId"),
+            "mergeResult": merge_result.get("result"),
+            "error": merge_result.get("error"),
+            "targetBranch": merge_result.get("targetBranch") or target_branch,
+            "branchName": merge_result.get("branchName"),
+        }
+        if worktree is not None:
+            payload.update({
+                "activeWorktree": worktree,
+                "routing": {
+                    **(task.get("routing") or {}),
+                    "activeWorktree": worktree,
+                },
+                "branchName": merge_result.get("branchName") or worktree.get("branchName"),
+            })
+        self._publish(
+            session_id=task["sessionId"],
+            task=task,
+            event_type=event_type,
+            payload=payload,
+        )
+        return {"approval": approval, "worktreeMerge": merge_result}
+
+    def _submit_completion_review_approval(
+        self,
+        *,
+        approval: dict[str, Any],
+        task: dict[str, Any],
+    ) -> dict[str, Any]:
+        self._publish(
+            session_id=task["sessionId"],
+            task=task,
+            event_type="approval.resolved",
+            payload={
+                "approvalId": approval["id"],
+                "taskId": task["id"],
+                "decision": approval["decision"],
+            },
+        )
+        try:
+            request = json.loads(approval.get("requestJson") or "{}")
+        except json.JSONDecodeError:
+            request = {}
+        summary = str(request.get("summary") or task.get("resultSummary") or task.get("summary") or "")
+        if approval.get("decision") != "approved":
+            failed_task = self._fail_task(
+                session_id=task["sessionId"],
+                task=task,
+                summary="Completion review was rejected by the user.",
+                error_code="COMPLETION_REVIEW_REJECTED",
+            )
+            return {"approval": approval, "task": failed_task}
+
+        if task.get("status") != "waiting_approval":
+            return {"approval": approval, "task": task}
+
+        self._validate_task_transition(task["status"], "running", task["id"])
+        task = self._store.update_task_status(task_id=task["id"], status="running")
+        self._publish(
+            session_id=task["sessionId"],
+            task=task,
+            event_type="task.updated",
+            payload={"status": "running", "detail": "Completion review approved"},
+        )
+        completed_task = self._complete_task(
+            session_id=task["sessionId"],
+            task=task,
+            summary=summary or "Completion review approved.",
+            context={"_allow_summary_only_completion": True},
+            tool_results=[],
+            skip_reflection=True,
+            force_complete_after_review=True,
+        )
+        return {"approval": approval, "task": completed_task}
 
     def _should_resume_child_approval_in_process(self, params: dict[str, Any], child_task: dict[str, Any]) -> bool:
         if params.get("_childWorkerApprovalResume") is True:

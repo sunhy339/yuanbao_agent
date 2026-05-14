@@ -23,6 +23,8 @@ import type {
   SessionWorkspaceCollaboration,
   SessionWorkspaceContextPreview,
   SessionWorkspaceBackgroundJob,
+  SessionWorkspaceWorktreeDiff,
+  SessionWorkspaceWorktreeStatus,
 } from "./session/SessionWorkspace";
 import type { WorkbenchTab, SystemWorkspaceKind } from "../types";
 
@@ -120,6 +122,14 @@ export interface WorkspaceRouterProps {
   handleRefreshTask: () => Promise<void>;
   handleTaskControl: (action: any) => Promise<void>;
   handleRefreshTrace: () => Promise<void>;
+  handleRefreshWorktree: (worktreeId: string) => Promise<void>;
+  handleLoadWorktreeDiff: (worktreeId: string) => Promise<void>;
+  handleMergeWorktree: (worktreeId: string) => Promise<void>;
+  handleCleanupWorktree: (worktreeId: string, force?: boolean) => Promise<void>;
+  worktreeStatus: SessionWorkspaceWorktreeStatus | null;
+  worktreeDiff: SessionWorkspaceWorktreeDiff | null;
+  worktreeBusyAction: "status" | "diff" | "requestMergeApproval" | "merge" | "cleanup" | null;
+  worktreeError: string | null;
   refreshBusy: boolean;
   taskControlBusyAction: any;
   approvalBusyId: string | null;
@@ -267,6 +277,7 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
                 verification: props.task.verification,
                 summary: props.task.summary,
                 resultSummary: props.task.resultSummary,
+                activeWorktree: props.task.routing?.activeWorktree ?? null,
                 planSteps: props.task.plan?.map((step: any) => ({
                   id: step.id,
                   title: step.title,
@@ -305,6 +316,14 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
         onRefreshTask={props.handleRefreshTask}
         onStopTask={() => props.handleTaskControl("cancel")}
         onRefreshTrace={props.handleRefreshTrace}
+        onRefreshWorktree={props.handleRefreshWorktree}
+        onLoadWorktreeDiff={props.handleLoadWorktreeDiff}
+        onMergeWorktree={props.handleMergeWorktree}
+        onCleanupWorktree={props.handleCleanupWorktree}
+        worktreeStatus={props.worktreeStatus}
+        worktreeDiff={props.worktreeDiff}
+        worktreeBusyAction={props.worktreeBusyAction}
+        worktreeError={props.worktreeError}
         taskBusyAction={props.refreshBusy ? "refresh" : props.taskControlBusyAction === "cancel" ? "stop" : null}
         busyId={props.approvalBusyId ?? props.patchBusyId ?? props.commandJobBusyId ?? (props.traceBusy ? "trace" : null)}
       />

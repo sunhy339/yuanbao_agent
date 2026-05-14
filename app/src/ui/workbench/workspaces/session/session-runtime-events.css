@@ -161,7 +161,8 @@
 }
 
 .session-workspace-chat-only .runtime-process-card,
-.session-workspace-chat-only .runtime-trace-row {
+.session-workspace-chat-only .runtime-trace-row,
+.session-workspace-chat-only .worktree-panel {
   width: 100%;
   border: 1px solid rgba(15, 23, 42, 0.1) !important;
   border-radius: 9px;
@@ -176,6 +177,34 @@
 .session-workspace-chat-only .runtime-process-card[data-status="failed"],
 .session-workspace-chat-only .runtime-process-card[data-status="error"] {
   background: rgba(255, 255, 255, 0.76) !important;
+}
+
+.session-workspace-chat-only .worktree-panel {
+  width: min(1000px, 86%);
+  justify-self: start;
+  margin-bottom: 4px;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .worktree-panel::before {
+  display: none;
+}
+
+.session-workspace-chat-only .worktree-meta div,
+.session-workspace-chat-only .worktree-state-grid article {
+  border-color: rgba(15, 23, 42, 0.08);
+  background: #f6f7f8;
+}
+
+.session-workspace-chat-only .worktree-panel h3,
+.session-workspace-chat-only .worktree-meta dd,
+.session-workspace-chat-only .worktree-state-grid strong {
+  color: #1f2937;
+}
+
+.session-workspace-chat-only .worktree-error {
+  color: #9f1239;
+  background: rgba(255, 241, 242, 0.86);
 }
 
 .session-workspace-chat-only .runtime-process-head,
@@ -257,4 +286,3 @@
     max-width: 94%;
   }
 }
-

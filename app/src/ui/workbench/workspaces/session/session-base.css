@@ -1,0 +1,86 @@
+.session-workspace {
+  --session-surface: var(--yb-surface);
+  --session-surface-muted: var(--yb-surface-soft);
+  --session-border: var(--yb-line);
+  --session-border-strong: var(--yb-line-strong);
+  --session-ink: var(--yb-ink);
+  --session-muted: var(--yb-muted);
+  --session-soft: var(--yb-muted);
+  --session-blue: var(--yb-info);
+  --session-green: var(--yb-success);
+  --session-amber: var(--yb-warning);
+  --session-red: var(--yb-danger);
+  --session-mono: var(--yb-font-mono);
+
+  min-height: 100%;
+  color: var(--session-ink);
+  font-family: var(--yb-font-ui);
+}
+
+.session-workspace-empty {
+  display: grid;
+  place-items: center;
+  padding: 28px 16px;
+}
+
+.session-empty-card {
+  width: min(560px, 100%);
+  border: 1px solid var(--session-border);
+  border-radius: 10px;
+  padding: 24px;
+  background: var(--session-surface);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06);
+}
+
+.session-empty-rule {
+  display: block;
+  width: 52px;
+  height: 4px;
+  margin-bottom: 22px;
+  border-radius: 99px;
+  background: var(--session-blue);
+}
+
+.session-kicker {
+  margin: 0 0 8px;
+  color: var(--session-muted);
+  font-family: var(--session-mono);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.session-workspace h1,
+.session-workspace h2,
+.session-workspace p {
+  margin-top: 0;
+}
+
+.session-workspace h1 {
+  margin-bottom: 0;
+  color: var(--session-ink);
+  font-size: clamp(24px, 3vw, 34px);
+  font-weight: 760;
+  line-height: 1.08;
+  text-wrap: pretty;
+}
+
+.session-workspace h2 {
+  margin-bottom: 0;
+  color: var(--session-ink);
+  font-size: 20px;
+}
+
+.session-empty-card p:last-child,
+.message-stream-empty p:last-child {
+  margin-bottom: 0;
+  color: var(--session-muted);
+  line-height: 1.6;
+}
+
+.session-workspace-chat-only {
+  display: grid;
+  min-height: 100%;
+}
+

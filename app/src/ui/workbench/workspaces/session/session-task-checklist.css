@@ -1,0 +1,176 @@
+.assistant-task-checklist {
+  display: grid;
+  width: min(78ch, 92%);
+  max-height: 356px;
+  justify-self: start;
+  overflow: auto;
+  border: 1px solid rgba(251, 191, 36, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.08);
+}
+
+.assistant-task-checklist summary {
+  display: grid;
+  grid-template-columns: 32px auto minmax(90px, 250px) auto 22px;
+  gap: 12px;
+  align-items: center;
+  min-height: 50px;
+  padding: 10px 18px;
+  color: #111827;
+  cursor: pointer;
+  list-style: none;
+}
+
+.assistant-task-checklist summary::-webkit-details-marker {
+  display: none;
+}
+
+.assistant-task-icon {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #dbeafe;
+}
+
+.assistant-task-icon::before,
+.assistant-task-icon::after {
+  position: absolute;
+  left: 8px;
+  width: 12px;
+  height: 2px;
+  border-radius: 99px;
+  background: #2563eb;
+  content: "";
+}
+
+.assistant-task-icon::before {
+  top: 9px;
+  box-shadow: 0 6px 0 #2563eb, 0 12px 0 #2563eb;
+}
+
+.assistant-task-icon::after {
+  top: 6px;
+  left: 5px;
+  width: 7px;
+  height: 12px;
+  border: solid #0f766e;
+  border-width: 0 2px 2px 0;
+  background: transparent;
+  box-shadow: 0 6px 0 -4px transparent;
+  transform: rotate(45deg);
+}
+
+.assistant-task-checklist summary > strong {
+  color: #111827;
+  font-size: 15px;
+  font-weight: 820;
+}
+
+.assistant-task-progress {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: #e5e7eb;
+}
+
+.assistant-task-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #d6aaa5;
+}
+
+.assistant-task-count {
+  color: #78625f;
+  font-family: var(--session-mono);
+  font-size: 12px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.assistant-task-chevron {
+  width: 9px;
+  height: 9px;
+  border: solid #78625f;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+  transition: transform 150ms ease;
+}
+
+.assistant-task-checklist:not([open]) .assistant-task-chevron {
+  transform: rotate(-45deg);
+}
+
+.assistant-task-checklist ol {
+  display: grid;
+  gap: 18px;
+  margin: 0;
+  padding: 8px 28px 20px 28px;
+  list-style: none;
+}
+
+.assistant-task-checklist li {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  min-width: 0;
+}
+
+.assistant-task-check {
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  border: 2px solid #8b6f68;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.assistant-task-checklist li[data-state="completed"] .assistant-task-check {
+  border-color: #16a34a;
+  background:
+    linear-gradient(45deg, transparent 45%, #16a34a 45% 55%, transparent 55%) center / 12px 12px no-repeat,
+    rgba(22, 163, 74, 0.08);
+}
+
+.assistant-task-checklist li[data-state="active"] .assistant-task-check {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+
+.assistant-task-checklist li div {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: baseline;
+  color: #111827;
+}
+
+.assistant-task-checklist li div span {
+  color: #78625f;
+  font-family: var(--session-mono);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.assistant-task-checklist li div strong {
+  min-width: 0;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 680;
+  line-height: 1.35;
+}
+
+.assistant-task-checklist li div small {
+  flex-basis: 100%;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+

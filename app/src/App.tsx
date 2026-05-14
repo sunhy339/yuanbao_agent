@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type {
+  AgentProfileCreateParams,
+  AgentProfilePreviewToolsParams,
+  AgentProfileRecord,
+  AgentProfileUpdateParams,
+  AgentProfileValidateParams,
   AgentEventEnvelope,
   AssistantTokenPayload,
   McpServerRecord,
@@ -70,6 +75,9 @@ export function App() {
   const [worktreeDiff, setWorktreeDiff] = useState<WorktreeDiffResult["diff"] | null>(null);
   const [worktreeBusyAction, setWorktreeBusyAction] = useState<"status" | "diff" | "requestMergeApproval" | "merge" | "cleanup" | null>(null);
   const [worktreeError, setWorktreeError] = useState<string | null>(null);
+  const [agentProfiles, setAgentProfiles] = useState<AgentProfileRecord[]>([]);
+  const [agentProfileBusyId, setAgentProfileBusyId] = useState<string | null>(null);
+  const [agentProfileFeedback, setAgentProfileFeedback] = useState<{ tone: "success" | "danger" | "info"; message: string } | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessageView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
@@ -163,6 +171,84 @@ export function App() {
       addToast("success", "Worktree cleaned.");
       await handleRefreshTask();
     }
+  }
+
+  async function refreshAgentProfiles() {
+    setAgentProfileBusyId("refresh");
+    setAgentProfileFeedback(null);
+    try {
+      const result = await runtimeClient.listAgentProfiles();
+      setAgentProfiles(result.agents);
+    } catch (reason) {
+      const message = getErrorMessage(reason);
+      setAgentProfileFeedback({ tone: "danger", message });
+      addToast("error", message);
+    } finally {
+      setAgentProfileBusyId(null);
+    }
+  }
+
+  async function handleAddAgentProfile(payload: AgentProfileCreateParams) {
+    setAgentProfileBusyId("create");
+    setAgentProfileFeedback(null);
+    try {
+      const result = await runtimeClient.createAgentProfile(payload);
+      setAgentProfiles((current) => [result.agent, ...current.filter((item) => item.id !== result.agent.id)]);
+      setAgentProfileFeedback({ tone: "success", message: `Agent profile "${result.agent.name}" created.` });
+      addToast("success", "Agent profile created.");
+    } catch (reason) {
+      const message = getErrorMessage(reason);
+      setAgentProfileFeedback({ tone: "danger", message });
+      addToast("error", message);
+      throw reason;
+    } finally {
+      setAgentProfileBusyId(null);
+    }
+  }
+
+  async function handleUpdateAgentProfile(agentId: string, payload: Partial<AgentProfileCreateParams>) {
+    setAgentProfileBusyId(agentId);
+    setAgentProfileFeedback(null);
+    try {
+      const updatePayload: AgentProfileUpdateParams = { agentId, ...payload };
+      const result = await runtimeClient.updateAgentProfile(updatePayload);
+      setAgentProfiles((current) => current.map((item) => (item.id === agentId ? result.agent : item)));
+      setAgentProfileFeedback({ tone: "success", message: `Agent profile "${result.agent.name}" saved.` });
+      addToast("success", "Agent profile saved.");
+    } catch (reason) {
+      const message = getErrorMessage(reason);
+      setAgentProfileFeedback({ tone: "danger", message });
+      addToast("error", message);
+      throw reason;
+    } finally {
+      setAgentProfileBusyId(null);
+    }
+  }
+
+  async function handleDeleteAgentProfile(agentId: string) {
+    setAgentProfileBusyId(agentId);
+    setAgentProfileFeedback(null);
+    try {
+      await runtimeClient.deleteAgentProfile({ agentId });
+      setAgentProfiles((current) => current.filter((item) => item.id !== agentId));
+      setAgentProfileFeedback({ tone: "success", message: "Agent profile deleted." });
+      addToast("success", "Agent profile deleted.");
+    } catch (reason) {
+      const message = getErrorMessage(reason);
+      setAgentProfileFeedback({ tone: "danger", message });
+      addToast("error", message);
+      throw reason;
+    } finally {
+      setAgentProfileBusyId(null);
+    }
+  }
+
+  async function handleValidateAgentProfile(payload: AgentProfileValidateParams) {
+    return runtimeClient.validateAgentProfile(payload);
+  }
+
+  async function handlePreviewAgentProfileTools(payload: AgentProfilePreviewToolsParams) {
+    return runtimeClient.previewAgentProfileTools(payload);
   }
 
   // ── Streaming refs ─────────────────────────────────────────────────
@@ -463,8 +549,9 @@ export function App() {
       runtimeClient.listScheduledTasks(),
       runtimeClient.listSkills().catch(() => ({ skills: [] as SkillPresetRecord[] })),
       runtimeClient.listMcpServers().catch(() => ({ servers: [] as McpServerRecord[] })),
+      runtimeClient.listAgentProfiles().catch(() => ({ agents: [] as AgentProfileRecord[] })),
     ])
-      .then(([nextHostStatus, nextConfig, nextSessions, nextTasks, nextScheduledTasks, nextSkills, nextMcpServers]) => {
+      .then(([nextHostStatus, nextConfig, nextSessions, nextTasks, nextScheduledTasks, nextSkills, nextMcpServers, nextAgentProfiles]) => {
         if (disposed) return;
 
         const normalizedConfig = normalizeRuntimeConfig(nextConfig.config);
@@ -490,6 +577,7 @@ export function App() {
         setSelectedScheduledTaskId(nextScheduledTasks.tasks[0]?.id ?? null);
         setSkills(nextSkills.skills);
         setMcpServers(nextMcpServers.servers);
+        setAgentProfiles(nextAgentProfiles.agents);
 
         if (nextConfig.config.workspace.rootPath) {
           setWorkspacePath(nextConfig.config.workspace.rootPath);
@@ -559,7 +647,7 @@ export function App() {
     session, sessions, task, activeTaskId, taskHistory,
     events, traceEvents, commandLogCacheById, patchCacheById,
     chatMessages, workspace, workspacePath,
-    scheduledRecords, scheduledLogs, skills, mcpServers,
+    scheduledRecords, scheduledLogs, skills, mcpServers, agentProfiles,
     loading, error,
   });
 
@@ -710,6 +798,15 @@ export function App() {
         handleDeleteMcpServer={handleDeleteMcpServer}
         setMcpError={setMcpError}
         settingsSkills={views.settingsSkills}
+        settingsAgents={views.settingsAgents}
+        agentProfileBusyId={agentProfileBusyId}
+        agentProfileFeedback={agentProfileFeedback}
+        refreshAgentProfiles={refreshAgentProfiles}
+        handleAddAgentProfile={handleAddAgentProfile}
+        handleUpdateAgentProfile={handleUpdateAgentProfile}
+        handleDeleteAgentProfile={handleDeleteAgentProfile}
+        handleValidateAgentProfile={handleValidateAgentProfile}
+        handlePreviewAgentProfileTools={handlePreviewAgentProfileTools}
         skillBusyId={skillBusyId}
         refreshSkills={refreshSkills}
         handleCreateSkill={handleCreateSkill}

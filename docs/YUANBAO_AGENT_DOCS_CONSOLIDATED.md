@@ -794,14 +794,14 @@ Supervisor/Swarm 更适合多 agent 协作，但应满足：
 | LLM 上下文压缩建议 | 部分接通 | compactor 支持 provider advisory；ReAct 当前仍有固定 60000 阈值。 |
 | LLM 拆任务/并行建议 | 规划/部分基础 | DecisionAdvisor 有 `decomposition` 类型，DAG/worker 基础存在，但默认完整闭环还需补齐。 |
 | Proposal 审计 | 已有基础 | proposal_records 已存在；需要保证所有关键默认路径都写入 proposal record。 |
-| 通用 Hooks | 部分接通 | runtime hooks 的 CRUD、执行记录、HookService、hook RPC 已有；任务生命周期和工具 pipeline 已开始调用 hooks，但 pause 事件名存在 `on_task_paused`/`on_task_pause` 不一致，前端设置入口也未看到完整接入。 |
+| 通用 Hooks | 生命周期已接通 | runtime hooks 的 CRUD、执行记录、HookService、hook RPC 已有；`before/after task`、`before/after tool`、`before/after provider turn`、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已统一触发，hook side effect 已接入 PermissionEngine。剩余主要是 Settings UI 管理入口与更多动作类型。 |
 
 状态总览图：
 
 ```mermaid
 flowchart LR
   Done["已接通\nRPC / Events / ReAct / Tools / Basic Memory"] --> Partial["部分接通\nAutonomy / AgentSoul / LLM Routing / Proposal Audit"]
-  Partial --> Todo["待补齐\nDefault LLM decisions / Hook lifecycle wiring / Replay / Parallel governance"]
+  Partial --> Todo["待补齐\nDefault LLM decisions / Hook settings UI / Replay polish / Parallel governance"]
 ```
 
 ## 13. 默认配置速查
@@ -864,15 +864,30 @@ flowchart TD
 
 这里的 hooks 不是简单的 webhook，而是 agent 生命周期中的可配置扩展点。它应该服务于审计、自动验证、外部通知、策略加固和团队流程。
 
-当前代码已支持创建的 hook 事件只有 3 个：
+当前代码的 hook repository 已允许核心生命周期事件：
 
 ```text
+before_task_start
 after_task_complete
 on_task_failed
+on_task_cancel
+on_task_pause
 on_approval_required
+before_tool_call
+after_tool_call
+before_provider_turn
+after_provider_turn
+before_compaction
+after_compaction
+on_task_resume
+before_worktree_create
+after_worktree_create
+before_worktree_merge
+after_worktree_merge
+on_context_snapshot
 ```
 
-它们已经有存储、RPC、`HookService` 和测试，但还没有在默认任务生命周期里自动触发。完整 hook 体系建议补到 20 个左右，按三阶段推进。
+它们已经有存储、RPC、`HookService` 和测试，并已接入默认 runtime 生命周期：任务启动/完成/失败/暂停/取消/恢复、工具执行前后、provider turn 前后、上下文压缩前后、context snapshot、worktree create/merge 都会触发对应 hook。`run_command` hook side effect 会经过 `PermissionEngine`；deny 会阻断执行，approval-required 会落到 approval 结果而不是绕过权限边界。后续 hook 工作重点转为 Settings 管理入口、更多动作类型，以及跨团队通知/审计模板。
 
 P0 最小本地开发闭环：8 个。
 
@@ -1239,7 +1254,7 @@ flowchart TD
 | profile store/schema | Done | runtime 新增 `agent_profiles` 表与 `AgentProfileStoreMixin`，支持 profile list/get/create/update/delete，序列化 `skillIds`、`mcpServerIds`、`toolPolicy` 和系统提示等字段。 |
 | profile RPC flow | Done | `agent.profile.list/create/update/delete/validate/previewTools` 已注册到 JSON-RPC；validate 覆盖基础字段与 tool policy 结构；previewTools 通过 `ToolPolicyResolver` 预览允许/拒绝工具。 |
 | shared RPC/domain 类型 | Done | shared 层补齐 `AgentProfileRecord` 与 `AgentProfile*Params/Result` 类型，前端调用可以使用稳定 RPC 类型。 |
-| 设置页 profile 管理 | Pending | Settings 的 Agents panel 目前仍是只读占位；下一步需要接入 `agent.profile.*` RPC，补 profile 列表、新建/编辑/删除、工具预览和表单校验。 |
+| 设置页 profile 管理 | Done | Settings 的 Agents panel 已接入 `agent.profile.*` RPC：支持 profile 列表/刷新、新建、编辑、删除、启用开关、validate 和 previewTools，并可编辑 role、permission mode、cwd、model/provider profile、skills、MCP servers、tool policy、system prompt。 |
 
 验证结果：
 
@@ -1247,15 +1262,17 @@ flowchart TD
 | --- | --- |
 | `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp_agent_profile runtime/tests/test_agent_profile_rpc.py runtime/tests/test_tool_policy_resolver.py` | 12 passed |
 | `npm.cmd run typecheck` in `app/` | passed |
+| `npm.cmd test -- SettingsWorkspace.test.tsx SessionWorkspace.test.tsx` in `app/` | 56 passed |
+| `cargo check` in `app/src-tauri` | passed |
 
 ### 当前剩余非大文件任务
 
 | 优先级 | 任务 | 当前状态 | 下一步 |
 | --- | --- | --- | --- |
 | P0/P1 | Completion / Stop 判断强化 | 硬 gate 第一/二/三/四/五层已完成：写入/验证型 `summary_only` 会进入 `completion_review`；失败验证会直接失败；有工作区变更证据但缺少 passed verification 会进入 `needs_verification`；结构化 acceptance failed/缺项会进入 `needs_acceptance_review`；unresolved tool failures 会进入 `needs_tool_review`；代码/测试文件变更如果只有结构性 git 检查也会进入 `needs_verification`；基础 completion review 证据展示已接入 UI。 | 下一步继续细化语言/框架测试匹配规则，并把 reviewer/approval 结论纳入更完整的完成审计。 |
-| P1 | Worktree 后续闭环 | 自动绑定写入型任务、工具 cwd 路由、桌面端 path/status/diff 展示、formal merge approval gate 已完成。 | 下一步接入 merge 前验证命令、reviewer/用户批准摘要、dirty cancel/cleanup 策略细化，以及多 agent 共享/独立 worktree 设计。 |
-| P1 | Hooks 生命周期补齐 | 基础 hook 能力已有，但生命周期触发点和权限边界还需统一。 | 补齐 before/after task、before/after tool、before/after provider turn、pause/cancel/resume、compaction、worktree merge 等事件，并纳入 PermissionEngine。 |
-| P1 | Dynamic Agent Profile 设置页 | backend store/RPC、shared 类型、validate 与 previewTools 已完成；Settings UI 仍是只读占位。 | 设置页接入 `agent.profile.*`，实现 profile 列表、新建/编辑/删除、工具预览和表单校验。 |
+| P1 | Worktree 后续闭环 | 自动绑定写入型任务、工具 cwd 路由、桌面端 path/status/diff 展示、formal merge approval gate、merge 前验证命令、reviewer gate、approval summary、dirty merge/cleanup 保护、多 agent worktree strategy 摘要已完成；会话页 Worktree 面板展示 verification/review/approval/agent strategy。 | 下一步做真实多 agent smoke 与更细的共享/独立 worktree 策略文档，必要时补 conflict UI。 |
+| P1 | Hooks 生命周期补齐 | before/after task、before/after tool、before/after provider turn、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已接线；hook `run_command` side effect 已纳入 PermissionEngine，runtime 回归覆盖 71 项。 | 下一步补 Settings UI 的 hook 管理入口，以及通知/webhook/模板等 P2 动作类型。 |
+| P1 | Dynamic Agent Profile 设置页 | Done：backend store/RPC、shared 类型、validate/previewTools、Tauri bridge、Settings UI profile 管理全部接通。 | 后续只剩真实 provider/profile 组合 smoke 与易用性打磨。 |
 | P1 | Real LLM smoke 固化 | 手工和回归测试已有，尚未变成安全脚本。 | 新增可选 smoke runner，只从环境变量读取 key，不落库、不写文档、不提交生成物。 |
 
 ### 当前重点
@@ -1270,6 +1287,8 @@ flowchart TD
 
 2026-05-14 更新：Dynamic Agent Profile backend/RPC 已完成并补验证；当前剩余的是 Settings UI profile 管理入口与 Real LLM smoke 固化。
 
+2026-05-15 更新：Dynamic Agent Profile Settings UI 已完成；Worktree 后续闭环已补到 merge verification、reviewer gate、approval summary、dirty merge/cleanup 保护和多 agent strategy 摘要展示；Hooks 生命周期已核对为已接线状态。当前主要剩余转向 Real LLM smoke 固化、Hook Settings 管理入口，以及多 agent worktree 策略的真实场景验证。
+
 ### 2026-05-14 Worktree 自动绑定首段闭环
 
 | 项目 | 状态 | 说明 |
@@ -1283,6 +1302,9 @@ flowchart TD
 | merge/cleanup 第一层保护 | Done | `worktree.merge` 默认要求正式 approval record，先拒绝 dirty worktree，冲突时不标记 merged；cleanup 默认只允许 clean worktree。 |
 | formal merge approval gate | Done | `worktree.requestMergeApproval` 会基于 clean status + diff 创建/复用 `worktree_merge` approval；前端只负责请求审批，`approval.submit` 批准后由 runtime 执行 merge，并发布 `task.worktree.merged` / `task.worktree.merge_failed`。 |
 | merge 前验证命令 | Done | `worktree.requestMergeApproval` 支持显式 `verificationCommands` 或 `DEFAULT_CONFIG.worktree.mergeVerificationCommands`；会在 task worktree cwd 中执行验证，失败则阻止创建 merge approval，成功则把 `verification` 写入 approval request、worktree `lastStatus.mergeVerification` 和 merge event。 |
+| reviewer/approval 摘要 | Done | merge approval request 会保存 `review`、`reviewStatus`、`reviewerSummary`；`worktree.merge` 会把批准人、批准时间、target branch、verificationStatus 等写入 `mergeApproval` / `approvalSummary`，并随 merge event 发布。 |
+| 多 agent worktree 策略摘要 | Done | runtime 根据 task routing/root/child 信息生成 `multiAgentWorktreeStrategy`，默认 root 用 `root_worktree`、child 用 `isolated_child_worktrees`；会进入 approval request、merge event 和 worktree `lastStatus`。 |
+| 桌面端收尾展示 | Done | Worktree 面板除 path/status/diff 外，已展示 merge verification、review、approval、agent strategy；dirty worktree 时 merge approval 和 cleanup 按钮会禁用并展示原因。 |
 
 验证：
 
@@ -1301,6 +1323,8 @@ flowchart TD
 | `cargo check` in `app/src-tauri` | passed |
 | `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worktree_isolation.py::TestWorktreeServiceMergeGate` | 9 passed |
 | `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worktree_isolation.py runtime/tests/test_worktree_auto_binding.py` | 37 passed |
+| `npm.cmd test -- SettingsWorkspace.test.tsx SessionWorkspace.test.tsx` in `app/` | 56 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp_closure runtime/tests/test_agent_profile_rpc.py runtime/tests/test_worktree_isolation.py runtime/tests/test_runtime_hooks.py` | 71 passed |
 
 剩余 worktree 后续：
 
@@ -1308,5 +1332,22 @@ flowchart TD
 2. ~~UI 需要展示 task worktree path、branch、status、diff，并提供 merge/cleanup 入口。~~ **Done**：会话页已有 Worktree 面板，事件折叠会保留 `activeWorktree`，并接入 status/diff/merge/cleanup 调用。
 3. ~~merge 前需要正式 approval record。~~ **Done**：第一层已从前端二次确认升级为 `worktree_merge` approval record；审批通过后 runtime 才执行 merge，失败会返回结构化错误并发布 merge_failed 事件。
 4. ~~merge 前接入验证命令。~~ **Done**：merge approval 请求会先执行配置/参数指定的验证命令，失败不创建 approval，成功把验证证据进入 approval request 和 merge event。
-5. merge 前还需要继续增强：接入 reviewer、approval gate 的 review 结果摘要，以及 diff 截断/完整 diff 展示策略。
-6. 子任务/多 agent 是否共享 root worktree、还是各自 worktree，需要结合任务依赖和 merge 策略做第二阶段设计。
+5. ~~merge 前还需要继续增强：接入 reviewer、approval gate 的 review 结果摘要，以及 diff 截断/完整 diff 展示策略。~~ **Done**：review/approval/verification/diff preview 已进入 approval request、merge event、worktree `lastStatus` 和桌面端 Worktree 面板。
+6. 子任务/多 agent 是否共享 root worktree、还是各自 worktree，当前已有 `multiAgentWorktreeStrategy` 摘要与默认策略；下一步需要真实多 agent smoke 和冲突/依赖场景下的策略验证。
+
+### 2026-05-15 Hooks 生命周期状态同步
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| hook event registry | Done | `hook_repository.py` 已允许 task/tool/provider/compaction/worktree/context snapshot 等生命周期事件。 |
+| task lifecycle hooks | Done | `before_task_start`、`after_task_complete`、`on_task_failed`、`on_task_cancel`、`on_task_pause`、`on_task_resume`、`on_approval_required` 已接入 runtime 默认路径。 |
+| tool/provider/compaction hooks | Done | tool pipeline 触发 `before_tool_call` / `after_tool_call`；ReAct provider turn 触发 `before_provider_turn` / `after_provider_turn`；compaction 触发 `before_compaction` / `after_compaction`；context snapshot 触发 `on_context_snapshot`。 |
+| worktree hooks | Done | WorktreeService 在 create/merge 前后触发 `before_worktree_create`、`after_worktree_create`、`before_worktree_merge`、`after_worktree_merge`，并把 review/approval/verification/strategy 上下文传入。 |
+| PermissionEngine | Done | hook 的 `run_command` side effect 会先经 `PermissionEngine` 判定；deny 阻断，approval-required 落为待批准结果。 |
+| 验证 | Done | `runtime/tests/test_runtime_hooks.py` 与 worktree/agent profile 组合回归通过：`71 passed`。 |
+
+剩余 Hooks 后续：
+
+1. Settings UI 里还需要 hook list/create/update/delete、执行记录查看、模板化动作配置。
+2. P2 动作类型可以继续扩展通知/webhook、memory write、自动验证建议、外部系统同步。
+3. 真实 provider + hook side effect smoke 仍应作为可选脚本固化，避免依赖本地密钥。

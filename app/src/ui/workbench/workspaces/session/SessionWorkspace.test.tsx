@@ -1178,6 +1178,20 @@ describe("SessionWorkspace", () => {
                   summary: "43 passed",
                 },
               ],
+              review: {
+                status: "approved",
+                reviewer: "reviewer-agent",
+                summary: "Looks good.",
+              },
+              mergeApproval: {
+                decision: "approved",
+                targetBranch: "main",
+                verificationStatus: "passed",
+              },
+              multiAgentWorktreeStrategy: {
+                strategy: "isolated_child_worktrees",
+                reason: "Child scopes merge independently.",
+              },
             },
           },
         }}
@@ -1198,6 +1212,10 @@ describe("SessionWorkspace", () => {
     expect(within(panel).getByText("app/src/App.tsx | 12 ++++++++++++")).toBeInTheDocument();
     expect(within(panel).getByText("1 passed")).toBeInTheDocument();
     expect(within(panel).getByText("passed - npm test")).toBeInTheDocument();
+    expect(within(panel).getAllByText("approved")).toHaveLength(2);
+    expect(within(panel).getByText("reviewer-agent - Looks good.")).toBeInTheDocument();
+    expect(within(panel).getByText("main - passed")).toBeInTheDocument();
+    expect(within(panel).getByText("isolated_child_worktrees")).toBeInTheDocument();
 
     await user.click(within(panel).getByRole("button", { name: "Refresh" }));
     await user.click(within(panel).getByRole("button", { name: "Diff" }));

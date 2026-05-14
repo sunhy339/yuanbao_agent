@@ -432,8 +432,8 @@ describe("SettingsWorkspace", () => {
     expect(screen.getByText("当前桌面版本尚未接入运行时消息桥接测试。")).toBeInTheDocument();
 
     await user.click(navButtons[4] as HTMLElement);
-    expect(screen.getByRole("button", { name: "添加智能体" })).toBeDisabled();
-    expect(screen.getByText("运行时智能体管理定义完成前，智能体配置暂时只读。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New profile" })).toBeDisabled();
+    expect(screen.getByText("No agent profiles")).toBeInTheDocument();
 
     await user.click(navButtons[5] as HTMLElement);
     expect(screen.getByRole("button", { name: "打开目录" })).toBeDisabled();
@@ -447,6 +447,87 @@ describe("SettingsWorkspace", () => {
     expect(screen.getByRole("button", { name: "打开日志" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "打开数据目录" })).toBeDisabled();
     expect(screen.getByText("打开本地目录还在等待 Tauri shell 桥接；上方路径可用于手动检查。")).toBeInTheDocument();
+  });
+
+  it("manages dynamic agent profiles from settings", async () => {
+    const user = userEvent.setup();
+    const onAddAgent = vi.fn();
+    const onUpdateAgent = vi.fn();
+    const onDeleteAgent = vi.fn();
+    const onValidateAgent = vi.fn().mockResolvedValue({ valid: true, errors: [] });
+    const onPreviewAgentTools = vi.fn().mockResolvedValue({
+      allowedTools: ["read_file", "git_diff"],
+      deniedTools: ["run_command"],
+    });
+    const { container } = render(
+      <SettingsWorkspace
+        agents={[
+          {
+            id: "reviewer",
+            name: "Reviewer",
+            description: "Review code changes",
+            role: "reviewer",
+            enabled: true,
+            permissionMode: "ask",
+            toolPolicy: {
+              allowedTools: ["read_file"],
+              deniedTools: ["run_command"],
+            },
+          },
+        ]}
+        onAddAgent={onAddAgent}
+        onUpdateAgent={onUpdateAgent}
+        onDeleteAgent={onDeleteAgent}
+        onValidateAgent={onValidateAgent}
+        onPreviewAgentTools={onPreviewAgentTools}
+      />,
+    );
+    const navButtons = container.querySelectorAll(".settings-nav button");
+
+    await user.click(navButtons[4] as HTMLElement);
+    expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "Preview tools" }));
+    expect(onPreviewAgentTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "reviewer",
+        permissionMode: "ask",
+      }),
+    );
+    expect(await screen.findByText(/2 allowed/)).toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText("Name"));
+    await user.type(screen.getByLabelText("Name"), "Senior Reviewer");
+    await user.click(screen.getByRole("button", { name: "Save profile" }));
+    expect(onUpdateAgent).toHaveBeenCalledWith(
+      "reviewer",
+      expect.objectContaining({
+        name: "Senior Reviewer",
+        role: "reviewer",
+        toolPolicy: expect.objectContaining({
+          allowedTools: ["read_file"],
+          deniedTools: ["run_command"],
+        }),
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    expect(onDeleteAgent).toHaveBeenCalledWith("reviewer");
+
+    await user.click(screen.getByRole("button", { name: "New profile" }));
+    await user.type(screen.getByLabelText("Name"), "Builder");
+    await user.selectOptions(screen.getByLabelText("Role"), "builder");
+    await user.type(screen.getByLabelText("Allowed tools"), "apply_patch");
+    await user.click(screen.getByRole("button", { name: "Create profile" }));
+    expect(onAddAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Builder",
+        role: "builder",
+        toolPolicy: expect.objectContaining({
+          allowedTools: ["apply_patch"],
+        }),
+      }),
+    );
   });
 
   it("shows project memory state and clears it from settings", async () => {

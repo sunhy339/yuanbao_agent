@@ -1,5 +1,10 @@
 import type {
   WorkspaceRef,
+  AgentProfileCreateParams,
+  AgentProfilePreviewToolsParams,
+  AgentProfilePreviewToolsResult,
+  AgentProfileValidateParams,
+  AgentProfileValidateResult,
   SessionRecord,
   TaskRecord,
   McpServerRecord,
@@ -9,6 +14,8 @@ import type {
 import type { HostStatus, RuntimeConfig } from "../../../lib/runtimeClient";
 import type {
   SettingsSkillConfig,
+  SettingsAgentConfig,
+  SettingsAgentFeedback,
   SettingsProviderFeedback,
   SettingsAgentBehaviorConfig,
   SettingsGeneralConfig,
@@ -163,6 +170,15 @@ export interface WorkspaceRouterProps {
   setMcpError: (error: string | null) => void;
 
   // Skills
+  settingsAgents: SettingsAgentConfig[];
+  agentProfileBusyId: string | null;
+  agentProfileFeedback: SettingsAgentFeedback | null;
+  refreshAgentProfiles: () => Promise<void>;
+  handleAddAgentProfile: (payload: AgentProfileCreateParams) => Promise<void>;
+  handleUpdateAgentProfile: (agentId: string, payload: Partial<AgentProfileCreateParams>) => Promise<void>;
+  handleDeleteAgentProfile: (agentId: string) => Promise<void>;
+  handleValidateAgentProfile: (payload: AgentProfileValidateParams) => Promise<AgentProfileValidateResult>;
+  handlePreviewAgentProfileTools: (payload: AgentProfilePreviewToolsParams) => Promise<AgentProfilePreviewToolsResult>;
   settingsSkills: SettingsSkillConfig[];
   skillBusyId: string | null;
   refreshSkills: () => void;
@@ -429,6 +445,16 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
       onGeneralChange={props.handleGeneralSettingsChange}
       im={props.imSettings}
       onIMChange={props.setIMSettings}
+      agents={props.settingsAgents}
+      agentBusyId={props.agentProfileBusyId}
+      agentFeedback={props.agentProfileFeedback}
+      onRefreshAgents={props.refreshAgentProfiles}
+      onAgentToggle={(agentId, enabled) => props.handleUpdateAgentProfile(agentId, { enabled })}
+      onAddAgent={props.handleAddAgentProfile}
+      onUpdateAgent={props.handleUpdateAgentProfile}
+      onDeleteAgent={props.handleDeleteAgentProfile}
+      onValidateAgent={props.handleValidateAgentProfile}
+      onPreviewAgentTools={props.handlePreviewAgentProfileTools}
       skills={props.settingsSkills}
       onRefreshSkills={props.refreshSkills}
       onOpenSkillsFolder={props.localPathActionsAvailable ? () => void props.handleOpenAppPath("skills") : undefined}

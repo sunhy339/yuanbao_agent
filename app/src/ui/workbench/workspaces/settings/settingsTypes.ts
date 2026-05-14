@@ -1,4 +1,12 @@
-import type { ProviderApiFormat } from "@shared";
+import type {
+  AgentProfileCreateParams,
+  AgentProfilePreviewToolsParams,
+  AgentProfilePreviewToolsResult,
+  AgentProfileRecord,
+  AgentProfileValidateParams,
+  AgentProfileValidateResult,
+  ProviderApiFormat,
+} from "@shared";
 
 export type { ProviderApiFormat };
 
@@ -101,13 +109,28 @@ export interface SettingsIMConfig {
   defaultReplyMode: "manual" | "auto" | "silent";
 }
 
-export interface SettingsAgentConfig {
+export interface SettingsAgentConfig extends Partial<AgentProfileRecord> {
   id: string;
   name: string;
   description?: string;
   cwd?: string;
   enabled: boolean;
-  permissionMode?: string;
+  role?: AgentProfileRecord["role"];
+  permissionMode?: AgentProfileRecord["permissionMode"];
+  providerProfileId?: string;
+  model?: string;
+  skillIds?: string[];
+  mcpServerIds?: string[];
+  toolPolicy?: AgentProfileRecord["toolPolicy"];
+  systemPrompt?: string;
+  isBuiltin?: boolean;
+}
+
+export type SettingsAgentDraft = AgentProfileCreateParams;
+
+export interface SettingsAgentFeedback {
+  tone: "success" | "danger" | "info";
+  message: string;
 }
 
 export interface SettingsSkillConfig {
@@ -183,8 +206,15 @@ export interface SettingsWorkspaceProps {
   onIMChange?: (next: SettingsIMConfig) => void;
   onTestIM?: () => void | Promise<void>;
   agents?: SettingsAgentConfig[];
+  agentBusyId?: string | null;
+  agentFeedback?: SettingsAgentFeedback | null;
+  onRefreshAgents?: () => void | Promise<void>;
   onAgentToggle?: (agentId: string, enabled: boolean) => void;
-  onAddAgent?: () => void;
+  onAddAgent?: (payload: SettingsAgentDraft) => void | Promise<void>;
+  onUpdateAgent?: (agentId: string, payload: Partial<SettingsAgentDraft>) => void | Promise<void>;
+  onDeleteAgent?: (agentId: string) => void | Promise<void>;
+  onValidateAgent?: (payload: AgentProfileValidateParams) => AgentProfileValidateResult | Promise<AgentProfileValidateResult>;
+  onPreviewAgentTools?: (payload: AgentProfilePreviewToolsParams) => AgentProfilePreviewToolsResult | Promise<AgentProfilePreviewToolsResult>;
   skills?: SettingsSkillConfig[];
   onRefreshSkills?: () => void | Promise<void>;
   onOpenSkillsFolder?: () => void;

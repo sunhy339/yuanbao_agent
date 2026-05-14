@@ -13,6 +13,7 @@ import type {
   SettingsProviderPayload,
   SettingsProviderTestResult,
   SettingsProviderFeedback,
+  SettingsAgentFeedback,
   SettingsGeneralConfig,
   SettingsIMConfig,
   SettingsAgentConfig,
@@ -49,6 +50,7 @@ export type {
   SettingsProviderTestResult,
   SettingsProvider,
   SettingsProviderFeedback,
+  SettingsAgentFeedback,
   SettingsProviderPayload,
   SettingsGeneralConfig,
   SettingsIMConfig,
@@ -82,8 +84,15 @@ export function SettingsWorkspace({
   onIMChange,
   onTestIM,
   agents = [],
+  agentBusyId,
+  agentFeedback,
+  onRefreshAgents,
   onAgentToggle,
   onAddAgent,
+  onUpdateAgent,
+  onDeleteAgent,
+  onValidateAgent,
+  onPreviewAgentTools,
   skills = [],
   onRefreshSkills,
   onOpenSkillsFolder,
@@ -257,7 +266,18 @@ export function SettingsWorkspace({
                   onChange={(next) => void onAgentBehaviorChange?.(next)}
                 />
               ) : null}
-              <AgentsPanel agents={agents} onAgentToggle={onAgentToggle} onAddAgent={onAddAgent} />
+              <AgentsPanel
+                agents={agents}
+                agentBusyId={agentBusyId}
+                agentFeedback={agentFeedback}
+                onRefreshAgents={onRefreshAgents}
+                onAgentToggle={onAgentToggle}
+                onAddAgent={onAddAgent}
+                onUpdateAgent={onUpdateAgent}
+                onDeleteAgent={onDeleteAgent}
+                onValidateAgent={onValidateAgent}
+                onPreviewAgentTools={onPreviewAgentTools}
+              />
             </>
           ) : null}
           {section === "skills" ? (

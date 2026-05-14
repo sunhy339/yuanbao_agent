@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type {
   AppConfig,
+  AgentProfileRecord,
   CommandLogRecord,
   SessionRecord,
   TaskRecord,
@@ -11,7 +12,7 @@ import type { ProviderSettingsForm } from "../state/providerConfig";
 import type { ProviderTestResult } from "@shared";
 import type { ApprovalCardView, PatchCardView, ToolTimelineItem } from "../state/eventRecordViews";
 import type { ComposerRuntimeChildTask } from "../ui/workbench/ComposerDock";
-import type { SettingsProvider, SettingsAgentBehaviorConfig, SettingsSkillConfig } from "../ui/workbench/workspaces/settings/SettingsWorkspace";
+import type { SettingsProvider, SettingsAgentBehaviorConfig, SettingsAgentConfig, SettingsSkillConfig } from "../ui/workbench/workspaces/settings/SettingsWorkspace";
 import type { ScheduledTask, ExecutionLog } from "../ui/workbench/workspaces/scheduled/ScheduledWorkspace";
 import type { SessionWorkspaceCollaboration, SessionWorkspaceBackgroundJob, SessionWorkspaceContextPreview } from "../ui/workbench/workspaces/session/SessionWorkspace";
 import type { WorkbenchTab } from "../ui/workbench/types";
@@ -53,6 +54,7 @@ export interface UseDerivedViewsDeps {
   scheduledLogs: any[];
   skills: any[];
   mcpServers: any[];
+  agentProfiles: AgentProfileRecord[];
   loading: boolean;
   error: string | null;
 }
@@ -63,7 +65,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
     activeProviderProfile, activeTab, session, task, activeTaskId,
     taskHistory, events, traceEvents, commandLogCacheById,
     patchCacheById, chatMessages, workspace, workspacePath,
-    scheduledRecords, scheduledLogs, skills, mcpServers, loading, error,
+    scheduledRecords, scheduledLogs, skills, mcpServers, agentProfiles, loading, error,
   } = deps;
 
   const runtimeReady = Boolean(hostStatus && config);
@@ -168,6 +170,18 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
   const settingsSkills = useMemo<SettingsSkillConfig[]>(
     () => skills.map(normalizeSkillForSettings),
     [skills],
+  );
+
+  const settingsAgents = useMemo<SettingsAgentConfig[]>(
+    () =>
+      agentProfiles.map((profile) => ({
+        ...profile,
+        enabled: Boolean(profile.enabled),
+        skillIds: profile.skillIds ?? [],
+        mcpServerIds: profile.mcpServerIds ?? [],
+        isBuiltin: Boolean(profile.isBuiltin ?? profile.is_builtin),
+      })),
+    [agentProfiles],
   );
 
   const scheduledLogsByTaskId = useMemo<Record<string, ExecutionLog[]>>(() => {
@@ -347,7 +361,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
     toolTimelineItems, approvalCards, approvalByPatchId, patchCards,
     visibleChatMessages, sessionContextPreview,
     settingsProviders, settingsAgentBehavior, sessionTaskCount,
-    scheduledTasks, settingsSkills, scheduledLogsByTaskId,
+    scheduledTasks, settingsSkills, settingsAgents, scheduledLogsByTaskId,
     sessionApprovals, sessionPatches, sessionTraceItems, sessionToolCalls,
     sessionCollaboration, composerRuntimeChildTasks, sessionBackgroundJobs,
     workspaceName, providerLabel, hostStatusText, overviewRuntimeStatus,

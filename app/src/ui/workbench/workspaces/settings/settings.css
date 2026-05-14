@@ -558,6 +558,115 @@
   word-break: break-word;
 }
 
+.settings-agent-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.78fr) minmax(420px, 1.22fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.settings-agent-row {
+  align-items: flex-start;
+}
+
+.settings-agent-row.is-selected {
+  border-color: rgba(34, 211, 238, 0.68);
+  background:
+    linear-gradient(90deg, rgba(8, 145, 178, 0.22), transparent 72%),
+    rgba(3, 7, 18, 0.48);
+}
+
+.settings-agent-select {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.settings-agent-select span {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-agent-editor {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--settings-border);
+  border-radius: var(--yb-radius-lg);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 45%),
+    rgba(3, 7, 18, 0.36);
+  box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.settings-agent-editor-header {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.settings-agent-editor-header h3 {
+  margin: 4px 0 0;
+  font-size: 18px;
+}
+
+.settings-toggle-inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 36px;
+  color: var(--settings-ink);
+  font-weight: 700;
+}
+
+.settings-agent-preview {
+  display: grid;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid var(--settings-border);
+  border-radius: var(--yb-radius-lg);
+  background: rgba(3, 7, 18, 0.28);
+}
+
+.settings-agent-preview div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-agent-feedback {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+  background: rgba(3, 7, 18, 0.26);
+}
+
+.settings-agent-feedback.is-success {
+  border-color: rgba(167, 243, 208, 0.28);
+  color: #a7f3d0;
+}
+
+.settings-agent-feedback.is-danger,
+.settings-danger-note {
+  border-color: rgba(251, 113, 133, 0.32);
+  color: #fecdd3;
+  background: rgba(190, 18, 60, 0.16);
+}
+
+.settings-danger-note {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(251, 113, 133, 0.32);
+  border-radius: 8px;
+}
+
 .settings-modal-backdrop {
   position: fixed;
   inset: 0;
@@ -1209,7 +1318,8 @@
 @media (max-width: 1180px) {
   .settings-workspace,
   .settings-command-strip,
-  .settings-provider-grid {
+  .settings-provider-grid,
+  .settings-agent-grid {
     grid-template-columns: 1fr;
   }
 

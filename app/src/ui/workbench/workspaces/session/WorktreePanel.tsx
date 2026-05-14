@@ -7,6 +7,17 @@ import type {
 } from "./types";
 import { compactMeta, getStatusTone } from "./utils";
 
+function readObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readText(record: Record<string, unknown> | null, key: string): string {
+  const value = record?.[key];
+  return typeof value === "string" ? value : "";
+}
+
 export function WorktreePanel({
   worktree,
   status,
@@ -57,6 +68,17 @@ export function WorktreePanel({
     : failedVerification
       ? failedVerification.summary || failedVerification.command || "Failed"
       : `${mergeVerification.length} passed`;
+  const review = readObject(worktree.lastStatus?.review);
+  const approval = readObject(worktree.lastStatus?.mergeApproval);
+  const multiAgentStrategy = readObject(worktree.lastStatus?.multiAgentWorktreeStrategy);
+  const reviewStatus = readText(review, "status") || "pending";
+  const reviewerSummary = readText(review, "summary");
+  const reviewer = readText(review, "reviewer");
+  const approvalDecision = readText(approval, "decision") || "not requested";
+  const approvalTarget = readText(approval, "targetBranch");
+  const approvalVerification = readText(approval, "verificationStatus");
+  const strategy = readText(multiAgentStrategy, "strategy");
+  const strategyReason = readText(multiAgentStrategy, "reason");
 
   return (
     <section className="worktree-panel" aria-label="Task worktree">
@@ -116,6 +138,25 @@ export function WorktreePanel({
               ))}
             </ul>
           ) : null}
+        </article>
+        <article>
+          <span>Review</span>
+          <strong>{reviewStatus}</strong>
+          {reviewerSummary || reviewer ? (
+            <small>{compactMeta([reviewer, reviewerSummary]).join(" - ")}</small>
+          ) : null}
+        </article>
+        <article>
+          <span>Approval</span>
+          <strong>{approvalDecision}</strong>
+          {approvalTarget || approvalVerification ? (
+            <small>{compactMeta([approvalTarget, approvalVerification]).join(" - ")}</small>
+          ) : null}
+        </article>
+        <article>
+          <span>Agent strategy</span>
+          <strong>{strategy || "root_worktree"}</strong>
+          {strategyReason ? <small>{strategyReason}</small> : null}
         </article>
       </div>
 

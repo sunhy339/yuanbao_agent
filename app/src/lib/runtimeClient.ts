@@ -4,6 +4,17 @@ import type {
   ApprovalRecord,
   ApprovalSubmitParams,
   ApprovalSubmitResult,
+  AgentProfileCreateParams,
+  AgentProfileDeleteParams,
+  AgentProfileDeleteResult,
+  AgentProfileListParams,
+  AgentProfileListResult,
+  AgentProfilePreviewToolsParams,
+  AgentProfilePreviewToolsResult,
+  AgentProfileResult,
+  AgentProfileUpdateParams,
+  AgentProfileValidateParams,
+  AgentProfileValidateResult,
   AgentEventEnvelope,
   AppConfig,
   CommandCancelParams,
@@ -586,6 +597,30 @@ export class RuntimeClient {
     const servers = sortMcpServers(result.servers.map(normalizeMcpServerRecord));
     clientCache.mcpServers = Object.fromEntries(servers.map((server) => [server.id, server]));
     return { servers };
+  }
+
+  async listAgentProfiles(payload: AgentProfileListParams = {}): Promise<AgentProfileListResult> {
+    return invokePayloadOrReject<AgentProfileListResult>("agent_profile_list", payload);
+  }
+
+  async createAgentProfile(payload: AgentProfileCreateParams): Promise<AgentProfileResult> {
+    return invokePayloadOrReject<AgentProfileResult>("agent_profile_create", payload);
+  }
+
+  async updateAgentProfile(payload: AgentProfileUpdateParams): Promise<AgentProfileResult> {
+    return invokePayloadOrReject<AgentProfileResult>("agent_profile_update", payload);
+  }
+
+  async deleteAgentProfile(payload: AgentProfileDeleteParams): Promise<AgentProfileDeleteResult> {
+    return invokePayloadOrReject<AgentProfileDeleteResult>("agent_profile_delete", payload);
+  }
+
+  async validateAgentProfile(payload: AgentProfileValidateParams): Promise<AgentProfileValidateResult> {
+    return invokePayloadOrReject<AgentProfileValidateResult>("agent_profile_validate", payload);
+  }
+
+  async previewAgentProfileTools(payload: AgentProfilePreviewToolsParams): Promise<AgentProfilePreviewToolsResult> {
+    return invokePayloadOrReject<AgentProfilePreviewToolsResult>("agent_profile_preview_tools", payload);
   }
 
   async createMcpServer(payload: McpServerCreateParams): Promise<McpServerResult> {

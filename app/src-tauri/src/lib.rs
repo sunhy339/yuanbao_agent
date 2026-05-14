@@ -1142,6 +1142,60 @@ async fn mcp_tools_refresh(
 }
 
 #[tauri::command]
+async fn agent_profile_list(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Option<Value>,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "agent.profile.list".to_string(), payload.unwrap_or_else(|| json!({}))).await
+}
+
+#[tauri::command]
+async fn agent_profile_create(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "agent.profile.create".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn agent_profile_update(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "agent.profile.update".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn agent_profile_delete(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "agent.profile.delete".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn agent_profile_validate(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "agent.profile.validate".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn agent_profile_preview_tools(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "agent.profile.previewTools".to_string(), payload).await
+}
+
+#[tauri::command]
 fn e2e_fixture() -> Result<Value, String> {
     let flow = env::var("YUANBAO_TAURI_E2E").unwrap_or_default();
     if flow == "ui-smoke"
@@ -1297,6 +1351,12 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             mcp_server_update,
             mcp_server_delete,
             mcp_tools_refresh,
+            agent_profile_list,
+            agent_profile_create,
+            agent_profile_update,
+            agent_profile_delete,
+            agent_profile_validate,
+            agent_profile_preview_tools,
             e2e_fixture,
             e2e_finish
         ])

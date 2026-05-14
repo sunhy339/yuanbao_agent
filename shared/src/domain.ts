@@ -426,3 +426,29 @@ export interface SkillPresetRecord {
   created_at?: number;
   updated_at?: number;
 }
+
+export interface AgentProfileRecord {
+  id: Identifier;
+  name: string;
+  description?: string;
+  role: "planner" | "builder" | "reviewer" | "researcher" | "custom";
+  cwd?: string;
+  enabled: boolean;
+  permissionMode?: "ask" | "plan" | "auto" | "skip";
+  providerProfileId?: string;
+  model?: string;
+  skillIds: string[];
+  mcpServerIds?: string[];
+  toolPolicy?: {
+    allowedTools?: string[];
+    deniedTools?: string[];
+    requiresApproval?: string[];
+  };
+  systemPrompt?: string;
+  isBuiltin?: boolean;
+  is_builtin?: number | boolean;
+  createdAt?: number;
+  updatedAt?: number;
+  created_at?: number;
+  updated_at?: number;
+}

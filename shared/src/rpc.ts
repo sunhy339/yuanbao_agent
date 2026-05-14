@@ -1,5 +1,6 @@
 import type { AppConfig, ConfigPatch, ProviderConfig } from "./config";
 import type {
+  AgentProfileRecord,
   ApprovalRecord,
   CommandLogRecord,
   GitDiffRecord,
@@ -115,7 +116,13 @@ export type RpcMethod =
   | "worktree.merge"
   | "worktree.cleanup"
   | "worktree.update"
-  | "worktree.delete";
+  | "worktree.delete"
+  | "agent.profile.list"
+  | "agent.profile.create"
+  | "agent.profile.update"
+  | "agent.profile.delete"
+  | "agent.profile.validate"
+  | "agent.profile.previewTools";
 
 export type WorktreeOperationStatus = "status" | "diff" | "requestMergeApproval" | "merge" | "cleanup";
 
@@ -650,4 +657,69 @@ export interface WorkerRunChildTaskParams {
 
 export interface WorkerRunChildTaskResult {
   task: TaskRecord;
+}
+
+// --- Agent Profile ---
+
+export interface AgentProfileListParams {
+  enabledOnly?: boolean;
+}
+
+export interface AgentProfileCreateParams {
+  id?: Identifier;
+  name: string;
+  description?: string;
+  role?: AgentProfileRecord["role"];
+  cwd?: string;
+  enabled?: boolean;
+  permissionMode?: AgentProfileRecord["permissionMode"];
+  providerProfileId?: string;
+  model?: string;
+  skillIds?: string[];
+  mcpServerIds?: string[];
+  toolPolicy?: AgentProfileRecord["toolPolicy"];
+  systemPrompt?: string;
+}
+
+export interface AgentProfileUpdateParams extends Partial<AgentProfileCreateParams> {
+  agentId: Identifier;
+}
+
+export interface AgentProfileDeleteParams {
+  agentId: Identifier;
+}
+
+export interface AgentProfileValidateParams {
+  name?: string;
+  role?: string;
+  toolPolicy?: AgentProfileRecord["toolPolicy"];
+}
+
+export interface AgentProfilePreviewToolsParams {
+  role?: string;
+  permissionMode?: string;
+  toolPolicy?: AgentProfileRecord["toolPolicy"];
+}
+
+export interface AgentProfileListResult {
+  agents: AgentProfileRecord[];
+}
+
+export interface AgentProfileResult {
+  agent: AgentProfileRecord;
+}
+
+export interface AgentProfileDeleteResult {
+  deleted: boolean;
+  agentId: Identifier;
+}
+
+export interface AgentProfileValidateResult {
+  valid: boolean;
+  errors: string[];
+}
+
+export interface AgentProfilePreviewToolsResult {
+  allowedTools: string[];
+  deniedTools: string[];
 }

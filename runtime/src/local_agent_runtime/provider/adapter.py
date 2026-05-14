@@ -22,6 +22,16 @@ OPENAI_COMPATIBLE_MODES = {
     "openai-compatible-chat",
 }
 
+OPENAI_CHAT_API_FORMATS = {
+    "openai-chat",
+    "chat-completions",
+    "custom-openai-compatible",
+}
+PLANNED_API_FORMATS = {
+    "openai-responses",
+    "anthropic-messages",
+}
+DEFAULT_PROVIDER_API_FORMAT = "openai-chat"
 PROVIDER_RETRY_ATTEMPTS = 2
 
 # JSON Schema keywords that many provider APIs (e.g. Tencent Yuanbao) reject.
@@ -478,21 +488,24 @@ class ProviderAdapter:
 
     def _compute_settings(self, context: dict[str, Any] | None) -> OpenAICompatibleSettings | None:
         provider_config = self._merged_provider_config(context)
-        mode = self._string_value(provider_config, "mode", "providerMode") or self._env(
+        mode = self._env(
             "LOCAL_AGENT_PROVIDER_MODE",
             "YUANBAO_PROVIDER_MODE",
+        ) or self._string_value(provider_config, "mode", "providerMode")
+        configured_env_var_name = (
+            self._env("LOCAL_AGENT_PROVIDER_API_KEY_ENV_VAR")
+            or self._string_value(
+                provider_config,
+                "apiKeyEnvVarName",
+                "api_key_env_var_name",
+                "envKey",
+                "env_key",
+            )
         )
-        configured_env_var_name = self._string_value(
-            provider_config,
-            "apiKeyEnvVarName",
-            "api_key_env_var_name",
-            "envKey",
-            "env_key",
-        )
-        api_format = (
-            self._string_value(provider_config, "apiFormat", "api_format", "providerApiFormat")
-            or self._env("LOCAL_AGENT_PROVIDER_API_FORMAT", "API_FORMAT")
-            or "openai-chat"
+        api_format = self._normalize_api_format(
+            self._env("LOCAL_AGENT_PROVIDER_API_FORMAT", "API_FORMAT")
+            or self._string_value(provider_config, "apiFormat", "api_format", "providerApiFormat")
+            or DEFAULT_PROVIDER_API_FORMAT
         )
         uses_anthropic_env = self._uses_anthropic_env(configured_env_var_name)
         normalized_mode = self._normalize_mode(mode)
@@ -502,19 +515,27 @@ class ProviderAdapter:
             if not self._anthropic_env_available():
                 return None
             uses_anthropic_env = True
-        if normalized_mode in OPENAI_COMPATIBLE_MODES and api_format not in {"openai-chat", "chat-completions"}:
+        if normalized_mode in OPENAI_COMPATIBLE_MODES and api_format not in OPENAI_CHAT_API_FORMATS:
+            if api_format in PLANNED_API_FORMATS:
+                raise ProviderAdapterError(
+                    f"Provider API format {api_format} is planned but not implemented in this runtime. "
+                    "Use OpenAI Chat Completions."
+                )
             raise ProviderAdapterError(
-                f"Provider API format {api_format} is not supported yet. Use OpenAI Chat Completions."
+                f"Provider API format {api_format} is not supported. Use OpenAI Chat Completions."
             )
 
-        api_key = self._string_value(provider_config, "apiKey", "api_key")
+        api_key = self._env(
+            "LOCAL_AGENT_PROVIDER_API_KEY",
+            "LOCAL_AGENT_OPENAI_API_KEY",
+            "OPENAI_API_KEY",
+        )
+        if not api_key:
+            api_key = self._string_value(provider_config, "apiKey", "api_key")
         if not api_key and configured_env_var_name:
             api_key = self._env(configured_env_var_name)
         if not api_key and not configured_env_var_name:
             api_key = self._env(
-                "LOCAL_AGENT_PROVIDER_API_KEY",
-                "LOCAL_AGENT_OPENAI_API_KEY",
-                "OPENAI_API_KEY",
                 "ANTHROPIC_AUTH_TOKEN",
             )
         if not api_key:
@@ -523,11 +544,11 @@ class ProviderAdapter:
                 raise ProviderAdapterError(f"Environment variable {env_hint} is not set.")
             return None
 
-        raw_base_url = self._string_value(provider_config, "baseUrl", "base_url")
-        base_url_source = "config" if raw_base_url else None
+        raw_base_url = self._env("LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL")
+        base_url_source = "openai_env" if raw_base_url else None
         if not raw_base_url:
-            raw_base_url = self._env("LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL")
-            base_url_source = "openai_env" if raw_base_url else base_url_source
+            raw_base_url = self._string_value(provider_config, "baseUrl", "base_url")
+            base_url_source = "config" if raw_base_url else None
         if not raw_base_url:
             raw_base_url = self._env("ANTHROPIC_BASE_URL")
             base_url_source = "anthropic_env" if raw_base_url else base_url_source
@@ -536,8 +557,7 @@ class ProviderAdapter:
             append_v1=uses_anthropic_env or base_url_source == "anthropic_env",
         )
         model = (
-            self._string_value(provider_config, "model", "defaultModel")
-            or self._env(
+            self._env(
                 "LOCAL_AGENT_PROVIDER_MODEL",
                 "OPENAI_MODEL",
                 "ANTHROPIC_MODEL",
@@ -545,14 +565,32 @@ class ProviderAdapter:
                 "ANTHROPIC_DEFAULT_OPUS_MODEL",
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL",
             )
+            or self._string_value(provider_config, "model", "defaultModel")
             or "gpt-5-codex"
         )
-        temperature = self._float_value(provider_config, "temperature")
+        temperature = self._float_env("LOCAL_AGENT_PROVIDER_TEMPERATURE", "OPENAI_TEMPERATURE")
         if temperature is None:
-            temperature = self._float_env("LOCAL_AGENT_PROVIDER_TEMPERATURE", "OPENAI_TEMPERATURE")
-        max_tokens = self._int_value(provider_config, "maxTokens", "max_tokens", "maxOutputTokens")
+            temperature = self._float_value(provider_config, "temperature")
+        max_tokens = self._int_env("LOCAL_AGENT_PROVIDER_MAX_TOKENS", "OPENAI_MAX_TOKENS")
         if max_tokens is None:
-            max_tokens = self._int_env("LOCAL_AGENT_PROVIDER_MAX_TOKENS", "OPENAI_MAX_TOKENS")
+            max_tokens = self._int_value(provider_config, "maxTokens", "max_tokens", "maxOutputTokens")
+        stream_timeout = self._float_env("LOCAL_AGENT_PROVIDER_STREAM_TIMEOUT", "OPENAI_STREAM_TIMEOUT")
+        if stream_timeout is None:
+            stream_timeout = self._float_value(provider_config, "streamTimeout", "stream_timeout")
+        if stream_timeout is None:
+            stream_timeout = 180.0
+        max_tool_argument_chars = self._int_env(
+            "LOCAL_AGENT_PROVIDER_MAX_TOOL_ARGUMENT_CHARS",
+            "OPENAI_MAX_TOOL_ARGUMENT_CHARS",
+        )
+        if max_tool_argument_chars is None:
+            max_tool_argument_chars = self._int_value(
+                provider_config,
+                "maxToolArgumentChars",
+                "max_tool_argument_chars",
+            )
+        if max_tool_argument_chars is None:
+            max_tool_argument_chars = 120_000
         return OpenAICompatibleSettings(
             base_url=base_url,
             api_key=api_key,
@@ -560,6 +598,8 @@ class ProviderAdapter:
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=self._timeout_value(provider_config),
+            stream_timeout=stream_timeout,
+            max_tool_argument_chars=max_tool_argument_chars,
         )
 
     def _anthropic_env_available(self) -> bool:
@@ -567,6 +607,14 @@ class ProviderAdapter:
 
     def _uses_anthropic_env(self, configured_env_var_name: str | None) -> bool:
         return bool(configured_env_var_name and configured_env_var_name.upper().startswith("ANTHROPIC_"))
+
+    def _normalize_api_format(self, api_format: str | None) -> str:
+        normalized = (api_format or DEFAULT_PROVIDER_API_FORMAT).strip().lower().replace("_", "-")
+        if normalized in {"chat-completions", "custom-openai-compatible"}:
+            return "openai-chat"
+        if normalized in OPENAI_CHAT_API_FORMATS or normalized in PLANNED_API_FORMATS:
+            return normalized
+        return DEFAULT_PROVIDER_API_FORMAT
 
     def _normalize_base_url(self, base_url: str, *, append_v1: bool = False) -> str:
         trimmed = base_url.rstrip("/")

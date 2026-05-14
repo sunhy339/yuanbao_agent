@@ -72,8 +72,12 @@ class _GoodProvider:
             "confidence": 0.9,
             "rationale": "User wants a task executed",
         })
+        self.contexts: list[dict[str, Any]] = []
+        self.prompts: list[str] = []
 
     def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        self.prompts.append(prompt)
+        self.contexts.append(context)
         return {"message": self._response}
 
 
@@ -160,6 +164,32 @@ class TestDecisionAdvisorAdvise:
         result = advisor.advise("intent_mode", {"goal": "hello"}, model_id="gpt-4o")
         assert result.model_id == "gpt-4o"
 
+    def test_provider_context_receives_runtime_config(self) -> None:
+        provider = _GoodProvider()
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "intent_mode",
+            {
+                "goal": "hello",
+                "config": {
+                    "provider": {
+                        "apiKey": "sk-secret",
+                        "timeout": 30,
+                        "streamTimeout": 20,
+                    }
+                },
+            },
+        )
+
+        assert result.accepted is True
+        assert provider.contexts
+        assert provider.contexts[0]["config"]["provider"]["apiKey"] == "sk-secret"
+        assert provider.contexts[0]["config"]["provider"]["timeout"] == 30
+        assert provider.contexts[0]["config"]["provider"]["streamTimeout"] == 20
+        assert "sk-secret" not in provider.prompts[0]
+        assert "[redacted]" in provider.prompts[0]
+
 
 class TestDecisionAdvisorLLMParsing:
     """LLM response parsing edge cases."""
@@ -176,6 +206,38 @@ class TestDecisionAdvisorLLMParsing:
         advisor = DecisionAdvisor(provider=provider)
         result = advisor.advise("intent_mode", {"goal": "fix the bug"})
         assert result.accepted is True
+
+    def test_parse_top_level_proposal_fields(self) -> None:
+        provider = _GoodProvider(response='{"mode": "task", "confidence": 0.73, "reasoning": "needs tools"}')
+        advisor = DecisionAdvisor(provider=provider)
+        result = advisor.advise("intent_mode", {"goal": "create files"})
+        assert result.accepted is True
+        assert result.payload == {"mode": "task"}
+        assert result.rationale == "needs tools"
+
+    def test_parse_first_balanced_json_object_with_braces_in_text(self) -> None:
+        provider = _GoodProvider(
+            response='Thought: use {braces} in prose.\n{"proposal": {"mode": "direct"}, "confidence": 0.8, "rationale": "answered"}\nDone.'
+        )
+        advisor = DecisionAdvisor(provider=provider)
+        result = advisor.advise("intent_mode", {"goal": "hello"})
+        assert result.accepted is True
+        assert result.payload["mode"] == "direct"
+
+    def test_parse_assistant_message_content_fallback(self) -> None:
+        class _AssistantMessageProvider:
+            def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "message": "",
+                    "assistant_message": {
+                        "content": '{"proposal": {"mode": "direct"}, "confidence": 0.6, "rationale": "short"}',
+                    },
+                }
+
+        advisor = DecisionAdvisor(provider=_AssistantMessageProvider())
+        result = advisor.advise("intent_mode", {"goal": "hello"})
+        assert result.accepted is True
+        assert result.payload["mode"] == "direct"
 
     def test_parse_confidence_clamped(self) -> None:
         provider = _GoodProvider(response=json.dumps({

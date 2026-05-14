@@ -27,26 +27,13 @@ class ProviderTurnMixin:
         budget: Any | None = None,
     ) -> dict[str, Any]:
         if not self._should_stream_provider(provider_context):
-            self._append_provider_trace(task=task, event_type="provider.request", payload=self._provider_trace_payload(provider_context))
-            span = self._tracer.start_span(
-                "llm_generate",
-                trace_id=getattr(self, "_active_trace_id", None),
-                parent_span_id=getattr(self, "_active_parent_span_id", None),
-            )
-            try:
-                response = self._provider.generate(goal, provider_context)
-            except Exception:
-                self._tracer.end_span(span.span_id, status="error")
-                raise
-            self._tracer.end_span(span.span_id, status="ok")
-            self._consume_budget_from_provider_response(
+            return self._request_non_streaming_provider_response(
                 session_id=session_id,
                 task=task,
+                goal=goal,
+                provider_context=provider_context,
                 budget=budget,
-                response=response,
             )
-            self._append_provider_trace(task=task, event_type="provider.response", payload=self._provider_response_trace(response))
-            return response
 
         self._append_provider_trace(
             task=task,
@@ -117,7 +104,8 @@ class ProviderTurnMixin:
                 break
             except Exception as stream_exc:
                 from ..provider.openai_compatible import ProviderAdapterError
-                is_retryable = isinstance(stream_exc, ProviderAdapterError) and "timed out" in str(stream_exc).lower()
+                error_text = str(stream_exc).lower()
+                is_retryable = isinstance(stream_exc, ProviderAdapterError) and "timed out" in error_text
                 if is_retryable and _stream_attempt < _max_stream_retries:
                     logger.warning(
                         "Provider stream timed out (attempt %d/%d), retrying: %s",
@@ -129,9 +117,42 @@ class ProviderTurnMixin:
                         payload={"attempt": _stream_attempt + 1, "error": str(stream_exc)},
                     )
                     continue
+                if hasattr(self._provider, "generate"):
+                    logger.warning(
+                        "Provider stream failed for task=%s; falling back to non-streaming request: %s",
+                        task["id"],
+                        stream_exc,
+                    )
+                    self._append_provider_trace(
+                        task=task,
+                        event_type="provider.stream.fallback_non_stream",
+                        payload={"attempt": _stream_attempt + 1, "error": str(stream_exc)[:500]},
+                    )
+                    return self._request_non_streaming_provider_response(
+                        session_id=session_id,
+                        task=task,
+                        goal=goal,
+                        provider_context=provider_context,
+                        budget=budget,
+                        fallback_from_stream=True,
+                    )
                 raise
 
         if final_response is None:
+            if hasattr(self._provider, "generate"):
+                self._append_provider_trace(
+                    task=task,
+                    event_type="provider.stream.fallback_non_stream",
+                    payload={"error": "Provider stream ended without a final response."},
+                )
+                return self._request_non_streaming_provider_response(
+                    session_id=session_id,
+                    task=task,
+                    goal=goal,
+                    provider_context=provider_context,
+                    budget=budget,
+                    fallback_from_stream=True,
+                )
             raise RuntimeError("Provider stream ended without a final response.")
 
         assistant_message = final_response.get("message", {})
@@ -167,20 +188,69 @@ class ProviderTurnMixin:
         return response
 
     def _should_stream_provider(self, provider_context: dict[str, Any]) -> bool:
-        if self._streaming_mode_cache is not None:
-            return self._streaming_mode_cache
         if not hasattr(self._provider, "stream"):
-            self._streaming_mode_cache = False
             return False
         config = provider_context.get("config") or {}
         provider_config = config.get("provider") if isinstance(config, dict) else {}
         if not isinstance(provider_config, dict):
-            self._streaming_mode_cache = False
             return False
+        stream_flag = self._provider_stream_flag(provider_config)
+        if stream_flag is not None:
+            return stream_flag
         mode = str(provider_config.get("mode") or provider_config.get("providerMode") or "").strip().lower()
-        result = mode in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}
-        self._streaming_mode_cache = result
-        return result
+        return mode in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}
+
+    def _request_non_streaming_provider_response(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        provider_context: dict[str, Any],
+        budget: Any | None,
+        fallback_from_stream: bool = False,
+    ) -> dict[str, Any]:
+        payload = self._provider_trace_payload(provider_context)
+        if fallback_from_stream:
+            payload["fallbackFromStream"] = True
+        self._append_provider_trace(task=task, event_type="provider.request", payload=payload)
+        span = self._tracer.start_span(
+            "llm_generate",
+            trace_id=getattr(self, "_active_trace_id", None),
+            parent_span_id=getattr(self, "_active_parent_span_id", None),
+        )
+        try:
+            response = self._provider.generate(goal, provider_context)
+        except Exception:
+            self._tracer.end_span(span.span_id, status="error")
+            raise
+        self._tracer.end_span(span.span_id, status="ok")
+        self._consume_budget_from_provider_response(
+            session_id=session_id,
+            task=task,
+            budget=budget,
+            response=response,
+        )
+        self._append_provider_trace(
+            task=task,
+            event_type="provider.response",
+            payload={**self._provider_response_trace(response), "fallbackFromStream": fallback_from_stream},
+        )
+        return response
+
+    @staticmethod
+    def _provider_stream_flag(provider_config: dict[str, Any]) -> bool | None:
+        for key in ("streamingEnabled", "streamResponses", "stream"):
+            value = provider_config.get(key)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in {"true", "1", "yes", "on"}:
+                    return True
+                if normalized in {"false", "0", "no", "off"}:
+                    return False
+        return None
 
     @staticmethod
     def _detect_stream_repetition(parts: list[str], min_chunk: int = 40, max_occurrences: int = 3) -> bool:

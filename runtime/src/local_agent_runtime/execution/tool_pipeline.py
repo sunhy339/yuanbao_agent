@@ -373,7 +373,7 @@ class ToolExecutionMixin:
             self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"})
             return tool_result
 
-        if tool_spec["name"] == "apply_patch":
+        if tool_spec["name"] in {"apply_patch", "write_file"}:
             tool_result = {
                 "id": tool_call_id,
                 "name": tool_spec["name"],
@@ -393,7 +393,8 @@ class ToolExecutionMixin:
                 },
             )
             self._fire_hooks("after_tool_call", session_id, task, extra_context={"toolCallId": tool_call_id, "toolName": tool_spec["name"], "toolStatus": "completed"})
-            self._fire_hooks("after_patch_apply", session_id, task, extra_context={"toolCallId": tool_call_id, "patchResult": result})
+            if tool_spec["name"] == "apply_patch":
+                self._fire_hooks("after_patch_apply", session_id, task, extra_context={"toolCallId": tool_call_id, "patchResult": result})
             return tool_result
 
         tool_result = {

@@ -146,6 +146,22 @@ describe("SettingsWorkspace", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("shows planned provider API formats as unavailable", async () => {
+    const { container } = render(<SettingsWorkspace />);
+
+    await openAddProviderModal(container);
+
+    const dialog = screen.getByRole("dialog");
+    const select = dialog.querySelector("#provider-api-format") as HTMLSelectElement;
+    const responsesOption = Array.from(select.options).find((option) => option.value === "openai-responses");
+    const anthropicOption = Array.from(select.options).find((option) => option.value === "anthropic-messages");
+
+    expect(responsesOption).toBeDefined();
+    expect(responsesOption).toBeDisabled();
+    expect(anthropicOption).toBeDefined();
+    expect(anthropicOption).toBeDisabled();
+  });
+
   it("derives the API key env var from pasted env config", async () => {
     const user = userEvent.setup();
     const onAddProvider = vi.fn();

@@ -151,6 +151,52 @@ def test_tool_call_chunks_stream_and_arguments_are_merged() -> None:
     }
 
 
+def test_stream_rejects_oversized_tool_call_arguments() -> None:
+    def fake_stream(**_kwargs: Any) -> tuple[int, Iterable[bytes]]:
+        return 200, iter(
+            [
+                _sse(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call_1",
+                                            "type": "function",
+                                            "function": {
+                                                "name": "write_file",
+                                                "arguments": "{\"content\":\"abcdef\"}",
+                                            },
+                                        }
+                                    ]
+                                },
+                                "index": 0,
+                            }
+                        ]
+                    }
+                )
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "model": "test-chat",
+                "maxToolArgumentChars": 8,
+            }
+        },
+        http_stream=fake_stream,
+    )
+
+    with pytest.raises(ProviderAdapterError, match="tool call arguments exceeded"):
+        list(adapter.chat_stream(messages=[{"role": "user", "content": "write"}]))
+
+
 def test_streaming_tool_call_name_maps_back_to_runtime_name() -> None:
     calls: list[dict[str, Any]] = []
 

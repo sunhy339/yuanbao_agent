@@ -166,7 +166,8 @@ Respond ONLY with valid JSON:
 }}
 
 The proposal object must only contain fields from the allowed list.
-Respond ONLY with valid JSON, no other text.
+Do not include markdown fences, analysis, comments, or extra text.
+If you are uncertain, still return the JSON shape above with lower confidence.
 """
 
 
@@ -292,11 +293,26 @@ class DecisionAdvisor:
             kind=entry.kind,
             description=entry.description,
             allowed_fields=", ".join(entry.allowed_proposal_schema),
-            input_context=json.dumps(input_context, indent=2, default=str),
+            input_context=json.dumps(
+                self._prompt_input_context(input_context),
+                indent=2,
+                default=str,
+            ),
         )
         try:
-            response = self._provider.generate(prompt, {"messages": [{"role": "user", "content": prompt}]})  # type: ignore[union-attr]
+            provider_context: dict[str, Any] = {
+                "messages": [{"role": "user", "content": prompt}],
+            }
+            config = input_context.get("config")
+            if isinstance(config, dict):
+                provider_context["config"] = config
+            response = self._provider.generate(prompt, provider_context)  # type: ignore[union-attr]
             message = response.get("message") or response.get("final_answer") or ""
+            assistant_message = response.get("assistant_message")
+            if not message and isinstance(assistant_message, dict):
+                assistant_content = assistant_message.get("content")
+                if isinstance(assistant_content, str):
+                    message = assistant_content
             return self._parse_llm_response(message)
         except Exception as exc:  # noqa: BLE001
             logger.warning("DecisionAdvisor LLM call failed for %s: %s", entry.kind, exc)
@@ -309,32 +325,98 @@ class DecisionAdvisor:
         fence_match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
         json_text = fence_match.group(1).strip() if fence_match else text.strip()
 
+        if json_text.lower().startswith("json\n"):
+            json_text = json_text[5:].strip()
+
         try:
             data = json.loads(json_text)
         except (json.JSONDecodeError, ValueError):
-            # Try finding a JSON object in the text
-            obj_match = re.search(r"\{.*\}", text, re.DOTALL)
-            if obj_match:
+            data = None
+            for json_object in DecisionAdvisor._extract_json_objects(text):
                 try:
-                    data = json.loads(obj_match.group())
+                    data = json.loads(json_object)
+                    break
                 except (json.JSONDecodeError, ValueError):
-                    return None
-            else:
+                    continue
+            if data is None:
                 return None
 
         if not isinstance(data, dict):
             return None
 
-        proposal = data.get("proposal", {})
+        proposal = data.get("proposal")
+        if proposal is None:
+            proposal = {
+                key: value
+                for key, value in data.items()
+                if key not in {"confidence", "rationale", "reasoning", "explanation"}
+            }
         if not isinstance(proposal, dict):
             return None
 
-        confidence = float(data.get("confidence", 0.5))
+        try:
+            confidence = float(data.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            confidence = 0.5
         confidence = max(0.0, min(1.0, confidence))
-        rationale = str(data.get("rationale", ""))
+        rationale = str(data.get("rationale") or data.get("reasoning") or data.get("explanation") or "")
 
         return {
             "payload": proposal,
             "confidence": confidence,
             "rationale": rationale,
         }
+
+    @staticmethod
+    def _extract_json_objects(text: str) -> list[str]:
+        objects: list[str] = []
+        for start, char in enumerate(text):
+            if char != "{":
+                continue
+            depth = 0
+            in_string = False
+            escaped = False
+            for index in range(start, len(text)):
+                current = text[index]
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif current == "\\":
+                        escaped = True
+                    elif current == '"':
+                        in_string = False
+                    continue
+                if current == '"':
+                    in_string = True
+                elif current == "{":
+                    depth += 1
+                elif current == "}":
+                    depth -= 1
+                    if depth == 0:
+                        objects.append(text[start : index + 1])
+                        break
+        return objects
+
+    @staticmethod
+    def _prompt_input_context(input_context: dict[str, Any]) -> dict[str, Any]:
+        prompt_context = dict(input_context)
+        config = prompt_context.get("config")
+        if isinstance(config, dict):
+            prompt_context["config"] = DecisionAdvisor._redact_sensitive_config(config)
+        return prompt_context
+
+    @staticmethod
+    def _redact_sensitive_config(value: Any) -> Any:
+        if isinstance(value, dict):
+            redacted: dict[str, Any] = {}
+            for key, item in value.items():
+                key_text = str(key)
+                lowered = key_text.lower()
+                if any(marker in lowered for marker in ("apikey", "api_key", "authorization", "password", "secret", "token")):
+                    redacted[key] = "[redacted]"
+                else:
+                    redacted[key] = DecisionAdvisor._redact_sensitive_config(item)
+            return redacted
+        if isinstance(value, list):
+            return [DecisionAdvisor._redact_sensitive_config(item) for item in value]
+        return value

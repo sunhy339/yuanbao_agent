@@ -280,6 +280,106 @@ def test_openai_compatible_request_can_be_configured_from_env() -> None:
     assert payload["max_tokens"] == 321
 
 
+def test_provider_env_overrides_stored_mock_defaults() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"choices":[{"message":{"role":"assistant","content":"env override"}}]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "mock",
+                "apiKey": "sk-config",
+                "baseUrl": "https://configured.example.test/v1",
+                "model": "configured-model",
+            }
+        },
+        http_post=fake_post,
+        environ={
+            "LOCAL_AGENT_PROVIDER_MODE": "openai-compatible",
+            "LOCAL_AGENT_PROVIDER_API_KEY": "sk-env",
+            "LOCAL_AGENT_PROVIDER_BASE_URL": "https://env.example.test/v1",
+            "LOCAL_AGENT_PROVIDER_MODEL": "env-model",
+        },
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "env override"
+    assert calls[0]["url"] == "https://env.example.test/v1/chat/completions"
+    assert calls[0]["headers"]["Authorization"] == "Bearer sk-env"
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["model"] == "env-model"
+
+
+def test_openai_compatible_bare_base_url_uses_v1_chat_completions() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert calls[0]["url"] == "https://llm.example.test/v1/chat/completions"
+
+
+def test_provider_api_format_aliases_use_openai_chat_adapter() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "chat-completions",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert calls[0]["url"] == "https://llm.example.test/v1/chat/completions"
+
+
+def test_provider_api_format_rejects_planned_formats() -> None:
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+    )
+
+    with pytest.raises(ProviderAdapterError, match="planned but not implemented"):
+        adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+
 def test_anthropic_env_can_drive_openai_compatible_request_without_mode() -> None:
     calls: list[dict[str, Any]] = []
 

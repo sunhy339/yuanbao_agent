@@ -10,6 +10,7 @@ import {
   DEFAULT_PROVIDER_MODEL,
   DEFAULT_PROVIDER_TEMPERATURE,
   DEFAULT_PROVIDER_TIMEOUT,
+  normalizeProviderApiFormat,
 } from "./providerConfig";
 
 export function getModelFromProviderPayload(payload: SettingsProviderPayload): string {
@@ -212,7 +213,9 @@ export function buildProviderProfileFromPayload(
     name: payload.name.trim() || existingProfile?.name || "供应商配置",
     mode: "openai-compatible",
     baseUrl: jsonConfig.endpoint || payload.endpoint.trim() || existingProfile?.baseUrl || DEFAULT_PROVIDER_BASE_URL,
-    apiFormat: jsonConfig.apiFormat || payload.apiFormat || existingProfile?.apiFormat || DEFAULT_PROVIDER_API_FORMAT,
+    apiFormat: normalizeProviderApiFormat(
+      jsonConfig.apiFormat || payload.apiFormat || existingProfile?.apiFormat || DEFAULT_PROVIDER_API_FORMAT,
+    ),
     model,
     defaultModel: model,
     fallbackModel: payload.opusModel.trim() || existingProfile?.fallbackModel || config.provider.fallbackModel,

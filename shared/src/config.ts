@@ -9,7 +9,7 @@ export interface ProviderProfile {
   name: string;
   mode?: ProviderMode;
   baseUrl?: string;
-  apiFormat?: string;
+  apiFormat?: ProviderApiFormat | string;
   model?: string;
   defaultModel?: string;
   fallbackModel?: string;
@@ -28,7 +28,7 @@ export interface ProviderProfile {
 export interface ProviderConfig {
   mode?: ProviderMode;
   baseUrl?: string;
-  apiFormat?: string;
+  apiFormat?: ProviderApiFormat | string;
   model?: string;
   defaultModel: string;
   fallbackModel?: string;
@@ -40,6 +40,40 @@ export interface ProviderConfig {
   timeout?: number;
   activeProfileId?: string;
   profiles?: ProviderProfile[];
+}
+
+export type ProviderApiFormat =
+  | "openai-chat"
+  | "chat-completions"
+  | "custom-openai-compatible"
+  | "openai-responses"
+  | "anthropic-messages";
+
+export const DEFAULT_PROVIDER_API_FORMAT: ProviderApiFormat = "openai-chat";
+
+export const SUPPORTED_PROVIDER_API_FORMATS = [
+  "openai-chat",
+  "chat-completions",
+  "custom-openai-compatible",
+] as const satisfies readonly ProviderApiFormat[];
+
+export function normalizeProviderApiFormat(value?: string | null): ProviderApiFormat {
+  const normalized = String(value || "").trim().toLowerCase().replace(/_/g, "-");
+  if (normalized === "chat-completions" || normalized === "custom-openai-compatible") {
+    return "openai-chat";
+  }
+  if (
+    normalized === "openai-chat" ||
+    normalized === "openai-responses" ||
+    normalized === "anthropic-messages"
+  ) {
+    return normalized;
+  }
+  return DEFAULT_PROVIDER_API_FORMAT;
+}
+
+export function isProviderApiFormatSupported(value?: string | null): boolean {
+  return normalizeProviderApiFormat(value) === "openai-chat";
 }
 
 export interface WorkspaceConfig {
@@ -175,7 +209,7 @@ export const defaultAppConfig: AppConfig = {
   provider: {
     mode: "mock",
     baseUrl: "https://api.openai.com/v1",
-    apiFormat: "openai-chat",
+    apiFormat: DEFAULT_PROVIDER_API_FORMAT,
     model: "gpt-5-codex",
     defaultModel: "gpt-5-codex",
     fallbackModel: "claude-sonnet",
@@ -192,7 +226,7 @@ export const defaultAppConfig: AppConfig = {
         name: "Default",
         mode: "mock",
         baseUrl: "https://api.openai.com/v1",
-        apiFormat: "openai-chat",
+        apiFormat: DEFAULT_PROVIDER_API_FORMAT,
         model: "gpt-5-codex",
         defaultModel: "gpt-5-codex",
         fallbackModel: "claude-sonnet",

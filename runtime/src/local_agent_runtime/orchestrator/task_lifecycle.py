@@ -48,11 +48,11 @@ class TaskLifecycleMixin:
             "summarize-findings",
             final_status="completed",
         )
-        # --- Completion decision advisory ---
-        completion_advice = self._consult_completion_advisor(task, final_summary)
         self._validate_task_transition(task["status"], "completed", task["id"], silent=True)
         if task["status"] in {"completed", "failed", "cancelled"}:
             return {**task, "resultSummary": final_summary}
+        # --- Completion decision advisory ---
+        completion_advice = self._consult_completion_advisor(task, final_summary, context or {})
         # Build structured result from task fields
         structured_result = {
             "summary": final_summary,
@@ -157,6 +157,7 @@ class TaskLifecycleMixin:
         self,
         task: dict[str, Any],
         summary: str,
+        context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Ask DecisionAdvisor whether the task is truly complete.
 
@@ -167,15 +168,21 @@ class TaskLifecycleMixin:
         advisor = getattr(self, "_decision_advisor", None)
         if advisor is None:
             return None
+        if self._should_skip_completion_advisor(task, context or {}):
+            return None
         try:
-            result = advisor.advise("completion_decision", {
+            input_context: dict[str, Any] = {
                 "goal": task.get("goal", ""),
                 "summary": summary[:2000],
                 "changed_files": [
                     f.get("path", "") for f in (task.get("changedFiles") or [])
                     if isinstance(f, dict)
                 ][:20],
-            })
+            }
+            config = (context or {}).get("config") if isinstance(context, dict) else None
+            if isinstance(config, dict):
+                input_context["config"] = config
+            result = advisor.advise("completion_decision", input_context)
             return {
                 "accepted": result.accepted,
                 "source": result.source,
@@ -186,6 +193,13 @@ class TaskLifecycleMixin:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Completion advisor call failed for task %s: %s", task.get("id"), exc)
             return None
+
+    def _should_skip_completion_advisor(self, task: dict[str, Any], context: dict[str, Any]) -> bool:
+        if context.get("_skip_completion_advisor") is True:
+            return True
+        if context.get("_child_worker") is True or task.get("role") != "root":
+            return not bool(self._advisor_config(context).get("enableChildCompletionAdvisor"))
+        return False
 
     def _validate_worker_output(self, *, session_id: str, task: dict[str, Any]) -> None:
         """Warn if a worker task completes without testsRun or risks."""
@@ -873,6 +887,13 @@ class TaskLifecycleMixin:
             )
             if changed_files != (task.get("changedFiles") or []):
                 update["changed_files"] = changed_files
+        elif tool_name == "write_file":
+            changed_files = self._merge_changed_files(
+                task.get("changedFiles") or [],
+                self._changed_files_from_write_file_result(result),
+            )
+            if changed_files != (task.get("changedFiles") or []):
+                update["changed_files"] = changed_files
         elif tool_name == "run_command":
             arguments = tool_result.get("arguments") if isinstance(tool_result.get("arguments"), dict) else {}
             commands = self._merge_command_records(
@@ -903,6 +924,20 @@ class TaskLifecycleMixin:
                 "patchId": patch_id,
             }
             for path in self._changed_paths_from_patch_result(result)
+        ]
+
+    def _changed_files_from_write_file_result(self, result: dict[str, Any]) -> list[dict[str, Any]]:
+        if result.get("status") != "written":
+            return []
+        path = result.get("path")
+        if not isinstance(path, str) or not path.strip():
+            return []
+        return [
+            {
+                "path": path,
+                "status": "added" if result.get("created") is True else "modified",
+                "reason": f"write_file wrote {result.get('bytesWritten', 0)} byte(s)",
+            }
         ]
 
     def _patch_file_status(self, diff_text: Any, path: str) -> str:

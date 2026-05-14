@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { isProviderApiFormatSupported, type ProviderApiFormat } from "@shared";
 import { formatStatusLabel } from "../../../copy";
 import "./settings.css";
 
@@ -13,7 +14,6 @@ type SettingsSection =
   | "about";
 
 type ProviderPresetId = "deepseek" | "zhipu" | "kimi" | "minimax" | "custom";
-type ProviderApiFormat = "openai-chat" | "openai-responses" | "anthropic-messages";
 type ThemeMode = "light" | "dark" | "system";
 type DensityMode = "comfortable" | "compact";
 type RadiusMode = "sm" | "md" | "lg";
@@ -287,6 +287,12 @@ const providerPresets = [
   sonnetModel: string;
   opusModel: string;
 }>;
+
+const providerApiFormatOptions: Array<{ value: ProviderApiFormat; label: string }> = [
+  { value: "openai-chat", label: "OpenAI Chat Completions" },
+  { value: "openai-responses", label: "OpenAI Responses API (planned)" },
+  { value: "anthropic-messages", label: "Anthropic Messages (planned)" },
+];
 
 const providerApiKeyEnvKeys = [
   "ANTHROPIC_AUTH_TOKEN",
@@ -1643,9 +1649,15 @@ function ProviderModal({
           <label className="settings-field" htmlFor="provider-api-format">
             <span>API 格式</span>
             <select id="provider-api-format" value={draft.apiFormat} onChange={(event) => updateDraft({ apiFormat: event.currentTarget.value as ProviderApiFormat })}>
-              <option value="openai-chat">OpenAI Chat Completions</option>
-              <option value="openai-responses">OpenAI Responses API</option>
-              <option value="anthropic-messages">Anthropic Messages</option>
+              {providerApiFormatOptions.map((option) => (
+                <option
+                  key={option.value}
+                  value={option.value}
+                  disabled={!isProviderApiFormatSupported(option.value) && draft.apiFormat !== option.value}
+                >
+                  {option.label}
+                </option>
+              ))}
             </select>
           </label>
           <label className="settings-field" htmlFor="provider-api-key">

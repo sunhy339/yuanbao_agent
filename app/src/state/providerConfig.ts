@@ -1,9 +1,14 @@
+import {
+  DEFAULT_PROVIDER_API_FORMAT as SHARED_DEFAULT_PROVIDER_API_FORMAT,
+  normalizeProviderApiFormat,
+} from "@shared";
 import type {
   AgentSoulConfig,
   AgentSoulProfile,
   AppConfig,
   AutonomyConfig,
   AutonomyProfile,
+  ProviderApiFormat,
   ProviderMode,
   ProviderProfile,
   TaskRecord,
@@ -11,10 +16,12 @@ import type {
 } from "@shared";
 import type { RuntimeConfig } from "../lib/runtimeClient";
 
+export { normalizeProviderApiFormat };
+
 export const DEFAULT_SEARCH_GLOB_TEXT = "";
 export const DEFAULT_PROVIDER_MODE: ProviderMode = "mock";
 export const DEFAULT_PROVIDER_BASE_URL = "https://api.openai.com/v1";
-export const DEFAULT_PROVIDER_API_FORMAT = "openai-chat";
+export const DEFAULT_PROVIDER_API_FORMAT = SHARED_DEFAULT_PROVIDER_API_FORMAT;
 export const DEFAULT_PROVIDER_MODEL = "gpt-5-codex";
 export const DEFAULT_PROVIDER_API_KEY_ENV_VAR = "LOCAL_AGENT_PROVIDER_API_KEY";
 export const DEFAULT_PROVIDER_TEMPERATURE = 0.2;
@@ -128,6 +135,7 @@ export interface ProviderSettingsForm {
   name: string;
   mode: ProviderMode;
   baseUrl: string;
+  apiFormat: ProviderApiFormat;
   model: string;
   apiKeyEnvVarName: string;
   temperature: string;
@@ -305,7 +313,7 @@ export function normalizeProviderConfig(provider: AppConfig["provider"]): AppCon
     ...activeProfile,
     mode: activeProfile?.mode ?? provider.mode ?? DEFAULT_PROVIDER_MODE,
     baseUrl: activeProfile?.baseUrl ?? provider.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
-    apiFormat: activeProfile?.apiFormat ?? provider.apiFormat ?? DEFAULT_PROVIDER_API_FORMAT,
+    apiFormat: normalizeProviderApiFormat(activeProfile?.apiFormat ?? provider.apiFormat),
     model,
     defaultModel: activeProfile?.defaultModel || provider.defaultModel || model,
     apiKeyEnvVarName:
@@ -343,7 +351,7 @@ export function normalizeProviderProfile(
     name: merged.name?.trim() || `Profile ${index + 1}`,
     mode: merged.mode ?? DEFAULT_PROVIDER_MODE,
     baseUrl: merged.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
-    apiFormat: merged.apiFormat ?? DEFAULT_PROVIDER_API_FORMAT,
+    apiFormat: normalizeProviderApiFormat(merged.apiFormat),
     model,
     defaultModel: merged.defaultModel || model,
     apiKeyEnvVarName: merged.apiKeyEnvVarName ?? DEFAULT_PROVIDER_API_KEY_ENV_VAR,
@@ -363,7 +371,7 @@ export function providerToProfile(provider: AppConfig["provider"], id: string, n
     name,
     mode: provider.mode ?? DEFAULT_PROVIDER_MODE,
     baseUrl: provider.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
-    apiFormat: provider.apiFormat ?? DEFAULT_PROVIDER_API_FORMAT,
+    apiFormat: normalizeProviderApiFormat(provider.apiFormat),
     model,
     defaultModel: provider.defaultModel || model,
     fallbackModel: provider.fallbackModel,
@@ -392,6 +400,7 @@ export function buildProviderSettingsForm(config: RuntimeConfig | null): Provide
       "Default",
     mode: normalized.mode ?? DEFAULT_PROVIDER_MODE,
     baseUrl: normalized.baseUrl ?? DEFAULT_PROVIDER_BASE_URL,
+    apiFormat: normalizeProviderApiFormat(normalized.apiFormat),
     model: normalized.model ?? normalized.defaultModel,
     apiKeyEnvVarName: normalized.apiKeyEnvVarName ?? DEFAULT_PROVIDER_API_KEY_ENV_VAR,
     temperature: String(normalized.temperature),

@@ -10,6 +10,7 @@ from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestrator.service import Orchestrator
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.provider.adapter import ProviderAdapter
+from local_agent_runtime.provider.openai_compatible import ProviderAdapterError
 from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
@@ -78,6 +79,57 @@ class ScriptedSseProvider:
         if not self._responses:
             raise AssertionError("Fake provider received more SSE requests than scripted")
         return 200, iter(self._responses.pop(0))
+
+
+class ScriptedSseThenPostProvider:
+    def __init__(self, *, stream_error: Exception, post_responses: list[dict[str, Any]], stream_responses: list[list[bytes]]) -> None:
+        self._stream_error = stream_error
+        self._post_responses = list(post_responses)
+        self._stream_responses = list(stream_responses)
+        self.post_requests: list[dict[str, Any]] = []
+        self.stream_requests: list[dict[str, Any]] = []
+        self._adapter = ProviderAdapter(
+            config={
+                "provider": {
+                    **FAKE_PROVIDER_CONFIG,
+                    "maxToolArgumentChars": 8,
+                }
+            },
+            http_post=self._http_post,
+            http_stream=self._http_stream,
+        )
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        return self._adapter.generate(prompt, context)
+
+    def stream(self, prompt: str, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        yield from self._adapter.stream(prompt, context)
+
+    def _http_post(self, **kwargs: Any) -> tuple[int, bytes]:
+        self.post_requests.append(
+            {
+                **kwargs,
+                "json": json.loads(kwargs["body"].decode("utf-8")),
+            }
+        )
+        if not self._post_responses:
+            raise AssertionError("Fake provider received more POST requests than scripted")
+        return 200, json.dumps(self._post_responses.pop(0), ensure_ascii=False).encode("utf-8")
+
+    def _http_stream(self, **kwargs: Any) -> tuple[int, Iterable[bytes]]:
+        self.stream_requests.append(
+            {
+                **kwargs,
+                "json": json.loads(kwargs["body"].decode("utf-8")),
+            }
+        )
+        if self._stream_error is not None:
+            error = self._stream_error
+            self._stream_error = None
+            raise error
+        if not self._stream_responses:
+            raise AssertionError("Fake provider received more SSE requests than scripted")
+        return 200, iter(self._stream_responses.pop(0))
 
 
 def _make_runtime(tmp_path: Path, provider: Any) -> SimpleNamespace:
@@ -158,6 +210,26 @@ def _tool_call_response(arguments: dict[str, Any]) -> dict[str, Any]:
                     "type": "function",
                     "function": {
                         "name": "apply_patch",
+                        "arguments": json.dumps(arguments, ensure_ascii=False),
+                    },
+                }
+            ],
+        },
+        finish_reason="tool_calls",
+    )
+
+
+def _write_file_tool_call_response(arguments: dict[str, Any]) -> dict[str, Any]:
+    return _chat_response(
+        {
+            "role": "assistant",
+            "content": "I will write the requested file.",
+            "tool_calls": [
+                {
+                    "id": "call_write_file",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
                         "arguments": json.dumps(arguments, ensure_ascii=False),
                     },
                 }
@@ -299,9 +371,57 @@ def _run_patch_approval_smoke(runtime: SimpleNamespace, workspace_root: Path) ->
     assert final_task["resultSummary"].startswith("Patch applied after approval.")
     assert "Changed: Update todo.txt." in final_task["resultSummary"]
     assert "Validated with git status, and git diff." in final_task["resultSummary"]
+    assert final_task["changedFiles"][0]["path"] == "todo.txt"
+    assert final_task["changedFiles"][0]["status"] == "modified"
     assert target_file.read_text(encoding="utf-8") == "status: new\n"
     _assert_trace_covers_e2e(runtime, task["id"])
     return final_task
+
+
+def test_approved_write_file_records_changed_files(tmp_path: Path) -> None:
+    provider = ScriptedHttpPostProvider(
+        [
+            _routing_response(),
+            _write_file_tool_call_response({"path": "notes.txt", "content": "hello\n"}),
+            _final_response(),
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    try:
+        session = _open_session(runtime, workspace_root)
+        task = _result(
+            _rpc(
+                runtime,
+                "message.send",
+                {"sessionId": session["id"], "content": "Create notes.txt"},
+            ),
+            "task",
+        )
+        assert task["status"] == "waiting_approval"
+        approval_requested = next(event for event in runtime.events if event["type"] == "approval.requested")
+        _rpc(
+            runtime,
+            "approval.submit",
+            {
+                "approvalId": approval_requested["payload"]["approvalId"],
+                "decision": "approved",
+            },
+        )
+        final_task = _result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    finally:
+        runtime.store.close()
+
+    assert final_task["status"] == "completed"
+    assert (workspace_root / "notes.txt").read_text(encoding="utf-8") == "hello\n"
+    assert final_task["changedFiles"] == [
+        {
+            "path": "notes.txt",
+            "status": "added",
+            "reason": "write_file wrote 6 byte(s)",
+        }
+    ]
 
 
 def test_non_streaming_openai_compatible_e2e_smoke_applies_approved_patch(tmp_path: Path) -> None:
@@ -342,3 +462,25 @@ def test_streaming_openai_compatible_e2e_smoke_applies_approved_patch(tmp_path: 
     assert provider.requests[0]["json"]["stream"] is True
     assert provider.requests[0]["headers"]["Accept"] == "text/event-stream"
     assert provider.requests[1]["json"]["messages"][-1]["role"] == "tool"
+
+
+def test_streaming_provider_failure_falls_back_to_non_streaming_turn(tmp_path: Path) -> None:
+    provider = ScriptedSseThenPostProvider(
+        stream_error=ProviderAdapterError("Provider streaming response exceeded 1s before completion."),
+        post_responses=[
+            _routing_response(),
+            _tool_call_response({"files": [{"path": "todo.txt", "content": "status: new\n"}]}),
+        ],
+        stream_responses=[_streaming_final_response()],
+    )
+    runtime = _make_runtime(tmp_path, provider)
+    try:
+        final_task = _run_patch_approval_smoke(runtime, tmp_path / "workspace")
+        trace = _rpc(runtime, "trace.list", {"taskId": final_task["id"], "limit": 200})["result"]["traceEvents"]
+    finally:
+        runtime.store.close()
+
+    assert len(provider.stream_requests) == 2
+    assert len(provider.post_requests) == 2
+    assert provider.post_requests[1]["json"]["tools"]
+    assert any(event["type"] == "provider.stream.fallback_non_stream" for event in trace)

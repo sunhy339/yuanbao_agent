@@ -121,7 +121,11 @@ class MetaRouter:
 
         # Prefer DecisionAdvisor path — creates durable proposal records
         if self._decision_advisor is not None:
-            result = self._decision_advisor.advise("routing_strategy", {"goal": goal})
+            input_context: dict[str, Any] = {"goal": goal}
+            config = (context or {}).get("config") if isinstance(context, dict) else None
+            if isinstance(config, dict):
+                input_context["config"] = config
+            result = self._decision_advisor.advise("routing_strategy", input_context)
             self._last_advice = result
             if result.accepted and result.payload:
                 routing = self._advisor_payload_to_decision(result.payload, result.rationale)

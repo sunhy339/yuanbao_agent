@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterable, Iterator
@@ -101,6 +102,8 @@ class OpenAICompatibleSettings:
     temperature: float | None = None
     max_tokens: int | None = None
     timeout: float = 10.0
+    stream_timeout: float = 180.0
+    max_tool_argument_chars: int = 120_000
 
 
 _shared_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -422,7 +425,7 @@ class OpenAICompatibleChatClient:
             raise ProviderAdapterError(
                 f"Provider request failed with HTTP {status}: {self._error_response_message(response_body)}"
             )
-        yield from self._normalize_stream(chunks, tool_name_map=tool_name_map)
+        yield from self._normalize_stream(chunks, settings=settings, tool_name_map=tool_name_map)
 
     def _build_payload(
         self,
@@ -534,9 +537,14 @@ class OpenAICompatibleChatClient:
             raise ProviderAdapterError(f"Provider streaming request failed: {exc}") from exc
 
     def _chat_completions_url(self, base_url: str) -> str:
+        from urllib.parse import urlsplit, urlunsplit
+
         trimmed = base_url.rstrip("/")
         if trimmed.endswith("/chat/completions"):
             return trimmed
+        parsed = urlsplit(trimmed)
+        if parsed.scheme and parsed.netloc and parsed.path in {"", "/"}:
+            return urlunsplit((parsed.scheme, parsed.netloc, "/v1/chat/completions", "", ""))
         return f"{trimmed}/chat/completions"
 
     def _decode_response(self, response_body: bytes) -> dict[str, Any]:
@@ -627,7 +635,14 @@ class OpenAICompatibleChatClient:
             )
         return normalized
 
-    def _normalize_stream(self, chunks: Iterable[bytes], *, tool_name_map: dict[str, str] | None = None) -> Iterator[dict[str, Any]]:
+    def _normalize_stream(
+        self,
+        chunks: Iterable[bytes],
+        *,
+        settings: OpenAICompatibleSettings,
+        tool_name_map: dict[str, str] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        started_at = time.monotonic()
         content_parts: list[str] = []
         role = "assistant"
         tool_call_parts: dict[int, dict[str, Any]] = {}
@@ -637,6 +652,10 @@ class OpenAICompatibleChatClient:
         usage: Any = None
 
         for data in self._iter_sse_data(chunks):
+            if time.monotonic() - started_at > settings.stream_timeout:
+                raise ProviderAdapterError(
+                    f"Provider streaming response exceeded {settings.stream_timeout:g}s before completion."
+                )
             if data == "[DONE]":
                 break
             chunk = self._decode_sse_json(data)
@@ -671,7 +690,12 @@ class OpenAICompatibleChatClient:
                 content_parts.append(content_delta)
                 yield {"type": "content_delta", "delta": content_delta}
 
-            for event in self._apply_tool_call_deltas(delta.get("tool_calls"), tool_call_parts, tool_name_map=tool_name_map):
+            for event in self._apply_tool_call_deltas(
+                delta.get("tool_calls"),
+                tool_call_parts,
+                tool_name_map=tool_name_map,
+                max_tool_argument_chars=settings.max_tool_argument_chars,
+            ):
                 yield event
 
             if first_choice.get("finish_reason") is not None:
@@ -757,6 +781,7 @@ class OpenAICompatibleChatClient:
         tool_call_parts: dict[int, dict[str, Any]],
         *,
         tool_name_map: dict[str, str] | None = None,
+        max_tool_argument_chars: int,
     ) -> Iterator[dict[str, Any]]:
         if tool_calls is None:
             return
@@ -790,6 +815,11 @@ class OpenAICompatibleChatClient:
             arguments_delta = function.get("arguments")
             if isinstance(arguments_delta, str):
                 part["arguments"] += arguments_delta
+                if len(part["arguments"]) > max_tool_argument_chars:
+                    raise ProviderAdapterError(
+                        "Provider tool call arguments exceeded "
+                        f"{max_tool_argument_chars} characters before completion."
+                    )
 
             yield {
                 "type": "tool_call_delta",

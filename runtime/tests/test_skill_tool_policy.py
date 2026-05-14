@@ -484,7 +484,7 @@ class TestSkillToolsFilteredEvent:
         session = _open_session(runtime, tmp_path)
 
         routing = RoutingDecision(
-            scenario=Scenario.CODE_EDIT,
+            scenario=Scenario.SIMPLE_QUERY,
             strategy=ExecutionStrategy.REACT_STANDARD,
             confidence=0.95,
             skill_id=None,  # No skill
@@ -526,7 +526,7 @@ class TestSkillToolsFilteredEvent:
         })
 
         routing = RoutingDecision(
-            scenario=Scenario.CODE_EDIT,
+            scenario=Scenario.SIMPLE_QUERY,
             strategy=ExecutionStrategy.REACT_STANDARD,
             confidence=0.95,
             skill_id="full_access",

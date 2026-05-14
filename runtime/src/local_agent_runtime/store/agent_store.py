@@ -172,6 +172,8 @@ class AgentStoreMixin:
         request_message_count: int | None = None,
         request_tool_count: int | None = None,
         request_token_estimate: int | None = None,
+        tool_policy_decision: dict[str, Any] | None = None,
+        role_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         turn_id = self.new_id("pt")
         now = self.now()
@@ -180,11 +182,13 @@ class AgentStoreMixin:
             INSERT INTO provider_turns
                 (id, task_id, session_id, turn_index, model, status,
                  request_message_count, request_tool_count, request_token_estimate,
-                 created_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+                 tool_policy_decision_json, role_snapshot_json, created_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
             """,
             (turn_id, task_id, session_id, turn_index, model,
              request_message_count, request_tool_count, request_token_estimate,
+             json.dumps(tool_policy_decision or {}, ensure_ascii=False, sort_keys=True),
+             json.dumps(role_snapshot or {}, ensure_ascii=False, sort_keys=True),
              now),
         )
         self._conn.commit()

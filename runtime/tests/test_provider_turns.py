@@ -859,7 +859,7 @@ class TestEdgeCases:
         session = _open_session(runtime, tmp_path)
 
         skill_routing = RoutingDecision(
-            scenario=Scenario.CODE_EDIT,
+            scenario=Scenario.SIMPLE_QUERY,
             strategy=ExecutionStrategy.REACT_STANDARD,
             confidence=0.95,
             skill_id="skill_code_review",

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .permission_engine import PermissionEngine, PermissionRequest
+
 
 RuntimeRole = Literal["root", "worker", "planner", "reviewer", "summarizer"]
 
@@ -22,6 +24,25 @@ READ_ONLY_TOOLS = frozenset(
     }
 )
 WRITE_TOOLS = frozenset({"write_file", "apply_patch", "run_command"})
+MEMORY_AND_SCRATCHPAD_TOOLS = frozenset({"memory.recall", "memory.remember", "scratchpad.read", "scratchpad.write"})
+
+TOOL_CAPABILITIES: dict[str, str] = {
+    "list_dir": "readFile",
+    "search_files": "readFile",
+    "read_file": "readFile",
+    "git_status": "readFile",
+    "git_diff": "readFile",
+    "code_search": "readFile",
+    "write_file": "writeFile",
+    "apply_patch": "writeFile",
+    "run_command": "runCommand",
+    "web_fetch": "webFetch",
+    "task": "subagents",
+    "memory.remember": "memoryWrite",
+    "memory.recall": "readFile",
+    "scratchpad.write": "memoryWrite",
+    "scratchpad.read": "readFile",
+}
 
 
 @dataclass(slots=True)
@@ -33,8 +54,9 @@ class ToolPolicyDecision:
     allowed_tool_names: list[str]
     denied_tool_names: list[str]
     reasons: dict[str, str]
+    decision_details: list[dict[str, Any]]
     role_snapshot: dict[str, Any]
-    policy_version: str = "tool-policy-v1"
+    policy_version: str = "tool-policy-v2"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -44,6 +66,7 @@ class ToolPolicyDecision:
             "allowedToolNames": self.allowed_tool_names,
             "deniedToolNames": self.denied_tool_names,
             "reasons": self.reasons,
+            "decisionDetails": self.decision_details,
             "policyVersion": self.policy_version,
         }
 
@@ -74,16 +97,67 @@ class ToolPolicyResolver:
         )
         allowed_tools: list[dict[str, Any]] = []
         denied_names: list[str] = []
+        decision_details: list[dict[str, Any]] = []
         allow_all = "*" in allowed_names
+        permission_engine = self._permission_engine(context)
+        skill_policy = self._skill_policy(context)
+        mcp_policy = self._mcp_policy(context)
         for tool in registered_tools:
             name = self._tool_name(tool)
             if not name:
                 continue
+            detail: dict[str, Any] = {
+                "toolName": name,
+                "source": self._tool_source(tool, name),
+                "phaseDecision": "allowed" if allow_all or name in allowed_names else "denied",
+            }
             if allow_all or name in allowed_names:
+                skill_allowed, skill_reason = self._skill_allows_tool(name, skill_policy)
+                detail["skillDecision"] = "allowed" if skill_allowed else "denied"
+                if not skill_allowed:
+                    denied_names.append(name)
+                    reasons[name] = skill_reason
+                    detail["finalDecision"] = "denied"
+                    detail["reason"] = skill_reason
+                    decision_details.append(detail)
+                    continue
+
+                mcp_allowed, mcp_reason = self._mcp_allows_tool(name, mcp_policy)
+                detail["mcpDecision"] = "allowed" if mcp_allowed else "denied"
+                if not mcp_allowed:
+                    denied_names.append(name)
+                    reasons[name] = mcp_reason
+                    detail["finalDecision"] = "denied"
+                    detail["reason"] = mcp_reason
+                    decision_details.append(detail)
+                    continue
+
+                permission = self._permission_decision(permission_engine, name, context)
+                if permission is not None:
+                    detail["permissionDecision"] = permission.decision
+                    detail["capability"] = permission.capability
+                    if permission.approval_kind:
+                        detail["approvalKind"] = permission.approval_kind
+                if permission is not None and permission.decision == "deny":
+                    denied_names.append(name)
+                    reason = permission.reason or f"tool {name} denied by PermissionEngine"
+                    reasons[name] = reason
+                    detail["finalDecision"] = "denied"
+                    detail["reason"] = reason
+                    decision_details.append(detail)
+                    continue
+
                 allowed_tools.append(tool)
+                detail["finalDecision"] = "allowed"
+                if permission is not None and permission.decision == "approval_required":
+                    detail["requiresApproval"] = True
             else:
                 denied_names.append(name)
-                reasons.setdefault(name, self._denied_reason(name, phase, runtime_role))
+                reason = self._denied_reason(name, phase, runtime_role)
+                reasons.setdefault(name, reason)
+                detail["finalDecision"] = "denied"
+                detail["reason"] = reason
+            decision_details.append(detail)
 
         return ToolPolicyDecision(
             phase=phase,
@@ -93,6 +167,7 @@ class ToolPolicyResolver:
             allowed_tool_names=[self._tool_name(t) for t in allowed_tools if self._tool_name(t)],
             denied_tool_names=denied_names,
             reasons=reasons,
+            decision_details=decision_details,
             role_snapshot=role_snapshot,
         )
 
@@ -250,3 +325,119 @@ class ToolPolicyResolver:
         if runtime_role in {"reviewer", "summarizer"} and name not in READ_ONLY_TOOLS:
             return f"runtimeRole={runtime_role} is read-only"
         return f"tool not allowed for phase={phase} runtimeRole={runtime_role}"
+
+    def _permission_engine(self, context: dict[str, Any]) -> PermissionEngine | None:
+        config = context.get("config")
+        if not isinstance(config, dict):
+            return None
+        return PermissionEngine(config)
+
+    def _permission_decision(
+        self,
+        permission_engine: PermissionEngine | None,
+        tool_name: str,
+        context: dict[str, Any],
+    ) -> Any | None:
+        if permission_engine is None:
+            return None
+        capability = self._tool_capability(tool_name)
+        if capability is None:
+            return None
+        return permission_engine.evaluate(PermissionRequest(
+            capability=capability,
+            tool_name=tool_name,
+            context=context,
+        ))
+
+    def _tool_capability(self, tool_name: str) -> str | None:
+        if tool_name.startswith("mcp__"):
+            return None
+        return TOOL_CAPABILITIES.get(tool_name)
+
+    def _skill_policy(self, context: dict[str, Any]) -> dict[str, Any] | None:
+        policy = context.get("skillPolicy") or context.get("skill_policy")
+        if isinstance(policy, dict):
+            return policy
+        meta = (context.get("_build_result") or context).get("snapshot_metadata")
+        if isinstance(meta, dict):
+            policy = meta.get("skillPolicy") or meta.get("skill_policy")
+            if isinstance(policy, dict):
+                return policy
+        return None
+
+    def _skill_allows_tool(self, tool_name: str, policy: dict[str, Any] | None) -> tuple[bool, str]:
+        if not policy:
+            return True, ""
+        mode = str(policy.get("toolPolicy") or policy.get("tool_policy") or "strict_whitelist")
+        whitelist = {
+            str(item)
+            for item in (policy.get("toolWhitelist") or policy.get("tool_whitelist") or [])
+            if isinstance(item, str) and item
+        }
+        if mode == "inherit_all":
+            return True, ""
+        if tool_name in MEMORY_AND_SCRATCHPAD_TOOLS:
+            return True, ""
+        if mode == "inherit_mcp" and tool_name.startswith("mcp__"):
+            return True, ""
+        if tool_name in whitelist:
+            return True, ""
+        skill_id = policy.get("skillId") or policy.get("skill_id") or "<unknown>"
+        return False, f"skill={skill_id} policy={mode} does not allow tool {tool_name}"
+
+    def _mcp_policy(self, context: dict[str, Any]) -> dict[str, Any] | None:
+        policy = context.get("mcpPolicy") or context.get("mcp_policy")
+        if isinstance(policy, dict):
+            return policy
+        config = context.get("config")
+        if isinstance(config, dict):
+            for key in ("mcpPolicy", "mcp_policy"):
+                policy = config.get(key)
+                if isinstance(policy, dict):
+                    return policy
+            mcp = config.get("mcp")
+            if isinstance(mcp, dict):
+                policy = mcp.get("policy") or mcp.get("serverPolicy") or mcp.get("server_policy")
+                if isinstance(policy, dict):
+                    return policy
+        return None
+
+    def _mcp_allows_tool(self, tool_name: str, policy: dict[str, Any] | None) -> tuple[bool, str]:
+        if not tool_name.startswith("mcp__") or not policy:
+            return True, ""
+        mode = str(policy.get("mode") or "allow")
+        if mode in {"disabled", "blocked", "deny"}:
+            return False, "MCP tools are disabled by MCP policy"
+        server_id, raw_tool = self._mcp_parts(tool_name)
+        blocked_servers = self._string_set(policy, "blockedServers", "serverDenylist", "blocked_servers", "server_denylist")
+        if server_id in blocked_servers:
+            return False, f"MCP server {server_id!r} is blocked by MCP policy"
+        allowed_servers = self._string_set(policy, "allowedServers", "serverAllowlist", "allowed_servers", "server_allowlist")
+        if allowed_servers and server_id not in allowed_servers:
+            return False, f"MCP server {server_id!r} is not in MCP server allowlist"
+        blocked_tools = self._string_set(policy, "blockedTools", "toolDenylist", "blocked_tools", "tool_denylist")
+        if tool_name in blocked_tools or raw_tool in blocked_tools:
+            return False, f"MCP tool {tool_name!r} is blocked by MCP policy"
+        allowed_tools = self._string_set(policy, "allowedTools", "toolAllowlist", "allowed_tools", "tool_allowlist")
+        if allowed_tools and tool_name not in allowed_tools and raw_tool not in allowed_tools:
+            return False, f"MCP tool {tool_name!r} is not in MCP tool allowlist"
+        return True, ""
+
+    def _mcp_parts(self, tool_name: str) -> tuple[str, str]:
+        parts = tool_name.split("__", 2)
+        if len(parts) == 3:
+            return parts[1], parts[2]
+        return "", tool_name
+
+    def _string_set(self, policy: dict[str, Any], *keys: str) -> set[str]:
+        values: set[str] = set()
+        for key in keys:
+            raw = policy.get(key)
+            if isinstance(raw, list):
+                values.update(str(item) for item in raw if isinstance(item, str) and item)
+        return values
+
+    def _tool_source(self, tool: dict[str, Any], tool_name: str) -> str:
+        if tool_name.startswith("mcp__") or tool.get("_mcp_server_id"):
+            return "mcp"
+        return "builtin"

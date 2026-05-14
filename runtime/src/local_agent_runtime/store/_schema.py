@@ -462,6 +462,8 @@ class SchemaBootstrapMixin:
                 context_snapshot_id TEXT,
                 turn_decision TEXT,
                 thought_summary TEXT,
+                tool_policy_decision_json TEXT,
+                role_snapshot_json TEXT,
                 created_at INTEGER NOT NULL,
                 completed_at INTEGER
             )
@@ -706,6 +708,7 @@ class SchemaBootstrapMixin:
         self._ensure_collaboration_task_columns()
         self._ensure_schedule_columns()
         self._ensure_compaction_columns()
+        self._ensure_provider_turn_columns()
         self._ensure_context_snapshot_columns()
         self._ensure_inbox_columns()
         self._ensure_mcp_server_columns()
@@ -853,6 +856,21 @@ class SchemaBootstrapMixin:
         for column, definition in expected.items():
             if column not in columns:
                 self._conn.execute(f"ALTER TABLE context_snapshots ADD COLUMN {column} {definition}")
+        self._conn.commit()
+
+    def _ensure_provider_turn_columns(self) -> None:
+        """Add replay/audit columns to provider_turns if missing."""
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(provider_turns)").fetchall()
+        }
+        expected = {
+            "tool_policy_decision_json": "TEXT",
+            "role_snapshot_json": "TEXT",
+        }
+        for column, definition in expected.items():
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE provider_turns ADD COLUMN {column} {definition}")
         self._conn.commit()
 
     def _ensure_inbox_columns(self) -> None:

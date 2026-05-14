@@ -108,9 +108,15 @@ class ContextBuilder(HistoryMixin):
 
         # Resolve skill preset if skill_id is provided
         skill_preset = self._resolve_skill(skill_id)
+        skill_policy_context: dict[str, Any] | None = None
         filtered_tool_names: list[str] | None = None
         original_tool_names: list[str] | None = None
         if skill_preset is not None:
+            skill_policy_context = {
+                "skillId": getattr(skill_preset, "id", skill_id),
+                "toolPolicy": getattr(skill_preset.tool_policy, "value", str(skill_preset.tool_policy)),
+                "toolWhitelist": list(skill_preset.tool_whitelist),
+            }
             original_tool_names = [t.get("name", "") for t in tools]
             from ..skills.types import ToolPolicy
             policy = skill_preset.tool_policy
@@ -184,6 +190,7 @@ class ContextBuilder(HistoryMixin):
             "messages": messages,
             "tools": tools,
             "openai_tools": openai_tools,
+            "skillPolicy": skill_policy_context,
             "budgetStats": budget_stats,
             "snapshot_metadata": {
                 "included_sections": budget_stats.get("includedSections", []),
@@ -194,6 +201,7 @@ class ContextBuilder(HistoryMixin):
                 "token_estimate": budget_stats.get("estimatedTokens", 0),
                 "filtered_tool_names": filtered_tool_names,
                 "original_tool_names": original_tool_names,
+                "skillPolicy": skill_policy_context,
                 "autonomy_profile": self._active_autonomy_profile(config),
                 "agent_soul_profile": self._active_agent_soul_profile(config),
                 "prompt_layers": budget_stats.get("promptLayers", []),

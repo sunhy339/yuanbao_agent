@@ -240,6 +240,8 @@ class ReactRunnerMixin:
                 request_message_count=len(messages),
                 request_tool_count=len(provider_tools),
                 request_token_estimate=_msg_token_total,
+                tool_policy_decision=tool_policy_decision.to_dict(),
+                role_snapshot=tool_policy_decision.role_snapshot,
             )
             self._fire_hooks("before_provider_turn", session_id, task, extra_context={"turnIndex": steps, "providerTurnId": provider_turn["id"]})
             # --- ContextSnapshot: capture what the model will see ---

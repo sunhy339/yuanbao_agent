@@ -27,6 +27,7 @@ import pytest
 
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.models import RuntimeEvent
+from local_agent_runtime.policy.permission_engine import PermissionEngine
 from local_agent_runtime.services.hook_service import HookService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 
@@ -209,6 +210,8 @@ class TestHookService:
         assert results[0]["policyOutcome"] == "allowed"
         assert len(captured_events) == 1
         assert captured_events[0].type == "hook.executed"
+        assert captured_events[0].visibility == "trace"
+        assert captured_events[0].payload["hookExecutionId"] == results[0]["id"]
 
     def test_invoke_notification_hook(self, tmp_path: Any) -> None:
         store, event_bus = _make_store(tmp_path)
@@ -258,6 +261,57 @@ class TestHookService:
         )
 
         service = HookService(store, event_bus)
+        results = service.invoke_hooks("after_task_complete", {
+            "workspaceId": ws_id,
+            "taskId": "task_1",
+        })
+
+        assert len(results) == 1
+        assert results[0]["policyOutcome"] == "approval_required"
+        assert results[0]["status"] == "pending"
+
+    def test_invoke_run_command_hook_blocked_by_permission_engine(self, tmp_path: Any) -> None:
+        store, event_bus = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        _create_hook(
+            store, ws_id,
+            action={"type": "run_command", "command": "npm test"},
+            authority={"requiresApproval": False},
+        )
+        engine = PermissionEngine(config={
+            "permissions": {
+                "preset": "balanced",
+                "capabilities": {"hooksExecute": {"mode": "blocked", "scope": "*"}},
+            },
+        })
+
+        service = HookService(store, event_bus, permission_engine=engine)
+        results = service.invoke_hooks("after_task_complete", {
+            "workspaceId": ws_id,
+            "taskId": "task_1",
+        })
+
+        assert len(results) == 1
+        assert results[0]["policyOutcome"] == "denied"
+        assert results[0]["status"] == "failed"
+        assert "blocked" in results[0]["errorSummary"]
+
+    def test_invoke_run_command_hook_uses_permission_engine_approval(self, tmp_path: Any) -> None:
+        store, event_bus = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        _create_hook(
+            store, ws_id,
+            action={"type": "run_command", "command": "npm test"},
+            authority={"requiresApproval": False},
+        )
+        engine = PermissionEngine(config={
+            "permissions": {
+                "preset": "balanced",
+                "capabilities": {"hooksExecute": {"mode": "allow", "scope": "*"}},
+            },
+        })
+
+        service = HookService(store, event_bus, permission_engine=engine)
         results = service.invoke_hooks("after_task_complete", {
             "workspaceId": ws_id,
             "taskId": "task_1",
@@ -331,7 +385,7 @@ class TestHookService:
         # Matching
         results = service.invoke_hooks("after_task_complete", {
             "workspaceId": ws_id,
-            "changedFiles": ["src/main.py", "README.md"],
+            "changedFiles": [{"path": "src/main.py"}, "README.md"],
         })
         assert len(results) == 1
         assert results[0]["status"] == "completed"
@@ -431,6 +485,11 @@ class TestHookLifecycleWiring:
         assert len(hook_execs) == 1
         assert hook_execs[0]["event"] == "on_task_pause"
         assert hook_execs[0]["status"] == "completed"
+        trace_events = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        hook_trace = [event for event in trace_events if event["type"] == "hook.executed"]
+        assert len(hook_trace) == 1
+        assert hook_trace[0]["visibility"] == "trace"
+        assert hook_trace[0]["payload"]["hookExecutionId"] == hook_execs[0]["id"]
 
     def test_cancel_task_fires_cancel_hook(self, tmp_path: Any) -> None:
         server, store, ws_id, _session, task = self._make_runtime_task(tmp_path)
@@ -449,6 +508,54 @@ class TestHookLifecycleWiring:
         assert hook_execs[0]["event"] == "on_task_cancel"
         assert hook_execs[0]["status"] == "completed"
 
+    def test_resume_task_fires_resume_hook(self, tmp_path: Any) -> None:
+        server, store, ws_id, _session, task = self._make_runtime_task(tmp_path)
+        paused_task = store.update_task_status(task_id=task["id"], status="paused")
+        _create_hook(
+            store,
+            ws_id,
+            event="on_task_resume",
+            action={"type": "audit_note", "note": "Task resumed"},
+        )
+
+        resumed = server._handlers["task.resume"]({"taskId": paused_task["id"]})["task"]
+
+        assert resumed["status"] == "running"
+        hook_execs = store.list_hook_executions({"taskId": task["id"]})["hookExecutions"]
+        assert len(hook_execs) == 1
+        assert hook_execs[0]["event"] == "on_task_resume"
+        assert hook_execs[0]["status"] == "completed"
+
+    def test_compaction_fires_before_and_after_hooks(self, tmp_path: Any) -> None:
+        server, store, ws_id, session, task = self._make_runtime_task(tmp_path)
+        _create_hook(
+            store,
+            ws_id,
+            event="before_compaction",
+            action={"type": "audit_note", "note": "Before compaction"},
+        )
+        _create_hook(
+            store,
+            ws_id,
+            event="after_compaction",
+            action={"type": "audit_note", "note": "After compaction"},
+        )
+        for index in range(12):
+            store.create_message(
+                session_id=session["id"],
+                task_id=task["id"],
+                role="user" if index % 2 == 0 else "assistant",
+                content=("context chunk " + str(index) + " ") * 100,
+            )
+
+        result = server._handlers["session.compact"]({"sessionId": session["id"], "maxTokens": 20})
+
+        assert result["strategy"] in {"primer_summary_recent", "none"}
+        execs = store.list_hook_executions({})["hookExecutions"]
+        events = [item["event"] for item in execs]
+        assert "before_compaction" in events
+        assert "after_compaction" in events
+
 
 # ---------------------------------------------------------------------------
 # Integration: Worktree Hook Points
@@ -456,6 +563,22 @@ class TestHookLifecycleWiring:
 
 class TestWorktreeHookPoints:
     """Worktree lifecycle hooks fire before/after create and merge."""
+
+    def _worktree_path(self, tmp_path: Any, name: str = "task_1") -> str:
+        return str(tmp_path / "wt" / name)
+
+    def _approve_worktree_merge(
+        self,
+        store: SQLiteStore,
+        wt: dict[str, Any],
+        target_branch: str = "main",
+    ) -> dict[str, Any]:
+        approval = store.create_approval(
+            wt["taskId"],
+            "worktree_merge",
+            {"worktreeId": wt["id"], "targetBranch": target_branch},
+        )
+        return store.resolve_approval(approval["id"], "approved")
 
     def _make_worktree_service(self, tmp_path: Any):
         """Build a WorktreeService with mock git adapter and real HookService."""
@@ -466,11 +589,11 @@ class TestWorktreeHookPoints:
         ws_id = _make_workspace(store, tmp_path)
         hook_service = HookService(store, event_bus)
 
-        # Mock git adapter — no real git operations in tests
+        # Mock git adapter; no real git operations in tests.
         git_adapter = MagicMock()
         git_adapter.create.return_value = {
             "branch": "agent/task_1",
-            "path": "/tmp/wt/task_1",
+            "path": self._worktree_path(tmp_path),
             "baseRef": "main",
         }
         git_adapter.merge.return_value = {
@@ -479,6 +602,8 @@ class TestWorktreeHookPoints:
             "result": "ok",
             "stdout": "",
         }
+        git_adapter.status.return_value = {"dirtyFiles": 0}
+        git_adapter.diff.return_value = {"diffStat": "", "files": []}
 
         service = WorktreeService(store, git_adapter, hook_service=hook_service)
         return service, store, event_bus, ws_id, git_adapter
@@ -501,7 +626,7 @@ class TestWorktreeHookPoints:
             "workspaceId": ws_id,
             "sessionId": "sess_1",
             "branchName": "agent/task_1",
-            "worktreePath": "/tmp/wt/task_1",
+            "worktreePath": self._worktree_path(tmp_path),
             "baseRef": "main",
         })
 
@@ -530,17 +655,29 @@ class TestWorktreeHookPoints:
             action={"type": "audit_note", "note": "After merge"},
         )
 
-        # First create a worktree record
+        # First create a real task and worktree record so approval tracing can attach.
+        session = store.create_session(ws_id, "Worktree merge hook test")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="root",
+            goal="test worktree merge hooks",
+            plan=[],
+        )
         wt = store.create_worktree({
-            "taskId": "task_1",
+            "taskId": task["id"],
             "workspaceId": ws_id,
-            "sessionId": "sess_1",
+            "sessionId": session["id"],
             "branchName": "agent/task_1",
-            "worktreePath": "/tmp/wt/task_1",
+            "worktreePath": self._worktree_path(tmp_path),
             "baseRef": "main",
         })["worktree"]
 
-        result = service.merge({"worktreeId": wt["id"], "targetBranch": "main"})
+        approval = self._approve_worktree_merge(store, wt)
+        result = service.merge({
+            "worktreeId": wt["id"],
+            "targetBranch": "main",
+            "approvalId": approval["id"],
+        })
 
         assert result["merged"] is True
         assert result["worktreeId"] == wt["id"]
@@ -572,7 +709,7 @@ class TestWorktreeHookPoints:
             "workspaceId": ws_id,
             "sessionId": "sess_1",
             "branchName": "agent/task_1",
-            "worktreePath": "/tmp/wt/task_1",
+            "worktreePath": self._worktree_path(tmp_path),
             "baseRef": "main",
         })
 
@@ -591,7 +728,7 @@ class TestWorktreeHookPoints:
         git_adapter = MagicMock()
         git_adapter.create.return_value = {
             "branch": "agent/task_1",
-            "path": "/tmp/wt/task_1",
+            "path": self._worktree_path(tmp_path),
             "baseRef": "main",
         }
 
@@ -601,7 +738,7 @@ class TestWorktreeHookPoints:
             "workspaceId": ws_id,
             "sessionId": "sess_1",
             "branchName": "agent/task_1",
-            "worktreePath": "/tmp/wt/task_1",
+            "worktreePath": self._worktree_path(tmp_path),
             "baseRef": "main",
         })
 
@@ -628,7 +765,7 @@ class TestWorktreeHookPoints:
             "workspaceId": ws_id,
             "sessionId": "sess_ctx",
             "branchName": "agent/ctx",
-            "worktreePath": "/tmp/wt/ctx",
+            "worktreePath": self._worktree_path(tmp_path, "ctx"),
             "baseRef": "HEAD",
         })
 

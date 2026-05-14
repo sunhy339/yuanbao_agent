@@ -185,6 +185,20 @@ class ProposalStoreMixin:
         )
         return approval
 
+    def update_approval_request(self, approval_id: str, request: dict[str, Any]) -> dict[str, Any]:
+        request_json = json.dumps(request, ensure_ascii=False, sort_keys=True)
+        cursor = self._conn.execute(
+            "UPDATE approvals SET request_json = ? WHERE id = ? AND decision IS NULL",
+            (request_json, approval_id),
+        )
+        self._conn.commit()
+        if cursor.rowcount == 0:
+            raise ValueError(f"Pending approval not found: {approval_id}")
+        row = self._conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Approval not found: {approval_id}")
+        return self._serialize_approval(dict(row))
+
     def find_approval(
         self,
         *,

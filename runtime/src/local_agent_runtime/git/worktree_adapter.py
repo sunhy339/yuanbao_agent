@@ -60,6 +60,15 @@ class GitWorktreeAdapter:
         result = self._run_git("diff", "--stat", base_ref, cwd=target_path, check=False)
         return {"diffStat": result.stdout.strip()}
 
+    def diff_full(self, target_path: str, base_ref: str = "HEAD") -> dict[str, Any]:
+        """Return full unified diff between worktree and *base_ref*."""
+        result = self._run_git("diff", base_ref, cwd=target_path, check=False)
+        return {
+            "diff": result.stdout,
+            "returnCode": result.returncode,
+            "stderr": result.stderr.strip(),
+        }
+
     # -- Branch helpers --------------------------------------------------------
 
     def list_worktrees(self) -> list[dict[str, str]]:

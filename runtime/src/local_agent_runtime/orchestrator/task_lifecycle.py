@@ -34,6 +34,9 @@ class TaskLifecycleMixin:
             validation=validation,
             tool_results=tool_results or [],
         )
+        completion_review = self._completion_review_conclusion(context or {})
+        if completion_review:
+            completion_evidence["reviewConclusion"] = completion_review
 
         # --- Reflection phase ---
         reflection_data = None
@@ -71,6 +74,8 @@ class TaskLifecycleMixin:
             "keyFindings": [],
             "completionEvidence": completion_evidence,
         }
+        if completion_review:
+            structured_result["completionReview"] = completion_review
         completion_gate = self._completion_gate_decision(
             task=task,
             context=context or {},
@@ -294,6 +299,24 @@ class TaskLifecycleMixin:
             return None
         if not self._completion_has_any_passing_verification_signal(completion_evidence):
             return None
+        requirements = completion_evidence.get("verificationRequirements")
+        if isinstance(requirements, dict):
+            missing = [
+                str(item)
+                for item in (requirements.get("missing") or [])
+                if str(item).strip()
+            ]
+            if missing:
+                return {
+                    "action": "review",
+                    "decision": "needs_verification",
+                    "gateStatus": "needs_verification",
+                    "risk": "code changes lack framework-matched verification",
+                    "reason": (
+                        "Completion blocked because code or test files changed, but passing verification "
+                        f"does not cover required framework signal(s): {', '.join(missing)}."
+                    ),
+                }
         if self._completion_has_targeted_verification(completion_evidence):
             return None
         return {
@@ -360,6 +383,128 @@ class TaskLifecycleMixin:
         value = item.get("path") or item.get("file") or item.get("name")
         return str(value or "").replace("\\", "/").strip()
 
+    def _completion_verification_requirements(
+        self,
+        *,
+        changed_files: list[dict[str, Any]],
+        verification: list[dict[str, Any]],
+        tests_run: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        required = sorted({
+            family
+            for item in changed_files
+            for family in self._completion_path_verification_families(
+                self._completion_changed_file_path(item)
+            )
+        })
+        if not required:
+            return {"required": [], "matched": [], "missing": [], "status": "not_required"}
+        matched: set[str] = set()
+        for item in verification:
+            if item.get("status") != "passed":
+                continue
+            matched.update(self._completion_verification_item_families(item))
+        for item in tests_run:
+            if item.get("status") not in {"passed", "success", "completed"}:
+                continue
+            matched.update(self._completion_verification_item_families(item))
+        missing = [family for family in required if family not in matched]
+        return {
+            "required": required,
+            "matched": sorted(matched),
+            "missing": missing,
+            "status": "satisfied" if not missing else "missing",
+        }
+
+    def _completion_path_verification_families(self, path: str) -> set[str]:
+        if not path:
+            return set()
+        normalized = path.casefold()
+        filename = normalized.rsplit("/", 1)[-1]
+        if filename in {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"}:
+            return {"javascript"}
+        if filename in {"vite.config.ts", "vite.config.js", "next.config.js", "next.config.ts", "tsconfig.json"}:
+            return {"javascript"}
+        if filename in {"pyproject.toml", "requirements.txt", "setup.py", "setup.cfg", "tox.ini", "pytest.ini"}:
+            return {"python"}
+        if filename in {"cargo.toml", "cargo.lock"}:
+            return {"rust"}
+        if filename in {"go.mod", "go.sum"}:
+            return {"go"}
+        if filename in {"pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"}:
+            return {"jvm"}
+        if filename.endswith((".csproj", ".sln")):
+            return {"dotnet"}
+        if not self._completion_path_requires_targeted_verification(path):
+            return set()
+        if normalized.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte")):
+            return {"javascript"}
+        if normalized.endswith((".py", ".pyw")):
+            return {"python"}
+        if normalized.endswith(".rs"):
+            return {"rust"}
+        if normalized.endswith(".go"):
+            return {"go"}
+        if normalized.endswith((".java", ".kt", ".kts")):
+            return {"jvm"}
+        if normalized.endswith(".cs"):
+            return {"dotnet"}
+        if normalized.endswith(".rb"):
+            return {"ruby"}
+        if normalized.endswith(".php"):
+            return {"php"}
+        if normalized.endswith(".swift"):
+            return {"swift"}
+        if normalized.endswith((".c", ".cc", ".cpp", ".h", ".hpp")):
+            return {"native"}
+        return {"generic"}
+
+    def _completion_verification_item_families(self, item: dict[str, Any]) -> set[str]:
+        text = " ".join(
+            str(item.get(key) or "")
+            for key in ("command", "name", "summary", "suite")
+        ).casefold()
+        families: set[str] = set()
+        token_map = {
+            "python": ("pytest", "unittest", "tox", "mypy", "pyright", "ruff", "python -m"),
+            "javascript": (
+                "jest",
+                "vitest",
+                "playwright",
+                "cypress",
+                "npm test",
+                "npm run test",
+                "pnpm test",
+                "pnpm run test",
+                "yarn test",
+                "yarn run test",
+                "bun test",
+                "tsc",
+                "typecheck",
+                "type check",
+                "eslint",
+                "npm run build",
+                "pnpm build",
+                "yarn build",
+                "vite",
+                "next build",
+            ),
+            "rust": ("cargo test", "cargo check", "cargo build", "cargo clippy"),
+            "go": ("go test", "go build", "go vet"),
+            "jvm": ("mvn test", "maven test", "gradle test", "./gradlew test", "gradlew test"),
+            "dotnet": ("dotnet test", "dotnet build"),
+            "ruby": ("rspec", "bundle exec", "ruby test"),
+            "php": ("phpunit", "composer test"),
+            "swift": ("swift test", "xcodebuild test"),
+            "native": ("cmake", "make test", "ctest", "ninja test"),
+        }
+        for family, tokens in token_map.items():
+            if any(token in text for token in tokens):
+                families.add(family)
+        if self._completion_text_mentions_targeted_verification(text) and not families:
+            families.add("generic")
+        return families
+
     def _completion_path_requires_targeted_verification(self, path: str) -> bool:
         if not path:
             return False
@@ -368,6 +513,35 @@ class TaskLifecycleMixin:
             return False
         if normalized.startswith(("docs/", "doc/", "documentation/")):
             return False
+        filename = normalized.rsplit("/", 1)[-1]
+        if filename in {
+            "package.json",
+            "package-lock.json",
+            "pnpm-lock.yaml",
+            "yarn.lock",
+            "bun.lockb",
+            "vite.config.ts",
+            "vite.config.js",
+            "next.config.js",
+            "next.config.ts",
+            "tsconfig.json",
+            "pyproject.toml",
+            "requirements.txt",
+            "setup.py",
+            "setup.cfg",
+            "tox.ini",
+            "pytest.ini",
+            "cargo.toml",
+            "cargo.lock",
+            "go.mod",
+            "go.sum",
+            "pom.xml",
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+        } or filename.endswith((".csproj", ".sln")):
+            return True
         return normalized.endswith(
             (
                 ".py",
@@ -481,6 +655,24 @@ class TaskLifecycleMixin:
             "dotnet build",
         )
         return any(token in normalized for token in targeted_tokens)
+
+    def _completion_review_conclusion(self, context: dict[str, Any]) -> dict[str, Any]:
+        raw = context.get("completionReviewConclusion")
+        if not isinstance(raw, dict):
+            return {}
+        conclusion = {
+            "approvalId": str(raw.get("approvalId") or "").strip(),
+            "decision": str(raw.get("decision") or "").strip(),
+            "decidedBy": str(raw.get("decidedBy") or "").strip(),
+            "summary": str(raw.get("summary") or "").strip(),
+        }
+        decided_at = raw.get("decidedAt")
+        if isinstance(decided_at, (int, float)):
+            conclusion["decidedAt"] = int(decided_at)
+        gate_status = str(raw.get("gateStatus") or "").strip()
+        if gate_status:
+            conclusion["gateStatus"] = gate_status
+        return {key: value for key, value in conclusion.items() if value not in ("", None)}
 
     def _is_write_or_verification_task(self, *, task: dict[str, Any], context: dict[str, Any]) -> bool:
         routing = task.get("routing") if isinstance(task.get("routing"), dict) else {}
@@ -706,6 +898,11 @@ class TaskLifecycleMixin:
             item for item in validation_checks
             if item.get("status") in {"failed", "timeout", "killed", "validation_failed"}
         ]
+        verification_requirements = self._completion_verification_requirements(
+            changed_files=changed_files,
+            verification=verification,
+            tests_run=tests_run,
+        )
 
         has_workspace_evidence = bool(changed_files or patches)
         has_command_evidence = bool(commands)
@@ -749,6 +946,7 @@ class TaskLifecycleMixin:
             "changedFiles": changed_files,
             "commands": commands,
             "verification": verification,
+            "verificationRequirements": verification_requirements,
             "testsRun": tests_run,
             "patches": patches,
             "toolResults": tool_evidence,
@@ -765,6 +963,8 @@ class TaskLifecycleMixin:
                 "verification": len(verification),
                 "passedVerification": len(passed_verification),
                 "failedVerification": len(failed_verification) + len(failed_validation_checks) + len(failed_tests_run),
+                "requiredVerificationFamilies": len(verification_requirements.get("required") or []),
+                "missingVerificationFamilies": len(verification_requirements.get("missing") or []),
                 "testsRun": len(tests_run),
                 "passedTestsRun": len(passed_tests_run),
                 "failedTestsRun": len(failed_tests_run),
@@ -1105,6 +1305,7 @@ class TaskLifecycleMixin:
         error_code: str,
         *,
         skip_drain: bool = False,
+        structured_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         logger.warning("Task %s failed: error_code=%s summary=%s", task["id"], error_code, summary[:200])
         task_plan = task.get("plan") or []
@@ -1118,6 +1319,7 @@ class TaskLifecycleMixin:
             summary=summary,
             result_summary=summary,
             error_code=error_code,
+            structured_result=structured_result,
         )
         runtime_task = {
             **failed_task,
@@ -1821,4 +2023,3 @@ class TaskLifecycleMixin:
             return stdout.strip().splitlines()[0]
         exit_code = result.get("exitCode")
         return f"Command {status}" + (f" with exit {exit_code}" if exit_code is not None else "")
-

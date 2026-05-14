@@ -301,6 +301,10 @@ export interface TaskListResult {
 
 export interface WorktreeGetParams {
   worktreeId: Identifier;
+  full?: boolean;
+  includeFullDiff?: boolean;
+  maxDiffBytes?: number;
+  diffPreviewBytes?: number;
 }
 
 export interface WorktreeGetByTaskParams {
@@ -319,6 +323,11 @@ export interface WorktreeMergeParams {
   targetBranch?: string;
   verificationCommands?: string[];
   verificationTimeoutMs?: number;
+  reviewStatus?: string;
+  reviewerSummary?: string;
+  reviewer?: string;
+  multiAgentWorktreeStrategy?: string | Record<string, unknown>;
+  diffPreviewBytes?: number;
 }
 
 export interface WorktreeGetResult {
@@ -351,6 +360,10 @@ export interface WorktreeMergeResult {
   error?: string;
   result?: Record<string, unknown>;
   verification?: TaskVerificationRecord[];
+  approvalSummary?: Record<string, unknown>;
+  review?: Record<string, unknown>;
+  diffSummary?: Record<string, unknown>;
+  multiAgentWorktreeStrategy?: Record<string, unknown>;
 }
 
 export interface WorktreeCleanupResult {

@@ -49,6 +49,12 @@ export interface SessionWorkspaceWorktreeStatus {
 export interface SessionWorkspaceWorktreeDiff {
   diffStat?: string;
   diff?: string;
+  mode?: string;
+  preview?: string;
+  bytes?: number;
+  previewBytes?: number;
+  truncated?: boolean;
+  fullDiffAvailable?: boolean;
   files?: unknown[];
   error?: string;
 }
@@ -180,6 +186,14 @@ export interface SessionWorkspaceApproval {
     summary: string;
     metrics: Array<{ label: string; value: string }>;
     issues: string[];
+    reviewConclusion?: {
+      approvalId?: string;
+      decision?: string;
+      decidedBy?: string;
+      decidedAt?: number;
+      gateStatus?: string;
+      summary?: string;
+    };
   };
 }
 
@@ -312,7 +326,7 @@ export interface SessionWorkspaceProps {
   onStopTask?(taskId: string): void | Promise<void>;
   onRefreshTrace?(): void | Promise<void>;
   onRefreshWorktree?(worktreeId: string): void | Promise<void>;
-  onLoadWorktreeDiff?(worktreeId: string): void | Promise<void>;
+  onLoadWorktreeDiff?(worktreeId: string, full?: boolean): void | Promise<void>;
   onMergeWorktree?(worktreeId: string): void | Promise<void>;
   onCleanupWorktree?(worktreeId: string, force?: boolean): void | Promise<void>;
   worktreeStatus?: SessionWorkspaceWorktreeStatus | null;

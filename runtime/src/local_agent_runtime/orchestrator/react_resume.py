@@ -77,6 +77,7 @@ class ReactResumeMixin:
                     summary=result["summary"],
                     context=state["context"],
                     tool_results=result.get("tool_results", []),
+                    force_complete_after_review=True,
                 )
             return runtime_task
         except Exception as exc:  # noqa: BLE001

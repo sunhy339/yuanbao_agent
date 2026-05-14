@@ -92,6 +92,10 @@ struct TaskListPayload {
 #[serde(rename_all = "camelCase")]
 struct WorktreeIdPayload {
     worktree_id: String,
+    full: Option<bool>,
+    include_full_diff: Option<bool>,
+    max_diff_bytes: Option<u64>,
+    diff_preview_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,6 +107,11 @@ struct WorktreeMergePayload {
     target_branch: Option<String>,
     verification_commands: Option<Vec<String>>,
     verification_timeout_ms: Option<u64>,
+    review_status: Option<String>,
+    reviewer_summary: Option<String>,
+    reviewer: Option<String>,
+    multi_agent_worktree_strategy: Option<Value>,
+    diff_preview_bytes: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -751,7 +760,13 @@ async fn worktree_diff(
     state.call_async(
         app_handle,
         "worktree.diff".to_string(),
-        json!({ "worktreeId": payload.worktree_id }),
+        json!({
+            "worktreeId": payload.worktree_id,
+            "full": payload.full,
+            "includeFullDiff": payload.include_full_diff,
+            "maxDiffBytes": payload.max_diff_bytes,
+            "diffPreviewBytes": payload.diff_preview_bytes,
+        }),
     ).await
 }
 
@@ -771,6 +786,11 @@ async fn worktree_merge(
             "targetBranch": payload.target_branch,
             "verificationCommands": payload.verification_commands,
             "verificationTimeoutMs": payload.verification_timeout_ms,
+            "reviewStatus": payload.review_status,
+            "reviewerSummary": payload.reviewer_summary,
+            "reviewer": payload.reviewer,
+            "multiAgentWorktreeStrategy": payload.multi_agent_worktree_strategy,
+            "diffPreviewBytes": payload.diff_preview_bytes,
         }),
     ).await
 }
@@ -789,6 +809,11 @@ async fn worktree_request_merge_approval(
             "targetBranch": payload.target_branch,
             "verificationCommands": payload.verification_commands,
             "verificationTimeoutMs": payload.verification_timeout_ms,
+            "reviewStatus": payload.review_status,
+            "reviewerSummary": payload.reviewer_summary,
+            "reviewer": payload.reviewer,
+            "multiAgentWorktreeStrategy": payload.multi_agent_worktree_strategy,
+            "diffPreviewBytes": payload.diff_preview_bytes,
         }),
     ).await
 }

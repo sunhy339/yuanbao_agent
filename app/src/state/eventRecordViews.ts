@@ -37,6 +37,14 @@ export interface ApprovalCompletionEvidenceView {
   summary: string;
   metrics: Array<{ label: string; value: string }>;
   issues: string[];
+  reviewConclusion?: {
+    approvalId?: string;
+    decision?: string;
+    decidedBy?: string;
+    decidedAt?: number;
+    gateStatus?: string;
+    summary?: string;
+  };
 }
 
 export interface PatchCardView {

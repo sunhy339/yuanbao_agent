@@ -569,6 +569,70 @@ class TestCompletionHardGate:
         assert result["status"] == "completed"
         assert result["structuredResult"]["completionEvidence"]["evidenceLevel"] == "verified"
 
+    def test_javascript_change_with_python_verification_waits_for_framework_review(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="modify the frontend",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "app/src/App.tsx", "action": "modified"}],
+            verification=[{"command": "pytest runtime/tests/test_feature.py", "status": "passed", "summary": "all passed"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Frontend implementation finished.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "waiting_approval"
+        assert result["structuredResult"]["completionGate"]["status"] == "needs_verification"
+        assert evidence["verificationRequirements"]["required"] == ["javascript"]
+        assert evidence["verificationRequirements"]["missing"] == ["javascript"]
+
+    def test_javascript_change_with_javascript_verification_completes(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="modify the frontend",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "app/src/App.tsx", "action": "modified"}],
+            verification=[{"command": "npm run test -- App.test.tsx", "status": "passed", "summary": "all passed"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Frontend implementation finished.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["verificationRequirements"]["required"] == ["javascript"]
+        assert evidence["verificationRequirements"]["missing"] == []
+        assert evidence["verificationRequirements"]["status"] == "satisfied"
+
     def test_doc_change_with_structural_verification_completes(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
@@ -625,6 +689,10 @@ class TestCompletionHardGate:
         completed = store.get_task({"taskId": task["id"]})["task"]
         assert completed["status"] == "completed"
         assert completed["structuredResult"]["completionEvidence"]["evidenceLevel"] == "summary_only"
+        review = completed["structuredResult"]["completionReview"]
+        assert review["approvalId"] == approval_id
+        assert review["decision"] == "approved"
+        assert completed["structuredResult"]["completionEvidence"]["reviewConclusion"]["decision"] == "approved"
 
     def test_completion_review_rejection_fails_task(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
@@ -651,3 +719,6 @@ class TestCompletionHardGate:
 
         assert result["task"]["status"] == "failed"
         assert result["task"]["errorCode"] == "COMPLETION_REVIEW_REJECTED"
+        failed = store.get_task({"taskId": task["id"]})["task"]
+        assert failed["structuredResult"]["completionReview"]["decision"] == "rejected"
+        assert failed["structuredResult"]["completionEvidence"]["reviewConclusion"]["decision"] == "rejected"

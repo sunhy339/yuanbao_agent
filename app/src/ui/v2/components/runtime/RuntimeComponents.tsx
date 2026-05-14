@@ -256,6 +256,14 @@ export interface ApprovalRecordView {
     summary: string;
     metrics: Array<{ label: string; value: string }>;
     issues: string[];
+    reviewConclusion?: {
+      approvalId?: string;
+      decision?: string;
+      decidedBy?: string;
+      decidedAt?: number;
+      gateStatus?: string;
+      summary?: string;
+    };
   };
 }
 
@@ -342,6 +350,15 @@ function CompletionEvidencePanel({
             <li key={issue}>{issue}</li>
           ))}
         </ul>
+      ) : null}
+      {evidence.reviewConclusion ? (
+        <p className="yb-approval-evidence-review">
+          {[
+            evidence.reviewConclusion.decision ? `review ${evidence.reviewConclusion.decision}` : null,
+            evidence.reviewConclusion.decidedBy ? `by ${evidence.reviewConclusion.decidedBy}` : null,
+            evidence.reviewConclusion.summary,
+          ].filter(Boolean).join(" | ")}
+        </p>
       ) : null}
     </section>
   );

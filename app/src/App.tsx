@@ -126,8 +126,8 @@ export function App() {
     if (result) setWorktreeStatus(normalizeWorktreeStatus(result.gitStatus));
   }
 
-  async function handleLoadWorktreeDiff(worktreeId: string) {
-    const result = await runWorktreeAction("diff", () => runtimeClient.worktreeDiff({ worktreeId }));
+  async function handleLoadWorktreeDiff(worktreeId: string, full = false) {
+    const result = await runWorktreeAction("diff", () => runtimeClient.worktreeDiff({ worktreeId, full }));
     if (result) setWorktreeDiff(result.diff ?? null);
   }
 

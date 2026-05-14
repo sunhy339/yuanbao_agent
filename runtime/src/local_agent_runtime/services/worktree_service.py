@@ -15,12 +15,14 @@ from ..git.worktree_adapter import GitWorktreeAdapter
 from ..policy.guard import PolicyGuard
 from ..policy.permission_engine import PermissionRequest
 from ..services.command_execution import run_shell_command
+from ..services.write_scope_enforcement import WriteScopeEnforcer
 from ..store.sqlite_store import SQLiteStore
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MERGE_VERIFICATION_TIMEOUT_MS = 120_000
 _VERIFICATION_OUTPUT_LIMIT = 4000
+_DEFAULT_APPROVAL_DIFF_LIMIT = 12_000
 
 
 class WorktreeService:
@@ -64,24 +66,32 @@ class WorktreeService:
         if status.get("dirtyFiles", 0):
             raise ValueError("Worktree has uncommitted changes; review and commit or clean before merge")
         diff = self._git.diff(wt["worktreePath"], wt.get("baseRef", "HEAD"))
+        full_diff = self._git.diff_full(wt["worktreePath"], wt.get("baseRef", "HEAD"))
+        diff_summary = self._diff_summary(diff=diff, full_diff=full_diff, params=params)
+        review = self._review_summary(params)
+        self._ensure_reviewer_gate(review)
+        multi_agent_strategy = self._multi_agent_worktree_strategy(wt=wt, params=params)
         verification = self._run_merge_verification(wt, params)
+        last_status_patch: dict[str, Any] = {
+            "dirtyFiles": status.get("dirtyFiles", 0),
+            "diffStat": diff.get("diffStat") or "",
+            "mergeDiff": diff_summary,
+            "review": review,
+            "multiAgentWorktreeStrategy": multi_agent_strategy,
+        }
         if verification:
-            self._store.update_worktree({
-                "worktreeId": wt["id"],
-                "lastStatus": {
-                    "mergeVerification": verification,
-                    "dirtyFiles": status.get("dirtyFiles", 0),
-                    "diffStat": diff.get("diffStat") or "",
-                },
-            })
+            last_status_patch["mergeVerification"] = verification
+        self._store.update_worktree({
+            "worktreeId": wt["id"],
+            "lastStatus": self._merge_last_status(wt, last_status_patch),
+        })
         failed_verification = next((item for item in verification if item.get("status") == "failed"), None)
         if failed_verification is not None:
             raise ValueError(
                 "Worktree merge verification failed: "
                 f"{failed_verification.get('command')}: {failed_verification.get('summary')}"
             )
-        if verification:
-            wt = self._store.get_worktree({"worktreeId": wt["id"]})["worktree"]
+        wt = self._store.get_worktree({"worktreeId": wt["id"]})["worktree"]
         request = {
             "worktreeId": wt["id"],
             "taskId": wt.get("taskId", ""),
@@ -90,8 +100,16 @@ class WorktreeService:
             "baseRef": wt.get("baseRef", "HEAD"),
             "worktreePath": wt.get("worktreePath", ""),
             "diffStat": diff.get("diffStat") or "",
+            "diffSummary": diff_summary,
+            "diffPreview": diff_summary.get("preview", ""),
+            "diffTruncated": diff_summary.get("truncated", False),
+            "diffBytes": diff_summary.get("bytes", 0),
             "dirtyFiles": status.get("dirtyFiles", 0),
             "files": status.get("files") or diff.get("files") or [],
+            "review": review,
+            "reviewStatus": review.get("status"),
+            "reviewerSummary": review.get("summary"),
+            "multiAgentWorktreeStrategy": multi_agent_strategy,
             "risk": "write merge worktree changes into target branch",
         }
         if verification:
@@ -109,7 +127,7 @@ class WorktreeService:
             fields=stable_fields,
         )
         if existing is not None and existing.get("decision") is None:
-            approval = existing
+            approval = self._store.update_approval_request(existing["id"], request)
         else:
             approval = self._store.create_approval(wt["taskId"], "worktree_merge", request)
 
@@ -198,6 +216,11 @@ class WorktreeService:
             approval = self._require_approved_merge_record(wt, params, target_branch)
             approved_request = self._approval_request(approval)
         verification = approved_request.get("verification") if isinstance(approved_request.get("verification"), list) else []
+        review = approved_request.get("review") if isinstance(approved_request.get("review"), dict) else self._review_summary(approved_request)
+        self._ensure_reviewer_gate(review)
+        diff_summary = approved_request.get("diffSummary") if isinstance(approved_request.get("diffSummary"), dict) else {}
+        approval_summary = self._approval_summary(approval=approval, request=approved_request)
+        multi_agent_strategy = approved_request.get("multiAgentWorktreeStrategy") if isinstance(approved_request.get("multiAgentWorktreeStrategy"), dict) else {}
         status = self._git.status(wt["worktreePath"])
         if status.get("dirtyFiles", 0):
             raise ValueError("Worktree has uncommitted changes; review and commit or clean before merge")
@@ -211,6 +234,9 @@ class WorktreeService:
             "targetBranch": target_branch,
             "diff": diff,
             "verification": verification,
+            "review": review,
+            "approvalSummary": approval_summary,
+            "multiAgentWorktreeStrategy": multi_agent_strategy,
         }
 
         # Fire before hooks
@@ -225,11 +251,15 @@ class WorktreeService:
             self._store.update_worktree({
                 "worktreeId": wt["id"],
                 "status": "failed",
-                "lastStatus": {
+                "lastStatus": self._merge_last_status(wt, {
                     "mergeResult": merge_result,
                     "mergeVerification": verification,
+                    "mergeApproval": approval_summary,
+                    "mergeDiff": diff_summary,
+                    "review": review,
+                    "multiAgentWorktreeStrategy": multi_agent_strategy,
                     "dirtyFiles": status.get("dirtyFiles", 0),
-                },
+                }),
             })
             hook_context["mergeResult"] = merge_result.get("result", "")
             self._fire_hooks("after_worktree_merge", hook_context)
@@ -240,17 +270,25 @@ class WorktreeService:
                 "targetBranch": target_branch,
                 "result": merge_result,
                 "verification": verification,
+                "approvalSummary": approval_summary,
+                "review": review,
+                "diffSummary": diff_summary,
+                "multiAgentWorktreeStrategy": multi_agent_strategy,
             }
 
         # Update store record
         self._store.update_worktree({
             "worktreeId": wt["id"],
             "status": "merged",
-            "lastStatus": {
+            "lastStatus": self._merge_last_status(wt, {
                 "mergeResult": merge_result,
                 "mergeVerification": verification,
+                "mergeApproval": approval_summary,
+                "mergeDiff": diff_summary,
+                "review": review,
+                "multiAgentWorktreeStrategy": multi_agent_strategy,
                 "dirtyFiles": status.get("dirtyFiles", 0),
-            },
+            }),
         })
 
         # Fire after hooks
@@ -264,6 +302,10 @@ class WorktreeService:
             "targetBranch": target_branch,
             "result": merge_result,
             "verification": verification,
+            "approvalSummary": approval_summary,
+            "review": review,
+            "diffSummary": diff_summary,
+            "multiAgentWorktreeStrategy": multi_agent_strategy,
         }
 
     def _require_approved_merge_record(
@@ -299,6 +341,100 @@ class WorktreeService:
         except json.JSONDecodeError as exc:
             raise ValueError("Worktree merge approval request is invalid") from exc
         return request if isinstance(request, dict) else {}
+
+    def _merge_last_status(self, wt: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+        current = wt.get("lastStatus") if isinstance(wt.get("lastStatus"), dict) else {}
+        return {**current, **patch}
+
+    def _approval_diff_limit(self, params: dict[str, Any]) -> int:
+        raw = params.get("diffPreviewBytes") or params.get("maxDiffBytes")
+        if raw is None:
+            raw = self._worktree_config().get("mergeApprovalDiffPreviewBytes")
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            value = _DEFAULT_APPROVAL_DIFF_LIMIT
+        return max(1000, min(value, 100_000))
+
+    def _diff_summary(
+        self,
+        *,
+        diff: dict[str, Any],
+        full_diff: dict[str, Any],
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        text = str(full_diff.get("diff") or "")
+        limit = self._approval_diff_limit(params)
+        encoded = text.encode("utf-8", errors="replace")
+        truncated = len(encoded) > limit
+        preview_bytes = encoded[:limit]
+        preview = preview_bytes.decode("utf-8", errors="replace")
+        return {
+            "mode": "preview",
+            "diffStat": diff.get("diffStat") or "",
+            "preview": preview,
+            "bytes": len(encoded),
+            "previewBytes": len(preview_bytes),
+            "truncated": truncated,
+            "fullDiffAvailable": True,
+            "returnCode": full_diff.get("returnCode"),
+        }
+
+    def _review_summary(self, params: dict[str, Any]) -> dict[str, Any]:
+        status = str(params.get("reviewStatus") or "pending").strip() or "pending"
+        return {
+            "status": status,
+            "summary": str(params.get("reviewerSummary") or params.get("reviewSummary") or "").strip(),
+            "reviewer": str(params.get("reviewer") or params.get("reviewerId") or "").strip(),
+        }
+
+    def _ensure_reviewer_gate(self, review: dict[str, Any]) -> None:
+        reasons = WriteScopeEnforcer(self._store).check_reviewer_gate({
+            "mergeRequested": True,
+            "reviewStatus": review.get("status"),
+        })
+        if reasons:
+            raise ValueError("; ".join(reasons))
+
+    def _multi_agent_worktree_strategy(self, *, wt: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
+        raw = params.get("multiAgentWorktreeStrategy")
+        if isinstance(raw, dict):
+            return raw
+        strategy = str(raw or self._worktree_config().get("multiAgentWorktreeStrategy") or "").strip()
+        try:
+            task = self._store.get_task({"taskId": wt.get("taskId", "")}).get("task", {})
+        except Exception:  # noqa: BLE001
+            task = {}
+        routing = task.get("routing") if isinstance(task.get("routing"), dict) else {}
+        is_child = bool(routing.get("rootTaskId") or routing.get("parentTaskId") or routing.get("childCollaborationTaskId"))
+        if not strategy:
+            strategy = "isolated_child_worktrees" if is_child else "root_worktree"
+        return {
+            "strategy": strategy,
+            "taskRole": task.get("role") or routing.get("role") or ("child" if is_child else "root"),
+            "rootTaskId": routing.get("rootTaskId") or task.get("rootTaskId"),
+            "reason": (
+                "Child write scopes merge independently before root integration."
+                if strategy == "isolated_child_worktrees"
+                else "Root task owns the active worktree for this merge."
+            ),
+        }
+
+    def _approval_summary(self, *, approval: dict[str, Any] | None, request: dict[str, Any]) -> dict[str, Any]:
+        if approval is None:
+            return {}
+        verification = request.get("verification") if isinstance(request.get("verification"), list) else []
+        return {
+            "approvalId": approval.get("id"),
+            "decision": approval.get("decision"),
+            "decidedBy": approval.get("decidedBy") or "user",
+            "decidedAt": approval.get("decidedAt"),
+            "targetBranch": request.get("targetBranch") or "main",
+            "verificationStatus": request.get("verificationStatus") or ("passed" if verification else "not_run"),
+            "verificationCount": len(verification),
+            "reviewStatus": request.get("reviewStatus"),
+            "reviewerSummary": request.get("reviewerSummary"),
+        }
 
     def _worktree_config(self) -> dict[str, Any]:
         try:
@@ -491,7 +627,18 @@ class WorktreeService:
         """Get diff between worktree and its base ref."""
         record = self._store.get_worktree(params)
         wt = record["worktree"]
-        git_diff = self._git.diff(wt["worktreePath"], wt["baseRef"])
+        if params.get("full") or params.get("includeFullDiff"):
+            summary = self._git.diff(wt["worktreePath"], wt["baseRef"])
+            full = self._git.diff_full(wt["worktreePath"], wt["baseRef"])
+            git_diff = {
+                **summary,
+                **self._diff_summary(diff=summary, full_diff=full, params=params),
+                "diff": full.get("diff") or "",
+                "mode": "full",
+                "truncated": False,
+            }
+        else:
+            git_diff = self._git.diff(wt["worktreePath"], wt["baseRef"])
         return {"worktree": wt, "diff": git_diff}
 
     def cleanup(self, params: dict[str, Any]) -> dict[str, Any]:

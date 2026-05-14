@@ -107,6 +107,9 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
       const completionEvidence = isCompletionReview ? buildCompletionEvidenceView(request) : undefined;
       const worktreeBranch = readRequestText(request, "branchName", "worktree");
       const worktreeTarget = readRequestText(request, "targetBranch", "main");
+      const worktreeDiffSummary = isWorktreeMerge ? buildWorktreeDiffSummary(request) : "";
+      const worktreeReviewSummary = isWorktreeMerge ? buildWorktreeReviewSummary(request) : "";
+      const worktreeStrategySummary = isWorktreeMerge ? buildWorktreeStrategySummary(request) : "";
       const patchSummary = isWorktreeMerge
         ? `Worktree merge ${worktreeBranch} -> ${worktreeTarget}`
         : isCompletionReview
@@ -151,7 +154,7 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
                 changedFiles.length > 0 ? ` | ${changedFiles.slice(0, 3).join(", ")}` : ""
               }`
             : isWorktreeMerge
-              ? `${command} | ${readRequestText(request, "diffStat", "diff reviewed")}`
+              ? compactSummary([command, worktreeDiffSummary, worktreeReviewSummary, worktreeStrategySummary])
               : isCompletionReview
                 ? completionEvidence?.summary ?? `${readRequestText(request, "reason", "completion evidence requires review")} | ${readRequestText(request, "summary", "").slice(0, 120)}`
               : `${command} | cwd ${cwd}`,
@@ -169,6 +172,10 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
       if (current) {
         cards.set(payload.approvalId, {
           ...current,
+          completionEvidence: mergeCompletionReviewConclusion(
+            current.completionEvidence,
+            payload.completionReviewConclusion,
+          ),
           status: payload.decision,
           resolvedAt: event.ts,
           updatedAt: event.ts,
@@ -189,6 +196,7 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
         risk: "not recorded",
         requestJson: "{}",
         requestSummary: "Resolved approval was received before the request event.",
+        completionEvidence: mergeCompletionReviewConclusion(undefined, payload.completionReviewConclusion),
         status: payload.decision,
         requestedAt: event.ts,
         updatedAt: event.ts,
@@ -199,6 +207,39 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
   }
 
   return sortByUpdatedAtDesc(Array.from(cards.values()));
+}
+
+function compactSummary(parts: string[]): string {
+  return parts.map((part) => part.trim()).filter(Boolean).join(" | ");
+}
+
+function buildWorktreeDiffSummary(request: Record<string, unknown>): string {
+  const summary = request["diffSummary"];
+  const diffSummary = summary && typeof summary === "object" ? summary as Record<string, unknown> : {};
+  const stat = readRequestText(diffSummary, "diffStat", readRequestText(request, "diffStat", "diff reviewed"));
+  const bytes = readRequestOptionalNumber(diffSummary, ["bytes"]);
+  const truncated = diffSummary["truncated"] === true || request["diffTruncated"] === true;
+  const suffix = bytes !== undefined ? `${bytes} bytes${truncated ? ", preview truncated" : ""}` : truncated ? "preview truncated" : "";
+  return compactSummary([stat, suffix]);
+}
+
+function buildWorktreeReviewSummary(request: Record<string, unknown>): string {
+  const review = request["review"];
+  const record = review && typeof review === "object" ? review as Record<string, unknown> : {};
+  const status = readRequestText(record, "status", readRequestText(request, "reviewStatus", ""));
+  const reviewer = readRequestText(record, "reviewer", "");
+  const summary = readRequestText(record, "summary", readRequestText(request, "reviewerSummary", ""));
+  if (!status && !reviewer && !summary) return "";
+  return compactSummary([`review ${status || "pending"}`, reviewer, summary]);
+}
+
+function buildWorktreeStrategySummary(request: Record<string, unknown>): string {
+  const strategy = request["multiAgentWorktreeStrategy"];
+  const record = strategy && typeof strategy === "object" ? strategy as Record<string, unknown> : {};
+  const name = readRequestText(record, "strategy", "");
+  const role = readRequestText(record, "taskRole", "");
+  if (!name && !role) return "";
+  return compactSummary([`worktree ${name || "strategy"}`, role]);
 }
 
 function buildCompletionEvidenceView(request: Record<string, unknown>): ApprovalCompletionEvidenceView | undefined {
@@ -226,6 +267,7 @@ function buildCompletionEvidenceView(request: Record<string, unknown>): Approval
     ...summarizeAcceptanceIssues(evidence["acceptance"]),
     ...summarizeToolFailures(evidence["unresolvedToolFailures"]),
     ...summarizeVerificationGap(gateStatus, evidence),
+    ...summarizeVerificationRequirements(evidence["verificationRequirements"]),
   ].slice(0, 5);
 
   return {
@@ -235,7 +277,49 @@ function buildCompletionEvidenceView(request: Record<string, unknown>): Approval
     summary: compactCompletionSummary(reason, gateStatus, evidenceLevel),
     metrics,
     issues,
+    reviewConclusion: readCompletionReviewConclusion(
+      evidence["reviewConclusion"] ?? request["completionReviewConclusion"],
+    ),
   };
+}
+
+function mergeCompletionReviewConclusion(
+  evidence: ApprovalCompletionEvidenceView | undefined,
+  rawConclusion: unknown,
+): ApprovalCompletionEvidenceView | undefined {
+  const reviewConclusion = readCompletionReviewConclusion(rawConclusion);
+  if (!reviewConclusion) return evidence;
+  if (!evidence) {
+    return {
+      summary: reviewConclusion.summary ?? "Completion review resolved.",
+      metrics: [],
+      issues: [],
+      reviewConclusion,
+    };
+  }
+  return {
+    ...evidence,
+    reviewConclusion,
+  };
+}
+
+function readCompletionReviewConclusion(raw: unknown): ApprovalCompletionEvidenceView["reviewConclusion"] | undefined {
+  const record = readRecord(raw);
+  if (!record) return undefined;
+  const conclusion: NonNullable<ApprovalCompletionEvidenceView["reviewConclusion"]> = {};
+  const approvalId = readString(record["approvalId"]);
+  const decision = readString(record["decision"]);
+  const decidedBy = readString(record["decidedBy"]);
+  const gateStatus = readString(record["gateStatus"]);
+  const summary = readString(record["summary"]);
+  const decidedAt = typeof record["decidedAt"] === "number" ? record["decidedAt"] : undefined;
+  if (approvalId) conclusion.approvalId = approvalId;
+  if (decision) conclusion.decision = decision;
+  if (decidedBy) conclusion.decidedBy = decidedBy;
+  if (decidedAt !== undefined) conclusion.decidedAt = decidedAt;
+  if (gateStatus) conclusion.gateStatus = gateStatus;
+  if (summary) conclusion.summary = summary;
+  return Object.keys(conclusion).length ? conclusion : undefined;
 }
 
 function inferCompletionGateStatus(
@@ -306,6 +390,16 @@ function summarizeVerificationGap(gateStatus: string | undefined, evidence: Reco
     return ["Code/test changes need targeted test, build, or typecheck verification."];
   }
   return ["Write evidence needs passing verification before completion."];
+}
+
+function summarizeVerificationRequirements(value: unknown): string[] {
+  const record = readRecord(value);
+  if (!record) return [];
+  const missing = Array.isArray(record["missing"])
+    ? record["missing"].map((item) => String(item).trim()).filter(Boolean)
+    : [];
+  if (!missing.length) return [];
+  return [`Missing framework verification: ${missing.join(", ")}`];
 }
 
 function compactCompletionSummary(reason: string | undefined, gateStatus: string | undefined, evidenceLevel: string | undefined): string {

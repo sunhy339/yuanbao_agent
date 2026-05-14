@@ -138,6 +138,12 @@ export interface WorktreeGitDiffRecord {
   diffStat?: string;
   diff?: string;
   files?: GitDiffFile[];
+  mode?: "preview" | "full" | string;
+  preview?: string;
+  bytes?: number;
+  previewBytes?: number;
+  truncated?: boolean;
+  fullDiffAvailable?: boolean;
   error?: string;
 }
 

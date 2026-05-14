@@ -171,6 +171,9 @@ export interface ApprovalResolvedPayload {
   approvalId: Identifier;
   taskId: Identifier;
   decision: "approved" | "rejected";
+  decidedBy?: string;
+  decidedAt?: number;
+  completionReviewConclusion?: Record<string, unknown>;
 }
 
 // --- Message lifecycle events (P1.3 / P1.4) ---

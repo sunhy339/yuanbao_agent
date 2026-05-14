@@ -94,8 +94,13 @@ class ApprovalFlowMixin:
             },
         )
         pending_state = self._load_pending_react_state(approval["taskId"])
+        logger.info("DEBUG _submit_approval: approval_taskId=%s pending_state=%s memory_keys=%s",
+                     approval["taskId"],
+                     type(pending_state).__name__ if pending_state else "None",
+                     list(self._pending_react_tasks.keys()))
         if pending_state is not None:
             child_task = self._blocked_child_collaboration_for_runtime_task(approval=approval, runtime_task=task)
+            logger.info("DEBUG _submit_approval: child_task=%s", child_task is not None)
             if child_task is not None and self._should_resume_child_approval_in_process(params, child_task):
                 try:
                     runtime_task = self._worker_runner.resume_child_approval(
@@ -154,6 +159,8 @@ class ApprovalFlowMixin:
                 "approvalId": approval["id"],
                 "taskId": task["id"],
                 "decision": approval["decision"],
+                "decidedBy": approval.get("decidedBy"),
+                "decidedAt": approval.get("decidedAt"),
             },
         )
         if approval.get("decision") != "approved":
@@ -213,6 +220,10 @@ class ApprovalFlowMixin:
             "targetBranch": merge_result.get("targetBranch") or target_branch,
             "branchName": merge_result.get("branchName"),
             "verification": merge_result.get("verification") or request_verification,
+            "approvalSummary": merge_result.get("approvalSummary"),
+            "review": merge_result.get("review") or request.get("review"),
+            "diffSummary": merge_result.get("diffSummary") or request.get("diffSummary"),
+            "multiAgentWorktreeStrategy": merge_result.get("multiAgentWorktreeStrategy") or request.get("multiAgentWorktreeStrategy"),
         }
         if worktree is not None:
             payload.update({
@@ -237,6 +248,11 @@ class ApprovalFlowMixin:
         approval: dict[str, Any],
         task: dict[str, Any],
     ) -> dict[str, Any]:
+        try:
+            request = json.loads(approval.get("requestJson") or "{}")
+        except json.JSONDecodeError:
+            request = {}
+        conclusion = self._completion_review_conclusion_payload(approval=approval, request=request)
         self._publish(
             session_id=task["sessionId"],
             task=task,
@@ -245,12 +261,11 @@ class ApprovalFlowMixin:
                 "approvalId": approval["id"],
                 "taskId": task["id"],
                 "decision": approval["decision"],
+                "decidedBy": approval.get("decidedBy"),
+                "decidedAt": approval.get("decidedAt"),
+                "completionReviewConclusion": conclusion,
             },
         )
-        try:
-            request = json.loads(approval.get("requestJson") or "{}")
-        except json.JSONDecodeError:
-            request = {}
         summary = str(request.get("summary") or task.get("resultSummary") or task.get("summary") or "")
         if approval.get("decision") != "approved":
             failed_task = self._fail_task(
@@ -258,6 +273,11 @@ class ApprovalFlowMixin:
                 task=task,
                 summary="Completion review was rejected by the user.",
                 error_code="COMPLETION_REVIEW_REJECTED",
+                structured_result=self._completion_review_structured_result(
+                    request=request,
+                    conclusion=conclusion,
+                    status="rejected",
+                ),
             )
             return {"approval": approval, "task": failed_task}
 
@@ -276,12 +296,64 @@ class ApprovalFlowMixin:
             session_id=task["sessionId"],
             task=task,
             summary=summary or "Completion review approved.",
-            context={"_allow_summary_only_completion": True},
+            context={
+                "_allow_summary_only_completion": True,
+                "completionReviewConclusion": conclusion,
+            },
             tool_results=[],
             skip_reflection=True,
             force_complete_after_review=True,
         )
         return {"approval": approval, "task": completed_task}
+
+    def _completion_review_conclusion_payload(
+        self,
+        *,
+        approval: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        structured = request.get("structuredResult") if isinstance(request.get("structuredResult"), dict) else {}
+        gate = structured.get("completionGate") if isinstance(structured.get("completionGate"), dict) else {}
+        completion_evidence = request.get("completionEvidence") if isinstance(request.get("completionEvidence"), dict) else {}
+        return {
+            "approvalId": approval.get("id"),
+            "decision": approval.get("decision"),
+            "decidedBy": approval.get("decidedBy") or "user",
+            "decidedAt": approval.get("decidedAt"),
+            "gateStatus": gate.get("status") or request.get("gateStatus"),
+            "evidenceLevel": completion_evidence.get("evidenceLevel"),
+            "summary": (
+                "Completion review approved by user."
+                if approval.get("decision") == "approved"
+                else "Completion review rejected by user."
+            ),
+        }
+
+    def _completion_review_structured_result(
+        self,
+        *,
+        request: dict[str, Any],
+        conclusion: dict[str, Any],
+        status: str,
+    ) -> dict[str, Any] | None:
+        structured = request.get("structuredResult") if isinstance(request.get("structuredResult"), dict) else None
+        if structured is None:
+            return None
+        gate = structured.get("completionGate") if isinstance(structured.get("completionGate"), dict) else {}
+        evidence = structured.get("completionEvidence") if isinstance(structured.get("completionEvidence"), dict) else {}
+        return {
+            **structured,
+            "status": status,
+            "completionReview": conclusion,
+            "completionGate": {
+                **gate,
+                "reviewConclusion": conclusion,
+            },
+            "completionEvidence": {
+                **evidence,
+                "reviewConclusion": conclusion,
+            },
+        }
 
     def _should_resume_child_approval_in_process(self, params: dict[str, Any], child_task: dict[str, Any]) -> bool:
         if params.get("_childWorkerApprovalResume") is True:
@@ -604,8 +676,10 @@ class ApprovalFlowMixin:
             )
 
     def _resume_react_after_approval(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
+        logger.info("DEBUG _resume_react_after_approval ENTRY: task_id=%s approval_kind=%s", task["id"], approval.get("kind"))
         state = self._load_pending_react_state(task["id"])
         if state is None:
+            logger.info("DEBUG _resume_react_after_approval: no pending state for task=%s", task["id"])
             return task
 
         runtime_task = {**task, "plan": task.get("plan") or []}
@@ -621,7 +695,10 @@ class ApprovalFlowMixin:
                 tool_spec=pending_spec,
                 budget=None,
             )
+            logger.info("DEBUG _resume_react: tool executed, runtime_task status=%s tool_result_status=%s",
+                        runtime_task.get("status"), tool_result.get("result", {}).get("status"))
             if runtime_task["status"] == "waiting_approval":
+                logger.info("DEBUG _resume_react: EARLY RETURN - runtime_task still waiting_approval")
                 state["pending_tool_spec"] = pending_spec
                 self._save_pending_react_state(task["id"], state)
                 return runtime_task
@@ -658,6 +735,7 @@ class ApprovalFlowMixin:
                 state=state,
                 budget=None,
             )
+            logger.info("DEBUG _resume_react_after_approval: react loop result status=%s", result.get("status"))
             if result["status"] == "completed":
                 return self._complete_task(
                     session_id=task["sessionId"],
@@ -665,6 +743,7 @@ class ApprovalFlowMixin:
                     summary=result["summary"],
                     context=state["context"],
                     tool_results=result.get("tool_results", []),
+                    force_complete_after_review=True,
                 )
             return runtime_task
         except Exception as exc:  # noqa: BLE001

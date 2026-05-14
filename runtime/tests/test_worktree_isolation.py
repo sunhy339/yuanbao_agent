@@ -312,6 +312,11 @@ class FakeGitWorktreeAdapter(GitWorktreeAdapter):
     def __init__(self) -> None:
         self.status_result: dict[str, Any] = {"dirtyFiles": 0, "files": []}
         self.diff_result: dict[str, Any] = {"diffStat": "file.py | 1 +"}
+        self.diff_full_result: dict[str, Any] = {
+            "diff": "diff --git a/file.py b/file.py\n+print('ok')\n",
+            "returnCode": 0,
+            "stderr": "",
+        }
         self.merge_result: dict[str, Any] = {"result": "ok", "returnCode": 0}
         self.merged: list[tuple[str, str]] = []
 
@@ -320,6 +325,9 @@ class FakeGitWorktreeAdapter(GitWorktreeAdapter):
 
     def diff(self, target_path: str, base_ref: str = "HEAD") -> dict[str, Any]:
         return self.diff_result
+
+    def diff_full(self, target_path: str, base_ref: str = "HEAD") -> dict[str, Any]:
+        return self.diff_full_result
 
     def merge(self, branch_name: str, target_branch: str = "main") -> dict[str, Any]:
         self.merged.append((branch_name, target_branch))
@@ -365,10 +373,66 @@ class TestWorktreeServiceMergeGate:
 
         approval = result["approval"]
         request = approval["requestJson"]
+        request_json = json.loads(request)
         assert approval["kind"] == "worktree_merge"
         assert approval["decision"] is None
         assert wt["id"] in request
         assert result["diff"]["diffStat"] == "file.py | 1 +"
+        assert request_json["diffSummary"]["diffStat"] == "file.py | 1 +"
+        assert request_json["diffSummary"]["preview"].startswith("diff --git")
+        assert request_json["review"]["status"] == "pending"
+        assert request_json["multiAgentWorktreeStrategy"]["strategy"] == "root_worktree"
+        stored = store.get_worktree({"worktreeId": wt["id"]})["worktree"]
+        assert stored["lastStatus"]["mergeDiff"]["bytes"] == request_json["diffBytes"]
+
+    def test_request_merge_approval_truncates_large_diff_preview(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        wt = _create_worktree(store, ws_id, task_id=task["id"], session_id=task["sessionId"])
+        git = FakeGitWorktreeAdapter()
+        git.diff_full_result = {"diff": "x" * 2000, "returnCode": 0, "stderr": ""}
+        service = WorktreeService(store, git)
+
+        result = service.request_merge_approval({"worktreeId": wt["id"], "diffPreviewBytes": 1000})
+
+        request = json.loads(result["approval"]["requestJson"])
+        assert request["diffSummary"]["bytes"] == 2000
+        assert request["diffSummary"]["previewBytes"] == 1000
+        assert request["diffSummary"]["truncated"] is True
+        assert len(request["diffPreview"]) == 1000
+
+    def test_get_diff_can_return_full_diff(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        wt = _create_worktree(store, ws_id)
+        git = FakeGitWorktreeAdapter()
+        git.diff_full_result = {"diff": "full diff body", "returnCode": 0, "stderr": ""}
+        service = WorktreeService(store, git)
+
+        result = service.get_diff({"worktreeId": wt["id"], "full": True})
+
+        assert result["diff"]["mode"] == "full"
+        assert result["diff"]["diff"] == "full diff body"
+        assert result["diff"]["truncated"] is False
+        assert result["diff"]["bytes"] == len("full diff body")
+
+    def test_request_merge_approval_blocks_negative_review(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        wt = _create_worktree(store, ws_id, task_id=task["id"], session_id=task["sessionId"])
+        git = FakeGitWorktreeAdapter()
+        service = WorktreeService(store, git)
+
+        with pytest.raises(ValueError, match="Cannot merge when reviewStatus"):
+            service.request_merge_approval({
+                "worktreeId": wt["id"],
+                "reviewStatus": "changes_requested",
+                "reviewerSummary": "Needs another pass.",
+            })
+
+        assert store.find_latest_approval(task_id=task["id"]) is None
 
     def test_request_merge_approval_runs_verification_commands(self, tmp_path: Any) -> None:
         store = _make_store(tmp_path)
@@ -426,10 +490,13 @@ class TestWorktreeServiceMergeGate:
         }
 
         first = service.request_merge_approval(params)
+        git.diff_full_result = {"diff": "updated approval diff", "returnCode": 0, "stderr": ""}
         second = service.request_merge_approval(params)
 
         assert second["approval"]["id"] == first["approval"]["id"]
         assert len(store.list_command_logs({"taskId": task["id"]})["commandLogs"]) == 2
+        request = json.loads(second["approval"]["requestJson"])
+        assert request["diffPreview"] == "updated approval diff"
 
     def test_request_merge_approval_applies_command_policy(self, tmp_path: Any) -> None:
         store = _make_store(tmp_path)
@@ -546,6 +613,10 @@ class TestWorktreeServiceMergeGate:
         merge_payload = orchestrator.published[-1]["payload"]
         assert merge_payload["worktreeId"] == wt["id"]
         assert merge_payload["routing"]["activeWorktree"]["id"] == wt["id"]
+        assert merge_payload["approvalSummary"]["approvalId"] == approval["id"]
+        assert merge_payload["review"]["status"] == "pending"
+        assert merge_payload["diffSummary"]["diffStat"] == "file.py | 1 +"
+        assert merge_payload["multiAgentWorktreeStrategy"]["strategy"] == "root_worktree"
 
     def test_submit_worktree_merge_approval_publishes_verification(self, tmp_path: Any) -> None:
         store = _make_store(tmp_path)

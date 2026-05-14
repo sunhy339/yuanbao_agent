@@ -29,6 +29,12 @@ describe("computeApprovalCards completion evidence", () => {
             changedFiles: 2,
             passedVerification: 2,
           },
+          verificationRequirements: {
+            required: ["javascript"],
+            matched: ["python"],
+            missing: ["javascript"],
+            status: "missing",
+          },
           changedFiles: [{ path: "src/feature.ts" }],
           verification: [
             { name: "git_status", status: "passed" },
@@ -41,6 +47,7 @@ describe("computeApprovalCards completion evidence", () => {
     expect(card.completionEvidence?.gateStatus).toBe("needs_verification");
     expect(card.completionEvidence?.metrics).toContainEqual({ label: "files", value: "2" });
     expect(card.completionEvidence?.issues).toContain("Code/test changes need targeted test, build, or typecheck verification.");
+    expect(card.completionEvidence?.issues).toContain("Missing framework verification: javascript");
   });
 
   it("summarizes acceptance and tool failure evidence", () => {
@@ -69,5 +76,39 @@ describe("computeApprovalCards completion evidence", () => {
     expect(card.completionEvidence?.metrics).toContainEqual({ label: "tool failures", value: "1" });
     expect(card.completionEvidence?.issues).toContain("failed: Docs updated");
     expect(card.completionEvidence?.issues).toContain("run_command: pytest failed");
+  });
+
+  it("attaches completion review conclusions from resolved approvals", () => {
+    const [card] = computeApprovalCards([
+      approvalRequested({
+        reason: "Completion requires review.",
+        completionEvidence: {
+          evidenceLevel: "summary_only",
+          counts: {},
+        },
+      }),
+      {
+        eventId: "evt_resolved",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "approval.resolved",
+        ts: 1778734169000,
+        payload: {
+          approvalId: "approval_1",
+          taskId: "task_1",
+          decision: "approved",
+          completionReviewConclusion: {
+            approvalId: "approval_1",
+            decision: "approved",
+            decidedBy: "user",
+            summary: "Completion review approved by user.",
+          },
+        },
+      },
+    ]);
+
+    expect(card.status).toBe("approved");
+    expect(card.completionEvidence?.reviewConclusion?.decision).toBe("approved");
+    expect(card.completionEvidence?.reviewConclusion?.decidedBy).toBe("user");
   });
 });

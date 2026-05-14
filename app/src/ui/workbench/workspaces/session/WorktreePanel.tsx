@@ -24,7 +24,7 @@ export function WorktreePanel({
   busyAction?: "status" | "diff" | "requestMergeApproval" | "merge" | "cleanup" | null;
   error?: string | null;
   onRefresh?(worktreeId: string): void | Promise<void>;
-  onLoadDiff?(worktreeId: string): void | Promise<void>;
+  onLoadDiff?(worktreeId: string, full?: boolean): void | Promise<void>;
   onMerge?(worktreeId: string): void | Promise<void>;
   onCleanup?(worktreeId: string, force?: boolean): void | Promise<void>;
 }) {
@@ -48,6 +48,8 @@ export function WorktreePanel({
   const hasReviewedDiff = Boolean(diff && !diff.error && (diff.diffStat || diff.diff || diff.files?.length));
   const canMerge = Boolean(onMerge) && hasReviewedDiff && dirtyFiles === 0 && !status?.error;
   const canCleanup = Boolean(onCleanup) && dirtyFiles === 0 && !status?.error;
+  const diffSize = typeof diff?.bytes === "number" ? `${diff.bytes} bytes` : null;
+  const diffMode = diff?.truncated ? "Preview truncated" : diff?.mode === "full" ? "Full diff loaded" : null;
   const mergeVerification = worktree.lastStatus?.mergeVerification ?? [];
   const failedVerification = mergeVerification.find((item) => item.status === "failed");
   const verificationSummary = !mergeVerification.length
@@ -100,6 +102,7 @@ export function WorktreePanel({
         <article>
           <span>Diff</span>
           <strong>{diffSummary}</strong>
+          {diffSize || diffMode ? <small>{compactMeta([diffMode, diffSize]).join(" - ")}</small> : null}
         </article>
         <article>
           <span>Verification</span>
@@ -141,6 +144,19 @@ export function WorktreePanel({
         >
           Diff
         </Button>
+        {diff?.truncated ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={busyAction === "diff"}
+            disabled={!onLoadDiff}
+            onClick={() => {
+              void onLoadDiff?.(worktree.id, true);
+            }}
+          >
+            Full diff
+          </Button>
+        ) : null}
         <Button
           size="sm"
           variant="secondary"

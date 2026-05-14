@@ -123,7 +123,7 @@ export interface WorkspaceRouterProps {
   handleTaskControl: (action: any) => Promise<void>;
   handleRefreshTrace: () => Promise<void>;
   handleRefreshWorktree: (worktreeId: string) => Promise<void>;
-  handleLoadWorktreeDiff: (worktreeId: string) => Promise<void>;
+  handleLoadWorktreeDiff: (worktreeId: string, full?: boolean) => Promise<void>;
   handleMergeWorktree: (worktreeId: string) => Promise<void>;
   handleCleanupWorktree: (worktreeId: string, force?: boolean) => Promise<void>;
   worktreeStatus: SessionWorkspaceWorktreeStatus | null;

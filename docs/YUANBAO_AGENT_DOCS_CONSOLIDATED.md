@@ -1203,3 +1203,25 @@ flowchart TD
 下一阶段最值得先做的是 **Completion / Stop 判断强化**。原因是 ToolPolicyResolver 已经能避免 synthesis 轮继续乱拿工具，provider 链路也更稳；接下来要保证任务什么时候“真的完成”有硬依据，否则 agent 仍可能出现自然语言说完成但工作区状态未满足验收项的问题。
 
 2026-05-14 更新：Completion Evidence 第一阶段已完成；后续重点应转向 **Worktree 自动绑定写入型任务**，并在之后把 `completionEvidence.evidenceLevel` 接入更严格的完成 gate。
+### 2026-05-14 Worktree 自动绑定首段闭环
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| 写入型任务自动绑定 worktree | Done | `Orchestrator` 已接收 `WorktreeService`，`CODE_EDIT` / `DEBUG` / `TEST_WRITE` / `DOC_WRITE` / multi-agent 类写入场景会按默认配置自动创建 task worktree，并发布 `task.worktree.bound` / `task.worktree.bind_failed`。 |
+| 工具默认进入 worktree | Done | `ToolExecutionMixin` 对 `list_dir`、`search_files`、`read_file`、`write_file`、`apply_patch`、`run_command`、`git_status`、`git_diff`、`code_search` 做 task worktree 兜底绑定；`run_command` 默认 `cwd=.`，实际根目录为 task worktree。 |
+| runtime 默认配置 | Done | `DEFAULT_CONFIG.worktree` 新增 `autoBindWriteTasks`、`baseRef`、`branchPrefix`、`pathRoot`、`cleanupPolicy`、`mergePolicy`，默认开启写入型任务隔离。 |
+| WorktreeService 状态 | Done | `create_for_task` 创建父目录，git worktree 创建成功后将 store 记录从 `creating` 推进到 `active`。 |
+| 路由关键词修正 | Done | 英文 `edit/change/modify/update/implement/add/fix/write` 已纳入 `CODE_EDIT`，避免常见英文写入请求掉到 `free_form` 而绕过 worktree 绑定。 |
+
+验证：
+
+| 命令 | 结果 |
+| --- | --- |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp runtime/tests/test_worktree_auto_binding.py runtime/tests/test_worktree_isolation.py runtime/tests/test_orchestrator_react_loop.py::test_react_loop_executes_tool_call_and_returns_result_to_provider runtime/tests/test_meta_router.py runtime/tests/test_decision_advisor_routing.py` | 69 passed |
+
+剩余 worktree 后续：
+
+1. 队列任务、恢复任务、跨进程后台任务需要把 `activeWorktree` 持久化进 task routing/snapshot，避免只依赖当前内存参数。
+2. UI 需要展示 task worktree path、branch、status、diff，并提供 merge/cleanup 入口。
+3. merge 前需要接入 diff、验证命令、reviewer、approval gate，dirty worktree 的 cancel/cleanup 不应自动删除。
+4. 子任务/多 agent 是否共享 root worktree、还是各自 worktree，需要结合任务依赖和 merge 策略做第二阶段设计。

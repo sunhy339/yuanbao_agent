@@ -726,6 +726,10 @@ class MessageExecutionMixin:
                 task = worker._store.update_task(task_id=task["id"], plan=plan)
                 task = {**task, "plan": plan}
                 context = worker._context_with_task_focus(context, task)
+                context = worker._context_with_worktree_binding(
+                    context,
+                    (routing or {}).get("activeWorktree") if isinstance(routing, dict) else None,
+                )
                 worker._publish(
                     session_id=session_id,
                     task=task,
@@ -745,6 +749,10 @@ class MessageExecutionMixin:
                 )
             else:
                 context = worker._context_with_task_focus(context, task)
+                context = worker._context_with_worktree_binding(
+                    context,
+                    (routing or {}).get("activeWorktree") if isinstance(routing, dict) else None,
+                )
                 worker._publish(
                     session_id=session_id,
                     task=task,

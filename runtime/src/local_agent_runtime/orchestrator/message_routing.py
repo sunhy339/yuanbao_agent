@@ -6,16 +6,170 @@ context building, and background message dispatch.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from copy import deepcopy
 from inspect import Parameter, signature
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_WRITE_WORKTREE_SCENARIOS = {
+    "code_edit",
+    "debug",
+    "test_write",
+    "doc_write",
+    "multi_step_task",
+    "supervised_task",
+    "swarm_task",
+}
+
 
 class MessageRoutingMixin:
     """Mixin providing message routing and background dispatch."""
+
+    def _maybe_bind_task_worktree(
+        self,
+        *,
+        session: dict[str, Any],
+        task: dict[str, Any],
+        routing: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        worktree_service = getattr(self, "_worktree_service", None)
+        if worktree_service is None or not self._should_auto_bind_worktree(routing):
+            return None
+
+        workspace_root_text = session.get("workspaceRoot")
+        if not workspace_root_text:
+            try:
+                workspace = self._store.require_workspace(session["workspaceId"])
+                workspace_root_text = workspace.get("rootPath")
+            except Exception:  # noqa: BLE001
+                workspace_root_text = ""
+        if not isinstance(workspace_root_text, str) or not workspace_root_text.strip():
+            return None
+
+        existing = self._store.get_worktree_by_task({"taskId": task["id"]}).get("worktree")
+        if existing is not None:
+            return existing
+
+        worktree_config = self._worktree_config()
+        workspace_root = Path(workspace_root_text).resolve()
+        task_id = str(task["id"])
+        branch_prefix = self._safe_worktree_segment(str(worktree_config.get("branchPrefix") or "agent"))
+        branch_name = f"{branch_prefix}/{self._safe_worktree_segment(task_id)}"
+        worktree_path = self._worktree_path_for_task(workspace_root, task_id, worktree_config)
+
+        try:
+            result = worktree_service.create_for_task({
+                "workspaceId": session["workspaceId"],
+                "sessionId": session["id"],
+                "taskId": task_id,
+                "baseRef": str(worktree_config.get("baseRef") or "HEAD"),
+                "branchName": branch_name,
+                "worktreePath": str(worktree_path),
+                "cleanupPolicy": str(worktree_config.get("cleanupPolicy") or "ask_user"),
+                "mergePolicy": str(worktree_config.get("mergePolicy") or "approval_required"),
+            })
+            worktree = result.get("worktree")
+            if isinstance(worktree, dict):
+                self._publish(
+                    session_id=session["id"],
+                    task=task,
+                    event_type="task.worktree.bound",
+                    payload={
+                        "worktreeId": worktree.get("id"),
+                        "worktreePath": worktree.get("worktreePath"),
+                        "branchName": worktree.get("branchName"),
+                        "baseRef": worktree.get("baseRef"),
+                        "status": worktree.get("status"),
+                    },
+                )
+                return worktree
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to auto-bind worktree for task %s", task_id, exc_info=True)
+            self._publish(
+                session_id=session["id"],
+                task=task,
+                event_type="task.worktree.bind_failed",
+                payload={"error": str(exc), "taskId": task_id},
+            )
+        return None
+
+    def _should_auto_bind_worktree(self, routing: dict[str, Any]) -> bool:
+        worktree_config = self._worktree_config()
+        if worktree_config.get("autoBindWriteTasks", True) is False:
+            return False
+        scenario = str(routing.get("scenario") or "")
+        return scenario in _WRITE_WORKTREE_SCENARIOS
+
+    def _worktree_config(self) -> dict[str, Any]:
+        config = self._store.get_config({})["config"]
+        worktree_config = config.get("worktree") if isinstance(config, dict) else {}
+        return worktree_config if isinstance(worktree_config, dict) else {}
+
+    def _worktree_path_for_task(
+        self,
+        workspace_root: Path,
+        task_id: str,
+        worktree_config: dict[str, Any],
+    ) -> Path:
+        configured_root = str(worktree_config.get("pathRoot") or "").strip()
+        if configured_root:
+            root = Path(configured_root)
+            if not root.is_absolute():
+                root = workspace_root.parent / root
+        else:
+            root = workspace_root.parent / f"{workspace_root.name}.worktrees"
+        return root.resolve() / self._safe_worktree_segment(task_id)
+
+    def _safe_worktree_segment(self, value: str) -> str:
+        segment = re.sub(r"[^A-Za-z0-9._/-]+", "-", value.strip())
+        segment = re.sub(r"/+", "/", segment).strip("/.")
+        parts = [part for part in segment.split("/") if part and part not in {".", ".."}]
+        return "/".join(parts) or "task"
+
+    def _context_with_worktree_binding(
+        self,
+        context: dict[str, Any],
+        worktree: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not isinstance(worktree, dict):
+            return context
+        worktree_path = worktree.get("worktreePath")
+        if not isinstance(worktree_path, str) or not worktree_path.strip():
+            return context
+
+        bound_context = {**context}
+        original_root = bound_context.get("workspace_root")
+        bound_context["original_workspace_root"] = original_root
+        bound_context["workspace_root"] = worktree_path
+        bound_context["active_worktree"] = {
+            "id": worktree.get("id"),
+            "path": worktree_path,
+            "branchName": worktree.get("branchName"),
+            "baseRef": worktree.get("baseRef"),
+            "status": worktree.get("status"),
+            "originalWorkspaceRoot": original_root,
+        }
+
+        messages = list(bound_context.get("messages") or [])
+        binding_text = "\n".join([
+            "Active worktree:",
+            f"- path: {worktree_path}",
+            f"- branch: {worktree.get('branchName')}",
+            f"- base: {worktree.get('baseRef')}",
+            "- use this worktree for file, shell and git operations for this task.",
+        ])
+        if messages and messages[-1].get("role") == "user":
+            content = str(messages[-1].get("content") or "")
+            if "Active worktree:" not in content:
+                messages[-1] = {**messages[-1], "content": f"{content}\n\n{binding_text}"}
+        else:
+            messages.append({"role": "user", "content": binding_text})
+        bound_context["messages"] = messages
+        return bound_context
 
     def send_message(self, params: dict[str, Any]) -> dict[str, Any]:
         if self._shutting_down:
@@ -155,6 +309,13 @@ class MessageRoutingMixin:
                 active_assistant_message_id=assistant_msg["id"],
             )
             runtime_task["activeAssistantMessageId"] = assistant_msg["id"]
+            worktree = self._maybe_bind_task_worktree(
+                session=session,
+                task=runtime_task,
+                routing=routing_dict,
+            )
+            if worktree is not None:
+                routing_dict["activeWorktree"] = worktree
             self._record_routing_proposal(
                 session_id=session["id"],
                 task_id=runtime_task["id"],
@@ -247,6 +408,15 @@ class MessageRoutingMixin:
         )
         runtime_task["activeAssistantMessageId"] = assistant_msg["id"]
         context = self._context_with_task_focus(context, runtime_task)
+        worktree = self._maybe_bind_task_worktree(
+            session=session,
+            task=runtime_task,
+            routing=routing_dict,
+        )
+        if worktree is not None:
+            routing_dict["activeWorktree"] = worktree
+            context["routing"] = routing_dict
+            context = self._context_with_worktree_binding(context, worktree)
 
         self._record_routing_proposal(
             session_id=session["id"],

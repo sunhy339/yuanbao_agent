@@ -98,6 +98,12 @@ _ROUTE_RULES: list[tuple[Scenario, list[str], float]] = [
     (Scenario.SIMPLE_QUERY, ["是什么", "怎么", "如何", "解释", "what is", "how to", "explain", "是什么意思", "介绍一下"], 0.75),
 ]
 
+_ROUTE_RULES.append((
+    Scenario.CODE_EDIT,
+    ["edit", "change", "modify", "update", "implement", "add", "fix", "write"],
+    0.70,
+))
+
 # Build a reverse lookup: lowercase keyword -> (scenario, confidence)
 _KEYWORD_INDEX: dict[str, tuple[Scenario, float]] = {}
 for _scenario, _keywords, _conf in _ROUTE_RULES:

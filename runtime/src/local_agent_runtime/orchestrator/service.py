@@ -84,6 +84,7 @@ class Orchestrator(
         *,
         decision_advisor: DecisionAdvisor | None = None,
         hook_service: HookService | None = None,
+        worktree_service: Any | None = None,
         _skip_orphan_cleanup: bool = False,
     ) -> None:
         self._store = store
@@ -92,6 +93,7 @@ class Orchestrator(
         self._provider = provider
         self._decision_advisor = decision_advisor
         self._hook_service = hook_service
+        self._worktree_service = worktree_service
         self._task_state_machine = TaskStateMachine()
         self._meta_router = meta_router or MetaRouter(
             provider=provider,

@@ -151,6 +151,14 @@ DEFAULT_CONFIG = {
             "allowedCwdRoots": [],
         }
     },
+    "worktree": {
+        "autoBindWriteTasks": True,
+        "baseRef": "HEAD",
+        "branchPrefix": "agent",
+        "pathRoot": "",
+        "cleanupPolicy": "ask_user",
+        "mergePolicy": "approval_required",
+    },
     "reflection": {
         "enabled": False,
         "maxRetries": 2,

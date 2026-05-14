@@ -6,6 +6,7 @@ git worktree operations. Supports hook firing for worktree lifecycle events.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from ..git.worktree_adapter import GitWorktreeAdapter
@@ -71,6 +72,7 @@ class WorktreeService:
         self._fire_hooks("before_worktree_create", hook_context)
 
         # Create git worktree
+        Path(params["worktreePath"]).parent.mkdir(parents=True, exist_ok=True)
         git_result = self._git.create(
             branch_name=params["branchName"],
             target_path=params["worktreePath"],
@@ -79,6 +81,12 @@ class WorktreeService:
 
         # Create store record
         record = self._store.create_worktree(params)
+        worktree_id = record.get("worktree", {}).get("id")
+        if worktree_id:
+            record = self._store.update_worktree({
+                "worktreeId": worktree_id,
+                "status": "active",
+            })
 
         # Fire after hooks
         hook_context["worktreeId"] = record.get("worktree", {}).get("id", "")

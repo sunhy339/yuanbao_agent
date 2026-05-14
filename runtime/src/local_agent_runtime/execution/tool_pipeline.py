@@ -23,6 +23,19 @@ from ..services.worker_budget import WorkerBudget
 
 logger = logging.getLogger(__name__)
 
+_WORKTREE_BOUND_TOOLS = {
+    "list_dir",
+    "search_files",
+    "read_file",
+    "run_command",
+    "apply_patch",
+    "git_status",
+    "git_diff",
+    "write_file",
+    "code_search",
+}
+_ACTIVE_WORKTREE_STATUSES = {"creating", "active", "paused", "ready_for_review"}
+
 
 class ToolExecutionMixin:
     """Mixin providing the full tool execution pipeline."""
@@ -78,6 +91,37 @@ class ToolExecutionMixin:
 
     # -- Main execution pipeline -----------------------------------------------
 
+    def _apply_task_worktree_to_tool_arguments(
+        self,
+        *,
+        task_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        if tool_name not in _WORKTREE_BOUND_TOOLS:
+            return arguments
+        try:
+            worktree = self._store.get_worktree_by_task({"taskId": task_id}).get("worktree")
+        except Exception:  # noqa: BLE001
+            return arguments
+        if not isinstance(worktree, dict):
+            return arguments
+        if worktree.get("status") not in _ACTIVE_WORKTREE_STATUSES:
+            return arguments
+        worktree_path = worktree.get("worktreePath")
+        if not isinstance(worktree_path, str) or not worktree_path.strip():
+            return arguments
+
+        original_root = arguments.get("workspaceRoot") or arguments.get("workspace_root")
+        bound = dict(arguments)
+        if original_root and original_root != worktree_path:
+            bound["originalWorkspaceRoot"] = original_root
+        bound["workspaceRoot"] = worktree_path
+        bound["activeWorktreeId"] = worktree.get("id")
+        if tool_name == "run_command":
+            bound.setdefault("cwd", ".")
+        return bound
+
     def _execute_tool(
         self,
         session_id: str,
@@ -97,6 +141,11 @@ class ToolExecutionMixin:
             "taskId": task["id"],
             "sessionId": session_id,
         }
+        tool_arguments = self._apply_task_worktree_to_tool_arguments(
+            task_id=task["id"],
+            tool_name=tool_spec["name"],
+            arguments=tool_arguments,
+        )
         self._consume_budget_for_tool_call(
             session_id=session_id,
             task=task,

@@ -33,9 +33,12 @@ class ConfigFlowMixin:
         agent_soul_profile = self._active_config_profile(config, "agentSoul")
 
         provider_config = config.get("provider") if isinstance(config, dict) else {}
+        effective_provider_config = self._effective_provider_config(provider_config)
+        provider_api_format = self._provider_api_format(effective_provider_config)
         streaming_mode = (
-            str((provider_config or {}).get("mode") or "").strip().lower()
+            str((effective_provider_config or {}).get("mode") or "").strip().lower()
             in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}
+            and provider_api_format == "openai-chat"
             if hasattr(self._provider, "stream") else False
         )
 
@@ -106,14 +109,22 @@ class ConfigFlowMixin:
 
         mode = str(provider_config.get("mode") or provider_config.get("providerMode") or "").strip()
         normalized_mode = mode.lower()
+        api_format = self._provider_api_format(provider_config)
         model = provider_config.get("model") or provider_config.get("defaultModel")
-        base_url = provider_config.get("baseUrl") or provider_config.get("base_url") or "https://api.openai.com/v1"
+        base_url = (
+            provider_config.get("baseUrl")
+            or provider_config.get("base_url")
+            or ("https://api.anthropic.com" if api_format == "anthropic-messages" else "https://api.openai.com/v1")
+        )
+        if api_format == "anthropic-messages" and str(base_url).rstrip("/") == "https://api.openai.com/v1":
+            base_url = "https://api.anthropic.com"
         env_var_name = (
             provider_config.get("apiKeyEnvVarName")
             or provider_config.get("api_key_env_var_name")
             or provider_config.get("envKey")
-            or "LOCAL_AGENT_PROVIDER_API_KEY"
+            or ("ANTHROPIC_API_KEY" if api_format == "anthropic-messages" else "LOCAL_AGENT_PROVIDER_API_KEY")
         )
+        request_path = self._provider_request_path(api_format, str(base_url))
 
         if normalized_mode in {"", "mock"}:
             result = {
@@ -123,8 +134,11 @@ class ConfigFlowMixin:
                 "profileId": profile_id,
                 "profileName": profile_name,
                 "providerMode": mode or "mock",
+                "apiFormat": api_format,
                 "model": model,
                 "baseUrl": base_url,
+                "requestPath": request_path,
+                "failureReason": "mock_mode",
                 "checkedEnvVarName": env_var_name,
                 "envVarName": env_var_name,
                 "lastCheckedAt": checked_at,
@@ -133,11 +147,14 @@ class ConfigFlowMixin:
                 "source": "runtime",
                 "details": {
                     "errorSummary": "Mock mode does not contact a remote model.",
+                    "apiFormat": api_format,
+                    "requestPath": request_path,
+                    "failureReason": "mock_mode",
                 },
             }
             self._persist_provider_test_result(profile_id, result, persist=provider_patch is None)
             return result
-        if normalized_mode not in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}:
+        if normalized_mode not in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat", "anthropic", "anthropic-messages", "anthropic_messages"}:
             result = {
                 "ok": False,
                 "status": "unsupported",
@@ -145,8 +162,11 @@ class ConfigFlowMixin:
                 "profileId": profile_id,
                 "profileName": profile_name,
                 "providerMode": mode,
+                "apiFormat": api_format,
                 "model": model,
                 "baseUrl": base_url,
+                "requestPath": request_path,
+                "failureReason": "unsupported_mode",
                 "checkedEnvVarName": env_var_name,
                 "envVarName": env_var_name,
                 "lastCheckedAt": checked_at,
@@ -155,12 +175,16 @@ class ConfigFlowMixin:
                 "source": "runtime",
                 "details": {
                     "errorSummary": f"Unsupported provider mode: {mode}",
+                    "apiFormat": api_format,
+                    "requestPath": request_path,
+                    "failureReason": "unsupported_mode",
                 },
             }
             self._persist_provider_test_result(profile_id, result, persist=provider_patch is None)
             return result
         direct_key = provider_config.get("apiKey") or provider_config.get("api_key")
         if not direct_key and env_var_name and not os.environ.get(str(env_var_name)):
+            failure_reason = "missing_env"
             result = {
                 "ok": False,
                 "status": "missing_env",
@@ -168,8 +192,11 @@ class ConfigFlowMixin:
                 "profileId": profile_id,
                 "profileName": profile_name,
                 "providerMode": mode,
+                "apiFormat": api_format,
                 "model": model,
                 "baseUrl": base_url,
+                "requestPath": request_path,
+                "failureReason": failure_reason,
                 "checkedEnvVarName": env_var_name,
                 "envVarName": env_var_name,
                 "lastCheckedAt": checked_at,
@@ -178,6 +205,9 @@ class ConfigFlowMixin:
                 "source": "runtime",
                 "details": {
                     "errorSummary": f"Set {env_var_name} in the runtime environment.",
+                    "apiFormat": api_format,
+                    "requestPath": request_path,
+                    "failureReason": failure_reason,
                 },
             }
             self._persist_provider_test_result(profile_id, result, persist=provider_patch is None)
@@ -203,8 +233,11 @@ class ConfigFlowMixin:
                 "profileId": profile_id,
                 "profileName": profile_name,
                 "providerMode": mode,
+                "apiFormat": api_format,
                 "model": model,
                 "baseUrl": base_url,
+                "requestPath": request_path,
+                "failureReason": error_summary,
                 "checkedEnvVarName": env_var_name,
                 "envVarName": env_var_name,
                 "lastCheckedAt": checked_at,
@@ -214,6 +247,9 @@ class ConfigFlowMixin:
                 "details": {
                     "errorSummary": error_summary,
                     "errorType": type(exc).__name__,
+                    "apiFormat": api_format,
+                    "requestPath": request_path,
+                    "failureReason": error_summary,
                 },
             }
             self._persist_provider_test_result(profile_id, result, persist=provider_patch is None)
@@ -226,8 +262,11 @@ class ConfigFlowMixin:
             "profileId": profile_id,
             "profileName": profile_name,
             "providerMode": mode,
+            "apiFormat": api_format,
             "model": response.get("raw", {}).get("model") or model,
             "baseUrl": base_url,
+            "requestPath": request_path,
+            "failureReason": None,
             "checkedEnvVarName": env_var_name,
             "envVarName": env_var_name,
             "lastCheckedAt": checked_at,
@@ -237,10 +276,78 @@ class ConfigFlowMixin:
             "details": {
                 "finishReason": response.get("finish_reason"),
                 "usage": response.get("raw", {}).get("usage"),
+                "apiFormat": api_format,
+                "requestPath": request_path,
+                "failureReason": None,
             },
         }
         self._persist_provider_test_result(profile_id, result, persist=provider_patch is None)
         return result
+
+    def _effective_provider_config(self, provider_root: Any) -> dict[str, Any]:
+        if not isinstance(provider_root, dict):
+            return {}
+        effective = {
+            key: value
+            for key, value in provider_root.items()
+            if key not in {"profiles", "activeProfileId"}
+        }
+        selected = self._select_provider_profile(provider_root, provider_root.get("activeProfileId"))
+        if isinstance(selected, dict):
+            effective.update({
+                key: value
+                for key, value in selected.items()
+                if key not in {"profiles", "activeProfileId"}
+            })
+        return effective
+
+    def _provider_api_format(self, provider_config: dict[str, Any]) -> str:
+        raw_format = (
+            provider_config.get("apiFormat")
+            or provider_config.get("api_format")
+            or provider_config.get("providerApiFormat")
+        )
+        if raw_format is None:
+            mode = (
+                str(provider_config.get("mode") or provider_config.get("providerMode") or "")
+                .strip()
+                .lower()
+                .replace("_", "-")
+            )
+            if mode in {"anthropic", "anthropic-messages"}:
+                return "anthropic-messages"
+        raw = raw_format or "openai-chat"
+        normalized = str(raw).strip().lower().replace("_", "-")
+        if normalized in {"chat-completions", "custom-openai-compatible"}:
+            return "openai-chat"
+        if normalized in {"openai-chat", "openai-responses", "anthropic-messages"}:
+            return normalized
+        return "openai-chat"
+
+    def _provider_request_path(self, api_format: str, base_url: str) -> str:
+        trimmed = base_url.rstrip("/")
+        if api_format == "openai-responses":
+            if trimmed.endswith("/responses"):
+                return self._path_from_url(trimmed)
+            if self._path_from_url(trimmed) in {"", "/"}:
+                return "/v1/responses"
+            return f"{self._path_from_url(trimmed).rstrip('/')}/responses"
+        if api_format == "anthropic-messages":
+            if trimmed.endswith("/messages"):
+                return self._path_from_url(trimmed)
+            if self._path_from_url(trimmed) in {"", "/"}:
+                return "/v1/messages"
+            return f"{self._path_from_url(trimmed).rstrip('/')}/messages"
+        if trimmed.endswith("/chat/completions"):
+            return self._path_from_url(trimmed)
+        if self._path_from_url(trimmed) in {"", "/"}:
+            return "/v1/chat/completions"
+        return f"{self._path_from_url(trimmed).rstrip('/')}/chat/completions"
+
+    def _path_from_url(self, value: str) -> str:
+        from urllib.parse import urlsplit
+
+        return urlsplit(value).path or "/"
 
     def _persist_provider_test_result(
         self,

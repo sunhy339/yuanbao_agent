@@ -194,6 +194,10 @@ class ProviderTurnMixin:
         provider_config = config.get("provider") if isinstance(config, dict) else {}
         if not isinstance(provider_config, dict):
             return False
+        provider_config = self._provider_trace_provider_config(provider_config)
+        api_format = self._provider_trace_api_format(provider_config)
+        if api_format != "openai-chat":
+            return False
         stream_flag = self._provider_stream_flag(provider_config)
         if stream_flag is not None:
             return stream_flag
@@ -292,14 +296,88 @@ class ProviderTurnMixin:
         provider_config = config.get("provider") if isinstance(config, dict) else {}
         if not isinstance(provider_config, dict):
             provider_config = {}
+        provider_config = self._provider_trace_provider_config(provider_config)
+        api_format = self._provider_trace_api_format(provider_config)
+        base_url = provider_config.get("baseUrl") or provider_config.get("base_url")
         return {
             "mode": provider_config.get("mode") or provider_config.get("providerMode"),
+            "apiFormat": api_format,
             "model": provider_config.get("model") or provider_config.get("defaultModel"),
-            "baseUrl": provider_config.get("baseUrl") or provider_config.get("base_url"),
+            "baseUrl": base_url,
+            "requestPath": self._provider_trace_request_path(api_format, str(base_url or "")),
             "messageCount": len(provider_context.get("messages") or []),
             "toolCount": len(provider_context.get("openai_tools") or provider_context.get("tools") or []),
             "step": provider_context.get("step"),
         }
+
+    def _provider_trace_provider_config(self, provider_config: dict[str, Any]) -> dict[str, Any]:
+        effective = {
+            key: value
+            for key, value in provider_config.items()
+            if key not in {"profiles", "activeProfileId"}
+        }
+        profiles = provider_config.get("profiles")
+        active_profile_id = provider_config.get("activeProfileId")
+        selected: dict[str, Any] | None = None
+        if isinstance(profiles, list) and profiles:
+            if isinstance(active_profile_id, str) and active_profile_id:
+                selected = next(
+                    (
+                        profile
+                        for profile in profiles
+                        if isinstance(profile, dict) and profile.get("id") == active_profile_id
+                    ),
+                    None,
+                )
+            if selected is None:
+                selected = next((profile for profile in profiles if isinstance(profile, dict)), None)
+        if selected:
+            effective.update({
+                key: value
+                for key, value in selected.items()
+                if key not in {"profiles", "activeProfileId"}
+            })
+        return effective
+
+    def _provider_trace_api_format(self, provider_config: dict[str, Any]) -> str:
+        raw_format = (
+            provider_config.get("apiFormat")
+            or provider_config.get("api_format")
+            or provider_config.get("providerApiFormat")
+        )
+        if raw_format is None:
+            mode = (
+                str(provider_config.get("mode") or provider_config.get("providerMode") or "")
+                .strip()
+                .lower()
+                .replace("_", "-")
+            )
+            if mode in {"anthropic", "anthropic-messages"}:
+                return "anthropic-messages"
+        raw = raw_format or "openai-chat"
+        normalized = str(raw).strip().lower().replace("_", "-")
+        if normalized in {"chat-completions", "custom-openai-compatible"}:
+            return "openai-chat"
+        if normalized in {"openai-chat", "openai-responses", "anthropic-messages"}:
+            return normalized
+        return "openai-chat"
+
+    def _provider_trace_request_path(self, api_format: str, base_url: str) -> str:
+        from urllib.parse import urlsplit
+
+        trimmed = base_url.rstrip("/")
+        path = urlsplit(trimmed).path or "/"
+        if api_format == "openai-responses":
+            if trimmed.endswith("/responses"):
+                return path
+            return "/v1/responses" if path in {"", "/"} else f"{path.rstrip('/')}/responses"
+        if api_format == "anthropic-messages":
+            if trimmed.endswith("/messages"):
+                return path
+            return "/v1/messages" if path in {"", "/"} else f"{path.rstrip('/')}/messages"
+        if trimmed.endswith("/chat/completions"):
+            return path
+        return "/v1/chat/completions" if path in {"", "/"} else f"{path.rstrip('/')}/chat/completions"
 
     def _provider_response_trace(self, response: Any) -> dict[str, Any]:
         if not isinstance(response, dict):

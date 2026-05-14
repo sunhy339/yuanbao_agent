@@ -1199,6 +1199,24 @@ flowchart TD
 
 剩余边界：当前硬 gate 已覆盖明确写入型/验证型任务的 `summary_only`、失败验证、有工作区变更证据但缺少 passed verification、结构化 acceptance criteria failed/缺项、unresolved tool failures、以及代码/测试文件变更但缺少目标验证的情况；基础 `completion_review` 证据摘要已经进入 UI，后续重点是继续细化更具体的语言/框架测试匹配规则，并把 reviewer/approval 结论串到更完整的完成审计里。
 
+### 2026-05-14 Provider API format 扩展收尾
+
+| 项目 | 状态 | 说明 |
+| --- | --- | --- |
+| OpenAI Responses API | Done | runtime 新增 `OpenAIResponsesClient`，将消息、tool schema、assistant function call、tool result 转换为 `/v1/responses` 形态，并把 Responses output/function_call 归一回现有 provider response 结构。 |
+| Anthropic Messages API | Done | runtime 新增 `AnthropicMessagesClient`，支持 native `/v1/messages` 请求、`x-api-key` / `anthropic-version` headers、system 抽离、`tool_use` / `tool_result` 双向转换；`mode=anthropic` 默认归一为 `anthropic-messages`。 |
+| provider test / trace metadata | Done | `provider.test` 与 provider turn trace 记录 effective `apiFormat`、`requestPath`、`failureReason`；active provider profile 会覆盖 root provider 设置；非 `openai-chat` provider turn 不再进入真实 streaming 路径。 |
+| Settings UI / shared config | Done | `openai-responses` 与 `anthropic-messages` 已进入 shared supported format 列表，设置页不再标记为 planned/unavailable，可直接新选。 |
+| 默认 endpoint 防护 | Done | Anthropic Messages 在继承默认 OpenAI base URL 时会切回 `https://api.anthropic.com`，避免 native Anthropic 请求误打到 OpenAI endpoint；显式自定义 endpoint 仍保持优先。 |
+
+验证结果：
+
+| 验证 | 结果 |
+| --- | --- |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest_tmp_provider runtime/tests/test_provider_adapter.py runtime/tests/test_runtime_flows.py` | 63 passed |
+| `npm.cmd test -- SettingsWorkspace.test.tsx` in `app/` | 14 passed |
+| `npm.cmd run typecheck` in `app/` | passed |
+
 ### 当前剩余非大文件任务
 
 | 优先级 | 任务 | 当前状态 | 下一步 |
@@ -1208,7 +1226,6 @@ flowchart TD
 | P1 | Hooks 生命周期补齐 | 基础 hook 能力已有，但生命周期触发点和权限边界还需统一。 | 补齐 before/after task、before/after tool、before/after provider turn、pause/cancel/resume、compaction、worktree merge 等事件，并纳入 PermissionEngine。 |
 | P1 | ToolPolicyResolver 第二阶段 | P0 最小闭环已完成。 | 将 Skill policy、MCP server policy、PermissionEngine、child allowlist 合并进统一 resolver；提供 provider turn 回放解释。 |
 | P1 | Dynamic Agent Profile 设置页/RPC | runtime snapshot 已有，profile CRUD 未完成。 | 增加 profile list/create/update/delete/validate/previewTools RPC；设置页接入 profile 管理和工具预览。 |
-| P1 | Provider API format 扩展 | P0 已避免 UI 误选未实现格式。 | 真正实现 `openai-responses`；再实现 native `anthropic-messages`；provider test 记录 effective `apiFormat`、request path 和失败原因。 |
 | P1 | Real LLM smoke 固化 | 手工和回归测试已有，尚未变成安全脚本。 | 新增可选 smoke runner，只从环境变量读取 key，不落库、不写文档、不提交生成物。 |
 
 ### 当前重点
@@ -1216,6 +1233,9 @@ flowchart TD
 下一阶段最值得先做的是 **Completion / Stop 判断强化**。原因是 ToolPolicyResolver 已经能避免 synthesis 轮继续乱拿工具，provider 链路也更稳；接下来要保证任务什么时候“真的完成”有硬依据，否则 agent 仍可能出现自然语言说完成但工作区状态未满足验收项的问题。
 
 2026-05-14 更新：Completion Evidence 第一阶段已完成；后续重点应转向 **Worktree 自动绑定写入型任务**，并在之后把 `completionEvidence.evidenceLevel` 接入更严格的完成 gate。
+
+2026-05-14 更新：Provider API format 扩展已完成 `openai-responses` 与 native `anthropic-messages` 收尾；当前剩余重点转向 Hooks 生命周期、ToolPolicyResolver 第二阶段、Dynamic Agent Profile CRUD/设置页，以及 Real LLM smoke 固化。
+
 ### 2026-05-14 Worktree 自动绑定首段闭环
 
 | 项目 | 状态 | 说明 |

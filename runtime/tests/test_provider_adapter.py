@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from local_agent_runtime.provider.adapter import ProviderAdapter, ProviderAdapterError
+from local_agent_runtime.orchestrator.provider_turn import ProviderTurnMixin
 
 
 def _context() -> dict[str, Any]:
@@ -363,7 +364,28 @@ def test_provider_api_format_aliases_use_openai_chat_adapter() -> None:
     assert calls[0]["url"] == "https://llm.example.test/v1/chat/completions"
 
 
-def test_provider_api_format_rejects_planned_formats() -> None:
+def test_openai_responses_api_format_posts_responses_payload() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, json.dumps(
+            {
+                "id": "resp_1",
+                "model": "test-responses",
+                "status": "completed",
+                "output_text": "responses ok",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "responses ok"}],
+                    }
+                ],
+                "usage": {"total_tokens": 9},
+            }
+        ).encode("utf-8")
+
     adapter = ProviderAdapter(
         config={
             "provider": {
@@ -374,10 +396,216 @@ def test_provider_api_format_rejects_planned_formats() -> None:
                 "model": "test-chat",
             }
         },
+        http_post=fake_post,
     )
 
-    with pytest.raises(ProviderAdapterError, match="planned but not implemented"):
-        adapter.chat(messages=[{"role": "user", "content": "hi"}])
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "responses ok"
+    assert response["finish_reason"] == "completed"
+    call = calls[0]
+    assert call["url"] == "https://llm.example.test/v1/responses"
+    assert call["headers"]["Authorization"] == "Bearer sk-test"
+    payload = json.loads(call["body"].decode("utf-8"))
+    assert payload["model"] == "test-chat"
+    assert payload["input"] == [{"role": "user", "content": "hi"}]
+
+
+def test_openai_responses_tool_call_response_is_normalized() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, json.dumps(
+            {
+                "id": "resp_2",
+                "model": "test-responses",
+                "status": "requires_action",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "workspace_read",
+                        "arguments": "{\"path\":\"README.md\"}",
+                    }
+                ],
+            }
+        ).encode("utf-8")
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    response = adapter.chat(
+        messages=[{"role": "user", "content": "read"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "workspace.read",
+                    "description": "Read a file",
+                    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+                },
+            }
+        ],
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["tools"][0]["name"] == "workspace_read"
+    assert response["message"]["tool_calls"] == [
+        {
+            "id": "call_1",
+            "type": "function",
+            "name": "workspace.read",
+            "arguments": {"path": "README.md"},
+        }
+    ]
+
+
+def test_anthropic_messages_api_format_posts_messages_payload() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, json.dumps(
+            {
+                "id": "msg_1",
+                "model": "claude-test",
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "anthropic ok"}],
+                "usage": {"input_tokens": 5, "output_tokens": 3},
+            }
+        ).encode("utf-8")
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-ant",
+                "baseUrl": "https://api.anthropic.test",
+                "apiFormat": "anthropic-messages",
+                "model": "claude-test",
+                "maxTokens": 777,
+            }
+        },
+        http_post=fake_post,
+    )
+
+    response = adapter.chat(
+        messages=[
+            {"role": "system", "content": "be brief"},
+            {"role": "user", "content": "hi"},
+        ]
+    )
+
+    assert response["message"]["content"] == "anthropic ok"
+    assert response["finish_reason"] == "end_turn"
+    call = calls[0]
+    assert call["url"] == "https://api.anthropic.test/v1/messages"
+    assert call["headers"]["x-api-key"] == "sk-ant"
+    assert call["headers"]["anthropic-version"] == "2023-06-01"
+    payload = json.loads(call["body"].decode("utf-8"))
+    assert payload["model"] == "claude-test"
+    assert payload["max_tokens"] == 777
+    assert payload["system"] == "be brief"
+    assert payload["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_anthropic_messages_tool_use_response_is_normalized() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, json.dumps(
+            {
+                "id": "msg_2",
+                "model": "claude-test",
+                "role": "assistant",
+                "stop_reason": "tool_use",
+                "content": [
+                    {"type": "text", "text": "checking"},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "workspace_read",
+                        "input": {"path": "README.md"},
+                    },
+                ],
+            }
+        ).encode("utf-8")
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "anthropic",
+                "apiKey": "sk-ant",
+                "baseUrl": "https://api.anthropic.test/v1",
+                "model": "claude-test",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    response = adapter.chat(
+        messages=[{"role": "user", "content": "read"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "workspace.read",
+                    "description": "Read a file",
+                    "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+                },
+            }
+        ],
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["tools"][0]["name"] == "workspace_read"
+    assert payload["tools"][0]["input_schema"]["type"] == "object"
+    assert response["message"]["content"] == "checking"
+    assert response["message"]["tool_calls"] == [
+        {
+            "id": "toolu_1",
+            "type": "function",
+            "name": "workspace.read",
+            "arguments": {"path": "README.md"},
+        }
+    ]
+
+
+def test_anthropic_mode_replaces_default_openai_base_url() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"id":"msg_3","model":"claude-test","role":"assistant","stop_reason":"end_turn","content":[]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "anthropic",
+                "apiKey": "sk-ant",
+                "baseUrl": "https://api.openai.com/v1",
+                "model": "claude-test",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert calls[0]["url"] == "https://api.anthropic.com/v1/messages"
 
 
 def test_anthropic_env_can_drive_openai_compatible_request_without_mode() -> None:
@@ -635,3 +863,108 @@ def test_provider_error_is_readable() -> None:
 
     with pytest.raises(ProviderAdapterError, match="Provider request failed with HTTP 429: rate limit exceeded"):
         adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+
+class _TraceProbeProvider:
+    def stream(self, *_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("not used")
+
+
+class _TraceProbe(ProviderTurnMixin):
+    def __init__(self) -> None:
+        self._provider = _TraceProbeProvider()
+
+
+def test_provider_trace_records_api_format_and_request_path() -> None:
+    probe = _TraceProbe()
+    context = {
+        "config": {
+            "provider": {
+                "mode": "openai-compatible",
+                "apiFormat": "openai-responses",
+                "baseUrl": "https://api.openai.test/v1",
+                "model": "gpt-test",
+                "stream": True,
+            }
+        },
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"name": "read_file"}],
+        "step": 2,
+    }
+
+    payload = probe._provider_trace_payload(context)
+
+    assert payload["apiFormat"] == "openai-responses"
+    assert payload["requestPath"] == "/v1/responses"
+    assert payload["messageCount"] == 1
+    assert payload["toolCount"] == 1
+    assert probe._should_stream_provider(context) is False
+
+
+def test_provider_trace_defaults_anthropic_mode_to_messages() -> None:
+    probe = _TraceProbe()
+    context = {
+        "config": {
+            "provider": {
+                "mode": "anthropic",
+                "baseUrl": "https://api.anthropic.test",
+                "model": "claude-test",
+                "stream": True,
+            }
+        }
+    }
+
+    payload = probe._provider_trace_payload(context)
+
+    assert payload["apiFormat"] == "anthropic-messages"
+    assert payload["requestPath"] == "/v1/messages"
+    assert probe._should_stream_provider(context) is False
+
+
+def test_openai_chat_trace_remains_streamable_by_default() -> None:
+    probe = _TraceProbe()
+    context = {
+        "config": {
+            "provider": {
+                "mode": "openai-compatible",
+                "apiFormat": "openai-chat",
+                "baseUrl": "https://api.openai.test/v1",
+            }
+        }
+    }
+
+    payload = probe._provider_trace_payload(context)
+
+    assert payload["apiFormat"] == "openai-chat"
+    assert payload["requestPath"] == "/v1/chat/completions"
+    assert probe._should_stream_provider(context) is True
+
+
+def test_provider_trace_uses_active_profile_api_format() -> None:
+    probe = _TraceProbe()
+    context = {
+        "config": {
+            "provider": {
+                "mode": "openai-compatible",
+                "apiFormat": "openai-chat",
+                "baseUrl": "https://root.example.test/v1",
+                "activeProfileId": "responses",
+                "profiles": [
+                    {
+                        "id": "responses",
+                        "mode": "openai-compatible",
+                        "apiFormat": "openai-responses",
+                        "baseUrl": "https://profile.example.test/v1",
+                        "model": "gpt-profile",
+                    }
+                ],
+            }
+        }
+    }
+
+    payload = probe._provider_trace_payload(context)
+
+    assert payload["apiFormat"] == "openai-responses"
+    assert payload["baseUrl"] == "https://profile.example.test/v1"
+    assert payload["requestPath"] == "/v1/responses"
+    assert probe._should_stream_provider(context) is False

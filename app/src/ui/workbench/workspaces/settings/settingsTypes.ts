@@ -289,8 +289,8 @@ export const providerPresets = [
 
 export const providerApiFormatOptions: Array<{ value: ProviderApiFormat; label: string }> = [
   { value: "openai-chat", label: "OpenAI Chat Completions" },
-  { value: "openai-responses", label: "OpenAI Responses API (planned)" },
-  { value: "anthropic-messages", label: "Anthropic Messages (planned)" },
+  { value: "openai-responses", label: "OpenAI Responses API" },
+  { value: "anthropic-messages", label: "Anthropic Messages" },
 ];
 
 export const providerApiKeyEnvKeys = [

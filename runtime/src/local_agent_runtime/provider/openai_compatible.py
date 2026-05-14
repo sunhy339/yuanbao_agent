@@ -99,11 +99,13 @@ class OpenAICompatibleSettings:
     base_url: str
     api_key: str
     model: str
+    api_format: str = "openai-chat"
     temperature: float | None = None
     max_tokens: int | None = None
     timeout: float = 10.0
     stream_timeout: float = 180.0
     max_tool_argument_chars: int = 120_000
+    anthropic_version: str = "2023-06-01"
 
 
 _shared_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
@@ -509,7 +511,7 @@ class OpenAICompatibleChatClient:
         return serialized
 
     def _request(self, *, settings: OpenAICompatibleSettings, body: bytes) -> tuple[int, bytes]:
-        url = self._chat_completions_url(settings.base_url)
+        url = self.request_url(settings)
         headers = {
             "Authorization": f"Bearer {settings.api_key}",
             "Content-Type": "application/json",
@@ -523,7 +525,7 @@ class OpenAICompatibleChatClient:
             raise ProviderAdapterError(f"Provider request failed: {exc}") from exc
 
     def _stream_request(self, *, settings: OpenAICompatibleSettings, body: bytes) -> tuple[int, Iterable[bytes]]:
-        url = self._chat_completions_url(settings.base_url)
+        url = self.request_url(settings)
         headers = {
             "Authorization": f"Bearer {settings.api_key}",
             "Content-Type": "application/json",
@@ -535,6 +537,9 @@ class OpenAICompatibleChatClient:
             raise
         except Exception as exc:  # noqa: BLE001
             raise ProviderAdapterError(f"Provider streaming request failed: {exc}") from exc
+
+    def request_url(self, settings: OpenAICompatibleSettings) -> str:
+        return self._chat_completions_url(settings.base_url)
 
     def _chat_completions_url(self, base_url: str) -> str:
         from urllib.parse import urlsplit, urlunsplit
@@ -926,3 +931,442 @@ class OpenAICompatibleChatClient:
             pass
 
         return None
+
+
+class OpenAIResponsesClient(OpenAICompatibleChatClient):
+    def chat(
+        self,
+        *,
+        settings: OpenAICompatibleSettings,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        request_tools, tool_name_map = self._prepare_responses_tools_for_request(tools)
+        payload = self._build_responses_payload(
+            settings=settings,
+            messages=messages,
+            tools=request_tools,
+            tool_name_map=tool_name_map,
+        )
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        status, response_body = self._request(settings=settings, body=body)
+        response_json = self._decode_response(response_body)
+        if status >= 400:
+            raise ProviderAdapterError(
+                f"Provider request failed with HTTP {status}: {self._error_message(response_json)}"
+            )
+        if self._contains_error(response_json):
+            raise ProviderAdapterError(f"Provider returned error: {self._error_message(response_json)}")
+        return self._normalize_responses_response(response_json, tool_name_map=tool_name_map)
+
+    def request_url(self, settings: OpenAICompatibleSettings) -> str:
+        from urllib.parse import urlsplit, urlunsplit
+
+        trimmed = settings.base_url.rstrip("/")
+        if trimmed.endswith("/responses"):
+            return trimmed
+        parsed = urlsplit(trimmed)
+        if parsed.scheme and parsed.netloc and parsed.path in {"", "/"}:
+            return urlunsplit((parsed.scheme, parsed.netloc, "/v1/responses", "", ""))
+        return f"{trimmed}/responses"
+
+    def _prepare_responses_tools_for_request(
+        self,
+        tools: list[dict[str, Any]] | None,
+    ) -> tuple[list[dict[str, Any]] | None, dict[str, str]]:
+        chat_tools, tool_name_map = self._prepare_tools_for_request(tools)
+        if not chat_tools:
+            return None, tool_name_map
+        responses_tools: list[dict[str, Any]] = []
+        for tool in chat_tools:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if not isinstance(function, dict):
+                continue
+            name = function.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            response_tool = {
+                "type": "function",
+                "name": name,
+                "description": function.get("description") or "",
+                "parameters": function.get("parameters") or {"type": "object"},
+            }
+            responses_tools.append(response_tool)
+        return responses_tools or None, tool_name_map
+
+    def _build_responses_payload(
+        self,
+        *,
+        settings: OpenAICompatibleSettings,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        tool_name_map: dict[str, str],
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": settings.model,
+            "input": self._serialize_responses_input(messages, tool_name_map=tool_name_map),
+        }
+        if settings.temperature is not None:
+            payload["temperature"] = settings.temperature
+        if settings.max_tokens is not None:
+            payload["max_output_tokens"] = settings.max_tokens
+        if tools:
+            payload["tools"] = tools
+        return payload
+
+    def _serialize_responses_input(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tool_name_map: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        serialized: list[dict[str, Any]] = []
+        raw_to_safe = {raw: safe for safe, raw in tool_name_map.items()}
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            if role == "tool":
+                serialized.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": str(message.get("tool_call_id") or ""),
+                        "output": message.get("content") if isinstance(message.get("content"), str) else "",
+                    }
+                )
+                continue
+            if role == "assistant":
+                content = message.get("content")
+                if isinstance(content, str) and content:
+                    serialized.append({"role": "assistant", "content": content})
+                for tool_call in self._serialize_response_function_calls(message.get("tool_calls"), raw_to_safe=raw_to_safe):
+                    serialized.append(tool_call)
+                continue
+            if role in {"system", "developer", "user"}:
+                content = message.get("content") if isinstance(message.get("content"), str) else ""
+                serialized.append({"role": role, "content": content})
+        return serialized
+
+    def _serialize_response_function_calls(self, tool_calls: Any, *, raw_to_safe: dict[str, str]) -> list[dict[str, Any]]:
+        if not isinstance(tool_calls, list):
+            return []
+        serialized: list[dict[str, Any]] = []
+        used_names: set[str] = set(raw_to_safe.values())
+        for index, item in enumerate(tool_calls, start=1):
+            if not isinstance(item, dict):
+                continue
+            function = item.get("function")
+            if isinstance(function, dict):
+                name = function.get("name")
+                raw_arguments = function.get("arguments")
+            else:
+                name = item.get("name")
+                raw_arguments = item.get("arguments")
+            if not isinstance(name, str) or not name:
+                continue
+            safe_name = raw_to_safe.get(name) or self._safe_tool_name(name, used_names, index)
+            used_names.add(safe_name)
+            arguments = raw_arguments if isinstance(raw_arguments, str) else json.dumps(raw_arguments or {}, ensure_ascii=False)
+            serialized.append(
+                {
+                    "type": "function_call",
+                    "call_id": str(item.get("id") or ""),
+                    "name": safe_name,
+                    "arguments": arguments,
+                }
+            )
+        return serialized
+
+    def _normalize_responses_response(
+        self,
+        response_json: dict[str, Any],
+        *,
+        tool_name_map: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        content_parts: list[str] = []
+        output_text = response_json.get("output_text")
+        if isinstance(output_text, str) and output_text:
+            content_parts.append(output_text)
+        has_output_text = bool(content_parts)
+        tool_calls: list[dict[str, Any]] = []
+        output = response_json.get("output")
+        if isinstance(output, list):
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type")
+                if item_type == "message":
+                    if not has_output_text:
+                        content_parts.extend(self._responses_text_parts(item.get("content")))
+                    continue
+                if item_type == "function_call":
+                    tool_calls.append(self._normalize_responses_tool_call(item, tool_name_map=tool_name_map))
+        return {
+            "message": {
+                "role": "assistant",
+                "content": "".join(content_parts),
+                "tool_calls": tool_calls,
+            },
+            "finish_reason": response_json.get("status"),
+            "raw": {
+                "id": response_json.get("id"),
+                "model": response_json.get("model"),
+                "usage": response_json.get("usage"),
+            },
+        }
+
+    def _responses_text_parts(self, content: Any) -> list[str]:
+        if isinstance(content, str):
+            return [content]
+        if not isinstance(content, list):
+            return []
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            text = block.get("text") or block.get("output_text")
+            if isinstance(text, str):
+                parts.append(text)
+        return parts
+
+    def _normalize_responses_tool_call(
+        self,
+        item: dict[str, Any],
+        *,
+        tool_name_map: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            raise ProviderAdapterError("Provider returned invalid response: function_call is missing name")
+        original_name = self._original_tool_name(name, tool_name_map)
+        return {
+            "id": str(item.get("call_id") or item.get("id") or ""),
+            "type": "function",
+            "name": original_name,
+            "arguments": self._parse_tool_arguments(original_name, item.get("arguments")),
+        }
+
+
+class AnthropicMessagesClient(OpenAICompatibleChatClient):
+    def chat(
+        self,
+        *,
+        settings: OpenAICompatibleSettings,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        request_tools, tool_name_map = self._prepare_anthropic_tools_for_request(tools)
+        payload = self._build_anthropic_payload(
+            settings=settings,
+            messages=messages,
+            tools=request_tools,
+            tool_name_map=tool_name_map,
+        )
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        status, response_body = self._request(settings=settings, body=body)
+        response_json = self._decode_response(response_body)
+        if status >= 400:
+            raise ProviderAdapterError(
+                f"Provider request failed with HTTP {status}: {self._error_message(response_json)}"
+            )
+        if self._contains_error(response_json):
+            raise ProviderAdapterError(f"Provider returned error: {self._error_message(response_json)}")
+        return self._normalize_anthropic_response(response_json, tool_name_map=tool_name_map)
+
+    def request_url(self, settings: OpenAICompatibleSettings) -> str:
+        from urllib.parse import urlsplit, urlunsplit
+
+        trimmed = settings.base_url.rstrip("/")
+        if trimmed.endswith("/messages"):
+            return trimmed
+        parsed = urlsplit(trimmed)
+        if parsed.scheme and parsed.netloc and parsed.path in {"", "/"}:
+            return urlunsplit((parsed.scheme, parsed.netloc, "/v1/messages", "", ""))
+        return f"{trimmed}/messages"
+
+    def _request(self, *, settings: OpenAICompatibleSettings, body: bytes) -> tuple[int, bytes]:
+        headers = {
+            "x-api-key": settings.api_key,
+            "anthropic-version": settings.anthropic_version,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        try:
+            return self._http_post(url=self.request_url(settings), headers=headers, body=body, timeout=settings.timeout)
+        except ProviderAdapterError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ProviderAdapterError(f"Provider request failed: {exc}") from exc
+
+    def _prepare_anthropic_tools_for_request(
+        self,
+        tools: list[dict[str, Any]] | None,
+    ) -> tuple[list[dict[str, Any]] | None, dict[str, str]]:
+        chat_tools, tool_name_map = self._prepare_tools_for_request(tools)
+        if not chat_tools:
+            return None, tool_name_map
+        anthropic_tools: list[dict[str, Any]] = []
+        for tool in chat_tools:
+            function = tool.get("function") if isinstance(tool, dict) else None
+            if not isinstance(function, dict):
+                continue
+            name = function.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            anthropic_tools.append(
+                {
+                    "name": name,
+                    "description": function.get("description") or "",
+                    "input_schema": function.get("parameters") or {"type": "object"},
+                }
+            )
+        return anthropic_tools or None, tool_name_map
+
+    def _build_anthropic_payload(
+        self,
+        *,
+        settings: OpenAICompatibleSettings,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        tool_name_map: dict[str, str],
+    ) -> dict[str, Any]:
+        system_parts, request_messages = self._serialize_anthropic_messages(messages, tool_name_map=tool_name_map)
+        payload: dict[str, Any] = {
+            "model": settings.model,
+            "max_tokens": settings.max_tokens or 4096,
+            "messages": request_messages,
+        }
+        if system_parts:
+            payload["system"] = "\n\n".join(system_parts)
+        if settings.temperature is not None:
+            payload["temperature"] = settings.temperature
+        if tools:
+            payload["tools"] = tools
+        return payload
+
+    def _serialize_anthropic_messages(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tool_name_map: dict[str, str],
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        system_parts: list[str] = []
+        serialized: list[dict[str, Any]] = []
+        raw_to_safe = {raw: safe for safe, raw in tool_name_map.items()}
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            content = message.get("content") if isinstance(message.get("content"), str) else ""
+            if role in {"system", "developer"}:
+                if content:
+                    system_parts.append(content)
+                continue
+            if role == "tool":
+                serialized.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": str(message.get("tool_call_id") or ""),
+                                "content": content,
+                            }
+                        ],
+                    }
+                )
+                continue
+            if role == "assistant":
+                blocks: list[dict[str, Any]] = []
+                if content:
+                    blocks.append({"type": "text", "text": content})
+                blocks.extend(self._serialize_anthropic_tool_uses(message.get("tool_calls"), raw_to_safe=raw_to_safe))
+                serialized.append({"role": "assistant", "content": blocks or content})
+                continue
+            if role == "user":
+                serialized.append({"role": "user", "content": content})
+        if not serialized:
+            serialized.append({"role": "user", "content": ""})
+        return system_parts, serialized
+
+    def _serialize_anthropic_tool_uses(self, tool_calls: Any, *, raw_to_safe: dict[str, str]) -> list[dict[str, Any]]:
+        if not isinstance(tool_calls, list):
+            return []
+        blocks: list[dict[str, Any]] = []
+        used_names: set[str] = set(raw_to_safe.values())
+        for index, item in enumerate(tool_calls, start=1):
+            if not isinstance(item, dict):
+                continue
+            function = item.get("function")
+            if isinstance(function, dict):
+                name = function.get("name")
+                raw_arguments = function.get("arguments")
+            else:
+                name = item.get("name")
+                raw_arguments = item.get("arguments")
+            if not isinstance(name, str) or not name:
+                continue
+            safe_name = raw_to_safe.get(name) or self._safe_tool_name(name, used_names, index)
+            used_names.add(safe_name)
+            arguments = self._parse_tool_arguments(name, raw_arguments)
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": str(item.get("id") or ""),
+                    "name": safe_name,
+                    "input": arguments,
+                }
+            )
+        return blocks
+
+    def _normalize_anthropic_response(
+        self,
+        response_json: dict[str, Any],
+        *,
+        tool_name_map: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        content_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        content = response_json.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text" and isinstance(block.get("text"), str):
+                    content_parts.append(block["text"])
+                    continue
+                if block_type == "tool_use":
+                    tool_calls.append(self._normalize_anthropic_tool_use(block, tool_name_map=tool_name_map))
+        return {
+            "message": {
+                "role": response_json.get("role") if isinstance(response_json.get("role"), str) else "assistant",
+                "content": "".join(content_parts),
+                "tool_calls": tool_calls,
+            },
+            "finish_reason": response_json.get("stop_reason"),
+            "raw": {
+                "id": response_json.get("id"),
+                "model": response_json.get("model"),
+                "usage": response_json.get("usage"),
+            },
+        }
+
+    def _normalize_anthropic_tool_use(
+        self,
+        block: dict[str, Any],
+        *,
+        tool_name_map: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        name = block.get("name")
+        if not isinstance(name, str) or not name:
+            raise ProviderAdapterError("Provider returned invalid response: tool_use is missing name")
+        original_name = self._original_tool_name(name, tool_name_map)
+        input_value = block.get("input")
+        arguments = input_value if isinstance(input_value, dict) else {}
+        return {
+            "id": str(block.get("id") or ""),
+            "type": "function",
+            "name": original_name,
+            "arguments": arguments,
+        }

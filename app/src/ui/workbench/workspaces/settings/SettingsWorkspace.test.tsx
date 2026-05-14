@@ -146,7 +146,7 @@ describe("SettingsWorkspace", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("shows planned provider API formats as unavailable", async () => {
+  it("shows expanded provider API formats as available", async () => {
     const { container } = render(<SettingsWorkspace />);
 
     await openAddProviderModal(container);
@@ -157,9 +157,9 @@ describe("SettingsWorkspace", () => {
     const anthropicOption = Array.from(select.options).find((option) => option.value === "anthropic-messages");
 
     expect(responsesOption).toBeDefined();
-    expect(responsesOption).toBeDisabled();
+    expect(responsesOption).not.toBeDisabled();
     expect(anthropicOption).toBeDefined();
-    expect(anthropicOption).toBeDisabled();
+    expect(anthropicOption).not.toBeDisabled();
   });
 
   it("derives the API key env var from pasted env config", async () => {

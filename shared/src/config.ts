@@ -55,6 +55,8 @@ export const SUPPORTED_PROVIDER_API_FORMATS = [
   "openai-chat",
   "chat-completions",
   "custom-openai-compatible",
+  "openai-responses",
+  "anthropic-messages",
 ] as const satisfies readonly ProviderApiFormat[];
 
 export function normalizeProviderApiFormat(value?: string | null): ProviderApiFormat {
@@ -73,7 +75,7 @@ export function normalizeProviderApiFormat(value?: string | null): ProviderApiFo
 }
 
 export function isProviderApiFormatSupported(value?: string | null): boolean {
-  return normalizeProviderApiFormat(value) === "openai-chat";
+  return SUPPORTED_PROVIDER_API_FORMATS.includes(normalizeProviderApiFormat(value));
 }
 
 export interface WorkspaceConfig {

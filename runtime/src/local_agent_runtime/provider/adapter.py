@@ -7,10 +7,12 @@ from collections.abc import Iterator
 from typing import Any
 
 from .openai_compatible import (
+    AnthropicMessagesClient,
     HttpPost,
     HttpStream,
     OpenAICompatibleChatClient,
     OpenAICompatibleSettings,
+    OpenAIResponsesClient,
     ProviderAdapterError,
 )
 
@@ -21,16 +23,24 @@ OPENAI_COMPATIBLE_MODES = {
     "openai_compatible",
     "openai-compatible-chat",
 }
+ANTHROPIC_MODES = {
+    "anthropic",
+    "anthropic-messages",
+    "anthropic_messages",
+}
 
 OPENAI_CHAT_API_FORMATS = {
     "openai-chat",
     "chat-completions",
     "custom-openai-compatible",
 }
-PLANNED_API_FORMATS = {
+OPENAI_RESPONSES_API_FORMATS = {
     "openai-responses",
+}
+ANTHROPIC_API_FORMATS = {
     "anthropic-messages",
 }
+SUPPORTED_API_FORMATS = OPENAI_CHAT_API_FORMATS | OPENAI_RESPONSES_API_FORMATS | ANTHROPIC_API_FORMATS
 DEFAULT_PROVIDER_API_FORMAT = "openai-chat"
 PROVIDER_RETRY_ATTEMPTS = 2
 
@@ -121,6 +131,8 @@ class ProviderAdapter:
         self._config = config or {}
         self._environ = environ if environ is not None else os.environ
         self._openai_client = OpenAICompatibleChatClient(http_post=http_post, http_stream=http_stream)
+        self._responses_client = OpenAIResponsesClient(http_post=http_post, http_stream=http_stream)
+        self._anthropic_client = AnthropicMessagesClient(http_post=http_post, http_stream=http_stream)
         self._cache = cache
         self._settings_cache: dict[str, Any] | None = None
         self._settings_cache_key: int = 0
@@ -203,9 +215,10 @@ class ProviderAdapter:
             }
 
         last_error: ProviderAdapterError | None = None
+        client = self._client_for_settings(settings)
         for attempt in range(PROVIDER_RETRY_ATTEMPTS):
             try:
-                return self._openai_client.chat(
+                return client.chat(
                     settings=settings,
                     messages=messages,
                     tools=tools,
@@ -228,6 +241,15 @@ class ProviderAdapter:
     ) -> Iterator[dict[str, Any]]:
         settings = self._resolve_settings(context)
         if settings is None:
+            response = self.chat(messages=messages, tools=tools, context=context)
+            content = response["message"]["content"]
+            if content:
+                yield {"type": "content_delta", "delta": content}
+            yield {"type": "finish_reason", "finish_reason": response["finish_reason"]}
+            yield {"type": "final", "response": response}
+            return
+
+        if settings.api_format != "openai-chat":
             response = self.chat(messages=messages, tools=tools, context=context)
             content = response["message"]["content"]
             if content:
@@ -263,6 +285,20 @@ class ProviderAdapter:
             messages = [{"role": "user", "content": prompt}]
         tools = self._normalize_tools(context.get("openai_tools") or context.get("tools"))
         yield from self.chat_stream(messages=messages, tools=tools, context=context)
+
+    def provider_request_metadata(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        settings = self._resolve_settings(context)
+        if settings is None:
+            return {
+                "apiFormat": self._normalize_api_format(None),
+                "requestPath": None,
+            }
+        client = self._client_for_settings(settings)
+        parsed = urlsplit(client.request_url(settings))
+        return {
+            "apiFormat": settings.api_format,
+            "requestPath": parsed.path or "/",
+        }
 
     def _normalize_tools(self, tools: Any) -> list[dict[str, Any]] | None:
         if not isinstance(tools, list):
@@ -473,6 +509,13 @@ class ProviderAdapter:
     def _real_provider_enabled(self, context: dict[str, Any] | None) -> bool:
         return self._resolve_settings(context) is not None
 
+    def _client_for_settings(self, settings: OpenAICompatibleSettings) -> OpenAICompatibleChatClient:
+        if settings.api_format == "openai-responses":
+            return self._responses_client
+        if settings.api_format == "anthropic-messages":
+            return self._anthropic_client
+        return self._openai_client
+
     def _resolve_settings(self, context: dict[str, Any] | None) -> OpenAICompatibleSettings | None:
         # Fast path: if context config hasn't changed, reuse cached settings.
         # We use id() of the context dict's config sub-dict as a cheap cache key.
@@ -511,18 +554,16 @@ class ProviderAdapter:
         normalized_mode = self._normalize_mode(mode)
         if normalized_mode == "mock":
             return None
-        if normalized_mode not in OPENAI_COMPATIBLE_MODES:
+        if normalized_mode in ANTHROPIC_MODES:
+            api_format = "anthropic-messages"
+        elif normalized_mode not in OPENAI_COMPATIBLE_MODES:
             if not self._anthropic_env_available():
                 return None
             uses_anthropic_env = True
-        if normalized_mode in OPENAI_COMPATIBLE_MODES and api_format not in OPENAI_CHAT_API_FORMATS:
-            if api_format in PLANNED_API_FORMATS:
-                raise ProviderAdapterError(
-                    f"Provider API format {api_format} is planned but not implemented in this runtime. "
-                    "Use OpenAI Chat Completions."
-                )
+        if api_format not in SUPPORTED_API_FORMATS:
             raise ProviderAdapterError(
-                f"Provider API format {api_format} is not supported. Use OpenAI Chat Completions."
+                "Provider API format "
+                f"{api_format} is not supported. Use OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages."
             )
 
         api_key = self._env(
@@ -534,13 +575,18 @@ class ProviderAdapter:
             api_key = self._string_value(provider_config, "apiKey", "api_key")
         if not api_key and configured_env_var_name:
             api_key = self._env(configured_env_var_name)
+        if not api_key and api_format == "anthropic-messages":
+            api_key = self._env("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
         if not api_key and not configured_env_var_name:
             api_key = self._env(
+                "ANTHROPIC_API_KEY",
                 "ANTHROPIC_AUTH_TOKEN",
             )
         if not api_key:
-            if normalized_mode in OPENAI_COMPATIBLE_MODES:
-                env_hint = configured_env_var_name or "LOCAL_AGENT_PROVIDER_API_KEY"
+            if normalized_mode in OPENAI_COMPATIBLE_MODES or normalized_mode in ANTHROPIC_MODES:
+                env_hint = configured_env_var_name or (
+                    "ANTHROPIC_API_KEY" if api_format == "anthropic-messages" else "LOCAL_AGENT_PROVIDER_API_KEY"
+                )
                 raise ProviderAdapterError(f"Environment variable {env_hint} is not set.")
             return None
 
@@ -552,8 +598,12 @@ class ProviderAdapter:
         if not raw_base_url:
             raw_base_url = self._env("ANTHROPIC_BASE_URL")
             base_url_source = "anthropic_env" if raw_base_url else base_url_source
+        default_base_url = "https://api.anthropic.com" if api_format == "anthropic-messages" else "https://api.openai.com/v1"
+        if api_format == "anthropic-messages" and raw_base_url and raw_base_url.rstrip("/") == "https://api.openai.com/v1":
+            raw_base_url = None
+            base_url_source = None
         base_url = self._normalize_base_url(
-            raw_base_url or "https://api.openai.com/v1",
+            raw_base_url or default_base_url,
             append_v1=uses_anthropic_env or base_url_source == "anthropic_env",
         )
         model = (
@@ -595,6 +645,7 @@ class ProviderAdapter:
             base_url=base_url,
             api_key=api_key,
             model=model,
+            api_format=api_format,
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=self._timeout_value(provider_config),
@@ -603,7 +654,7 @@ class ProviderAdapter:
         )
 
     def _anthropic_env_available(self) -> bool:
-        return bool(self._env("ANTHROPIC_AUTH_TOKEN") and self._env("ANTHROPIC_BASE_URL"))
+        return bool(self._env("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN") and self._env("ANTHROPIC_BASE_URL"))
 
     def _uses_anthropic_env(self, configured_env_var_name: str | None) -> bool:
         return bool(configured_env_var_name and configured_env_var_name.upper().startswith("ANTHROPIC_"))
@@ -612,7 +663,7 @@ class ProviderAdapter:
         normalized = (api_format or DEFAULT_PROVIDER_API_FORMAT).strip().lower().replace("_", "-")
         if normalized in {"chat-completions", "custom-openai-compatible"}:
             return "openai-chat"
-        if normalized in OPENAI_CHAT_API_FORMATS or normalized in PLANNED_API_FORMATS:
+        if normalized in SUPPORTED_API_FORMATS:
             return normalized
         return DEFAULT_PROVIDER_API_FORMAT
 

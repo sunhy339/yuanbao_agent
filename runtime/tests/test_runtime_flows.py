@@ -116,10 +116,13 @@ def test_message_list_returns_persisted_conversation(runtime_harness: Any, tmp_p
     assert messages[0]["createdAt"] <= messages[1]["createdAt"]
 
 
-def test_provider_test_reports_mock_and_missing_env(runtime_harness: Any) -> None:
+def test_provider_test_reports_mock_and_missing_env(runtime_harness: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("YUANBAO_TEST_MISSING_ANTHROPIC_KEY", raising=False)
     mocked = runtime_harness.call("provider.test", {"provider": {"mode": "mock"}})["result"]
     assert mocked["ok"] is True
     assert mocked["status"] == "mocked"
+    assert mocked["apiFormat"] == "openai-chat"
+    assert mocked["requestPath"] == "/v1/chat/completions"
 
     missing_env = runtime_harness.call(
         "provider.test",
@@ -134,6 +137,27 @@ def test_provider_test_reports_mock_and_missing_env(runtime_harness: Any) -> Non
     assert missing_env["ok"] is False
     assert missing_env["status"] == "missing_env"
     assert missing_env["checkedEnvVarName"] == "YUANBAO_TEST_MISSING_KEY"
+    assert missing_env["apiFormat"] == "openai-chat"
+    assert missing_env["requestPath"] == "/v1/chat/completions"
+    assert missing_env["failureReason"] == "missing_env"
+
+    anthropic_missing_env = runtime_harness.call(
+        "provider.test",
+        {
+            "provider": {
+                "mode": "anthropic",
+                "apiKeyEnvVarName": "YUANBAO_TEST_MISSING_ANTHROPIC_KEY",
+                "model": "claude-test",
+            }
+        },
+    )["result"]
+    assert anthropic_missing_env["ok"] is False
+    assert anthropic_missing_env["status"] == "missing_env"
+    assert anthropic_missing_env["apiFormat"] == "anthropic-messages"
+    assert anthropic_missing_env["baseUrl"] == "https://api.anthropic.com"
+    assert anthropic_missing_env["requestPath"] == "/v1/messages"
+    assert anthropic_missing_env["checkedEnvVarName"] == "YUANBAO_TEST_MISSING_ANTHROPIC_KEY"
+    assert anthropic_missing_env["failureReason"] == "missing_env"
 
 
 def test_message_send_fails_when_openai_provider_key_is_missing(

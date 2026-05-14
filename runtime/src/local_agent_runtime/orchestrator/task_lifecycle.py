@@ -27,6 +27,12 @@ class TaskLifecycleMixin:
             tool_results=tool_results or [],
         )
         final_summary = self._merge_completion_summary(summary=summary, validation=validation)
+        completion_evidence = self._build_completion_evidence(
+            task=task,
+            summary=final_summary,
+            validation=validation,
+            tool_results=tool_results or [],
+        )
 
         # --- Reflection phase ---
         reflection_data = None
@@ -41,6 +47,7 @@ class TaskLifecycleMixin:
             reflection_data = self._reflector.to_dict(reflection_result)
             if reflection_result.improved_summary:
                 final_summary = reflection_result.improved_summary
+                completion_evidence["summaryPreview"] = final_summary[:500]
         # --- End reflection ---
 
         task["plan"] = self._planner.advance(
@@ -56,11 +63,12 @@ class TaskLifecycleMixin:
         # Build structured result from task fields
         structured_result = {
             "summary": final_summary,
-            "status": "success",
+            "status": completion_evidence["status"],
             "changedFiles": task.get("changedFiles") or [],
             "testsRun": task.get("testsRun") or [],
             "risks": task.get("risks") or [],
             "keyFindings": [],
+            "completionEvidence": completion_evidence,
         }
         completed_task = self._store.update_task(
             task_id=task["id"],
@@ -103,6 +111,7 @@ class TaskLifecycleMixin:
         completion_payload = {
             "decision": "completed",
             "whyComplete": final_summary[:500],
+            "completionEvidence": completion_evidence,
             "changedFiles": runtime_task.get("changedFiles") or [],
             "commands": runtime_task.get("commands") or [],
             "testsRun": runtime_task.get("verification") or [],
@@ -142,6 +151,7 @@ class TaskLifecycleMixin:
                 "reflection": reflection_data,
                 "summary": final_summary,
                 "resultSummary": final_summary,
+                "completionEvidence": completion_evidence,
                 "detail": final_summary,
             },
         )
@@ -174,6 +184,13 @@ class TaskLifecycleMixin:
             input_context: dict[str, Any] = {
                 "goal": task.get("goal", ""),
                 "summary": summary[:2000],
+                "acceptance_criteria": task.get("acceptanceCriteria") or [],
+                "completion_evidence": self._build_completion_evidence(
+                    task=task,
+                    summary=summary,
+                    validation=None,
+                    tool_results=[],
+                ),
                 "changed_files": [
                     f.get("path", "") for f in (task.get("changedFiles") or [])
                     if isinstance(f, dict)
@@ -200,6 +217,135 @@ class TaskLifecycleMixin:
         if context.get("_child_worker") is True or task.get("role") != "root":
             return not bool(self._advisor_config(context).get("enableChildCompletionAdvisor"))
         return False
+
+    def _build_completion_evidence(
+        self,
+        *,
+        task: dict[str, Any],
+        summary: str,
+        validation: dict[str, Any] | None,
+        tool_results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        criteria = [
+            str(item).strip()
+            for item in (task.get("acceptanceCriteria") or [])
+            if str(item).strip()
+        ]
+        changed_files = [
+            dict(item) for item in (task.get("changedFiles") or [])
+            if isinstance(item, dict)
+        ]
+        commands = [
+            dict(item) for item in (task.get("commands") or [])
+            if isinstance(item, dict)
+        ]
+        verification = [
+            dict(item) for item in (task.get("verification") or [])
+            if isinstance(item, dict)
+        ]
+        patches = self._completed_patch_results(tool_results)
+        tool_evidence = self._completion_tool_evidence(tool_results)
+        validation_checks = [
+            dict(item) for item in ((validation or {}).get("checks") or [])
+            if isinstance(item, dict)
+        ]
+
+        failed_verification = [
+            item for item in verification
+            if item.get("status") in {"failed", "timeout", "killed", "validation_failed"}
+        ]
+        passed_verification = [item for item in verification if item.get("status") == "passed"]
+        failed_validation_checks = [
+            item for item in validation_checks
+            if item.get("status") in {"failed", "timeout", "killed", "validation_failed"}
+        ]
+
+        has_workspace_evidence = bool(changed_files or patches)
+        has_command_evidence = bool(commands)
+        has_verification_evidence = bool(passed_verification)
+        has_failed_evidence = bool(failed_verification or failed_validation_checks)
+        if has_failed_evidence:
+            status = "needs_attention"
+            evidence_level = "failed_verification"
+        elif has_verification_evidence:
+            status = "success"
+            evidence_level = "verified"
+        elif has_workspace_evidence or has_command_evidence or tool_evidence:
+            status = "success"
+            evidence_level = "runtime_evidence"
+        else:
+            status = "unverified"
+            evidence_level = "summary_only"
+
+        acceptance = [
+            {
+                "criterion": criterion,
+                "status": "supported" if evidence_level != "summary_only" else "unverified",
+                "evidenceLevel": evidence_level,
+            }
+            for criterion in criteria
+        ]
+
+        return {
+            "status": status,
+            "evidenceLevel": evidence_level,
+            "summaryOnly": evidence_level == "summary_only",
+            "acceptance": acceptance,
+            "acceptanceCriteria": criteria,
+            "changedFiles": changed_files,
+            "commands": commands,
+            "verification": verification,
+            "patches": patches,
+            "toolResults": tool_evidence,
+            "validation": {
+                "checks": validation_checks,
+                "summary": (validation or {}).get("summary"),
+                "ran": (validation or {}).get("ran") or [],
+            },
+            "counts": {
+                "acceptanceCriteria": len(criteria),
+                "changedFiles": len(changed_files),
+                "commands": len(commands),
+                "verification": len(verification),
+                "passedVerification": len(passed_verification),
+                "failedVerification": len(failed_verification) + len(failed_validation_checks),
+                "patches": len(patches),
+                "toolResults": len(tool_evidence),
+            },
+            "summaryPreview": summary[:500],
+        }
+
+    def _completion_tool_evidence(self, tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        evidence: list[dict[str, Any]] = []
+        for tool_result in tool_results:
+            if not isinstance(tool_result, dict):
+                continue
+            name = tool_result.get("name")
+            result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+            if not isinstance(name, str) or not name:
+                continue
+            status = result.get("status") or ("completed" if result else "unknown")
+            item = {
+                "name": name,
+                "status": status,
+                "ok": result.get("ok"),
+                "summary": result.get("summary") or result.get("error"),
+            }
+            if name == "run_command":
+                item["exitCode"] = result.get("exitCode")
+                item["command"] = result.get("command")
+            elif name in {"apply_patch", "write_file"}:
+                item["changedPaths"] = (
+                    self._changed_paths_from_patch_result(result)
+                    if name == "apply_patch"
+                    else [result.get("path")] if isinstance(result.get("path"), str) else []
+                )
+            elif name == "task":
+                item["childStatus"] = result.get("status")
+                subagent = result.get("subagent") if isinstance(result.get("subagent"), dict) else {}
+                item["agentType"] = result.get("agentType") or subagent.get("agentType")
+            evidence.append({key: value for key, value in item.items() if value not in (None, [], "")})
+        return evidence
 
     def _validate_worker_output(self, *, session_id: str, task: dict[str, Any]) -> None:
         """Warn if a worker task completes without testsRun or risks."""

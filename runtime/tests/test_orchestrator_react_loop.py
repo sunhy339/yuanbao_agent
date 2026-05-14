@@ -1586,6 +1586,12 @@ def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: 
     assert task["commands"][0]["status"] == "completed"
     assert task["verification"][-1]["command"] == "pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation"
     assert task["verification"][-1]["status"] == "passed"
+    evidence = task["structuredResult"]["completionEvidence"]
+    assert evidence["evidenceLevel"] == "verified"
+    assert evidence["status"] == "success"
+    assert evidence["counts"]["changedFiles"] == 1
+    assert evidence["counts"]["passedVerification"] >= 1
+    assert evidence["acceptance"][0]["status"] == "supported"
 
     trace = _rpc(runtime, "trace.list", {"taskId": task["id"]})["result"]["traceEvents"]
     trace_types = [event["type"] for event in trace]
@@ -1595,6 +1601,8 @@ def test_patch_completion_runs_post_task_validation_and_records_trace(tmp_path: 
     assert validation_event["payload"]["command"]["command"] == "pytest runtime/tests/test_orchestrator_react_loop.py -k post_task_validation"
     assert validation_event["payload"]["patches"][0]["summary"] == "Updated todo.txt"
     assert validation_event["payload"]["verification"][-1]["status"] == "passed"
+    completion_event = next(event for event in trace if event["type"] == "agent.decision.completion")
+    assert completion_event["payload"]["completionEvidence"]["evidenceLevel"] == "verified"
     task_updates = [event for event in runtime.events if event["type"] == "task.updated"]
     assert any(event["payload"].get("changedFiles") for event in task_updates)
     assert any(event["payload"].get("commands") for event in task_updates)

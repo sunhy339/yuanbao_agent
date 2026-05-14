@@ -1170,6 +1170,22 @@ flowchart TD
 | `npm.cmd test -- SettingsWorkspace.test.tsx` in `app/` | 14 passed |
 | `npx.cmd tsc --noEmit` in `app/` | passed |
 
+### 2026-05-14 补充进展：Completion Evidence
+
+| 任务 | 状态 | 说明 |
+| --- | --- | --- |
+| Completion / Stop 判断强化第一阶段 | Done | `_complete_task` 会构建 `completionEvidence`，汇总 acceptance criteria、changed files、commands、verification、patches 和 tool results，并写入 `structuredResult.completionEvidence` 与 `agent.decision.completion` 事件。验证通过时标记 `evidenceLevel=verified`；只有自然语言总结时标记 `summary_only/unverified`，为后续硬 gate 留出明确输入。 |
+
+验证结果：
+
+| 验证 | 结果 |
+| --- | --- |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local runtime/tests/test_orchestrator_react_loop.py::test_patch_completion_runs_post_task_validation_and_records_trace runtime/tests/test_decision_trace.py::TestCompletionDecisionEvent::test_completion_event_on_success runtime/tests/test_worker_structured_output.py` | 8 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local-react runtime/tests/test_orchestrator_react_loop.py runtime/tests/test_structured_react_turn.py runtime/tests/test_decision_trace.py` | 87 passed, 1 skipped |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local-provider runtime/tests/test_provider_turns.py::TestContextSnapshotCRUD runtime/tests/test_multi_agent_health_report.py runtime/tests/test_e2e_smoke.py` | 11 passed |
+
+剩余边界：当前阶段先做“证据结构化与可审计”，暂不直接阻断 summary-only completion；下一阶段可以基于 `completionEvidence.evidenceLevel` 和任务风险等级，把写入型任务的 `summary_only` 完成升级为 `needs_user_review`、`needs_verification` 或失败。
+
 ### 当前剩余非大文件任务
 
 | 优先级 | 任务 | 当前状态 | 下一步 |
@@ -1185,3 +1201,5 @@ flowchart TD
 ### 当前重点
 
 下一阶段最值得先做的是 **Completion / Stop 判断强化**。原因是 ToolPolicyResolver 已经能避免 synthesis 轮继续乱拿工具，provider 链路也更稳；接下来要保证任务什么时候“真的完成”有硬依据，否则 agent 仍可能出现自然语言说完成但工作区状态未满足验收项的问题。
+
+2026-05-14 更新：Completion Evidence 第一阶段已完成；后续重点应转向 **Worktree 自动绑定写入型任务**，并在之后把 `completionEvidence.evidenceLevel` 接入更严格的完成 gate。

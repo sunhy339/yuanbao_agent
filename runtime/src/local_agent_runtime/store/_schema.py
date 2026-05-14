@@ -440,6 +440,28 @@ class SchemaBootstrapMixin:
 
             CREATE UNIQUE INDEX IF NOT EXISTS idx_rolling_summary_session
                 ON session_rolling_summaries (session_id);
+
+            CREATE TABLE IF NOT EXISTS agent_profiles (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                role TEXT NOT NULL DEFAULT 'custom',
+                cwd TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                permission_mode TEXT,
+                provider_profile_id TEXT,
+                model TEXT,
+                skill_ids_json TEXT NOT NULL DEFAULT '[]',
+                mcp_server_ids_json TEXT DEFAULT '[]',
+                tool_policy_json TEXT,
+                system_prompt TEXT,
+                is_builtin INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_profiles_role
+                ON agent_profiles (role);
             """
         )
         self._conn.commit()

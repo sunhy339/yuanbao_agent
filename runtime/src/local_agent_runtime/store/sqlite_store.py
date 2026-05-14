@@ -13,6 +13,7 @@ from ._constants import CONFIG_KEY, DEFAULT_CONFIG
 from .agent_store import AgentStoreMixin
 from .config_store import ConfigStoreMixin
 from .event_store import EventStoreMixin
+from .agent_profile_store import AgentProfileStoreMixin
 from .extension_store import ExtensionStoreMixin
 from .proposal_store import ProposalStoreMixin
 from .repositories.hook_repository import HookStoreMixin
@@ -27,6 +28,7 @@ class SQLiteStore(
     SessionStoreMixin,
     TaskStoreMixin,
     AgentStoreMixin,
+    AgentProfileStoreMixin,
     EventStoreMixin,
     ConfigStoreMixin,
     ProposalStoreMixin,

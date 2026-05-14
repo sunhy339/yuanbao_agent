@@ -41,6 +41,7 @@ from .message_routing import MessageRoutingMixin
 from .message_execution import MessageExecutionMixin
 from .publishing import PublishingMixin
 from .supplement_flow import SupplementFlowMixin
+from .agent_profile_flow import AgentProfileFlowMixin
 from .skill_flow import SkillFlowMixin
 from .provider_turn import ProviderTurnMixin
 from .react_runner import ReactRunnerMixin
@@ -67,6 +68,7 @@ class Orchestrator(
     MessageRoutingMixin,
     PublishingMixin,
     SkillFlowMixin,
+    AgentProfileFlowMixin,
     SupplementFlowMixin,
 ):
     """Coordinates the first-pass agent loop for Sprint 1."""

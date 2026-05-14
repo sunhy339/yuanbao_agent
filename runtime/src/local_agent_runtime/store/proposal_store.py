@@ -205,6 +205,33 @@ class ProposalStoreMixin:
             return None
         return self._serialize_approval(dict(row))
 
+    def find_approval_by_request_fields(
+        self,
+        *,
+        task_id: str,
+        kind: str,
+        fields: dict[str, Any],
+        decision: str | None = None,
+    ) -> dict[str, Any] | None:
+        query = ["SELECT * FROM approvals WHERE task_id = ? AND kind = ?"]
+        values: list[Any] = [task_id, kind]
+        if decision is not None:
+            query.append("AND decision = ?")
+            values.append(decision)
+        query.append("ORDER BY created_at DESC")
+        rows = self._conn.execute(" ".join(query), values).fetchall()
+        for row in rows:
+            approval = self._serialize_approval(dict(row))
+            try:
+                request = json.loads(approval.get("requestJson") or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(request, dict):
+                continue
+            if all(request.get(key) == value for key, value in fields.items()):
+                return approval
+        return None
+
     def find_latest_approval(self, *, task_id: str, decision: str | None = None) -> dict[str, Any] | None:
         query = ["SELECT * FROM approvals WHERE task_id = ?"]
         values: list[Any] = [task_id]

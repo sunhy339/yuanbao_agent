@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
 from ..git.worktree_adapter import GitWorktreeAdapter
+from ..policy.guard import PolicyGuard
+from ..policy.permission_engine import PermissionRequest
+from ..services.command_execution import run_shell_command
 from ..store.sqlite_store import SQLiteStore
 
 logger = logging.getLogger(__name__)
@@ -29,10 +31,14 @@ class WorktreeService:
         store: SQLiteStore,
         git_adapter: GitWorktreeAdapter,
         hook_service: Any | None = None,
+        policy_guard: PolicyGuard | None = None,
+        permission_engine: Any | None = None,
     ) -> None:
         self._store = store
         self._git = git_adapter
         self._hook_service = hook_service
+        self._policy_guard = policy_guard
+        self._permission_engine = permission_engine
 
     def _fire_hooks(self, event: str, context: dict[str, Any]) -> list[dict[str, Any]]:
         """Fire hooks for a worktree lifecycle event. No-op if no hook service."""
@@ -93,10 +99,14 @@ class WorktreeService:
             request["verificationCommands"] = [item.get("command") for item in verification if item.get("command")]
             request["verificationStatus"] = "passed"
 
-        existing = self._store.find_approval(
-            task_id=wt["taskId"],
+        stable_fields = {
+            "worktreeId": wt["id"],
+            "targetBranch": target_branch,
+        }
+        existing = self._store.find_approval_by_request_fields(
+            task_id=wt.get("taskId", ""),
             kind="worktree_merge",
-            request=request,
+            fields=stable_fields,
         )
         if existing is not None and existing.get("decision") is None:
             approval = existing
@@ -342,87 +352,117 @@ class WorktreeService:
                 commands.append(command.strip())
         return commands
 
+    def _policy_guard_for_verification(self) -> PolicyGuard:
+        if self._policy_guard is not None:
+            return self._policy_guard
+        try:
+            config = self._store.get_config({}).get("config", {})
+            approval_mode = config.get("policy", {}).get("approvalMode", "on_write_or_command")
+        except Exception:  # noqa: BLE001
+            approval_mode = "on_write_or_command"
+        return PolicyGuard(approval_mode=approval_mode)
+
+    def _run_command_config(self) -> dict[str, Any]:
+        try:
+            config = self._store.get_config({}).get("config", {})
+        except Exception:  # noqa: BLE001
+            return {}
+        tools = config.get("tools") if isinstance(config, dict) else {}
+        run_command = tools.get("runCommand") if isinstance(tools, dict) else {}
+        return run_command if isinstance(run_command, dict) else {}
+
+    def _verification_shell(self) -> str:
+        shell_name = str(self._run_command_config().get("allowedShell") or "powershell").strip().lower()
+        if shell_name not in {"powershell", "bash", "zsh"}:
+            return "powershell"
+        return shell_name
+
+    def _ensure_verification_command_allowed(self, command: str) -> None:
+        self._policy_guard_for_verification().validate_command(command, self._run_command_config())
+        if self._permission_engine is not None:
+            decision = self._permission_engine.evaluate(
+                PermissionRequest(capability="runCommand", tool_name="run_command")
+            )
+            if decision.decision == "deny":
+                raise ValueError(decision.reason)
+
     def _run_merge_verification(self, wt: dict[str, Any], params: dict[str, Any]) -> list[dict[str, Any]]:
         commands = self._merge_verification_commands(params)
         if not commands:
             return []
         timeout_ms = self._merge_verification_timeout_ms(params)
-        timeout_seconds = timeout_ms / 1000
+        shell_name = self._verification_shell()
+        worktree_path = Path(wt["worktreePath"]).resolve()
+        if not worktree_path.is_dir():
+            raise ValueError(f"Worktree path does not exist: {wt['worktreePath']}")
         results: list[dict[str, Any]] = []
         for command in commands:
-            started_at = int(time.time() * 1000)
+            self._ensure_verification_command_allowed(command)
+            command_log = self._store.create_command_log(
+                task_id=wt.get("taskId", ""),
+                command=command,
+                cwd=str(worktree_path),
+                shell=shell_name,
+            )
+            started_at = command_log.get("startedAt") or int(time.time() * 1000)
+            stdout = ""
+            stderr = ""
+            exit_code: int | None = None
+            command_status = "failed"
+            duration_ms = 0
             try:
-                completed = subprocess.run(
+                stdout, stderr, exit_code, command_status, duration_ms = run_shell_command(
+                    shell_name,
                     command,
-                    cwd=wt["worktreePath"],
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_seconds,
-                    check=False,
+                    worktree_path,
+                    timeout_ms,
                 )
-                finished_at = int(time.time() * 1000)
-                status = "passed" if completed.returncode == 0 else "failed"
-                stdout = self._truncate_output(completed.stdout)
-                stderr = self._truncate_output(completed.stderr)
-                result = {
-                    "command": command,
-                    "cwd": wt["worktreePath"],
-                    "status": status,
-                    "exitCode": completed.returncode,
-                    "durationMs": max(0, finished_at - started_at),
-                    "summary": self._verification_summary(
-                        status=status,
-                        exit_code=completed.returncode,
-                        stdout=stdout,
-                        stderr=stderr,
-                    ),
-                    "startedAt": started_at,
-                    "finishedAt": finished_at,
-                }
-                if stdout:
-                    result["stdout"] = stdout
-                if stderr:
-                    result["stderr"] = stderr
-                results.append(result)
-                if status == "failed":
-                    break
-            except subprocess.TimeoutExpired as exc:
-                finished_at = int(time.time() * 1000)
-                stdout = self._truncate_output(exc.stdout)
-                stderr = self._truncate_output(exc.stderr)
-                result = {
-                    "command": command,
-                    "cwd": wt["worktreePath"],
-                    "status": "failed",
-                    "exitCode": None,
-                    "durationMs": max(0, finished_at - started_at),
-                    "summary": f"Verification timed out after {timeout_ms}ms.",
-                    "startedAt": started_at,
-                    "finishedAt": finished_at,
-                }
-                if stdout:
-                    result["stdout"] = stdout
-                if stderr:
-                    result["stderr"] = stderr
-                results.append(result)
-                break
             except Exception as exc:  # noqa: BLE001
-                finished_at = int(time.time() * 1000)
-                results.append({
-                    "command": command,
-                    "cwd": wt.get("worktreePath", ""),
-                    "status": "failed",
-                    "exitCode": None,
-                    "durationMs": max(0, finished_at - started_at),
-                    "summary": str(exc),
-                    "startedAt": started_at,
-                    "finishedAt": finished_at,
-                })
+                stderr = str(exc)
+                command_status = "failed"
+            finished_at = self._store.now()
+            stdout_path = self._store.write_command_artifact(command_log["id"], "stdout", stdout)
+            stderr_path = self._store.write_command_artifact(command_log["id"], "stderr", stderr)
+            command_log = self._store.update_command_log(
+                command_log["id"],
+                status=command_status,
+                exit_code=exit_code,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                finished_at=finished_at,
+            )
+            status = "passed" if command_status == "completed" and exit_code == 0 else "failed"
+            stdout_text = self._truncate_output(stdout)
+            stderr_text = self._truncate_output(stderr)
+            result = {
+                "id": command_log["id"],
+                "command": command,
+                "cwd": str(worktree_path),
+                "shell": shell_name,
+                "status": status,
+                "exitCode": exit_code,
+                "durationMs": duration_ms or max(0, finished_at - started_at),
+                "summary": self._verification_summary(
+                    status=status,
+                    exit_code=exit_code,
+                    stdout=stdout_text,
+                    stderr=stderr_text,
+                ),
+                "startedAt": started_at,
+                "finishedAt": finished_at,
+                "stdoutPath": command_log.get("stdoutPath"),
+                "stderrPath": command_log.get("stderrPath"),
+            }
+            if stdout_text:
+                result["stdout"] = stdout_text
+            if stderr_text:
+                result["stderr"] = stderr_text
+            results.append(result)
+            if status == "failed":
                 break
         return results
 
-    def _verification_summary(self, *, status: str, exit_code: int, stdout: str, stderr: str) -> str:
+    def _verification_summary(self, *, status: str, exit_code: int | None, stdout: str, stderr: str) -> str:
         output = (stderr if status == "failed" else stdout).strip()
         if not output:
             output = (stdout or stderr).strip()

@@ -395,11 +395,72 @@ class TestWorktreeServiceMergeGate:
         assert verification[0]["status"] == "passed"
         assert verification[0]["command"].startswith("python -c")
         assert verification[0]["cwd"] == str(worktree_path)
+        assert verification[0]["id"].startswith("cmd_")
         request = json.loads(result["approval"]["requestJson"])
         assert request["verificationStatus"] == "passed"
         assert request["verification"][0]["status"] == "passed"
         stored = store.get_worktree({"worktreeId": wt["id"]})["worktree"]
         assert stored["lastStatus"]["mergeVerification"][0]["status"] == "passed"
+        command_logs = store.list_command_logs({"taskId": task["id"]})["commandLogs"]
+        assert command_logs[0]["command"].startswith("python -c")
+        assert command_logs[0]["status"] == "completed"
+
+    def test_request_merge_approval_reuses_pending_approval_after_rerun_verification(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+        wt = _create_worktree(
+            store,
+            ws_id,
+            task_id=task["id"],
+            session_id=task["sessionId"],
+            worktree_path=str(worktree_path),
+        )
+        git = FakeGitWorktreeAdapter()
+        service = WorktreeService(store, git)
+        params = {
+            "worktreeId": wt["id"],
+            "verificationCommands": ["python -c \"print('merge ok')\""],
+        }
+
+        first = service.request_merge_approval(params)
+        second = service.request_merge_approval(params)
+
+        assert second["approval"]["id"] == first["approval"]["id"]
+        assert len(store.list_command_logs({"taskId": task["id"]})["commandLogs"]) == 2
+
+    def test_request_merge_approval_applies_command_policy(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        store.update_config({
+            "tools": {
+                "runCommand": {
+                    "blockedPatterns": ["python -c*"],
+                },
+            },
+        })
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+        wt = _create_worktree(
+            store,
+            ws_id,
+            task_id=task["id"],
+            session_id=task["sessionId"],
+            worktree_path=str(worktree_path),
+        )
+        git = FakeGitWorktreeAdapter()
+        service = WorktreeService(store, git)
+
+        with pytest.raises(ValueError, match="Blocked dangerous command pattern"):
+            service.request_merge_approval({
+                "worktreeId": wt["id"],
+                "verificationCommands": ["python -c \"print('merge ok')\""],
+            })
+
+        assert store.list_command_logs({"taskId": task["id"]})["commandLogs"] == []
 
     def test_request_merge_approval_blocks_failed_verification(self, tmp_path: Any) -> None:
         store = _make_store(tmp_path)

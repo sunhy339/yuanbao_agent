@@ -153,6 +153,7 @@ export function App() {
       setWorktreeDiff(result.diff ?? worktreeDiff);
       const passedVerification = result.verification?.length ? ` after ${result.verification.length} verification check${result.verification.length === 1 ? "" : "s"}` : "";
       addToast("info", `Worktree merge approval requested${passedVerification}.`);
+      await handleRefreshTask();
     }
   }
 

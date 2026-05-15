@@ -1344,10 +1344,10 @@ flowchart TD
 | tool/provider/compaction hooks | Done | tool pipeline 触发 `before_tool_call` / `after_tool_call`；ReAct provider turn 触发 `before_provider_turn` / `after_provider_turn`；compaction 触发 `before_compaction` / `after_compaction`；context snapshot 触发 `on_context_snapshot`。 |
 | worktree hooks | Done | WorktreeService 在 create/merge 前后触发 `before_worktree_create`、`after_worktree_create`、`before_worktree_merge`、`after_worktree_merge`，并把 review/approval/verification/strategy 上下文传入。 |
 | PermissionEngine | Done | hook 的 `run_command` side effect 会先经 `PermissionEngine` 判定；deny 阻断，approval-required 落为待批准结果。 |
+| Settings UI 管理入口 | Done | 设置页已接入 hook list/create/update/delete、启用开关、action/condition/authority/retry 配置和执行记录查看。 |
 | 验证 | Done | `runtime/tests/test_runtime_hooks.py` 与 worktree/agent profile 组合回归通过：`71 passed`。 |
 
 剩余 Hooks 后续：
 
-1. Settings UI 里还需要 hook list/create/update/delete、执行记录查看、模板化动作配置。
-2. P2 动作类型可以继续扩展通知/webhook、memory write、自动验证建议、外部系统同步。
-3. 真实 provider + hook side effect smoke 仍应作为可选脚本固化，避免依赖本地密钥。
+1. P2 动作类型可以继续扩展通知/webhook、memory write、自动验证建议、外部系统同步。
+2. 真实 provider + hook side effect 组合 smoke 仍可作为发布 gate 的可选项启用，避免默认依赖本地密钥。

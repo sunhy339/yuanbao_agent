@@ -54,7 +54,17 @@ def test_mock_provider_still_uses_deterministic_fallback() -> None:
     assert response["prompt"] == "inspect workspace"
 
 
-def test_openai_compatible_request_payload() -> None:
+def test_openai_compatible_request_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "LOCAL_AGENT_PROVIDER_MODEL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
     calls: list[dict[str, Any]] = []
 
     def fake_post(**kwargs: Any) -> tuple[int, bytes]:
@@ -364,7 +374,17 @@ def test_provider_api_format_aliases_use_openai_chat_adapter() -> None:
     assert calls[0]["url"] == "https://llm.example.test/v1/chat/completions"
 
 
-def test_openai_responses_api_format_posts_responses_payload() -> None:
+def test_openai_responses_api_format_posts_responses_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "LOCAL_AGENT_PROVIDER_MODEL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
     calls: list[dict[str, Any]] = []
 
     def fake_post(**kwargs: Any) -> tuple[int, bytes]:
@@ -471,7 +491,17 @@ def test_openai_responses_tool_call_response_is_normalized() -> None:
     ]
 
 
-def test_anthropic_messages_api_format_posts_messages_payload() -> None:
+def test_anthropic_messages_api_format_posts_messages_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "LOCAL_AGENT_PROVIDER_MODEL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
     calls: list[dict[str, Any]] = []
 
     def fake_post(**kwargs: Any) -> tuple[int, bytes]:

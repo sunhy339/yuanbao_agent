@@ -237,6 +237,12 @@ function sortScheduledRuns(runs: ScheduledTaskRunRecord[]): ScheduledTaskRunReco
 
 function mergeRuntimeConfig(current: RuntimeConfig, next: ConfigUpdateParams): RuntimeConfig {
   const patch = "config" in next && next.config ? next.config : next;
+  const curAutonomy = current.autonomy ?? {};
+  const curAgentSoul = current.agentSoul ?? {};
+  const curPermissions = current.permissions ?? { preset: undefined, capabilities: {} };
+  const curTools = current.tools ?? {};
+  const curWorktree = current.worktree ?? {};
+  const curUi = current.ui ?? {};
   return {
     ...current,
     ...patch,
@@ -257,40 +263,40 @@ function mergeRuntimeConfig(current: RuntimeConfig, next: ConfigUpdateParams): R
       ...patch.policy,
     },
     autonomy: {
-      ...current.autonomy,
+      ...curAutonomy,
       ...patch.autonomy,
-      activeProfileId: patch.autonomy?.activeProfileId ?? current.autonomy.activeProfileId,
-      profiles: patch.autonomy?.profiles ?? current.autonomy.profiles,
+      activeProfileId: patch.autonomy?.activeProfileId ?? curAutonomy.activeProfileId,
+      profiles: patch.autonomy?.profiles ?? curAutonomy.profiles,
     },
     agentSoul: {
-      ...current.agentSoul,
+      ...curAgentSoul,
       ...patch.agentSoul,
-      activeProfileId: patch.agentSoul?.activeProfileId ?? current.agentSoul.activeProfileId,
-      workspaceInstructions: patch.agentSoul?.workspaceInstructions ?? current.agentSoul.workspaceInstructions,
-      sessionOverrideEnabled: patch.agentSoul?.sessionOverrideEnabled ?? current.agentSoul.sessionOverrideEnabled,
-      profiles: patch.agentSoul?.profiles ?? current.agentSoul.profiles,
+      activeProfileId: patch.agentSoul?.activeProfileId ?? curAgentSoul.activeProfileId,
+      workspaceInstructions: patch.agentSoul?.workspaceInstructions ?? curAgentSoul.workspaceInstructions,
+      sessionOverrideEnabled: patch.agentSoul?.sessionOverrideEnabled ?? curAgentSoul.sessionOverrideEnabled,
+      profiles: patch.agentSoul?.profiles ?? curAgentSoul.profiles,
     },
     permissions: {
-      preset: patch.permissions?.preset ?? current.permissions.preset,
+      preset: patch.permissions?.preset ?? curPermissions.preset,
       capabilities: {
-        ...current.permissions.capabilities,
+        ...curPermissions.capabilities,
         ...patch.permissions?.capabilities,
       },
     },
     tools: {
-      ...current.tools,
+      ...curTools,
       ...patch.tools,
       runCommand: {
-        ...current.tools.runCommand,
+        ...curTools.runCommand,
         ...patch.tools?.runCommand,
       },
     },
     worktree: {
-      ...current.worktree,
+      ...curWorktree,
       ...patch.worktree,
     },
     ui: {
-      ...current.ui,
+      ...curUi,
       ...patch.ui,
     },
   };

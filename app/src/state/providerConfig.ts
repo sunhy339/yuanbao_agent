@@ -198,8 +198,8 @@ export function normalizeRuntimeConfig(config: AppConfig | RuntimeConfig): Runti
       ignore: config.workspace.ignore,
     },
     tools: {
-      ...config.tools,
-      runCommand: normalizeRunCommandConfig(config.tools.runCommand),
+      ...(config.tools ?? {}),
+      runCommand: normalizeRunCommandConfig(config.tools?.runCommand),
     },
     worktree: config.worktree,
   };

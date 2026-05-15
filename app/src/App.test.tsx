@@ -21,6 +21,7 @@ const runtimeMocks = vi.hoisted(() => ({
   listScheduledTasks: vi.fn(),
   listSkills: vi.fn(),
   listMcpServers: vi.fn(),
+  listAgentProfiles: vi.fn(),
   listMessages: vi.fn(),
   subscribeEvents: vi.fn(),
   canOpenLocalAppPaths: vi.fn(),
@@ -115,6 +116,7 @@ function setupRuntimeMocks() {
   } satisfies ScheduledTaskListResult);
   runtimeMocks.listSkills.mockResolvedValue({ skills: [] });
   runtimeMocks.listMcpServers.mockResolvedValue({ servers: [] });
+  runtimeMocks.listAgentProfiles.mockResolvedValue({ agents: [] });
   runtimeMocks.listMessages.mockImplementation(
     async ({ sessionId }: { sessionId: string }): Promise<MessageListResult> => ({
       messages: messagesBySession[sessionId] ?? [],

@@ -141,10 +141,12 @@ class TestHookCRUD:
         updated = store.update_hook({
             "hookId": hook["id"],
             "name": "Updated name",
+            "event": "before_provider_turn",
             "priority": 50,
             "enabled": False,
         })
         assert updated["hook"]["name"] == "Updated name"
+        assert updated["hook"]["event"] == "before_provider_turn"
         assert updated["hook"]["priority"] == 50
         assert updated["hook"]["enabled"] is False
 

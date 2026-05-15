@@ -1154,7 +1154,7 @@ flowchart TD
 2. P0：为 ReAct 写文件类工具调用增加“大内容分片/多文件分步写入”策略，避免一次 tool call 塞完整页面代码导致流式卡住。
 3. P0：完成条件必须以 acceptance criteria + workspace 文件状态 + 工具执行结果为准。
 4. P1：provider 设置页明确提示 base URL 规范，保存时可自动规范化或预检 `/v1/chat/completions`。
-5. P1：将真实 LLM smoke 固化为可选测试脚本，不写入密钥，只从环境变量读取。
+5. P1：真实 LLM smoke 已固化为默认跳过、环境变量显式开启的 pytest；只从环境变量读取 key/base URL/model/apiFormat，不写入密钥或生成物。
 
 2026-05-14 后端链路修复进展：
 
@@ -1271,9 +1271,9 @@ flowchart TD
 | --- | --- | --- | --- |
 | P0/P1 | Completion / Stop 判断强化 | 硬 gate 第一/二/三/四/五层已完成：写入/验证型 `summary_only` 会进入 `completion_review`；失败验证会直接失败；有工作区变更证据但缺少 passed verification 会进入 `needs_verification`；结构化 acceptance failed/缺项会进入 `needs_acceptance_review`；unresolved tool failures 会进入 `needs_tool_review`；代码/测试文件变更如果只有结构性 git 检查也会进入 `needs_verification`；基础 completion review 证据展示已接入 UI。 | 下一步继续细化语言/框架测试匹配规则，并把 reviewer/approval 结论纳入更完整的完成审计。 |
 | P1 | Worktree 后续闭环 | 自动绑定写入型任务、工具 cwd 路由、桌面端 path/status/diff 展示、formal merge approval gate、merge 前验证命令、reviewer gate、approval summary、dirty merge/cleanup 保护、多 agent worktree strategy 摘要已完成；会话页 Worktree 面板展示 verification/review/approval/agent strategy。 | 下一步做真实多 agent smoke 与更细的共享/独立 worktree 策略文档，必要时补 conflict UI。 |
-| P1 | Hooks 生命周期补齐 | before/after task、before/after tool、before/after provider turn、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已接线；hook `run_command` side effect 已纳入 PermissionEngine，runtime 回归覆盖 71 项。 | 下一步补 Settings UI 的 hook 管理入口，以及通知/webhook/模板等 P2 动作类型。 |
+| P1 | Hooks 生命周期补齐 | before/after task、before/after tool、before/after provider turn、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已接线；hook `run_command` side effect 已纳入 PermissionEngine；Settings UI 已接入 hook 列表、新建/编辑/删除、启用开关、action/condition/authority/retry 配置和执行记录查看。 | 下一步补通知/webhook/模板等 P2 动作类型，以及真实 provider + hook side effect smoke。 |
 | P1 | Dynamic Agent Profile 设置页 | Done：backend store/RPC、shared 类型、validate/previewTools、Tauri bridge、Settings UI profile 管理全部接通。 | 后续只剩真实 provider/profile 组合 smoke 与易用性打磨。 |
-| P1 | Real LLM smoke 固化 | 手工和回归测试已有，尚未变成安全脚本。 | 新增可选 smoke runner，只从环境变量读取 key，不落库、不写文档、不提交生成物。 |
+| P1 | Real LLM smoke 固化 | Done：新增 `runtime/tests/test_real_llm_smoke.py`，默认跳过；设置 `YUANBAO_REAL_LLM_SMOKE=1` 后用环境变量中的 provider key/base URL/model/apiFormat 做最小真实 chat smoke。 | 后续可在手工发布 gate 中按需启用，并补真实 provider + hook side effect 组合 smoke。 |
 
 ### 当前重点
 
@@ -1287,7 +1287,7 @@ flowchart TD
 
 2026-05-14 更新：Dynamic Agent Profile backend/RPC 已完成并补验证；当前剩余的是 Settings UI profile 管理入口与 Real LLM smoke 固化。
 
-2026-05-15 更新：Dynamic Agent Profile Settings UI 已完成；Worktree 后续闭环已补到 merge verification、reviewer gate、approval summary、dirty merge/cleanup 保护和多 agent strategy 摘要展示；Hooks 生命周期已核对为已接线状态。当前主要剩余转向 Real LLM smoke 固化、Hook Settings 管理入口，以及多 agent worktree 策略的真实场景验证。
+2026-05-15 更新：Dynamic Agent Profile Settings UI 已完成；Worktree 后续闭环已补到 merge verification、reviewer gate、approval summary、dirty merge/cleanup 保护和多 agent strategy 摘要展示；Hooks 生命周期已核对为已接线状态，Hook Settings 管理入口已接入；Real LLM smoke 已固化为默认跳过、环境变量显式开启的 pytest。当前主要剩余转向多 agent worktree 策略的真实场景验证，以及 P2 hook 动作类型。
 
 ### 2026-05-14 Worktree 自动绑定首段闭环
 

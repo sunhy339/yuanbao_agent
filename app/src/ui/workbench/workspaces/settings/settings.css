@@ -576,6 +576,13 @@
     rgba(3, 7, 18, 0.48);
 }
 
+.settings-hook-row.is-selected {
+  border-color: rgba(34, 211, 238, 0.68);
+  background:
+    linear-gradient(90deg, rgba(8, 145, 178, 0.2), transparent 72%),
+    rgba(3, 7, 18, 0.48);
+}
+
 .settings-agent-select {
   min-width: 0;
   flex: 1;
@@ -638,6 +645,57 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.settings-hook-editor .settings-field textarea {
+  min-height: 92px;
+  font-family: var(--yb-font-mono);
+  font-size: 0.82rem;
+}
+
+.settings-hook-executions {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--settings-border);
+  border-radius: var(--yb-radius-lg);
+  background: rgba(3, 7, 18, 0.28);
+}
+
+.settings-hook-executions header {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.settings-hook-executions h3 {
+  margin: 4px 0 0;
+  font-size: 16px;
+}
+
+.settings-hook-execution-list {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-hook-execution-list article {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+  background: rgba(3, 7, 18, 0.24);
+}
+
+.settings-hook-execution-list span,
+.settings-hook-execution-list small {
+  color: var(--settings-muted);
+  overflow-wrap: anywhere;
+}
+
+.settings-hook-error {
+  color: #fecdd3;
 }
 
 .settings-agent-feedback {

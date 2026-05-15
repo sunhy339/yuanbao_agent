@@ -7,7 +7,11 @@ import type {
   AgentProfileValidateParams,
   AgentEventEnvelope,
   AssistantTokenPayload,
+  HookCreateParams,
+  HookUpdateParams,
   McpServerRecord,
+  RuntimeHookExecutionRecord,
+  RuntimeHookRecord,
   SessionRecord,
   SkillPresetRecord,
   TaskRecord,
@@ -78,6 +82,10 @@ export function App() {
   const [agentProfiles, setAgentProfiles] = useState<AgentProfileRecord[]>([]);
   const [agentProfileBusyId, setAgentProfileBusyId] = useState<string | null>(null);
   const [agentProfileFeedback, setAgentProfileFeedback] = useState<{ tone: "success" | "danger" | "info"; message: string } | null>(null);
+  const [runtimeHooks, setRuntimeHooks] = useState<RuntimeHookRecord[]>([]);
+  const [hookExecutions, setHookExecutions] = useState<RuntimeHookExecutionRecord[]>([]);
+  const [hookBusyId, setHookBusyId] = useState<string | null>(null);
+  const [hookFeedback, setHookFeedback] = useState<{ tone: "success" | "danger" | "info"; message: string } | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessageView[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
@@ -251,6 +259,114 @@ export function App() {
     return runtimeClient.previewAgentProfileTools(payload);
   }
 
+  async function refreshRuntimeHooks(workspaceIdOverride?: string) {
+    const targetWorkspaceId = workspaceIdOverride ?? workspace?.id;
+    if (!targetWorkspaceId) {
+      setRuntimeHooks([]);
+      setHookExecutions([]);
+      setHookFeedback({ tone: "info", message: "Open a workspace before managing runtime hooks." });
+      return;
+    }
+    setHookBusyId("refresh");
+    setHookFeedback(null);
+    try {
+      const result = await runtimeClient.listHooks({ workspaceId: targetWorkspaceId });
+      setRuntimeHooks(result.hooks);
+      const selectedHookId = result.hooks[0]?.id;
+      if (selectedHookId) {
+        const executions = await runtimeClient.listHookExecutions({ hookId: selectedHookId, limit: 50 });
+        setHookExecutions(executions.hookExecutions);
+      } else {
+        setHookExecutions([]);
+      }
+    } catch (reason) {
+      const message = getErrorMessage(reason);
+      setHookFeedback({ tone: "danger", message });
+      addToast("error", message);
+    } finally {
+      setHookBusyId(null);
+    }
+  }
+
+  async function refreshHookExecutions(hookId?: string) {
+    const targetHookId = hookId ?? runtimeHooks[0]?.id;
+    if (!targetHookId) {
+      setHookExecutions([]);
+      return;
+    }
+    setHookBusyId("executions");
+    setHookFeedback(null);
+    try {
+      const result = await runtimeClient.listHookExecutions({ hookId: targetHookId, limit: 50 });
+      setHookExecutions((current) => [
+        ...current.filter((item) => item.hookId !== targetHookId),
+        ...result.hookExecutions,
+      ]);
+    } catch (reason) {
+      const message = getErrorMessage(reason);
+      setHookFeedback({ tone: "danger", message });
+      addToast("error", message);
+    } finally {
+      setHookBusyId(null);
+    }
+  }
+
+  async function handleAddHook(payload: HookCreateParams) {
+    setHookBusyId("create");
+    setHookFeedback(null);
+    try {
+      const result = await runtimeClient.createHook(payload);
+      setRuntimeHooks((current) => [result.hook, ...current.filter((item) => item.id !== result.hook.id)]);
+      setHookFeedback({ tone: "success", message: `Hook "${result.hook.name}" created.` });
+      addToast("success", "Runtime hook created.");
+    } catch (reason) {
+      const message = getErrorMessage(reason);
+      setHookFeedback({ tone: "danger", message });
+      addToast("error", message);
+      throw reason;
+    } finally {
+      setHookBusyId(null);
+    }
+  }
+
+  async function handleUpdateHook(hookId: string, payload: Partial<HookCreateParams>) {
+    setHookBusyId(hookId);
+    setHookFeedback(null);
+    try {
+      const updatePayload: HookUpdateParams = { hookId, ...payload };
+      const result = await runtimeClient.updateHook(updatePayload);
+      setRuntimeHooks((current) => current.map((item) => (item.id === hookId ? result.hook : item)));
+      setHookFeedback({ tone: "success", message: `Hook "${result.hook.name}" saved.` });
+      addToast("success", "Runtime hook saved.");
+    } catch (reason) {
+      const message = getErrorMessage(reason);
+      setHookFeedback({ tone: "danger", message });
+      addToast("error", message);
+      throw reason;
+    } finally {
+      setHookBusyId(null);
+    }
+  }
+
+  async function handleDeleteHook(hookId: string) {
+    setHookBusyId(hookId);
+    setHookFeedback(null);
+    try {
+      await runtimeClient.deleteHook({ hookId });
+      setRuntimeHooks((current) => current.filter((item) => item.id !== hookId));
+      setHookExecutions((current) => current.filter((item) => item.hookId !== hookId));
+      setHookFeedback({ tone: "success", message: "Runtime hook deleted." });
+      addToast("success", "Runtime hook deleted.");
+    } catch (reason) {
+      const message = getErrorMessage(reason);
+      setHookFeedback({ tone: "danger", message });
+      addToast("error", message);
+      throw reason;
+    } finally {
+      setHookBusyId(null);
+    }
+  }
+
   // ── Streaming refs ─────────────────────────────────────────────────
   const pendingAssistantTokenEventsRef = useRef<AgentEventEnvelope[]>([]);
   const assistantTokenFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -348,6 +464,9 @@ export function App() {
     setPatchBusyId(null);
     setApprovalBusyId(null);
     setChatMessages([]);
+    setRuntimeHooks([]);
+    setHookExecutions([]);
+    setHookFeedback(null);
   }
 
   const workspaceHook = useWorkspaceSessions({
@@ -593,6 +712,16 @@ export function App() {
     return () => { disposed = true; };
   }, []);
 
+  useEffect(() => {
+    if (!workspace?.id) {
+      setRuntimeHooks([]);
+      setHookExecutions([]);
+      setHookFeedback(null);
+      return;
+    }
+    void refreshRuntimeHooks(workspace.id);
+  }, [workspace?.id]);
+
   // ── Trace auto-refresh useEffect ────────────────────────────────────
   const traceAutoRefreshStatus =
     task && task.id === activeTaskId && TRACE_AUTO_REFRESH_STATUSES.has(task.status)
@@ -807,6 +936,15 @@ export function App() {
         handleDeleteAgentProfile={handleDeleteAgentProfile}
         handleValidateAgentProfile={handleValidateAgentProfile}
         handlePreviewAgentProfileTools={handlePreviewAgentProfileTools}
+        settingsHooks={runtimeHooks}
+        hookExecutions={hookExecutions}
+        hookBusyId={hookBusyId}
+        hookFeedback={hookFeedback}
+        refreshRuntimeHooks={() => refreshRuntimeHooks()}
+        handleAddHook={handleAddHook}
+        handleUpdateHook={handleUpdateHook}
+        handleDeleteHook={handleDeleteHook}
+        refreshHookExecutions={refreshHookExecutions}
         skillBusyId={skillBusyId}
         refreshSkills={refreshSkills}
         handleCreateSkill={handleCreateSkill}

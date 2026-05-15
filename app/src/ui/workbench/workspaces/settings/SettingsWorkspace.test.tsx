@@ -27,6 +27,14 @@ function openAddProviderModal(container: HTMLElement) {
   return userEvent.setup().click(button);
 }
 
+async function openSettingsSection(container: HTMLElement, label: string) {
+  const nav = container.querySelector(".settings-nav");
+  if (!nav) {
+    throw new Error("Settings nav not found");
+  }
+  await userEvent.setup().click(within(nav as HTMLElement).getByRole("button", { name: label }));
+}
+
 describe("SettingsWorkspace", () => {
   const providers = [
     {
@@ -391,7 +399,7 @@ describe("SettingsWorkspace", () => {
     const { container } = render(<SettingsWorkspace onOpenSkillsFolder={onOpenSkillsFolder} />);
     const navButtons = container.querySelectorAll(".settings-nav button");
 
-    await user.click(navButtons[5] as HTMLElement);
+    await openSettingsSection(container, "技能库");
     expect(container.querySelector(".settings-empty-state")).toBeInTheDocument();
 
     await user.click(container.querySelector(".settings-secondary-action") as HTMLElement);
@@ -413,9 +421,7 @@ describe("SettingsWorkspace", () => {
         ]}
       />,
     );
-    const navButtons = container.querySelectorAll(".settings-nav button");
-
-    await user.click(navButtons[5] as HTMLElement);
+    await openSettingsSection(container, "技能库");
 
     expect(screen.getByText("Docs")).toBeInTheDocument();
     expect(screen.getByText("可用")).toBeInTheDocument();
@@ -425,25 +431,23 @@ describe("SettingsWorkspace", () => {
   it("marks unsupported utility actions as disabled with visible reasons", async () => {
     const user = userEvent.setup();
     const { container } = render(<SettingsWorkspace />);
-    const navButtons = container.querySelectorAll(".settings-nav button");
-
-    await user.click(navButtons[3] as HTMLElement);
+    await openSettingsSection(container, "消息桥接");
     expect(screen.getByRole("button", { name: "测试 IM 连接" })).toBeDisabled();
     expect(screen.getByText("当前桌面版本尚未接入运行时消息桥接测试。")).toBeInTheDocument();
 
-    await user.click(navButtons[4] as HTMLElement);
+    await openSettingsSection(container, "智能体");
     expect(screen.getByRole("button", { name: "New profile" })).toBeDisabled();
     expect(screen.getByText("No agent profiles")).toBeInTheDocument();
 
-    await user.click(navButtons[5] as HTMLElement);
+    await openSettingsSection(container, "技能库");
     expect(screen.getByRole("button", { name: "打开目录" })).toBeDisabled();
     expect(screen.getByText("打开目录还在等待桌面 shell 桥接；刷新仍会使用运行时技能注册表。")).toBeInTheDocument();
 
-    await user.click(navButtons[6] as HTMLElement);
+    await openSettingsSection(container, "电脑操作");
     expect(screen.getByRole("button", { name: "重新检查" })).toBeDisabled();
     expect(screen.getByText("桌面权限重新检查尚未实现。")).toBeInTheDocument();
 
-    await user.click(navButtons[7] as HTMLElement);
+    await openSettingsSection(container, "关于");
     expect(screen.getByRole("button", { name: "打开日志" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "打开数据目录" })).toBeDisabled();
     expect(screen.getByText("打开本地目录还在等待 Tauri shell 桥接；上方路径可用于手动检查。")).toBeInTheDocument();
@@ -482,9 +486,7 @@ describe("SettingsWorkspace", () => {
         onPreviewAgentTools={onPreviewAgentTools}
       />,
     );
-    const navButtons = container.querySelectorAll(".settings-nav button");
-
-    await user.click(navButtons[4] as HTMLElement);
+    await openSettingsSection(container, "智能体");
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole("button", { name: "Preview tools" }));
@@ -530,6 +532,92 @@ describe("SettingsWorkspace", () => {
     );
   });
 
+  it("manages runtime hooks from settings", async () => {
+    const user = userEvent.setup();
+    const onAddHook = vi.fn();
+    const onUpdateHook = vi.fn();
+    const onDeleteHook = vi.fn();
+    const onRefreshHookExecutions = vi.fn();
+    const { container } = render(
+      <SettingsWorkspace
+        hookWorkspaceId="workspace-1"
+        hooks={[
+          {
+            id: "hook-1",
+            name: "Audit provider",
+            enabled: true,
+            scope: "workspace",
+            workspaceId: "workspace-1",
+            event: "before_provider_turn",
+            priority: 20,
+            conditions: { taskStatus: "running" },
+            action: { type: "audit_note", note: "provider turn" },
+            authority: { policy: "allowed" },
+            timeoutMs: 60000,
+            retry: { maxAttempts: 0 },
+            onFailure: "warn",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ]}
+        hookExecutions={[
+          {
+            id: "exec-1",
+            hookId: "hook-1",
+            event: "before_provider_turn",
+            conditionResult: "matched",
+            policyOutcome: "allowed",
+            status: "completed",
+            startedAt: 1,
+            finishedAt: 2,
+            durationMs: 1,
+            createdAt: 1,
+          },
+        ]}
+        onAddHook={onAddHook}
+        onUpdateHook={onUpdateHook}
+        onDeleteHook={onDeleteHook}
+        onRefreshHookExecutions={onRefreshHookExecutions}
+      />,
+    );
+
+    await openSettingsSection(container, "Hooks");
+    expect(screen.getAllByText("Audit provider").length).toBeGreaterThan(0);
+    expect(screen.getByText("completed")).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Event"), "after_provider_turn");
+    await user.click(screen.getByRole("button", { name: "Save hook" }));
+    expect(onUpdateHook).toHaveBeenCalledWith(
+      "hook-1",
+      expect.objectContaining({
+        event: "after_provider_turn",
+        action: expect.objectContaining({ type: "audit_note" }),
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Load runs" }));
+    expect(onRefreshHookExecutions).toHaveBeenCalledWith("hook-1");
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    expect(onDeleteHook).toHaveBeenCalledWith("hook-1");
+
+    await user.click(screen.getByRole("button", { name: "New hook" }));
+    await user.type(screen.getByLabelText("Name"), "Run verifier");
+    await user.selectOptions(screen.getByLabelText("Action"), "run_command");
+    await user.type(screen.getByLabelText("Command"), "npm test");
+    await user.click(screen.getByRole("button", { name: "Create hook" }));
+    expect(onAddHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: "workspace-1",
+        name: "Run verifier",
+        action: expect.objectContaining({
+          type: "run_command",
+          command: "npm test",
+        }),
+      }),
+    );
+  });
+
   it("shows project memory state and clears it from settings", async () => {
     const user = userEvent.setup();
     const onClearWorkspaceMemory = vi.fn();
@@ -541,7 +629,7 @@ describe("SettingsWorkspace", () => {
     );
     const navButtons = container.querySelectorAll(".settings-nav button");
 
-    await user.click(navButtons[7] as HTMLElement);
+    await openSettingsSection(container, "关于");
     expect(screen.getByText("项目记忆")).toBeInTheDocument();
     expect(screen.getByText(/roadmap aligned/)).toBeInTheDocument();
 
@@ -564,7 +652,7 @@ describe("SettingsWorkspace", () => {
     );
     const navButtons = container.querySelectorAll(".settings-nav button");
 
-    await user.click(navButtons[7] as HTMLElement);
+    await openSettingsSection(container, "关于");
     const focusInput = screen.getByRole("textbox", { name: "固定焦点" }) as HTMLTextAreaElement;
     await user.clear(focusInput);
     await user.type(focusInput, "Keep context focused on large projects.");

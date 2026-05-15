@@ -5,7 +5,13 @@ import type {
   AgentProfileRecord,
   AgentProfileValidateParams,
   AgentProfileValidateResult,
+  HookCreateParams,
+  HookUpdateParams,
   ProviderApiFormat,
+  RuntimeHookEvent,
+  RuntimeHookExecutionRecord,
+  RuntimeHookFailureMode,
+  RuntimeHookRecord,
 } from "@shared";
 
 export type { ProviderApiFormat };
@@ -16,6 +22,7 @@ export type SettingsSection =
   | "general"
   | "im"
   | "agents"
+  | "hooks"
   | "skills"
   | "computer"
   | "about";
@@ -133,6 +140,16 @@ export interface SettingsAgentFeedback {
   message: string;
 }
 
+export interface SettingsHookConfig extends RuntimeHookRecord {}
+
+export type SettingsHookDraft = HookCreateParams;
+export type SettingsHookPatch = HookUpdateParams;
+
+export interface SettingsHookFeedback {
+  tone: "success" | "danger" | "info";
+  message: string;
+}
+
 export interface SettingsSkillConfig {
   id: string;
   name: string;
@@ -215,6 +232,17 @@ export interface SettingsWorkspaceProps {
   onDeleteAgent?: (agentId: string) => void | Promise<void>;
   onValidateAgent?: (payload: AgentProfileValidateParams) => AgentProfileValidateResult | Promise<AgentProfileValidateResult>;
   onPreviewAgentTools?: (payload: AgentProfilePreviewToolsParams) => AgentProfilePreviewToolsResult | Promise<AgentProfilePreviewToolsResult>;
+  hooks?: SettingsHookConfig[];
+  hookExecutions?: RuntimeHookExecutionRecord[];
+  hookBusyId?: string | null;
+  hookFeedback?: SettingsHookFeedback | null;
+  hookWorkspaceId?: string | null;
+  onRefreshHooks?: () => void | Promise<void>;
+  onHookToggle?: (hookId: string, enabled: boolean) => void | Promise<void>;
+  onAddHook?: (payload: SettingsHookDraft) => void | Promise<void>;
+  onUpdateHook?: (hookId: string, payload: Partial<SettingsHookDraft>) => void | Promise<void>;
+  onDeleteHook?: (hookId: string) => void | Promise<void>;
+  onRefreshHookExecutions?: (hookId?: string) => void | Promise<void>;
   skills?: SettingsSkillConfig[];
   onRefreshSkills?: () => void | Promise<void>;
   onOpenSkillsFolder?: () => void;
@@ -238,10 +266,42 @@ export const sections: Array<{ id: SettingsSection; label: string; eyebrow: stri
   { id: "general", label: "外观偏好", eyebrow: "界面" },
   { id: "im", label: "消息桥接", eyebrow: "桥接" },
   { id: "agents", label: "智能体", eyebrow: "队列" },
+  { id: "hooks", label: "Hooks", eyebrow: "Runtime" },
   { id: "skills", label: "技能库", eyebrow: "技能" },
   { id: "computer", label: "电脑操作", eyebrow: "控制" },
   { id: "about", label: "关于", eyebrow: "构建" },
 ];
+
+export const runtimeHookEvents = [
+  "before_task_start",
+  "after_task_complete",
+  "on_task_failed",
+  "on_task_cancel",
+  "on_task_pause",
+  "on_approval_required",
+  "before_tool_call",
+  "after_tool_call",
+  "before_provider_turn",
+  "after_provider_turn",
+  "before_compaction",
+  "after_compaction",
+  "on_task_resume",
+  "before_subagent_start",
+  "after_subagent_complete",
+  "on_subagent_failed",
+  "before_worktree_create",
+  "after_worktree_create",
+  "before_worktree_merge",
+  "after_worktree_merge",
+  "before_patch_apply",
+  "after_patch_apply",
+  "on_memory_write",
+  "on_context_snapshot",
+] satisfies RuntimeHookEvent[];
+
+export const runtimeHookActionTypes = ["audit_note", "notification", "run_command"] as const;
+
+export const runtimeHookFailureModes = ["warn", "block", "retry", "ignore", "ask_user"] satisfies RuntimeHookFailureMode[];
 
 export const fallbackProviders: SettingsProvider[] = [
   {

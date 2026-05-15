@@ -147,6 +147,82 @@ export interface WorktreeGitDiffRecord {
   error?: string;
 }
 
+export type RuntimeHookEvent =
+  | "before_task_start"
+  | "after_task_complete"
+  | "on_task_failed"
+  | "on_task_cancel"
+  | "on_task_pause"
+  | "on_approval_required"
+  | "before_tool_call"
+  | "after_tool_call"
+  | "before_provider_turn"
+  | "after_provider_turn"
+  | "before_compaction"
+  | "after_compaction"
+  | "on_task_resume"
+  | "before_subagent_start"
+  | "after_subagent_complete"
+  | "on_subagent_failed"
+  | "before_worktree_create"
+  | "after_worktree_create"
+  | "before_worktree_merge"
+  | "after_worktree_merge"
+  | "before_patch_apply"
+  | "after_patch_apply"
+  | "on_memory_write"
+  | "on_context_snapshot";
+
+export type RuntimeHookActionType = "audit_note" | "notification" | "run_command";
+export type RuntimeHookFailureMode = "warn" | "block" | "retry" | "ignore" | "ask_user";
+
+export interface RuntimeHookAction {
+  type?: RuntimeHookActionType | string;
+  note?: string;
+  message?: string;
+  command?: string;
+  cwd?: string;
+  [key: string]: unknown;
+}
+
+export interface RuntimeHookRecord {
+  id: Identifier;
+  name: string;
+  enabled: boolean;
+  scope: string;
+  workspaceId: Identifier;
+  event: RuntimeHookEvent | string;
+  priority: number;
+  conditions: Record<string, unknown>;
+  action: RuntimeHookAction;
+  authority: Record<string, unknown>;
+  timeoutMs: number;
+  retry: Record<string, unknown>;
+  onFailure: RuntimeHookFailureMode | string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RuntimeHookExecutionRecord {
+  id: Identifier;
+  hookId: Identifier;
+  event: RuntimeHookEvent | string;
+  sessionId?: Identifier | null;
+  taskId?: Identifier | null;
+  triggerEventId?: Identifier | null;
+  conditionResult: string;
+  policyOutcome: string;
+  approvalId?: Identifier | null;
+  status: string;
+  startedAt: number;
+  finishedAt?: number | null;
+  durationMs?: number | null;
+  inputSummary?: string | null;
+  outputSummary?: string | null;
+  errorSummary?: string | null;
+  createdAt: number;
+}
+
 export interface WorkspaceRef {
   id: Identifier;
   name: string;

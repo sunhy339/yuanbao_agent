@@ -14,6 +14,10 @@ import type {
   SettingsProviderTestResult,
   SettingsProviderFeedback,
   SettingsAgentFeedback,
+  SettingsHookFeedback,
+  SettingsHookConfig,
+  SettingsHookDraft,
+  SettingsHookPatch,
   SettingsGeneralConfig,
   SettingsIMConfig,
   SettingsAgentConfig,
@@ -29,6 +33,7 @@ import { AgentBehaviorPanel } from "./AgentBehaviorPanel";
 import { GeneralPanel } from "./GeneralPanel";
 import { IMPanel } from "./IMPanel";
 import { AgentsPanel } from "./AgentsPanel";
+import { HooksPanel } from "./HooksPanel";
 import { SkillsPanel } from "./SkillsPanel";
 import { ComputerUsePanel } from "./ComputerUsePanel";
 import { AboutPanel } from "./AboutPanel";
@@ -51,6 +56,10 @@ export type {
   SettingsProvider,
   SettingsProviderFeedback,
   SettingsAgentFeedback,
+  SettingsHookFeedback,
+  SettingsHookConfig,
+  SettingsHookDraft,
+  SettingsHookPatch,
   SettingsProviderPayload,
   SettingsGeneralConfig,
   SettingsIMConfig,
@@ -93,6 +102,17 @@ export function SettingsWorkspace({
   onDeleteAgent,
   onValidateAgent,
   onPreviewAgentTools,
+  hooks = [],
+  hookExecutions = [],
+  hookBusyId,
+  hookFeedback,
+  hookWorkspaceId,
+  onRefreshHooks,
+  onHookToggle,
+  onAddHook,
+  onUpdateHook,
+  onDeleteHook,
+  onRefreshHookExecutions,
   skills = [],
   onRefreshSkills,
   onOpenSkillsFolder,
@@ -151,7 +171,7 @@ export function SettingsWorkspace({
   const activeSection = sections.find((item) => item.id === section) ?? sections[0];
   const readyProviders = providers.filter((provider) => provider.id === activeProviderId || provider.lastTest?.ok).length;
   const enabledAgents = agents.filter((agent) => agent.enabled).length;
-  const enabledSkills = skills.filter((skill) => skill.enabled).length;
+  const enabledHooks = hooks.filter((hook) => hook.enabled).length;
 
   return (
     <main className="settings-workspace" aria-labelledby="settings-title">
@@ -202,8 +222,8 @@ export function SettingsWorkspace({
                 <dd>{enabledAgents}/{agents.length}</dd>
               </div>
               <div>
-                <dt>技能</dt>
-                <dd>{enabledSkills}/{skills.length}</dd>
+                <dt>Hooks</dt>
+                <dd>{enabledHooks}/{hooks.length}</dd>
               </div>
               <div>
                 <dt>权限</dt>
@@ -279,6 +299,21 @@ export function SettingsWorkspace({
                 onPreviewAgentTools={onPreviewAgentTools}
               />
             </>
+          ) : null}
+          {section === "hooks" ? (
+            <HooksPanel
+              hooks={hooks}
+              executions={hookExecutions}
+              hookBusyId={hookBusyId}
+              hookFeedback={hookFeedback}
+              workspaceId={hookWorkspaceId}
+              onRefreshHooks={onRefreshHooks}
+              onHookToggle={onHookToggle}
+              onAddHook={onAddHook}
+              onUpdateHook={onUpdateHook}
+              onDeleteHook={onDeleteHook}
+              onRefreshHookExecutions={onRefreshHookExecutions}
+            />
           ) : null}
           {section === "skills" ? (
             <SkillsPanel

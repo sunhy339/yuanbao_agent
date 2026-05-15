@@ -10,12 +10,16 @@ import type {
   McpServerRecord,
   SkillPresetRecord,
   ScheduledTaskRecord,
+  RuntimeHookExecutionRecord,
 } from "@shared";
 import type { HostStatus, RuntimeConfig } from "../../../lib/runtimeClient";
 import type {
   SettingsSkillConfig,
   SettingsAgentConfig,
   SettingsAgentFeedback,
+  SettingsHookConfig,
+  SettingsHookDraft,
+  SettingsHookFeedback,
   SettingsProviderFeedback,
   SettingsAgentBehaviorConfig,
   SettingsGeneralConfig,
@@ -179,6 +183,15 @@ export interface WorkspaceRouterProps {
   handleDeleteAgentProfile: (agentId: string) => Promise<void>;
   handleValidateAgentProfile: (payload: AgentProfileValidateParams) => Promise<AgentProfileValidateResult>;
   handlePreviewAgentProfileTools: (payload: AgentProfilePreviewToolsParams) => Promise<AgentProfilePreviewToolsResult>;
+  settingsHooks: SettingsHookConfig[];
+  hookExecutions: RuntimeHookExecutionRecord[];
+  hookBusyId: string | null;
+  hookFeedback: SettingsHookFeedback | null;
+  refreshRuntimeHooks: () => Promise<void>;
+  handleAddHook: (payload: SettingsHookDraft) => Promise<void>;
+  handleUpdateHook: (hookId: string, payload: Partial<SettingsHookDraft>) => Promise<void>;
+  handleDeleteHook: (hookId: string) => Promise<void>;
+  refreshHookExecutions: (hookId?: string) => Promise<void>;
   settingsSkills: SettingsSkillConfig[];
   skillBusyId: string | null;
   refreshSkills: () => void;
@@ -455,6 +468,17 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
       onDeleteAgent={props.handleDeleteAgentProfile}
       onValidateAgent={props.handleValidateAgentProfile}
       onPreviewAgentTools={props.handlePreviewAgentProfileTools}
+      hooks={props.settingsHooks}
+      hookExecutions={props.hookExecutions}
+      hookBusyId={props.hookBusyId}
+      hookFeedback={props.hookFeedback}
+      hookWorkspaceId={props.workspace?.id ?? null}
+      onRefreshHooks={props.refreshRuntimeHooks}
+      onHookToggle={(hookId, enabled) => props.handleUpdateHook(hookId, { enabled })}
+      onAddHook={props.handleAddHook}
+      onUpdateHook={props.handleUpdateHook}
+      onDeleteHook={props.handleDeleteHook}
+      onRefreshHookExecutions={props.refreshHookExecutions}
       skills={props.settingsSkills}
       onRefreshSkills={props.refreshSkills}
       onOpenSkillsFolder={props.localPathActionsAvailable ? () => void props.handleOpenAppPath("skills") : undefined}

@@ -21,3 +21,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "real_llm: optional smoke tests that contact a configured live LLM provider",
+]

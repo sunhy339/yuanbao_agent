@@ -86,6 +86,7 @@ class HookStoreMixin:
         on_failure = params.get("onFailure", "warn")
         if on_failure not in self.VALID_HOOK_FAILURE_MODES:
             raise ValueError(f"Invalid on_failure: {on_failure}")
+        enabled = 1 if params.get("enabled", True) else 0
         now = self.now()
         hook_id = self.new_id("hook")
         self._conn.execute(
@@ -93,8 +94,8 @@ class HookStoreMixin:
                (id, name, enabled, scope, workspace_id, event, priority,
                 conditions_json, action_json, authority_json, timeout_ms,
                 retry_json, on_failure, created_at, updated_at)
-               VALUES (?, ?, 1, 'workspace', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (hook_id, name, workspace_id, event, priority,
+               VALUES (?, ?, ?, 'workspace', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (hook_id, name, enabled, workspace_id, event, priority,
              json.dumps(conditions, ensure_ascii=False),
              json.dumps(action, ensure_ascii=False),
              json.dumps(authority, ensure_ascii=False),
@@ -113,13 +114,18 @@ class HookStoreMixin:
             raise ValueError(f"Hook not found: {hook_id}")
         updates: list[str] = []
         args: list[Any] = []
-        for field, col in [("name", "name"), ("priority", "priority"), ("timeoutMs", "timeout_ms"), ("onFailure", "on_failure")]:
+        for field, col in [("name", "name"), ("event", "event"), ("priority", "priority"), ("timeoutMs", "timeout_ms"), ("onFailure", "on_failure")]:
             if field in params:
                 updates.append(f"{col} = ?")
                 if field == "onFailure":
                     val = params[field]
                     if val not in self.VALID_HOOK_FAILURE_MODES:
                         raise ValueError(f"Invalid on_failure: {val}")
+                    args.append(val)
+                elif field == "event":
+                    val = params[field]
+                    if val not in self.VALID_HOOK_EVENTS:
+                        raise ValueError(f"Invalid hook event: {val}")
                     args.append(val)
                 elif field in ("priority", "timeoutMs"):
                     args.append(int(params[field]))

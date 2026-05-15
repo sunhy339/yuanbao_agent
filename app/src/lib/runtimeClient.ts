@@ -28,6 +28,16 @@ import type {
   ConfigUpdateResult,
   DiffGetParams,
   DiffGetResult,
+  HookCreateParams,
+  HookDeleteParams,
+  HookDeleteResult,
+  HookGetParams,
+  HookListExecutionsParams,
+  HookListExecutionsResult,
+  HookListParams,
+  HookListResult,
+  HookResult,
+  HookUpdateParams,
   MessageListParams,
   MessageListResult,
   MessageSendParams,
@@ -621,6 +631,30 @@ export class RuntimeClient {
 
   async previewAgentProfileTools(payload: AgentProfilePreviewToolsParams): Promise<AgentProfilePreviewToolsResult> {
     return invokePayloadOrReject<AgentProfilePreviewToolsResult>("agent_profile_preview_tools", payload);
+  }
+
+  async listHooks(payload: HookListParams): Promise<HookListResult> {
+    return invokePayloadOrReject<HookListResult>("hook_list", payload);
+  }
+
+  async createHook(payload: HookCreateParams): Promise<HookResult> {
+    return invokePayloadOrReject<HookResult>("hook_create", payload);
+  }
+
+  async updateHook(payload: HookUpdateParams): Promise<HookResult> {
+    return invokePayloadOrReject<HookResult>("hook_update", payload);
+  }
+
+  async deleteHook(payload: HookDeleteParams): Promise<HookDeleteResult> {
+    return invokePayloadOrReject<HookDeleteResult>("hook_delete", payload);
+  }
+
+  async getHook(payload: HookGetParams): Promise<HookResult> {
+    return invokePayloadOrReject<HookResult>("hook_get", payload);
+  }
+
+  async listHookExecutions(payload: HookListExecutionsParams = {}): Promise<HookListExecutionsResult> {
+    return invokePayloadOrReject<HookListExecutionsResult>("hook_list_executions", payload);
   }
 
   async createMcpServer(payload: McpServerCreateParams): Promise<McpServerResult> {

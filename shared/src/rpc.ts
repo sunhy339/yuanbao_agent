@@ -11,6 +11,11 @@ import type {
   ProviderMode,
   McpServerRecord,
   McpToolRefreshResult,
+  RuntimeHookAction,
+  RuntimeHookEvent,
+  RuntimeHookExecutionRecord,
+  RuntimeHookFailureMode,
+  RuntimeHookRecord,
   ScheduledTaskRecord,
   ScheduledTaskRunRecord,
   SessionRecord,
@@ -122,7 +127,13 @@ export type RpcMethod =
   | "agent.profile.update"
   | "agent.profile.delete"
   | "agent.profile.validate"
-  | "agent.profile.previewTools";
+  | "agent.profile.previewTools"
+  | "hook.create"
+  | "hook.update"
+  | "hook.delete"
+  | "hook.list"
+  | "hook.get"
+  | "hook.listExecutions";
 
 export type WorktreeOperationStatus = "status" | "diff" | "requestMergeApproval" | "merge" | "cleanup";
 
@@ -722,4 +733,58 @@ export interface AgentProfileValidateResult {
 export interface AgentProfilePreviewToolsResult {
   allowedTools: string[];
   deniedTools: string[];
+}
+
+// --- Runtime Hooks ---
+
+export interface HookListParams {
+  workspaceId: Identifier;
+  event?: RuntimeHookEvent | string;
+}
+
+export interface HookCreateParams {
+  workspaceId: Identifier;
+  name: string;
+  event: RuntimeHookEvent | string;
+  enabled?: boolean;
+  priority?: number;
+  conditions?: Record<string, unknown>;
+  action?: RuntimeHookAction;
+  authority?: Record<string, unknown>;
+  timeoutMs?: number;
+  retry?: Record<string, unknown>;
+  onFailure?: RuntimeHookFailureMode | string;
+}
+
+export interface HookUpdateParams extends Partial<Omit<HookCreateParams, "workspaceId">> {
+  hookId: Identifier;
+}
+
+export interface HookDeleteParams {
+  hookId: Identifier;
+}
+
+export type HookGetParams = HookDeleteParams;
+
+export interface HookListExecutionsParams {
+  hookId?: Identifier;
+  taskId?: Identifier;
+  limit?: number;
+}
+
+export interface HookListResult {
+  hooks: RuntimeHookRecord[];
+}
+
+export interface HookResult {
+  hook: RuntimeHookRecord;
+}
+
+export interface HookDeleteResult {
+  deleted: boolean;
+  hookId: Identifier;
+}
+
+export interface HookListExecutionsResult {
+  hookExecutions: RuntimeHookExecutionRecord[];
 }

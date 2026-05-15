@@ -1196,6 +1196,60 @@ async fn agent_profile_preview_tools(
 }
 
 #[tauri::command]
+async fn hook_list(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "hook.list".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn hook_create(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "hook.create".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn hook_update(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "hook.update".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn hook_delete(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "hook.delete".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn hook_get(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "hook.get".to_string(), payload).await
+}
+
+#[tauri::command]
+async fn hook_list_executions(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Value,
+) -> Result<Value, String> {
+    state.call_async(app_handle, "hook.listExecutions".to_string(), payload).await
+}
+
+#[tauri::command]
 fn e2e_fixture() -> Result<Value, String> {
     let flow = env::var("YUANBAO_TAURI_E2E").unwrap_or_default();
     if flow == "ui-smoke"
@@ -1357,6 +1411,12 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             agent_profile_delete,
             agent_profile_validate,
             agent_profile_preview_tools,
+            hook_list,
+            hook_create,
+            hook_update,
+            hook_delete,
+            hook_get,
+            hook_list_executions,
             e2e_fixture,
             e2e_finish
         ])

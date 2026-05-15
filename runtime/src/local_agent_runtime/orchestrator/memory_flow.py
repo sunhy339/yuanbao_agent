@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -350,7 +351,7 @@ class MemoryFlowMixin:
         return f"{text[: max_chars - 15].rstrip()} [truncated]"
 
     def _merge_completion_summary(self, *, summary: str, validation: dict[str, Any] | None) -> str:
-        base = (summary or "").strip()
+        base = self._sanitize_completion_summary(summary)
         if not validation:
             return base
         validation_summary = (validation.get("summary") or "").strip()
@@ -359,4 +360,13 @@ class MemoryFlowMixin:
         if not base:
             return validation_summary
         return f"{base} {validation_summary}"
+
+    def _sanitize_completion_summary(self, summary: Any) -> str:
+        text = str(summary or "")
+        text = re.sub(r"<tool_call\b[^>]*>.*?</tool_call>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"<arg_key>.*?</arg_key>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"<arg_value>.*?</arg_value>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"</?(?:tool_call|arg_key|arg_value)\b[^>]*>", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text
 

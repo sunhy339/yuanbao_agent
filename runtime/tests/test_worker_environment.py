@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,8 @@ def test_build_child_worker_env_keeps_only_runtime_provider_and_platform_vars(tm
     assert env["ANTHROPIC_API_KEY"] == "sk-anthropic"
     assert env["LOCAL_AGENT_DB_PATH"] == str(db_path)
     assert env["LOCAL_AGENT_CHILD_WORKER"] == "1"
+    assert env["LOCAL_AGENT_PYTHON_EXECUTABLE"] == sys.executable
+    assert "pytest -q" in env["LOCAL_AGENT_RECOMMENDED_PYTEST_COMMAND"]
     assert env["PYTHONUNBUFFERED"] == "1"
     assert env["PYTHONPATH"] == os.pathsep.join([str(runtime_src), "parent-pythonpath"])
     assert "SECRET_TOKEN" not in env
@@ -117,8 +120,6 @@ def test_normalize_child_tool_allowlist_dedupes_and_requires_known_explicit_tool
         "git_status",
         "git_diff",
         "code_search",
-        "web_fetch",
-        "browser",
         "run_command",
         "apply_patch",
         "write_file",
@@ -169,8 +170,6 @@ class TestToolAliasNormalization:
             "git_status",
             "git_diff",
             "code_search",
-            "web_fetch",
-            "browser",
             "run_command",
         )
 
@@ -182,8 +181,6 @@ class TestToolAliasNormalization:
             "git_status",
             "git_diff",
             "code_search",
-            "web_fetch",
-            "browser",
             "run_command",
         )
 
@@ -195,8 +192,6 @@ class TestToolAliasNormalization:
             "git_status",
             "git_diff",
             "code_search",
-            "web_fetch",
-            "browser",
             "apply_patch",
         )
 
@@ -215,8 +210,6 @@ class TestToolAliasNormalization:
             "git_status",
             "git_diff",
             "code_search",
-            "web_fetch",
-            "browser",
             "run_command",
         )
 

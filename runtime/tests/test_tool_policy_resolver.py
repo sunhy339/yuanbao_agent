@@ -180,6 +180,31 @@ def test_child_worker_explicit_write_allowlist_enters_execution_phase() -> None:
     assert run_detail["finalDecision"] == "allowed"
 
 
+def test_child_worker_write_allowlist_adds_local_read_tools_only() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_child", "role": "worker"},
+        context={
+            "_child_worker": True,
+            "runtimeRole": "worker",
+            "_child_tool_allowlist": ["run_command"],
+        },
+        tool_results=[],
+        registered_tools=_tools("list_dir", "read_file", "git_status", "git_diff", "code_search", "web_fetch", "run_command"),
+    )
+
+    assert decision.phase == "execution"
+    assert set(decision.allowed_tool_names) == {
+        "list_dir",
+        "read_file",
+        "git_status",
+        "git_diff",
+        "code_search",
+        "run_command",
+    }
+    assert decision.denied_tool_names == ["web_fetch"]
+
+
 def test_child_worker_explicit_write_allowlist_still_honors_permission_engine() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
@@ -14,6 +15,15 @@ DEFAULT_CHILD_TOOL_ALLOWLIST = (
     "code_search",
     "web_fetch",
     "browser",
+)
+
+DEFAULT_CHILD_LOCAL_TOOL_ALLOWLIST = (
+    "list_dir",
+    "search_files",
+    "read_file",
+    "git_status",
+    "git_diff",
+    "code_search",
 )
 
 DEFAULT_ENV_ALLOWLIST = (
@@ -121,6 +131,8 @@ def build_child_worker_env(
     env["PYTHONPATH"] = os.pathsep.join(python_path_entries)
     env["LOCAL_AGENT_DB_PATH"] = child_database_path
     env["LOCAL_AGENT_CHILD_WORKER"] = "1"
+    env["LOCAL_AGENT_PYTHON_EXECUTABLE"] = sys.executable
+    env["LOCAL_AGENT_RECOMMENDED_PYTEST_COMMAND"] = _recommended_python_module_command(sys.executable, "pytest", "-q")
     env["PYTHONUNBUFFERED"] = "1"
     env["LOCAL_AGENT_CHILD_TOOL_ALLOWLIST"] = ",".join(normalize_child_tool_allowlist(tool_allowlist))
     return env
@@ -151,13 +163,21 @@ def normalize_child_tool_allowlist(value: Sequence[str] | str | None = None) -> 
     if any(name in {"run_command", "apply_patch", "write_file"} for name in normalized):
         expanded: list[str] = []
         expanded_seen: set[str] = set()
-        for name in (*DEFAULT_CHILD_TOOL_ALLOWLIST, *normalized):
+        for name in (*DEFAULT_CHILD_LOCAL_TOOL_ALLOWLIST, *normalized):
             if name in expanded_seen:
                 continue
             expanded_seen.add(name)
             expanded.append(name)
         normalized = expanded
     return tuple(normalized)
+
+
+def _recommended_python_module_command(python_executable: str, module: str, *args: str) -> str:
+    executable = str(python_executable).strip()
+    if not executable:
+        executable = "python"
+    quoted = f'"{executable}"' if any(ch.isspace() for ch in executable) or os.name == "nt" else executable
+    return " ".join([quoted, "-m", module, *args])
 
 
 def _required_path_text(path: str | os.PathLike[str] | None, *, name: str) -> str:

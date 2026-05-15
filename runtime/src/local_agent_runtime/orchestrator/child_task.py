@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ class ChildTaskMixin:
         child_allowlist = self._child_tool_allowlist_from_params(params)
         if child_allowlist is not None:
             context["_child_tool_allowlist"] = list(child_allowlist)
+        context = self._context_with_child_runtime_hints(context, child_allowlist=child_allowlist)
         context = self._context_with_worker_budget(context, budget)
         plan = self._planner.plan(prompt.strip(), context=context)
         child_can_write = bool(child_allowlist is not None and set(child_allowlist) & {"write_file", "apply_patch", "run_command"})
@@ -258,3 +260,49 @@ class ChildTaskMixin:
         if raw is None:
             return None
         return normalize_child_tool_allowlist(raw)
+
+    def _context_with_child_runtime_hints(
+        self,
+        context: dict[str, Any],
+        *,
+        child_allowlist: tuple[str, ...] | None,
+    ) -> dict[str, Any]:
+        if child_allowlist is None or "run_command" not in set(child_allowlist):
+            return context
+        workspace_root = str(context.get("workspace_root") or context.get("workspaceRoot") or "").strip()
+        python_executable = sys.executable
+        pytest_command = self._recommended_python_module_command(python_executable, "pytest", "-q")
+        hints = {
+            "pythonExecutable": python_executable,
+            "recommendedPytestCommand": pytest_command,
+            "workspaceRoot": workspace_root,
+            "runCommandCwd": ".",
+            "avoidCommands": ["python", "python3", "py", "cd ... && ..."],
+        }
+        updated = dict(context)
+        updated["childRuntimeHints"] = hints
+        messages = list(updated.get("messages") or [])
+        messages.append({
+            "role": "system",
+            "content": self._child_runtime_hint_text(hints),
+        })
+        updated["messages"] = messages
+        return updated
+
+    def _recommended_python_module_command(self, python_executable: str, module: str, *args: str) -> str:
+        executable = str(python_executable).strip() or "python"
+        quoted = f'"{executable}"' if os.name == "nt" or any(ch.isspace() for ch in executable) else executable
+        return " ".join([quoted, "-m", module, *args])
+
+    def _child_runtime_hint_text(self, hints: dict[str, Any]) -> str:
+        workspace_root = str(hints.get("workspaceRoot") or "")
+        lines = [
+            "[Child runtime hints]",
+            f"- Python executable: {hints['pythonExecutable']}",
+            f"- Preferred pytest command: {hints['recommendedPytestCommand']}",
+            "- When running tests, call run_command with this command first; do not probe python, python3, or py.",
+            "- Set run_command cwd to '.' and pass workspaceRoot instead of using shell cd.",
+        ]
+        if workspace_root:
+            lines.append(f"- run_command workspaceRoot: {workspace_root}")
+        return "\n".join(lines)

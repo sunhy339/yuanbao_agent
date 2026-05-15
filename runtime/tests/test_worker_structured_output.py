@@ -610,6 +610,49 @@ class TestCompletionHardGate:
         assert evidence["verificationRequirements"]["missing"] == []
         assert evidence["testsRun"][0]["command"] == "python -m pytest -q"
 
+    def test_completion_summary_strips_model_tool_call_markup(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion summary")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="fix a Python bug",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "score.py", "action": "modified"}],
+            commands=[
+                {
+                    "id": "cmd_pytest",
+                    "command": "python -m pytest -q",
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "3 passed",
+                }
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary=(
+                "<tool_call>run_command<arg_key>command</arg_key>"
+                "<arg_value>python -m pytest -q</arg_value></tool_call> "
+                "Changed: Update score.py. Validated with pytest."
+            ),
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        assert "<tool_call>" not in result["resultSummary"]
+        assert "arg_value" not in result["resultSummary"]
+        assert result["resultSummary"].startswith("Changed: Update score.py.")
+
     def test_later_successful_equivalent_test_command_resolves_prior_failure(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

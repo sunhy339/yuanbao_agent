@@ -21,6 +21,14 @@ READ_ONLY_TOOL_NAMES = (
         "memory.recall",
         "scratchpad.read",
 )
+LOCAL_READ_ONLY_TOOL_NAMES = (
+    "list_dir",
+    "search_files",
+    "read_file",
+    "git_status",
+    "git_diff",
+    "code_search",
+)
 READ_ONLY_TOOLS = frozenset(
     READ_ONLY_TOOL_NAMES
 )
@@ -487,7 +495,7 @@ class ToolPolicyResolver:
             return names
         expanded: list[str] = []
         seen: set[str] = set()
-        for name in [*READ_ONLY_TOOL_NAMES, *names]:
+        for name in [*LOCAL_READ_ONLY_TOOL_NAMES, *names]:
             if name in seen:
                 continue
             seen.add(name)

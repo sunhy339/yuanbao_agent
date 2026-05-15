@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -246,3 +247,48 @@ class TestRoleSystemPrompt:
 
         assert result is None
         assert advisor.calls == []
+
+    def test_child_worker_run_command_context_includes_runtime_hints(self, tmp_path: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        event_bus = EventBus()
+        orchestrator = Orchestrator(
+            store=store,
+            event_bus=event_bus,
+            tool_registry=ToolRegistry(),
+            provider=SimpleNamespace(generate=lambda _prompt, _context: {"final_answer": "done"}),
+        )
+        context = {
+            "workspace_root": str(tmp_path / "workspace"),
+            "messages": [{"role": "system", "content": "base"}],
+        }
+
+        result = orchestrator._context_with_child_runtime_hints(  # noqa: SLF001
+            context,
+            child_allowlist=("read_file", "run_command"),
+        )
+
+        hints = result["childRuntimeHints"]
+        assert hints["pythonExecutable"] == sys.executable
+        assert "pytest -q" in hints["recommendedPytestCommand"]
+        assert hints["workspaceRoot"] == str(tmp_path / "workspace")
+        assert len(result["messages"]) == 2
+        assert "Preferred pytest command" in result["messages"][-1]["content"]
+        assert "do not probe python, python3, or py" in result["messages"][-1]["content"]
+
+    def test_child_worker_without_run_command_skips_runtime_hints(self, tmp_path: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        event_bus = EventBus()
+        orchestrator = Orchestrator(
+            store=store,
+            event_bus=event_bus,
+            tool_registry=ToolRegistry(),
+            provider=SimpleNamespace(generate=lambda _prompt, _context: {"final_answer": "done"}),
+        )
+        context = {"workspace_root": str(tmp_path / "workspace"), "messages": []}
+
+        result = orchestrator._context_with_child_runtime_hints(  # noqa: SLF001
+            context,
+            child_allowlist=("read_file",),
+        )
+
+        assert result is context

@@ -59,7 +59,7 @@ UNSAFE_CHILD_TOOLS = frozenset(
         "task",
     }
 )
-KNOWN_CHILD_TOOLS = frozenset((*DEFAULT_CHILD_TOOL_ALLOWLIST, "run_command", "apply_patch"))
+KNOWN_CHILD_TOOLS = frozenset((*DEFAULT_CHILD_TOOL_ALLOWLIST, "run_command", "apply_patch", "write_file"))
 
 # Tool alias map: common aliases -> canonical tool names
 TOOL_ALIAS_MAP: dict[str, str] = {
@@ -120,6 +120,7 @@ def build_child_worker_env(
         python_path_entries.append(str(existing_python_path))
     env["PYTHONPATH"] = os.pathsep.join(python_path_entries)
     env["LOCAL_AGENT_DB_PATH"] = child_database_path
+    env["LOCAL_AGENT_CHILD_WORKER"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
     env["LOCAL_AGENT_CHILD_TOOL_ALLOWLIST"] = ",".join(normalize_child_tool_allowlist(tool_allowlist))
     return env
@@ -147,6 +148,15 @@ def normalize_child_tool_allowlist(value: Sequence[str] | str | None = None) -> 
             raise ValueError(f"Tools not allowed for child workers: {name}")
         seen.add(name)
         normalized.append(name)
+    if any(name in {"run_command", "apply_patch", "write_file"} for name in normalized):
+        expanded: list[str] = []
+        expanded_seen: set[str] = set()
+        for name in (*DEFAULT_CHILD_TOOL_ALLOWLIST, *normalized):
+            if name in expanded_seen:
+                continue
+            expanded_seen.add(name)
+            expanded.append(name)
+        normalized = expanded
     return tuple(normalized)
 
 

@@ -27,7 +27,7 @@ def test_root_synthesis_after_task_result_exposes_no_tools() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_root", "role": "root"},
-        context={"routing": {"strategy": "plan_swarm"}},
+        context={"routing": {"strategy": "react_standard"}},
         tool_results=[{"name": "task", "result": {"status": "completed"}}],
         registered_tools=_tools("task", "read_file", "write_file", "run_command"),
     )
@@ -36,6 +36,92 @@ def test_root_synthesis_after_task_result_exposes_no_tools() -> None:
     assert decision.allowed_tool_names == []
     assert set(decision.denied_tool_names) == {"task", "read_file", "write_file", "run_command"}
     assert decision.role_snapshot["runtimeRole"] == "root"
+
+
+def test_plan_strategy_continues_after_task_result_but_withholds_task() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={"routing": {"strategy": "plan_swarm"}},
+        tool_results=[{"name": "task", "result": {"status": "completed"}}],
+        registered_tools=_tools("task", "read_file", "write_file", "run_command"),
+    )
+
+    assert decision.phase == "post_task_continuation"
+    assert set(decision.allowed_tool_names) == {"read_file", "write_file", "run_command"}
+    assert decision.denied_tool_names == ["task"]
+    assert "withheld after a child result" in decision.reasons["task"]
+    task_detail = next(item for item in decision.decision_details if item["toolName"] == "task")
+    assert task_detail["continuationDecision"] == "denied"
+
+
+def test_plan_strategy_explicit_disable_synthesizes_after_task_result() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "routing": {
+                "strategy": "plan_swarm",
+                "toolContinuation": {"allowToolsAfterTaskResults": False},
+            },
+        },
+        tool_results=[{"name": "task", "result": {"status": "completed"}}],
+        registered_tools=_tools("task", "read_file"),
+    )
+
+    assert decision.phase == "synthesis"
+    assert decision.allowed_tool_names == []
+    assert set(decision.denied_tool_names) == {"task", "read_file"}
+
+
+def test_task_tool_budget_allows_bounded_follow_up_subtasks() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "routing": {
+                "strategy": "plan_swarm",
+                "toolContinuation": {
+                    "allowToolsAfterTaskResults": True,
+                    "maxTaskToolCalls": 2,
+                },
+            },
+        },
+        tool_results=[{"name": "task", "result": {"status": "completed"}}],
+        registered_tools=_tools("task", "read_file"),
+    )
+
+    assert decision.phase == "post_task_continuation"
+    assert set(decision.allowed_tool_names) == {"task", "read_file"}
+    assert decision.denied_tool_names == []
+
+
+def test_task_tool_budget_blocks_after_limit() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "routing": {
+                "strategy": "plan_swarm",
+                "toolContinuation": {
+                    "allowToolsAfterTaskResults": True,
+                    "allowMoreSubtasksAfterTaskResults": True,
+                    "maxTaskToolCalls": 2,
+                },
+            },
+        },
+        tool_results=[
+            {"name": "task", "result": {"status": "completed"}},
+            {"name": "read_file", "result": {"ok": True}},
+            {"name": "task", "result": {"status": "completed"}},
+        ],
+        registered_tools=_tools("task", "read_file"),
+    )
+
+    assert decision.phase == "post_task_continuation"
+    assert decision.allowed_tool_names == ["read_file"]
+    assert decision.denied_tool_names == ["task"]
+    assert "2/2" in decision.reasons["task"]
 
 
 def test_reviewer_role_is_read_only() -> None:
@@ -70,6 +156,109 @@ def test_child_worker_uses_agent_type_metadata_and_allowlist() -> None:
     assert decision.role_snapshot["agentType"] == "structure-agent"
     assert set(decision.allowed_tool_names) == {"read_file", "git_status"}
     assert set(decision.denied_tool_names) == {"write_file", "task"}
+
+
+def test_child_worker_explicit_write_allowlist_enters_execution_phase() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_child", "role": "worker"},
+        context={
+            "_child_worker": True,
+            "agentType": "coder",
+            "runtimeRole": "worker",
+            "_child_tool_allowlist": ["read_file", "run_command", "apply_patch", "write_file"],
+        },
+        tool_results=[],
+        registered_tools=_tools("read_file", "run_command", "apply_patch", "write_file", "task"),
+    )
+
+    assert decision.phase == "execution"
+    assert set(decision.allowed_tool_names) == {"read_file", "run_command", "apply_patch", "write_file"}
+    assert decision.denied_tool_names == ["task"]
+    run_detail = next(item for item in decision.decision_details if item["toolName"] == "run_command")
+    assert run_detail["phaseDecision"] == "allowed"
+    assert run_detail["finalDecision"] == "allowed"
+
+
+def test_child_worker_explicit_write_allowlist_still_honors_permission_engine() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_child", "role": "worker"},
+        context={
+            "_child_worker": True,
+            "runtimeRole": "worker",
+            "_child_tool_allowlist": ["read_file", "run_command"],
+            "config": {
+                "permissions": {
+                    "preset": "balanced",
+                    "capabilities": {"runCommand": {"mode": "blocked", "scope": "*"}},
+                },
+            },
+        },
+        tool_results=[],
+        registered_tools=_tools("read_file", "run_command"),
+    )
+
+    assert decision.phase == "execution"
+    assert decision.allowed_tool_names == ["read_file"]
+    assert decision.denied_tool_names == ["run_command"]
+    run_detail = next(item for item in decision.decision_details if item["toolName"] == "run_command")
+    assert run_detail["permissionDecision"] == "deny"
+    assert run_detail["finalDecision"] == "denied"
+
+
+def test_child_worker_synthesizes_after_successful_verification_command() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_child", "role": "worker"},
+        context={
+            "_child_worker": True,
+            "runtimeRole": "worker",
+            "_child_tool_allowlist": ["read_file", "apply_patch", "run_command"],
+        },
+        tool_results=[
+            {"name": "apply_patch", "result": {"status": "applied"}},
+            {
+                "name": "run_command",
+                "result": {
+                    "status": "completed",
+                    "exitCode": 0,
+                    "commandLog": {"command": "python -m pytest -q"},
+                },
+            },
+        ],
+        registered_tools=_tools("read_file", "apply_patch", "run_command"),
+    )
+
+    assert decision.phase == "synthesis"
+    assert decision.allowed_tool_names == []
+    assert set(decision.denied_tool_names) == {"read_file", "apply_patch", "run_command"}
+
+
+def test_child_worker_keeps_execution_after_successful_diagnostic_command() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_child", "role": "worker"},
+        context={
+            "_child_worker": True,
+            "runtimeRole": "worker",
+            "_child_tool_allowlist": ["read_file", "apply_patch", "run_command"],
+        },
+        tool_results=[
+            {
+                "name": "run_command",
+                "result": {
+                    "status": "completed",
+                    "exitCode": 0,
+                    "commandLog": {"command": "where.exe python"},
+                },
+            },
+        ],
+        registered_tools=_tools("read_file", "apply_patch", "run_command"),
+    )
+
+    assert decision.phase == "execution"
+    assert set(decision.allowed_tool_names) == {"read_file", "apply_patch", "run_command"}
 
 
 def test_permission_engine_denies_blocked_tool_exposure() -> None:

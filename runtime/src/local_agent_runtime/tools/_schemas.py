@@ -28,15 +28,15 @@ WORKSPACE_ROOT_PROPERTY = _string_property(
     examples=["D:/projects/example", "/Users/me/project"],
 )
 
-CHILD_TOOL_ALLOWLIST_TOOL_NAMES = [*DEFAULT_CHILD_TOOL_ALLOWLIST, "run_command", "apply_patch"]
+CHILD_TOOL_ALLOWLIST_TOOL_NAMES = [*DEFAULT_CHILD_TOOL_ALLOWLIST, "run_command", "apply_patch", "write_file"]
 
 
 def _child_tool_allowlist_property() -> dict[str, Any]:
     return {
         "type": "array",
         "description": (
-            "Optional child-worker tool allowlist. Defaults to read-only tools; include run_command or apply_patch "
-            "only when the child task explicitly needs command execution or file edits."
+            "Optional child-worker tool allowlist. Defaults to read-only tools; include run_command, apply_patch, "
+            "or write_file to extend the child with command execution or file edits."
         ),
         "items": {
             "type": "string",
@@ -44,7 +44,7 @@ def _child_tool_allowlist_property() -> dict[str, Any]:
         },
         "uniqueItems": True,
         "default": list(DEFAULT_CHILD_TOOL_ALLOWLIST),
-        "examples": [["list_dir", "search_files", "read_file"], ["read_file", "run_command", "apply_patch"]],
+        "examples": [["list_dir", "search_files", "read_file"], ["read_file", "run_command", "apply_patch", "write_file"]],
     }
 
 

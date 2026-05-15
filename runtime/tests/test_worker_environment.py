@@ -53,6 +53,7 @@ def test_build_child_worker_env_keeps_only_runtime_provider_and_platform_vars(tm
     assert env["OPENAI_API_KEY"] == "sk-openai"
     assert env["ANTHROPIC_API_KEY"] == "sk-anthropic"
     assert env["LOCAL_AGENT_DB_PATH"] == str(db_path)
+    assert env["LOCAL_AGENT_CHILD_WORKER"] == "1"
     assert env["PYTHONUNBUFFERED"] == "1"
     assert env["PYTHONPATH"] == os.pathsep.join([str(runtime_src), "parent-pythonpath"])
     assert "SECRET_TOKEN" not in env
@@ -109,10 +110,18 @@ def test_normalize_child_tool_allowlist_dedupes_and_requires_known_explicit_tool
         "read_file",
         "git_status",
     )
-    assert normalize_child_tool_allowlist(["read_file", "run_command", "apply_patch"]) == (
+    assert normalize_child_tool_allowlist(["read_file", "run_command", "apply_patch", "write_file"]) == (
+        "list_dir",
+        "search_files",
         "read_file",
+        "git_status",
+        "git_diff",
+        "code_search",
+        "web_fetch",
+        "browser",
         "run_command",
         "apply_patch",
+        "write_file",
     )
 
     with pytest.raises(ValueError, match="not allowed for child workers: task"):
@@ -153,13 +162,43 @@ class TestToolAliasNormalization:
         assert normalize_child_tool_allowlist(["diff"]) == ("git_diff",)
 
     def test_shell_alias(self):
-        assert normalize_child_tool_allowlist(["shell"]) == ("run_command",)
+        assert normalize_child_tool_allowlist(["shell"]) == (
+            "list_dir",
+            "search_files",
+            "read_file",
+            "git_status",
+            "git_diff",
+            "code_search",
+            "web_fetch",
+            "browser",
+            "run_command",
+        )
 
     def test_command_alias(self):
-        assert normalize_child_tool_allowlist(["command"]) == ("run_command",)
+        assert normalize_child_tool_allowlist(["command"]) == (
+            "list_dir",
+            "search_files",
+            "read_file",
+            "git_status",
+            "git_diff",
+            "code_search",
+            "web_fetch",
+            "browser",
+            "run_command",
+        )
 
     def test_patch_alias(self):
-        assert normalize_child_tool_allowlist(["patch"]) == ("apply_patch",)
+        assert normalize_child_tool_allowlist(["patch"]) == (
+            "list_dir",
+            "search_files",
+            "read_file",
+            "git_status",
+            "git_diff",
+            "code_search",
+            "web_fetch",
+            "browser",
+            "apply_patch",
+        )
 
     def test_duplicate_aliases_collapse(self):
         # rg and grep both resolve to search_files, should dedupe
@@ -169,7 +208,17 @@ class TestToolAliasNormalization:
 
     def test_string_input_with_aliases(self):
         result = normalize_child_tool_allowlist("rg,cat,shell")
-        assert result == ("search_files", "read_file", "run_command")
+        assert result == (
+            "list_dir",
+            "search_files",
+            "read_file",
+            "git_status",
+            "git_diff",
+            "code_search",
+            "web_fetch",
+            "browser",
+            "run_command",
+        )
 
     def test_unsafe_alias_task_still_blocked(self):
         # 'task' is not in the alias map, so it hits the unsafe check

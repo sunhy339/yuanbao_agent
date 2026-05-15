@@ -569,6 +569,147 @@ class TestCompletionHardGate:
         assert result["status"] == "completed"
         assert result["structuredResult"]["completionEvidence"]["evidenceLevel"] == "verified"
 
+    def test_code_change_with_successful_test_command_completes(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="fix a Python bug",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "calc.py", "action": "modified"}],
+            commands=[
+                {
+                    "id": "cmd_pytest",
+                    "command": "python -m pytest -q",
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "1 passed",
+                }
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Implementation finished and pytest passed.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["evidenceLevel"] == "verified"
+        assert evidence["verificationRequirements"]["required"] == ["python"]
+        assert evidence["verificationRequirements"]["missing"] == []
+        assert evidence["testsRun"][0]["command"] == "python -m pytest -q"
+
+    def test_later_successful_equivalent_test_command_resolves_prior_failure(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="fix a Python bug",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "cart.py", "action": "modified"}],
+            commands=[
+                {
+                    "id": "cmd_bad_shell",
+                    "command": 'cd "C:\\tmp\\worktree" && python -m pytest -q',
+                    "status": "failed",
+                    "exitCode": 1,
+                    "summary": "PowerShell rejected &&",
+                },
+                {
+                    "id": "cmd_pytest_passed",
+                    "command": 'cd "C:\\tmp\\worktree"; python -m pytest -q',
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "4 passed",
+                },
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Implementation finished and pytest passed after retry.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["evidenceLevel"] == "verified"
+        assert evidence["counts"]["failedVerification"] == 0
+        assert evidence["counts"]["failedTestsRun"] == 0
+        assert evidence["counts"]["resolvedFailedTestsRun"] == 1
+        assert evidence["counts"]["passedTestsRun"] == 1
+
+    def test_later_success_resolves_prior_failure_when_commands_are_latest_first(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="fix a Python bug",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "score.py", "action": "modified"}],
+            commands=[
+                {
+                    "id": "cmd_pytest_passed",
+                    "command": r"C:\Python314\python.exe -m pytest -q",
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "3 passed",
+                    "startedAt": 300,
+                },
+                {
+                    "id": "cmd_bad_shell",
+                    "command": r'cd "D:\workspace"; python -m pytest -q',
+                    "status": "failed",
+                    "exitCode": 1,
+                    "summary": "PowerShell command failed",
+                    "startedAt": 200,
+                },
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Implementation finished and pytest passed after retry.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["evidenceLevel"] == "verified"
+        assert evidence["counts"]["failedVerification"] == 0
+        assert evidence["counts"]["failedTestsRun"] == 0
+        assert evidence["counts"]["resolvedFailedTestsRun"] == 1
+        assert evidence["counts"]["passedTestsRun"] == 1
+
     def test_javascript_change_with_python_verification_waits_for_framework_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

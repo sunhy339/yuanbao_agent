@@ -9,8 +9,7 @@ from .permission_engine import PermissionEngine, PermissionRequest
 RuntimeRole = Literal["root", "worker", "planner", "reviewer", "summarizer"]
 
 
-READ_ONLY_TOOLS = frozenset(
-    {
+READ_ONLY_TOOL_NAMES = (
         "list_dir",
         "search_files",
         "read_file",
@@ -21,10 +20,29 @@ READ_ONLY_TOOLS = frozenset(
         "browser",
         "memory.recall",
         "scratchpad.read",
-    }
+)
+READ_ONLY_TOOLS = frozenset(
+    READ_ONLY_TOOL_NAMES
 )
 WRITE_TOOLS = frozenset({"write_file", "apply_patch", "run_command"})
 MEMORY_AND_SCRATCHPAD_TOOLS = frozenset({"memory.recall", "memory.remember", "scratchpad.read", "scratchpad.write"})
+VERIFICATION_COMMAND_MARKERS = (
+    "pytest",
+    "unittest",
+    "npm test",
+    "npm run test",
+    "pnpm test",
+    "yarn test",
+    "cargo test",
+    "go test",
+    "mvn test",
+    "gradle test",
+    " tsc",
+    "tsc ",
+    "npm run build",
+    "pnpm build",
+    "yarn build",
+)
 
 TOOL_CAPABILITIES: dict[str, str] = {
     "list_dir": "readFile",
@@ -112,6 +130,16 @@ class ToolPolicyResolver:
                 "phaseDecision": "allowed" if allow_all or name in allowed_names else "denied",
             }
             if allow_all or name in allowed_names:
+                continuation_reason = self._task_tool_continuation_block_reason(name, context, tool_results)
+                if continuation_reason:
+                    denied_names.append(name)
+                    reasons[name] = continuation_reason
+                    detail["continuationDecision"] = "denied"
+                    detail["finalDecision"] = "denied"
+                    detail["reason"] = continuation_reason
+                    decision_details.append(detail)
+                    continue
+
                 skill_allowed, skill_reason = self._skill_allows_tool(name, skill_policy)
                 detail["skillDecision"] = "allowed" if skill_allowed else "denied"
                 if not skill_allowed:
@@ -192,13 +220,14 @@ class ToolPolicyResolver:
         child_allowlist = self._child_allowlist(context)
         if child_allowlist is not None:
             tool_policy = "child_allowlist"
+        child_can_write = bool(child_allowlist is not None and set(child_allowlist) & WRITE_TOOLS)
         profile = {
             "agentType": agent_type,
             "baseRuntimeRole": runtime_role,
             "toolPolicy": tool_policy,
-            "capabilities": [],
+            "capabilities": ["workspace_write"] if child_can_write else [],
             "scopes": [],
-            "riskLevel": "low" if tool_policy in {"read_only", "child_allowlist"} else "medium",
+            "riskLevel": "medium" if child_can_write else ("low" if tool_policy in {"read_only", "child_allowlist"} else "medium"),
             "source": "runtime_default",
             "version": 1,
         }
@@ -228,12 +257,20 @@ class ToolPolicyResolver:
             return "approval_waiting"
         if self._last_task_result_ready(context, tool_results):
             return "synthesis"
+        if self._last_ready_task_result(tool_results) and self._allow_tools_after_task_results(context):
+            if self._last_tool_failed(tool_results):
+                return "recovery"
+            return "post_task_continuation"
         if runtime_role == "summarizer":
             return "synthesis"
         if runtime_role == "reviewer":
             return "review"
         if runtime_role == "planner":
             return "planning"
+        if runtime_role == "worker" and self._child_worker_execution_enabled(context):
+            if self._child_worker_verified_by_command(tool_results):
+                return "synthesis"
+            return "execution"
         if not tool_results:
             routing = context.get("routing")
             strategy = routing.get("strategy") if isinstance(routing, dict) else None
@@ -242,6 +279,40 @@ class ToolPolicyResolver:
         if self._last_tool_failed(tool_results):
             return "recovery"
         return "investigation"
+
+    def _child_worker_execution_enabled(self, context: dict[str, Any]) -> bool:
+        if context.get("_child_worker") is not True:
+            return False
+        child_allowlist = self._child_allowlist(context)
+        if child_allowlist is None:
+            return False
+        return bool(set(child_allowlist) & WRITE_TOOLS)
+
+    def _child_worker_verified_by_command(self, tool_results: list[dict[str, Any]]) -> bool:
+        if not tool_results:
+            return False
+        last_result = tool_results[-1]
+        if last_result.get("name") != "run_command":
+            return False
+        result = last_result.get("result")
+        if not isinstance(result, dict):
+            return False
+        if result.get("status") != "completed" or result.get("exitCode") != 0:
+            return False
+        command = self._run_command_text(result)
+        if not command:
+            return False
+        command_lower = f" {command.lower()} "
+        return any(marker in command_lower for marker in VERIFICATION_COMMAND_MARKERS)
+
+    def _run_command_text(self, result: dict[str, Any]) -> str:
+        command = result.get("command")
+        if isinstance(command, str):
+            return command
+        command_log = result.get("commandLog")
+        if isinstance(command_log, dict) and isinstance(command_log.get("command"), str):
+            return command_log["command"]
+        return ""
 
     def _allowed_names_for_phase_and_role(
         self,
@@ -277,13 +348,120 @@ class ToolPolicyResolver:
         return names, reasons
 
     def _last_task_result_ready(self, context: dict[str, Any], tool_results: list[dict[str, Any]]) -> bool:
-        if context.get("_allow_tools_after_task_results") is True or not tool_results:
+        if self._allow_tools_after_task_results(context) or not tool_results:
+            return False
+        return self._last_ready_task_result(tool_results)
+
+    def _last_ready_task_result(self, tool_results: list[dict[str, Any]]) -> bool:
+        if not tool_results:
             return False
         last_result = tool_results[-1]
         if last_result.get("name") != "task":
             return False
         result = last_result.get("result")
         return not (isinstance(result, dict) and result.get("status") == "waiting_approval")
+
+    def allow_tools_after_task_results(self, context: dict[str, Any]) -> bool:
+        return self._allow_tools_after_task_results(context)
+
+    def _allow_tools_after_task_results(self, context: dict[str, Any]) -> bool:
+        for key in ("_allow_tools_after_task_results", "allowToolsAfterTaskResults", "allow_tools_after_task_results"):
+            value = context.get(key)
+            if isinstance(value, bool):
+                return value
+        routing = context.get("routing")
+        if isinstance(routing, dict):
+            continuation = routing.get("toolContinuation") or routing.get("tool_continuation")
+            if isinstance(continuation, dict):
+                for key in ("allowToolsAfterTaskResults", "allow_tools_after_task_results"):
+                    value = continuation.get(key)
+                    if isinstance(value, bool):
+                        return value
+            for key in ("allowToolsAfterTaskResults", "allow_tools_after_task_results"):
+                value = routing.get(key)
+                if isinstance(value, bool):
+                    return value
+            strategy = routing.get("strategy")
+            if isinstance(strategy, str) and strategy in self.TASK_TOOL_STRATEGIES:
+                return True
+        return False
+
+    def _allow_more_subtasks_after_task_results(self, context: dict[str, Any]) -> bool:
+        if context.get("_allow_more_subtasks_after_task_results") is True:
+            return True
+        if context.get("allowMoreSubtasksAfterTaskResults") is True or context.get("allow_more_subtasks_after_task_results") is True:
+            return True
+        routing = context.get("routing")
+        if isinstance(routing, dict):
+            if routing.get("allowMoreSubtasksAfterTaskResults") is True or routing.get("allow_more_subtasks_after_task_results") is True:
+                return True
+            continuation = routing.get("toolContinuation") or routing.get("tool_continuation")
+            if isinstance(continuation, dict):
+                return (
+                    continuation.get("allowMoreSubtasksAfterTaskResults") is True
+                    or continuation.get("allow_more_subtasks_after_task_results") is True
+                )
+        return False
+
+    def _max_task_tool_calls(self, context: dict[str, Any]) -> int | None:
+        raw_values: list[Any] = [
+            context.get("_max_task_tool_calls"),
+            context.get("maxTaskToolCalls"),
+            context.get("max_task_tool_calls"),
+        ]
+        routing = context.get("routing")
+        if isinstance(routing, dict):
+            raw_values.extend([
+                routing.get("maxTaskToolCalls"),
+                routing.get("max_task_tool_calls"),
+            ])
+            continuation = routing.get("toolContinuation") or routing.get("tool_continuation")
+            if isinstance(continuation, dict):
+                raw_values.extend([
+                    continuation.get("maxTaskToolCalls"),
+                    continuation.get("max_task_tool_calls"),
+                ])
+        for raw in raw_values:
+            if raw is None:
+                continue
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+        return None
+
+    def _ready_task_result_count(self, tool_results: list[dict[str, Any]]) -> int:
+        count = 0
+        for tool_result in tool_results:
+            if tool_result.get("name") != "task":
+                continue
+            result = tool_result.get("result")
+            if isinstance(result, dict) and result.get("status") == "waiting_approval":
+                continue
+            count += 1
+        return count
+
+    def _task_tool_continuation_block_reason(
+        self,
+        tool_name: str,
+        context: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+    ) -> str | None:
+        if tool_name != "task" or not self._allow_tools_after_task_results(context):
+            return None
+        completed_task_calls = self._ready_task_result_count(tool_results)
+        if completed_task_calls <= 0:
+            return None
+        max_calls = self._max_task_tool_calls(context)
+        if max_calls is not None:
+            if completed_task_calls < max_calls:
+                return None
+            return f"task tool budget exhausted after {completed_task_calls}/{max_calls} completed child task result(s)"
+        if self._allow_more_subtasks_after_task_results(context):
+            return None
+        return "task tool is withheld after a child result; parent may continue with non-task tools"
 
     def _last_tool_failed(self, tool_results: list[dict[str, Any]]) -> bool:
         if not tool_results:
@@ -295,14 +473,26 @@ class ToolPolicyResolver:
         for key in ("_child_tool_allowlist", "childToolAllowlist", "child_tool_allowlist"):
             value = context.get(key)
             if isinstance(value, list) and all(isinstance(item, str) for item in value):
-                return [item for item in value if item]
+                return self._expand_child_allowlist([item for item in value if item])
         budget = context.get("_worker_budget")
         if isinstance(budget, dict):
             for key in ("childToolAllowlist", "child_tool_allowlist", "toolAllowlist", "tool_allowlist"):
                 value = budget.get(key)
                 if isinstance(value, list) and all(isinstance(item, str) for item in value):
-                    return [item for item in value if item]
+                    return self._expand_child_allowlist([item for item in value if item])
         return None
+
+    def _expand_child_allowlist(self, names: list[str]) -> list[str]:
+        if not (set(names) & WRITE_TOOLS):
+            return names
+        expanded: list[str] = []
+        seen: set[str] = set()
+        for name in [*READ_ONLY_TOOL_NAMES, *names]:
+            if name in seen:
+                continue
+            seen.add(name)
+            expanded.append(name)
+        return expanded
 
     def _normalize_runtime_role(self, value: Any) -> str:
         role = str(value).strip().lower() if value is not None else "root"

@@ -96,6 +96,7 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
             assert set(task_properties["childToolAllowlist"]["items"]["enum"]) >= {
                 "run_command",
                 "apply_patch",
+                "write_file",
             }
             assert task_properties["child_tool_allowlist"] == task_properties["childToolAllowlist"]
         elif name == "run_command":

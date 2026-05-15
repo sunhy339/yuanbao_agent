@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -869,6 +870,8 @@ class TaskLifecycleMixin:
             dict(item) for item in (task.get("testsRun") or [])
             if isinstance(item, dict)
         ]
+        command_verification = self._completion_tests_run_from_commands(commands)
+        tests_run = self._merge_completion_tests_run(tests_run, command_verification)
         patches = self._completed_patch_results(tool_results)
         tool_evidence = self._completion_tool_evidence(tool_results)
         failed_tool_results = self._unresolved_failed_tool_results(tool_evidence)
@@ -894,19 +897,32 @@ class TaskLifecycleMixin:
             item for item in tests_run
             if item.get("status") in {"failed", "timeout", "killed", "validation_failed"}
         ]
+        unresolved_failed_tests_run = self._unresolved_failed_verification_items(
+            tests_run,
+            passed_statuses={"passed", "success", "completed"},
+            failed_statuses={"failed", "timeout", "killed", "validation_failed"},
+        )
+        resolved_failed_tests_run = [
+            item for item in failed_tests_run
+            if item not in unresolved_failed_tests_run
+        ]
         failed_validation_checks = [
             item for item in validation_checks
             if item.get("status") in {"failed", "timeout", "killed", "validation_failed"}
         ]
+        verification_for_requirements = [
+            *verification,
+            *command_verification,
+        ]
         verification_requirements = self._completion_verification_requirements(
             changed_files=changed_files,
-            verification=verification,
+            verification=verification_for_requirements,
             tests_run=tests_run,
         )
 
         has_workspace_evidence = bool(changed_files or patches)
         has_command_evidence = bool(commands)
-        has_verification_evidence = bool(passed_verification)
+        has_verification_evidence = bool(passed_verification or passed_tests_run)
         has_failed_evidence = bool(failed_verification or failed_validation_checks)
         if has_failed_evidence:
             status = "needs_attention"
@@ -962,12 +978,13 @@ class TaskLifecycleMixin:
                 "commands": len(commands),
                 "verification": len(verification),
                 "passedVerification": len(passed_verification),
-                "failedVerification": len(failed_verification) + len(failed_validation_checks) + len(failed_tests_run),
+                "failedVerification": len(failed_verification) + len(failed_validation_checks) + len(unresolved_failed_tests_run),
                 "requiredVerificationFamilies": len(verification_requirements.get("required") or []),
                 "missingVerificationFamilies": len(verification_requirements.get("missing") or []),
                 "testsRun": len(tests_run),
                 "passedTestsRun": len(passed_tests_run),
-                "failedTestsRun": len(failed_tests_run),
+                "failedTestsRun": len(unresolved_failed_tests_run),
+                "resolvedFailedTestsRun": len(resolved_failed_tests_run),
                 "patches": len(patches),
                 "toolResults": len(tool_evidence),
                 "failedToolResults": len(failed_tool_results),
@@ -985,6 +1002,188 @@ class TaskLifecycleMixin:
             },
             "summaryPreview": summary[:500],
         }
+
+    def _completion_tests_run_from_commands(self, commands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        tests_run: list[dict[str, Any]] = []
+        for command_record in commands:
+            if not isinstance(command_record, dict):
+                continue
+            command = str(command_record.get("command") or "").strip()
+            if not command or not self._completion_text_mentions_targeted_verification(command):
+                continue
+            status = str(command_record.get("status") or "").strip().lower()
+            exit_code = command_record.get("exitCode")
+            passed = status in {"completed", "passed", "success"} and exit_code in (0, "0", None)
+            failed = status in {"failed", "timeout", "killed", "validation_failed"} or (
+                isinstance(exit_code, int) and exit_code != 0
+            )
+            normalized_status = "passed" if passed else "failed" if failed else status or "unknown"
+            tests_run.append({
+                "id": command_record.get("id"),
+                "name": command,
+                "command": command,
+                "cwd": command_record.get("cwd"),
+                "status": normalized_status,
+                "exitCode": exit_code,
+                "durationMs": command_record.get("durationMs"),
+                "summary": command_record.get("summary") or f"Command {normalized_status}",
+                "source": "run_command",
+                "startedAt": command_record.get("startedAt"),
+                "finishedAt": command_record.get("finishedAt"),
+            })
+        return [
+            {key: value for key, value in item.items() if value not in (None, "", [])}
+            for item in tests_run
+        ]
+
+    def _merge_completion_tests_run(
+        self,
+        current: list[dict[str, Any]],
+        additions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in [*current, *additions]:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("id") or "").strip(),
+                str(item.get("command") or item.get("name") or "").strip(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(dict(item))
+        return merged
+
+    def _unresolved_failed_verification_items(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        passed_statuses: set[str],
+        failed_statuses: set[str],
+    ) -> list[dict[str, Any]]:
+        unresolved: list[dict[str, Any]] = []
+        normalized_items = self._completion_chronological_items([
+            item for item in items
+            if isinstance(item, dict)
+        ])
+        for index, item in enumerate(normalized_items):
+            status = str(item.get("status") or "").strip().lower()
+            if status not in failed_statuses:
+                continue
+            keys = self._completion_verification_resolution_keys(item)
+            families = self._completion_verification_item_families(item)
+            identity = self._completion_verification_identity(item)
+            has_later_success = False
+            for later in normalized_items[index + 1 :]:
+                later_status = str(later.get("status") or "").strip().lower()
+                if later_status not in passed_statuses:
+                    continue
+                later_keys = self._completion_verification_resolution_keys(later)
+                if keys and later_keys:
+                    if keys.isdisjoint(later_keys):
+                        continue
+                    has_later_success = True
+                    break
+                later_families = self._completion_verification_item_families(later)
+                if families and later_families and families.isdisjoint(later_families):
+                    continue
+                if not families and not later_families:
+                    later_identity = self._completion_verification_identity(later)
+                    if identity and later_identity and identity != later_identity:
+                        continue
+                has_later_success = True
+                break
+            if not has_later_success:
+                unresolved.append(item)
+        return unresolved
+
+    def _completion_chronological_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        indexed = list(enumerate(items))
+        if not any(self._completion_item_timestamp(item) is not None for _, item in indexed):
+            return items
+        return [
+            item for index, item in sorted(
+                indexed,
+                key=lambda pair: (
+                    self._completion_item_timestamp(pair[1]) is None,
+                    self._completion_item_timestamp(pair[1]) or 0,
+                    pair[0],
+                ),
+            )
+        ]
+
+    def _completion_item_timestamp(self, item: dict[str, Any]) -> float | None:
+        for key in ("startedAt", "createdAt", "finishedAt", "completedAt", "updatedAt"):
+            value = item.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str) and value.strip():
+                try:
+                    return float(value)
+                except ValueError:
+                    continue
+        return None
+
+    def _completion_verification_resolution_keys(self, item: dict[str, Any]) -> set[str]:
+        text = " ".join(
+            str(item.get(key) or "")
+            for key in ("command", "name", "summary", "suite")
+        ).casefold()
+        token_map = {
+            "python:test": ("pytest", "unittest", "tox"),
+            "python:typecheck": ("mypy", "pyright"),
+            "python:lint": ("ruff",),
+            "javascript:test": (
+                "jest",
+                "vitest",
+                "playwright",
+                "cypress",
+                "npm test",
+                "npm run test",
+                "pnpm test",
+                "pnpm run test",
+                "yarn test",
+                "yarn run test",
+                "bun test",
+            ),
+            "javascript:typecheck": ("tsc", "typecheck", "type check"),
+            "javascript:lint": ("eslint",),
+            "javascript:build": ("npm run build", "pnpm build", "yarn build", "vite", "next build"),
+            "rust:test": ("cargo test",),
+            "rust:check": ("cargo check", "cargo clippy"),
+            "rust:build": ("cargo build",),
+            "go:test": ("go test",),
+            "go:build": ("go build",),
+            "go:lint": ("go vet",),
+            "jvm:test": ("mvn test", "maven test", "gradle test", "./gradlew test", "gradlew test"),
+            "dotnet:test": ("dotnet test",),
+            "dotnet:build": ("dotnet build",),
+            "ruby:test": ("rspec", "ruby test"),
+            "php:test": ("phpunit", "composer test"),
+            "swift:test": ("swift test", "xcodebuild test"),
+            "native:test": ("make test", "ctest", "ninja test"),
+            "native:build": ("cmake",),
+        }
+        keys = {
+            key
+            for key, tokens in token_map.items()
+            if any(token in text for token in tokens)
+        }
+        if "python -m pytest" in text:
+            keys.add("python:test")
+        return keys
+
+    def _completion_verification_identity(self, item: dict[str, Any]) -> str:
+        text = " ".join(
+            str(item.get(key) or "")
+            for key in ("command", "name", "suite")
+        ).casefold()
+        text = re.sub(r'cd\s+["\']?[^;&|]+["\']?\s*(?:&&|;)?', " ", text)
+        text = re.sub(r'["\'][a-z]:[^"\']+["\']', " ", text)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
 
     def _completion_acceptance_evidence(
         self,
@@ -1620,7 +1819,11 @@ class TaskLifecycleMixin:
                 # Check for conflict markers
                 check_proc = subprocess.run(
                     ["git", "diff", "--check"],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=10,
                     cwd=workspace_root,
                 )
                 if check_proc.stdout.strip():

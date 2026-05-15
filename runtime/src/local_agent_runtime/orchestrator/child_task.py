@@ -53,6 +53,7 @@ class ChildTaskMixin:
             context["_child_tool_allowlist"] = list(child_allowlist)
         context = self._context_with_worker_budget(context, budget)
         plan = self._planner.plan(prompt.strip(), context=context)
+        child_can_write = bool(child_allowlist is not None and set(child_allowlist) & {"write_file", "apply_patch", "run_command"})
         role_snapshot = {
             "runtimeRole": child_role,
             "agentType": agent_type,
@@ -62,15 +63,15 @@ class ChildTaskMixin:
                 "agentType": agent_type,
                 "baseRuntimeRole": child_role,
                 "toolPolicy": "child_allowlist" if child_allowlist is not None else "read_only",
-                "capabilities": [],
+                "capabilities": ["workspace_write"] if child_can_write else [],
                 "scopes": [],
-                "riskLevel": "low",
+                "riskLevel": "medium" if child_can_write else "low",
                 "source": "runtime_default",
                 "version": 1,
             },
             "toolPolicy": "child_allowlist" if child_allowlist is not None else "read_only",
             "scopes": [],
-            "riskLevel": "low",
+            "riskLevel": "medium" if child_can_write else "low",
             "budget": params.get("budget") if isinstance(params.get("budget"), dict) else {},
         }
         child_routing = {

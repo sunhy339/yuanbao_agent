@@ -47,7 +47,9 @@ class PolicyGuard:
             raise ValueError(f"Blocked dangerous command: {dangerous_match}")
 
     def requires_approval(self, tool_name: str, *, approval_mode: str | None = None) -> bool:
-        mode = approval_mode or self._approval_mode
+        mode = str(approval_mode or self._approval_mode or "").strip().lower()
+        if mode in {"off", "never", "none", "no", "false"}:
+            return False
         # Consult structured safety metadata from tool schemas
         from ..tools.registry import BUILTIN_TOOL_SCHEMAS_BY_NAME
         schema = BUILTIN_TOOL_SCHEMAS_BY_NAME.get(tool_name)

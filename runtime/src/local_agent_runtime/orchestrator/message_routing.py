@@ -30,15 +30,22 @@ class MessageRoutingMixin:
     """Mixin providing message routing and background dispatch."""
 
     def _routing_dict_from_decision(self, routing: Any, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        strategy = routing.strategy.value
+        allow_tools_after_task_results = strategy in {"plan_execute", "plan_supervise", "plan_swarm"}
         return {
             "scenario": routing.scenario.value,
-            "strategy": routing.strategy.value,
+            "strategy": strategy,
             "confidence": routing.confidence,
             "max_steps": routing.max_steps,
             "enable_reflection": routing.enable_reflection,
             "enable_planning": routing.enable_planning,
             "reasoning": routing.reasoning,
             "skill_id": routing.skill_id,
+            "toolContinuation": {
+                "allowToolsAfterTaskResults": allow_tools_after_task_results,
+                "allowMoreSubtasksAfterTaskResults": False,
+                "maxTaskToolCalls": 1,
+            },
             "profile_snapshot": self._runtime_profile_snapshot(context),
             "roleSnapshot": {
                 "runtimeRole": "root",

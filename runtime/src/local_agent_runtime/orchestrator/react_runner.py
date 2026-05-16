@@ -578,7 +578,16 @@ class ReactRunnerMixin:
         return self._autonomy_profile_int(context, "maxParallelSubtasks") or 4
 
     def _child_subtask_timeout_ms(self, context: dict[str, Any]) -> int | None:
-        return self._autonomy_profile_int(context, "timeoutMs")
+        profile_timeout = self._autonomy_profile_int(context, "timeoutMs")
+        if profile_timeout is not None:
+            return profile_timeout
+        config = context.get("config") if isinstance(context, dict) else {}
+        policy = config.get("policy") if isinstance(config, dict) else {}
+        raw_value = policy.get("commandTimeoutMs") if isinstance(policy, dict) else None
+        try:
+            return max(1000, int(raw_value)) if raw_value is not None else None
+        except (TypeError, ValueError):
+            return None
 
     def _compaction_threshold(self, context: dict[str, Any]) -> int:
         """Get compaction threshold from autonomy profile, falling back to 60000."""

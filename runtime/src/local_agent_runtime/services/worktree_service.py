@@ -177,14 +177,24 @@ class WorktreeService:
             target_path=params["worktreePath"],
             base_ref=params.get("baseRef", "HEAD"),
         )
+        requested_base_ref = params.get("baseRef", "HEAD")
+        stable_base_ref = git_result.get("baseRef") or requested_base_ref
 
         # Create store record
-        record = self._store.create_worktree(params)
+        record = self._store.create_worktree({
+            **params,
+            "baseRef": stable_base_ref,
+        })
         worktree_id = record.get("worktree", {}).get("id")
         if worktree_id:
             record = self._store.update_worktree({
                 "worktreeId": worktree_id,
                 "status": "active",
+                "lastStatus": {
+                    **(record.get("worktree", {}).get("lastStatus") or {}),
+                    "requestedBaseRef": requested_base_ref,
+                    "resolvedBaseRef": stable_base_ref,
+                },
             })
 
         # Fire after hooks

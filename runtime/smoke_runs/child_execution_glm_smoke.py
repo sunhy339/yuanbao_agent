@@ -20,10 +20,26 @@ from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 
 
+SMOKE_MIN_OUTPUT_TOKENS = 6000
+SMOKE_PROBE_OUTPUT_TOKENS = 128
+
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
+def _int_setting(source: dict[str, Any], *keys: str, default: int) -> int:
+    for key in keys:
+        value = source.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return default
 
 
 def choose_glm_provider_config() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
@@ -58,16 +74,27 @@ def choose_glm_provider_config() -> tuple[dict[str, Any], dict[str, Any], list[d
             and (candidate.get("apiKey") or os.environ.get(str(candidate.get("apiKeyEnvVarName") or "")))
         ):
             continue
-        profile = dict(candidate)
-        profile["timeout"] = int(profile.get("timeout") or 90)
-        profile["maxTokens"] = min(int(profile.get("maxTokens") or profile.get("maxOutputTokens") or 128), 128)
-        profile["maxOutputTokens"] = min(int(profile.get("maxOutputTokens") or profile.get("maxTokens") or 128), 128)
-        provider_config = {**profile, "activeProfileId": str(profile.get("id") or "glm-probe"), "profiles": [profile]}
+        base_profile = dict(candidate)
+        probe_profile = dict(base_profile)
+        probe_profile["timeout"] = _int_setting(probe_profile, "timeout", default=90)
+        probe_profile["maxTokens"] = min(
+            _int_setting(probe_profile, "maxTokens", "maxOutputTokens", default=SMOKE_PROBE_OUTPUT_TOKENS),
+            SMOKE_PROBE_OUTPUT_TOKENS,
+        )
+        probe_profile["maxOutputTokens"] = min(
+            _int_setting(probe_profile, "maxOutputTokens", "maxTokens", default=SMOKE_PROBE_OUTPUT_TOKENS),
+            SMOKE_PROBE_OUTPUT_TOKENS,
+        )
+        provider_config = {
+            **probe_profile,
+            "activeProfileId": str(probe_profile.get("id") or "glm-probe"),
+            "profiles": [probe_profile],
+        }
         public = {
-            "name": str(profile.get("name") or profile.get("id") or "GLM"),
-            "mode": str(profile.get("mode") or ""),
-            "apiFormat": str(profile.get("apiFormat") or "openai-chat"),
-            "model": str(profile.get("model") or ""),
+            "name": str(base_profile.get("name") or base_profile.get("id") or "GLM"),
+            "mode": str(base_profile.get("mode") or ""),
+            "apiFormat": str(base_profile.get("apiFormat") or "openai-chat"),
+            "model": str(base_profile.get("model") or ""),
         }
         try:
             adapter = ProviderAdapter(config={"provider": provider_config})
@@ -86,21 +113,27 @@ def choose_glm_provider_config() -> tuple[dict[str, Any], dict[str, Any], list[d
         selected = {
             "id": "glm-child-execution-smoke",
             "name": public["name"],
-            "mode": str(profile.get("mode") or "openai-compatible"),
-            "baseUrl": str(profile.get("baseUrl")),
-            "model": str(profile.get("model")),
-            "defaultModel": str(profile.get("defaultModel") or profile.get("model")),
-            "fallbackModel": str(profile.get("fallbackModel") or profile.get("model")),
-            "apiKeyEnvVarName": str(profile.get("apiKeyEnvVarName") or "LOCAL_AGENT_PROVIDER_API_KEY"),
-            "apiFormat": str(profile.get("apiFormat") or "openai-chat"),
+            "mode": str(base_profile.get("mode") or "openai-compatible"),
+            "baseUrl": str(base_profile.get("baseUrl")),
+            "model": str(base_profile.get("model")),
+            "defaultModel": str(base_profile.get("defaultModel") or base_profile.get("model")),
+            "fallbackModel": str(base_profile.get("fallbackModel") or base_profile.get("model")),
+            "apiKeyEnvVarName": str(base_profile.get("apiKeyEnvVarName") or "LOCAL_AGENT_PROVIDER_API_KEY"),
+            "apiFormat": str(base_profile.get("apiFormat") or "openai-chat"),
             "temperature": 0.0,
-            "maxTokens": int(profile.get("maxTokens") or profile.get("maxOutputTokens") or 2200),
-            "maxOutputTokens": int(profile.get("maxOutputTokens") or profile.get("maxTokens") or 2200),
-            "maxContextTokens": int(profile.get("maxContextTokens") or 120000),
-            "timeout": int(profile.get("timeout") or 90),
+            "maxTokens": max(
+                _int_setting(base_profile, "maxTokens", "maxOutputTokens", default=SMOKE_MIN_OUTPUT_TOKENS),
+                SMOKE_MIN_OUTPUT_TOKENS,
+            ),
+            "maxOutputTokens": max(
+                _int_setting(base_profile, "maxOutputTokens", "maxTokens", default=SMOKE_MIN_OUTPUT_TOKENS),
+                SMOKE_MIN_OUTPUT_TOKENS,
+            ),
+            "maxContextTokens": _int_setting(base_profile, "maxContextTokens", default=120000),
+            "timeout": _int_setting(base_profile, "timeout", default=90),
         }
-        if profile.get("apiKey"):
-            selected["apiKey"] = str(profile["apiKey"])
+        if base_profile.get("apiKey"):
+            selected["apiKey"] = str(base_profile["apiKey"])
         return {**selected, "activeProfileId": selected["id"], "profiles": [selected]}, public, probe_results
 
     raise RuntimeError("No usable GLM provider config found: " + json.dumps(probe_results, ensure_ascii=False))

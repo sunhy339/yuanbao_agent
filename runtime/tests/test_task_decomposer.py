@@ -152,6 +152,54 @@ class TestTaskDecomposerDecompose:
         assert result.dag == {"s0": [], "s1": ["s0"]}
         assert result.execution_order == ["s0", "s1"]
 
+    def test_expands_generic_full_stack_implementation_plan(self) -> None:
+        raw = json.dumps([
+            {
+                "id": "sub-0",
+                "title": "Analyze codebase",
+                "description": "Inspect the current project.",
+                "dependencies": [],
+                "agentType": "planner",
+            },
+            {
+                "id": "sub-1",
+                "title": "Implement changes",
+                "description": "Implement backend, frontend, tests, and README changes.",
+                "dependencies": ["sub-0"],
+                "agentType": "worker",
+            },
+            {
+                "id": "sub-2",
+                "title": "Verify results",
+                "description": "Run tests and verify everything.",
+                "dependencies": ["sub-1"],
+                "agentType": "worker",
+            },
+        ])
+        provider = MockProvider(response=raw)
+        decomposer = TaskDecomposer(provider)
+
+        result = decomposer.decompose(
+            goal=(
+                "Build feedback_models.py, feedback_storage.py, feedback_api.py, "
+                "feedback_analytics.py, feedback_import_export.py, index.html, app.js, "
+                "styles.css, two pytest tests, README docs, py_compile, node --check, and SQLite."
+            )
+        )
+
+        titles = [task.title for task in result.subtasks]
+        assert titles == [
+            "Analyze codebase and constraints",
+            "Implement backend models and storage",
+            "Implement API analytics import export",
+            "Implement frontend static app",
+            "Write pytest coverage",
+            "Document and verify",
+        ]
+        test_task = next(task for task in result.subtasks if task.title == "Write pytest coverage")
+        assert set(test_task.dependencies) == {"sub-2", "sub-3"}
+        assert "db_path" in test_task.description
+
 
 # ---------------------------------------------------------------------------
 # DAG builder tests

@@ -63,6 +63,7 @@ DEFAULT_ENV_ALLOWLIST = (
     "YUANBAO_SMOKE_PROVIDER_API_FORMAT",
     "YUANBAO_SMOKE_PROVIDER_MODE",
     "YUANBAO_SMOKE_PROVIDER_NAME",
+    "LOCAL_AGENT_NODE_EXECUTABLE",
 )
 
 WINDOWS_RUNTIME_ENV = (
@@ -131,6 +132,18 @@ def build_child_worker_env(
         value = _lookup_env_value(parent_env, key)
         if _env_value_present(value):
             env[key] = str(value)
+
+    node_executable = _node_executable(parent_env)
+    if node_executable:
+        env["LOCAL_AGENT_NODE_EXECUTABLE"] = node_executable
+        node_dir = str(Path(node_executable).parent)
+        existing_path = env.get("PATH")
+        if existing_path:
+            path_entries = existing_path.split(os.pathsep)
+            if node_dir not in path_entries:
+                env["PATH"] = os.pathsep.join([node_dir, *path_entries])
+        else:
+            env["PATH"] = node_dir
 
     existing_python_path = _lookup_env_value(parent_env, "PYTHONPATH")
     python_path_entries = [runtime_src_path]
@@ -224,4 +237,20 @@ def _lookup_env_value(env: Mapping[str, str], key: str) -> str | None:
     for candidate_key, value in env.items():
         if candidate_key.upper() == normalized_key:
             return value
+    return None
+
+
+def _node_executable(parent_env: Mapping[str, str]) -> str | None:
+    configured = _lookup_env_value(parent_env, "LOCAL_AGENT_NODE_EXECUTABLE")
+    if _env_value_present(configured) and Path(str(configured)).is_file():
+        return str(configured)
+
+    home = Path.home()
+    candidates = [
+        home / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node" / "bin" / "node.exe",
+        home / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node" / "bin" / "node",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
     return None

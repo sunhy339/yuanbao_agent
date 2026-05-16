@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from local_agent_runtime.event_bus import EventBus
+from local_agent_runtime.orchestration.types import OrchestrationResult
 from local_agent_runtime.orchestrator.service import Orchestrator
 from local_agent_runtime.provider.adapter import ProviderAdapter
 from local_agent_runtime.policy.guard import PolicyGuard
@@ -143,6 +144,164 @@ def test_react_loop_accepts_simple_final_answer(tmp_path: Any) -> None:
     assert task["resultSummary"] == "The provider answered directly."
     assert [event["type"] for event in runtime.events if event["type"] == "message.completed"]
     assert not [event for event in runtime.events if event["type"] == "tool.started"]
+
+
+def test_react_loop_continues_with_non_task_tools_after_child_result(tmp_path: Any) -> None:
+    provider = ScriptedProvider([
+        {
+            "message": "I will delegate a focused inspection first.",
+            "tool_calls": [
+                {
+                    "id": "call_child",
+                    "name": "task",
+                    "arguments": {
+                        "title": "Inspect inventory",
+                        "prompt": "Inspect the inventory module and report the relevant files.",
+                        "agentType": "explorer",
+                        "childToolAllowlist": ["read_file", "git_status"],
+                    },
+                }
+            ],
+        },
+        {"final": "Child result reviewed; continuing work is complete."},
+    ])
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="Use a child inspection and then continue locally",
+        plan=[],
+    )
+    dispatched: list[dict[str, Any]] = []
+
+    def _dispatch(params: dict[str, Any]) -> dict[str, Any]:
+        dispatched.append(params)
+        return {
+            "status": "completed",
+            "summary": "Child inspected inventory.py and found the target function.",
+            "childTaskId": "task_child_1",
+        }
+
+    runtime.server._orchestrator._subagent_service.dispatch = _dispatch  # noqa: SLF001
+    context = {
+        "workspace_root": str(tmp_path / "workspace"),
+        "config": runtime.store.get_config({})["config"],
+        "routing": {
+            "strategy": "plan_swarm",
+            "toolContinuation": {
+                "allowToolsAfterTaskResults": True,
+                "allowMoreSubtasksAfterTaskResults": False,
+                "maxTaskToolCalls": 1,
+            },
+        },
+    }
+
+    result = runtime.server._orchestrator._run_react_loop(  # noqa: SLF001
+        session_id=session["id"],
+        task=task,
+        goal="Use a child inspection and then continue locally",
+        context=context,
+    )
+
+    assert result["status"] == "completed"
+    assert len(dispatched) == 1
+    assert len(provider.calls) == 2
+    first_policy = provider.calls[0]["context"]["tool_policy_decision"]
+    second_policy = provider.calls[1]["context"]["tool_policy_decision"]
+    second_tool_names = {
+        tool.get("name") or tool.get("function", {}).get("name")
+        for tool in provider.calls[1]["context"]["tools"]
+    }
+    assert first_policy["phase"] == "planning"
+    assert "task" in first_policy["allowedToolNames"]
+    assert second_policy["phase"] == "post_task_continuation"
+    assert "task" not in second_policy["allowedToolNames"]
+    assert "task" in second_policy["deniedToolNames"]
+    assert "task" not in second_tool_names
+    assert {"read_file", "apply_patch", "run_command"}.issubset(second_tool_names)
+
+
+def test_swarm_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> None:
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="coordinate a long swarm task",
+        plan=[],
+    )
+    captured: dict[str, Any] = {}
+
+    runtime.server._orchestrator._decomposer.decompose = (  # noqa: SLF001
+        lambda **_kwargs: SimpleNamespace(subtasks=[], execution_order=[], dag={})
+    )
+    runtime.server._orchestrator._check_plan_approval = lambda **_kwargs: None  # noqa: SLF001
+
+    def _execute(*_args: Any, **kwargs: Any) -> OrchestrationResult:
+        captured.update(kwargs)
+        return OrchestrationResult(success=True, summary="done", subtask_results=[])
+
+    runtime.server._orchestrator._swarm.execute = _execute  # noqa: SLF001
+    context = {
+        "config": {
+            "autonomy": {
+                "activeProfileId": "long-run",
+                "profiles": [{"id": "long-run", "timeoutMs": 900_000}],
+            }
+        }
+    }
+
+    runtime.server._orchestrator._execute_with_swarm(  # noqa: SLF001
+        session_id=session["id"],
+        task=task,
+        goal="coordinate a long swarm task",
+        context=context,
+    )
+
+    assert captured["child_timeout_ms"] == 900_000
+
+
+def test_supervisor_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> None:
+    provider = ScriptedProvider([])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="coordinate a long supervised task",
+        plan=[],
+    )
+    captured: dict[str, Any] = {}
+
+    runtime.server._orchestrator._decomposer.decompose = (  # noqa: SLF001
+        lambda **_kwargs: SimpleNamespace(subtasks=[], execution_order=[], dag={})
+    )
+    runtime.server._orchestrator._check_plan_approval = lambda **_kwargs: None  # noqa: SLF001
+
+    def _execute(*_args: Any, **kwargs: Any) -> OrchestrationResult:
+        captured.update(kwargs)
+        return OrchestrationResult(success=True, summary="done", subtask_results=[])
+
+    runtime.server._orchestrator._supervisor.execute = _execute  # noqa: SLF001
+    context = {
+        "config": {
+            "autonomy": {
+                "activeProfileId": "long-run",
+                "profiles": [{"id": "long-run", "timeoutMs": 900_000}],
+            }
+        }
+    }
+
+    runtime.server._orchestrator._execute_with_supervisor(  # noqa: SLF001
+        session_id=session["id"],
+        task=task,
+        goal="coordinate a long supervised task",
+        context=context,
+    )
+
+    assert captured["child_timeout_ms"] == 900_000
 
 
 def test_react_loop_injects_task_focus_into_provider_context(tmp_path: Any) -> None:

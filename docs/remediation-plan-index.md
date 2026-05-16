@@ -23,6 +23,7 @@ staged with `git add -f` when they need to be committed.
 | Memory and context compaction | `docs/memory-and-context-compaction-plan.md` | Older plan, checklist not updated after implementation |
 | Frontend V2 follow-up | `docs/frontend-v2-followup-plan.md` | Checklist complete, 46 done / 0 open |
 | Agent runtime maturity roadmap | `docs/agent-runtime-maturity-roadmap.md` | New post-plan roadmap for effective config, decision trace, budget panel, reports, parallel safety, and replay |
+| Real local app long-run remediation | `docs/YUANBAO_AGENT_DOCS_CONSOLIDATED.md#2026-05-16-real-local-app-long-run-remediation-plan` | Main workflow hardening track after the successful real full-stack local app smoke; focus is MCP/Skills coverage, intent confidence, user takeover, automation levels, workspace awareness, structured handoffs, product acceptance, and frontend runtime observability |
 | LLM decision closure | `docs/llm-decision-closure-plan.md` | New code-verified closure plan for default advisor wiring, proposal records, completion decision, and context policy |
 | Runtime hooks design | `docs/runtime-hooks-design-plan.md` | New detailed design for policy-gated, auditable lifecycle hooks |
 | Permission Policy V2 Lite | `docs/permission-policy-v2-lite-plan.md` | New focused plan for capability-based permission presets, unified runtime evaluation, approval gating, and audit records |

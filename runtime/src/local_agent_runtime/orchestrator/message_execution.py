@@ -683,6 +683,7 @@ class MessageExecutionMixin:
             result = self._supervisor.execute(
                 goal, context,
                 session_id=session_id, task=task,
+                child_timeout_ms=self._child_subtask_timeout_ms(context),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
             )
 
@@ -777,6 +778,7 @@ class MessageExecutionMixin:
             result = self._swarm.execute(
                 goal, context,
                 session_id=session_id, task=task,
+                child_timeout_ms=self._child_subtask_timeout_ms(context),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
             )
 

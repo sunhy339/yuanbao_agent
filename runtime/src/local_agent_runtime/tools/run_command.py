@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import os
 from pathlib import Path
 from typing import Any
 
@@ -16,9 +18,59 @@ from ._shared import (
     require_workspace_root,
     run_shell,
 )
+from .command_compat import CommandCompatAdapter
 from ..policy.permission_engine import PermissionRequest as PermRequest
 from ..services.command_background import BackgroundCommandRequest, get_background_command_service
 from ..services.write_scope_enforcement import WriteScopeEnforcer
+
+
+_POWERSHELL_QUOTED_EXECUTABLE_RE = re.compile(r"""^(\s*)(["'])([^"']+\.(?:exe|cmd|bat|ps1))\2(\s+.*)?$""", re.IGNORECASE)
+_POWERSHELL_NODE_EXECUTABLE_RE = re.compile(
+    r"""(?P<prefix>(?:^|\s)&\s*)(?P<quote>["'])(?P<path>[^"']*\\node(?:\.exe)?)(?P=quote)""",
+    re.IGNORECASE,
+)
+
+
+def _powershell_execution_command(command: str, shell_name: str) -> str:
+    if shell_name != "powershell":
+        return command
+    command = CommandCompatAdapter().adapt(command, shell_name).adapted
+    command = _rewrite_missing_node_executable(command)
+    if command.lstrip().startswith("&"):
+        return command
+    match = _POWERSHELL_QUOTED_EXECUTABLE_RE.match(command)
+    if not match:
+        return command
+    return f"{match.group(1)}& {command[len(match.group(1)):]}"
+
+
+def _rewrite_missing_node_executable(command: str) -> str:
+    match = _POWERSHELL_NODE_EXECUTABLE_RE.search(command)
+    if not match:
+        return command
+    requested = Path(match.group("path"))
+    if requested.is_file():
+        return command
+    replacement = _available_node_executable()
+    if replacement is None:
+        return command
+    quote = match.group("quote")
+    replacement_text = f"{match.group('prefix')}{quote}{replacement}{quote}"
+    return command[:match.start()] + replacement_text + command[match.end():]
+
+
+def _available_node_executable() -> str | None:
+    configured = os.environ.get("LOCAL_AGENT_NODE_EXECUTABLE")
+    if configured and Path(configured).is_file():
+        return configured
+    home = Path.home()
+    for candidate in (
+        home / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node" / "bin" / "node.exe",
+        home / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node" / "bin" / "node",
+    ):
+        if candidate.is_file():
+            return str(candidate)
+    return None
 
 
 def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None, *, permission_engine: Any | None = None) -> dict[str, Any]:
@@ -36,6 +88,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         background = background_requested(params)
         cwd_rel = normalize_cwd(policy_guard, workspace_root, params, store)
         shell_name = normalize_shell(params.get("shell"), store)
+        command = _powershell_execution_command(command, shell_name)
         timeout_ms = int(params.get("timeoutMs") or params.get("timeout_ms") or active_command_policy["commandTimeoutMs"])
         timeout_ms = max(1000, min(timeout_ms, 1_800_000))
 

@@ -15,13 +15,17 @@ __pycache__/
 *$py.class
 *.egg-info/
 .pytest_cache/
+.pytest-*/
 .pytest-tmp-*/
+.pytest-tmp/
+.pytest-local-*/
 
 # Runtime state and generated logs
 *.sqlite3
 *.db
 runtime/.local-agent-runtime.sqlite3
 runtime_artifacts/
+runtime/smoke_runs/
 
 # Environment and local machine state
 .env

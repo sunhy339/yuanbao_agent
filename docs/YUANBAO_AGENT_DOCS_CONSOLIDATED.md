@@ -1351,3 +1351,177 @@ flowchart TD
 
 1. P2 动作类型可以继续扩展通知/webhook、memory write、自动验证建议、外部系统同步。
 2. 真实 provider + hook side effect 组合 smoke 仍可作为发布 gate 的可选项启用，避免默认依赖本地密钥。
+
+### 2026-05-15 Real LLM Full Coverage Smoke
+
+This pass used a controlled real-provider development task to cover the main backend loop end to end: root task, subagent, child allowlist, parent continuation after child result, patch, command verification, git inspection, completion evidence, hooks, and trace events.
+
+Coverage:
+
+| Node | Result |
+| --- | --- |
+| Provider probe | MiniMax returned `HTTP 403 API Key expired`; GLM `GLM-5.1` passed with request path `/v1/chat/completions`. |
+| Parent routing | Forced `plan_swarm`; routing wrote `toolContinuation` with `allowToolsAfterTaskResults=true`, `allowMoreSubtasksAfterTaskResults=false`, and `maxTaskToolCalls=1`. |
+| ToolPolicyResolver | Turn 0 phase was `planning` and exposed `task`; after child result the parent entered `post_task_continuation`, exposed non-task tools, and denied another `task` call with a replayable budget reason. |
+| Subagent / collaboration | `collab.task.created/claimed/updated/completed` appeared; child runtime task completed; child policy exposed only `list_dir`, `search_files`, `read_file`, `git_status`, `git_diff`, and `code_search`. |
+| Tool execution | Parent sequence covered `task -> read_file -> apply_patch -> run_command -> git_status -> git_diff`; one failed patch validation was followed by a successful patch and was treated as resolved. |
+| Completion gate | `completionEvidence.evidenceLevel=verified`; evidence included changed files, tests, command result, patch record, tool results, and `unresolvedToolFailures=[]`. |
+| Hooks | 29 hook executions completed, covering task start, provider turns, tool calls, subagent start/complete, patch apply, and task complete. |
+| Events | Trace covered task created/started/completed, tool started/completed/failed, child bridge events, command output, validation completed, and completion decision. |
+
+Issues found and fixed:
+
+| Issue | Root cause | Fix |
+| --- | --- | --- |
+| Parent task completed but retained `errorCode=ORPHAN_CLEANUP`. | Child worker process started `local_agent_runtime.main`, whose server constructor also ran orphan cleanup and misclassified the still-running parent task. | `build_child_worker_env` now sets `LOCAL_AGENT_CHILD_WORKER=1`; `main.build_server` skips orphan cleanup in child-worker mode. |
+| Parent could not continue local work after a child `task` result. | The old synthesis gate hid all tools after a completed `task` result. | `ToolPolicyResolver` now supports `post_task_continuation` and bounded follow-up task budgets via `routing.toolContinuation`; ReAct synthesis gating uses the same resolver path. |
+
+Verification:
+
+| Command / flow | Result |
+| --- | --- |
+| `python C:\tmp\yuanbao_real_backend_full_coverage_smoke.py` | passed, output `C:\tmp\yuanbao_real_full_coverage_smoke_20260515_131948` |
+| `python C:\tmp\yuanbao_real_backend_full_coverage_smoke.py` | passed, output `C:\tmp\yuanbao_real_full_coverage_smoke_20260515_132547` |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local-real-flow-full-verify-2 runtime/tests/test_worker_environment.py runtime/tests/test_child_worker_orphan_cleanup.py runtime/tests/test_orchestrator_react_loop.py::test_react_loop_continues_with_non_task_tools_after_child_result runtime/tests/test_tool_policy_resolver.py` | 38 passed |
+| `git diff --check` on touched runtime files | passed; only Windows CRLF warnings |
+
+Still not covered by this specific smoke: worktree merge approval/cleanup, pause/resume/cancel, compaction, real parallel multi-child tasks, and worktree conflict handling. Those remain heavier scenario smokes rather than blockers for the main development-task backend loop.
+
+### 2026-05-15 Heavy Scenario Follow-up Smoke
+
+This pass focused on the heavier lifecycle paths that were not covered by the main real-provider smoke.
+
+Covered:
+
+| Area | Result |
+| --- | --- |
+| Worktree merge approval | Added a real git regression that creates a worktree from `HEAD`, commits on the worktree branch, then requests merge approval. The approval diff now compares against the stable creation commit and includes the committed change. |
+| Merge verification | The real git regression runs a merge verification command and records `verificationStatus=passed`. |
+| Hook lifecycle | Re-ran runtime hook coverage for task pause/cancel/resume, compaction, worktree create/merge, and PermissionEngine-backed hook actions. |
+| Pause/resume/cancel | Re-ran task state machine and background-command cancellation suites. |
+| Compaction | Re-ran compaction hook coverage through `session.compact`. |
+| Multi-subagent / process worker | Re-ran multi-subagent regression and process worker e2e suites after the child-worker orphan cleanup fix. |
+| Real LLM main loop | Re-ran `python C:\tmp\yuanbao_real_backend_full_coverage_smoke.py`; GLM passed and the parent/subagent/completion loop remained healthy. |
+
+Issue found and fixed:
+
+| Issue | Root cause | Fix |
+| --- | --- | --- |
+| Worktree merge approval diff could be empty after the agent committed changes in the worktree branch. | Worktree records stored symbolic `baseRef=HEAD`; later `git diff HEAD` ran inside the worktree branch, so it compared the branch to itself. | `GitWorktreeAdapter.create` now resolves the requested base ref to a concrete commit SHA. `WorktreeService.create_for_task` stores that stable SHA as `baseRef` and records `requestedBaseRef/resolvedBaseRef` in `lastStatus`. |
+
+Verification:
+
+| Command / flow | Result |
+| --- | --- |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local-worktree-base runtime/tests/test_worktree_isolation.py::TestWorktreeServiceMergeGate` | 16 passed |
+| `python -m pytest -q -p no:cacheprovider --basetemp .pytest-local-heavy-flow-2 runtime/tests/test_worktree_isolation.py runtime/tests/test_runtime_hooks.py runtime/tests/test_task_state_machine.py runtime/tests/test_run_command_background.py runtime/tests/test_multi_subagent_regression.py runtime/tests/test_process_worker_e2e.py` | 113 passed, 7 skipped |
+| `python C:\tmp\yuanbao_real_backend_full_coverage_smoke.py` | passed, output `C:\tmp\yuanbao_real_full_coverage_smoke_20260515_141647` |
+
+### 2026-05-16 Real Local App Long-Run Remediation Plan
+
+This section records the follow-up plan from the successful real local full-stack smoke. The latest complex run proved that the runtime can drive a local application task end to end with a real provider, multi-agent decomposition, context snapshots, memory recall, compaction recovery, child workers, command verification, and final coverage. It should now be treated as an engineering hardening track rather than a proof-of-concept.
+
+Current baseline:
+
+| Area | Current result |
+| --- | --- |
+| Real provider | GLM `GLM-5.1` selected through OpenAI-compatible chat; provider probe passed on the successful full-stack run. |
+| Long-run orchestration | `plan_swarm` completed a full local app task with 6 collaboration tasks after generic `Implement changes` plans were expanded into backend, API/import/export, frontend, pytest, and documentation/verification slices. |
+| Context and memory | Successful run recorded 116 provider turns, 116 context snapshots, 140 compactions, and 20 memory recalls. |
+| Verification | Generated workspace passed direct `python -m pytest -q` with `57 passed`; static frontend served successfully; `node --check app.js` passed in manual verification. |
+| Completion behavior | `approvalMode=none` no longer blocks on completion review; failed verification still fails hard. |
+| Product state | Good enough as a local workflow proof: static frontend runs with localStorage; Python backend modules and tests work. Not yet product-grade because UI copy has mojibake, README was not fully updated, and frontend is not wired to a real HTTP backend. |
+
+Remediation objectives:
+
+1. Make long-run agent execution faster and more stable.
+2. Improve context compaction from generic summaries into actionable engineering handoff records.
+3. Add provider failure recovery so timeout / HTTP 400 / oversized context does not collapse a child task unnecessarily.
+4. Promote generated artifacts from "tests pass" to "user can actually operate the local app".
+5. Treat smoke gates as engineering safety nets while optimizing the real user-facing main workflow first.
+
+Optimization layers:
+
+| Layer | Design | Acceptance signal |
+| --- | --- | --- |
+| Execution stability | Enforce per-child budgets for time, token, tool calls, and file scope; require partial result handoff before timeout; checkpoint after every completed collaboration task. | A child timeout leaves a resumable handoff record with changed files, failed command, and next action. |
+| Task decomposition | Reject overloaded plans that collapse backend, frontend, tests, docs, and verification into one worker. Expand them into bounded file/domain slices. | Complex local app goals consistently create at least backend, frontend, tests, and verification/documentation tasks when those deliverables are named. |
+| Provider recovery | Classify provider errors into network timeout, HTTP parameter error, API key/auth, context too large, and model refusal; retry with smaller context or split task when recoverable. | GLM timeout / HTTP 400 scenarios produce a retry or smaller continuation rather than an opaque child failure. |
+| Context and memory | Change compaction summaries to a structured handoff: objective, completed work, modified files, failed commands, decisions, next steps, risks. Deduplicate repeated compaction content. | Later child tasks can recover exact file/test state from compaction without rereading the entire transcript. |
+| Product acceptance | Add automatic product checks: start local server when applicable, run browser or DOM smoke, submit one real feedback item, verify persistence/API state, and check for mojibake-visible UI copy. | Full-stack artifact acceptance includes unit tests, integration tests, browser smoke, and readable documentation. |
+
+Main workflow additions:
+
+| Area | Design direction | Acceptance signal |
+| --- | --- | --- |
+| Intent confidence | Classify requests into high, medium, and low confidence before entering heavy execution. High confidence can run directly; medium confidence should inspect local context first; low confidence should ask a short clarifying question or act under an explicit assumption. | Small requests stay lightweight, ambiguous requests do not trigger large edits, and complex requests still enter the right execution path. |
+| User takeover | Treat user interruption as a top-priority runtime event. Pause stale work, preserve useful state, discard outdated plans, and re-resolve the current goal. | Commands like stop, continue, close, no need, wait for wrap-up, or change direction reliably redirect the active run. |
+| Automation level | Track execution mode explicitly: chat, assist, auto, full-auto, and danger-zone. User-granted no-approval behavior applies only inside the current safe scope. | The runtime can explain what it is allowed to do and when it must still stop for destructive or credential-sensitive actions. |
+| Workspace awareness | Snapshot branch, dirty files, running servers, port usage, dependency state, and likely user-owned changes before risky edits. | The agent does not mix its changes with unrelated user work and can report exactly what it touched. |
+| Task budget | Maintain budgets for time, provider turns, tool calls, retries, subagents, and compactions. When a budget is exceeded, switch to a convergence strategy instead of continuing blindly. | Long runs either complete or produce a useful partial handoff with a clear reason for stopping. |
+| Model routing | Route phases to suitable models or providers: strong model for planning/review, cheaper stable model for bounded execution, vision/browser checks for UI, and fallback provider when recoverable. | Provider choice is visible in run reports and failures can trigger conservative fallback behavior. |
+| Subtask scheduling | Decide which tasks can run in parallel, which must be serial, and which file scopes are mutually exclusive. Exploratory tasks should not write files unless explicitly assigned. | Multi-agent work improves throughput without workers editing the same ownership boundary. |
+| Artifact lifecycle | Track temporary files, smoke scripts, screenshots, logs, generated apps, and reports. Decide what belongs in git and what should remain runtime-only. | The workspace stays clean after long runs and final reports link to the right durable artifacts. |
+| Permission boundary | Bind file, shell, network, MCP, git, delete, and credential permissions to the current task and risk level. | Full-auto remains productive without silently widening into destructive or sensitive actions. |
+| Profile strategy | Allow project/user profiles such as conservative, aggressive auto-fix, frontend-heavy, backend-heavy, docs workflow, enterprise-safe, and low-cost model mode. | The same runtime can adapt to different repositories and user risk tolerance. |
+
+MCP and Skills must become first-class main workflow coverage:
+
+1. Verify that a request can trigger the right skill, read the relevant `SKILL.md`, and let those instructions change execution behavior.
+2. Verify that MCP service results enter the working context and compaction handoff instead of staying as isolated tool output.
+3. Verify mixed workflows where skill guidance, MCP calls, local file edits, browser checks, and tests all participate in one user-facing task.
+4. Add recovery behavior for missing skills, unavailable MCP servers, partial MCP responses, and tool permission denials.
+
+Frontend runtime additions:
+
+| UI surface | Purpose | First useful version |
+| --- | --- | --- |
+| Task cockpit | Show current phase, automation level, active goal, next action, user-intervention status, and risk level. | A compact status strip above the conversation. |
+| Plan and progress panel | Show completed, active, pending, skipped, failed, retried, and user-edited plan items. | A dynamic checklist that updates as the runtime changes plans. |
+| Tool timeline | Show shell, file edits, browser, MCP, skills, git, tests, and provider calls with expandable details. | A chronological run log with concise collapsed rows. |
+| MCP/Skills panel | Show available services/skills, which ones fired, what rule files were read, call status, failure/rollback records, and permissions. | Per-run visibility into MCP/skill usage and failures. |
+| Context and memory panel | Show current summary, last compaction handoff, recalled memories, key facts, unresolved items, and next action after compression. | A debug view for long-run state continuity. |
+| Acceptance panel | Show tests, type checks, browser checks, document renders, generated files, screenshots, risk notes, and final run report. | A single place to answer "is this actually done?" |
+| Automation and permission controls | Show current full-auto/assist state, auto-approved operation classes, remaining confirmation boundaries, pause, stop, continue, and downgrade controls. | The user can see and change how autonomous the run is. |
+| Workspace panel | Show repo, branch, dirty files, agent-touched files, likely user changes, dev server state, ports, and latest tests. | The user can audit what changed without reading raw git output. |
+| Replay/debug view | Show start/end time, provider calls, tool calls, compactions, retries, key decisions, final artifacts, and verification records. | Failed long runs become diagnosable from one report. |
+| Takeover controls | Support pause, continue, skip current step, change target, wrap up only, stop run, and require confirmation from now on. | Mid-run user messages map to explicit runtime state transitions. |
+
+Frontend implementation priority should follow the runtime risk, not visual polish: task cockpit, plan/progress, tool timeline, and acceptance report first; MCP/Skills, context/memory, automation controls, and workspace status second.
+
+Near-term implementation order:
+
+1. Add real MCP + Skills acceptance coverage:
+   - one scenario must trigger a skill, read its instructions, use MCP/tool output, edit or inspect local artifacts, and preserve the result through compaction;
+   - include unavailable MCP/skill fallback cases.
+2. Upgrade the main workflow state machine:
+   - add intent confidence, automation level, user takeover, task budget, and workspace snapshot records;
+   - make these fields visible in run reports and available to compaction.
+3. Add provider error recovery:
+   - context shrink retry for HTTP 400 that looks like invalid/oversized request;
+   - retry with shorter provider timeout budget for transient DNS/TCP timeouts;
+   - explicit auth/key failure classification with no retry.
+4. Upgrade compaction records:
+   - store structured `handoffSummary` fields alongside free-text summary;
+   - include modified files, latest failing command, verification status, and next recommended command;
+   - add regression tests for summary quality on long-running child tasks.
+5. Add generated-artifact product gate:
+   - for static frontend: serve files, run `node --check`, fetch `index.html`, and inspect visible copy for mojibake tokens;
+   - for Python backend: run one programmatic submit/list/analytics/export flow against a temp SQLite DB;
+   - for full-stack apps with HTTP server: run a browser submit flow and verify persisted state.
+6. Add a run report and frontend cockpit surface:
+   - show each agent, task status, runtime, files touched, commands, compactions, recalls, retries, and remaining risks;
+   - make the report usable as the first source for debugging failed long runs.
+7. Keep smoke gates minimal:
+   - `short_fullstack_smoke`: fast daily safety check for the core path;
+   - `long_fullstack_stress_smoke`: release/manual pressure test for compaction, memory, recovery, and generated product quality.
+
+Open risks:
+
+| Risk | Mitigation |
+| --- | --- |
+| Long smoke feedback loop is too slow for daily development. | Keep the long smoke as manual/release gate and make the shorter smoke the default regression. |
+| Compression preserves volume but loses actionable detail. | Introduce structured handoff summaries and verify downstream recovery with tests. |
+| Provider failures are provider-specific and intermittent. | Classify errors by observable behavior and use conservative retry/split rules. |
+| Generated app can pass tests while being rough for users. | Add browser/product acceptance in addition to pytest. |
+| Windows shell/path quirks create false failures. | Continue command compatibility hardening for quoting, explicit executables, temp dirs, and local runtime paths. |

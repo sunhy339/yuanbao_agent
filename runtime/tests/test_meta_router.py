@@ -54,6 +54,87 @@ class TestRuleBasedRouting:
         assert decision.scenario == Scenario.DOC_WRITE
         assert decision.confidence >= 0.80
 
+    def test_readme_only_stays_doc_write(self) -> None:
+        decision = self.router.route("Please update the README.md usage section")
+        assert decision.scenario == Scenario.DOC_WRITE
+        assert decision.skill_id == "doc_writer"
+
+    def test_readme_mentioned_in_development_task_routes_to_code_edit(self) -> None:
+        decision = self.router.route(
+            "First read README.md, then fix cart.py and add a regression test in "
+            "test_cart.py. Run `python -m pytest -q` before summarizing."
+        )
+
+        assert decision.scenario == Scenario.CODE_EDIT
+        assert decision.skill_id is None
+        assert decision.confidence >= 0.80
+
+    def test_generated_python_game_with_readme_routes_to_code_edit(self) -> None:
+        decision = self.router.route(
+            "Use Python to develop a simple 2D thunder fighter game. Generate "
+            "game.py and README.md, then run a syntax check."
+        )
+
+        assert decision.scenario == Scenario.CODE_EDIT
+        assert decision.skill_id is None
+        assert decision.confidence >= 0.80
+
+    def test_chinese_python_game_with_readme_routes_to_code_edit(self) -> None:
+        decision = self.router.route(
+            "\u7528 Python \u5f00\u53d1\u4e00\u4e2a\u7b80\u5355\u7684 2D "
+            "\u96f7\u9706\u6218\u673a\u5c0f\u6e38\u620f\uff0c\u751f\u6210 "
+            "game.py \u548c README.md\uff0c\u5e76\u8fd0\u884c\u8bed\u6cd5\u68c0\u67e5\u3002"
+        )
+
+        assert decision.scenario == Scenario.CODE_EDIT
+        assert decision.skill_id is None
+        assert decision.confidence >= 0.80
+
+    def test_chinese_development_goal_without_readme_routes_to_code_edit(self) -> None:
+        decision = self.router.route(
+            "\u6211\u60f3\u7528 Python \u5f00\u53d1\u4e00\u4e2a\u7b80\u5355\u7684 "
+            "2D \u96f7\u9706\u6218\u673a\u5c0f\u6e38\u620f"
+        )
+
+        assert decision.scenario == Scenario.CODE_EDIT
+        assert decision.skill_id is None
+        assert decision.confidence >= 0.80
+
+    def test_static_blog_website_with_readme_routes_to_code_edit(self) -> None:
+        decision = self.router.route(
+            "\u8bf7\u7528 HTML/CSS/JavaScript \u751f\u6210\u4e00\u4e2a\u6280\u672f"
+            "\u535a\u5ba2\u7f51\u7ad9\uff0c\u751f\u6210 index.html\u3001styles.css "
+            "\u548c README.md\uff0c\u5e76\u8fd0\u884c\u8f7b\u91cf\u68c0\u67e5\u3002"
+        )
+
+        assert decision.scenario == Scenario.CODE_EDIT
+        assert decision.skill_id is None
+        assert decision.confidence >= 0.80
+
+    def test_blog_website_without_explicit_files_routes_to_code_edit(self) -> None:
+        decision = self.router.route(
+            "\u751f\u6210\u4e00\u4e2a\u5e26\u6709\u6280\u672f\u6587\u7ae0\u7684"
+            "\u9759\u6001\u535a\u5ba2\u7f51\u7ad9"
+        )
+
+        assert decision.scenario == Scenario.CODE_EDIT
+        assert decision.skill_id is None
+        assert decision.confidence >= 0.80
+
+    def test_complex_feedback_plan_with_readme_routes_to_multi_step(self) -> None:
+        decision = self.router.route(
+            "\u8bbe\u8ba1\u4e00\u4e2a\u7528\u6237\u53cd\u9988\u7cfb\u7edf\uff0c"
+            "\u5305\u542b\u524d\u7aef\u5165\u53e3\u3001\u540e\u7aef API\u3001"
+            "\u6570\u636e\u5b58\u50a8\u3001\u6821\u9a8c\u3001\u6d4b\u8bd5\u548c "
+            "README \u66f4\u65b0\u3002\u8bf7\u505a\u4efb\u52a1\u89c4\u5212\uff0c"
+            "\u62c6\u5206\u591a\u4e2a agent \u5e76\u884c\u5904\u7406\uff0c"
+            "\u4e0d\u8981\u5b9e\u73b0\u4ee3\u7801\u3002"
+        )
+
+        assert decision.scenario == Scenario.MULTI_STEP_TASK
+        assert decision.strategy == ExecutionStrategy.PLAN_THEN_EXECUTE
+        assert decision.skill_id is None
+
     def test_code_search_scenario_from_chinese(self) -> None:
         decision = self.router.route("搜索一下这个函数在哪")
         assert decision.scenario == Scenario.CODE_SEARCH

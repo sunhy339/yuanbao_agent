@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 import json
+import subprocess
 
 import pytest
 
@@ -319,6 +320,17 @@ class FakeGitWorktreeAdapter(GitWorktreeAdapter):
         }
         self.merge_result: dict[str, Any] = {"result": "ok", "returnCode": 0}
         self.merged: list[tuple[str, str]] = []
+        self.created: list[dict[str, Any]] = []
+        self.resolved_base_ref = "abc123"
+
+    def create(self, branch_name: str, target_path: str, base_ref: str = "HEAD") -> dict[str, Any]:
+        self.created.append({"branchName": branch_name, "targetPath": target_path, "baseRef": base_ref})
+        return {
+            "branch": branch_name,
+            "path": target_path,
+            "baseRef": self.resolved_base_ref,
+            "requestedBaseRef": base_ref,
+        }
 
     def status(self, target_path: str) -> dict[str, Any]:
         return self.status_result
@@ -348,7 +360,42 @@ class FakeApprovalOrchestrator(ApprovalFlowMixin):
         self.hooks.append((args, kwargs))
 
 
+def _run_git(cwd: Any, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
 class TestWorktreeServiceMergeGate:
+    def test_create_for_task_persists_resolved_base_ref(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        task = _create_task(store, ws_id)
+        git = FakeGitWorktreeAdapter()
+        service = WorktreeService(store, git)
+
+        result = service.create_for_task({
+            "workspaceId": ws_id,
+            "sessionId": task["sessionId"],
+            "taskId": task["id"],
+            "baseRef": "HEAD",
+            "branchName": f"agent/{task['id']}",
+            "worktreePath": str(tmp_path / "worktree"),
+            "cleanupPolicy": "ask_user",
+            "mergePolicy": "approval_required",
+        })
+
+        wt = result["worktree"]
+        assert git.created[0]["baseRef"] == "HEAD"
+        assert wt["baseRef"] == "abc123"
+        assert wt["lastStatus"]["requestedBaseRef"] == "HEAD"
+        assert wt["lastStatus"]["resolvedBaseRef"] == "abc123"
+
     def test_merge_requires_explicit_approval(self, tmp_path: Any) -> None:
         store = _make_store(tmp_path)
         ws_id = _make_workspace(store, tmp_path)
@@ -384,6 +431,60 @@ class TestWorktreeServiceMergeGate:
         assert request_json["multiAgentWorktreeStrategy"]["strategy"] == "root_worktree"
         stored = store.get_worktree({"worktreeId": wt["id"]})["worktree"]
         assert stored["lastStatus"]["mergeDiff"]["bytes"] == request_json["diffBytes"]
+
+    def test_real_git_merge_approval_diff_uses_stable_base_after_worktree_commit(self, tmp_path: Any) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _run_git(repo, "init")
+        _run_git(repo, "checkout", "-b", "main")
+        _run_git(repo, "config", "user.email", "test@example.com")
+        _run_git(repo, "config", "user.name", "Test User")
+        (repo / "calc.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+        _run_git(repo, "add", "calc.py")
+        _run_git(repo, "commit", "-m", "init")
+
+        store = _make_store(tmp_path)
+        workspace = store.upsert_workspace(str(repo))
+        session = store.create_session(workspace["id"], "real git worktree")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="fix add",
+            plan=[],
+            status="completed",
+        )
+        worktree_path = tmp_path / "worktree"
+        service = WorktreeService(store, GitWorktreeAdapter(repo))
+        created = service.create_for_task({
+            "workspaceId": workspace["id"],
+            "sessionId": session["id"],
+            "taskId": task["id"],
+            "baseRef": "HEAD",
+            "branchName": f"agent/{task['id']}",
+            "worktreePath": str(worktree_path),
+            "cleanupPolicy": "ask_user",
+            "mergePolicy": "approval_required",
+        })
+        wt = created["worktree"]
+        assert wt["baseRef"] != "HEAD"
+
+        (worktree_path / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+        _run_git(worktree_path, "add", "calc.py")
+        _run_git(worktree_path, "commit", "-m", "fix add")
+
+        result = service.request_merge_approval({
+            "worktreeId": wt["id"],
+            "targetBranch": "main",
+            "reviewStatus": "approved",
+            "reviewerSummary": "Looks good.",
+            "verificationCommands": ["python -c \"print('merge ok')\""],
+        })
+        request = json.loads(result["approval"]["requestJson"])
+
+        assert "calc.py" in request["diffStat"]
+        assert "return a + b" in request["diffPreview"]
+        assert request["verificationStatus"] == "passed"
+        assert result["verification"][0]["status"] == "passed"
 
     def test_request_merge_approval_truncates_large_diff_preview(self, tmp_path: Any) -> None:
         store = _make_store(tmp_path)

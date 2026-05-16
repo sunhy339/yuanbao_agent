@@ -116,7 +116,16 @@ def test_subagent_service_dispatch_normalizes_child_tool_allowlist_into_budget()
             title="Run focused child tests",
             budget={
                 "maxTokens": 256,
-                "childToolAllowlist": ["read_file", "run_command", "apply_patch"],
+                "childToolAllowlist": [
+                    "list_dir",
+                    "search_files",
+                    "read_file",
+                    "git_status",
+                    "git_diff",
+                    "code_search",
+                    "run_command",
+                    "apply_patch",
+                ],
             },
         )
     ]
@@ -161,6 +170,47 @@ def test_worker_runner_uses_injected_executor_and_completes_child_task(tmp_path:
         assert worker["status"] == "idle"
         assert worker["currentTaskId"] is None
         assert response["message"]["body"] == "handled executor boundary"
+    finally:
+        store.close()
+
+
+def test_worker_runner_replaces_markup_only_child_summary_from_runtime_task(tmp_path: Path) -> None:
+    def executor(_context: Any) -> dict[str, Any]:
+        return {
+            "summary": (
+                "<tool_call>run_command<arg_key>command</arg_key>"
+                "<arg_value>python -m pytest -q</arg_value></tool_call>"
+            ),
+            "executionMode": "process-rpc",
+            "payload": {
+                "runtimeTask": {
+                    "changedFiles": [{"path": "orders.py", "reason": "Update orders.py"}],
+                    "commands": [
+                        {
+                            "command": "python -m pytest -q",
+                            "status": "completed",
+                            "exitCode": 0,
+                        }
+                    ],
+                }
+            },
+            "result": {},
+        }
+
+    store, runner, records = _runner_context(tmp_path, executor=executor)
+    try:
+        response = runner.run_child_task(
+            ChildTaskRequest(
+                prompt="fix orders",
+                title="Fix orders",
+                agent_type="worker",
+                session_id=records["session"]["id"],
+                parent_runtime_task_id=records["parent_task"]["id"],
+            )
+        )
+
+        assert response["summary"] == "Changed: Update orders.py. Validated with python -m pytest -q."
+        assert "<tool_call>" not in response["message"]["body"]
     finally:
         store.close()
 

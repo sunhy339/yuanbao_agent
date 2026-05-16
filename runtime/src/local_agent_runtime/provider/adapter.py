@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from urllib.parse import urlsplit, urlunsplit
 from collections.abc import Iterator
 from typing import Any
@@ -214,6 +215,7 @@ class ProviderAdapter:
                 "raw": {"id": None, "model": None, "usage": None},
             }
 
+        settings = self._settings_for_request(settings, tools)
         last_error: ProviderAdapterError | None = None
         client = self._client_for_settings(settings)
         for attempt in range(PROVIDER_RETRY_ATTEMPTS):
@@ -249,6 +251,7 @@ class ProviderAdapter:
             yield {"type": "final", "response": response}
             return
 
+        settings = self._settings_for_request(settings, tools)
         if settings.api_format != "openai-chat":
             response = self.chat(messages=messages, tools=tools, context=context)
             content = response["message"]["content"]
@@ -508,6 +511,19 @@ class ProviderAdapter:
 
     def _real_provider_enabled(self, context: dict[str, Any] | None) -> bool:
         return self._resolve_settings(context) is not None
+
+    @staticmethod
+    def _settings_for_request(
+        settings: OpenAICompatibleSettings,
+        tools: list[dict[str, Any]] | None,
+    ) -> OpenAICompatibleSettings:
+        if not tools:
+            return settings
+        timeout = max(settings.timeout, 120.0)
+        stream_timeout = max(settings.stream_timeout, 600.0)
+        if timeout == settings.timeout and stream_timeout == settings.stream_timeout:
+            return settings
+        return replace(settings, timeout=timeout, stream_timeout=stream_timeout)
 
     def _client_for_settings(self, settings: OpenAICompatibleSettings) -> OpenAICompatibleChatClient:
         if settings.api_format == "openai-responses":

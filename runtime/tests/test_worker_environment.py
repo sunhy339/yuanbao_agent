@@ -68,7 +68,9 @@ def test_build_child_worker_env_keeps_only_runtime_provider_and_platform_vars(tm
     assert "COMSPEC" not in env
 
     if os.name == "nt":
-        assert env["PATH"] == "C:\\Python;C:\\Windows\\System32"
+        assert env["PATH"].endswith("C:\\Python;C:\\Windows\\System32")
+        if "LOCAL_AGENT_NODE_EXECUTABLE" in env:
+            assert env["PATH"].split(os.pathsep)[0] == str(Path(env["LOCAL_AGENT_NODE_EXECUTABLE"]).parent)
         assert env["SystemRoot"] == "C:\\Windows"
         assert env["TEMP"] == "C:\\Temp"
         assert env["TMP"] == "C:\\Tmp"
@@ -91,6 +93,29 @@ def test_build_child_worker_env_honors_extra_env_allowlist_without_empty_values(
     assert env["CUSTOM_CA_BUNDLE"] == "D:\\certs\\ca.pem"
     assert "EMPTY_VALUE" not in env
     assert "MISSING_VALUE" not in env
+
+
+def test_build_child_worker_env_exposes_configured_node_executable(tmp_path: Path) -> None:
+    node_dir = tmp_path / "node" / "bin"
+    node_dir.mkdir(parents=True)
+    node_executable = node_dir / ("node.exe" if os.name == "nt" else "node")
+    node_executable.write_text("", encoding="utf-8")
+    parent_path = str(tmp_path / "system-bin")
+
+    env = build_child_worker_env(
+        parent_env={
+            "LOCAL_AGENT_NODE_EXECUTABLE": str(node_executable),
+            "PATH": parent_path,
+            "SystemRoot": "C:\\Windows",
+            "TEMP": "C:\\Temp",
+            "TMP": "C:\\Tmp",
+        },
+        db_path=str(tmp_path / "runtime.sqlite3"),
+        runtime_src=str(tmp_path / "src"),
+    )
+
+    assert env["LOCAL_AGENT_NODE_EXECUTABLE"] == str(node_executable)
+    assert env["PATH"].split(os.pathsep)[0] == str(node_dir)
 
 
 def test_build_child_worker_env_rejects_missing_db_path(tmp_path: Path) -> None:

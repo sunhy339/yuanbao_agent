@@ -10,6 +10,7 @@ import json
 import locale
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -403,6 +404,8 @@ def rg_filename_search(
         command,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if completed.returncode not in (0, 1):
         raise subprocess.CalledProcessError(completed.returncode, command, completed.stdout, completed.stderr)
@@ -461,6 +464,8 @@ def rg_content_search(
         command,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if completed.returncode not in (0, 1):
         raise subprocess.CalledProcessError(completed.returncode, command, completed.stdout, completed.stderr)
@@ -555,6 +560,11 @@ _FILE_DUMP_COMMAND_RE = re.compile(
     r"""^\s*(?P<cmd>type|cat|gc|get-content)(?:\s+-Raw)?(?:\s+-Encoding\s+\S+)?\s+(?P<path>"[^"]+"|'[^']+'|[^\s|;&<>]+)\s*$""",
     re.IGNORECASE,
 )
+_NATIVE_EXE_COMMAND_RE = re.compile(
+    r"""^\s*&?\s*(?:"(?P<quoted>[^"]+\.exe)"|'(?P<single>[^']+\.exe)'|(?P<bare>[A-Za-z]:\\[^\s]+\.exe))(?P<args>.*)$""",
+    re.IGNORECASE,
+)
+_POWERSHELL_INVOKABLE_SUFFIXES = (".exe", ".cmd", ".bat", ".ps1")
 
 
 def _decode_command_bytes(value: bytes | str | None) -> str:
@@ -608,6 +618,60 @@ def _run_simple_file_dump(command: str, cwd: Path) -> str | None:
     return _decode_command_bytes(resolved.read_bytes())
 
 
+def _normalize_powershell_invocation(command: str) -> str:
+    stripped = command.lstrip()
+    leading = command[: len(command) - len(stripped)]
+    if not stripped or stripped[0] not in {"'", '"'}:
+        return command
+    quote = stripped[0]
+    end = stripped.find(quote, 1)
+    if end <= 0:
+        return command
+    target = stripped[1:end].lower()
+    if target.endswith(_POWERSHELL_INVOKABLE_SUFFIXES):
+        return f"{leading}& {stripped}"
+    return command
+
+
+def _run_simple_native_exe(command: str, cwd: Path, timeout_ms: int) -> tuple[str, str, int | None, str, int] | None:
+    match = _NATIVE_EXE_COMMAND_RE.match(command)
+    if not match:
+        return None
+    executable = match.group("quoted") or match.group("single") or match.group("bare")
+    if not executable:
+        return None
+    args_text = (match.group("args") or "").strip()
+    try:
+        args = shlex.split(args_text, posix=True) if args_text else []
+    except ValueError:
+        return None
+    started = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            [executable, *args],
+            cwd=str(cwd),
+            capture_output=True,
+            text=False,
+            timeout=timeout_ms / 1000 if timeout_ms else None,
+            check=False,
+        )
+    except (OSError, ValueError):
+        return None
+    except subprocess.TimeoutExpired as exc:
+        stdout = _decode_command_bytes(exc.stdout)
+        stderr = _decode_command_bytes(exc.stderr)
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        return stdout, stderr, None, "timeout", duration_ms
+
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    stdout = _decode_command_bytes(completed.stdout)
+    stderr = _decode_command_bytes(completed.stderr)
+    status = "completed" if completed.returncode == 0 else "failed"
+    if completed.returncode < 0:
+        status = "killed"
+    return stdout, stderr, completed.returncode, status, duration_ms
+
+
 def run_shell(
     shell_name: str,
     command: str,
@@ -620,6 +684,10 @@ def run_shell(
         if dumped is not None:
             duration_ms = int((time.perf_counter() - started) * 1000)
             return dumped, "", 0, "completed", duration_ms
+        command = _normalize_powershell_invocation(command)
+        native_result = _run_simple_native_exe(command, cwd, timeout_ms)
+        if native_result is not None:
+            return native_result
 
     try:
         completed = subprocess.run(
@@ -702,6 +770,8 @@ def run_git_command(cwd: Path, args: list[str]) -> subprocess.CompletedProcess[s
         ["git", "-C", str(cwd), *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if completed.returncode != 0:

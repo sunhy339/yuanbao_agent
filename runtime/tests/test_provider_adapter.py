@@ -111,7 +111,7 @@ def test_openai_compatible_request_payload(monkeypatch: pytest.MonkeyPatch) -> N
     assert len(calls) == 1
     call = calls[0]
     assert call["url"] == "https://llm.example.test/v1/chat/completions"
-    assert call["timeout"] == 9
+    assert call["timeout"] == 120.0
     assert call["headers"]["Authorization"] == "Bearer sk-test"
     assert call["headers"]["Content-Type"] == "application/json"
     payload = json.loads(call["body"].decode("utf-8"))

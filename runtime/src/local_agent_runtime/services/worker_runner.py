@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -446,7 +447,9 @@ class WorkerRunner:
 
         child_task = payload.get("task") if isinstance(payload.get("task"), dict) else {}
         budget = payload.get("budget") if isinstance(payload.get("budget"), dict) else {}
-        summary = str(payload.get("summary") or "").strip() or "Child worker completed."
+        summary = self._sanitize_child_summary(payload.get("summary"))
+        if not summary:
+            summary = self._summary_from_runtime_task(child_task) or "Child worker completed."
         status = str(payload.get("status") or "completed")
         return {
             "status": status,
@@ -651,7 +654,10 @@ class WorkerRunner:
             payload_value = output.get("payload")
             payload = dict(payload_value) if isinstance(payload_value, dict) else {}
             summary_value = output.get("summary") or result.get("summary")
-            summary = str(summary_value).strip() if summary_value is not None else self._inline_summary()
+            summary = self._sanitize_child_summary(summary_value)
+            if not summary:
+                runtime_task = payload.get("runtimeTask") if isinstance(payload.get("runtimeTask"), dict) else {}
+                summary = self._summary_from_runtime_task(runtime_task) or self._inline_summary()
             mode_value = (
                 output.get("executionMode")
                 or output.get("execution_mode")
@@ -673,6 +679,45 @@ class WorkerRunner:
             "payload": payload,
             "artifacts": output.get("artifacts") if isinstance(output, dict) else None,
         }
+
+    def _sanitize_child_summary(self, summary: Any) -> str:
+        text = str(summary or "")
+        text = re.sub(r"<tool_call\b[^>]*>.*?</tool_call>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"<arg_key>.*?</arg_key>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"<arg_value>.*?</arg_value>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r"</?(?:tool_call|arg_key|arg_value)\b[^>]*>", " ", text, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _summary_from_runtime_task(self, task: dict[str, Any]) -> str:
+        if not isinstance(task, dict):
+            return ""
+        existing = self._sanitize_child_summary(task.get("resultSummary") or task.get("summary"))
+        if existing:
+            return existing
+
+        changed_files = task.get("changedFiles") if isinstance(task.get("changedFiles"), list) else []
+        changed_reasons = [
+            str(item.get("reason") or item.get("path") or "").strip()
+            for item in changed_files
+            if isinstance(item, dict) and str(item.get("reason") or item.get("path") or "").strip()
+        ]
+        changed_reasons = list(dict.fromkeys(changed_reasons))
+        changed_text = f"Changed: {'; '.join(changed_reasons)}." if changed_reasons else ""
+
+        commands = task.get("commands") if isinstance(task.get("commands"), list) else []
+        passed_commands = [
+            str(item.get("command") or "").strip()
+            for item in commands
+            if isinstance(item, dict)
+            and str(item.get("command") or "").strip()
+            and str(item.get("status") or "").lower() in {"completed", "passed", "success"}
+            and item.get("exitCode") in (0, "0", None)
+        ]
+        validation_text = ""
+        if passed_commands:
+            validation_text = f"Validated with {passed_commands[-1]}."
+
+        return " ".join(part for part in (changed_text, validation_text) if part).strip()
 
     def _fail_child_task(
         self,

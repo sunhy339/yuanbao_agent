@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from ._shared import (
-    is_ignored,
+    matches_glob,
     merged_ignore_patterns,
     require_workspace_root,
+    resolve_workspace_path,
     to_relative_path,
     walk_directory,
 )
@@ -97,15 +98,18 @@ def build_code_search_tool(policy_guard: Any, store: Any, subagent_service: Any 
         max_results = int(params.get("max_results", 30))
         max_results = max(1, min(max_results, 100))
 
+        search_root = resolve_workspace_path(policy_guard, workspace_root, params.get("path"))
+        if not search_root.is_dir():
+            raise ValueError(f"Directory does not exist: {params.get('path', '.')}")
+
         ignore_patterns = merged_ignore_patterns(store, params.get("ignore"))
         entries = walk_directory(
             workspace_root=workspace_root,
-            path=params.get("path", "."),
+            base_path=search_root,
             recursive=True,
-            max_depth=int(params.get("max_depth", 6)),
-            ignore_patterns=ignore_patterns,
-            glob_patterns=glob_patterns,
             store=store,
+            max_depth=max(1, min(int(params.get("max_depth", 6)), 8)),
+            ignore_patterns=ignore_patterns,
         )
 
         results: list[dict[str, Any]] = []
@@ -114,6 +118,8 @@ def build_code_search_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 break
             entry_path = workspace_root / entry["path"]
             if not entry_path.is_file():
+                continue
+            if glob_patterns and not any(matches_glob(entry["path"], pattern) for pattern in glob_patterns):
                 continue
             try:
                 content = entry_path.read_text(encoding="utf-8", errors="replace")

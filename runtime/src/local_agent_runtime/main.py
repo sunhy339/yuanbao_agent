@@ -78,6 +78,7 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
         hook_service=hook_service,
         decision_advisor=decision_advisor,
         worktree_service=worktree_service,
+        _skip_orphan_cleanup=os.environ.get("LOCAL_AGENT_CHILD_WORKER") == "1",
     )
     return JsonRpcServer(
         orchestrator=orchestrator,

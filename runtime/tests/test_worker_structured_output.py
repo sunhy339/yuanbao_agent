@@ -205,6 +205,38 @@ class TestCompletionHardGate:
         ).fetchall()
         assert len(approvals) == 1
 
+    def test_no_approval_mode_skips_completion_review(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="modify the implementation",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="I changed the implementation.",
+            context={
+                "routing": {"scenario": "code_edit"},
+                "config": {"policy": {"approvalMode": "none"}},
+            },
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        assert result["structuredResult"]["completionEvidence"]["evidenceLevel"] == "summary_only"
+        approvals = store._conn.execute(
+            "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",
+            (task["id"], "completion_review"),
+        ).fetchall()
+        assert approvals == []
+
     def test_write_task_with_runtime_evidence_without_verification_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

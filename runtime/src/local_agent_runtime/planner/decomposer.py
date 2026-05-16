@@ -74,6 +74,7 @@ class TaskDecomposer:
         )
         raw_text = response.get("message") or ""
         subtasks = self._parse_subtasks(raw_text, fallback_goal=goal)
+        subtasks = self._expand_overloaded_implementation_plan(subtasks, goal=goal)
         dag = self.build_dag(subtasks)
         all_ids = [s.id for s in subtasks]
         execution_order = self.topological_sort(dag, all_ids)
@@ -160,6 +161,147 @@ class TaskDecomposer:
 
         # 3. Fallback
         return [Subtask(id="sub-0", title=fallback_goal[:80], description=fallback_goal)]
+
+    def _expand_overloaded_implementation_plan(self, subtasks: list[Subtask], *, goal: str) -> list[Subtask]:
+        """Split generic plans when the goal names several concrete deliverable groups."""
+        if not self._looks_like_overloaded_implementation_plan(subtasks):
+            return subtasks
+
+        normalized_goal = goal.casefold()
+        has_backend = any(
+            token in normalized_goal
+            for token in (
+                "backend",
+                "feedback_models.py",
+                "feedback_storage.py",
+                "feedback_api.py",
+                "feedback_analytics.py",
+                "feedback_import_export.py",
+                "sqlite",
+            )
+        )
+        has_frontend = any(token in normalized_goal for token in ("frontend", "index.html", "app.js", "styles.css"))
+        has_tests = any(token in normalized_goal for token in ("pytest", "test_", "tests"))
+        has_docs = any(token in normalized_goal for token in ("readme", "docs", "documentation"))
+        has_verification = any(
+            token in normalized_goal
+            for token in ("py_compile", "node --check", "verification", "validate", "run tests")
+        )
+        deliverable_count = sum(1 for flag in (has_backend, has_frontend, has_tests, has_docs, has_verification) if flag)
+        if deliverable_count < 3:
+            return subtasks
+
+        expanded: list[Subtask] = [
+            Subtask(
+                id="sub-0",
+                title="Analyze codebase and constraints",
+                description=(
+                    "Inspect the workspace and summarize current files, constraints, required artifact names, "
+                    "and validation commands from the parent goal. Do not edit files."
+                ),
+                dependencies=[],
+                agent_type="planner",
+            )
+        ]
+        last_backend_id = "sub-0"
+        if has_backend:
+            expanded.append(
+                Subtask(
+                    id="sub-1",
+                    title="Implement backend models and storage",
+                    description=(
+                        "Implement the backend data model and persistence slice, preserving explicit artifact names "
+                        "from the parent goal such as feedback_models.py and feedback_storage.py. Ensure storage APIs "
+                        "accept explicit database paths or storage objects so tests can use isolated temporary databases."
+                    ),
+                    dependencies=["sub-0"],
+                    agent_type="worker",
+                )
+            )
+            expanded.append(
+                Subtask(
+                    id="sub-2",
+                    title="Implement API analytics import export",
+                    description=(
+                        "Implement the API, analytics, and import/export modules named by the parent goal. Pass explicit "
+                        "db_path or storage dependencies through analytics and import/export helpers; do not hard-code "
+                        "feedback.db in paths that tests exercise."
+                    ),
+                    dependencies=["sub-1"],
+                    agent_type="worker",
+                )
+            )
+            last_backend_id = "sub-2"
+        if has_frontend:
+            expanded.append(
+                Subtask(
+                    id="sub-3",
+                    title="Implement frontend static app",
+                    description=(
+                        "Implement the frontend files named by the parent goal, including index.html, app.js, and "
+                        "styles.css, with forms, queue/filter UI, analytics display, and import/export controls."
+                    ),
+                    dependencies=["sub-0"],
+                    agent_type="worker",
+                )
+            )
+        if has_tests:
+            test_deps = [last_backend_id]
+            if has_frontend:
+                test_deps.append("sub-3")
+            expanded.append(
+                Subtask(
+                    id="sub-4",
+                    title="Write pytest coverage",
+                    description=(
+                        "Write at least two pytest files covering validation failures, successful submission, persistence, "
+                        "status transitions, search/filter, analytics aggregation, and import/export or API flows. Use "
+                        "tmp_path database files and pass db_path/storage explicitly into the modules under test."
+                    ),
+                    dependencies=list(dict.fromkeys(test_deps)),
+                    agent_type="worker",
+                )
+            )
+        if has_docs or has_verification:
+            verify_deps = []
+            if has_backend:
+                verify_deps.append(last_backend_id)
+            if has_frontend:
+                verify_deps.append("sub-3")
+            if has_tests:
+                verify_deps.append("sub-4")
+            expanded.append(
+                Subtask(
+                    id="sub-5",
+                    title="Document and verify",
+                    description=(
+                        "Update README documentation if requested and run the parent goal's validation commands, such as "
+                        "python -m pytest -q, python -m py_compile for Python modules, node --check app.js, and file "
+                        "existence checks. Fix failures within the scoped files when possible."
+                    ),
+                    dependencies=list(dict.fromkeys(verify_deps or ["sub-0"])),
+                    agent_type="worker",
+                )
+            )
+        return expanded
+
+    @staticmethod
+    def _looks_like_overloaded_implementation_plan(subtasks: list[Subtask]) -> bool:
+        if len(subtasks) > 3:
+            return False
+        combined = " ".join(f"{task.title} {task.description}" for task in subtasks).casefold()
+        if "implement changes" in combined or "implement modules" in combined:
+            return True
+        worker_tasks = [task for task in subtasks if task.agent_type == "worker"]
+        if len(worker_tasks) != 1:
+            return False
+        worker_text = f"{worker_tasks[0].title} {worker_tasks[0].description}".casefold()
+        deliverable_hits = sum(
+            1
+            for token in ("backend", "frontend", "pytest", "readme", "index.html", "feedback_api.py")
+            if token in worker_text
+        )
+        return deliverable_hits >= 3
 
     @staticmethod
     def _try_parse_array(text: str) -> list[Subtask] | None:

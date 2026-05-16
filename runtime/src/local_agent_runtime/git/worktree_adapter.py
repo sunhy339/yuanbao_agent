@@ -26,8 +26,15 @@ class GitWorktreeAdapter:
             cwd=cwd or self._repo_root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=check,
         )
+
+    def resolve_ref(self, ref: str = "HEAD") -> str:
+        """Resolve *ref* to a stable commit SHA in the main repository."""
+        result = self._run_git("rev-parse", "--verify", ref)
+        return result.stdout.strip()
 
     # -- Create / Remove -------------------------------------------------------
 
@@ -36,8 +43,14 @@ class GitWorktreeAdapter:
 
         Returns dict with ``branch``, ``path``, ``base_ref``.
         """
+        resolved_base_ref = self.resolve_ref(base_ref)
         self._run_git("worktree", "add", "-b", branch_name, target_path, base_ref)
-        return {"branch": branch_name, "path": target_path, "baseRef": base_ref}
+        return {
+            "branch": branch_name,
+            "path": target_path,
+            "baseRef": resolved_base_ref,
+            "requestedBaseRef": base_ref,
+        }
 
     def remove(self, target_path: str, force: bool = False) -> dict[str, Any]:
         """Remove a git worktree."""

@@ -220,19 +220,28 @@ class TaskLifecycleMixin:
                     "Fix the failed checks before marking the task completed."
                 ),
             }
+        reviews_disabled = self._completion_reviews_disabled(context)
         is_write_or_verification_task = self._is_write_or_verification_task(task=task, context=context)
         if not is_write_or_verification_task:
             return {"action": "complete", "reason": "Read-only completion is allowed."}
         tool_failure_gate = self._completion_tool_failure_gate(completion_evidence)
         if tool_failure_gate is not None:
+            if reviews_disabled and tool_failure_gate.get("action") == "review":
+                return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
             return tool_failure_gate
         acceptance_gate = self._completion_acceptance_gate(completion_evidence)
         if acceptance_gate is not None:
+            if reviews_disabled and acceptance_gate.get("action") == "review":
+                return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
             return acceptance_gate
         verification_match_gate = self._completion_verification_match_gate(completion_evidence)
         if verification_match_gate is not None:
+            if reviews_disabled and verification_match_gate.get("action") == "review":
+                return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
             return verification_match_gate
         if self._completion_needs_verification_review(completion_evidence):
+            if reviews_disabled:
+                return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
             return {
                 "action": "review",
                 "decision": "needs_verification",
@@ -245,6 +254,8 @@ class TaskLifecycleMixin:
             }
         if completion_evidence.get("evidenceLevel") != "summary_only":
             return {"action": "complete", "reason": "Runtime evidence is present."}
+        if reviews_disabled:
+            return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
         return {
             "action": "review",
             "decision": "needs_user_review",
@@ -255,6 +266,12 @@ class TaskLifecycleMixin:
                 "Verification or user review is required before marking it completed."
             ),
         }
+
+    def _completion_reviews_disabled(self, context: dict[str, Any]) -> bool:
+        config = context.get("config") if isinstance(context, dict) else {}
+        policy = config.get("policy") if isinstance(config, dict) else {}
+        mode = str(policy.get("approvalMode") or "").strip().lower() if isinstance(policy, dict) else ""
+        return mode in {"none", "never", "off"}
 
     def _completion_tool_failure_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
         counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}

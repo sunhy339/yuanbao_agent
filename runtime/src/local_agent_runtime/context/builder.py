@@ -737,6 +737,8 @@ class ContextBuilder(HistoryMixin):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             stdout, _stderr = process.communicate(timeout=2)
         except subprocess.TimeoutExpired:

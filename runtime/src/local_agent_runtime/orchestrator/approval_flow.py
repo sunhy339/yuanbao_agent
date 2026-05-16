@@ -375,6 +375,7 @@ class ApprovalFlowMixin:
             result = self._supervisor.execute(
                 state["goal"], state["context"],
                 session_id=session_id, task=task,
+                child_timeout_ms=self._child_subtask_timeout_ms(state["context"]),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
                 completed_ids=set(state["completed"]),
                 failed_ids=set(state["failed"]),
@@ -420,6 +421,7 @@ class ApprovalFlowMixin:
             result = self._swarm.execute(
                 state["goal"], state["context"],
                 session_id=session_id, task=task,
+                child_timeout_ms=self._child_subtask_timeout_ms(state["context"]),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
                 completed_ids=set(state["completed"]),
                 failed_ids=set(state["failed"]),

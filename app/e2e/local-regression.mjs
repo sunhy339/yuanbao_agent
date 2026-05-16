@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const appRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const repoRoot = resolve(appRoot, "..");
+const runtimePytestBaseTemp = resolve(repoRoot, ".pytest-local-e2e-ci-runtime");
 const apiKeyEnvVarName = process.env.YUANBAO_TAURI_E2E_API_KEY_ENV || "LOCAL_AGENT_PROVIDER_API_KEY";
 const mode = process.argv.includes("--ci") ? "ci" : "mock";
 
@@ -39,7 +40,7 @@ function runMockRegression() {
   run("npm", ["test"], appRoot);
   run("npm", ["run", "typecheck"], appRoot);
   run("cargo", ["check"], resolve(appRoot, "src-tauri"));
-  run("python", ["-m", "pytest", "runtime/tests", "-q"], repoRoot);
+  run("python", ["-m", "pytest", "runtime/tests", "-q", "-p", "no:cacheprovider", "--basetemp", runtimePytestBaseTemp], repoRoot);
 }
 
 runMockRegression();

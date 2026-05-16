@@ -286,4 +286,7 @@ def test_react_task_delegates_two_child_agents_and_synthesizes_health_report(tmp
     assert "task.completed" in trace_types
     assert provider.requests[0]["json"]["tools"]
     assert {call["function"]["name"] for call in provider.requests[0]["json"]["tools"]} >= {"task"}
-    assert provider.requests[1]["json"].get("tools") in (None, [])
+    followup_tools = provider.requests[1]["json"].get("tools") or []
+    followup_tool_names = {call["function"]["name"] for call in followup_tools}
+    assert "task" not in followup_tool_names
+    assert {"read_file", "run_command", "git_status", "git_diff"}.issubset(followup_tool_names)

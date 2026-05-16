@@ -19,8 +19,10 @@ class MockProvider:
 
     def __init__(self, *, response: str | None = None) -> None:
         self._response = response or "[]"
+        self.contexts: list[dict[str, Any]] = []
 
     def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        self.contexts.append(context)
         return {"message": self._response, "prompt": prompt}
 
 
@@ -41,6 +43,42 @@ class TestTaskDecomposerDecompose:
         assert len(result.subtasks) == 2
         assert result.subtasks[0].id == "sub-0"
         assert result.subtasks[1].dependencies == ["sub-0"]
+        assert result.subtasks[0].agent_type == "worker"
+
+    def test_parses_llm_selected_agent_types(self) -> None:
+        raw = json.dumps([
+            {
+                "id": "sub-0",
+                "title": "Plan data model",
+                "description": "Assess schema risks.",
+                "dependencies": [],
+                "agentType": "planner",
+            },
+            {
+                "id": "sub-1",
+                "title": "Implement modules",
+                "description": "Create backend files and tests.",
+                "dependencies": ["sub-0"],
+                "agentType": "worker",
+            },
+            {
+                "id": "sub-2",
+                "title": "Review result",
+                "description": "Review produced changes.",
+                "dependencies": ["sub-1"],
+                "agentType": "reviewer",
+            },
+        ])
+        provider = MockProvider(response=raw)
+        decomposer = TaskDecomposer(provider)
+
+        result = decomposer.decompose(goal="build a small full-stack app")
+
+        assert [subtask.agent_type for subtask in result.subtasks] == ["planner", "worker", "reviewer"]
+        prompt = provider.contexts[0]["messages"][0]["content"]
+        assert '"agentType"' in prompt
+        assert 'Use "worker" for implementation' in prompt
+        assert "Preserve explicit artifact names" in prompt
 
     def test_parses_fenced_json_block(self) -> None:
         raw = 'Here is the plan:\n```json\n[\n  {"id": "sub-0", "title": "Analyze", "description": "Read files", "dependencies": []}\n]\n```\nDone.'
@@ -89,6 +127,19 @@ class TestTaskDecomposerDecompose:
         decomposer = TaskDecomposer(provider)
         decomposer.decompose(goal="goal", context="extra info")
         assert "extra info" in captured["prompt"]
+
+    def test_provider_context_is_forwarded(self) -> None:
+        raw = json.dumps([{"id": "sub-0", "title": "t", "description": "d", "dependencies": []}])
+        provider = MockProvider(response=raw)
+        decomposer = TaskDecomposer(provider)
+
+        decomposer.decompose(
+            goal="goal",
+            provider_context={"config": {"provider": {"timeout": 120}}},
+        )
+
+        assert provider.contexts[0]["config"]["provider"]["timeout"] == 120
+        assert provider.contexts[0]["messages"][0]["role"] == "user"
 
     def test_decompose_returns_plan_result(self) -> None:
         raw = json.dumps([

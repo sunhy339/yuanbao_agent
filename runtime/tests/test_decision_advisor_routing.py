@@ -49,8 +49,12 @@ class FakeAdvisorProvider:
 
     def __init__(self, response_text: str) -> None:
         self._response = response_text
+        self.prompts: list[str] = []
+        self.contexts: list[dict[str, Any]] = []
 
     def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        self.prompts.append(prompt)
+        self.contexts.append(context)
         return {"message": self._response}
 
 
@@ -176,6 +180,67 @@ class TestAdvisorRoutingFallback:
         assert "rule-match" in result.reasoning
         # Advisor was NOT called because rule confidence was high enough
         assert router.last_advice is None
+
+    def test_mixed_doc_and_frontend_signals_defer_to_advisor(self) -> None:
+        provider = FakeAdvisorProvider(
+            '{"proposal": {"scenario": "code_edit", "strategy": "react_standard"}, '
+            '"confidence": 0.93, "rationale": "static website task with README as supporting docs"}'
+        )
+        advisor = DecisionAdvisor(provider=provider)
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route(
+            "Generate a technical blog website with index.html, styles.css, and README.md. "
+            "Run a lightweight check after creating the files."
+        )
+
+        assert result.scenario == Scenario.CODE_EDIT
+        assert result.skill_id is None
+        assert "advisor-match" in result.reasoning
+        assert result.metadata["rule_candidate"]["scenario"] in {"doc_write", "code_edit"}
+        assert router.last_advice is not None
+        assert router.last_advice.accepted is True
+        assert provider.contexts
+        prompt_context = provider.contexts[0]["messages"][0]["content"]
+        assert "rule_candidate" in prompt_context
+        assert "Do not choose multi_step_task just because" in prompt_context
+        assert "explicitly requires multi-agent work" in prompt_context
+
+    def test_advisor_overplanned_simple_artifact_generation_is_guarded(self) -> None:
+        advisor = DecisionAdvisor(
+            provider=FakeAdvisorProvider(
+                '{"proposal": {"scenario": "multi_step_task", "strategy": "plan_execute"}, '
+                '"confidence": 0.95, "rationale": "multiple files and verification"}'
+            )
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route(
+            "Generate a technical blog website with index.html, styles.css, and README.md. "
+            "Run a lightweight check after creating the files."
+        )
+
+        assert result.scenario == Scenario.CODE_EDIT
+        assert result.strategy == ExecutionStrategy.REACT_STANDARD
+        assert result.metadata["advisor_candidate"]["scenario"] == "multi_step_task"
+        assert "overplanned" in result.reasoning
+
+    def test_explicit_planning_signal_keeps_advisor_multi_step(self) -> None:
+        advisor = DecisionAdvisor(
+            provider=FakeAdvisorProvider(
+                '{"proposal": {"scenario": "multi_step_task", "strategy": "plan_execute"}, '
+                '"confidence": 0.95, "rationale": "user requested planning and phases"}'
+            )
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route(
+            "Plan and build a technical blog website with index.html, styles.css, README.md, "
+            "then break down the work into phases."
+        )
+
+        assert result.scenario == Scenario.MULTI_STEP_TASK
+        assert result.strategy == ExecutionStrategy.PLAN_THEN_EXECUTE
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,13 @@ import re
 from typing import Any, Callable
 
 from ..planner.decomposer import TaskDecomposer
-from ..planner.types import PlanResult, Subtask
+from ..planner.types import (
+    PlanResult,
+    Subtask,
+    build_subtask_prompt,
+    child_tool_allowlist_for_agent,
+    normalize_subtask_agent_type,
+)
 from ..provider.adapter import ProviderAdapter
 from ..services.subagent_service import SubagentService
 from .result_synthesizer import ResultSynthesizer
@@ -56,6 +62,7 @@ class SwarmOrchestrator:
         *,
         session_id: str,
         task: dict[str, Any],
+        child_timeout_ms: int | None = None,
         is_paused_fn: Callable[[], bool] | None = None,
         completed_ids: set[str] | None = None,
         failed_ids: set[str] | None = None,
@@ -107,11 +114,18 @@ class SwarmOrchestrator:
             prompt_override = self._last_handoff_prompt
             try:
                 dispatch_result = self._subagent.dispatch({
-                    "prompt": prompt_override or subtask.description,
+                    "prompt": build_subtask_prompt(
+                        parent_goal=goal,
+                        subtask=subtask,
+                        prompt_override=prompt_override,
+                        completed_context=results,
+                    ),
                     "title": subtask.title,
                     "sessionId": session_id,
                     "taskId": parent_task_id,
-                    "agentType": "planner",
+                    "agentType": normalize_subtask_agent_type(subtask.agent_type),
+                    "childToolAllowlist": child_tool_allowlist_for_agent(subtask.agent_type),
+                    **({"timeoutMs": child_timeout_ms} if child_timeout_ms is not None else {}),
                 })
                 subtask.status = "completed"
                 subtask.result = dispatch_result.get("summary") or "Completed"
@@ -276,6 +290,7 @@ class SwarmOrchestrator:
         return {
             "id": subtask.id,
             "title": subtask.title,
+            "agentType": subtask.agent_type,
             "status": subtask.status,
             "result": subtask.result,
         }

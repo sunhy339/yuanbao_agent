@@ -15,14 +15,19 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from ..models import ProposalKind
 from .proposal_validator import validate_proposal
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_ROUTING_ADVISOR_TIMEOUT_SECONDS = 3.0
+_DEFAULT_ROUTING_ADVISOR_COOLDOWN_SECONDS = 600.0
 
 
 # ---------------------------------------------------------------------------
@@ -183,8 +188,16 @@ class DecisionAdvisor:
             fallback()
     """
 
-    def __init__(self, provider: AdvisorProvider | None = None) -> None:
+    def __init__(
+        self,
+        provider: AdvisorProvider | None = None,
+        *,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
         self._provider = provider
+        self._clock = clock or time.monotonic
+        self._cooldown_until_by_kind: dict[str, float] = {}
+        self._cooldown_reason_by_kind: dict[str, str] = {}
 
     def advise(
         self,
@@ -232,10 +245,23 @@ class DecisionAdvisor:
             )
 
         proposal_id = uuid.uuid4().hex[:12]
+        kind_policy = self._kind_policy(kind, input_context)
+        cooldown_reason = self._cooldown_reason(kind, kind_policy)
+        if cooldown_reason:
+            return AdviceResult(
+                proposal_id=proposal_id,
+                kind=kind,
+                payload={},
+                confidence=0.0,
+                rationale=entry.fallback,
+                source="rule_fallback",
+                accepted=False,
+                fallback_reason=cooldown_reason,
+            )
 
         # Try LLM advisory
         if self._provider is not None:
-            result = self._call_llm(entry, input_context, proposal_id, model_id)
+            result, failure_reason = self._call_llm(entry, input_context, proposal_id, model_id, kind_policy)
             if result is not None:
                 # Validate the proposal
                 validation_reasons = validate_proposal(kind, result["payload"])
@@ -268,6 +294,8 @@ class DecisionAdvisor:
                     model_id=model_id,
                     fallback_reason="LLM proposal failed validation",
                 )
+            if failure_reason:
+                self._record_kind_failure(kind, kind_policy, failure_reason)
 
         # Fallback: no provider or LLM call failed
         return AdviceResult(
@@ -278,7 +306,7 @@ class DecisionAdvisor:
             rationale=entry.fallback,
             source="rule_fallback",
             accepted=False,
-            fallback_reason="No LLM provider available or LLM call failed",
+            fallback_reason=failure_reason if self._provider is not None and failure_reason else "No LLM provider available or LLM call failed",
         )
 
     def _call_llm(
@@ -287,7 +315,8 @@ class DecisionAdvisor:
         input_context: dict[str, Any],
         proposal_id: str,
         model_id: str | None,
-    ) -> dict[str, Any] | None:
+        kind_policy: dict[str, float | None],
+    ) -> tuple[dict[str, Any] | None, str | None]:
         """Build prompt, call LLM, parse response."""
         prompt = _ADVISOR_PROMPT_TEMPLATE.format(
             kind=entry.kind,
@@ -305,7 +334,10 @@ class DecisionAdvisor:
             }
             config = input_context.get("config")
             if isinstance(config, dict):
-                provider_context["config"] = config
+                provider_context["config"] = self._provider_context_config(
+                    config=config,
+                    kind_policy=kind_policy,
+                )
             response = self._provider.generate(prompt, provider_context)  # type: ignore[union-attr]
             message = response.get("message") or response.get("final_answer") or ""
             assistant_message = response.get("assistant_message")
@@ -313,10 +345,112 @@ class DecisionAdvisor:
                 assistant_content = assistant_message.get("content")
                 if isinstance(assistant_content, str):
                     message = assistant_content
-            return self._parse_llm_response(message)
+            return self._parse_llm_response(message), None
         except Exception as exc:  # noqa: BLE001
             logger.warning("DecisionAdvisor LLM call failed for %s: %s", entry.kind, exc)
+            return None, str(exc)
+
+    def _kind_policy(self, kind: str, input_context: dict[str, Any]) -> dict[str, float | None]:
+        advisor_config = self._advisor_config(input_context)
+        per_kind = advisor_config.get("decisionKinds")
+        kind_config = per_kind.get(kind) if isinstance(per_kind, dict) and isinstance(per_kind.get(kind), dict) else {}
+        if not isinstance(kind_config, dict):
+            kind_config = {}
+        if kind == "routing_strategy":
+            timeout = self._bounded_float(
+                kind_config.get("timeoutSeconds")
+                or advisor_config.get("routingStrategyTimeoutSeconds"),
+                _DEFAULT_ROUTING_ADVISOR_TIMEOUT_SECONDS,
+                minimum=0.2,
+                maximum=180.0,
+            )
+            cooldown = self._bounded_float(
+                kind_config.get("cooldownSeconds")
+                or advisor_config.get("routingStrategyCooldownSeconds"),
+                _DEFAULT_ROUTING_ADVISOR_COOLDOWN_SECONDS,
+                minimum=0.0,
+                maximum=3600.0,
+            )
+            return {"timeoutSeconds": timeout, "cooldownSeconds": cooldown}
+        timeout = self._bounded_float(
+            kind_config.get("timeoutSeconds"),
+            None,
+            minimum=0.2,
+            maximum=120.0,
+        )
+        cooldown = self._bounded_float(
+            kind_config.get("cooldownSeconds"),
+            0.0,
+            minimum=0.0,
+            maximum=3600.0,
+        )
+        return {"timeoutSeconds": timeout, "cooldownSeconds": cooldown}
+
+    def _advisor_config(self, input_context: dict[str, Any]) -> dict[str, Any]:
+        config = input_context.get("config")
+        if not isinstance(config, dict):
+            return {}
+        advisor = config.get("advisor")
+        if isinstance(advisor, dict):
+            return advisor
+        autonomy = config.get("autonomy")
+        if isinstance(autonomy, dict) and isinstance(autonomy.get("advisor"), dict):
+            return autonomy["advisor"]
+        return {}
+
+    def _provider_context_config(
+        self,
+        *,
+        config: dict[str, Any],
+        kind_policy: dict[str, float | None],
+    ) -> dict[str, Any]:
+        timeout = kind_policy.get("timeoutSeconds")
+        if timeout is None:
+            return config
+        adjusted = deepcopy(config)
+        provider = adjusted.get("provider")
+        if isinstance(provider, dict):
+            self._apply_provider_timeout(provider, timeout)
+        return adjusted
+
+    def _apply_provider_timeout(self, provider: dict[str, Any], timeout: float) -> None:
+        provider["timeout"] = timeout
+        provider["timeoutSeconds"] = timeout
+        profiles = provider.get("profiles")
+        if isinstance(profiles, list):
+            for profile in profiles:
+                if isinstance(profile, dict):
+                    profile["timeout"] = timeout
+                    profile["timeoutSeconds"] = timeout
+
+    def _cooldown_reason(self, kind: str, kind_policy: dict[str, float | None]) -> str | None:
+        cooldown = kind_policy.get("cooldownSeconds")
+        if not isinstance(cooldown, (int, float)) or cooldown <= 0:
             return None
+        retry_after = self._cooldown_until_by_kind.get(kind, 0.0)
+        now = self._clock()
+        if now >= retry_after:
+            return None
+        remaining = max(0, int(retry_after - now))
+        reason = self._cooldown_reason_by_kind.get(kind) or "previous LLM advisory failure"
+        return f"Advisor {kind} is in cooldown for {remaining}s after {reason}; using rule fallback."
+
+    def _record_kind_failure(self, kind: str, kind_policy: dict[str, float | None], reason: str) -> None:
+        cooldown = kind_policy.get("cooldownSeconds")
+        if not isinstance(cooldown, (int, float)) or cooldown <= 0:
+            return
+        self._cooldown_until_by_kind[kind] = self._clock() + float(cooldown)
+        self._cooldown_reason_by_kind[kind] = reason
+
+    @staticmethod
+    def _bounded_float(value: Any, default: float | None, *, minimum: float, maximum: float) -> float | None:
+        if value is None or value == "":
+            return default
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return max(minimum, min(maximum, parsed))
 
     @staticmethod
     def _parse_llm_response(text: str) -> dict[str, Any] | None:

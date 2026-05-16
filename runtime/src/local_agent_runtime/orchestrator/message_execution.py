@@ -210,7 +210,11 @@ class MessageExecutionMixin:
                 trace_id=getattr(self, "_active_trace_id", None),
                 attributes={"goal": goal[:200]},
             )
-            plan = self._decomposer.decompose(goal=goal, context=plan_context)
+            plan = self._decomposer.decompose(
+                goal=goal,
+                context=plan_context,
+                provider_context=self._planning_provider_context(context),
+            )
             self._tracer.end_span(
                 decomp_span.span_id, status="ok",
                 attributes={"subtask_count": len(plan.subtasks), "execution_order": plan.execution_order},
@@ -234,6 +238,30 @@ class MessageExecutionMixin:
                     "parallel": plan.execution_order != [list(range(len(plan.subtasks)))],
                 },
             )
+
+            if self._is_plan_only_goal(goal):
+                summary = self._format_plan_only_summary(goal=goal, plan=plan)
+                self._publish(
+                    session_id=session_id, task=task,
+                    event_type="task.planning.completed",
+                    payload={
+                        "subtaskCount": len(plan.subtasks),
+                        "executionOrder": plan.execution_order,
+                        "planOnly": True,
+                    },
+                )
+                self._tracer.end_span(
+                    plan_span.span_id, status="ok",
+                    attributes={"subtaskCount": len(plan.subtasks), "planOnly": True},
+                )
+                return {
+                    "task": self._complete_task(
+                        session_id=session_id,
+                        task=task,
+                        summary=summary,
+                        context={**context, "_allow_summary_only_completion": True},
+                    ),
+                }
 
             # 1b. Plan approval gate (strict mode)
             config = self._store.get_config({})["config"]
@@ -306,6 +334,8 @@ class MessageExecutionMixin:
                 session_id=session_id,
                 parent_task_id=task["id"],
                 max_workers=self._max_parallel_subtasks(context),
+                parent_goal=goal,
+                child_timeout_ms=self._child_subtask_timeout_ms(context),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
                 tracer=self._tracer,
                 on_subtask_callback=_on_subtask_event,
@@ -349,7 +379,10 @@ class MessageExecutionMixin:
             if coverage < threshold:
                 gaps = self._coverage_evaluator.find_gaps(goal, execution["subtasks"])
                 if gaps:
-                    from ..planner.types import Subtask as PlanSubtask
+                    from ..planner.types import (
+                        Subtask as PlanSubtask,
+                        child_tool_allowlist_for_agent,
+                    )
                     supplement = PlanSubtask(
                         id="supplement-0",
                         title="Address uncovered aspects",
@@ -360,6 +393,7 @@ class MessageExecutionMixin:
                         dependencies=[
                             s.id for s in execution["subtasks"] if s.status == "completed"
                         ],
+                        agent_type="worker",
                     )
                     try:
                         dispatch_result = self._subagent_service.dispatch({
@@ -367,7 +401,8 @@ class MessageExecutionMixin:
                             "title": supplement.title,
                             "sessionId": session_id,
                             "taskId": task["id"],
-                            "agentType": "planner",
+                            "agentType": supplement.agent_type,
+                            "childToolAllowlist": child_tool_allowlist_for_agent(supplement.agent_type),
                         })
                         supplement.status = "completed"
                         supplement.result = dispatch_result.get("summary") or "Completed"
@@ -437,6 +472,79 @@ class MessageExecutionMixin:
         if strategy == "plan_swarm":
             return OrchestrationMode.SWARM
         return OrchestrationMode.DAG
+
+    def _planning_provider_context(self, context: dict[str, Any]) -> dict[str, Any]:
+        config = context.get("config") if isinstance(context, dict) else None
+        if not isinstance(config, dict):
+            try:
+                config = self._store.get_config({}).get("config")
+            except Exception:  # noqa: BLE001
+                config = None
+        if not isinstance(config, dict):
+            return {}
+        adjusted = deepcopy(config)
+        provider = adjusted.get("provider")
+        if isinstance(provider, dict):
+            provider["timeout"] = max(float(provider.get("timeout") or 0), 180.0)
+            provider["timeoutSeconds"] = max(float(provider.get("timeoutSeconds") or 0), 180.0)
+            provider["streamTimeout"] = max(float(provider.get("streamTimeout") or 0), 600.0)
+            provider["streamTimeoutSeconds"] = max(float(provider.get("streamTimeoutSeconds") or 0), 600.0)
+            profiles = provider.get("profiles")
+            if isinstance(profiles, list):
+                for profile in profiles:
+                    if isinstance(profile, dict):
+                        profile["timeout"] = max(float(profile.get("timeout") or 0), 180.0)
+                        profile["timeoutSeconds"] = max(float(profile.get("timeoutSeconds") or 0), 180.0)
+                        profile["streamTimeout"] = max(float(profile.get("streamTimeout") or 0), 600.0)
+                        profile["streamTimeoutSeconds"] = max(float(profile.get("streamTimeoutSeconds") or 0), 600.0)
+        return {"config": adjusted}
+
+    @staticmethod
+    def _is_plan_only_goal(goal: str) -> bool:
+        lowered = goal.casefold()
+        plan_markers = (
+            "only output",
+            "plan only",
+            "do not implement",
+            "don't implement",
+            "do not modify",
+            "do not create files",
+            "do not run commands",
+            "\u53ea\u9700\u8981\u8f93\u51fa\u65b9\u6848",
+            "\u53ea\u8f93\u51fa\u65b9\u6848",
+            "\u4e0d\u8981\u5b9e\u73b0",
+            "\u4e0d\u8981\u4fee\u6539",
+            "\u4e0d\u8981\u521b\u5efa\u6587\u4ef6",
+            "\u4e0d\u8981\u8fd0\u884c\u547d\u4ee4",
+        )
+        return any(marker in lowered for marker in plan_markers)
+
+    @staticmethod
+    def _format_plan_only_summary(*, goal: str, plan: Any) -> str:
+        lines = [
+            "\u8fd9\u662f\u4e00\u4e2a\u590d\u6742\u4efb\u52a1\uff0c\u672c\u8f6e\u53ea\u8f93\u51fa\u65b9\u6848\uff0c\u4e0d\u6267\u884c\u4ee3\u7801\u5b9e\u73b0\u3002",
+            "",
+            "\u4efb\u52a1\u89c4\u5212\uff1a",
+        ]
+        subtask_by_id = {subtask.id: subtask for subtask in plan.subtasks}
+        for index, subtask_id in enumerate(plan.execution_order, start=1):
+            subtask = subtask_by_id.get(subtask_id)
+            if subtask is None:
+                continue
+            deps = ", ".join(subtask.dependencies) if subtask.dependencies else "\u65e0"
+            lines.append(f"{index}. {subtask.title}")
+            lines.append(f"   - agent: {subtask.id}")
+            lines.append(f"   - \u4f9d\u8d56: {deps}")
+            lines.append(f"   - \u5de5\u4f5c\u5185\u5bb9: {subtask.description}")
+        lines.extend([
+            "",
+            "\u5e76\u884c\u5efa\u8bae\uff1a\u65e0\u4f9d\u8d56\u7684\u5b50\u4efb\u52a1\u53ef\u4ea4\u7ed9\u591a\u4e2a agent \u5e76\u884c\uff1b\u6709\u4f9d\u8d56\u7684\u5b50\u4efb\u52a1\u6309\u4e0a\u9762\u987a\u5e8f\u4e32\u884c\u3002",
+            "\u98ce\u9669\u70b9\uff1aAPI \u5951\u7ea6\u4e0d\u4e00\u81f4\u3001\u6570\u636e\u5b58\u50a8\u548c\u6821\u9a8c\u8fb9\u754c\u4e0d\u6e05\u3001\u6d4b\u8bd5\u8986\u76d6\u4e0d\u8db3\u3001\u6587\u6863\u548c\u5b9e\u73b0\u8131\u8282\u3002",
+            "\u9a8c\u8bc1\u65b9\u5f0f\uff1a\u5148\u68c0\u67e5\u65b9\u6848\u662f\u5426\u8986\u76d6\u524d\u7aef\u3001\u540e\u7aef\u3001\u6570\u636e\u3001\u6d4b\u8bd5\u548c\u6587\u6863\uff1b\u5b9e\u65bd\u9636\u6bb5\u518d\u8fd0\u884c\u5355\u5143\u6d4b\u8bd5\u3001API \u96c6\u6210\u6d4b\u8bd5\u548c\u7aef\u5230\u7aef\u9a8c\u8bc1\u3002",
+            "",
+            f"\u539f\u59cb\u76ee\u6807\uff1a{goal}",
+        ])
+        return "\n".join(lines)
 
     def _check_plan_approval(
         self,
@@ -540,7 +648,11 @@ class MessageExecutionMixin:
             plan_context = json.dumps(
                 context.get("tool_results", []), ensure_ascii=False,
             )[:2000]
-            plan = self._decomposer.decompose(goal=goal, context=plan_context)
+            plan = self._decomposer.decompose(
+                goal=goal,
+                context=plan_context,
+                provider_context=self._planning_provider_context(context),
+            )
             self._publish(
                 session_id=session_id, task=task,
                 event_type="task.planning.decomposed",
@@ -630,7 +742,11 @@ class MessageExecutionMixin:
             plan_context = json.dumps(
                 context.get("tool_results", []), ensure_ascii=False,
             )[:2000]
-            plan = self._decomposer.decompose(goal=goal, context=plan_context)
+            plan = self._decomposer.decompose(
+                goal=goal,
+                context=plan_context,
+                provider_context=self._planning_provider_context(context),
+            )
             self._publish(
                 session_id=session_id, task=task,
                 event_type="task.planning.decomposed",

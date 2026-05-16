@@ -96,6 +96,56 @@ class TestSwarmSequential:
         assert result.success is True
         assert result.handoff_count == 2  # handoff after sub-0 and sub-1
         assert len(mock_sub.calls) == 3
+        assert mock_sub.calls[0]["agentType"] == "worker"
+        assert "apply_patch" in mock_sub.calls[0]["childToolAllowlist"]
+
+    def test_passes_parent_timeout_budget_to_child_dispatch(self) -> None:
+        mock_sub = MockSubagentService()
+        mock_prov = MockProvider(handoffs=[json.dumps({"done": True})])
+        swarm = SwarmOrchestrator(provider=mock_prov, subagent_service=mock_sub)
+
+        swarm.execute(
+            "Do A",
+            {},
+            session_id="sess-1",
+            task=_make_task(),
+            child_timeout_ms=600_000,
+        )
+
+        assert mock_sub.calls[0]["timeoutMs"] == 600_000
+
+    def test_respects_agent_type_from_decomposition(self) -> None:
+        mock_sub = MockSubagentService()
+        mock_prov = MockProvider(
+            subtasks=[
+                {
+                    "id": "sub-0",
+                    "title": "Risk pass",
+                    "description": "Read files and assess risk.",
+                    "dependencies": [],
+                    "agentType": "planner",
+                },
+                {
+                    "id": "sub-1",
+                    "title": "Implement pass",
+                    "description": "Write the implementation.",
+                    "dependencies": ["sub-0"],
+                    "agentType": "worker",
+                },
+            ],
+            handoffs=[
+                json.dumps({"next_subtask_id": "sub-1", "handoff_prompt": None, "done": False}),
+                json.dumps({"done": True}),
+            ],
+        )
+        swarm = SwarmOrchestrator(provider=mock_prov, subagent_service=mock_sub)
+
+        swarm.execute("Plan, then implement", {}, session_id="sess-1", task=_make_task())
+
+        assert mock_sub.calls[0]["agentType"] == "planner"
+        assert "apply_patch" not in mock_sub.calls[0]["childToolAllowlist"]
+        assert mock_sub.calls[1]["agentType"] == "worker"
+        assert "apply_patch" in mock_sub.calls[1]["childToolAllowlist"]
 
 
 class TestSwarmEarlyDone:
@@ -212,4 +262,5 @@ class TestSwarmInstanceIsolation:
         assert result2.success is True
         assert len(mock_sub2.calls) == 1
         # Should use original description, NOT leaked handoff prompt from s1
-        assert mock_sub2.calls[0]["prompt"] == "Do X"
+        assert "Do X" in mock_sub2.calls[0]["prompt"]
+        assert "Context from instance 1" not in mock_sub2.calls[0]["prompt"]

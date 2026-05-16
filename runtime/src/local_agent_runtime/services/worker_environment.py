@@ -55,6 +55,14 @@ DEFAULT_ENV_ALLOWLIST = (
     "TOGETHER_API_KEY",
     "PERPLEXITY_API_KEY",
     "YUANBAO_PROVIDER_MODE",
+    "YUANBAO_SMOKE_PROVIDER_API_KEY",
+    "YUANBAO_SMOKE_PROVIDER_BASE_URL",
+    "YUANBAO_SMOKE_PROVIDER_MODEL",
+    "YUANBAO_SMOKE_PROVIDER_TIMEOUT",
+    "YUANBAO_SMOKE_PROVIDER_MAX_TOKENS",
+    "YUANBAO_SMOKE_PROVIDER_API_FORMAT",
+    "YUANBAO_SMOKE_PROVIDER_MODE",
+    "YUANBAO_SMOKE_PROVIDER_NAME",
 )
 
 WINDOWS_RUNTIME_ENV = (
@@ -176,7 +184,9 @@ def _recommended_python_module_command(python_executable: str, module: str, *arg
     executable = str(python_executable).strip()
     if not executable:
         executable = "python"
-    quoted = f'"{executable}"' if any(ch.isspace() for ch in executable) or os.name == "nt" else executable
+    quoted = f'"{executable}"' if any(ch.isspace() for ch in executable) else executable
+    if os.name == "nt" and quoted.startswith('"'):
+        quoted = f"& {quoted}"
     return " ".join([quoted, "-m", module, *args])
 
 

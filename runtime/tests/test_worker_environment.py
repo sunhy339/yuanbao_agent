@@ -57,6 +57,9 @@ def test_build_child_worker_env_keeps_only_runtime_provider_and_platform_vars(tm
     assert env["LOCAL_AGENT_CHILD_WORKER"] == "1"
     assert env["LOCAL_AGENT_PYTHON_EXECUTABLE"] == sys.executable
     assert "pytest -q" in env["LOCAL_AGENT_RECOMMENDED_PYTEST_COMMAND"]
+    if os.name == "nt":
+        recommended = env["LOCAL_AGENT_RECOMMENDED_PYTEST_COMMAND"].lstrip()
+        assert not recommended.startswith('"') or recommended.startswith('& "')
     assert env["PYTHONUNBUFFERED"] == "1"
     assert env["PYTHONPATH"] == os.pathsep.join([str(runtime_src), "parent-pythonpath"])
     assert "SECRET_TOKEN" not in env

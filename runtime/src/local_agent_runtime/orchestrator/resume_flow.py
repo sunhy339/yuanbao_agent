@@ -171,6 +171,8 @@ class ResumeFlowMixin:
                 session_id=state["session_id"],
                 parent_task_id=task["id"],
                 max_workers=self._max_parallel_subtasks(state.get("context") or {}),
+                parent_goal=state.get("goal"),
+                child_timeout_ms=self._child_subtask_timeout_ms(state.get("context") or {}),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
                 completed_ids=set(state["completed"]),
                 failed_ids=set(state["failed"]),

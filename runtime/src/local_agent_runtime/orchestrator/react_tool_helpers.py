@@ -105,7 +105,8 @@ class ReactToolHelpersMixin:
             "write_file",
             "code_search",
         }
-        if tool_name in workspace_tools and "workspaceRoot" not in arguments and "workspace_root" not in arguments:
+        if tool_name in workspace_tools:
+            arguments.pop("workspace_root", None)
             arguments["workspaceRoot"] = context["workspace_root"]
 
         search_config = context.get("search_config", {})
@@ -128,6 +129,11 @@ class ReactToolHelpersMixin:
             arguments.setdefault("dry_run", False)
         elif tool_name == "task":
             arguments.setdefault("priority", 3)
+            timeout_ms_getter = getattr(self, "_child_subtask_timeout_ms", None)
+            if callable(timeout_ms_getter) and "timeoutMs" not in arguments:
+                timeout_ms = timeout_ms_getter(context)
+                if timeout_ms is not None:
+                    arguments["timeoutMs"] = timeout_ms
 
     def _plan_step_for_tool(self, tool_name: str) -> str:
         return {

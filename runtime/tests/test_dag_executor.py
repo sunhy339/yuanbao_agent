@@ -147,7 +147,65 @@ class TestDAGExecutorExecute:
         call = mock.calls[0]
         assert call["sessionId"] == "my-session"
         assert call["taskId"] == "my-task"
+        assert call["agentType"] == "worker"
+        assert "apply_patch" in call["childToolAllowlist"]
+
+    def test_respects_llm_selected_read_only_subtask_role(self) -> None:
+        subtasks = [
+            Subtask(
+                id="a",
+                title="Assess risk",
+                description="Assess risks without changing files.",
+                dependencies=[],
+                agent_type="planner",
+            ),
+        ]
+        plan = _make_plan(subtasks)
+        mock = MockSubagentService()
+        executor = DAGExecutor(mock)
+
+        executor.execute(plan, session_id="my-session", parent_task_id="my-task")
+
+        call = mock.calls[0]
         assert call["agentType"] == "planner"
+        assert "apply_patch" not in call["childToolAllowlist"]
+
+    def test_child_prompt_preserves_parent_goal_when_available(self) -> None:
+        subtasks = [
+            Subtask(id="a", title="Implement", description="Build the implementation.", dependencies=[]),
+        ]
+        plan = _make_plan(subtasks)
+        mock = MockSubagentService()
+        executor = DAGExecutor(mock)
+
+        executor.execute(
+            plan,
+            session_id="my-session",
+            parent_task_id="my-task",
+            parent_goal="Create feedback_models.py and at least 2 pytest files.",
+        )
+
+        prompt = mock.calls[0]["prompt"]
+        assert "[Parent task]" in prompt
+        assert "feedback_models.py" in prompt
+        assert "at least 2 pytest files" in prompt
+
+    def test_passes_parent_timeout_budget_to_child_dispatch(self) -> None:
+        subtasks = [
+            Subtask(id="a", title="Implement", description="Build the implementation.", dependencies=[]),
+        ]
+        plan = _make_plan(subtasks)
+        mock = MockSubagentService()
+        executor = DAGExecutor(mock)
+
+        executor.execute(
+            plan,
+            session_id="my-session",
+            parent_task_id="my-task",
+            child_timeout_ms=600_000,
+        )
+
+        assert mock.calls[0]["timeoutMs"] == 600_000
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ from collections import deque
 from typing import Any
 
 from ..provider.adapter import ProviderAdapter
-from .types import PlanResult, Subtask
+from .types import PlanResult, Subtask, normalize_subtask_agent_type
 
 _DECOMPOSITION_PROMPT = """\
 You are a task decomposition specialist. Break the following goal into concrete, ordered sub-tasks.
@@ -20,19 +20,26 @@ Respond with a JSON array of sub-tasks. Each sub-task MUST have:
 - "title": a short title (under 80 characters)
 - "description": a detailed description of what to do (this will be used as the prompt for a sub-agent)
 - "dependencies": an array of sub-task IDs that must complete before this one can start (use [] for tasks with no dependencies)
+- "agentType": choose exactly one of "planner", "worker", "reviewer", or "summarizer"
 
 Guidelines:
 - Each sub-task should be independently executable
+- Use "worker" for implementation, file edits, command execution, tests, or verification
+- Use "planner" only for planning/risk-analysis tasks that should not modify files
+- Use "reviewer" for read-only critique of existing or newly produced work
+- Use "summarizer" only for the final synthesis step
 - Use dependencies to express ordering constraints
-- Keep the number of sub-tasks between 2 and 8
+- Keep the number of sub-tasks between 2 and 10; use more subtasks when the parent goal explicitly names separate backend, frontend, test, documentation, or verification deliverables
 - Make descriptions specific and actionable
+- Preserve explicit artifact names, test-count requirements, and validation commands from the parent goal inside the relevant sub-task descriptions
+- Do not collapse implementation and verification into a vague "implement changes" sub-task when the parent goal names concrete deliverables
 
 Example response:
 ```json
 [
-  {{"id": "sub-0", "title": "Analyze codebase", "description": "Search and analyze the relevant source files...", "dependencies": []}},
-  {{"id": "sub-1", "title": "Implement changes", "description": "Apply the required modifications...", "dependencies": ["sub-0"]}},
-  {{"id": "sub-2", "title": "Verify results", "description": "Run tests and verify...", "dependencies": ["sub-1"]}}
+  {{"id": "sub-0", "title": "Analyze codebase", "description": "Search and analyze the relevant source files...", "dependencies": [], "agentType": "planner"}},
+  {{"id": "sub-1", "title": "Implement changes", "description": "Apply the required modifications...", "dependencies": ["sub-0"], "agentType": "worker"}},
+  {{"id": "sub-2", "title": "Verify results", "description": "Run tests and verify...", "dependencies": ["sub-1"], "agentType": "worker"}}
 ]
 ```
 """
@@ -48,12 +55,22 @@ class TaskDecomposer:
     # Public API
     # ------------------------------------------------------------------
 
-    def decompose(self, goal: str, context: str = "") -> PlanResult:
+    def decompose(
+        self,
+        goal: str,
+        context: str = "",
+        *,
+        provider_context: dict[str, Any] | None = None,
+    ) -> PlanResult:
         """Call the LLM to decompose *goal* into sub-tasks, build DAG, and sort."""
         prompt = self._build_prompt(goal, context)
+        request_context = {
+            **(provider_context or {}),
+            "messages": [{"role": "user", "content": prompt}],
+        }
         response = self._provider.generate(
             prompt,
-            {"messages": [{"role": "user", "content": prompt}]},
+            request_context,
         )
         raw_text = response.get("message") or ""
         subtasks = self._parse_subtasks(raw_text, fallback_goal=goal)
@@ -176,9 +193,12 @@ class TaskDecomposer:
                         if not isinstance(deps, list):
                             deps = []
                         deps = [str(d) for d in deps if isinstance(d, str)]
+                        agent_type = normalize_subtask_agent_type(
+                            item.get("agentType") or item.get("agent_type") or item.get("role"),
+                        )
                         subtasks.append(Subtask(
                             id=sub_id, title=title,
-                            description=desc, dependencies=deps,
+                            description=desc, dependencies=deps, agent_type=agent_type,
                         ))
                     return subtasks if subtasks else None
         return None

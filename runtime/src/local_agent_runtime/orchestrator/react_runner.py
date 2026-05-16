@@ -538,7 +538,11 @@ class ReactRunnerMixin:
     ) -> bool:
         if not tool_results:
             return False
-        if context.get("_allow_tools_after_task_results") is True:
+        resolver = getattr(self, "_tool_policy_resolver", None)
+        if resolver is None:
+            resolver = ToolPolicyResolver()
+            self._tool_policy_resolver = resolver
+        if resolver.allow_tools_after_task_results(context):
             return False
         last_result = tool_results[-1]
         if last_result.get("name") != "task":
@@ -572,6 +576,9 @@ class ReactRunnerMixin:
 
     def _max_parallel_subtasks(self, context: dict[str, Any]) -> int:
         return self._autonomy_profile_int(context, "maxParallelSubtasks") or 4
+
+    def _child_subtask_timeout_ms(self, context: dict[str, Any]) -> int | None:
+        return self._autonomy_profile_int(context, "timeoutMs")
 
     def _compaction_threshold(self, context: dict[str, Any]) -> int:
         """Get compaction threshold from autonomy profile, falling back to 60000."""

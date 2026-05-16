@@ -309,6 +309,58 @@ class TestCompletionHardGate:
         ).fetchall()
         assert approvals == []
 
+    def test_tool_result_py_compile_evidence_completes_without_review(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="create a python file and run a syntax check",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        command_log = store.create_command_log(
+            task_id=task["id"],
+            command="python -m py_compile game.py",
+            cwd=".",
+            shell="powershell",
+        )
+        store.update_command_log(command_log["id"], status="completed", exit_code=0)
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Created game.py and py_compile passed.",
+            context={"routing": {"scenario": "code_edit"}},
+            tool_results=[
+                {
+                    "name": "write_file",
+                    "result": {"status": "written", "path": "game.py", "bytesWritten": 100},
+                },
+                {
+                    "name": "run_command",
+                    "result": {
+                        "status": "completed",
+                        "exitCode": 0,
+                    },
+                },
+            ],
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert evidence["evidenceLevel"] == "verified"
+        assert evidence["changedFiles"][0]["path"] == "game.py"
+        assert evidence["testsRun"][0]["status"] == "passed"
+        approvals = store._conn.execute(
+            "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",
+            (task["id"], "completion_review"),
+        ).fetchall()
+        assert approvals == []
+
     def test_failed_acceptance_criteria_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
@@ -497,6 +549,64 @@ class TestCompletionHardGate:
                         "command": "pytest",
                         "exitCode": 0,
                         "summary": "tests passed",
+                    },
+                },
+            ],
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["counts"]["failedToolResults"] == 0
+        assert evidence["counts"]["resolvedFailedToolResults"] == 1
+
+    def test_equivalent_file_listing_failure_after_success_completes(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="generate a static blog website",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Generated the static website files and checked they exist.",
+            context={"routing": {"scenario": "code_edit"}},
+            tool_results=[
+                {
+                    "name": "write_file",
+                    "result": {"status": "completed", "path": "index.html"},
+                },
+                {
+                    "name": "write_file",
+                    "result": {"status": "completed", "path": "styles.css"},
+                },
+                {
+                    "name": "write_file",
+                    "result": {"status": "completed", "path": "app.js"},
+                },
+                {
+                    "name": "run_command",
+                    "result": {
+                        "status": "completed",
+                        "command": "Get-ChildItem -Name index.html, styles.css, app.js, README.md",
+                        "exitCode": 0,
+                        "summary": "files exist",
+                    },
+                },
+                {
+                    "name": "run_command",
+                    "result": {
+                        "status": "completed",
+                        "command": "ls index.html styles.css app.js README.md",
+                        "exitCode": 1,
+                        "summary": "PowerShell argument form failed",
                     },
                 },
             ],
@@ -817,6 +927,38 @@ class TestCompletionHardGate:
         assert evidence["verificationRequirements"]["missing"] == []
         assert evidence["verificationRequirements"]["status"] == "satisfied"
 
+    def test_javascript_change_with_node_check_verification_completes(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="modify static frontend",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "app.js", "action": "modified"}],
+            verification=[{"command": "node --check app.js", "status": "passed", "summary": "syntax ok"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Static frontend implementation finished.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["verificationRequirements"]["required"] == ["javascript"]
+        assert evidence["verificationRequirements"]["missing"] == []
+        assert evidence["verificationRequirements"]["status"] == "satisfied"
+
     def test_doc_change_with_structural_verification_completes(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
@@ -877,6 +1019,69 @@ class TestCompletionHardGate:
         assert review["approvalId"] == approval_id
         assert review["decision"] == "approved"
         assert completed["structuredResult"]["completionEvidence"]["reviewConclusion"]["decision"] == "approved"
+
+    def test_swarm_task_summary_only_requires_completion_review(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="agent",
+            goal="Use multiple agents to implement a full-stack feature",
+            plan=[],
+            routing={"scenario": "swarm_task", "strategy": "plan_swarm"},
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Plan execution completed with no files changed.",
+            context={"routing": {"scenario": "swarm_task", "strategy": "plan_swarm"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        gate = result["structuredResult"]["completionGate"]
+        assert gate["status"] == "needs_user_review"
+        assert "summary" in gate["reason"].lower()
+
+    def test_explicit_artifact_requirements_block_incomplete_completion(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "feedback_models.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (project / "tests").mkdir()
+        (project / "tests" / "test_feedback_core.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="agent",
+            goal=(
+                "Create feedback_models.py, feedback_storage.py, index.html, app.js, styles.css, "
+                "and at least 2 pytest files."
+            ),
+            plan=[],
+            routing={"scenario": "swarm_task", "strategy": "plan_swarm"},
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Implemented a partial slice.",
+            context={"workspace_root": str(project), "routing": {"scenario": "swarm_task", "strategy": "plan_swarm"}},
+            tool_results=[{"name": "write_file", "result": {"status": "completed", "path": "feedback_models.py"}}],
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        evidence = result["structuredResult"]["completionEvidence"]
+        failed = [item["criterion"] for item in evidence["acceptance"] if item["status"] == "failed"]
+        assert "Expected artifact exists: feedback_storage.py" in failed
+        assert "Expected artifact exists: app.js" in failed
+        assert "Expected pytest file count >= 2" in failed
 
     def test_completion_review_rejection_fails_task(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)

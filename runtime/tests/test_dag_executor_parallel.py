@@ -5,8 +5,10 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+from local_agent_runtime.observability.tracer import Tracer
 from local_agent_runtime.planner.dag_executor import DAGExecutor
 from local_agent_runtime.planner.types import PlanResult, Subtask
+from local_agent_runtime.store.sqlite_store import SQLiteStore
 
 
 # ---------------------------------------------------------------------------
@@ -251,3 +253,28 @@ class TestParallelThreadSafety:
         assert result["success"] is False
         assert len(result["completed"]) == 3
         assert len(result["failed"]) == 2
+
+    def test_parallel_tracing_uses_thread_safe_store_connection(self, tmp_path: Any) -> None:
+        """Parallel subtask spans should not trip SQLite's thread affinity guard."""
+        store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+        try:
+            subtasks = [
+                Subtask(id=f"t{i}", title=f"Task {i}", description=f"do {i}", dependencies=[])
+                for i in range(4)
+            ]
+            plan = _make_plan(subtasks)
+            executor = DAGExecutor(_SlowSubagentService())
+            result = executor.execute(
+                plan,
+                session_id="s1",
+                parent_task_id="task_parallel_trace",
+                max_workers=4,
+                tracer=Tracer(store),
+            )
+
+            spans = store.get_trace_spans({"traceId": "task_parallel_trace", "limit": 20})["spans"]
+        finally:
+            store.close()
+
+        assert result["success"] is True
+        assert sum(1 for span in spans if span["operation"] == "dag_subtask") == 4

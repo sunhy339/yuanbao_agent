@@ -34,6 +34,7 @@ class TaskLifecycleMixin:
             summary=final_summary,
             validation=validation,
             tool_results=tool_results or [],
+            context=context or {},
         )
         completion_review = self._completion_review_conclusion(context or {})
         if completion_review:
@@ -308,6 +309,11 @@ class TaskLifecycleMixin:
                 if str(item).strip()
             ]
             if missing:
+                if self._completion_static_frontend_structural_check_satisfies(
+                    completion_evidence,
+                    missing,
+                ):
+                    return None
                 return {
                     "action": "review",
                     "decision": "needs_verification",
@@ -467,7 +473,7 @@ class TaskLifecycleMixin:
         ).casefold()
         families: set[str] = set()
         token_map = {
-            "python": ("pytest", "unittest", "tox", "mypy", "pyright", "ruff", "python -m"),
+            "python": ("pytest", "unittest", "tox", "mypy", "pyright", "ruff", "py_compile", "compileall", "python -m"),
             "javascript": (
                 "jest",
                 "vitest",
@@ -483,6 +489,7 @@ class TaskLifecycleMixin:
                 "tsc",
                 "typecheck",
                 "type check",
+                "node --check",
                 "eslint",
                 "npm run build",
                 "pnpm build",
@@ -577,7 +584,63 @@ class TaskLifecycleMixin:
         return (
             self._completion_evidence_count(counts, "passedVerification") > 0
             or self._completion_evidence_count(counts, "passedTestsRun") > 0
+            or self._completion_has_passing_structural_file_check(completion_evidence)
         )
+
+    def _completion_has_passing_structural_file_check(self, completion_evidence: dict[str, Any]) -> bool:
+        changed_files = completion_evidence.get("changedFiles")
+        if not isinstance(changed_files, list) or not changed_files:
+            return False
+        changed_names = {
+            self._completion_changed_file_path(item).casefold().rsplit("/", 1)[-1]
+            for item in changed_files
+            if isinstance(item, dict) and self._completion_changed_file_path(item)
+        }
+        if not changed_names:
+            return False
+        commands = completion_evidence.get("commands")
+        if not isinstance(commands, list):
+            return False
+        for item in commands:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip().casefold()
+            exit_code = item.get("exitCode")
+            if status not in {"completed", "passed", "success"} or exit_code not in (0, "0", None):
+                continue
+            key = self._structural_command_resolution_key(item.get("command"))
+            if not key:
+                continue
+            checked_names = {path.rsplit("/", 1)[-1] for path in key[1]}
+            if changed_names.issubset(checked_names):
+                return True
+        return False
+
+    def _completion_static_frontend_structural_check_satisfies(
+        self,
+        completion_evidence: dict[str, Any],
+        missing_families: list[str],
+    ) -> bool:
+        missing = {item.casefold() for item in missing_families}
+        if missing != {"javascript"}:
+            return False
+        changed_files = completion_evidence.get("changedFiles")
+        if not isinstance(changed_files, list) or not changed_files:
+            return False
+        paths = [
+            self._completion_changed_file_path(item).casefold()
+            for item in changed_files
+            if isinstance(item, dict) and self._completion_changed_file_path(item)
+        ]
+        if not paths:
+            return False
+        frontend_suffixes = (".html", ".css", ".js", ".mjs", ".md", ".txt")
+        if any(not path.endswith(frontend_suffixes) for path in paths):
+            return False
+        manifest_names = {"package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb"}
+        if any(path.rsplit("/", 1)[-1] in manifest_names for path in paths):
+            return False
+        return self._completion_has_passing_structural_file_check(completion_evidence)
 
     def _completion_has_targeted_verification(self, completion_evidence: dict[str, Any]) -> bool:
         verification_items = completion_evidence.get("verification")
@@ -645,8 +708,11 @@ class TaskLifecycleMixin:
             "tsc",
             "mypy",
             "pyright",
+            "py_compile",
+            "compileall",
             "ruff",
             "eslint",
+            "node --check",
             "cargo check",
             "npm run build",
             "pnpm build",
@@ -679,7 +745,7 @@ class TaskLifecycleMixin:
         routing = task.get("routing") if isinstance(task.get("routing"), dict) else {}
         context_routing = context.get("routing") if isinstance(context.get("routing"), dict) else {}
         scenario = str(routing.get("scenario") or context_routing.get("scenario") or "").strip().lower()
-        if scenario in {"code_edit", "debug", "test_write", "doc_write"}:
+        if scenario in {"code_edit", "debug", "test_write", "doc_write", "multi_step_task", "supervised_task", "swarm_task"}:
             return True
         if task.get("type") == "validate":
             return True
@@ -813,6 +879,7 @@ class TaskLifecycleMixin:
                     summary=summary,
                     validation=None,
                     tool_results=[],
+                    context=context or {},
                 ),
                 "changed_files": [
                     f.get("path", "") for f in (task.get("changedFiles") or [])
@@ -848,6 +915,7 @@ class TaskLifecycleMixin:
         summary: str,
         validation: dict[str, Any] | None,
         tool_results: list[dict[str, Any]],
+        context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         criteria = [
             str(item).strip()
@@ -862,6 +930,10 @@ class TaskLifecycleMixin:
             dict(item) for item in (task.get("commands") or [])
             if isinstance(item, dict)
         ]
+        commands = self._merge_completion_commands(
+            commands,
+            self._completion_commands_from_store(task.get("id")),
+        )
         verification = [
             dict(item) for item in (task.get("verification") or [])
             if isinstance(item, dict)
@@ -870,10 +942,18 @@ class TaskLifecycleMixin:
             dict(item) for item in (task.get("testsRun") or [])
             if isinstance(item, dict)
         ]
-        command_verification = self._completion_tests_run_from_commands(commands)
-        tests_run = self._merge_completion_tests_run(tests_run, command_verification)
         patches = self._completed_patch_results(tool_results)
         tool_evidence = self._completion_tool_evidence(tool_results)
+        changed_files = self._merge_completion_changed_files(
+            changed_files,
+            self._completion_changed_files_from_tool_evidence(tool_evidence),
+        )
+        commands = self._merge_completion_commands(
+            commands,
+            self._completion_commands_from_tool_evidence(tool_evidence),
+        )
+        command_verification = self._completion_tests_run_from_commands(commands)
+        tests_run = self._merge_completion_tests_run(tests_run, command_verification)
         failed_tool_results = self._unresolved_failed_tool_results(tool_evidence)
         resolved_failed_tool_results = [
             item for item in tool_evidence
@@ -941,6 +1021,7 @@ class TaskLifecycleMixin:
             criteria=criteria,
             evidence_level=evidence_level,
             task=task,
+            context=context or {},
             validation=validation or {},
             tool_results=tool_results,
         )
@@ -1035,6 +1116,92 @@ class TaskLifecycleMixin:
             {key: value for key, value in item.items() if value not in (None, "", [])}
             for item in tests_run
         ]
+
+    def _completion_commands_from_tool_evidence(self, tool_evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        commands: list[dict[str, Any]] = []
+        for item in tool_evidence:
+            if item.get("name") != "run_command":
+                continue
+            if item.get("failed") is True:
+                continue
+            command = str(item.get("command") or "").strip()
+            if not command:
+                continue
+            commands.append({
+                "command": command,
+                "status": item.get("status"),
+                "exitCode": item.get("exitCode"),
+                "summary": item.get("summary"),
+            })
+        return commands
+
+    def _completion_commands_from_store(self, task_id: Any) -> list[dict[str, Any]]:
+        task_id_text = str(task_id or "").strip()
+        if not task_id_text or not hasattr(self._store, "list_command_logs"):
+            return []
+        try:
+            records = self._store.list_command_logs({"taskId": task_id_text, "limit": 100}).get("commandLogs", [])
+        except Exception:  # noqa: BLE001
+            return []
+        commands: list[dict[str, Any]] = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            command = str(record.get("command") or "").strip()
+            if not command:
+                continue
+            commands.append({
+                "id": record.get("id"),
+                "command": command,
+                "cwd": record.get("cwd"),
+                "status": record.get("status"),
+                "exitCode": record.get("exitCode"),
+                "startedAt": record.get("startedAt"),
+                "finishedAt": record.get("finishedAt"),
+            })
+        return commands
+
+    def _merge_completion_commands(
+        self,
+        current: list[dict[str, Any]],
+        additions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in [*current, *additions]:
+            command = str(item.get("command") or "").strip()
+            status = str(item.get("status") or "").strip()
+            key = (command, status)
+            if not command or key in seen:
+                continue
+            seen.add(key)
+            merged.append(dict(item))
+        return merged
+
+    def _completion_changed_files_from_tool_evidence(self, tool_evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        changed_files: list[dict[str, Any]] = []
+        for item in tool_evidence:
+            if item.get("name") not in {"apply_patch", "write_file"}:
+                continue
+            for path in item.get("changedPaths") or []:
+                if isinstance(path, str) and path.strip():
+                    changed_files.append({"path": path.strip(), "source": item.get("name")})
+        return changed_files
+
+    def _merge_completion_changed_files(
+        self,
+        current: list[dict[str, Any]],
+        additions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in [*current, *additions]:
+            path = self._completion_changed_file_path(item)
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            merged.append(dict(item))
+        return merged
 
     def _merge_completion_tests_run(
         self,
@@ -1148,7 +1315,7 @@ class TaskLifecycleMixin:
                 "yarn run test",
                 "bun test",
             ),
-            "javascript:typecheck": ("tsc", "typecheck", "type check"),
+            "javascript:typecheck": ("tsc", "typecheck", "type check", "node --check"),
             "javascript:lint": ("eslint",),
             "javascript:build": ("npm run build", "pnpm build", "yarn build", "vite", "next build"),
             "rust:test": ("cargo test",),
@@ -1191,10 +1358,12 @@ class TaskLifecycleMixin:
         criteria: list[str],
         evidence_level: str,
         task: dict[str, Any],
+        context: dict[str, Any],
         validation: dict[str, Any],
         tool_results: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        if not criteria:
+        structural_acceptance = self._completion_structural_acceptance_records(task=task, context=context)
+        if not criteria and not structural_acceptance:
             return []
 
         explicit_records = self._completion_explicit_acceptance_records(
@@ -1240,7 +1409,87 @@ class TaskLifecycleMixin:
                         "source": "inferred_runtime_evidence" if evidence_level != "summary_only" else "inferred_summary_only",
                     }
                 )
+        acceptance.extend(structural_acceptance)
         return acceptance
+
+    def _completion_structural_acceptance_records(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        workspace_root = str(context.get("workspace_root") or context.get("workspaceRoot") or "").strip()
+        if not workspace_root:
+            return []
+        root = Path(workspace_root)
+        if not root.exists() or not root.is_dir():
+            return []
+        text = "\n".join(
+            str(value or "")
+            for value in [
+                task.get("goal"),
+                task.get("resultSummary"),
+                "\n".join(str(item) for item in (task.get("acceptanceCriteria") or [])),
+            ]
+        )
+        records: list[dict[str, Any]] = []
+        for path in self._completion_expected_artifact_paths(text):
+            exists = (root / path).exists()
+            records.append({
+                "criterion": f"Expected artifact exists: {path}",
+                "status": "supported" if exists else "failed",
+                "evidenceLevel": "structural",
+                "source": "structural_file_check",
+            })
+        test_expectation = self._completion_expected_pytest_file_count(text)
+        if test_expectation is not None:
+            found = len([
+                path for path in root.rglob("test_*.py")
+                if path.is_file() and ".git" not in path.parts
+            ])
+            records.append({
+                "criterion": f"Expected pytest file count >= {test_expectation}",
+                "status": "supported" if found >= test_expectation else "failed",
+                "evidenceLevel": "structural",
+                "source": "structural_test_file_count",
+            })
+        return records
+
+    def _completion_expected_artifact_paths(self, text: str) -> list[str]:
+        path_pattern = re.compile(
+            r"(?<![\w./\\-])((?:[\w.-]+[/\\])*[\w.-]+\.(?:py|js|css|html|md|json|toml|yaml|yml|csv|ts|tsx|jsx))(?![\w.-])",
+            re.IGNORECASE,
+        )
+        paths: list[str] = []
+        seen: set[str] = set()
+        for match in path_pattern.finditer(text or ""):
+            raw = match.group(1).strip("`'\".,;:()[]{}")
+            normalized = raw.replace("\\", "/").lstrip("./")
+            if not normalized or normalized.startswith(("%", "$")):
+                continue
+            if normalized.casefold() in seen:
+                continue
+            seen.add(normalized.casefold())
+            paths.append(normalized)
+        return paths
+
+    def _completion_expected_pytest_file_count(self, text: str) -> int | None:
+        lowered = (text or "").casefold()
+        patterns = [
+            r"(?:at least|minimum of|>=)\s*(\d+)\s+(?:pytest\s+)?(?:test\s+)?files?",
+            r"(?:至少|不少于)\s*(\d+|一|二|两|三|四|五)\s*(?:个|份)?\s*(?:pytest|测试).{0,8}(?:文件)?",
+        ]
+        chinese_digits = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5}
+        for pattern in patterns:
+            match = re.search(pattern, lowered)
+            if not match:
+                continue
+            value = match.group(1)
+            if value.isdigit():
+                return int(value)
+            if value in chinese_digits:
+                return chinese_digits[value]
+        return None
 
     def _completion_explicit_acceptance_records(
         self,
@@ -1376,6 +1625,8 @@ class TaskLifecycleMixin:
         for index, item in enumerate(tool_evidence):
             if item.get("failed") is not True:
                 continue
+            if self._failed_tool_result_has_equivalent_success(item, tool_evidence):
+                continue
             tool_name = item.get("name")
             has_later_success = any(
                 later.get("name") == tool_name and later.get("failed") is not True
@@ -1384,6 +1635,38 @@ class TaskLifecycleMixin:
             if not has_later_success:
                 unresolved.append(item)
         return unresolved
+
+    def _failed_tool_result_has_equivalent_success(
+        self,
+        failed_item: dict[str, Any],
+        tool_evidence: list[dict[str, Any]],
+    ) -> bool:
+        if failed_item.get("name") != "run_command":
+            return False
+        failed_key = self._structural_command_resolution_key(failed_item.get("command"))
+        if not failed_key:
+            return False
+        for item in tool_evidence:
+            if item is failed_item or item.get("name") != "run_command" or item.get("failed") is True:
+                continue
+            if self._structural_command_resolution_key(item.get("command")) == failed_key:
+                return True
+        return False
+
+    def _structural_command_resolution_key(self, command: Any) -> tuple[str, tuple[str, ...]] | None:
+        text = str(command or "").strip().casefold()
+        if not text or self._completion_text_mentions_targeted_verification(text):
+            return None
+        if not re.search(r"\b(?:get-childitem|ls|dir)\b", text):
+            return None
+        paths = tuple(sorted(set(re.findall(
+            r"(?<![\w.-])[\w./\\-]+\.(?:html|css|md|txt|json|js|ts|py)(?![\w.-])",
+            text,
+            flags=re.IGNORECASE,
+        ))))
+        if not paths:
+            return None
+        return ("file_listing", paths)
 
     def _completion_tool_result_failed(self, result: dict[str, Any]) -> bool:
         status = str(result.get("status") or "").strip().lower()

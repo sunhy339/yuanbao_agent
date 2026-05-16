@@ -6,7 +6,13 @@ import re
 from typing import Any, Callable
 
 from ..planner.decomposer import TaskDecomposer
-from ..planner.types import PlanResult, Subtask
+from ..planner.types import (
+    PlanResult,
+    Subtask,
+    build_subtask_prompt,
+    child_tool_allowlist_for_agent,
+    normalize_subtask_agent_type,
+)
 from ..provider.adapter import ProviderAdapter
 from ..services.subagent_service import SubagentService
 from .result_synthesizer import ResultSynthesizer
@@ -82,6 +88,7 @@ class SupervisorOrchestrator:
         *,
         session_id: str,
         task: dict[str, Any],
+        child_timeout_ms: int | None = None,
         is_paused_fn: Callable[[], bool] | None = None,
         completed_ids: set[str] | None = None,
         failed_ids: set[str] | None = None,
@@ -133,7 +140,11 @@ class SupervisorOrchestrator:
             # Execute with review loop
             subtask.status = "running"
             success = self._execute_with_review(
-                subtask, session_id=session_id, parent_task_id=parent_task_id,
+                subtask,
+                session_id=session_id,
+                parent_task_id=parent_task_id,
+                parent_goal=goal,
+                child_timeout_ms=child_timeout_ms,
             )
             review_count += self._last_review_count
 
@@ -183,6 +194,8 @@ class SupervisorOrchestrator:
         *,
         session_id: str,
         parent_task_id: str,
+        parent_goal: str | None = None,
+        child_timeout_ms: int | None = None,
     ) -> bool:
         """Execute a sub-task with supervisor review and retry loop."""
         self._last_review_count = 0
@@ -192,11 +205,17 @@ class SupervisorOrchestrator:
             # Dispatch
             try:
                 dispatch_result = self._subagent.dispatch({
-                    "prompt": description,
+                    "prompt": build_subtask_prompt(
+                        parent_goal=parent_goal,
+                        subtask=subtask,
+                        prompt_override=description,
+                    ),
                     "title": subtask.title,
                     "sessionId": session_id,
                     "taskId": parent_task_id,
-                    "agentType": "planner",
+                    "agentType": normalize_subtask_agent_type(subtask.agent_type),
+                    "childToolAllowlist": child_tool_allowlist_for_agent(subtask.agent_type),
+                    **({"timeoutMs": child_timeout_ms} if child_timeout_ms is not None else {}),
                 })
                 result_text = dispatch_result.get("summary") or "Completed"
             except Exception as exc:  # noqa: BLE001

@@ -88,6 +88,19 @@ class _BadProvider:
         raise RuntimeError("provider error")
 
 
+class _RecordingFailureProvider:
+    """Provider that records contexts before raising."""
+
+    def __init__(self) -> None:
+        self.contexts: list[dict[str, Any]] = []
+        self.calls = 0
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        self.calls += 1
+        self.contexts.append(context)
+        raise RuntimeError("provider timeout")
+
+
 class _MalformedProvider:
     """Provider that returns non-JSON."""
 
@@ -190,6 +203,55 @@ class TestDecisionAdvisorAdvise:
         assert "sk-secret" not in provider.prompts[0]
         assert "[redacted]" in provider.prompts[0]
 
+    def test_routing_strategy_uses_short_advisor_timeout(self) -> None:
+        provider = _RecordingFailureProvider()
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "routing_strategy",
+            {
+                "goal": "ambiguous change",
+                "config": {
+                    "provider": {
+                        "timeout": 30,
+                        "profiles": [
+                            {
+                                "id": "active",
+                                "timeout": 30,
+                            }
+                        ],
+                        "activeProfileId": "active",
+                    }
+                },
+            },
+        )
+
+        assert result.source == "rule_fallback"
+        assert provider.calls == 1
+        provider_config = provider.contexts[0]["config"]["provider"]
+        assert provider_config["timeout"] == 3.0
+        assert provider_config["profiles"][0]["timeout"] == 3.0
+
+    def test_routing_strategy_failure_enters_cooldown(self) -> None:
+        provider = _RecordingFailureProvider()
+        now = [100.0]
+        advisor = DecisionAdvisor(provider=provider, clock=lambda: now[0])
+        context = {
+            "goal": "ambiguous change",
+            "config": {
+                "advisor": {"routingStrategyCooldownSeconds": 60},
+                "provider": {"timeout": 30},
+            },
+        }
+
+        first = advisor.advise("routing_strategy", context)
+        second = advisor.advise("routing_strategy", context)
+
+        assert first.source == "rule_fallback"
+        assert second.source == "rule_fallback"
+        assert "cooldown" in (second.fallback_reason or "")
+        assert provider.calls == 1
+
 
 class TestDecisionAdvisorLLMParsing:
     """LLM response parsing edge cases."""
@@ -279,6 +341,33 @@ class TestDecisionAdvisorRoutingStrategy:
         result = advisor.advise("routing_strategy", {"goal": "hello"})
         assert result.accepted is False
         assert result.source == "rule_fallback"
+
+    def test_routing_strategy_allows_long_smoke_timeout(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {"scenario": "multi_step_task", "strategy": "plan_execute"},
+            "confidence": 0.88,
+            "rationale": "Complex task needs planning.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+        result = advisor.advise(
+            "routing_strategy",
+            {
+                "goal": "build a full-stack system",
+                "config": {
+                    "advisor": {"routingStrategyTimeoutSeconds": 150},
+                    "provider": {
+                        "mode": "openai-compatible",
+                        "timeout": 30,
+                        "profiles": [{"id": "active", "timeout": 30}],
+                    },
+                },
+            },
+        )
+
+        provider_config = provider.contexts[0]["config"]["provider"]
+        assert result.accepted is True
+        assert provider_config["timeout"] == 150
+        assert provider_config["profiles"][0]["timeout"] == 150
 
 
 class TestDecisionAdvisorContextPolicy:

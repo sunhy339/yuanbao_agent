@@ -8,7 +8,13 @@ from typing import Any
 
 from ..observability.tracer import Tracer
 from ..services.subagent_service import SubagentService
-from .types import PlanResult, Subtask
+from .types import (
+    PlanResult,
+    Subtask,
+    build_subtask_prompt,
+    child_tool_allowlist_for_agent,
+    normalize_subtask_agent_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +45,8 @@ class DAGExecutor:
         session_id: str,
         parent_task_id: str,
         max_workers: int = 4,
+        parent_goal: str | None = None,
+        child_timeout_ms: int | None = None,
         is_paused_fn: Callable[[], bool] | None = None,
         completed_ids: set[str] | None = None,
         failed_ids: set[str] | None = None,
@@ -132,7 +140,11 @@ class DAGExecutor:
                 for sid in runnable:
                     self._execute_subtask(
                         subtask_index, sid, completed, failed, results,
-                        session_id, parent_task_id, lock, tracer, on_subtask_callback,
+                        session_id, parent_task_id, lock,
+                        parent_goal=parent_goal,
+                        child_timeout_ms=child_timeout_ms,
+                        tracer=tracer,
+                        on_subtask_callback=on_subtask_callback,
                     )
             else:
                 logger.info("Level %d: executing %d subtasks in parallel", level_idx, len(runnable))
@@ -141,7 +153,11 @@ class DAGExecutor:
                         pool.submit(
                             self._execute_subtask,
                             subtask_index, sid, completed, failed, results,
-                            session_id, parent_task_id, lock, tracer, on_subtask_callback,
+                            session_id, parent_task_id, lock,
+                            parent_goal=parent_goal,
+                            child_timeout_ms=child_timeout_ms,
+                            tracer=tracer,
+                            on_subtask_callback=on_subtask_callback,
                         ): sid
                         for sid in runnable
                     }
@@ -207,6 +223,8 @@ class DAGExecutor:
         session_id: str,
         parent_task_id: str,
         lock: threading.Lock,
+        parent_goal: str | None = None,
+        child_timeout_ms: int | None = None,
         tracer: Tracer | None = None,
         on_subtask_callback: Callable[[str, str, dict[str, Any]], None] | None = None,
     ) -> None:
@@ -230,11 +248,17 @@ class DAGExecutor:
             on_subtask_callback(subtask_id, "started", {"subtaskId": subtask_id, "subtaskTitle": subtask.title})
         try:
             dispatch_result = self._subagent.dispatch({
-                "prompt": subtask.description,
+                "prompt": build_subtask_prompt(
+                    parent_goal=parent_goal,
+                    subtask=subtask,
+                    completed_context=results,
+                ),
                 "title": subtask.title,
                 "sessionId": session_id,
                 "taskId": parent_task_id,
-                "agentType": "planner",
+                "agentType": normalize_subtask_agent_type(subtask.agent_type),
+                "childToolAllowlist": child_tool_allowlist_for_agent(subtask.agent_type),
+                **({"timeoutMs": child_timeout_ms} if child_timeout_ms is not None else {}),
             })
             with lock:
                 subtask.status = "completed"

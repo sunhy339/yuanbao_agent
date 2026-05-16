@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from copy import deepcopy
@@ -21,6 +22,75 @@ from .repositories.worktree_repository import WorktreeStoreMixin
 from .session_store import SessionStoreMixin
 from .task_store import TaskStoreMixin
 from ._schema import SchemaBootstrapMixin
+
+
+class _LockedCursor:
+    def __init__(self, cursor: sqlite3.Cursor, lock: threading.RLock) -> None:
+        self._cursor = cursor
+        self._lock = lock
+
+    def fetchone(self) -> Any:
+        with self._lock:
+            return self._cursor.fetchone()
+
+    def fetchall(self) -> list[Any]:
+        with self._lock:
+            return self._cursor.fetchall()
+
+    def fetchmany(self, size: int | None = None) -> list[Any]:
+        with self._lock:
+            if size is None:
+                return self._cursor.fetchmany()
+            return self._cursor.fetchmany(size)
+
+    def __iter__(self) -> Any:
+        with self._lock:
+            rows = list(self._cursor)
+        return iter(rows)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cursor, name)
+
+
+class _LockedConnection:
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self._lock = threading.RLock()
+
+    @property
+    def row_factory(self) -> Any:
+        return self._conn.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value: Any) -> None:
+        self._conn.row_factory = value
+
+    def execute(self, *args: Any, **kwargs: Any) -> _LockedCursor:
+        with self._lock:
+            return _LockedCursor(self._conn.execute(*args, **kwargs), self._lock)
+
+    def executemany(self, *args: Any, **kwargs: Any) -> _LockedCursor:
+        with self._lock:
+            return _LockedCursor(self._conn.executemany(*args, **kwargs), self._lock)
+
+    def executescript(self, *args: Any, **kwargs: Any) -> _LockedCursor:
+        with self._lock:
+            return _LockedCursor(self._conn.executescript(*args, **kwargs), self._lock)
+
+    def commit(self) -> None:
+        with self._lock:
+            self._conn.commit()
+
+    def rollback(self) -> None:
+        with self._lock:
+            self._conn.rollback()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
 
 
 class SQLiteStore(
@@ -43,7 +113,7 @@ class SQLiteStore(
         database_file = Path(database_path)
         if database_path != ":memory:":
             database_file.expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(database_path)
+        self._conn = _LockedConnection(sqlite3.connect(database_path, check_same_thread=False))
         self._conn.row_factory = sqlite3.Row
         self._artifact_dir = (
             Path.cwd() / "runtime_artifacts"

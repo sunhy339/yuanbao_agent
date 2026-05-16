@@ -208,6 +208,42 @@ class TestCompact:
         assert "turn 9" in recent_contents
         assert "turn 8" in recent_contents
 
+    def test_compaction_does_not_orphan_recent_tool_result(self) -> None:
+        assistant_tool_call = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_keep",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        }
+        tool_result = {
+            "role": "tool",
+            "tool_call_id": "call_keep",
+            "content": '{"status":"completed"}',
+        }
+        msgs = [
+            _msg("system", "sys"),
+            *[_msg("user", _long_content(200)) for _ in range(8)],
+            assistant_tool_call,
+            tool_result,
+        ]
+        compactor = ContextCompactor(self.store, recent_turns=1)
+
+        result = compactor.compact("sess_tool", msgs, max_tokens=80)
+
+        kept = result.kept_messages
+        tool_index = next(i for i, message in enumerate(kept) if message.get("role") == "tool")
+        assistant_ids = set()
+        for message in kept[:tool_index]:
+            if message.get("role") == "assistant":
+                for item in message.get("tool_calls") or []:
+                    assistant_ids.add(item.get("id"))
+        assert "call_keep" in assistant_ids
+
     def test_compaction_record_persisted(self) -> None:
         msgs = [_msg("system", "sys")] + [
             _msg("user", _long_content(200)) for _ in range(20)

@@ -112,6 +112,7 @@ class ContextCompactor:
 
         # --- Split into segments ---
         primers, history, recents = self._split_segments(messages)
+        history, recents = self._repair_recent_tool_call_pairs(history, recents)
 
         primer_tokens = sum(estimate_tokens(m.get("content", "")) for m in primers)
         recent_tokens = sum(estimate_tokens(m.get("content", "")) for m in recents)
@@ -264,6 +265,74 @@ class ContextCompactor:
         history = body[:split_point]
         recents = body[split_point:]
         return primers, history, recents
+
+    def _repair_recent_tool_call_pairs(
+        self,
+        history: list[dict[str, Any]],
+        recents: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Keep strict tool-call request/response pairs together.
+
+        Some provider APIs reject a tool/function output unless the matching
+        assistant tool call is still present in the request history. Recency
+        splitting can otherwise leave a tail like ``tool(call-1)`` while the
+        preceding assistant message that created ``call-1`` was summarized.
+        """
+        if not history or not recents:
+            return history, recents
+
+        repaired_history = list(history)
+        repaired_recents = list(recents)
+        while True:
+            recent_call_ids = self._assistant_tool_call_ids(repaired_recents)
+            orphan_tool_ids = [
+                tool_id
+                for tool_id in (self._tool_result_id(message) for message in repaired_recents)
+                if tool_id and tool_id not in recent_call_ids
+            ]
+            if not orphan_tool_ids:
+                return repaired_history, repaired_recents
+
+            orphan_set = set(orphan_tool_ids)
+            boundary: int | None = None
+            for index in range(len(repaired_history) - 1, -1, -1):
+                if self._message_tool_call_ids(repaired_history[index]) & orphan_set:
+                    boundary = index
+                    break
+            if boundary is None:
+                return repaired_history, repaired_recents
+
+            repaired_recents = repaired_history[boundary:] + repaired_recents
+            repaired_history = repaired_history[:boundary]
+
+    @staticmethod
+    def _assistant_tool_call_ids(messages: list[dict[str, Any]]) -> set[str]:
+        ids: set[str] = set()
+        for message in messages:
+            ids.update(ContextCompactor._message_tool_call_ids(message))
+        return ids
+
+    @staticmethod
+    def _message_tool_call_ids(message: dict[str, Any]) -> set[str]:
+        if message.get("role") != "assistant":
+            return set()
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return set()
+        ids: set[str] = set()
+        for item in tool_calls:
+            if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]:
+                ids.add(item["id"])
+        return ids
+
+    @staticmethod
+    def _tool_result_id(message: dict[str, Any]) -> str | None:
+        if message.get("role") != "tool":
+            return None
+        tool_call_id = message.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            return tool_call_id
+        return None
 
     def _generate_summary(self, history: list[dict], token_budget: int) -> str | None:
         """Ask the LLM to summarise *history*, or return a heuristic summary."""

@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..provider.failure_recovery import classify_provider_failure
+
 logger = logging.getLogger(__name__)
 
 from ..context.builder import ContextBuilder
@@ -284,6 +286,56 @@ class Orchestrator(
             )
         except Exception:  # noqa: BLE001
             logger.debug("Failed to record routing proposal", exc_info=True)
+
+    def _record_failure_recovery_proposal(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        provider_turn_id: str | None,
+        failure_recovery: dict[str, Any] | None = None,
+        error: BaseException | str | None = None,
+    ) -> None:
+        try:
+            recovery = failure_recovery or classify_provider_failure(error or "").to_dict()
+            record = self._store.create_proposal({
+                "kind": "failure_recovery",
+                "sessionId": session_id,
+                "taskId": task["id"],
+                "proposal": {
+                    "strategy": self._failure_recovery_proposal_strategy(recovery),
+                    "maxRetries": 1 if recovery.get("retryable") else 0,
+                    "retryable": bool(recovery.get("retryable")),
+                    "recoverable": bool(recovery.get("recoverable")),
+                    "category": recovery.get("category"),
+                    "httpStatus": recovery.get("httpStatus"),
+                },
+                "source": {
+                    "type": "runtime_classifier",
+                    "reason": recovery.get("reason"),
+                    "userMessage": recovery.get("userMessage"),
+                },
+                "inputSummary": str(error or recovery.get("userMessage") or "")[:500],
+                "turnId": provider_turn_id,
+            })
+            self._store.validate_proposal({
+                "proposalId": record["proposal"]["id"],
+                "status": "accepted",
+                "reasons": [],
+            })
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to record failure recovery proposal", exc_info=True)
+
+    @staticmethod
+    def _failure_recovery_proposal_strategy(recovery: dict[str, Any]) -> str:
+        action = str(recovery.get("recommendedAction") or "")
+        if action.startswith("retry"):
+            return "retry"
+        if action in {"ask_user_or_change_request", "fix_provider_credentials"}:
+            return "ask_user"
+        if bool(recovery.get("recoverable")):
+            return "fallback"
+        return "abort"
 
     # ------------------------------------------------------------------
     # MCP Server management

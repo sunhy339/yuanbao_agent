@@ -487,6 +487,7 @@ class SchemaBootstrapMixin:
                 thought_summary TEXT,
                 tool_policy_decision_json TEXT,
                 role_snapshot_json TEXT,
+                failure_recovery_json TEXT,
                 created_at INTEGER NOT NULL,
                 completed_at INTEGER
             )
@@ -891,6 +892,7 @@ class SchemaBootstrapMixin:
         expected = {
             "tool_policy_decision_json": "TEXT",
             "role_snapshot_json": "TEXT",
+            "failure_recovery_json": "TEXT",
         }
         for column, definition in expected.items():
             if column not in columns:

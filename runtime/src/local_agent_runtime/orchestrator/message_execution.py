@@ -13,6 +13,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from ..policy.guard import PolicyGuard
+from ..provider.failure_recovery import classify_provider_failure
 from ..provider.adapter import ProviderAdapter
 from ..services.collaboration_service import CollaborationService
 from ..services.subagent_service import SubagentService
@@ -119,12 +120,14 @@ class MessageExecutionMixin:
             }
         except Exception as exc:  # noqa: BLE001
             logger.error("React loop failed for task=%s: %s", task["id"], exc, exc_info=True)
+            failure_recovery = classify_provider_failure(exc).to_dict()
             return {
                 "task": self._fail_task(
                     session_id=session_id,
                     task=task,
                     summary=str(exc),
                     error_code="LOOP_EXECUTION_FAILED",
+                    structured_result={"failureRecovery": failure_recovery},
                 )
             }
 
@@ -171,12 +174,14 @@ class MessageExecutionMixin:
             }
         except Exception as exc:  # noqa: BLE001
             logger.error("Fast react loop failed for task=%s: %s", task["id"], exc, exc_info=True)
+            failure_recovery = classify_provider_failure(exc).to_dict()
             return {
                 "task": self._fail_task(
                     session_id=session_id,
                     task=task,
                     summary=str(exc),
                     error_code="FAST_LOOP_FAILED",
+                    structured_result={"failureRecovery": failure_recovery},
                 )
             }
 

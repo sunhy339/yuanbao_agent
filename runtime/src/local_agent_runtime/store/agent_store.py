@@ -218,6 +218,7 @@ class AgentStoreMixin:
                 context_snapshot_id = ?,
                 turn_decision = ?,
                 thought_summary = ?,
+                failure_recovery_json = NULL,
                 completed_at = ?
             WHERE id = ?
             """,
@@ -233,6 +234,7 @@ class AgentStoreMixin:
         *,
         turn_id: str,
         error_summary: str,
+        failure_recovery: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = self.now()
         self._conn.execute(
@@ -240,10 +242,11 @@ class AgentStoreMixin:
             UPDATE provider_turns
             SET status = 'failed',
                 error_summary = ?,
+                failure_recovery_json = ?,
                 completed_at = ?
             WHERE id = ?
             """,
-            (error_summary[:500], now, turn_id),
+            (error_summary[:500], json.dumps(failure_recovery, ensure_ascii=False, sort_keys=True) if failure_recovery else None, now, turn_id),
         )
         self._conn.commit()
         row = self._conn.execute("SELECT * FROM provider_turns WHERE id = ?", (turn_id,)).fetchone()
@@ -260,8 +263,11 @@ class AgentStoreMixin:
         serialized = dict(row)
         tool_policy_decision = self._json_object(row.get("tool_policy_decision_json"))
         role_snapshot = self._json_object(row.get("role_snapshot_json"))
+        failure_recovery = self._json_object(row.get("failure_recovery_json"))
         serialized["toolPolicyDecision"] = tool_policy_decision
         serialized["roleSnapshot"] = role_snapshot
+        if failure_recovery:
+            serialized["failureRecovery"] = failure_recovery
         serialized["toolPolicyExplanation"] = self._tool_policy_explanation(
             tool_policy_decision,
             role_snapshot,

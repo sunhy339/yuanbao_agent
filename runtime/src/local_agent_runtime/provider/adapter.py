@@ -16,6 +16,7 @@ from .openai_compatible import (
     OpenAIResponsesClient,
     ProviderAdapterError,
 )
+from .failure_recovery import classify_provider_failure
 
 
 OPENAI_COMPATIBLE_MODES = {
@@ -100,21 +101,8 @@ def _sanitize_schema(schema: dict[str, Any]) -> dict[str, Any]:
             cleaned[key] = value
     return cleaned
 
-RETRYABLE_PROVIDER_ERROR_MARKERS = (
-    "timed out",
-    "timeout",
-    "temporarily",
-    "temporary",
-    "connection",
-    "reset",
-    "unreachable",
-    "dns",
-)
-
-
 def _is_retryable_provider_error(exc: ProviderAdapterError) -> bool:
-    message = str(exc).lower()
-    return any(marker in message for marker in RETRYABLE_PROVIDER_ERROR_MARKERS)
+    return classify_provider_failure(exc).retryable
 
 
 class ProviderAdapter:
@@ -261,26 +249,11 @@ class ProviderAdapter:
             yield {"type": "final", "response": response}
             return
 
-        last_error: ProviderAdapterError | None = None
-        for attempt in range(PROVIDER_RETRY_ATTEMPTS):
-            emitted = False
-            try:
-                for event in self._openai_client.stream(
-                    settings=settings,
-                    messages=messages,
-                    tools=tools,
-                ):
-                    emitted = True
-                    yield event
-                return
-            except ProviderAdapterError as exc:
-                last_error = exc
-                if emitted or attempt + 1 >= PROVIDER_RETRY_ATTEMPTS or not _is_retryable_provider_error(exc):
-                    raise
-
-        if last_error is not None:
-            raise last_error
-        raise ProviderAdapterError("Provider streaming request failed before a response was returned.")
+        yield from self._openai_client.stream(
+            settings=settings,
+            messages=messages,
+            tools=tools,
+        )
 
     def stream(self, prompt: str, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
         messages = context.get("messages")

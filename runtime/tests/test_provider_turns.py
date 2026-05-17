@@ -216,6 +216,29 @@ class TestProviderTurnCRUD:
         assert failed["completed_at"] > 0
         store.close()
 
+    def test_failed_turn_serializes_failure_recovery(self, tmp_path: Any) -> None:
+        store = _make_store(tmp_path)
+        _seed_session_and_task(store)
+        turn = store.create_provider_turn(task_id="task_1", session_id="sess_1", turn_index=0)
+        store.fail_provider_turn(
+            turn_id=turn["id"],
+            error_summary="Provider request timed out after 30s",
+            failure_recovery={
+                "category": "timeout",
+                "retryable": True,
+                "recoverable": True,
+                "recommendedAction": "retry",
+                "reason": "provider request timed out",
+                "userMessage": "Provider request timed out after 30s",
+            },
+        )
+
+        failed = store.list_provider_turns("task_1")[0]
+
+        assert failed["failureRecovery"]["category"] == "timeout"
+        assert failed["failureRecovery"]["retryable"] is True
+        store.close()
+
     def test_list_turns_ordered_by_turn_index(self, tmp_path: Any) -> None:
         store = _make_store(tmp_path)
         _seed_session_and_task(store)
@@ -535,27 +558,46 @@ class TestE2EMultiStepToolCalls:
     """Simulate a multi-step agent task with tool calls — like building a small app."""
 
     def test_multi_step_produces_turns_and_snapshots_for_each_step(self, tmp_path: Any) -> None:
-        """Simulate: Step 1 read files, Step 2 write files, Step 3 final answer."""
+        """Simulate: Step 1 read files, Step 2 write files, Step 3 verify, Step 4 final answer."""
         tool_calls_step1 = [
             {"id": "call_read", "name": "read_file", "arguments": {"path": "index.html"}},
         ]
         tool_calls_step2 = [
             {"id": "call_write", "name": "write_file", "arguments": {"path": "index.html", "content": "<h1>Hello</h1>"}},
         ]
+        tool_calls_step3 = [
+            {"id": "call_verify", "name": "run_command", "arguments": {"command": "dir index.html", "cwd": "."}},
+        ]
 
         def read_file(params: dict[str, Any]) -> dict[str, Any]:
             return {"content": "<html></html>"}
 
         def write_file(params: dict[str, Any]) -> dict[str, Any]:
-            return {"success": True, "path": params["path"]}
+            return {
+                "status": "written",
+                "ok": True,
+                "path": params["path"],
+                "bytesWritten": len(params["content"].encode("utf-8")),
+                "created": True,
+            }
+
+        def run_command(params: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "status": "completed",
+                "ok": True,
+                "command": params["command"],
+                "exitCode": 0,
+                "stdout": "index.html\n",
+            }
 
         provider = ScriptedProvider([
             {"message": "Let me read the existing file first.", "tool_calls": tool_calls_step1},
             {"message": "Now I'll write the updated file.", "tool_calls": tool_calls_step2},
+            {"message": "I'll verify the generated file exists.", "tool_calls": tool_calls_step3},
             {"final": "I've built the app. Created index.html with Hello World."},
         ])
 
-        runtime = _make_runtime(tmp_path, provider, {"read_file": read_file, "write_file": write_file})
+        runtime = _make_runtime(tmp_path, provider, {"read_file": read_file, "write_file": write_file, "run_command": run_command})
         session = _open_session(runtime, tmp_path)
         task = _call_result(
             _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "build a hello world app"}),
@@ -564,9 +606,9 @@ class TestE2EMultiStepToolCalls:
 
         assert task["status"] == "completed"
 
-        # 3 turns — one per provider call
+        # 4 turns — one per provider call
         turns = runtime.store.list_provider_turns(task["id"])
-        assert len(turns) == 3
+        assert len(turns) == 4
 
         # All completed, with correct turn indices
         for i, turn in enumerate(turns):
@@ -577,12 +619,14 @@ class TestE2EMultiStepToolCalls:
         assert turns[0]["response_tool_call_count"] == 1
         # Second turn had 1 tool call (write_file)
         assert turns[1]["response_tool_call_count"] == 1
-        # Third turn had 0 tool calls (final answer)
-        assert turns[2]["response_tool_call_count"] == 0
+        # Third turn had 1 tool call (run_command)
+        assert turns[2]["response_tool_call_count"] == 1
+        # Fourth turn had 0 tool calls (final answer)
+        assert turns[3]["response_tool_call_count"] == 0
 
-        # 3 snapshots — one per step
+        # 4 snapshots — one per step
         snapshots = runtime.store.list_context_snapshots(task["id"])
-        assert len(snapshots) == 3
+        assert len(snapshots) == 4
 
         # Each snapshot linked to its corresponding turn
         for snap, turn in zip(snapshots, turns):
@@ -680,6 +724,10 @@ class TestE2EProviderFailure:
         assert len(turns) == 1
         assert turns[0]["status"] == "failed"
         assert "API rate limit exceeded" in turns[0]["error_summary"]
+        assert turns[0]["failureRecovery"]["category"] == "rate_limit"
+        assert turns[0]["failureRecovery"]["retryable"] is True
+        assert task["structuredResult"]["failureRecovery"]["category"] == "rate_limit"
+        assert any(event["type"] == "agent.decision.failure_recovery" for event in runtime.events)
 
         # The ContextSnapshot should still exist (created before provider call)
         snapshots = runtime.store.list_context_snapshots(task["id"])

@@ -9,6 +9,7 @@ import json
 import logging
 from typing import Any
 
+from ..provider.failure_recovery import classify_provider_failure
 from ..react.types import ProviderTurnResult, TurnDecision
 
 logger = logging.getLogger(__name__)
@@ -104,20 +105,9 @@ class ProviderTurnMixin:
                 break
             except Exception as stream_exc:
                 from ..provider.openai_compatible import ProviderAdapterError
-                error_text = str(stream_exc).lower()
-                is_retryable = isinstance(stream_exc, ProviderAdapterError) and "timed out" in error_text
-                if is_retryable and _stream_attempt < _max_stream_retries:
-                    logger.warning(
-                        "Provider stream timed out (attempt %d/%d), retrying: %s",
-                        _stream_attempt + 1, _max_stream_retries + 1, stream_exc,
-                    )
-                    self._append_provider_trace(
-                        task=task,
-                        event_type="provider.stream.retry",
-                        payload={"attempt": _stream_attempt + 1, "error": str(stream_exc)},
-                    )
-                    continue
-                if hasattr(self._provider, "generate"):
+                recovery = classify_provider_failure(stream_exc)
+                is_retryable = isinstance(stream_exc, ProviderAdapterError) and recovery.retryable
+                if hasattr(self._provider, "generate") and self._can_fallback_to_non_stream(recovery):
                     logger.warning(
                         "Provider stream failed for task=%s; falling back to non-streaming request: %s",
                         task["id"],
@@ -126,7 +116,11 @@ class ProviderTurnMixin:
                     self._append_provider_trace(
                         task=task,
                         event_type="provider.stream.fallback_non_stream",
-                        payload={"attempt": _stream_attempt + 1, "error": str(stream_exc)[:500]},
+                        payload={
+                            "attempt": _stream_attempt + 1,
+                            "error": str(stream_exc)[:500],
+                            "failureRecovery": recovery.to_dict(),
+                        },
                     )
                     return self._request_non_streaming_provider_response(
                         session_id=session_id,
@@ -136,6 +130,21 @@ class ProviderTurnMixin:
                         budget=budget,
                         fallback_from_stream=True,
                     )
+                if is_retryable and _stream_attempt < _max_stream_retries:
+                    logger.warning(
+                        "Provider stream timed out (attempt %d/%d), retrying: %s",
+                        _stream_attempt + 1, _max_stream_retries + 1, stream_exc,
+                    )
+                    self._append_provider_trace(
+                        task=task,
+                        event_type="provider.stream.retry",
+                        payload={
+                            "attempt": _stream_attempt + 1,
+                            "error": str(stream_exc),
+                            "failureRecovery": recovery.to_dict(),
+                        },
+                    )
+                    continue
                 raise
 
         if final_response is None:
@@ -204,6 +213,10 @@ class ProviderTurnMixin:
         mode = str(provider_config.get("mode") or provider_config.get("providerMode") or "").strip().lower()
         return mode in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}
 
+    @staticmethod
+    def _can_fallback_to_non_stream(recovery: Any) -> bool:
+        return getattr(recovery, "category", None) in {"timeout", "network", "server_error", "invalid_response"}
+
     def _request_non_streaming_provider_response(
         self,
         *,
@@ -225,8 +238,18 @@ class ProviderTurnMixin:
         )
         try:
             response = self._provider.generate(goal, provider_context)
-        except Exception:
+        except Exception as exc:
             self._tracer.end_span(span.span_id, status="error")
+            self._append_provider_trace(
+                task=task,
+                event_type="provider.failure.classified",
+                payload={
+                    **self._provider_trace_payload(provider_context),
+                    "fallbackFromStream": fallback_from_stream,
+                    "error": str(exc)[:500],
+                    "failureRecovery": classify_provider_failure(exc).to_dict(),
+                },
+            )
             raise
         self._tracer.end_span(span.span_id, status="ok")
         self._consume_budget_from_provider_response(

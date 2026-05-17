@@ -633,7 +633,21 @@ def validate_retry_budget(payload: dict[str, Any]) -> list[str]:
             reasons.append("retryDelayMs must be a non-negative number")
     strategy = payload.get("strategy")
     if strategy is not None:
-        valid_strategies = {"retry", "fallback", "skip", "abort", "ask_user"}
+        valid_strategies = {
+            "retry",
+            "retry_with_backoff",
+            "fallback",
+            "compact_or_split_context",
+            "fix_provider_credentials",
+            "fix_provider_request",
+            "fix_provider_api_format",
+            "inspect_provider_response",
+            "surface_error",
+            "skip",
+            "abort",
+            "ask_user",
+            "ask_user_or_change_request",
+        }
         if strategy not in valid_strategies:
             reasons.append(
                 f"Invalid recovery strategy: {strategy!r}. "

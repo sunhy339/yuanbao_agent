@@ -11,6 +11,7 @@ from copy import deepcopy
 from typing import Any
 
 from ..context.token_budget import estimate_tokens
+from ..provider.failure_recovery import classify_provider_failure
 from ..policy.tool_policy_resolver import ToolPolicyDecision, ToolPolicyResolver
 from ..services.worker_budget import WorkerBudget, WorkerBudgetExceededError
 
@@ -287,7 +288,30 @@ class ReactRunnerMixin:
                     budget=budget,
                 )
             except Exception as exc:
-                self._store.fail_provider_turn(turn_id=provider_turn["id"], error_summary=str(exc)[:500])
+                failure_recovery = classify_provider_failure(exc).to_dict()
+                self._store.fail_provider_turn(
+                    turn_id=provider_turn["id"],
+                    error_summary=str(exc)[:500],
+                    failure_recovery=failure_recovery,
+                )
+                self._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="agent.decision.failure_recovery",
+                    payload={
+                        "providerTurnId": provider_turn["id"],
+                        "failureRecovery": failure_recovery,
+                        "error": str(exc)[:500],
+                    },
+                    visibility="panel",
+                )
+                self._record_failure_recovery_proposal(
+                    session_id=session_id,
+                    task=task,
+                    provider_turn_id=provider_turn["id"],
+                    failure_recovery=failure_recovery,
+                    error=str(exc),
+                )
                 raise
             parsed = self._parse_provider_response(
                 response,

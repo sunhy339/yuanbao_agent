@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from local_agent_runtime.provider.adapter import ProviderAdapter, ProviderAdapterError
+from local_agent_runtime.provider.failure_recovery import classify_provider_failure
 from local_agent_runtime.orchestrator.provider_turn import ProviderTurnMixin
 
 
@@ -893,6 +894,29 @@ def test_provider_error_is_readable() -> None:
 
     with pytest.raises(ProviderAdapterError, match="Provider request failed with HTTP 429: rate limit exceeded"):
         adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+
+@pytest.mark.parametrize(
+    ("message", "category", "retryable", "action"),
+    [
+        ("Provider request timed out after 30s", "timeout", True, "retry"),
+        ("Provider request failed with HTTP 429: rate limit exceeded", "rate_limit", True, "retry_with_backoff"),
+        ("Provider request failed with HTTP 413: context length exceeded", "context_too_large", False, "compact_or_split_context"),
+        ("Environment variable MISSING_KEY is not set.", "auth", False, "fix_provider_credentials"),
+        ("Provider refused due to content filter", "refusal", False, "ask_user_or_change_request"),
+    ],
+)
+def test_provider_failure_recovery_classifier(
+    message: str,
+    category: str,
+    retryable: bool,
+    action: str,
+) -> None:
+    recovery = classify_provider_failure(ProviderAdapterError(message))
+
+    assert recovery.category == category
+    assert recovery.retryable is retryable
+    assert recovery.recommended_action == action
 
 
 class _TraceProbeProvider:

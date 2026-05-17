@@ -362,7 +362,7 @@ class ExtensionStoreMixin:
             self._conn.execute("ALTER TABLE proposal_records ADD COLUMN model_id TEXT")
             self._conn.execute("ALTER TABLE proposal_records ADD COLUMN turn_id TEXT")
 
-        # provider_turns: add turn_decision and thought_summary columns
+        # provider_turns: add turn_decision, thought_summary and recovery columns
         pt_columns = {
             row["name"]
             for row in self._conn.execute("PRAGMA table_info(provider_turns)").fetchall()
@@ -370,6 +370,8 @@ class ExtensionStoreMixin:
         if pt_columns and "turn_decision" not in pt_columns:
             self._conn.execute("ALTER TABLE provider_turns ADD COLUMN turn_decision TEXT")
             self._conn.execute("ALTER TABLE provider_turns ADD COLUMN thought_summary TEXT")
+        if pt_columns and "failure_recovery_json" not in pt_columns:
+            self._conn.execute("ALTER TABLE provider_turns ADD COLUMN failure_recovery_json TEXT")
 
         self._conn.commit()
 

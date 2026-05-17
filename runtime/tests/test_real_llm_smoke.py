@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from local_agent_runtime.main import build_server
 from local_agent_runtime.provider.adapter import ProviderAdapter
+from local_agent_runtime.router.types import ExecutionStrategy, RoutingDecision, Scenario
 
 
 def _env(name: str, default: str = "") -> str:
@@ -72,3 +75,100 @@ def test_real_llm_provider_smoke_is_env_gated() -> None:
     assert metadata["apiFormat"] in {"openai-chat", "openai-responses", "anthropic-messages"}
     assert isinstance(metadata["requestPath"], str)
     assert metadata["requestPath"].startswith("/")
+
+
+def _force_simple_react_route(server: Any) -> None:
+    router = server._orchestrator._meta_router  # noqa: SLF001
+
+    def route(_goal: str, _context: dict[str, Any] | None = None) -> RoutingDecision:
+        return RoutingDecision(
+            scenario=Scenario.SIMPLE_QUERY,
+            strategy=ExecutionStrategy.REACT_STANDARD,
+            confidence=0.99,
+            max_steps=1,
+            enable_reflection=False,
+            enable_planning=False,
+            reasoning="forced-real-provider-hook-smoke",
+        )
+
+    router.route = route
+
+
+@pytest.mark.real_llm
+def test_real_llm_provider_turn_runs_hook_side_effects(tmp_path: Path) -> None:
+    if _env("YUANBAO_REAL_LLM_SMOKE") != "1":
+        pytest.skip("Set YUANBAO_REAL_LLM_SMOKE=1 to contact a live provider.")
+
+    config = _real_smoke_config()["provider"]
+    config["streamingEnabled"] = False
+    server = build_server(database_path=str(tmp_path / "real_llm_hooks.sqlite3"))
+    store = server._store  # noqa: SLF001
+    _force_simple_react_route(server)
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = server._handlers["workspace.open"]({"path": str(workspace_root)})["workspace"]  # noqa: SLF001
+    session = server._handlers["session.create"]({  # noqa: SLF001
+        "workspaceId": workspace["id"],
+        "title": "Real provider hook smoke",
+    })["session"]
+    store.update_config({
+        "config": {
+            "provider": config,
+            "permissions": {
+                "preset": "balanced",
+                "capabilities": {
+                    "hooksExecute": {"mode": "allow", "scope": "*"},
+                    "memoryWrite": {"mode": "allow", "scope": "*"},
+                },
+            },
+            "policy": {"maxTaskSteps": 1},
+        }
+    })
+    server._handlers["hook.create"]({  # noqa: SLF001
+        "workspaceId": workspace["id"],
+        "name": "remember provider turn",
+        "event": "before_provider_turn",
+        "action": {
+            "type": "memory_write",
+            "kind": "session",
+            "content": "Real provider hook smoke turn {providerTurnId} for task {taskId}",
+        },
+        "authority": {"requiresApproval": False},
+        "onFailure": "warn",
+    })
+    server._handlers["hook.create"]({  # noqa: SLF001
+        "workspaceId": workspace["id"],
+        "name": "suggest provider verification",
+        "event": "after_provider_turn",
+        "action": {
+            "type": "auto_verification_suggestion",
+            "checks": ["provider_turn_completed", "hook_side_effect_recorded"],
+            "suggestion": "Verify provider turn and hook side effects were recorded.",
+        },
+        "authority": {"requiresApproval": False},
+        "onFailure": "warn",
+    })
+
+    response = server._handlers["message.send"]({  # noqa: SLF001
+        "sessionId": session["id"],
+        "content": "Reply with exactly: hook smoke connected",
+        "newTask": True,
+    })
+    task = response["task"]
+    turns = server._handlers["provider_turn.list"]({"taskId": task["id"]})["turns"]  # noqa: SLF001
+    hook_executions = server._handlers["hook.listExecutions"]({  # noqa: SLF001
+        "taskId": task["id"],
+        "limit": 20,
+    })["hookExecutions"]
+    memories = server._handlers["memory.list"]({  # noqa: SLF001
+        "workspaceId": workspace["id"],
+        "sessionId": session["id"],
+        "limit": 20,
+    })["entries"]
+
+    assert task["status"] == "completed"
+    assert turns
+    assert any(turn.get("status") == "completed" for turn in turns)
+    assert {item["event"] for item in hook_executions} >= {"before_provider_turn", "after_provider_turn"}
+    assert all(item["status"] == "completed" for item in hook_executions)
+    assert any("Real provider hook smoke turn" in item["content"] for item in memories)

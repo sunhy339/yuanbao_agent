@@ -25,7 +25,12 @@ class HookStoreMixin:
         "before_patch_apply", "after_patch_apply",
         "on_memory_write", "on_context_snapshot",
     })
-    VALID_HOOK_ACTIONS = frozenset({"audit_note", "notification", "run_command"})
+    VALID_HOOK_ACTIONS = frozenset({
+        # P1: Core actions
+        "audit_note", "notification", "run_command",
+        # P2: Advanced integration actions
+        "webhook", "memory_write", "auto_verification_suggestion", "external_sync",
+    })
     VALID_HOOK_FAILURE_MODES = frozenset({"warn", "block", "retry", "ignore", "ask_user"})
 
     def _serialize_hook(self, row: dict[str, Any]) -> dict[str, Any]:

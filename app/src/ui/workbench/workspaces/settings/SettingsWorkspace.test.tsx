@@ -616,6 +616,22 @@ describe("SettingsWorkspace", () => {
         }),
       }),
     );
+
+    await user.type(screen.getByLabelText("Name"), "Webhook sync");
+    await user.selectOptions(screen.getByLabelText("Action"), "webhook");
+    await user.type(screen.getByLabelText("Webhook URL"), "https://example.com/hook");
+    await user.click(screen.getByRole("button", { name: "Create hook" }));
+    expect(onAddHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: "workspace-1",
+        name: "Webhook sync",
+        action: expect.objectContaining({
+          type: "webhook",
+          url: "https://example.com/hook",
+          method: "POST",
+        }),
+      }),
+    );
   });
 
   it("shows project memory state and clears it from settings", async () => {

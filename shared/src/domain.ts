@@ -173,7 +173,14 @@ export type RuntimeHookEvent =
   | "on_memory_write"
   | "on_context_snapshot";
 
-export type RuntimeHookActionType = "audit_note" | "notification" | "run_command";
+export type RuntimeHookActionType =
+  | "audit_note"
+  | "notification"
+  | "run_command"
+  | "webhook"
+  | "memory_write"
+  | "auto_verification_suggestion"
+  | "external_sync";
 export type RuntimeHookFailureMode = "warn" | "block" | "retry" | "ignore" | "ask_user";
 
 export interface RuntimeHookAction {

@@ -40,9 +40,10 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
     provider = ProviderAdapter()
     decision_advisor = DecisionAdvisor(provider=provider)
     meta_router = MetaRouter(provider=provider, decision_advisor=decision_advisor)
+    memory_store = MemoryStore(store)
     memory_manager = MemoryManager(
-        store=MemoryStore(store),
-        retriever=MemoryRetriever(MemoryStore(store)),
+        store=memory_store,
+        retriever=MemoryRetriever(memory_store),
     )
     from .context.scratchpad import Scratchpad
     scratchpad = Scratchpad(store)
@@ -56,7 +57,7 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
             permission_engine=permission_engine,
         )
     )
-    hook_service = HookService(store, event_bus, permission_engine=permission_engine)
+    hook_service = HookService(store, event_bus, permission_engine=permission_engine, memory_store=memory_store)
     # WorktreeService requires a git repo root; only create when env var is set.
     worktree_service = None
     repo_root = os.environ.get("LOCAL_AGENT_REPO_ROOT")

@@ -779,3 +779,318 @@ class TestWorktreeHookPoints:
         # Verify trace event was emitted
         hook_events = [e for e in captured_events if e.type == "hook.executed"]
         assert len(hook_events) == 1
+
+
+# ---------------------------------------------------------------------------
+# P2 Action Types
+# ---------------------------------------------------------------------------
+
+class TestHookP2Actions:
+    """P2 hook action types: webhook, memory_write, auto_verification, external_sync."""
+
+    def test_create_hook_with_webhook_action_type(self, tmp_path: Any) -> None:
+        store, _ = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        hook = _create_hook(store, ws_id, action={
+            "type": "webhook",
+            "url": "https://example.com/hook",
+            "method": "POST",
+        })
+        assert hook["action"]["type"] == "webhook"
+        assert hook["action"]["url"] == "https://example.com/hook"
+
+    def test_create_hook_with_memory_write_action_type(self, tmp_path: Any) -> None:
+        store, _ = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        hook = _create_hook(store, ws_id, action={
+            "type": "memory_write",
+            "kind": "session",
+            "content": "Task {taskId} completed",
+        })
+        assert hook["action"]["type"] == "memory_write"
+
+    def test_create_hook_with_auto_verification_action_type(self, tmp_path: Any) -> None:
+        store, _ = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        hook = _create_hook(store, ws_id, action={
+            "type": "auto_verification_suggestion",
+            "checks": ["tests_pass", "lint_clean"],
+        })
+        assert hook["action"]["type"] == "auto_verification_suggestion"
+
+    def test_create_hook_with_external_sync_action_type(self, tmp_path: Any) -> None:
+        store, _ = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        hook = _create_hook(store, ws_id, action={
+            "type": "external_sync",
+            "target": "github",
+            "operation": "create_issue",
+        })
+        assert hook["action"]["type"] == "external_sync"
+
+    def test_auto_verification_suggestion_executes(self, tmp_path: Any) -> None:
+        store, event_bus = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        _create_hook(store, ws_id, action={
+            "type": "auto_verification_suggestion",
+            "checks": ["tests_pass", "lint_clean"],
+            "suggestion": "Run tests after changes",
+        })
+
+        captured_events: list[RuntimeEvent] = []
+        event_bus.subscribe(captured_events.append)
+
+        service = HookService(store, event_bus)
+        results = service.invoke_hooks("after_task_complete", {
+            "workspaceId": ws_id,
+            "taskId": "task_av1",
+        })
+
+        assert len(results) == 1
+        assert results[0]["status"] == "completed"
+        assert results[0]["policyOutcome"] == "allowed"
+
+        # Verify the specialized event type
+        verification_events = [e for e in captured_events if e.type == "hook.auto_verification_suggestion"]
+        assert len(verification_events) == 1
+        assert verification_events[0].payload["checks"] == ["tests_pass", "lint_clean"]
+        assert verification_events[0].payload["suggestion"] == "Run tests after changes"
+
+    def test_external_sync_executes_deferred(self, tmp_path: Any) -> None:
+        store, event_bus = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        _create_hook(store, ws_id, action={
+            "type": "external_sync",
+            "target": "github",
+            "operation": "create_issue",
+            "mapping": {"title": "taskGoal"},
+        })
+
+        captured_events: list[RuntimeEvent] = []
+        event_bus.subscribe(captured_events.append)
+
+        service = HookService(store, event_bus)
+        results = service.invoke_hooks("after_task_complete", {
+            "workspaceId": ws_id,
+            "taskId": "task_es1",
+        })
+
+        assert len(results) == 1
+        assert results[0]["status"] == "deferred"
+        assert results[0]["policyOutcome"] == "allowed"
+
+        sync_events = [e for e in captured_events if e.type == "hook.external_sync"]
+        assert len(sync_events) == 1
+        assert sync_events[0].payload["target"] == "github"
+        assert sync_events[0].payload["operation"] == "create_issue"
+
+    def test_external_sync_blocked_by_permission(self, tmp_path: Any) -> None:
+        store, event_bus = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        _create_hook(store, ws_id, action={
+            "type": "external_sync",
+            "target": "github",
+            "operation": "delete_repo",
+        })
+        engine = PermissionEngine(config={
+            "permissions": {
+                "preset": "balanced",
+                "capabilities": {"hooksExecute": {"mode": "blocked", "scope": "*"}},
+            },
+        })
+
+        service = HookService(store, event_bus, permission_engine=engine)
+        results = service.invoke_hooks("after_task_complete", {
+            "workspaceId": ws_id,
+            "taskId": "task_es2",
+        })
+
+        assert len(results) == 1
+        assert results[0]["policyOutcome"] == "denied"
+        assert results[0]["status"] == "failed"
+
+    def test_memory_write_executes_with_store(self, tmp_path: Any) -> None:
+        from local_agent_runtime.memory.store import MemoryStore
+
+        store, event_bus = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        memory_store = MemoryStore(store)
+
+        _create_hook(store, ws_id, action={
+            "type": "memory_write",
+            "kind": "session",
+            "content": "Task {taskId} finished with status {taskStatus}",
+            "keywords": ["task", "completion"],
+        })
+
+        captured_events: list[RuntimeEvent] = []
+        event_bus.subscribe(captured_events.append)
+
+        service = HookService(store, event_bus, memory_store=memory_store)
+        results = service.invoke_hooks("after_task_complete", {
+            "workspaceId": ws_id,
+            "taskId": "task_mw1",
+            "taskStatus": "completed",
+        })
+
+        assert len(results) == 1
+        assert results[0]["status"] == "completed"
+        assert results[0]["policyOutcome"] == "allowed"
+
+        # Verify memory was written
+        mem_events = [e for e in captured_events if e.type == "hook.memory_write"]
+        assert len(mem_events) == 1
+        assert mem_events[0].payload["memoryKind"] == "session"
+
+        # Verify the content was template-substituted — outputSummary shows the entry id
+        assert "mem_" in results[0]["outputSummary"]
+
+    def test_memory_write_skipped_without_store(self, tmp_path: Any) -> None:
+        store, event_bus = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        _create_hook(store, ws_id, action={
+            "type": "memory_write",
+            "kind": "session",
+            "content": "Should be skipped",
+        })
+
+        service = HookService(store, event_bus, memory_store=None)
+        results = service.invoke_hooks("after_task_complete", {
+            "workspaceId": ws_id,
+            "taskId": "task_mw2",
+        })
+
+        assert len(results) == 1
+        assert results[0]["status"] == "skipped"
+        assert results[0]["policyOutcome"] == "skipped"
+        assert "not available" in results[0]["outputSummary"]
+
+    def test_memory_write_invalid_kind(self, tmp_path: Any) -> None:
+        from local_agent_runtime.memory.store import MemoryStore
+
+        store, event_bus = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        memory_store = MemoryStore(store)
+
+        _create_hook(store, ws_id, action={
+            "type": "memory_write",
+            "kind": "invalid_kind",
+            "content": "Bad kind",
+        })
+
+        service = HookService(store, event_bus, memory_store=memory_store)
+        results = service.invoke_hooks("after_task_complete", {
+            "workspaceId": ws_id,
+            "taskId": "task_mw3",
+        })
+
+        assert len(results) == 1
+        assert results[0]["status"] == "failed"
+        assert results[0]["policyOutcome"] == "error"
+        assert "Invalid memory kind" in results[0]["errorSummary"]
+
+    def test_webhook_executes_success(self, tmp_path: Any) -> None:
+        """Test webhook fires an HTTP request to a mock server."""
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        import threading
+
+        received: list[dict[str, Any]] = []
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length)
+                received.append(json.loads(body))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+            def log_message(self, *args: Any) -> None:
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), _Handler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.handle_request, daemon=True)
+        t.start()
+
+        store, event_bus = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        _create_hook(store, ws_id, action={
+            "type": "webhook",
+            "url": f"http://127.0.0.1:{port}/hook",
+            "method": "POST",
+        })
+
+        service = HookService(store, event_bus)
+        results = service.invoke_hooks("after_task_complete", {
+            "workspaceId": ws_id,
+            "taskId": "task_wh1",
+        })
+
+        assert len(results) == 1
+        assert results[0]["status"] == "completed"
+        assert results[0]["policyOutcome"] == "allowed"
+        assert "HTTP 200" in results[0]["outputSummary"]
+
+        # Verify the webhook received the payload
+        t.join(timeout=5)
+        assert len(received) == 1
+        assert received[0]["event"] == "after_task_complete"
+        assert received[0]["hookId"].startswith("hook_")
+
+    def test_webhook_failed_connection(self, tmp_path: Any) -> None:
+        store, event_bus = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        _create_hook(store, ws_id, action={
+            "type": "webhook",
+            "url": "http://127.0.0.1:1/impossible-port",
+        })
+
+        service = HookService(store, event_bus)
+        results = service.invoke_hooks("after_task_complete", {
+            "workspaceId": ws_id,
+            "taskId": "task_wh2",
+        })
+
+        assert len(results) == 1
+        assert results[0]["status"] == "failed"
+        assert results[0]["policyOutcome"] == "error"
+
+    def test_webhook_blocked_by_permission(self, tmp_path: Any) -> None:
+        store, event_bus = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        _create_hook(store, ws_id, action={
+            "type": "webhook",
+            "url": "https://example.com/webhook",
+        })
+        engine = PermissionEngine(config={
+            "permissions": {
+                "preset": "balanced",
+                "capabilities": {"hooksExecute": {"mode": "blocked", "scope": "*"}},
+            },
+        })
+
+        service = HookService(store, event_bus, permission_engine=engine)
+        results = service.invoke_hooks("after_task_complete", {
+            "workspaceId": ws_id,
+            "taskId": "task_wh3",
+        })
+
+        assert len(results) == 1
+        assert results[0]["policyOutcome"] == "denied"
+        assert results[0]["status"] == "failed"
+
+    def test_p2_action_crud_roundtrip(self, tmp_path: Any) -> None:
+        """All 4 P2 action types can be created, retrieved, and updated."""
+        store, _ = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+
+        for action_type in ("webhook", "memory_write", "auto_verification_suggestion", "external_sync"):
+            hook = _create_hook(store, ws_id, action={"type": action_type}, name=f"{action_type} hook")
+            assert hook["action"]["type"] == action_type
+
+            retrieved = store.get_hook({"hookId": hook["id"]})
+            assert retrieved["hook"]["action"]["type"] == action_type
+
+            updated = store.update_hook({"hookId": hook["id"], "name": f"Updated {action_type}"})
+            assert updated["hook"]["name"] == f"Updated {action_type}"

@@ -299,7 +299,15 @@ export const runtimeHookEvents = [
   "on_context_snapshot",
 ] satisfies RuntimeHookEvent[];
 
-export const runtimeHookActionTypes = ["audit_note", "notification", "run_command"] as const;
+export const runtimeHookActionTypes = [
+  "audit_note",
+  "notification",
+  "run_command",
+  "webhook",
+  "memory_write",
+  "auto_verification_suggestion",
+  "external_sync",
+] as const;
 
 export const runtimeHookFailureModes = ["warn", "block", "retry", "ignore", "ask_user"] satisfies RuntimeHookFailureMode[];
 

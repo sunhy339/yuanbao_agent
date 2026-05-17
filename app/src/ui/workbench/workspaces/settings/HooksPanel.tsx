@@ -23,6 +23,16 @@ interface HookDraftForm {
   actionMessage: string;
   actionCommand: string;
   actionCwd: string;
+  actionUrl: string;
+  actionMethod: string;
+  actionTarget: string;
+  actionOperation: string;
+  actionContent: string;
+  actionKind: string;
+  actionChecksJson: string;
+  actionHeadersJson: string;
+  actionPayloadJson: string;
+  actionMappingJson: string;
   conditionsJson: string;
   authorityJson: string;
   retryJson: string;
@@ -80,6 +90,16 @@ function draftFromHook(hook?: SettingsHookConfig | null): HookDraftForm {
     actionMessage: typeof action.message === "string" ? action.message : "",
     actionCommand: typeof action.command === "string" ? action.command : "",
     actionCwd: typeof action.cwd === "string" ? action.cwd : "",
+    actionUrl: typeof action.url === "string" ? action.url : "",
+    actionMethod: typeof action.method === "string" ? action.method : "POST",
+    actionTarget: typeof action.target === "string" ? action.target : "",
+    actionOperation: typeof action.operation === "string" ? action.operation : "",
+    actionContent: typeof action.content === "string" ? action.content : "",
+    actionKind: typeof action.kind === "string" ? action.kind : "session",
+    actionChecksJson: prettyJson(action.checks, "[]"),
+    actionHeadersJson: prettyJson(action.headers),
+    actionPayloadJson: prettyJson(action.extraPayload),
+    actionMappingJson: prettyJson(action.mapping),
     conditionsJson: prettyJson(hook?.conditions),
     authorityJson: prettyJson(hook?.authority),
     retryJson: prettyJson(hook?.retry, '{"maxAttempts":0}'),
@@ -102,6 +122,40 @@ function payloadFromDraft(draft: HookDraftForm, workspaceId: string): SettingsHo
     }
     if (draft.actionCwd.trim()) {
       action.cwd = draft.actionCwd.trim();
+    }
+  }
+  if (draft.actionType === "webhook") {
+    action.url = draft.actionUrl.trim();
+    action.method = draft.actionMethod.trim() || "POST";
+    const headers = parseJsonObject(draft.actionHeadersJson, "Webhook headers");
+    if (Object.keys(headers).length) {
+      action.headers = headers;
+    }
+    const payload = parseJsonObject(draft.actionPayloadJson, "Webhook payload");
+    if (Object.keys(payload).length) {
+      action.extraPayload = payload;
+    }
+  }
+  if (draft.actionType === "memory_write") {
+    action.kind = draft.actionKind.trim() || "session";
+    action.content = draft.actionContent.trim();
+  }
+  if (draft.actionType === "auto_verification_suggestion") {
+    const parsed = JSON.parse(draft.actionChecksJson.trim() || "[]") as unknown;
+    if (!Array.isArray(parsed)) {
+      throw new Error("Verification checks must be a JSON array.");
+    }
+    action.checks = parsed;
+    if (draft.actionMessage.trim()) {
+      action.suggestion = draft.actionMessage.trim();
+    }
+  }
+  if (draft.actionType === "external_sync") {
+    action.target = draft.actionTarget.trim();
+    action.operation = draft.actionOperation.trim();
+    const mapping = parseJsonObject(draft.actionMappingJson, "External sync mapping");
+    if (Object.keys(mapping).length) {
+      action.mapping = mapping;
     }
   }
 
@@ -333,6 +387,18 @@ export function HooksPanel({
         setLocalError("Run command hooks require a command.");
         return;
       }
+      if (payload.action?.type === "webhook" && !payload.action.url) {
+        setLocalError("Webhook hooks require a URL.");
+        return;
+      }
+      if (payload.action?.type === "memory_write" && !payload.action.content) {
+        setLocalError("Memory write hooks require content.");
+        return;
+      }
+      if (payload.action?.type === "external_sync" && (!payload.action.target || !payload.action.operation)) {
+        setLocalError("External sync hooks require a target and operation.");
+        return;
+      }
       if (mode === "edit" && selectedHook) {
         const { workspaceId: _workspaceId, ...patch } = payload;
         await onUpdateHook?.(selectedHook.id, patch);
@@ -502,6 +568,115 @@ export function HooksPanel({
                     value={draft.actionCwd}
                     onChange={(event) => updateDraftValue(setDraft, "actionCwd", event.currentTarget.value)}
                     placeholder="Workspace root"
+                  />
+                </label>
+              </>
+            ) : null}
+            {draft.actionType === "webhook" ? (
+              <>
+                <label className="settings-field settings-form-wide">
+                  Webhook URL
+                  <input
+                    value={draft.actionUrl}
+                    onChange={(event) => updateDraftValue(setDraft, "actionUrl", event.currentTarget.value)}
+                    placeholder="https://example.com/webhook"
+                  />
+                </label>
+                <label className="settings-field">
+                  Method
+                  <input
+                    value={draft.actionMethod}
+                    onChange={(event) => updateDraftValue(setDraft, "actionMethod", event.currentTarget.value)}
+                    placeholder="POST"
+                  />
+                </label>
+                <label className="settings-field">
+                  Headers JSON
+                  <textarea
+                    rows={4}
+                    value={draft.actionHeadersJson}
+                    onChange={(event) => updateDraftValue(setDraft, "actionHeadersJson", event.currentTarget.value)}
+                  />
+                </label>
+                <label className="settings-field">
+                  Extra payload JSON
+                  <textarea
+                    rows={4}
+                    value={draft.actionPayloadJson}
+                    onChange={(event) => updateDraftValue(setDraft, "actionPayloadJson", event.currentTarget.value)}
+                  />
+                </label>
+              </>
+            ) : null}
+            {draft.actionType === "memory_write" ? (
+              <>
+                <label className="settings-field">
+                  Memory kind
+                  <select
+                    value={draft.actionKind}
+                    onChange={(event) => updateDraftValue(setDraft, "actionKind", event.currentTarget.value)}
+                  >
+                    <option value="working">working</option>
+                    <option value="session">session</option>
+                    <option value="long_term">long_term</option>
+                    <option value="semantic">semantic</option>
+                  </select>
+                </label>
+                <label className="settings-field settings-form-wide">
+                  Memory content
+                  <textarea
+                    rows={3}
+                    value={draft.actionContent}
+                    onChange={(event) => updateDraftValue(setDraft, "actionContent", event.currentTarget.value)}
+                    placeholder="Task {taskId} finished with status {taskStatus}"
+                  />
+                </label>
+              </>
+            ) : null}
+            {draft.actionType === "auto_verification_suggestion" ? (
+              <>
+                <label className="settings-field settings-form-wide">
+                  Suggestion
+                  <input
+                    value={draft.actionMessage}
+                    onChange={(event) => updateDraftValue(setDraft, "actionMessage", event.currentTarget.value)}
+                    placeholder="Run tests after changes"
+                  />
+                </label>
+                <label className="settings-field settings-form-wide">
+                  Checks JSON
+                  <textarea
+                    rows={3}
+                    value={draft.actionChecksJson}
+                    onChange={(event) => updateDraftValue(setDraft, "actionChecksJson", event.currentTarget.value)}
+                  />
+                </label>
+              </>
+            ) : null}
+            {draft.actionType === "external_sync" ? (
+              <>
+                <label className="settings-field">
+                  Target
+                  <input
+                    value={draft.actionTarget}
+                    onChange={(event) => updateDraftValue(setDraft, "actionTarget", event.currentTarget.value)}
+                    placeholder="github"
+                  />
+                </label>
+                <label className="settings-field">
+                  Operation
+                  <input
+                    value={draft.actionOperation}
+                    onChange={(event) => updateDraftValue(setDraft, "actionOperation", event.currentTarget.value)}
+                    placeholder="create_issue"
+                  />
+                </label>
+                <label className="settings-field settings-form-wide">
+                  Mapping JSON
+                  <textarea
+                    rows={4}
+                    value={draft.actionMappingJson}
+                    onChange={(event) => updateDraftValue(setDraft, "actionMappingJson", event.currentTarget.value)}
                   />
                 </label>
               </>

@@ -40,6 +40,8 @@ REQUIRED_FIELDS_BY_KIND: dict[str, list[str]] = {
     "event_presentation": ["grouping"],
     "synthesis_strategy": ["structure"],
     "todo_maintenance": ["updates"],
+    "completion_decision": ["is_complete"],
+    "product_surface_decision": ["surface_type"],
 }
 
 
@@ -302,11 +304,53 @@ def validate_proposal(kind: str, payload: dict[str, Any]) -> list[str]:
     if kind == "todo_maintenance":
         reasons.extend(validate_roadmap_edit(payload))
 
+    # Completion decision validator
+    if kind == "completion_decision":
+        reasons.extend(validate_completion_decision(payload))
+
+    # Product surface advisor validator
+    if kind == "product_surface_decision":
+        reasons.extend(validate_product_surface_decision(payload))
+
     # Skill policy validator
     if kind == "skill_policy":
         reasons.extend(validate_skill_availability(payload))
         reasons.extend(validate_skill_root_allowlist(payload))
 
+    return reasons
+
+
+def validate_completion_decision(payload: dict[str, Any]) -> list[str]:
+    """Validate completion advisor proposals without making them authoritative."""
+    reasons: list[str] = []
+    if "is_complete" in payload and not isinstance(payload.get("is_complete"), bool):
+        reasons.append("is_complete must be a boolean")
+    for field in ("remaining_risks", "blocking_issues", "recommended_verification"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, list):
+            reasons.append(f"{field} must be a list when provided")
+    return reasons
+
+
+def validate_product_surface_decision(payload: dict[str, Any]) -> list[str]:
+    """Validate semantic product-surface advice while keeping it advisory."""
+    reasons: list[str] = []
+    surface_type = payload.get("surface_type")
+    if "surface_type" in payload and (not isinstance(surface_type, str) or not surface_type.strip()):
+        reasons.append("surface_type must be a non-empty string")
+    for field in ("recommended_verification", "probe_intents", "blocking_if_missing"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, list):
+            reasons.append(f"{field} must be a list when provided")
+    for field in (
+        "needs_runtime_probe",
+        "needs_browser_probe",
+        "needs_api_probe",
+        "needs_state_probe",
+    ):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, bool):
+            reasons.append(f"{field} must be a boolean when provided")
     return reasons
 
 

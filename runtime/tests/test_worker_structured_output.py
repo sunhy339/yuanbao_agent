@@ -18,7 +18,7 @@ from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.registry import ToolRegistry
 
 
-def _make_runtime(tmp_path: Any) -> SimpleNamespace:
+def _make_runtime(tmp_path: Any, decision_advisor: Any | None = None) -> SimpleNamespace:
     event_bus = EventBus()
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     tool_registry = ToolRegistry()
@@ -30,6 +30,7 @@ def _make_runtime(tmp_path: Any) -> SimpleNamespace:
     orchestrator = Orchestrator(
         store=store, event_bus=event_bus,
         tool_registry=tool_registry, provider=DummyProvider(),
+        decision_advisor=decision_advisor,
     )
     return SimpleNamespace(orchestrator=orchestrator, store=store, event_bus=event_bus)
 
@@ -1403,7 +1404,7 @@ class TestCompletionHardGate:
         assert "no matching backend route found" in api["issues"]
         assert result["structuredResult"]["completionGate"]["status"] == "needs_acceptance_review"
 
-    def test_frontend_api_reference_with_matching_backend_route_completes(self, tmp_path: Any) -> None:
+    def test_frontend_api_reference_with_matching_backend_route_adds_non_blocking_advisory(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         project = tmp_path / "project"
@@ -1463,6 +1464,212 @@ class TestCompletionHardGate:
         assert api["status"] == "supported"
         assert api["source"] == "api_contract_reachability"
         assert api["backendRoute"]["sourcePath"] == "server.py"
+        advisory = evidence["productAdvisories"][0]
+        assert advisory["kind"] == "frontend_backend_api_flow"
+        assert advisory["severity"] == "suggestion"
+        assert "server/browser/API smoke" in advisory["recommendedVerification"]
+        assert not any(
+            item.get("source") == "product_surface_scan"
+            for item in evidence["acceptance"]
+        )
+
+    def test_frontend_api_reference_with_runtime_signal_records_advisory_signal(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "index.html").write_text(
+            '<!doctype html><script src="app.js"></script><main>Feedback</main>\n',
+            encoding="utf-8",
+        )
+        (project / "app.js").write_text(
+            "fetch('/api/feedback', { method: 'POST', body: JSON.stringify({ note: 'ok' }) });\n",
+            encoding="utf-8",
+        )
+        (project / "server.py").write_text(
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n\n"
+            "@app.post('/api/feedback')\n"
+            "def create_feedback():\n"
+            "    return {'ok': True}\n",
+            encoding="utf-8",
+        )
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="product gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Create a feedback frontend and backend API",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "index.html", "summary": "generated frontend"},
+                {"path": "app.js", "summary": "generated API call"},
+                {"path": "server.py", "summary": "generated API route"},
+            ],
+            verification=[
+                {"command": "node --check app.js", "status": "passed", "summary": "syntax ok"},
+                {
+                    "command": "pytest -q tests/test_feedback_api.py",
+                    "status": "passed",
+                    "summary": "FastAPI TestClient POST /api/feedback round trip persisted feedback",
+                },
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Generated feedback frontend and backend API.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]
+        advisory = evidence["productAdvisories"][0]
+        assert advisory["kind"] == "frontend_backend_api_flow"
+        assert advisory["severity"] == "info"
+        assert advisory["signals"][0]["source"] == "verification"
+
+    def test_completion_advisor_gets_product_advisories_and_can_request_review(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, Any]]] = []
+
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                self.calls.append((kind, input_context))
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The changed files form a frontend/backend feedback flow.",
+                        fallback_reason=None,
+                        proposal_id="surface_review_1",
+                        confidence=0.82,
+                        payload={
+                            "surface_type": "frontend_backend_api_flow",
+                            "needs_runtime_probe": True,
+                            "needs_api_probe": True,
+                            "needs_state_probe": True,
+                            "recommended_verification": [
+                                "Run an API smoke that submits feedback and verifies state.",
+                            ],
+                            "probe_intents": [
+                                {"kind": "api", "target": "POST /api/feedback"},
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="The task asked for an end-to-end feedback flow but no runtime flow proof is present.",
+                    fallback_reason=None,
+                    proposal_id="advisor_review_1",
+                    confidence=0.88,
+                    payload={
+                        "is_complete": False,
+                        "surface_type": "frontend_backend_api_flow",
+                        "blocking_issues": ["Missing end-to-end API/browser or state verification for the requested flow."],
+                        "recommended_verification": ["Run an API smoke that submits feedback and verifies state."],
+                    },
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "index.html").write_text(
+            '<!doctype html><script src="app.js"></script><main>Feedback</main>\n',
+            encoding="utf-8",
+        )
+        (project / "app.js").write_text(
+            "fetch('/api/feedback', { method: 'POST', body: JSON.stringify({ note: 'ok' }) });\n",
+            encoding="utf-8",
+        )
+        (project / "server.py").write_text(
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n\n"
+            "@app.post('/api/feedback')\n"
+            "def create_feedback():\n"
+            "    return {'ok': True}\n",
+            encoding="utf-8",
+        )
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="product advisor")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Create an end-to-end feedback frontend and backend API flow",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "index.html", "summary": "generated frontend"},
+                {"path": "app.js", "summary": "generated API call"},
+                {"path": "server.py", "summary": "generated API route"},
+            ],
+            verification=[
+                {"command": "node --check app.js", "status": "passed", "summary": "syntax ok"},
+                {"command": "pytest -q", "status": "passed", "summary": "1 passed"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Generated feedback frontend and backend API.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        assert [call[0] for call in advisor.calls] == [
+            "product_surface_decision",
+            "completion_decision",
+        ]
+        surface_context = advisor.calls[0][1]
+        assert surface_context["objective_signals"]["objective_product_advisories"][0]["kind"] == "frontend_backend_api_flow"
+        advisor_context = advisor.calls[1][1]
+        assert any(
+            item.get("source") == "llm_product_surface_advisor"
+            for item in advisor_context["product_advisories"]
+        )
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert evidence["productSurfaceAdvisor"]["payload"]["surface_type"] == "frontend_backend_api_flow"
+        surface_proposals = store.list_proposals({
+            "taskId": task["id"],
+            "kind": "product_surface_decision",
+        })["proposals"]
+        assert len(surface_proposals) == 1
+        assert evidence["productSurfaceAdvisor"]["proposalRecordId"] == surface_proposals[0]["id"]
+        assert surface_proposals[0]["proposal"]["needs_api_probe"] is True
+        llm_advisory = [
+            item for item in evidence["productAdvisories"]
+            if item.get("source") == "llm_product_surface_advisor"
+        ][0]
+        assert llm_advisory["surfaceType"] == "frontend_backend_api_flow"
+        assert llm_advisory["probeRequests"]["needs_api_probe"] is True
+        assert evidence["completionAdvisor"]["payload"]["is_complete"] is False
+        proposal_records = store.list_proposals({
+            "taskId": task["id"],
+            "kind": "completion_decision",
+        })["proposals"]
+        assert len(proposal_records) == 1
+        proposal = proposal_records[0]
+        assert evidence["completionAdvisor"]["proposalRecordId"] == proposal["id"]
+        assert proposal["status"] == "accepted"
+        assert proposal["proposal"]["is_complete"] is False
+        assert proposal["proposal"]["surface_type"] == "frontend_backend_api_flow"
+        assert proposal["source"]["type"] == "llm"
+        assert proposal["source"]["advisorProposalId"] == "advisor_review_1"
+        assert result["structuredResult"]["completionGate"]["status"] == "advisor_needs_review"
 
     def test_static_frontend_script_syntax_failure_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)

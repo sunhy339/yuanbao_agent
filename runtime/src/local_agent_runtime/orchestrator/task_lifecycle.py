@@ -101,8 +101,29 @@ class TaskLifecycleMixin:
         self._validate_task_transition(task["status"], "completed", task["id"], silent=True)
         if task["status"] in {"completed", "failed", "cancelled"}:
             return {**task, "resultSummary": final_summary}
+        # --- Product surface advisory ---
+        self._apply_product_surface_advisor(
+            session_id=session_id,
+            task=task,
+            summary=final_summary,
+            context=context or {},
+            completion_evidence=completion_evidence,
+        )
         # --- Completion decision advisory ---
-        completion_advice = self._consult_completion_advisor(task, final_summary, context or {})
+        completion_advice = self._consult_completion_advisor(
+            task,
+            final_summary,
+            context or {},
+            completion_evidence=completion_evidence,
+        )
+        if completion_advice is not None:
+            self._record_completion_advisor_proposal(
+                session_id=session_id,
+                task=task,
+                summary=final_summary,
+                completion_advice=completion_advice,
+            )
+            completion_evidence["completionAdvisor"] = completion_advice
         # Build structured result from task fields
         structured_result = {
             "summary": final_summary,
@@ -193,6 +214,8 @@ class TaskLifecycleMixin:
         if completion_advice is not None:
             completion_payload["advisorOutcome"] = completion_advice["source"]
             completion_payload["advisorAccepted"] = completion_advice["accepted"]
+            if completion_advice.get("proposalRecordId"):
+                completion_payload["advisorProposalId"] = completion_advice["proposalRecordId"]
             if completion_advice.get("rationale"):
                 completion_payload["advisorRationale"] = completion_advice["rationale"]
             if completion_advice.get("fallback_reason"):
@@ -276,6 +299,11 @@ class TaskLifecycleMixin:
             if reviews_disabled and verification_match_gate.get("action") == "review":
                 return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
             return verification_match_gate
+        advisor_gate = self._completion_advisor_gate(completion_evidence)
+        if advisor_gate is not None:
+            if reviews_disabled and advisor_gate.get("action") == "review":
+                return {"action": "complete", "reason": "Completion advisor review skipped because approvalMode disables approvals."}
+            return advisor_gate
         if self._completion_needs_verification_review(completion_evidence):
             if reviews_disabled:
                 return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
@@ -302,6 +330,35 @@ class TaskLifecycleMixin:
                 "Write-oriented task produced only a natural-language summary. "
                 "Verification or user review is required before marking it completed."
             ),
+        }
+
+    def _completion_advisor_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
+        advice = completion_evidence.get("completionAdvisor")
+        if not isinstance(advice, dict) or advice.get("accepted") is not True:
+            return None
+        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
+        if payload.get("is_complete") is not False:
+            return None
+        confidence = advice.get("confidence")
+        if not isinstance(confidence, (int, float)) or confidence < 0.75:
+            return None
+        blocking = [
+            str(item).strip()
+            for item in (payload.get("blocking_issues") or payload.get("remaining_risks") or [])
+            if str(item).strip()
+        ]
+        reason = (
+            "Completion advisor judged this task likely incomplete"
+            f" (confidence {confidence:.2f})."
+        )
+        if blocking:
+            reason = f"{reason} Blocking issue(s): {'; '.join(blocking[:3])}"
+        return {
+            "action": "review",
+            "decision": "advisor_needs_review",
+            "gateStatus": "advisor_needs_review",
+            "risk": "LLM completion advisor judged task incomplete",
+            "reason": reason,
         }
 
     def _completion_reviews_disabled(self, context: dict[str, Any]) -> bool:
@@ -906,11 +963,270 @@ class TaskLifecycleMixin:
             self._drain_session_queue(session_id)
         return runtime_task
 
+    def _apply_product_surface_advisor(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        summary: str,
+        context: dict[str, Any],
+        completion_evidence: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        advice = self._consult_product_surface_advisor(
+            task=task,
+            summary=summary,
+            context=context,
+            completion_evidence=completion_evidence,
+        )
+        if advice is None:
+            return None
+        self._record_product_surface_advisor_proposal(
+            session_id=session_id,
+            task=task,
+            summary=summary,
+            product_surface_advice=advice,
+        )
+        completion_evidence["productSurfaceAdvisor"] = advice
+        advisory = self._product_surface_advisory_from_advice(advice)
+        if advisory is not None:
+            completion_evidence.setdefault("productAdvisories", []).append(advisory)
+        return advice
+
+    def _consult_product_surface_advisor(
+        self,
+        *,
+        task: dict[str, Any],
+        summary: str,
+        context: dict[str, Any],
+        completion_evidence: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        advisor = getattr(self, "_decision_advisor", None)
+        if advisor is None:
+            return None
+        if self._should_skip_product_surface_advisor(task, context, completion_evidence):
+            return None
+        try:
+            input_context: dict[str, Any] = {
+                "goal": task.get("goal", ""),
+                "summary": summary[:2000],
+                "acceptance_criteria": task.get("acceptanceCriteria") or [],
+                "changed_files": [
+                    {
+                        "path": f.get("path", ""),
+                        "summary": f.get("summary") or f.get("description") or "",
+                    }
+                    for f in (task.get("changedFiles") or [])
+                    if isinstance(f, dict)
+                ][:20],
+                "objective_signals": self._product_surface_objective_signals(completion_evidence),
+            }
+            config = context.get("config") if isinstance(context, dict) else None
+            if isinstance(config, dict):
+                input_context["config"] = config
+            result = advisor.advise("product_surface_decision", input_context)
+            return {
+                "accepted": result.accepted,
+                "source": result.source,
+                "rationale": result.rationale,
+                "fallback_reason": result.fallback_reason,
+                "proposal_id": result.proposal_id,
+                "model_id": getattr(result, "model_id", None),
+                "validation_reasons": list(getattr(result, "validation_reasons", []) or []),
+                "confidence": result.confidence,
+                "payload": result.payload,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Product surface advisor call failed for task %s: %s", task.get("id"), exc)
+            return None
+
+    def _should_skip_product_surface_advisor(
+        self,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        completion_evidence: dict[str, Any],
+    ) -> bool:
+        if context.get("_skip_product_surface_advisor") is True:
+            return True
+        if self._should_skip_completion_advisor(task, context):
+            return True
+        advisor_config = self._advisor_config(context)
+        if advisor_config.get("enableProductSurfaceAdvisor") is False:
+            return True
+        if context.get("_child_worker") is True or task.get("role", "root") != "root":
+            return not bool(advisor_config.get("enableChildProductSurfaceAdvisor"))
+        if not self._is_write_or_verification_task(task=task, context=context):
+            return True
+        return not bool(
+            completion_evidence.get("changedFiles")
+            or completion_evidence.get("commands")
+            or completion_evidence.get("verification")
+            or completion_evidence.get("testsRun")
+            or completion_evidence.get("productAdvisories")
+            or completion_evidence.get("acceptance")
+        )
+
+    def _product_surface_objective_signals(self, completion_evidence: dict[str, Any]) -> dict[str, Any]:
+        acceptance = [
+            {
+                "criterion": item.get("criterion"),
+                "status": item.get("status"),
+                "source": item.get("source"),
+                "apiMethod": item.get("apiMethod"),
+                "apiPath": item.get("apiPath"),
+                "issues": item.get("issues") or [],
+            }
+            for item in (completion_evidence.get("acceptance") or [])[:30]
+            if isinstance(item, dict)
+        ]
+        verification = [
+            {
+                "command": item.get("command") or item.get("name"),
+                "status": item.get("status"),
+                "summary": item.get("summary"),
+            }
+            for item in (completion_evidence.get("verification") or [])[:20]
+            if isinstance(item, dict)
+        ]
+        return {
+            "evidence_level": completion_evidence.get("evidenceLevel"),
+            "counts": completion_evidence.get("counts") or {},
+            "acceptance": acceptance,
+            "objective_product_advisories": completion_evidence.get("productAdvisories") or [],
+            "verification": verification,
+            "tests_run": completion_evidence.get("testsRun") or [],
+        }
+
+    def _record_product_surface_advisor_proposal(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        summary: str,
+        product_surface_advice: dict[str, Any],
+    ) -> str | None:
+        try:
+            payload = product_surface_advice.get("payload")
+            proposal_payload = payload if isinstance(payload, dict) else {}
+            source = {
+                "type": product_surface_advice.get("source") or "unknown",
+                "confidence": product_surface_advice.get("confidence"),
+                "rationale": product_surface_advice.get("rationale") or "",
+                "advisorProposalId": product_surface_advice.get("proposal_id"),
+            }
+            if product_surface_advice.get("fallback_reason"):
+                source["fallbackReason"] = product_surface_advice["fallback_reason"]
+            if product_surface_advice.get("validation_reasons"):
+                source["validationReasons"] = product_surface_advice["validation_reasons"]
+            if product_surface_advice.get("model_id"):
+                source["model_id"] = product_surface_advice["model_id"]
+            goal = str(task.get("goal") or "")
+            input_summary = f"goal: {goal}\nsummary: {summary}"[:500]
+            record = self._store.create_proposal({
+                "kind": "product_surface_decision",
+                "sessionId": session_id,
+                "taskId": task["id"],
+                "proposal": proposal_payload,
+                "source": source,
+                "inputSummary": input_summary,
+                "modelId": product_surface_advice.get("model_id"),
+            })
+            proposal_record_id = record["proposal"]["id"]
+            if product_surface_advice.get("accepted") is True:
+                self._store.validate_proposal({
+                    "proposalId": proposal_record_id,
+                    "status": "accepted",
+                    "reasons": [],
+                })
+                outcome = "accepted"
+            else:
+                reasons = [
+                    str(item).strip()
+                    for item in (product_surface_advice.get("validation_reasons") or [])
+                    if str(item).strip()
+                ]
+                fallback = str(product_surface_advice.get("fallback_reason") or "").strip()
+                if not reasons and fallback:
+                    reasons.append(fallback)
+                self._store.validate_proposal({
+                    "proposalId": proposal_record_id,
+                    "status": "rejected",
+                    "reasons": reasons or ["product surface advisor rejected"],
+                })
+                outcome = "rejected"
+            product_surface_advice["proposalRecordId"] = proposal_record_id
+            payload_dict = proposal_payload if isinstance(proposal_payload, dict) else {}
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="agent.decision.product_surface",
+                payload={
+                    "proposalId": proposal_record_id,
+                    "outcome": outcome,
+                    "surfaceType": payload_dict.get("surface_type"),
+                    "source": product_surface_advice.get("source"),
+                    "confidence": product_surface_advice.get("confidence"),
+                    "rationale": product_surface_advice.get("rationale"),
+                },
+            )
+            return proposal_record_id
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to record product surface advisor proposal", exc_info=True)
+            return None
+
+    def _product_surface_advisory_from_advice(self, advice: dict[str, Any]) -> dict[str, Any] | None:
+        if advice.get("accepted") is not True:
+            return None
+        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
+        surface_type = str(payload.get("surface_type") or "").strip()
+        if not surface_type:
+            return None
+        recommended = self._completion_string_list(payload.get("recommended_verification"))
+        blocking = self._completion_string_list(payload.get("blocking_if_missing"))
+        probe_intents = payload.get("probe_intents") if isinstance(payload.get("probe_intents"), list) else []
+        probe_flags = {
+            key: bool(payload.get(key))
+            for key in (
+                "needs_runtime_probe",
+                "needs_browser_probe",
+                "needs_api_probe",
+                "needs_state_probe",
+            )
+            if isinstance(payload.get(key), bool)
+        }
+        summary = str(advice.get("rationale") or "").strip()
+        if not summary:
+            summary = f"LLM classified the task artifact surface as {surface_type}."
+        return {
+            "kind": "llm_product_surface",
+            "surfaceType": surface_type,
+            "severity": "suggestion" if recommended or blocking or any(probe_flags.values()) else "info",
+            "source": "llm_product_surface_advisor",
+            "summary": summary[:500],
+            "recommendedVerification": recommended,
+            "blockingIfMissing": blocking,
+            "probeIntents": probe_intents[:10],
+            "probeRequests": probe_flags,
+            "confidence": advice.get("confidence"),
+            "proposalRecordId": advice.get("proposalRecordId"),
+        }
+
+    @staticmethod
+    def _completion_string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [
+            str(item).strip()
+            for item in value
+            if str(item).strip()
+        ]
+
     def _consult_completion_advisor(
         self,
         task: dict[str, Any],
         summary: str,
         context: dict[str, Any] | None = None,
+        *,
+        completion_evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Ask DecisionAdvisor whether the task is truly complete.
 
@@ -924,17 +1240,19 @@ class TaskLifecycleMixin:
         if self._should_skip_completion_advisor(task, context or {}):
             return None
         try:
+            evidence = completion_evidence or self._build_completion_evidence(
+                task=task,
+                summary=summary,
+                validation=None,
+                tool_results=[],
+                context=context or {},
+            )
             input_context: dict[str, Any] = {
                 "goal": task.get("goal", ""),
                 "summary": summary[:2000],
                 "acceptance_criteria": task.get("acceptanceCriteria") or [],
-                "completion_evidence": self._build_completion_evidence(
-                    task=task,
-                    summary=summary,
-                    validation=None,
-                    tool_results=[],
-                    context=context or {},
-                ),
+                "completion_evidence": evidence,
+                "product_advisories": evidence.get("productAdvisories") or [],
                 "changed_files": [
                     f.get("path", "") for f in (task.get("changedFiles") or [])
                     if isinstance(f, dict)
@@ -950,15 +1268,80 @@ class TaskLifecycleMixin:
                 "rationale": result.rationale,
                 "fallback_reason": result.fallback_reason,
                 "proposal_id": result.proposal_id,
+                "model_id": getattr(result, "model_id", None),
+                "validation_reasons": list(getattr(result, "validation_reasons", []) or []),
+                "confidence": result.confidence,
+                "payload": result.payload,
             }
         except Exception as exc:  # noqa: BLE001
             logger.warning("Completion advisor call failed for task %s: %s", task.get("id"), exc)
             return None
 
+    def _record_completion_advisor_proposal(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        summary: str,
+        completion_advice: dict[str, Any],
+    ) -> str | None:
+        try:
+            payload = completion_advice.get("payload")
+            proposal_payload = payload if isinstance(payload, dict) else {}
+            source = {
+                "type": completion_advice.get("source") or "unknown",
+                "confidence": completion_advice.get("confidence"),
+                "rationale": completion_advice.get("rationale") or "",
+                "advisorProposalId": completion_advice.get("proposal_id"),
+            }
+            if completion_advice.get("fallback_reason"):
+                source["fallbackReason"] = completion_advice["fallback_reason"]
+            if completion_advice.get("validation_reasons"):
+                source["validationReasons"] = completion_advice["validation_reasons"]
+            if completion_advice.get("model_id"):
+                source["model_id"] = completion_advice["model_id"]
+            goal = str(task.get("goal") or "")
+            input_summary = f"goal: {goal}\nsummary: {summary}"[:500]
+            record = self._store.create_proposal({
+                "kind": "completion_decision",
+                "sessionId": session_id,
+                "taskId": task["id"],
+                "proposal": proposal_payload,
+                "source": source,
+                "inputSummary": input_summary,
+                "modelId": completion_advice.get("model_id"),
+            })
+            proposal_record_id = record["proposal"]["id"]
+            if completion_advice.get("accepted") is True:
+                self._store.validate_proposal({
+                    "proposalId": proposal_record_id,
+                    "status": "accepted",
+                    "reasons": [],
+                })
+            else:
+                reasons = [
+                    str(item).strip()
+                    for item in (completion_advice.get("validation_reasons") or [])
+                    if str(item).strip()
+                ]
+                fallback = str(completion_advice.get("fallback_reason") or "").strip()
+                if not reasons and fallback:
+                    reasons.append(fallback)
+                self._store.validate_proposal({
+                    "proposalId": proposal_record_id,
+                    "status": "rejected",
+                    "reasons": reasons or ["completion advisor rejected"],
+                })
+            completion_advice["proposalRecordId"] = proposal_record_id
+            return proposal_record_id
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to record completion advisor proposal", exc_info=True)
+            return None
+
     def _should_skip_completion_advisor(self, task: dict[str, Any], context: dict[str, Any]) -> bool:
         if context.get("_skip_completion_advisor") is True:
             return True
-        if context.get("_child_worker") is True or task.get("role") != "root":
+        if context.get("_child_worker") is True or task.get("role", "root") != "root":
             return not bool(self._advisor_config(context).get("enableChildCompletionAdvisor"))
         return False
 
@@ -1071,6 +1454,14 @@ class TaskLifecycleMixin:
             status = "unverified"
             evidence_level = "summary_only"
 
+        product_advisories = self._completion_product_advisories(
+            task=task,
+            context=context or {},
+            verification=verification,
+            tests_run=tests_run,
+            commands=commands,
+        )
+
         acceptance = self._completion_acceptance_evidence(
             criteria=criteria,
             evidence_level=evidence_level,
@@ -1102,6 +1493,7 @@ class TaskLifecycleMixin:
             "patches": patches,
             "toolResults": tool_evidence,
             "unresolvedToolFailures": failed_tool_results,
+            "productAdvisories": product_advisories,
             "validation": {
                 "checks": validation_checks,
                 "summary": (validation or {}).get("summary"),
@@ -1542,6 +1934,150 @@ class TaskLifecycleMixin:
                 "issues": issues,
             })
         return records
+
+    def _completion_product_advisories(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        verification: list[dict[str, Any]],
+        tests_run: list[dict[str, Any]],
+        commands: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        workspace_root = str(context.get("workspace_root") or context.get("workspaceRoot") or "").strip()
+        if not workspace_root:
+            return []
+        root = Path(workspace_root)
+        if not root.exists() or not root.is_dir():
+            return []
+        references = self._completion_frontend_api_references(root=root, task=task)
+        if not references:
+            return []
+        backend_routes = self._completion_backend_api_routes(root=root, task=task)
+        matched_references = [
+            reference for reference in references
+            if self._completion_match_backend_api_route(reference, backend_routes) is not None
+        ]
+        if not matched_references:
+            return []
+        signals = self._completion_product_advisory_signals(
+            verification=verification,
+            tests_run=tests_run,
+            commands=commands,
+        )
+        return [{
+            "kind": "frontend_backend_api_flow",
+            "severity": "info" if signals else "suggestion",
+            "source": "product_surface_scan",
+            "summary": (
+                "Frontend API calls have matching backend routes and runtime smoke/state verification evidence was found."
+                if signals
+                else "Frontend API calls have matching backend routes; ask the completion advisor whether API/browser/state smoke is necessary for this task."
+            ),
+            "recommendedVerification": [] if signals else [
+                "server/browser/API smoke",
+                "state or persistence verification when the task changes stored data",
+            ],
+            "apiReferences": [
+                {
+                    "method": str(reference.get("method") or "GET").upper(),
+                    "path": str(reference.get("path") or ""),
+                    "sourcePath": str(reference.get("sourcePath") or ""),
+                }
+                for reference in matched_references[:10]
+            ],
+            "signals": signals[:10],
+        }]
+
+    def _completion_product_advisory_signals(
+        self,
+        *,
+        verification: list[dict[str, Any]],
+        tests_run: list[dict[str, Any]],
+        commands: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        signals: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for source_name, items in (
+            ("verification", verification),
+            ("testsRun", tests_run),
+            ("commands", commands),
+        ):
+            for item in items:
+                if not isinstance(item, dict) or not self._completion_item_passed(item):
+                    continue
+                text = self._completion_runtime_signal_text(item)
+                if not self._completion_text_mentions_product_runtime_signal(text):
+                    continue
+                command = str(item.get("command") or item.get("name") or item.get("summary") or "").strip()
+                key = (source_name, command.casefold())
+                if key in seen:
+                    continue
+                seen.add(key)
+                signals.append({
+                    "source": source_name,
+                    "command": command[:300] if command else None,
+                    "summary": str(item.get("summary") or "").strip()[:300] or None,
+                })
+        return [
+            {key: value for key, value in signal.items() if value not in ("", None)}
+            for signal in signals
+        ]
+
+    @staticmethod
+    def _completion_item_passed(item: dict[str, Any]) -> bool:
+        status = str(item.get("status") or "").strip().casefold()
+        exit_code = item.get("exitCode")
+        return status in {"passed", "success", "completed", "ok"} and exit_code in (0, "0", None)
+
+    @staticmethod
+    def _completion_runtime_signal_text(item: dict[str, Any]) -> str:
+        return " ".join(
+            str(item.get(key) or "")
+            for key in ("command", "name", "summary", "suite")
+        ).casefold()
+
+    def _completion_text_mentions_product_runtime_signal(self, text: str) -> bool:
+        normalized = text.casefold()
+        if not normalized.strip():
+            return False
+        strong_tokens = (
+            "playwright",
+            "cypress",
+            "selenium",
+            "browser smoke",
+            "server smoke",
+            "api smoke",
+            "e2e",
+            "end-to-end",
+            "testclient",
+            "supertest",
+            "httpx",
+            "requests",
+            "curl ",
+            "invoke-webrequest",
+            "invoke-restmethod",
+            "fetch(",
+            "/api/",
+        )
+        persistence_tokens = (
+            "persist",
+            "persistence",
+            "storage",
+            "database",
+            "sqlite",
+            "postgres",
+            "mysql",
+            "redis",
+            "state verification",
+            "round trip",
+            "round-trip",
+        )
+        if any(token in normalized for token in strong_tokens):
+            return True
+        if "api" in normalized and any(token in normalized for token in persistence_tokens):
+            return True
+        return False
 
     def _completion_frontend_api_references(
         self,

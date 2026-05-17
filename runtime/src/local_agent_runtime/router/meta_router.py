@@ -1,8 +1,9 @@
 """Meta-router: classify user goals into scenarios and pick an execution strategy.
 
-Two-phase routing:
-  1. Rule-based keyword matching (zero cost, deterministic).
-  2. Optional LLM-based classification via DecisionAdvisor when rule confidence is low.
+Two-signal routing:
+  1. Rule-based keyword matching provides a cheap candidate and fallback.
+  2. DecisionAdvisor participates in semantic routing when available, with the
+     rule candidate supplied as context for audit and guardrails.
 """
 
 from __future__ import annotations
@@ -97,20 +98,27 @@ class MetaRouter:
         """Return a routing decision for *goal*.
 
         Phase 1: rule-based match (free, instant).
-        Phase 2: if confidence < 0.8 and a provider is available, ask the LLM.
+        Phase 2: when DecisionAdvisor is available, ask the LLM with the rule
+        candidate as context; deterministic rules remain the fallback.
         Fallback: FREE_FORM → REACT_STANDARD.
         """
         rule_result = self._rule_based_route(goal, context)
         defer_rule_to_llm = self._should_defer_rule_to_llm(goal, rule_result)
-        if rule_result.confidence >= _RULE_CONFIDENCE_THRESHOLD and not defer_rule_to_llm:
+        consult_routing_advisor = self._should_consult_routing_advisor(
+            context=context,
+            rule_result=rule_result,
+            defer_rule_to_llm=defer_rule_to_llm,
+        )
+        if rule_result.confidence >= _RULE_CONFIDENCE_THRESHOLD and not consult_routing_advisor:
             return rule_result
 
+        rule_candidate = rule_result if consult_routing_advisor else None
         llm_result = self._llm_route(
             goal,
             context,
-            rule_candidate=rule_result if defer_rule_to_llm else None,
+            rule_candidate=rule_candidate,
         )
-        if llm_result is not None and defer_rule_to_llm:
+        if llm_result is not None and rule_candidate is not None:
             llm_result.metadata["rule_candidate"] = {
                 "scenario": rule_result.scenario.value,
                 "strategy": rule_result.strategy.value,
@@ -122,6 +130,40 @@ class MetaRouter:
             return llm_result
 
         return rule_result
+
+    def _should_consult_routing_advisor(
+        self,
+        *,
+        context: dict[str, Any] | None,
+        rule_result: RoutingDecision,
+        defer_rule_to_llm: bool,
+    ) -> bool:
+        if self._decision_advisor is not None:
+            if defer_rule_to_llm or rule_result.confidence < _RULE_CONFIDENCE_THRESHOLD:
+                return True
+            return self._routing_advisor_high_confidence_enabled(context)
+        if self._provider is not None:
+            return defer_rule_to_llm or rule_result.confidence < _RULE_CONFIDENCE_THRESHOLD
+        return False
+
+    def _routing_advisor_high_confidence_enabled(self, context: dict[str, Any] | None) -> bool:
+        config = (context or {}).get("config") if isinstance(context, dict) else None
+        if not isinstance(config, dict):
+            return True
+        advisor = config.get("advisor")
+        if not isinstance(advisor, dict):
+            autonomy = config.get("autonomy")
+            advisor = autonomy.get("advisor") if isinstance(autonomy, dict) else None
+        if not isinstance(advisor, dict):
+            return True
+        value = advisor.get("routingStrategyUseForHighConfidence")
+        if value is None:
+            value = advisor.get("routingStrategySemanticFirst")
+        if value is None:
+            return True
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().casefold() not in {"0", "false", "no", "off", "never"}
 
     # ------------------------------------------------------------------
     # Phase 1 – rule-based routing

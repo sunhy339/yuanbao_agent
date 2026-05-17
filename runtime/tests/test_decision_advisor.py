@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -106,10 +107,6 @@ class _MalformedProvider:
 
     def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
         return {"message": "I think the user wants to do something."}
-
-
-import json
-
 
 class TestDecisionAdvisorAdvise:
     """DecisionAdvisor.advise() core behavior."""
@@ -368,6 +365,127 @@ class TestDecisionAdvisorRoutingStrategy:
         assert result.accepted is True
         assert provider_config["timeout"] == 150
         assert provider_config["profiles"][0]["timeout"] == 150
+
+
+class TestDecisionAdvisorCompletionDecision:
+    """Completion decisions use LLM review payloads, validated by guardrails."""
+
+    def test_completion_decision_accepts_structured_review_payload(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "is_complete": True,
+                "why_complete": "Changed files and verification match the requested module update.",
+                "remaining_risks": ["No end-to-end API smoke was requested."],
+                "surface_type": "backend_module",
+                "recommended_verification": ["targeted unit test"],
+            },
+            "confidence": 0.82,
+            "rationale": "Evidence supports completion with a non-blocking risk.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "completion_decision",
+            {
+                "goal": "Update the feedback storage module",
+                "summary": "Implemented and tested storage changes.",
+                "changed_files": ["feedback_storage.py"],
+                "completion_evidence": {
+                    "evidenceLevel": "verified",
+                    "verification": [{"command": "pytest -q tests/test_feedback_storage.py", "status": "passed"}],
+                    "productAdvisories": [],
+                },
+            },
+        )
+
+        assert result.accepted is True
+        assert result.payload["is_complete"] is True
+        assert result.payload["surface_type"] == "backend_module"
+        assert result.payload["remaining_risks"] == ["No end-to-end API smoke was requested."]
+
+    def test_completion_decision_rejects_non_boolean_verdict(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {"is_complete": "maybe"},
+            "confidence": 0.7,
+            "rationale": "bad shape",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "completion_decision",
+            {
+                "goal": "finish task",
+                "summary": "done",
+                "changed_files": ["app.py"],
+            },
+        )
+
+        assert result.accepted is False
+        assert result.source == "validation_rejected"
+        assert "is_complete must be a boolean" in result.validation_reasons
+
+
+class TestDecisionAdvisorProductSurfaceDecision:
+    """Product surface decisions use LLM semantics, validated as advisory data."""
+
+    def test_product_surface_decision_accepts_probe_recommendations(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "surface_type": "frontend_backend_api_flow",
+                "needs_runtime_probe": True,
+                "needs_api_probe": True,
+                "needs_state_probe": True,
+                "recommended_verification": ["API smoke plus state assertion"],
+                "probe_intents": [{"kind": "api", "target": "POST /api/feedback"}],
+            },
+            "confidence": 0.84,
+            "rationale": "The changed UI calls a backend route that mutates feedback state.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "product_surface_decision",
+            {
+                "goal": "Build a feedback form and backend API",
+                "summary": "Created frontend and API route.",
+                "changed_files": ["index.html", "app.js", "server.py"],
+                "objective_signals": {
+                    "acceptance": [{"source": "api_contract_reachability", "status": "supported"}],
+                },
+            },
+        )
+
+        assert result.accepted is True
+        assert result.payload["surface_type"] == "frontend_backend_api_flow"
+        assert result.payload["needs_api_probe"] is True
+        assert result.payload["recommended_verification"] == ["API smoke plus state assertion"]
+
+    def test_product_surface_decision_rejects_bad_probe_shape(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "surface_type": "backend_module",
+                "needs_api_probe": "yes",
+                "recommended_verification": "pytest",
+            },
+            "confidence": 0.7,
+            "rationale": "bad shape",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "product_surface_decision",
+            {
+                "goal": "Update storage",
+                "summary": "Changed module.",
+                "changed_files": ["storage.py"],
+                "objective_signals": {"acceptance": []},
+            },
+        )
+
+        assert result.accepted is False
+        assert result.source == "validation_rejected"
+        assert "needs_api_probe must be a boolean when provided" in result.validation_reasons
+        assert "recommended_verification must be a list when provided" in result.validation_reasons
 
 
 class TestDecisionAdvisorContextPolicy:

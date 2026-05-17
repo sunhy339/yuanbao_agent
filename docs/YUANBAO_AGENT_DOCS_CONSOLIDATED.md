@@ -23,9 +23,9 @@
 | 前端配置模型 | `shared/src/config.ts`, `app/src/lib/runtimeClient.ts` | 前后端都已有 `autonomy` 与 `agentSoul` 配置结构。 |
 | 上下文构建 | `runtime/src/local_agent_runtime/context/builder.py` | 会记录 `autonomy_profile`、`agent_soul_profile`、`prompt_layers`、预算统计。 |
 | 压缩判断 | `runtime/src/local_agent_runtime/context/compactor.py` | 支持规则判断与 provider advisory；ReAct 循环内当前使用 60000 阈值。 |
-| 路由决策 | `runtime/src/local_agent_runtime/router/meta_router.py` | 规则路由为基础；配置了 DecisionAdvisor 时可让 LLM 给 routing proposal。 |
-| LLM 决策接口 | `runtime/src/local_agent_runtime/policy/decision_advisor.py` | 已注册 routing/context/decomposition/react/completion 等决策类型，但并非每个默认路径都已经完整强制接入。 |
-| Proposal 审计 | `runtime/src/local_agent_runtime/store/sqlite_store.py` | 已有 `proposal_records` 表和 create/validate/apply/list 能力。 |
+| 路由决策 | `runtime/src/local_agent_runtime/router/meta_router.py` | 规则路由提供 cheap candidate/fallback；配置了 DecisionAdvisor 时默认让 LLM 参与语义路由，高置信规则也会作为 `rule_candidate` 给 advisor，必要时可用 `routingStrategyUseForHighConfidence=false` 退回低成本规则直走。 |
+| LLM 决策接口 | `runtime/src/local_agent_runtime/policy/decision_advisor.py` | 已注册 routing/context/decomposition/react/product-surface/completion 等决策类型；主流程原则是 LLM 负责语义判断，runtime validator/PermissionEngine/硬 gate 负责安全边界和客观失败。 |
+| Proposal 审计 | `runtime/src/local_agent_runtime/store/sqlite_store.py` | 已有 `proposal_records` 表和 create/validate/apply/list 能力；routing/failure recovery/product-surface/completion advisor 等关键 LLM 或 runtime decision 会落表审计。 |
 | 工具 registry | `runtime/src/local_agent_runtime/tools/registry.py` | 当前 13 个基础工具，再加 memory/scratchpad 共 17 个内置工具。 |
 | MCP | `runtime/src/local_agent_runtime/mcp/client.py` | 支持 `stdio`、`sse`、`streamable_http`，工具名按 `mcp__server__tool` 命名。 |
 
@@ -790,10 +790,10 @@ Supervisor/Swarm 更适合多 agent 协作，但应满足：
 | Prompt layering | 已有基础 | context snapshot 中记录 prompt layers，AgentSoul 不覆盖 safety。 |
 | 结构化 memory | 已有基础 | SQLite memory 类型、scope、source、recall 能力存在。 |
 | 跨 session workspace memory | 部分接通 | memory 数据模型支持；实际召回质量还需要持续验证和调参。 |
-| LLM routing proposal | 部分接通 | MetaRouter 可走 DecisionAdvisor；默认 provider 是 mock，真实 LLM 需要配置 provider。 |
+| LLM routing proposal | 已接入主路径 | MetaRouter 先生成规则候选，再默认让 DecisionAdvisor 做语义路由；规则候选作为 advisor 上下文和 fallback，真实 LLM 需要配置 provider。 |
 | LLM 上下文压缩建议 | 部分接通 | compactor 支持 provider advisory；ReAct 当前仍有固定 60000 阈值。 |
 | LLM 拆任务/并行建议 | 规划/部分基础 | DecisionAdvisor 有 `decomposition` 类型，DAG/worker 基础存在，但默认完整闭环还需补齐。 |
-| Proposal 审计 | 已有基础 | proposal_records 已存在；需要保证所有关键默认路径都写入 proposal record。 |
+| Proposal 审计 | 持续补齐 | proposal_records 已存在；routing_strategy、failure_recovery、product_surface_decision、completion_decision 已写入并 validate，后续继续保证所有关键默认路径都写入 proposal record。 |
 | 通用 Hooks | 生命周期、P2 actions 与 Settings UI 已接通 | runtime hooks 的 CRUD、执行记录、HookService、hook RPC 已有；`before/after task`、`before/after tool`、`before/after provider turn`、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已统一触发。`run_command`、`webhook`、`memory_write`、`auto_verification_suggestion`、`external_sync` 已走 PermissionEngine/审计记录；Settings UI 管理入口已完成。剩余主要是真实 provider + hook side effect 组合 smoke。 |
 
 状态总览图：
@@ -837,7 +837,7 @@ Autonomy 默认层级：
 | 决策点 | 当前接入情况 | 应补齐的标准 |
 | --- | --- | --- |
 | intent mode | DecisionAdvisor 已定义 | 默认入口要记录 proposal 或明确 rule fallback。 |
-| routing strategy | MetaRouter 已可接 DecisionAdvisor | 确保真实 provider 配置后默认 runtime 会生成可审计 proposal。 |
+| routing strategy | MetaRouter 默认接 DecisionAdvisor | 规则候选进入 advisor 上下文；validator 通过后 LLM proposal 可覆盖规则，规则仍作为 fallback/overplanning guard。 |
 | context policy | DecisionAdvisor 已定义，ContextBuilder 有预算/层级 | 让 LLM 建议 include/drop/compact，但 hard budget 仍由 runtime 执行。 |
 | decomposition | DecisionAdvisor 已定义 | LLM 可建议是否拆任务、DAG、并行度；runtime 校验依赖、写入范围和预算。 |
 | react turn decision | DecisionAdvisor 已定义 | 每轮继续/停止/提问/审批建议应可记录，但 final authority 仍在 ReAct parser 与 runtime 状态机。 |
@@ -1549,9 +1549,10 @@ Completed or effectively closed:
 | Long-running subagent workflow hardening | Done in latest runtime commit | `ff8aa40` records broader runtime workflow coverage, command compatibility support, child worker/orphan cleanup coverage, code search tests, policy guard tests, and long-run plan documentation. |
 | Pytest temporary directory hygiene | Done | `.pytest-*/` is ignored so focused/long-run temp directories do not pollute git status. |
 | Main workflow state baseline + phase 2 execution | Done in current follow-up | Each foreground, background, and queued task now persists `routing.mainWorkflow` with intent confidence, automation level, budgets, workspace/git snapshot, and initial user takeover state. Stop/cancel, pause, and continue takeover supplements are routed through the existing task lifecycle paths; ReAct `maxTaskSteps` exhaustion now records `mainWorkflow.budget` exhaustion, emits `task.budget.exhausted`, and converges into a partial completion/review path instead of hard failing the loop. |
+| LLM-first semantic routing/advisory | Done in current follow-up | MetaRouter now treats rules as cheap candidates/fallback and defaults to DecisionAdvisor semantic routing when available, including high-confidence rule matches. Completion evidence now asks a product-surface advisor to classify artifact shape and suggest probes before the completion advisor judges done-ness. High-confidence advisor judgments can route to completion review while objective failures remain under deterministic guardrails. Routing, product-surface, and completion advisor proposals are persisted in `proposal_records` for audit/replay. |
 | Structured compaction handoff | Done in current follow-up | Context compaction now emits and persists `handoffSummary` with objective, current step, completed work, modified files, failed commands, failed tools, verification status, decisions, risks, next action, and recent context. The structured handoff is injected into the compacted system summary and exposed through `context.budget` / `autonomy.report` for recovery UI and follow-up turns. |
 | MCP + Skills main-flow acceptance | Done in current follow-up | ContextBuilder now exposes built-in tools plus live ToolRegistry/MCP schemas to provider turns. Main-flow acceptance tests route through a skill with `inherit_mcp`, call an MCP tool, compact after the tool result, verify the MCP result plus skill decision survive in `handoffSummary`, and verify failed MCP tools become structured `failedTools` with recovery next action. |
-| Product acceptance artifact gate | Done in current follow-up | Completion evidence now checks changed readable artifacts (`html/md/txt/css/js/jsx/ts/tsx/vue/svelte`) for visible mojibake/replacement-character tokens, validates local CSS/JS/image/route references from changed HTML, verifies changed HTML has visible route content, checks frontend `/api/...` calls against local backend route declarations, and runs `node --check` for reachable local scripts. Failed product-quality evidence routes write-oriented completion into `completion_review` instead of silently completing rough generated UI/docs. |
+| Product acceptance artifact gate | Done in current follow-up | Completion evidence now checks changed readable artifacts (`html/md/txt/css/js/jsx/ts/tsx/vue/svelte`) for visible mojibake/replacement-character tokens, validates local CSS/JS/image/route references from changed HTML, verifies changed HTML has visible route content, checks frontend `/api/...` calls against local backend route declarations, and runs `node --check` for reachable local scripts. Product-shape signals that require semantic judgment are recorded as objective facts, passed through the LLM product-surface advisor, appended as non-blocking `productAdvisories`, and then used by the LLM completion advisor instead of being hard-coded as automatic failure. Failed objective product-quality evidence still routes write-oriented completion into `completion_review`. |
 | Provider failure recovery baseline | Done in current follow-up | Provider failures are classified as auth, rate limit, timeout, context too large, refusal, server/network, unsupported format, request validation, invalid response, or unknown. Adapter retry is conservative; stream timeout/network/server/invalid-response failures fall back to a non-stream turn when available; recoverable non-stream failures now get one compacted-context retry, while auth/refusal remain non-retryable. Provider turns, task failures, trace events, and failure-recovery proposals preserve the structured recovery decision. |
 | Hook P2 actions + live smoke gate | Done in current follow-up | Runtime hooks now support `webhook`, `memory_write`, `auto_verification_suggestion`, and `external_sync` with PermissionEngine/audit handling; Settings UI can configure those actions. An env-gated real provider smoke verifies provider-turn hooks plus memory/verification side effects when credentials are available. |
 | Multi-agent worktree strategy validation | Done in current follow-up | Real git regression covers root/child strategy reporting, isolated child worktrees, merge verification/approval, and child merge conflict failure context. |
@@ -1563,9 +1564,9 @@ Still open / next implementation queue:
 | --- | --- | --- |
 | P0/P1 | Main workflow state machine phase 3 | Extend wrap-up/change-target takeover behavior, richer budget dimensions, and resumable handoff UI. Cockpit phase 1 is visible; phase 2 should add expanded drill-downs and recovery actions. |
 | P1 | Provider failure recovery phase 2 | Smaller-context retry is implemented for recoverable non-stream failures. Remaining work: use recovery classification for bounded task splitting and guarded provider fallback when appropriate; keep auth/refusal failures non-retryable and user-visible. |
-| P1 | Product acceptance gate phase 2 | Static route/content health and frontend-to-backend `/api/...` route contract checks are now covered for changed artifacts. Next add true server/browser smoke, persistence/API state verification, richer dynamic route discovery beyond literal API calls, and deeper README/docs quality beyond mojibake detection. |
+| P1 | Product acceptance gate phase 2 | Static route/content health and frontend-to-backend `/api/...` route contract checks are covered for changed artifacts. LLM-guided product-surface classification now runs before completion advisory and persists `product_surface_decision` proposals. Next add optional automatic server/browser/API probes when the advisor requests them, first-class persistence/API state probes, richer dynamic route discovery beyond literal API calls, and deeper README/docs quality beyond mojibake detection. |
 | P1 | Frontend runtime cockpit phase 2 | Add expandable drill-downs for acceptance/run report, provider recovery, MCP/Skills signals, memory/context handoff, automation controls, and workspace status. |
-| P1 | Completion audit refinement | Continue language/framework-specific verification matching and include reviewer/approval conclusions in the completion audit trail. |
+| P1 | Completion audit refinement | Completion advisor proposals now persist to `proposal_records`. Continue language/framework-specific verification matching and include reviewer/approval conclusions in the completion audit trail. |
 | P1 | Optional live multi-agent worktree smoke | Real git regression 已完成：root/child strategy reporting、isolated child worktrees、merge verification/approval、以及 child merge conflict failure context 均已覆盖。后续可选真实 LLM 并行多 agent smoke，不再是 worktree 策略闭环 blocker。 |
 | P1/P2 | Hook provider templates | Baseline P2 actions are implemented for webhook, memory write, automatic verification suggestion, and external-system sync. Remaining work is GitHub/Jira/Slack 等 provider-specific templates and release-gate live run with real credentials. |
 | P1/P2 | Real provider + hook side effect smoke | Env-gated pytest 已固化：`runtime/tests/test_real_llm_smoke.py::test_real_llm_provider_turn_runs_hook_side_effects` 默认跳过，设置 `YUANBAO_REAL_LLM_SMOKE=1` 和 provider key 后会验证真实 provider turn、before/after provider hooks、memory_write 与 auto_verification_suggestion side effects。当前 shell 未设置真实 key，尚未执行 live run。 |
@@ -1575,7 +1576,7 @@ Still open / next implementation queue:
 
 Current priority order:
 
-1. Product acceptance phase 2: browser/server smoke, persistence/API state verification, and richer dynamic route discovery beyond literal API calls.
+1. Product acceptance phase 2 follow-up: optional browser/server/API smoke execution when the product-surface/completion advisors request it, first-class persistence/API state verification, and richer dynamic route discovery beyond literal API calls.
 2. Provider recovery phase 2: bounded task splitting and guarded provider fallback after the new smaller-context retry path.
 3. Frontend runtime cockpit phase 2 plus main workflow phase 3: wrap-up/change-target takeover, resumable handoff UI, and richer budget convergence policies.
 4. MCP + Skills fallback polish: missing skill/unavailable server/partial response strategy selection remains, while failed MCP/tool handoff is now structured.

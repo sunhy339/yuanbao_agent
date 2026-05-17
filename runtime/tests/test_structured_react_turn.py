@@ -322,10 +322,18 @@ class TestDecisionAdvisorRegistry:
         assert "is_complete" in entry.allowed_proposal_schema
         assert entry.trace_event == "agent.decision.completion"
 
-    def test_both_kinds_in_list(self) -> None:
+    def test_product_surface_decision_registered(self) -> None:
+        entry = get_decision_kind("product_surface_decision")
+        assert entry is not None
+        assert "objective_signals" in entry.required_input_fields
+        assert "surface_type" in entry.allowed_proposal_schema
+        assert entry.trace_event == "agent.decision.product_surface"
+
+    def test_runtime_decision_kinds_in_list(self) -> None:
         kinds = list_decision_kinds()
         assert "react_turn_decision" in kinds
         assert "completion_decision" in kinds
+        assert "product_surface_decision" in kinds
 
 
 # ---------------------------------------------------------------------------

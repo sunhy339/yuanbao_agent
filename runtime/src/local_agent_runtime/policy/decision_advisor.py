@@ -133,9 +133,36 @@ register_decision(DecisionKindEntry(
     kind="completion_decision",
     description="Validate whether the task is truly complete before marking it done",
     required_input_fields=("goal", "summary", "changed_files"),
-    allowed_proposal_schema=("is_complete", "why_complete", "remaining_risks"),
+    allowed_proposal_schema=(
+        "is_complete",
+        "why_complete",
+        "remaining_risks",
+        "surface_type",
+        "blocking_issues",
+        "recommended_verification",
+    ),
     fallback="accept provider's final answer",
     trace_event="agent.decision.completion",
+))
+register_decision(DecisionKindEntry(
+    kind="product_surface_decision",
+    description=(
+        "Classify the completed artifact surface and recommend semantic verification "
+        "without turning product-shape guesses into hard gates"
+    ),
+    required_input_fields=("goal", "summary", "changed_files", "objective_signals"),
+    allowed_proposal_schema=(
+        "surface_type",
+        "needs_runtime_probe",
+        "needs_browser_probe",
+        "needs_api_probe",
+        "needs_state_probe",
+        "recommended_verification",
+        "probe_intents",
+        "blocking_if_missing",
+    ),
+    fallback="use objective completion evidence only",
+    trace_event="agent.decision.product_surface",
 ))
 
 

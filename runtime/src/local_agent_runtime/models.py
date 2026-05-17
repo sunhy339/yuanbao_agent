@@ -56,6 +56,9 @@ ProposalKind = Literal[
     "event_presentation",
     "synthesis_strategy",
     "todo_maintenance",
+    "react_turn_decision",
+    "completion_decision",
+    "product_surface_decision",
 ]
 
 ProposalStatus = Literal["pending", "accepted", "rejected", "applied"]

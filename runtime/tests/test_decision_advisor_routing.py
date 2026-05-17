@@ -165,20 +165,40 @@ class TestAdvisorRoutingFallback:
         assert router.last_advice is not None
         assert router.last_advice.source == "rule_fallback"
 
-    def test_high_confidence_rule_skips_advisor(self) -> None:
-        """Rule-based routing with confidence >= 0.80 skips LLM entirely."""
+    def test_high_confidence_rule_still_consults_advisor_by_default(self) -> None:
+        """High-confidence rules become advisor context instead of bypassing LLM."""
         advisor = DecisionAdvisor(
             provider=FakeAdvisorProvider(
-                '{"proposal": {"scenario": "debug"}, '
+                '{"proposal": {"scenario": "debug", "strategy": "skill_based"}, '
+                '"confidence": 0.99, "rationale": "debug intent confirmed"}'
+            )
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+        result = router.route("debug the error")
+
+        assert result.scenario == Scenario.DEBUG
+        assert "advisor-match" in result.reasoning
+        assert result.metadata["rule_candidate"]["scenario"] == "debug"
+        assert router.last_advice is not None
+        assert router.last_advice.accepted is True
+
+    def test_high_confidence_rule_can_skip_advisor_by_config(self) -> None:
+        """A config flag preserves the old low-cost high-confidence rule path."""
+        advisor = DecisionAdvisor(
+            provider=FakeAdvisorProvider(
+                '{"proposal": {"scenario": "debug", "strategy": "skill_based"}, '
                 '"confidence": 0.99, "rationale": "should not be used"}'
             )
         )
         router = MetaRouter(provider=None, decision_advisor=advisor)
-        # "debug" has keyword match with confidence > 0.80
-        result = router.route("debug the error")
-        # Rule match should win because confidence >= 0.80 threshold
+
+        result = router.route(
+            "debug the error",
+            {"config": {"advisor": {"routingStrategyUseForHighConfidence": False}}},
+        )
+
+        assert result.scenario == Scenario.DEBUG
         assert "rule-match" in result.reasoning
-        # Advisor was NOT called because rule confidence was high enough
         assert router.last_advice is None
 
     def test_mixed_doc_and_frontend_signals_defer_to_advisor(self) -> None:

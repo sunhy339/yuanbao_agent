@@ -3,7 +3,7 @@
 Covers:
 - proposal_records table migration
 - create_proposal / validate_proposal / apply_proposal / list_proposals
-- all 17 ProposalKind values accepted
+- all ProposalKind values accepted
 - kind validation rejects invalid kinds
 - status transitions: pending -> accepted/rejected, accepted -> applied
 - invalid transitions rejected
@@ -32,7 +32,7 @@ def _create_task(store: SQLiteStore) -> dict:
 
 
 class TestProposalKindType:
-    """P2: All 17 proposal kinds are defined in the ProposalKind literal."""
+    """P2: Proposal kinds used by material decision records are accepted."""
 
     EXPECTED_KINDS = [
         "intent_mode", "decomposition", "agent_profile", "model_policy",
@@ -40,6 +40,7 @@ class TestProposalKindType:
         "memory_policy", "artifact_contract", "risk_policy", "approval_policy",
         "test_strategy", "failure_recovery", "event_presentation",
         "synthesis_strategy", "todo_maintenance",
+        "react_turn_decision", "completion_decision", "product_surface_decision",
     ]
 
     def test_all_kinds_accepted(self, store: SQLiteStore):

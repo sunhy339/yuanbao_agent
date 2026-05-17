@@ -444,7 +444,7 @@ class ProposalStoreMixin:
         "memory_policy", "artifact_contract", "risk_policy", "approval_policy",
         "test_strategy", "failure_recovery", "event_presentation",
         "synthesis_strategy", "todo_maintenance",
-        "react_turn_decision", "completion_decision",
+        "react_turn_decision", "completion_decision", "product_surface_decision",
     })
 
     VALID_PROPOSAL_STATUSES = frozenset({"pending", "accepted", "rejected", "applied"})

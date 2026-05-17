@@ -99,9 +99,13 @@ register_decision(DecisionKindEntry(
 ))
 register_decision(DecisionKindEntry(
     kind="routing_strategy",
-    description="Select execution strategy: fast ReAct, standard ReAct, reflection, skill mode, planning, supervisor, or swarm",
+    description=(
+        "Select execution strategy and whether the parent should keep using tools "
+        "after child task results. Use tool_continuation for semantic continuation policy; "
+        "runtime still enforces budgets, permissions, and safety gates."
+    ),
     required_input_fields=("goal",),
-    allowed_proposal_schema=("strategy", "scenario", "skill_id"),
+    allowed_proposal_schema=("strategy", "scenario", "skill_id", "tool_continuation", "toolContinuation"),
     fallback="default to standard ReAct",
     trace_event="agent.decision.routing_strategy",
 ))

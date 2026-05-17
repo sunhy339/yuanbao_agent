@@ -333,6 +333,51 @@ class TestDecisionAdvisorRoutingStrategy:
         assert result.accepted is True
         assert result.payload["strategy"] == "react_standard"
 
+    def test_routing_strategy_accepts_tool_continuation_policy(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "strategy": "react_standard",
+                "scenario": "code_edit",
+                "tool_continuation": {
+                    "allow_tools_after_task_results": True,
+                    "allow_more_subtasks_after_task_results": False,
+                    "max_task_tool_calls": 1,
+                    "rationale": "After the delegated slice returns, the parent should inspect files and apply integration fixes.",
+                },
+            },
+            "confidence": 0.86,
+            "rationale": "The parent needs a semantic continuation pass after child work.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise("routing_strategy", {"goal": "delegate one slice then integrate the result"})
+
+        assert result.accepted is True
+        continuation = result.payload["tool_continuation"]
+        assert continuation["allow_tools_after_task_results"] is True
+        assert continuation["max_task_tool_calls"] == 1
+
+    def test_routing_strategy_rejects_bad_tool_continuation_policy(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "strategy": "react_standard",
+                "tool_continuation": {
+                    "allow_tools_after_task_results": "yes",
+                    "max_task_tool_calls": 0,
+                },
+            },
+            "confidence": 0.7,
+            "rationale": "bad shape",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise("routing_strategy", {"goal": "delegate then continue"})
+
+        assert result.accepted is False
+        assert result.source == "validation_rejected"
+        assert "tool_continuation.allow_tools_after_task_results must be a boolean when provided" in result.validation_reasons
+        assert "tool_continuation.maxTaskToolCalls must be an integer from 1 to 20 when provided" in result.validation_reasons
+
     def test_routing_strategy_fallback(self) -> None:
         advisor = DecisionAdvisor(provider=None)
         result = advisor.advise("routing_strategy", {"goal": "hello"})

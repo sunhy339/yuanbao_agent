@@ -53,6 +53,7 @@ def test_plan_strategy_continues_after_task_result_but_withholds_task() -> None:
     assert "withheld after a child result" in decision.reasons["task"]
     task_detail = next(item for item in decision.decision_details if item["toolName"] == "task")
     assert task_detail["continuationDecision"] == "denied"
+    assert task_detail["toolContinuationPolicy"]["source"] == "strategy_fallback"
 
 
 def test_plan_strategy_explicit_disable_synthesizes_after_task_result() -> None:
@@ -72,6 +73,35 @@ def test_plan_strategy_explicit_disable_synthesizes_after_task_result() -> None:
     assert decision.phase == "synthesis"
     assert decision.allowed_tool_names == []
     assert set(decision.denied_tool_names) == {"task", "read_file"}
+
+
+def test_advisor_continuation_can_allow_post_task_tools_for_standard_react() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "routing": {
+                "strategy": "react_standard",
+                "toolContinuation": {
+                    "allowToolsAfterTaskResults": True,
+                    "allowMoreSubtasksAfterTaskResults": False,
+                    "maxTaskToolCalls": 1,
+                    "source": "decision_advisor",
+                    "rationale": "Parent should inspect and integrate a delegated result before final synthesis.",
+                },
+            },
+        },
+        tool_results=[{"name": "task", "result": {"status": "completed"}}],
+        registered_tools=_tools("task", "read_file", "write_file", "run_command"),
+    )
+
+    assert decision.phase == "post_task_continuation"
+    assert set(decision.allowed_tool_names) == {"read_file", "write_file", "run_command"}
+    assert decision.denied_tool_names == ["task"]
+    task_detail = next(item for item in decision.decision_details if item["toolName"] == "task")
+    assert task_detail["toolContinuationPolicy"]["source"] == "decision_advisor"
+    assert task_detail["toolContinuationPolicy"]["allowToolsAfterTaskResults"] is True
+    assert "1/1" in task_detail["reason"]
 
 
 def test_task_tool_budget_allows_bounded_follow_up_subtasks() -> None:

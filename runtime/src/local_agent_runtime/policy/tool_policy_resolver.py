@@ -50,6 +50,12 @@ VERIFICATION_COMMAND_MARKERS = (
     "npm run build",
     "pnpm build",
     "yarn build",
+    "cmake",
+    "cmake --build",
+    "ctest",
+    "ninja",
+    "ninja test",
+    "make test",
 )
 
 TOOL_CAPABILITIES: dict[str, str] = {
@@ -138,6 +144,8 @@ class ToolPolicyResolver:
                 "phaseDecision": "allowed" if allow_all or name in allowed_names else "denied",
             }
             if allow_all or name in allowed_names:
+                if name == "task":
+                    detail["toolContinuationPolicy"] = self.tool_continuation_policy(context)
                 continuation_reason = self._task_tool_continuation_block_reason(name, context, tool_results)
                 if continuation_reason:
                     denied_names.append(name)
@@ -372,11 +380,20 @@ class ToolPolicyResolver:
     def allow_tools_after_task_results(self, context: dict[str, Any]) -> bool:
         return self._allow_tools_after_task_results(context)
 
+    def tool_continuation_policy(self, context: dict[str, Any]) -> dict[str, Any]:
+        return self._tool_continuation_policy(context)
+
     def _allow_tools_after_task_results(self, context: dict[str, Any]) -> bool:
+        return bool(self._tool_continuation_policy(context).get("allowToolsAfterTaskResults"))
+
+    def _tool_continuation_policy(self, context: dict[str, Any]) -> dict[str, Any]:
         for key in ("_allow_tools_after_task_results", "allowToolsAfterTaskResults", "allow_tools_after_task_results"):
             value = context.get(key)
             if isinstance(value, bool):
-                return value
+                return {
+                    "allowToolsAfterTaskResults": value,
+                    "source": key,
+                }
         routing = context.get("routing")
         if isinstance(routing, dict):
             continuation = routing.get("toolContinuation") or routing.get("tool_continuation")
@@ -384,15 +401,31 @@ class ToolPolicyResolver:
                 for key in ("allowToolsAfterTaskResults", "allow_tools_after_task_results"):
                     value = continuation.get(key)
                     if isinstance(value, bool):
-                        return value
+                        return {
+                            "allowToolsAfterTaskResults": value,
+                            "allowMoreSubtasksAfterTaskResults": (
+                                continuation.get("allowMoreSubtasksAfterTaskResults") is True
+                                or continuation.get("allow_more_subtasks_after_task_results") is True
+                            ),
+                            "maxTaskToolCalls": self._max_task_tool_calls(context),
+                            "source": str(continuation.get("source") or f"routing.toolContinuation.{key}"),
+                            "rationale": continuation.get("rationale"),
+                        }
             for key in ("allowToolsAfterTaskResults", "allow_tools_after_task_results"):
                 value = routing.get(key)
                 if isinstance(value, bool):
-                    return value
+                    return {
+                        "allowToolsAfterTaskResults": value,
+                        "source": f"routing.{key}",
+                    }
             strategy = routing.get("strategy")
             if isinstance(strategy, str) and strategy in self.TASK_TOOL_STRATEGIES:
-                return True
-        return False
+                return {
+                    "allowToolsAfterTaskResults": True,
+                    "source": "strategy_fallback",
+                    "rationale": "legacy planning strategy fallback",
+                }
+        return {"allowToolsAfterTaskResults": False, "source": "default"}
 
     def _allow_more_subtasks_after_task_results(self, context: dict[str, Any]) -> bool:
         if context.get("_allow_more_subtasks_after_task_results") is True:

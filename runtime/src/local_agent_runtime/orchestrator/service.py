@@ -239,6 +239,8 @@ class Orchestrator(
                 "strategy": routing.strategy.value,
                 "skill_id": routing.skill_id,
             }
+            if isinstance(routing_dict.get("toolContinuation"), dict):
+                proposal_payload["toolContinuation"] = routing_dict["toolContinuation"]
             source = {
                 "type": advice.source,
                 "confidence": advice.confidence,
@@ -279,6 +281,7 @@ class Orchestrator(
                     "outcome": status,
                     "scenario": routing.scenario.value,
                     "strategy": routing.strategy.value,
+                    "toolContinuation": routing_dict.get("toolContinuation"),
                     "source": advice.source,
                     "confidence": advice.confidence,
                     "rationale": advice.rationale,

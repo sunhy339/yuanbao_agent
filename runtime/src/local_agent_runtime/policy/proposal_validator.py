@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from ..models import ProposalKind
+from ..router.types import ExecutionStrategy, Scenario
 from ..services.worker_environment import (
     KNOWN_CHILD_TOOLS,
     UNSAFE_CHILD_TOOLS,
@@ -276,6 +277,10 @@ def validate_proposal(kind: str, payload: dict[str, Any]) -> list[str]:
         reasons.extend(validate_mode(payload))
         reasons.extend(validate_session_task_state(payload))
 
+    # Routing strategy validator
+    if kind == "routing_strategy":
+        reasons.extend(validate_routing_strategy(payload))
+
     # Model policy validator
     if kind == "model_policy":
         reasons.extend(validate_model_provider(payload))
@@ -360,6 +365,49 @@ def validate_product_surface_decision(payload: dict[str, Any]) -> list[str]:
             status = item.get("status")
             if status is not None and not isinstance(status, str):
                 reasons.append(f"evidence_requests[{index}].status must be a string when provided")
+    return reasons
+
+
+def validate_routing_strategy(payload: dict[str, Any]) -> list[str]:
+    """Validate advisor routing proposals without owning semantic routing."""
+    reasons: list[str] = []
+    strategy = payload.get("strategy")
+    valid_strategies = {item.value for item in ExecutionStrategy}
+    if strategy is not None and strategy not in valid_strategies:
+        reasons.append(f"Invalid routing strategy: {strategy!r}")
+    scenario = payload.get("scenario")
+    valid_scenarios = {item.value for item in Scenario}
+    if scenario is not None and scenario not in valid_scenarios:
+        reasons.append(f"Invalid routing scenario: {scenario!r}")
+    continuation = payload.get("tool_continuation")
+    camel_continuation = payload.get("toolContinuation")
+    if continuation is not None and camel_continuation is not None:
+        reasons.append("Provide only one of tool_continuation or toolContinuation")
+        return reasons
+    continuation = continuation if continuation is not None else camel_continuation
+    if continuation is None:
+        return reasons
+    if not isinstance(continuation, dict):
+        return ["tool_continuation must be an object when provided"]
+    bool_fields = (
+        "allow_tools_after_task_results",
+        "allowToolsAfterTaskResults",
+        "allow_more_subtasks_after_task_results",
+        "allowMoreSubtasksAfterTaskResults",
+    )
+    for field in bool_fields:
+        value = continuation.get(field)
+        if value is not None and not isinstance(value, bool):
+            reasons.append(f"tool_continuation.{field} must be a boolean when provided")
+    max_calls = continuation.get("max_task_tool_calls")
+    if max_calls is None:
+        max_calls = continuation.get("maxTaskToolCalls")
+    if max_calls is not None:
+        if not isinstance(max_calls, int) or isinstance(max_calls, bool) or max_calls <= 0 or max_calls > 20:
+            reasons.append("tool_continuation.maxTaskToolCalls must be an integer from 1 to 20 when provided")
+    rationale = continuation.get("rationale")
+    if rationale is not None and not isinstance(rationale, str):
+        reasons.append("tool_continuation.rationale must be a string when provided")
     return reasons
 
 

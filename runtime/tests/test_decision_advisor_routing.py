@@ -138,6 +138,30 @@ class TestAdvisorRoutingAccepted:
         result = router.route("adjust the main configuration")
         assert result.skill_id == "edit_skill"
 
+    def test_advisor_returns_tool_continuation_policy(self, tmp_path: Any) -> None:
+        advisor = DecisionAdvisor(
+            provider=FakeAdvisorProvider(
+                '{"proposal": {"scenario": "code_edit", "strategy": "react_standard", '
+                '"tool_continuation": {"allow_tools_after_task_results": true, '
+                '"allow_more_subtasks_after_task_results": false, "max_task_tool_calls": 1, '
+                '"rationale": "integrate delegated result before final synthesis"}}, '
+                '"confidence": 0.86, "rationale": "parent should continue after child result"}'
+            )
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route("Delegate one implementation slice, then integrate the returned changes")
+
+        assert result.scenario == Scenario.CODE_EDIT
+        assert result.strategy == ExecutionStrategy.REACT_STANDARD
+        assert result.metadata["toolContinuation"]["allowToolsAfterTaskResults"] is True
+        assert result.metadata["toolContinuation"]["source"] == "decision_advisor"
+        assert result.metadata["toolContinuation"]["maxTaskToolCalls"] == 1
+        orchestrator, _, _ = _make_orchestrator(tmp_path, provider=MagicMock(), meta_router=router)
+        routing_dict = orchestrator._routing_dict_from_decision(result)
+        assert routing_dict["toolContinuation"]["source"] == "decision_advisor"
+        assert routing_dict["toolContinuation"]["allowToolsAfterTaskResults"] is True
+
 
 # ---------------------------------------------------------------------------
 # Test: MetaRouter with DecisionAdvisor — rejected / fallback
@@ -295,6 +319,7 @@ class TestRoutingStrategyRegistry:
         assert "goal" in entry.required_input_fields
         assert "strategy" in entry.allowed_proposal_schema
         assert "scenario" in entry.allowed_proposal_schema
+        assert "tool_continuation" in entry.allowed_proposal_schema
         assert entry.trace_event == "agent.decision.routing_strategy"
 
 

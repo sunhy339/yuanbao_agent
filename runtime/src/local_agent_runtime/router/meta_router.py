@@ -555,6 +555,13 @@ class MetaRouter:
 
         cfg = SCENARIO_STRATEGY_MAP.get(scenario, SCENARIO_STRATEGY_MAP[Scenario.FREE_FORM])
         skill_id = payload.get("skill_id") or cfg.get("skill_id")
+        metadata: dict[str, Any] = {
+            "decision_id": uuid.uuid4().hex[:12],
+            "advisor_source": "decision_advisor",
+        }
+        tool_continuation = self._advisor_tool_continuation_payload(payload)
+        if tool_continuation:
+            metadata["toolContinuation"] = tool_continuation
 
         return RoutingDecision(
             scenario=scenario,
@@ -565,8 +572,36 @@ class MetaRouter:
             enable_reflection=cfg.get("enable_reflection", False),
             enable_planning=cfg.get("enable_planning", False),
             reasoning=f"advisor-match: {rationale}",
-            metadata={"decision_id": uuid.uuid4().hex[:12], "advisor_source": "decision_advisor"},
+            metadata=metadata,
         )
+
+    @staticmethod
+    def _advisor_tool_continuation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        raw = payload.get("tool_continuation")
+        if raw is None:
+            raw = payload.get("toolContinuation")
+        if not isinstance(raw, dict):
+            return {}
+        continuation: dict[str, Any] = {"source": "decision_advisor"}
+        allow = raw.get("allow_tools_after_task_results")
+        if allow is None:
+            allow = raw.get("allowToolsAfterTaskResults")
+        if isinstance(allow, bool):
+            continuation["allowToolsAfterTaskResults"] = allow
+        allow_more = raw.get("allow_more_subtasks_after_task_results")
+        if allow_more is None:
+            allow_more = raw.get("allowMoreSubtasksAfterTaskResults")
+        if isinstance(allow_more, bool):
+            continuation["allowMoreSubtasksAfterTaskResults"] = allow_more
+        max_calls = raw.get("max_task_tool_calls")
+        if max_calls is None:
+            max_calls = raw.get("maxTaskToolCalls")
+        if isinstance(max_calls, int) and not isinstance(max_calls, bool) and max_calls > 0:
+            continuation["maxTaskToolCalls"] = min(max_calls, 20)
+        rationale = raw.get("rationale")
+        if isinstance(rationale, str) and rationale.strip():
+            continuation["rationale"] = rationale.strip()[:500]
+        return continuation if len(continuation) > 1 else {}
 
 
 # Re-export the keyword index so it is accessible from tests if needed.

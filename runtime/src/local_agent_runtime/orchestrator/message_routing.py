@@ -32,7 +32,7 @@ class MessageRoutingMixin:
 
     def _routing_dict_from_decision(self, routing: Any, context: dict[str, Any] | None = None) -> dict[str, Any]:
         strategy = routing.strategy.value
-        allow_tools_after_task_results = strategy in {"plan_execute", "plan_supervise", "plan_swarm"}
+        tool_continuation = self._routing_tool_continuation_from_decision(routing, strategy)
         return {
             "scenario": routing.scenario.value,
             "strategy": strategy,
@@ -42,11 +42,7 @@ class MessageRoutingMixin:
             "enable_planning": routing.enable_planning,
             "reasoning": routing.reasoning,
             "skill_id": routing.skill_id,
-            "toolContinuation": {
-                "allowToolsAfterTaskResults": allow_tools_after_task_results,
-                "allowMoreSubtasksAfterTaskResults": False,
-                "maxTaskToolCalls": 1,
-            },
+            "toolContinuation": tool_continuation,
             "profile_snapshot": self._runtime_profile_snapshot(context),
             "roleSnapshot": {
                 "runtimeRole": "root",
@@ -69,6 +65,37 @@ class MessageRoutingMixin:
                 "budget": {},
             },
         }
+
+    def _routing_tool_continuation_from_decision(self, routing: Any, strategy: str) -> dict[str, Any]:
+        metadata = getattr(routing, "metadata", None)
+        raw = metadata.get("toolContinuation") if isinstance(metadata, dict) else None
+        if isinstance(raw, dict) and isinstance(raw.get("allowToolsAfterTaskResults"), bool):
+            continuation = {
+                "allowToolsAfterTaskResults": raw["allowToolsAfterTaskResults"],
+                "allowMoreSubtasksAfterTaskResults": raw.get("allowMoreSubtasksAfterTaskResults") is True,
+                "maxTaskToolCalls": self._bounded_routing_task_call_budget(raw.get("maxTaskToolCalls")),
+                "source": str(raw.get("source") or "routing_metadata"),
+            }
+            rationale = raw.get("rationale")
+            if isinstance(rationale, str) and rationale.strip():
+                continuation["rationale"] = rationale.strip()[:500]
+            return continuation
+        return {
+            "allowToolsAfterTaskResults": strategy in {"plan_execute", "plan_supervise", "plan_swarm"},
+            "allowMoreSubtasksAfterTaskResults": False,
+            "maxTaskToolCalls": 1,
+            "source": "strategy_fallback",
+        }
+
+    @staticmethod
+    def _bounded_routing_task_call_budget(value: Any) -> int:
+        try:
+            budget = int(value)
+        except (TypeError, ValueError):
+            return 1
+        if budget <= 0:
+            return 1
+        return min(budget, 20)
 
     def _attach_main_workflow_state(
         self,

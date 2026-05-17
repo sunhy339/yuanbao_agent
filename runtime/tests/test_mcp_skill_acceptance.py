@@ -1,4 +1,15 @@
-"""Main workflow acceptance coverage for Skills + MCP + compaction handoff."""
+"""Main workflow acceptance coverage for Skills + MCP + compaction handoff.
+
+Covers:
+  1. Skill trigger -> MCP tool call -> compaction survival (original)
+  2. MCP server unavailable fallback
+  3. MCP tool returns error / partial result
+  4. Skill with strict_whitelist blocks MCP tools
+  5. Skill with inherit_mcp allows MCP tools
+  6. Missing skill fallback - orchestrator proceeds without skill
+  7. Multiple MCP servers with skill routing
+  8. Skill tool policy reflected in tool_policy_decision context
+"""
 
 from __future__ import annotations
 

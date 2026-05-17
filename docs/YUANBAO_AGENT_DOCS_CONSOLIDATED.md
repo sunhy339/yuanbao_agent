@@ -794,7 +794,7 @@ Supervisor/Swarm 更适合多 agent 协作，但应满足：
 | LLM 上下文压缩建议 | 部分接通 | compactor 支持 provider advisory；ReAct 当前仍有固定 60000 阈值。 |
 | LLM 拆任务/并行建议 | 规划/部分基础 | DecisionAdvisor 有 `decomposition` 类型，DAG/worker 基础存在，但默认完整闭环还需补齐。 |
 | Proposal 审计 | 已有基础 | proposal_records 已存在；需要保证所有关键默认路径都写入 proposal record。 |
-| 通用 Hooks | 生命周期与 Settings UI 已接通 | runtime hooks 的 CRUD、执行记录、HookService、hook RPC 已有；`before/after task`、`before/after tool`、`before/after provider turn`、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已统一触发，hook side effect 已接入 PermissionEngine。Settings UI 管理入口已完成；剩余主要是 P2 动作类型与真实 provider + hook side effect 组合 smoke。 |
+| 通用 Hooks | 生命周期、P2 actions 与 Settings UI 已接通 | runtime hooks 的 CRUD、执行记录、HookService、hook RPC 已有；`before/after task`、`before/after tool`、`before/after provider turn`、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已统一触发。`run_command`、`webhook`、`memory_write`、`auto_verification_suggestion`、`external_sync` 已走 PermissionEngine/审计记录；Settings UI 管理入口已完成。剩余主要是真实 provider + hook side effect 组合 smoke。 |
 
 状态总览图：
 
@@ -1270,8 +1270,8 @@ flowchart TD
 | 优先级 | 任务 | 当前状态 | 下一步 |
 | --- | --- | --- | --- |
 | P0/P1 | Completion / Stop 判断强化 | 硬 gate 第一/二/三/四/五层已完成：写入/验证型 `summary_only` 会进入 `completion_review`；失败验证会直接失败；有工作区变更证据但缺少 passed verification 会进入 `needs_verification`；结构化 acceptance failed/缺项会进入 `needs_acceptance_review`；unresolved tool failures 会进入 `needs_tool_review`；代码/测试文件变更如果只有结构性 git 检查也会进入 `needs_verification`；基础 completion review 证据展示已接入 UI。 | 下一步继续细化语言/框架测试匹配规则，并把 reviewer/approval 结论纳入更完整的完成审计。 |
-| P1 | Worktree 后续闭环 | 自动绑定写入型任务、工具 cwd 路由、桌面端 path/status/diff 展示、formal merge approval gate、merge 前验证命令、reviewer gate、approval summary、dirty merge/cleanup 保护、多 agent worktree strategy 摘要已完成；会话页 Worktree 面板展示 verification/review/approval/agent strategy。 | 下一步做真实多 agent smoke 与更细的共享/独立 worktree 策略文档，必要时补 conflict UI。 |
-| P1 | Hooks 生命周期补齐 | before/after task、before/after tool、before/after provider turn、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已接线；hook `run_command` side effect 已纳入 PermissionEngine；Settings UI 已接入 hook 列表、新建/编辑/删除、启用开关、action/condition/authority/retry 配置和执行记录查看。 | 下一步补通知/webhook/模板等 P2 动作类型，以及真实 provider + hook side effect smoke。 |
+| P1 | Worktree 后续闭环 | 自动绑定写入型任务、工具 cwd 路由、桌面端 path/status/diff 展示、formal merge approval gate、merge 前验证命令、reviewer gate、approval summary、dirty merge/cleanup 保护、多 agent worktree strategy 摘要已完成；会话页 Worktree 面板展示 verification/review/approval/agent strategy。真实 git 多 child worktree 回归已覆盖 root/child 策略、独立 child worktree、verification、approval 和 merge conflict 失败上下文。 | 后续只剩可选的真实 LLM 并行多 agent smoke 与 conflict UI 打磨。 |
+| P1 | Hooks 生命周期补齐 | before/after task、before/after tool、before/after provider turn、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已接线；hook `run_command`、`webhook`、`memory_write`、`auto_verification_suggestion`、`external_sync` side effect/dispatch 已纳入 PermissionEngine 与执行审计；Settings UI 已接入 hook 列表、新建/编辑/删除、启用开关、action/condition/authority/retry 配置、P2 action 字段和执行记录查看。 | 下一步只剩带真实 provider key 的 release-gate live run，以及按需补更多外部系统模板。 |
 | P1 | Dynamic Agent Profile 设置页 | Done：backend store/RPC、shared 类型、validate/previewTools、Tauri bridge、Settings UI profile 管理全部接通。 | 后续只剩真实 provider/profile 组合 smoke 与易用性打磨。 |
 | P1 | Real LLM smoke 固化 | Done：新增 `runtime/tests/test_real_llm_smoke.py`，默认跳过；设置 `YUANBAO_REAL_LLM_SMOKE=1` 后用环境变量中的 provider key/base URL/model/apiFormat 做最小真实 chat smoke。 | 后续可在手工发布 gate 中按需启用，并补真实 provider + hook side effect 组合 smoke。 |
 
@@ -1333,7 +1333,7 @@ flowchart TD
 3. ~~merge 前需要正式 approval record。~~ **Done**：第一层已从前端二次确认升级为 `worktree_merge` approval record；审批通过后 runtime 才执行 merge，失败会返回结构化错误并发布 merge_failed 事件。
 4. ~~merge 前接入验证命令。~~ **Done**：merge approval 请求会先执行配置/参数指定的验证命令，失败不创建 approval，成功把验证证据进入 approval request 和 merge event。
 5. ~~merge 前还需要继续增强：接入 reviewer、approval gate 的 review 结果摘要，以及 diff 截断/完整 diff 展示策略。~~ **Done**：review/approval/verification/diff preview 已进入 approval request、merge event、worktree `lastStatus` 和桌面端 Worktree 面板。
-6. 子任务/多 agent 是否共享 root worktree、还是各自 worktree，当前已有 `multiAgentWorktreeStrategy` 摘要与默认策略；下一步需要真实多 agent smoke 和冲突/依赖场景下的策略验证。
+6. ~~子任务/多 agent 是否共享 root worktree、还是各自 worktree，当前已有 `multiAgentWorktreeStrategy` 摘要与默认策略；下一步需要真实多 agent smoke 和冲突/依赖场景下的策略验证。~~ **Done**：真实 git 回归已创建 root task 与两个 child worker worktrees，验证 child 默认 `isolated_child_worktrees`，merge approval 保留 parent/root/child collaboration 信息；第一个 child merge 成功后，第二个 child 同文件变更冲突会保持 worktree `failed`，并在 `lastStatus` 保留 approval、review、diff 与 conflict handling 策略。
 
 ### 2026-05-15 Hooks 生命周期状态同步
 
@@ -1349,8 +1349,8 @@ flowchart TD
 
 剩余 Hooks 后续：
 
-1. P2 动作类型可以继续扩展通知/webhook、memory write、自动验证建议、外部系统同步。
-2. 真实 provider + hook side effect 组合 smoke 仍可作为发布 gate 的可选项启用，避免默认依赖本地密钥。
+1. P2 动作类型基础闭环已完成：webhook 会执行受权限控制的 HTTP 调用，memory_write 会写入 runtime memory，auto_verification_suggestion 会发结构化建议事件，external_sync 会记录受权限控制的外部同步 dispatch。
+2. 真实 provider + hook side effect 组合 smoke 仍可作为发布 gate 的可选项启用，避免默认依赖本地密钥；后续可继续补 GitHub/Jira/Slack 等外部系统模板。
 
 ### 2026-05-15 Real LLM Full Coverage Smoke
 
@@ -1436,7 +1436,7 @@ Remediation objectives:
 
 1. Make long-run agent execution faster and more stable.
 2. Improve context compaction from generic summaries into actionable engineering handoff records.
-3. Add provider failure recovery so timeout / HTTP 400 / oversized context does not collapse a child task unnecessarily.
+3. Extend provider failure recovery beyond the current classifier/fallback baseline so timeout / HTTP 400 / oversized context can trigger smaller continuation tasks when safe.
 4. Promote generated artifacts from "tests pass" to "user can actually operate the local app".
 5. Treat smoke gates as engineering safety nets while optimizing the real user-facing main workflow first.
 
@@ -1446,7 +1446,7 @@ Optimization layers:
 | --- | --- | --- |
 | Execution stability | Enforce per-child budgets for time, token, tool calls, and file scope; require partial result handoff before timeout; checkpoint after every completed collaboration task. | A child timeout leaves a resumable handoff record with changed files, failed command, and next action. |
 | Task decomposition | Reject overloaded plans that collapse backend, frontend, tests, docs, and verification into one worker. Expand them into bounded file/domain slices. | Complex local app goals consistently create at least backend, frontend, tests, and verification/documentation tasks when those deliverables are named. |
-| Provider recovery | Classify provider errors into network timeout, HTTP parameter error, API key/auth, context too large, and model refusal; retry with smaller context or split task when recoverable. | GLM timeout / HTTP 400 scenarios produce a retry or smaller continuation rather than an opaque child failure. |
+| Provider recovery | Baseline classification, conservative retry/fallback, provider-turn audit, and failure-recovery proposals are in place. Phase 2 should use those classifications to retry with smaller context, split tasks, or switch provider only when recoverable. | GLM timeout / HTTP 400 scenarios produce a retry or smaller continuation rather than an opaque child failure. |
 | Context and memory | Change compaction summaries to a structured handoff: objective, completed work, modified files, failed commands, decisions, next steps, risks. Deduplicate repeated compaction content. | Later child tasks can recover exact file/test state from compaction without rereading the entire transcript. |
 | Product acceptance | Add automatic product checks: start local server when applicable, run browser or DOM smoke, submit one real feedback item, verify persistence/API state, and check for mojibake-visible UI copy. | Full-stack artifact acceptance includes unit tests, integration tests, browser smoke, and readable documentation. |
 
@@ -1551,27 +1551,31 @@ Completed or effectively closed:
 | Main workflow state baseline + phase 2 execution | Done in current follow-up | Each foreground, background, and queued task now persists `routing.mainWorkflow` with intent confidence, automation level, budgets, workspace/git snapshot, and initial user takeover state. Stop/cancel, pause, and continue takeover supplements are routed through the existing task lifecycle paths; ReAct `maxTaskSteps` exhaustion now records `mainWorkflow.budget` exhaustion, emits `task.budget.exhausted`, and converges into a partial completion/review path instead of hard failing the loop. |
 | Structured compaction handoff | Done in current follow-up | Context compaction now emits and persists `handoffSummary` with objective, current step, completed work, modified files, failed commands, verification status, decisions, risks, next action, and recent context. The structured handoff is injected into the compacted system summary and exposed through `context.budget` / `autonomy.report` for recovery UI and follow-up turns. |
 | MCP + Skills main-flow acceptance | Done in current follow-up | ContextBuilder now exposes built-in tools plus live ToolRegistry/MCP schemas to provider turns. A main-flow acceptance test routes through a skill with `inherit_mcp`, calls an MCP tool, compacts after the tool result, and verifies the MCP result plus skill decision survive in `handoffSummary`. |
+| Product acceptance artifact gate | Done in current follow-up | Completion evidence now checks changed readable artifacts (`html/md/txt/css/js/jsx/ts/tsx/vue/svelte`) for visible mojibake/replacement-character tokens, validates local CSS/JS references from changed HTML, and runs `node --check` for reachable local scripts. Failed product-quality evidence routes write-oriented completion into `completion_review` instead of silently completing rough generated UI/docs. |
+| Provider failure recovery baseline | Done in current follow-up | Provider failures are classified as auth, rate limit, timeout, context too large, refusal, server/network, unsupported format, request validation, invalid response, or unknown. Adapter retry is conservative; stream timeout/network/server/invalid-response failures fall back to a non-stream turn when available; provider turns, task failures, trace events, and failure-recovery proposals preserve the structured recovery decision. |
+| Hook P2 actions + live smoke gate | Done in current follow-up | Runtime hooks now support `webhook`, `memory_write`, `auto_verification_suggestion`, and `external_sync` with PermissionEngine/audit handling; Settings UI can configure those actions. An env-gated real provider smoke verifies provider-turn hooks plus memory/verification side effects when credentials are available. |
+| Multi-agent worktree strategy validation | Done in current follow-up | Real git regression covers root/child strategy reporting, isolated child worktrees, merge verification/approval, and child merge conflict failure context. |
 
 Still open / next implementation queue:
 
 | Priority | Task | Current next step |
 | --- | --- | --- |
 | P0/P1 | Main workflow state machine phase 3 | Extend the execution state into frontend cockpit/reporting, wrap-up/change-target takeover behavior, richer budget dimensions, and resumable handoff UI. |
-| P1 | Provider failure recovery | Classify timeout, HTTP parameter/context-too-large, auth/key, and refusal failures; retry or split context only when recoverable. |
-| P1 | Product acceptance gate | Add generated-artifact checks beyond unit tests: server/browser smoke, visible copy/mojibake check, persistence/API flow, and readable docs/README verification. |
+| P1 | Provider failure recovery phase 2 | Use the recovery classification to drive smaller-context retries, task splitting, or provider fallback when appropriate; keep auth/refusal failures non-retryable and user-visible. |
+| P1 | Product acceptance gate phase 2 | Add generated-artifact checks beyond unit tests for server/browser smoke, persistence/API flow, route/API health, and deeper README/docs quality beyond mojibake detection. |
 | P1 | Frontend runtime cockpit | Implement task cockpit, plan/progress panel, tool timeline, and acceptance/run report first; then MCP/Skills, context/memory, automation controls, and workspace panel. |
 | P1 | Completion audit refinement | Continue language/framework-specific verification matching and include reviewer/approval conclusions in the completion audit trail. |
-| P1 | Real multi-agent worktree strategy validation | Run real multi-agent worktree smoke for shared vs isolated child worktrees, conflict/dependency handling, and strategy reporting. |
-| P1/P2 | Hook action expansion | Add notification/webhook, memory write, automatic verification suggestion, and external-system sync actions as P2 hook side effects. |
-| P1/P2 | Real provider + hook side effect smoke | Keep as a manual/release gate so default tests do not depend on local secrets. |
+| P1 | Optional live multi-agent worktree smoke | Real git regression 已完成：root/child strategy reporting、isolated child worktrees、merge verification/approval、以及 child merge conflict failure context 均已覆盖。后续可选真实 LLM 并行多 agent smoke，不再是 worktree 策略闭环 blocker。 |
+| P1/P2 | Hook provider templates | Baseline P2 actions are implemented for webhook, memory write, automatic verification suggestion, and external-system sync. Remaining work is GitHub/Jira/Slack 等 provider-specific templates and release-gate live run with real credentials. |
+| P1/P2 | Real provider + hook side effect smoke | Env-gated pytest 已固化：`runtime/tests/test_real_llm_smoke.py::test_real_llm_provider_turn_runs_hook_side_effects` 默认跳过，设置 `YUANBAO_REAL_LLM_SMOKE=1` 和 provider key 后会验证真实 provider turn、before/after provider hooks、memory_write 与 auto_verification_suggestion side effects。当前 shell 未设置真实 key，尚未执行 live run。 |
 | P1/P2 | Dynamic profile real-provider smoke and UX polish | Validate profile + provider combinations with real providers and smooth the settings/profile authoring experience. |
 | P1/P2 | Memory recall quality tuning | Continue validating cross-session workspace memory recall quality, deduplication, and injection budget behavior under long tasks. |
 | P2 | Minimal smoke gate split | Keep only a fast daily safety smoke and a manual/release long stress smoke; do not let smoke structure distract from main workflow hardening. |
 
 Current priority order:
 
-1. Product acceptance gate and runtime cockpit/reporting.
-2. Provider recovery and multi-agent worktree strategy validation.
-3. Main workflow phase 3: cockpit/reporting, wrap-up/change-target takeover, and richer budget convergence policies.
+1. Runtime cockpit/reporting plus product acceptance phase 2.
+2. Provider recovery phase 2: smaller-context retry, task splitting, and guarded provider fallback.
+3. Main workflow phase 3: wrap-up/change-target takeover, resumable handoff UI, and richer budget convergence policies.
 4. MCP + Skills fallback polish against unavailable servers/skills and partial MCP responses.
 5. Completion audit refinement and release-grade smoke coverage.

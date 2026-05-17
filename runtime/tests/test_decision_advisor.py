@@ -428,43 +428,51 @@ class TestDecisionAdvisorCompletionDecision:
 class TestDecisionAdvisorProductSurfaceDecision:
     """Product surface decisions use LLM semantics, validated as advisory data."""
 
-    def test_product_surface_decision_accepts_probe_recommendations(self) -> None:
+    def test_product_surface_decision_accepts_flexible_evidence_requests(self) -> None:
         provider = _GoodProvider(response=json.dumps({
             "proposal": {
-                "surface_type": "frontend_backend_api_flow",
-                "needs_runtime_probe": True,
-                "needs_api_probe": True,
-                "needs_state_probe": True,
-                "recommended_verification": ["API smoke plus state assertion"],
-                "probe_intents": [{"kind": "api", "target": "POST /api/feedback"}],
+                "surface_type": "architecture_design",
+                "recommended_verification": ["Reviewer checks trade-off coverage"],
+                "verification_intents": [
+                    {"kind": "design_review", "target": "ADR covers alternatives and rollback"},
+                ],
+                "evidence_requests": [
+                    {
+                        "kind": "design_review",
+                        "summary": "ADR documents alternatives, chosen path, rollback, and open risks.",
+                        "blocking": True,
+                    },
+                ],
             },
             "confidence": 0.84,
-            "rationale": "The changed UI calls a backend route that mutates feedback state.",
+            "rationale": "The task is a design deliverable, so review evidence matters more than runtime smoke.",
         }))
         advisor = DecisionAdvisor(provider=provider)
 
         result = advisor.advise(
             "product_surface_decision",
             {
-                "goal": "Build a feedback form and backend API",
-                "summary": "Created frontend and API route.",
-                "changed_files": ["index.html", "app.js", "server.py"],
+                "goal": "Design the migration plan for auth storage",
+                "summary": "Wrote an ADR with options and rollout plan.",
+                "changed_files": ["docs/auth-storage-adr.md"],
                 "objective_signals": {
-                    "acceptance": [{"source": "api_contract_reachability", "status": "supported"}],
+                    "acceptance": [{"source": "product_readability_check", "status": "supported"}],
                 },
             },
         )
 
         assert result.accepted is True
-        assert result.payload["surface_type"] == "frontend_backend_api_flow"
-        assert result.payload["needs_api_probe"] is True
-        assert result.payload["recommended_verification"] == ["API smoke plus state assertion"]
+        assert result.payload["surface_type"] == "architecture_design"
+        assert result.payload["evidence_requests"][0]["kind"] == "design_review"
+        assert result.payload["evidence_requests"][0]["blocking"] is True
 
-    def test_product_surface_decision_rejects_bad_probe_shape(self) -> None:
+    def test_product_surface_decision_rejects_bad_evidence_request_shape(self) -> None:
         provider = _GoodProvider(response=json.dumps({
             "proposal": {
                 "surface_type": "backend_module",
-                "needs_api_probe": "yes",
+                "evidence_requests": [
+                    {"kind": 123, "blocking": "yes"},
+                ],
                 "recommended_verification": "pytest",
             },
             "confidence": 0.7,
@@ -484,7 +492,8 @@ class TestDecisionAdvisorProductSurfaceDecision:
 
         assert result.accepted is False
         assert result.source == "validation_rejected"
-        assert "needs_api_probe must be a boolean when provided" in result.validation_reasons
+        assert "evidence_requests[0].kind must be a string when provided" in result.validation_reasons
+        assert "evidence_requests[0].blocking must be a boolean when provided" in result.validation_reasons
         assert "recommended_verification must be a list when provided" in result.validation_reasons
 
 

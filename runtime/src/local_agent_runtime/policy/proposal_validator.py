@@ -338,19 +338,28 @@ def validate_product_surface_decision(payload: dict[str, Any]) -> list[str]:
     surface_type = payload.get("surface_type")
     if "surface_type" in payload and (not isinstance(surface_type, str) or not surface_type.strip()):
         reasons.append("surface_type must be a non-empty string")
-    for field in ("recommended_verification", "probe_intents", "blocking_if_missing"):
+    for field in ("recommended_verification", "verification_intents", "evidence_requests"):
         value = payload.get(field)
         if value is not None and not isinstance(value, list):
             reasons.append(f"{field} must be a list when provided")
-    for field in (
-        "needs_runtime_probe",
-        "needs_browser_probe",
-        "needs_api_probe",
-        "needs_state_probe",
-    ):
-        value = payload.get(field)
-        if value is not None and not isinstance(value, bool):
-            reasons.append(f"{field} must be a boolean when provided")
+    evidence_requests = payload.get("evidence_requests")
+    if isinstance(evidence_requests, list):
+        for index, item in enumerate(evidence_requests):
+            if not isinstance(item, dict):
+                reasons.append(f"evidence_requests[{index}] must be an object")
+                continue
+            kind = item.get("kind")
+            if kind is not None and not isinstance(kind, str):
+                reasons.append(f"evidence_requests[{index}].kind must be a string when provided")
+            blocking = item.get("blocking")
+            if blocking is not None and not isinstance(blocking, bool):
+                reasons.append(f"evidence_requests[{index}].blocking must be a boolean when provided")
+            satisfied = item.get("satisfied")
+            if satisfied is not None and not isinstance(satisfied, bool):
+                reasons.append(f"evidence_requests[{index}].satisfied must be a boolean when provided")
+            status = item.get("status")
+            if status is not None and not isinstance(status, str):
+                reasons.append(f"evidence_requests[{index}].status must be a string when provided")
     return reasons
 
 

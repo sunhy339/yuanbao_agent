@@ -147,19 +147,15 @@ register_decision(DecisionKindEntry(
 register_decision(DecisionKindEntry(
     kind="product_surface_decision",
     description=(
-        "Classify the completed artifact surface and recommend semantic verification "
+        "Classify the completed artifact surface and recommend semantic evidence "
         "without turning product-shape guesses into hard gates"
     ),
     required_input_fields=("goal", "summary", "changed_files", "objective_signals"),
     allowed_proposal_schema=(
         "surface_type",
-        "needs_runtime_probe",
-        "needs_browser_probe",
-        "needs_api_probe",
-        "needs_state_probe",
         "recommended_verification",
-        "probe_intents",
-        "blocking_if_missing",
+        "verification_intents",
+        "evidence_requests",
     ),
     fallback="use objective completion evidence only",
     trace_event="agent.decision.product_surface",

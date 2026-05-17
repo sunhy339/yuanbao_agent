@@ -304,6 +304,11 @@ class TaskLifecycleMixin:
             if reviews_disabled and advisor_gate.get("action") == "review":
                 return {"action": "complete", "reason": "Completion advisor review skipped because approvalMode disables approvals."}
             return advisor_gate
+        advisor_evidence_gate = self._completion_advisor_evidence_gate(completion_evidence)
+        if advisor_evidence_gate is not None:
+            if reviews_disabled and advisor_evidence_gate.get("action") == "review":
+                return {"action": "complete", "reason": "Advisor-requested evidence review skipped because approvalMode disables approvals."}
+            return advisor_evidence_gate
         if self._completion_needs_verification_review(completion_evidence):
             if reviews_disabled:
                 return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
@@ -358,6 +363,34 @@ class TaskLifecycleMixin:
             "decision": "advisor_needs_review",
             "gateStatus": "advisor_needs_review",
             "risk": "LLM completion advisor judged task incomplete",
+            "reason": reason,
+        }
+
+    def _completion_advisor_evidence_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
+        requested = completion_evidence.get("advisorRequestedEvidence")
+        if not isinstance(requested, list):
+            return None
+        missing = [
+            item for item in requested
+            if isinstance(item, dict)
+            and item.get("blocking") is True
+            and item.get("status") == "missing"
+        ]
+        if not missing:
+            return None
+        details = [
+            str(item.get("summary") or item.get("kind") or "advisor-requested evidence").strip()
+            for item in missing
+            if str(item.get("summary") or item.get("kind") or "").strip()
+        ]
+        reason = "A product-surface advisor marked evidence as blocking before completion."
+        if details:
+            reason = f"{reason} Missing evidence: {'; '.join(details[:3])}"
+        return {
+            "action": "review",
+            "decision": "advisor_evidence_requested",
+            "gateStatus": "advisor_evidence_requested",
+            "risk": "LLM product-surface advisor requested blocking evidence",
             "reason": reason,
         }
 
@@ -987,6 +1020,12 @@ class TaskLifecycleMixin:
             product_surface_advice=advice,
         )
         completion_evidence["productSurfaceAdvisor"] = advice
+        requested_evidence = self._advisor_requested_evidence_from_advice(
+            advice=advice,
+            completion_evidence=completion_evidence,
+        )
+        if requested_evidence:
+            completion_evidence["advisorRequestedEvidence"] = requested_evidence
         advisory = self._product_surface_advisory_from_advice(advice)
         if advisory is not None:
             completion_evidence.setdefault("productAdvisories", []).append(advisory)
@@ -1181,34 +1220,106 @@ class TaskLifecycleMixin:
         if not surface_type:
             return None
         recommended = self._completion_string_list(payload.get("recommended_verification"))
-        blocking = self._completion_string_list(payload.get("blocking_if_missing"))
-        probe_intents = payload.get("probe_intents") if isinstance(payload.get("probe_intents"), list) else []
-        probe_flags = {
-            key: bool(payload.get(key))
-            for key in (
-                "needs_runtime_probe",
-                "needs_browser_probe",
-                "needs_api_probe",
-                "needs_state_probe",
-            )
-            if isinstance(payload.get(key), bool)
-        }
+        evidence_requests = self._normalize_advisor_evidence_requests(payload.get("evidence_requests"))
+        verification_intents = payload.get("verification_intents") if isinstance(payload.get("verification_intents"), list) else []
+        has_blocking_request = any(item.get("blocking") is True for item in evidence_requests)
         summary = str(advice.get("rationale") or "").strip()
         if not summary:
             summary = f"LLM classified the task artifact surface as {surface_type}."
         return {
             "kind": "llm_product_surface",
             "surfaceType": surface_type,
-            "severity": "suggestion" if recommended or blocking or any(probe_flags.values()) else "info",
+            "severity": "suggestion" if recommended or verification_intents or evidence_requests else "info",
             "source": "llm_product_surface_advisor",
             "summary": summary[:500],
             "recommendedVerification": recommended,
-            "blockingIfMissing": blocking,
-            "probeIntents": probe_intents[:10],
-            "probeRequests": probe_flags,
+            "verificationIntents": verification_intents[:10],
+            "evidenceRequests": evidence_requests[:10],
+            "hasBlockingEvidenceRequest": has_blocking_request,
             "confidence": advice.get("confidence"),
             "proposalRecordId": advice.get("proposalRecordId"),
         }
+
+    def _advisor_requested_evidence_from_advice(
+        self,
+        *,
+        advice: dict[str, Any],
+        completion_evidence: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if advice.get("accepted") is not True:
+            return []
+        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
+        requests = self._normalize_advisor_evidence_requests(payload.get("evidence_requests"))
+        if not requests:
+            return []
+        return [
+            {
+                **request,
+                "status": self._advisor_evidence_request_status(
+                    request=request,
+                    completion_evidence=completion_evidence,
+                ),
+                "source": "llm_product_surface_advisor",
+                "proposalRecordId": advice.get("proposalRecordId"),
+            }
+            for request in requests
+        ]
+
+    def _normalize_advisor_evidence_requests(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        requests: list[dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    requests.append({
+                        "kind": "evidence",
+                        "summary": text,
+                        "blocking": False,
+                    })
+                continue
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "evidence").strip() or "evidence"
+            summary = str(
+                item.get("summary")
+                or item.get("description")
+                or item.get("target")
+                or item.get("why")
+                or kind
+            ).strip()
+            request: dict[str, Any] = {
+                "kind": kind,
+                "summary": summary,
+                "blocking": bool(item.get("blocking")) if isinstance(item.get("blocking"), bool) else False,
+            }
+            for key in ("target", "rationale", "suggestedCommand", "domain"):
+                if item.get(key) not in (None, ""):
+                    request[key] = item[key]
+            if isinstance(item.get("satisfied"), bool):
+                request["satisfied"] = item["satisfied"]
+            if isinstance(item.get("status"), str) and item["status"].strip():
+                request["advisorStatus"] = item["status"].strip()
+            requests.append(request)
+        return requests[:20]
+
+    def _advisor_evidence_request_status(
+        self,
+        *,
+        request: dict[str, Any],
+        completion_evidence: dict[str, Any],
+    ) -> str:
+        if request.get("satisfied") is True:
+            return "satisfied"
+        if request.get("satisfied") is False:
+            return "missing"
+        advisor_status = str(request.get("advisorStatus") or "").strip().casefold()
+        if advisor_status in {"satisfied", "present", "covered", "verified", "passed"}:
+            return "satisfied"
+        if advisor_status in {"missing", "absent", "unverified", "needed", "required"}:
+            return "missing"
+        return "missing" if request.get("blocking") is True else "requested"
 
     @staticmethod
     def _completion_string_list(value: Any) -> list[str]:
@@ -1889,7 +2000,6 @@ class TaskLifecycleMixin:
             })
         records.extend(self._completion_product_readability_records(root=root, task=task))
         records.extend(self._completion_static_frontend_asset_records(root=root, task=task))
-        records.extend(self._completion_api_contract_records(root=root, task=task))
         test_expectation = self._completion_expected_pytest_file_count(text)
         if test_expectation is not None:
             found = len([
@@ -1901,37 +2011,6 @@ class TaskLifecycleMixin:
                 "status": "supported" if found >= test_expectation else "failed",
                 "evidenceLevel": "structural",
                 "source": "structural_test_file_count",
-            })
-        return records
-
-    def _completion_api_contract_records(
-        self,
-        *,
-        root: Path,
-        task: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        references = self._completion_frontend_api_references(root=root, task=task)
-        if not references:
-            return []
-        backend_routes = self._completion_backend_api_routes(root=root, task=task)
-        records: list[dict[str, Any]] = []
-        for reference in references:
-            match = self._completion_match_backend_api_route(reference, backend_routes)
-            method = str(reference.get("method") or "GET").upper()
-            path = str(reference.get("path") or "")
-            source_path = str(reference.get("sourcePath") or "")
-            issues: list[str] = []
-            if match is None:
-                issues.append("no matching backend route found")
-            records.append({
-                "criterion": f"Frontend API route reachable: {source_path} -> {method} {path}",
-                "status": "supported" if match is not None else "failed",
-                "evidenceLevel": "product_quality",
-                "source": "api_contract_reachability",
-                "apiMethod": method,
-                "apiPath": path,
-                "backendRoute": match,
-                "issues": issues,
             })
         return records
 
@@ -1954,40 +2033,48 @@ class TaskLifecycleMixin:
         if not references:
             return []
         backend_routes = self._completion_backend_api_routes(root=root, task=task)
-        matched_references = [
-            reference for reference in references
-            if self._completion_match_backend_api_route(reference, backend_routes) is not None
-        ]
-        if not matched_references:
-            return []
+        api_observations = self._completion_api_contract_observations(
+            references=references,
+            backend_routes=backend_routes,
+        )
         signals = self._completion_product_advisory_signals(
             verification=verification,
             tests_run=tests_run,
             commands=commands,
         )
+        matched = [item for item in api_observations if item.get("backendRoute")]
         return [{
-            "kind": "frontend_backend_api_flow",
+            "kind": "api_reference_observation",
             "severity": "info" if signals else "suggestion",
-            "source": "product_surface_scan",
+            "source": "objective_surface_scan",
             "summary": (
-                "Frontend API calls have matching backend routes and runtime smoke/state verification evidence was found."
+                "Changed files include API calls and runtime verification evidence was found."
                 if signals
-                else "Frontend API calls have matching backend routes; ask the completion advisor whether API/browser/state smoke is necessary for this task."
+                else "Changed files include API calls; ask the product-surface advisor what evidence matters for this task."
             ),
-            "recommendedVerification": [] if signals else [
-                "server/browser/API smoke",
-                "state or persistence verification when the task changes stored data",
-            ],
-            "apiReferences": [
-                {
-                    "method": str(reference.get("method") or "GET").upper(),
-                    "path": str(reference.get("path") or ""),
-                    "sourcePath": str(reference.get("sourcePath") or ""),
-                }
-                for reference in matched_references[:10]
-            ],
+            "recommendedVerification": [],
+            "apiReferences": api_observations[:10],
+            "localBackendRouteMatches": len(matched),
             "signals": signals[:10],
         }]
+
+    def _completion_api_contract_observations(
+        self,
+        *,
+        references: list[dict[str, str]],
+        backend_routes: list[dict[str, str]],
+    ) -> list[dict[str, Any]]:
+        observations: list[dict[str, Any]] = []
+        for reference in references:
+            match = self._completion_match_backend_api_route(reference, backend_routes)
+            observations.append({
+                "method": str(reference.get("method") or "GET").upper(),
+                "path": str(reference.get("path") or ""),
+                "sourcePath": str(reference.get("sourcePath") or ""),
+                "backendRoute": match,
+                "localRouteMatched": match is not None,
+            })
+        return observations
 
     def _completion_product_advisory_signals(
         self,
@@ -2005,9 +2092,6 @@ class TaskLifecycleMixin:
         ):
             for item in items:
                 if not isinstance(item, dict) or not self._completion_item_passed(item):
-                    continue
-                text = self._completion_runtime_signal_text(item)
-                if not self._completion_text_mentions_product_runtime_signal(text):
                     continue
                 command = str(item.get("command") or item.get("name") or item.get("summary") or "").strip()
                 key = (source_name, command.casefold())
@@ -2029,55 +2113,6 @@ class TaskLifecycleMixin:
         status = str(item.get("status") or "").strip().casefold()
         exit_code = item.get("exitCode")
         return status in {"passed", "success", "completed", "ok"} and exit_code in (0, "0", None)
-
-    @staticmethod
-    def _completion_runtime_signal_text(item: dict[str, Any]) -> str:
-        return " ".join(
-            str(item.get(key) or "")
-            for key in ("command", "name", "summary", "suite")
-        ).casefold()
-
-    def _completion_text_mentions_product_runtime_signal(self, text: str) -> bool:
-        normalized = text.casefold()
-        if not normalized.strip():
-            return False
-        strong_tokens = (
-            "playwright",
-            "cypress",
-            "selenium",
-            "browser smoke",
-            "server smoke",
-            "api smoke",
-            "e2e",
-            "end-to-end",
-            "testclient",
-            "supertest",
-            "httpx",
-            "requests",
-            "curl ",
-            "invoke-webrequest",
-            "invoke-restmethod",
-            "fetch(",
-            "/api/",
-        )
-        persistence_tokens = (
-            "persist",
-            "persistence",
-            "storage",
-            "database",
-            "sqlite",
-            "postgres",
-            "mysql",
-            "redis",
-            "state verification",
-            "round trip",
-            "round-trip",
-        )
-        if any(token in normalized for token in strong_tokens):
-            return True
-        if "api" in normalized and any(token in normalized for token in persistence_tokens):
-            return True
-        return False
 
     def _completion_frontend_api_references(
         self,

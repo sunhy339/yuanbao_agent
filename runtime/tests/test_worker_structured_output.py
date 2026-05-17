@@ -1354,7 +1354,7 @@ class TestCompletionHardGate:
         assert route["assetType"] == "route"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_acceptance_review"
 
-    def test_frontend_api_reference_without_backend_route_waits_for_review(self, tmp_path: Any) -> None:
+    def test_frontend_api_reference_without_backend_route_records_observation(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         project = tmp_path / "project"
@@ -1393,16 +1393,12 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "waiting_approval"
+        assert result["status"] == "completed"
         evidence = result["structuredResult"]["completionEvidence"]
-        api = [
-            item for item in evidence["acceptance"]
-            if item["criterion"] == "Frontend API route reachable: app.js -> POST /api/feedback"
-        ][0]
-        assert api["status"] == "failed"
-        assert api["source"] == "api_contract_reachability"
-        assert "no matching backend route found" in api["issues"]
-        assert result["structuredResult"]["completionGate"]["status"] == "needs_acceptance_review"
+        advisory = evidence["productAdvisories"][0]
+        assert advisory["kind"] == "api_reference_observation"
+        assert advisory["source"] == "objective_surface_scan"
+        assert advisory["apiReferences"][0]["localRouteMatched"] is False
 
     def test_frontend_api_reference_with_matching_backend_route_adds_non_blocking_advisory(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
@@ -1458,18 +1454,17 @@ class TestCompletionHardGate:
         assert result["status"] == "completed"
         evidence = result["structuredResult"]["completionEvidence"]
         api = [
-            item for item in evidence["acceptance"]
-            if item["criterion"] == "Frontend API route reachable: app.js -> POST /api/feedback"
+            item for item in evidence["productAdvisories"][0]["apiReferences"]
+            if item["path"] == "/api/feedback"
         ][0]
-        assert api["status"] == "supported"
-        assert api["source"] == "api_contract_reachability"
+        assert api["localRouteMatched"] is True
         assert api["backendRoute"]["sourcePath"] == "server.py"
         advisory = evidence["productAdvisories"][0]
-        assert advisory["kind"] == "frontend_backend_api_flow"
-        assert advisory["severity"] == "suggestion"
-        assert "server/browser/API smoke" in advisory["recommendedVerification"]
+        assert advisory["kind"] == "api_reference_observation"
+        assert advisory["severity"] == "info"
+        assert advisory["recommendedVerification"] == []
         assert not any(
-            item.get("source") == "product_surface_scan"
+            item.get("source") == "objective_surface_scan"
             for item in evidence["acceptance"]
         )
 
@@ -1531,7 +1526,7 @@ class TestCompletionHardGate:
         assert result["status"] == "completed"
         evidence = result["structuredResult"]["completionEvidence"]
         advisory = evidence["productAdvisories"][0]
-        assert advisory["kind"] == "frontend_backend_api_flow"
+        assert advisory["kind"] == "api_reference_observation"
         assert advisory["severity"] == "info"
         assert advisory["signals"][0]["source"] == "verification"
 
@@ -1546,20 +1541,25 @@ class TestCompletionHardGate:
                     return SimpleNamespace(
                         accepted=True,
                         source="llm",
-                        rationale="The changed files form a frontend/backend feedback flow.",
+                        rationale="The changed files form an interactive feedback flow.",
                         fallback_reason=None,
                         proposal_id="surface_review_1",
                         confidence=0.82,
                         payload={
-                            "surface_type": "frontend_backend_api_flow",
-                            "needs_runtime_probe": True,
-                            "needs_api_probe": True,
-                            "needs_state_probe": True,
+                            "surface_type": "interactive_feedback_flow",
                             "recommended_verification": [
-                                "Run an API smoke that submits feedback and verifies state.",
+                                "Provide end-to-end evidence for the requested feedback flow.",
                             ],
-                            "probe_intents": [
-                                {"kind": "api", "target": "POST /api/feedback"},
+                            "verification_intents": [
+                                {"kind": "flow_evidence", "target": "feedback submission path"},
+                            ],
+                            "evidence_requests": [
+                                {
+                                    "kind": "flow_evidence",
+                                    "summary": "Submit feedback and verify the resulting state or persistence.",
+                                    "target": "feedback submission",
+                                    "blocking": True,
+                                },
                             ],
                         },
                     )
@@ -1572,9 +1572,9 @@ class TestCompletionHardGate:
                     confidence=0.88,
                     payload={
                         "is_complete": False,
-                        "surface_type": "frontend_backend_api_flow",
-                        "blocking_issues": ["Missing end-to-end API/browser or state verification for the requested flow."],
-                        "recommended_verification": ["Run an API smoke that submits feedback and verifies state."],
+                        "surface_type": "interactive_feedback_flow",
+                        "blocking_issues": ["Missing end-to-end evidence for the requested feedback flow."],
+                        "recommended_verification": ["Provide flow evidence that submits feedback and verifies the outcome."],
                     },
                 )
 
@@ -1635,27 +1635,30 @@ class TestCompletionHardGate:
             "completion_decision",
         ]
         surface_context = advisor.calls[0][1]
-        assert surface_context["objective_signals"]["objective_product_advisories"][0]["kind"] == "frontend_backend_api_flow"
+        assert surface_context["objective_signals"]["objective_product_advisories"][0]["kind"] == "api_reference_observation"
         advisor_context = advisor.calls[1][1]
         assert any(
             item.get("source") == "llm_product_surface_advisor"
             for item in advisor_context["product_advisories"]
         )
         evidence = result["structuredResult"]["completionEvidence"]
-        assert evidence["productSurfaceAdvisor"]["payload"]["surface_type"] == "frontend_backend_api_flow"
+        assert evidence["productSurfaceAdvisor"]["payload"]["surface_type"] == "interactive_feedback_flow"
         surface_proposals = store.list_proposals({
             "taskId": task["id"],
             "kind": "product_surface_decision",
         })["proposals"]
         assert len(surface_proposals) == 1
         assert evidence["productSurfaceAdvisor"]["proposalRecordId"] == surface_proposals[0]["id"]
-        assert surface_proposals[0]["proposal"]["needs_api_probe"] is True
+        assert surface_proposals[0]["proposal"]["evidence_requests"][0]["kind"] == "flow_evidence"
+        assert evidence["advisorRequestedEvidence"][0]["kind"] == "flow_evidence"
+        assert evidence["advisorRequestedEvidence"][0]["status"] == "missing"
         llm_advisory = [
             item for item in evidence["productAdvisories"]
             if item.get("source") == "llm_product_surface_advisor"
         ][0]
-        assert llm_advisory["surfaceType"] == "frontend_backend_api_flow"
-        assert llm_advisory["probeRequests"]["needs_api_probe"] is True
+        assert llm_advisory["surfaceType"] == "interactive_feedback_flow"
+        assert llm_advisory["evidenceRequests"][0]["kind"] == "flow_evidence"
+        assert llm_advisory["hasBlockingEvidenceRequest"] is True
         assert evidence["completionAdvisor"]["payload"]["is_complete"] is False
         proposal_records = store.list_proposals({
             "taskId": task["id"],
@@ -1666,10 +1669,99 @@ class TestCompletionHardGate:
         assert evidence["completionAdvisor"]["proposalRecordId"] == proposal["id"]
         assert proposal["status"] == "accepted"
         assert proposal["proposal"]["is_complete"] is False
-        assert proposal["proposal"]["surface_type"] == "frontend_backend_api_flow"
+        assert proposal["proposal"]["surface_type"] == "interactive_feedback_flow"
         assert proposal["source"]["type"] == "llm"
         assert proposal["source"]["advisorProposalId"] == "advisor_review_1"
         assert result["structuredResult"]["completionGate"]["status"] == "advisor_needs_review"
+
+    def test_product_surface_advisor_can_request_design_evidence(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, Any]]] = []
+
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                self.calls.append((kind, input_context))
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="This is a design task, so the completion evidence should include reviewable trade-offs.",
+                        fallback_reason=None,
+                        proposal_id="surface_design_1",
+                        confidence=0.86,
+                        payload={
+                            "surface_type": "architecture_design",
+                            "recommended_verification": ["Review ADR alternatives, rollout, and rollback sections."],
+                            "verification_intents": [
+                                {"kind": "design_review", "target": "ADR trade-offs"},
+                            ],
+                            "evidence_requests": [
+                                {
+                                    "kind": "design_review",
+                                    "summary": "ADR includes alternatives, decision rationale, rollout, rollback, and open risks.",
+                                    "target": "docs/auth-storage-adr.md",
+                                    "blocking": True,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="Design evidence is needed before this can be considered reviewed.",
+                    fallback_reason=None,
+                    proposal_id="completion_design_1",
+                    confidence=0.74,
+                    payload={
+                        "is_complete": True,
+                        "surface_type": "architecture_design",
+                        "remaining_risks": ["Design review evidence is still pending."],
+                    },
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor)
+        store = rt.store
+        project = tmp_path / "project"
+        docs = project / "docs"
+        docs.mkdir(parents=True)
+        (docs / "auth-storage-adr.md").write_text(
+            "# Auth Storage ADR\n\nDecision: migrate token storage behind a repository boundary.\n",
+            encoding="utf-8",
+        )
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="design evidence")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Design the auth storage migration plan",
+            plan=[],
+            routing={"scenario": "doc_write"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "docs/auth-storage-adr.md", "summary": "documented migration design"},
+            ],
+            verification=[
+                {"command": "markdown lint docs/auth-storage-adr.md", "status": "passed", "summary": "markdown ok"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Drafted the auth storage migration ADR.",
+            context={"workspace_root": str(project), "routing": {"scenario": "doc_write"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert evidence["productSurfaceAdvisor"]["payload"]["surface_type"] == "architecture_design"
+        assert evidence["advisorRequestedEvidence"][0]["kind"] == "design_review"
+        assert evidence["advisorRequestedEvidence"][0]["status"] == "missing"
+        assert result["structuredResult"]["completionGate"]["status"] == "advisor_evidence_requested"
 
     def test_static_frontend_script_syntax_failure_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)

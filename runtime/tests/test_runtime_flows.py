@@ -1623,8 +1623,95 @@ def test_supplement_records_user_takeover_state(runtime_harness: Any, tmp_path: 
     assert takeover["taskStatusAtReceipt"] == "running"
     assert updated["routing"]["mainWorkflow"]["takeoverHistory"][-1]["state"] == "stop_requested"
     assert updated["status"] == "cancelled"
-    assert "task.user_takeover.received" in _event_types(runtime_harness.events)
-    assert "task.cancelled" in _event_types(runtime_harness.events)
+    event_types = _event_types(runtime_harness.events)
+    assert "task.user_takeover.received" in event_types
+    assert "task.cancelled" in event_types
+
+
+def test_supplement_pause_takeover_pauses_task(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call("session.create", {"workspaceId": workspace["id"], "title": "pause takeover"}),
+        "session",
+    )
+    active = runtime_harness.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="long task",
+        plan=[],
+        status="running",
+        routing={
+            "scenario": "code_edit",
+            "strategy": "react_standard",
+            "mainWorkflow": {"userTakeover": {"state": "none"}},
+        },
+    )
+
+    result = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "pause for a moment"},
+    )
+    assert result["result"]["acceptedMode"] == "supplement"
+    updated = _call_result(
+        runtime_harness.call("task.get", {"taskId": active["id"]}),
+        "task",
+    )
+
+    takeover = updated["routing"]["mainWorkflow"]["userTakeover"]
+    assert takeover["state"] == "pause_requested"
+    assert takeover["taskStatusAtReceipt"] == "running"
+    assert updated["status"] == "paused"
+    event_types = _event_types(runtime_harness.events)
+    assert "task.user_takeover.received" in event_types
+    assert "task.paused" in event_types
+
+
+def test_supplement_continue_takeover_resumes_paused_task(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call("session.create", {"workspaceId": workspace["id"], "title": "continue takeover"}),
+        "session",
+    )
+    active = runtime_harness.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="long task",
+        plan=[],
+        status="paused",
+        routing={
+            "scenario": "code_edit",
+            "strategy": "react_standard",
+            "mainWorkflow": {"userTakeover": {"state": "pause_requested"}},
+        },
+    )
+
+    result = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "continue now"},
+    )
+    assert result["result"]["acceptedMode"] == "supplement"
+    updated = _call_result(
+        runtime_harness.call("task.get", {"taskId": active["id"]}),
+        "task",
+    )
+
+    takeover = updated["routing"]["mainWorkflow"]["userTakeover"]
+    assert takeover["state"] == "continue_requested"
+    assert takeover["taskStatusAtReceipt"] == "paused"
+    assert updated["status"] == "running"
+    event_types = _event_types(runtime_harness.events)
+    assert "task.user_takeover.received" in event_types
+    assert "task.resumed" in event_types
 
 
 # ── Observability tests ──────────────────────────────────────────────────

@@ -1548,14 +1548,14 @@ Completed or effectively closed:
 | Real LLM smoke baseline | Done | Real LLM smoke is default-skipped and environment-gated; GLM full-coverage and heavy follow-up smokes passed in recorded runs. |
 | Long-running subagent workflow hardening | Done in latest runtime commit | `ff8aa40` records broader runtime workflow coverage, command compatibility support, child worker/orphan cleanup coverage, code search tests, policy guard tests, and long-run plan documentation. |
 | Pytest temporary directory hygiene | Done | `.pytest-*/` is ignored so focused/long-run temp directories do not pollute git status. |
-| Main workflow state baseline | Done in current follow-up | Each foreground, background, and queued task now persists `routing.mainWorkflow` with intent confidence, automation level, budgets, workspace/git snapshot, and initial user takeover state. Stop/cancel takeover supplements are recorded and routed through the existing task cancellation path. |
+| Main workflow state baseline + phase 2 execution | Done in current follow-up | Each foreground, background, and queued task now persists `routing.mainWorkflow` with intent confidence, automation level, budgets, workspace/git snapshot, and initial user takeover state. Stop/cancel, pause, and continue takeover supplements are routed through the existing task lifecycle paths; ReAct `maxTaskSteps` exhaustion now records `mainWorkflow.budget` exhaustion, emits `task.budget.exhausted`, and converges into a partial completion/review path instead of hard failing the loop. |
 
 Still open / next implementation queue:
 
 | Priority | Task | Current next step |
 | --- | --- | --- |
 | P0/P1 | MCP + Skills real acceptance coverage | Add a real scenario that triggers a skill, reads `SKILL.md`, uses MCP/tool output, edits or inspects local artifacts, and survives compaction. Include unavailable MCP/skill fallback cases. |
-| P0/P1 | Main workflow state machine phase 2 | Use the persisted `mainWorkflow` state to drive convergence behavior, budget-exceeded transitions, pause/continue takeover handling, and frontend cockpit state. |
+| P0/P1 | Main workflow state machine phase 3 | Extend the execution state into frontend cockpit/reporting, wrap-up/change-target takeover behavior, richer budget dimensions, and resumable handoff UI. |
 | P0/P1 | Structured compaction handoff | Store `handoffSummary` fields for objective, completed work, modified files, failed commands, verification status, decisions, risks, and next command; add downstream recovery tests. |
 | P1 | Provider failure recovery | Classify timeout, HTTP parameter/context-too-large, auth/key, and refusal failures; retry or split context only when recoverable. |
 | P1 | Product acceptance gate | Add generated-artifact checks beyond unit tests: server/browser smoke, visible copy/mojibake check, persistence/API flow, and readable docs/README verification. |
@@ -1574,4 +1574,4 @@ Current priority order:
 2. Structured compaction handoff.
 3. Product acceptance gate and runtime cockpit/reporting.
 4. Provider recovery and multi-agent worktree strategy validation.
-5. Main workflow phase 2: convergence and pause/continue takeover execution.
+5. Main workflow phase 3: cockpit/reporting, wrap-up/change-target takeover, and richer budget convergence policies.

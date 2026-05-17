@@ -1310,7 +1310,7 @@ def test_pending_react_approval_recovers_with_new_orchestrator_and_store(tmp_pat
     assert len(provider.calls) == 2
 
 
-def test_react_loop_fails_when_max_steps_are_exceeded(tmp_path: Any) -> None:
+def test_react_loop_converges_when_max_steps_are_exceeded(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [
             {
@@ -1348,10 +1348,17 @@ def test_react_loop_fails_when_max_steps_are_exceeded(tmp_path: Any) -> None:
         "task",
     )
 
-    assert task["status"] == "failed"
-    assert task["errorCode"] == "LOOP_EXECUTION_FAILED"
+    assert task["status"] == "completed"
+    assert task.get("errorCode") is None
     assert "maxTaskSteps" in task["resultSummary"]
-    assert "tool.completed" in [event["type"] for event in runtime.events]
+    workflow = task["routing"]["mainWorkflow"]
+    assert workflow["budget"]["exhausted"] is True
+    assert workflow["budget"]["exhaustedReason"] == "max_steps"
+    assert workflow["budget"]["consumedSteps"] == 1
+    assert workflow["convergence"]["state"] == "partial_result"
+    event_types = [event["type"] for event in runtime.events]
+    assert "tool.completed" in event_types
+    assert "task.budget.exhausted" in event_types
 
 
 def test_react_loop_reuses_duplicate_read_file_results(tmp_path: Any) -> None:

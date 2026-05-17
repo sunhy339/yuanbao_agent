@@ -120,12 +120,18 @@ class SupplementFlowMixin:
         takeover: dict[str, Any],
     ) -> dict[str, Any]:
         state = takeover.get("state")
-        if state != "stop_requested":
+        transition_by_state = {
+            "stop_requested": self.cancel_task,
+            "pause_requested": self.pause_task,
+            "continue_requested": self.resume_task,
+        }
+        transition = transition_by_state.get(state)
+        if transition is None:
             return task
         try:
-            return self.cancel_task({"taskId": task["id"]})["task"]
+            return transition({"taskId": task["id"]})["task"]
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to apply stop takeover for task %s: %s", task.get("id"), exc)
+            logger.warning("Failed to apply %s takeover for task %s: %s", state, task.get("id"), exc)
             return task
 
     @staticmethod

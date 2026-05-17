@@ -129,7 +129,15 @@ class ReactRunnerMixin:
                 return {"status": "paused"}
 
             if steps >= max_steps:
-                raise RuntimeError(f"Reached maxTaskSteps ({max_steps}) before the provider returned a final answer.")
+                return self._converge_after_step_budget_exhausted(
+                    session_id=session_id,
+                    task=task,
+                    goal=goal,
+                    context=context,
+                    tool_results=tool_results,
+                    steps=steps,
+                    max_steps=max_steps,
+                )
 
             # Drain pending supplements from task inbox
             pending_supplements = self._store.get_pending_supplements(task["id"])
@@ -461,6 +469,71 @@ class ReactRunnerMixin:
                 }
                 self._save_pending_react_state(task["id"], self._pending_react_tasks[task["id"]])
                 return {"status": "paused"}
+
+    def _converge_after_step_budget_exhausted(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+        steps: int,
+        max_steps: int,
+    ) -> dict[str, Any]:
+        routing = dict(task.get("routing") or context.get("routing") or {})
+        workflow = dict(routing.get("mainWorkflow") or {})
+        budget_state = dict(workflow.get("budget") or {})
+        budget_state.update({
+            "exhausted": True,
+            "exhaustedReason": "max_steps",
+            "consumedSteps": steps,
+            "maxSteps": max_steps,
+            "convergenceRequired": True,
+        })
+        workflow["budget"] = budget_state
+        workflow["convergence"] = {
+            "state": "partial_result",
+            "reason": "max_steps_exhausted",
+            "toolResultCount": len(tool_results),
+        }
+        routing["mainWorkflow"] = workflow
+        task = self._store.update_task(task_id=task["id"], routing=routing)
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="task.budget.exhausted",
+            payload={
+                "dimension": "max_steps",
+                "consumedSteps": steps,
+                "maxSteps": max_steps,
+                "convergence": workflow["convergence"],
+            },
+        )
+        summary = self._budget_exhausted_summary(goal=goal, tool_results=tool_results, steps=steps, max_steps=max_steps)
+        return {
+            "status": "completed",
+            "summary": summary,
+            "tool_results": tool_results,
+            "budget_exhausted": True,
+        }
+
+    @staticmethod
+    def _budget_exhausted_summary(
+        *,
+        goal: str,
+        tool_results: list[dict[str, Any]],
+        steps: int,
+        max_steps: int,
+    ) -> str:
+        completed = sum(1 for item in tool_results if (item.get("result") or {}).get("status") in {None, "completed", "applied", "written"})
+        failed = sum(1 for item in tool_results if (item.get("result") or {}).get("status") in {"failed", "error", "timeout"})
+        return (
+            f"Reached maxTaskSteps ({max_steps}) after {steps} step(s). "
+            f"Partial progress is preserved for review. "
+            f"Tool results recorded: {len(tool_results)} total, {completed} completed, {failed} failed. "
+            f"Original goal: {goal}"
+        )
 
     def _initial_react_messages(self, context: dict[str, Any], goal: str) -> list[dict[str, Any]]:
         messages = context.get("messages")

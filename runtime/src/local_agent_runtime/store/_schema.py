@@ -298,6 +298,7 @@ class SchemaBootstrapMixin:
                 tokens_after INTEGER NOT NULL,
                 summary TEXT,
                 primer_hash TEXT,
+                handoff_summary_json TEXT DEFAULT '{}',
                 created_at INTEGER NOT NULL
             );
 
@@ -856,6 +857,7 @@ class SchemaBootstrapMixin:
             "covered_message_ids": "TEXT DEFAULT '[]'",
             "trimmed_sections": "TEXT DEFAULT '[]'",
             "task_id": "TEXT",
+            "handoff_summary_json": "TEXT DEFAULT '{}'",
         }
         for column, definition in expected.items():
             if column not in columns:

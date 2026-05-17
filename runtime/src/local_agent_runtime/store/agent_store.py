@@ -472,7 +472,7 @@ class AgentStoreMixin:
                 "SELECT * FROM compaction_records WHERE session_id = ? ORDER BY created_at DESC LIMIT 20",
                 (effective_session,),
             ).fetchall()
-            compactions = [dict(r) for r in rows]
+            compactions = [self._serialize_compaction_record(dict(r)) for r in rows]
 
         # 4. Get all snapshots for historical trend (if task_id)
         trend: list[dict[str, Any]] = []
@@ -501,6 +501,18 @@ class AgentStoreMixin:
             "tokenTrend": trend,
             "promptLayers": prompt_layers,
         }
+
+    def _serialize_compaction_record(self, row: dict[str, Any]) -> dict[str, Any]:
+        result = dict(row)
+        raw_handoff = result.pop("handoff_summary_json", None)
+        if raw_handoff:
+            try:
+                handoff = json.loads(raw_handoff)
+            except (json.JSONDecodeError, TypeError):
+                handoff = {}
+            if isinstance(handoff, dict):
+                result["handoffSummary"] = handoff
+        return result
 
     # ------------------------------------------------------------------
     # Autonomy Run Report
@@ -604,7 +616,7 @@ class AgentStoreMixin:
             "SELECT * FROM compaction_records WHERE session_id = ? ORDER BY created_at DESC LIMIT 20",
             (session_id,),
         ).fetchall()
-        compactions = [dict(r) for r in compaction_rows]
+        compactions = [self._serialize_compaction_record(dict(r)) for r in compaction_rows]
 
         # 11. Subagents
         subagent_rows = self._conn.execute(

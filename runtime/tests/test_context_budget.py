@@ -230,6 +230,48 @@ class TestContextBudgetRpc:
         assert c["tokens_before"] == 10000
         assert c["tokens_after"] == 5000
 
+    def test_returns_structured_compaction_handoff(self, tmp_path: Any) -> None:
+        """context.budget exposes parsed handoffSummary for recovery UI and follow-up turns."""
+        server, store = _make_harness(tmp_path)
+        session = _setup_session(store, tmp_path)
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="root",
+            goal="recover from compaction",
+            plan=[],
+        )
+        handoff = {
+            "version": 1,
+            "objective": "recover from compaction",
+            "verificationStatus": "failed",
+            "nextCommand": "Fix or rerun failed command: pytest",
+        }
+        store._conn.execute(
+            """INSERT INTO compaction_records (
+                   id, session_id, task_id, strategy, tokens_before, tokens_after,
+                   summary, handoff_summary_json, created_at
+               )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "comp_handoff",
+                session["id"],
+                task["id"],
+                "primer_summary_recent",
+                10000,
+                6000,
+                "summary",
+                json.dumps(handoff),
+                store.now(),
+            ),
+        )
+        store._conn.commit()
+
+        result = _call(server, "context.budget", {"taskId": task["id"]})
+
+        assert result["compactions"][0]["id"] == "comp_handoff"
+        assert result["compactions"][0]["handoffSummary"]["objective"] == "recover from compaction"
+        assert result["compactions"][0]["handoffSummary"]["verificationStatus"] == "failed"
+
     def test_returns_prompt_layers_from_snapshot(self, tmp_path: Any) -> None:
         """context.budget returns promptLayers from latest snapshot."""
         server, store = _make_harness(tmp_path)

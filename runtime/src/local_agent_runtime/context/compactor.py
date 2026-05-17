@@ -35,6 +35,7 @@ class CompactionResult:
     summary: str | None = None
     strategy: str = "primer_summary_recent"
     compaction_id: str | None = None
+    handoff_summary: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -120,19 +121,30 @@ class ContextCompactor:
 
         # Generate summary of the history segment
         summary = self._generate_summary(history, budget_for_summary)
-        summary_tokens = estimate_tokens(summary) if summary else 0
+        handoff_summary = self._build_handoff_summary(
+            session_id=session_id,
+            task_id=task_id,
+            history=history,
+            recents=recents,
+            summary=summary,
+        )
+        handoff_text = self._format_handoff_summary(handoff_summary)
 
         # Reassemble
         kept: list[dict[str, Any]] = list(primers)
-        if summary:
+        if summary or handoff_text:
+            content_parts: list[str] = []
+            if summary:
+                content_parts.append(f"[Conversation summary]\n{summary}")
+            if handoff_text:
+                content_parts.append(f"[Structured handoff]\n{handoff_text}")
             kept.append({
                 "role": "system",
-                "content": f"[Conversation summary]\n{summary}",
+                "content": "\n\n".join(content_parts),
             })
         kept.extend(recents)
 
-        # Compute tokens_after from pre-computed values + summary
-        tokens_after = primer_tokens + recent_tokens + summary_tokens
+        tokens_after = sum(estimate_tokens(m.get("content", "")) for m in kept)
         primer_hash = self._hash_primers(primers)
 
         # Persist record
@@ -158,8 +170,9 @@ class ContextCompactor:
             """
             INSERT INTO compaction_records
                 (id, session_id, task_id, strategy, tokens_before, tokens_after,
-                 summary, primer_hash, covered_message_ids, trimmed_sections, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 summary, primer_hash, covered_message_ids, trimmed_sections,
+                 handoff_summary_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 compaction_id,
@@ -172,6 +185,7 @@ class ContextCompactor:
                 primer_hash,
                 _json.dumps(covered_ids, ensure_ascii=False),
                 _json.dumps([], ensure_ascii=False),
+                _json.dumps(handoff_summary, ensure_ascii=False),
                 now,
             ),
         )
@@ -184,6 +198,7 @@ class ContextCompactor:
             summary=summary,
             strategy="primer_summary_recent",
             compaction_id=compaction_id,
+            handoff_summary=handoff_summary,
         )
 
     def should_compact(
@@ -366,6 +381,231 @@ class ContextCompactor:
         head = history_text[: max_chars // 2]
         tail = history_text[len(history_text) - max_chars // 2 :]
         return f"{head}\n…[truncated]…\n{tail}"
+
+    def _build_handoff_summary(
+        self,
+        *,
+        session_id: str,
+        task_id: str | None,
+        history: list[dict[str, Any]],
+        recents: list[dict[str, Any]],
+        summary: str | None,
+    ) -> dict[str, Any]:
+        task = self._load_task_for_handoff(task_id)
+        messages = history + recents
+        commands = self._handoff_commands(task)
+        verification = self._handoff_verification(task)
+        return {
+            "version": 1,
+            "sessionId": session_id,
+            "taskId": task_id,
+            "objective": self._handoff_objective(task, messages),
+            "currentStep": task.get("currentStep") if task else None,
+            "completedWork": self._handoff_completed_work(task, summary)[:8],
+            "modifiedFiles": self._handoff_modified_files(task)[:20],
+            "failedCommands": [item for item in commands if self._is_failed_status(item.get("status"))][:8],
+            "verificationStatus": self._handoff_verification_status(verification, commands),
+            "verification": verification[:8],
+            "decisions": self._handoff_decisions(task, summary)[:8],
+            "risks": self._handoff_risks(task)[:8],
+            "nextCommand": self._handoff_next_action(task, commands),
+            "recentContext": self._handoff_recent_context(messages),
+        }
+
+    def _load_task_for_handoff(self, task_id: str | None) -> dict[str, Any] | None:
+        if not task_id:
+            return None
+        try:
+            return self._store.get_task({"taskId": task_id})["task"]
+        except Exception:
+            return None
+
+    @staticmethod
+    def _handoff_objective(task: dict[str, Any] | None, messages: list[dict[str, Any]]) -> str | None:
+        if task and task.get("goal"):
+            return str(task["goal"])[:500]
+        for message in reversed(messages):
+            if message.get("role") == "user" and message.get("content"):
+                return str(message["content"])[:500]
+        return None
+
+    @staticmethod
+    def _handoff_completed_work(task: dict[str, Any] | None, summary: str | None) -> list[str]:
+        items: list[str] = []
+        if task:
+            for step in task.get("plan") or []:
+                if isinstance(step, dict) and step.get("status") == "completed":
+                    title = step.get("title") or step.get("id")
+                    if title:
+                        items.append(str(title)[:240])
+            result_summary = task.get("resultSummary") or task.get("summary")
+            if result_summary:
+                items.append(str(result_summary)[:500])
+        if summary:
+            items.append(str(summary)[:500])
+        return ContextCompactor._dedupe_text(items)
+
+    @staticmethod
+    def _handoff_modified_files(task: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if not task:
+            return []
+        files: list[dict[str, Any]] = []
+        for item in task.get("changedFiles") or []:
+            if isinstance(item, dict):
+                path = item.get("path") or item.get("file") or item.get("name")
+                if path:
+                    files.append({
+                        "path": str(path),
+                        "status": item.get("status"),
+                        "summary": item.get("summary"),
+                    })
+            elif isinstance(item, str):
+                files.append({"path": item})
+        return files
+
+    @staticmethod
+    def _handoff_commands(task: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if not task:
+            return []
+        commands: list[dict[str, Any]] = []
+        for item in task.get("commands") or []:
+            if not isinstance(item, dict):
+                continue
+            commands.append({
+                "command": item.get("command") or item.get("name"),
+                "status": item.get("status"),
+                "exitCode": item.get("exitCode"),
+                "summary": item.get("summary"),
+            })
+        return commands
+
+    @staticmethod
+    def _handoff_verification(task: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if not task:
+            return []
+        verification: list[dict[str, Any]] = []
+        for source_key in ("verification", "testsRun"):
+            for item in task.get(source_key) or []:
+                if not isinstance(item, dict):
+                    continue
+                verification.append({
+                    "name": item.get("name") or item.get("command") or item.get("suite"),
+                    "status": item.get("status"),
+                    "summary": item.get("summary"),
+                })
+        return verification
+
+    @staticmethod
+    def _handoff_risks(task: dict[str, Any] | None) -> list[str]:
+        if not task:
+            return []
+        risks: list[str] = []
+        for item in task.get("risks") or []:
+            text = item.get("summary") or item.get("risk") or item.get("message") if isinstance(item, dict) else item
+            if text:
+                risks.append(str(text)[:300])
+        return ContextCompactor._dedupe_text(risks)
+
+    @staticmethod
+    def _handoff_decisions(task: dict[str, Any] | None, summary: str | None) -> list[str]:
+        decisions: list[str] = []
+        if task:
+            routing = task.get("routing") or {}
+            if isinstance(routing, dict):
+                strategy = routing.get("strategy")
+                scenario = routing.get("scenario")
+                if strategy or scenario:
+                    decisions.append(f"routing: scenario={scenario or 'unknown'}, strategy={strategy or 'unknown'}")
+                workflow = routing.get("mainWorkflow")
+                if isinstance(workflow, dict):
+                    takeover = workflow.get("userTakeover")
+                    if isinstance(takeover, dict) and takeover.get("state"):
+                        decisions.append(f"user takeover state: {takeover['state']}")
+                    budget = workflow.get("budget")
+                    if isinstance(budget, dict) and budget.get("exhausted"):
+                        decisions.append(f"budget exhausted: {budget.get('exhaustedReason') or 'unknown'}")
+        if summary:
+            decisions.append(str(summary)[:300])
+        return ContextCompactor._dedupe_text(decisions)
+
+    @staticmethod
+    def _handoff_verification_status(
+        verification: list[dict[str, Any]],
+        commands: list[dict[str, Any]],
+    ) -> str:
+        statuses = [str(item.get("status") or "").lower() for item in verification + commands]
+        if any(ContextCompactor._is_failed_status(status) for status in statuses):
+            return "failed"
+        if any(status in {"passed", "completed", "success", "ok"} for status in statuses):
+            return "passed"
+        return "missing"
+
+    @staticmethod
+    def _handoff_next_action(task: dict[str, Any] | None, commands: list[dict[str, Any]]) -> str | None:
+        for command in commands:
+            if ContextCompactor._is_failed_status(command.get("status")) and command.get("command"):
+                return f"Fix or rerun failed command: {command['command']}"
+        if task:
+            for step in task.get("plan") or []:
+                if isinstance(step, dict) and step.get("status") in {"active", "pending"}:
+                    title = step.get("title") or step.get("id")
+                    if title:
+                        return str(title)[:300]
+            if task.get("currentStep"):
+                return str(task["currentStep"])[:300]
+        return None
+
+    @staticmethod
+    def _handoff_recent_context(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+        recent: list[dict[str, str]] = []
+        for message in messages[-6:]:
+            content = str(message.get("content") or "").strip()
+            if content:
+                recent.append({"role": str(message.get("role") or "unknown"), "content": content[:300]})
+        return recent
+
+    @staticmethod
+    def _format_handoff_summary(handoff: dict[str, Any]) -> str:
+        lines: list[str] = []
+        if handoff.get("objective"):
+            lines.append(f"Objective: {handoff['objective']}")
+        if handoff.get("currentStep"):
+            lines.append(f"Current step: {handoff['currentStep']}")
+        lines.append(f"Verification status: {handoff.get('verificationStatus') or 'missing'}")
+        if handoff.get("completedWork"):
+            lines.append("Completed work:")
+            lines.extend(f"- {item}" for item in handoff["completedWork"][:5])
+        if handoff.get("modifiedFiles"):
+            lines.append("Modified files:")
+            for item in handoff["modifiedFiles"][:8]:
+                summary = f" - {item.get('summary')}" if item.get("summary") else ""
+                lines.append(f"- {item.get('path')}{summary}")
+        if handoff.get("failedCommands"):
+            lines.append("Failed commands:")
+            for item in handoff["failedCommands"][:5]:
+                lines.append(f"- {item.get('command')} ({item.get('status')})")
+        if handoff.get("risks"):
+            lines.append("Risks:")
+            lines.extend(f"- {item}" for item in handoff["risks"][:5])
+        if handoff.get("nextCommand"):
+            lines.append(f"Next action: {handoff['nextCommand']}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _is_failed_status(status: Any) -> bool:
+        text = str(status or "").lower()
+        return text in {"failed", "error", "timeout", "killed", "cancelled"} or text.startswith("fail")
+
+    @staticmethod
+    def _dedupe_text(items: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            text = str(item).strip()
+            if text and text not in seen:
+                seen.add(text)
+                result.append(text)
+        return result
 
     def _llm_compaction_decision(
         self,

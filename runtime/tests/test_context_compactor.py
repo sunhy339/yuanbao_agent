@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -267,6 +268,63 @@ class TestCompact:
         result = compactor.compact("sess_6", msgs, max_tokens=200)
         assert result.summary is not None
         assert "caching strategies" in result.summary
+
+    def test_compaction_persists_structured_handoff_summary(self, tmp_path: Any) -> None:
+        workspace = self.store.upsert_workspace(str(tmp_path))
+        session = self.store.create_session(workspace["id"], "handoff")
+        task = self.store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Implement resumable compaction handoff",
+            plan=[
+                {"id": "inspect", "title": "Inspect compaction flow", "status": "completed"},
+                {"id": "fix", "title": "Fix failed verification", "status": "active"},
+            ],
+            current_step="Fix failed verification",
+            routing={
+                "scenario": "code_edit",
+                "strategy": "react_standard",
+                "mainWorkflow": {
+                    "budget": {"exhausted": True, "exhaustedReason": "max_steps"},
+                    "userTakeover": {"state": "none"},
+                },
+            },
+        )
+        self.store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "runtime/src/local_agent_runtime/context/compactor.py", "summary": "Adds handoff"}],
+            commands=[{"command": "python -m pytest runtime/tests/test_context_compactor.py", "status": "failed"}],
+            verification=[{"name": "context compactor tests", "status": "failed", "summary": "one assertion failed"}],
+            risks=[{"summary": "Need rerun after fixing verification"}],
+        )
+        msgs = [_msg("system", "sys")] + [
+            _msg("user", f"turn {index} {_long_content(200)}") for index in range(20)
+        ]
+
+        result = self.compactor.compact(
+            session["id"],
+            msgs,
+            max_tokens=220,
+            task_id=task["id"],
+        )
+
+        assert result.handoff_summary is not None
+        assert result.handoff_summary["objective"] == "Implement resumable compaction handoff"
+        assert result.handoff_summary["verificationStatus"] == "failed"
+        assert result.handoff_summary["failedCommands"][0]["command"].startswith("python -m pytest")
+        assert result.handoff_summary["nextCommand"].startswith("Fix or rerun failed command")
+        handoff_message = next(message for message in result.kept_messages if "Structured handoff" in message["content"])
+        assert "Objective: Implement resumable compaction handoff" in handoff_message["content"]
+        assert "Modified files:" in handoff_message["content"]
+
+        row = self.store._conn.execute(
+            "SELECT handoff_summary_json FROM compaction_records WHERE id = ?",
+            (result.compaction_id,),
+        ).fetchone()
+        assert row is not None
+        persisted = json.loads(row["handoff_summary_json"])
+        assert persisted["taskId"] == task["id"]
+        assert persisted["risks"] == ["Need rerun after fixing verification"]
 
 
 # ---------------------------------------------------------------------------

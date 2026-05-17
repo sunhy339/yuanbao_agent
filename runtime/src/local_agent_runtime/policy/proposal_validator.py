@@ -365,6 +365,19 @@ def validate_product_surface_decision(payload: dict[str, Any]) -> list[str]:
             status = item.get("status")
             if status is not None and not isinstance(status, str):
                 reasons.append(f"evidence_requests[{index}].status must be a string when provided")
+            suggested_tool = item.get("suggestedTool")
+            if suggested_tool is None:
+                suggested_tool = item.get("suggested_tool")
+            if suggested_tool is not None:
+                if not isinstance(suggested_tool, dict):
+                    reasons.append(f"evidence_requests[{index}].suggestedTool must be an object when provided")
+                else:
+                    name = suggested_tool.get("name") or suggested_tool.get("toolName")
+                    if not isinstance(name, str) or not name.strip():
+                        reasons.append(f"evidence_requests[{index}].suggestedTool.name must be a non-empty string")
+                    arguments = suggested_tool.get("arguments", {})
+                    if arguments is not None and not isinstance(arguments, dict):
+                        reasons.append(f"evidence_requests[{index}].suggestedTool.arguments must be an object when provided")
     return reasons
 
 

@@ -122,7 +122,7 @@ class ApprovalFlowMixin:
                 )
                 self._finalize_child_collaboration_after_approval(approval=approval, runtime_task=failed_task)
             return {"approval": approval}
-        if approval["decision"] == "rejected" and approval["kind"] == "run_command":
+        if approval["decision"] == "rejected" and approval["kind"] in {"run_command", "advisor_tool"}:
             try:
                 request = json.loads(approval.get("requestJson") or "{}")
             except json.JSONDecodeError:
@@ -132,8 +132,8 @@ class ApprovalFlowMixin:
                 return {"approval": approval, "task": task}
             summary = (
                 "Advisor-requested evidence command was rejected by the user."
-                if isinstance(advisor_evidence, dict)
-                else "Run command approval was rejected by the user."
+                if approval["kind"] == "run_command"
+                else "Advisor-requested evidence tool was rejected by the user."
             )
             task = self._fail_task(
                 session_id=task["sessionId"],
@@ -146,6 +146,8 @@ class ApprovalFlowMixin:
             task = self._resume_approved_plan(task=task, approval=approval)
         if approval["decision"] == "approved" and approval["kind"] == "run_command":
             task = self._resume_approved_command(task=task, approval=approval)
+        if approval["decision"] == "approved" and approval["kind"] == "advisor_tool":
+            task = self._resume_approved_advisor_tool(task=task, approval=approval)
         if approval["decision"] == "approved" and approval["kind"] == "apply_patch":
             task = self._resume_approved_patch(task=task, approval=approval)
         if approval["decision"] == "approved" and approval["kind"] == "write_file":
@@ -596,6 +598,79 @@ class ApprovalFlowMixin:
                 task={**runtime_task, "sessionId": task["sessionId"]},
                 summary=str(exc),
                 error_code="COMMAND_EXECUTION_FAILED",
+            )
+
+    def _resume_approved_advisor_tool(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
+        request = json.loads(approval.get("requestJson") or "{}")
+        tool_name = str(request.get("toolName") or request.get("name") or "").strip()
+        if not tool_name:
+            return self._fail_task(
+                session_id=task["sessionId"],
+                task=task,
+                summary="Advisor evidence tool approval request is missing toolName.",
+                error_code="ADVISOR_TOOL_APPROVAL_INVALID",
+            )
+        if tool_name == "run_command":
+            return self._fail_task(
+                session_id=task["sessionId"],
+                task=task,
+                summary="Advisor evidence run_command approvals must use the run_command approval flow.",
+                error_code="ADVISOR_TOOL_APPROVAL_INVALID",
+            )
+        raw_arguments = request.get("arguments")
+        arguments = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
+        workspace_root = str(request.get("workspaceRoot") or arguments.get("workspaceRoot") or "").strip()
+        context = self._context_builder.build(
+            session_id=task["sessionId"],
+            goal=task.get("goal") or "",
+        )
+        if workspace_root:
+            context["workspace_root"] = workspace_root
+        context.setdefault("search_config", {})
+        context.setdefault("search_mode", "content")
+        self._fill_tool_defaults(tool_name, arguments, context)
+        arguments["approvalId"] = approval["id"]
+        tool_spec = {
+            "name": tool_name,
+            "arguments": arguments,
+            "plan_step_id": self._plan_step_for_tool(tool_name),
+            "start_token": f"Approval accepted. Running advisor evidence tool: {tool_name}",
+        }
+        runtime_task = {**task, "plan": task.get("plan") or []}
+        try:
+            tool_result = self._execute_tool(
+                session_id=task["sessionId"],
+                task=runtime_task,
+                tool_spec=tool_spec,
+            )
+            result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+            status = str(result.get("status") or "").strip()
+            if status in {"blocked", "approval_required"} or self._tool_failed(tool_name, result):
+                summary = (
+                    f"Advisor evidence tool {tool_name} could not complete"
+                    f" with status {status or 'failed'}."
+                )
+                return self._fail_task(
+                    session_id=task["sessionId"],
+                    task={**runtime_task, "sessionId": task["sessionId"]},
+                    summary=summary,
+                    error_code="ADVISOR_TOOL_EXECUTION_FAILED",
+                )
+            summary = f"Approved advisor evidence tool {tool_name} finished."
+            return self._complete_task(
+                session_id=task["sessionId"],
+                task=runtime_task,
+                summary=summary,
+                context=context,
+                tool_results=[tool_result],
+                skip_reflection=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return self._fail_task(
+                session_id=task["sessionId"],
+                task={**runtime_task, "sessionId": task["sessionId"]},
+                summary=str(exc),
+                error_code="ADVISOR_TOOL_EXECUTION_FAILED",
             )
 
     def _resume_approved_patch(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:

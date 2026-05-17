@@ -27,6 +27,7 @@ ApprovalKind = Literal[
     "write_file",
     "worktree_merge",
     "completion_review",
+    "advisor_tool",
 ]
 ScheduledTaskStatus = Literal["active", "disabled"]
 ScheduledRunStatus = Literal["queued", "running", "completed", "failed", "cancelled"]

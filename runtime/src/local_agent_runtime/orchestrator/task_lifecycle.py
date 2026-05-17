@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..policy.permission_engine import PermissionEngine, PermissionRequest
+from ..policy.tool_policy_resolver import TOOL_CAPABILITIES
 from ..tools._shared import approval_request, normalize_shell
 from ..tools.run_command import _powershell_execution_command
 
@@ -112,6 +113,7 @@ class TaskLifecycleMixin:
             summary=final_summary,
             context=context or {},
             completion_evidence=completion_evidence,
+            tool_results=tool_results or [],
         )
         # --- Completion decision advisory ---
         completion_advice = self._consult_completion_advisor(
@@ -1106,6 +1108,7 @@ class TaskLifecycleMixin:
         summary: str,
         context: dict[str, Any],
         completion_evidence: dict[str, Any],
+        tool_results: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
         advice = self._consult_product_surface_advisor(
             task=task,
@@ -1125,6 +1128,7 @@ class TaskLifecycleMixin:
         requested_evidence = self._advisor_requested_evidence_from_advice(
             advice=advice,
             completion_evidence=completion_evidence,
+            tool_results=tool_results,
         )
         execution_suggestions = self._advisor_evidence_execution_suggestions(
             task=task,
@@ -1254,7 +1258,7 @@ class TaskLifecycleMixin:
             if request is None or not self._advisor_evidence_suggestion_needs_approval(suggestion, request):
                 continue
             try:
-                request_payload, execution_request = self._advisor_evidence_run_command_approval_request(
+                request_payload, execution_request, approval_kind = self._advisor_evidence_execution_approval_request(
                     task=task,
                     context=context,
                     advice=advice,
@@ -1270,12 +1274,12 @@ class TaskLifecycleMixin:
             if hasattr(self._store, "find_approval_by_request_fields"):
                 approval = self._store.find_approval_by_request_fields(
                     task_id=task["id"],
-                    kind="run_command",
+                    kind=approval_kind,
                     fields=execution_request,
                 )
             created = False
             if approval is None:
-                approval = self._store.create_approval(task["id"], "run_command", request_payload)
+                approval = self._store.create_approval(task["id"], approval_kind, request_payload)
                 created = True
 
             decision = approval.get("decision")
@@ -1289,26 +1293,35 @@ class TaskLifecycleMixin:
 
             suggestion.update({
                 "approvalId": approval["id"],
-                "approvalKind": "run_command",
+                "approvalKind": approval_kind,
                 "approvalDecision": decision or "pending",
-                "executionMode": "approval_then_run_command",
+                "executionMode": "approval_then_run_command" if suggestion.get("type") == "run_command" else "approval_then_tool",
                 "executionState": execution_state,
                 "approvalRequest": execution_request,
             })
             record = {
                 "approvalId": approval["id"],
-                "kind": "run_command",
+                "kind": approval_kind,
                 "decision": decision,
                 "executionState": execution_state,
                 "requestIndex": suggestion.get("requestIndex"),
                 "requestKind": suggestion.get("requestKind"),
-                "command": execution_request["command"],
-                "cwd": execution_request["cwd"],
-                "shell": execution_request["shell"],
-                "timeoutMs": execution_request["timeoutMs"],
                 "workspaceRoot": execution_request["workspaceRoot"],
                 "created": created,
             }
+            if suggestion.get("type") == "run_command":
+                record.update({
+                    "command": execution_request["command"],
+                    "cwd": execution_request["cwd"],
+                    "shell": execution_request["shell"],
+                    "timeoutMs": execution_request["timeoutMs"],
+                })
+            else:
+                record.update({
+                    "toolName": execution_request["toolName"],
+                    "arguments": execution_request["arguments"],
+                    "capability": execution_request.get("capability"),
+                })
             approvals.append({key: value for key, value in record.items() if value not in ("", None)})
             if created:
                 self._publish_advisor_evidence_approval_requested(
@@ -1337,11 +1350,38 @@ class TaskLifecycleMixin:
         request: dict[str, Any],
     ) -> bool:
         return (
-            suggestion.get("type") == "run_command"
+            suggestion.get("type") in {"run_command", "tool"}
             and suggestion.get("blocking") is True
             and suggestion.get("permissionDecision") == "approval_required"
             and request.get("status") == "missing"
         )
+
+    def _advisor_evidence_execution_approval_request(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        advice: dict[str, Any],
+        request: dict[str, Any],
+        suggestion: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any], str]:
+        if suggestion.get("type") == "run_command":
+            payload, execution_request = self._advisor_evidence_run_command_approval_request(
+                task=task,
+                context=context,
+                advice=advice,
+                request=request,
+                suggestion=suggestion,
+            )
+            return payload, execution_request, "run_command"
+        payload, execution_request = self._advisor_evidence_tool_approval_request(
+            task=task,
+            context=context,
+            advice=advice,
+            request=request,
+            suggestion=suggestion,
+        )
+        return payload, execution_request, "advisor_tool"
 
     def _advisor_evidence_run_command_approval_request(
         self,
@@ -1355,7 +1395,7 @@ class TaskLifecycleMixin:
         command = str(suggestion.get("command") or "").strip()
         if not command:
             raise ValueError("Advisor evidence command is empty")
-        workspace_root = self._advisor_evidence_workspace_root(task=task, context=context)
+        workspace_root = self._advisor_evidence_workspace_root(task=task, context=context, tool_name="run_command")
         shell_name = normalize_shell(
             str(request.get("shell")).strip() if isinstance(request.get("shell"), str) else None,
             self._store,
@@ -1389,7 +1429,64 @@ class TaskLifecycleMixin:
         }
         return approval_payload, execution_request
 
-    def _advisor_evidence_workspace_root(self, *, task: dict[str, Any], context: dict[str, Any]) -> Path:
+    def _advisor_evidence_tool_approval_request(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        advice: dict[str, Any],
+        request: dict[str, Any],
+        suggestion: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        tool_name = str(suggestion.get("toolName") or "").strip()
+        if not tool_name:
+            raise ValueError("Advisor evidence tool name is empty")
+        if tool_name == "run_command":
+            raise ValueError("Advisor evidence run_command must use suggestedCommand approval")
+        raw_arguments = suggestion.get("arguments")
+        arguments = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
+        workspace_root = self._advisor_evidence_workspace_root(task=task, context=context, tool_name=tool_name)
+        tool_context = {
+            **(context if isinstance(context, dict) else {}),
+            "workspace_root": str(workspace_root),
+        }
+        tool_context.setdefault("search_config", {})
+        tool_context.setdefault("search_mode", "content")
+        self._fill_tool_defaults(tool_name, arguments, tool_context)
+        execution_request = {
+            "taskId": str(task.get("id") or ""),
+            "toolName": tool_name,
+            "arguments": arguments,
+            "workspaceRoot": str(workspace_root),
+            "capability": suggestion.get("capability"),
+        }
+        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
+        advisor_metadata = {
+            "source": "llm_product_surface_advisor",
+            "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
+            "requestIndex": suggestion.get("requestIndex"),
+            "requestKind": suggestion.get("requestKind"),
+            "summary": suggestion.get("summary"),
+            "target": suggestion.get("target"),
+            "blocking": True,
+            "surfaceType": payload.get("surface_type"),
+            "rationale": request.get("rationale") or advice.get("rationale"),
+        }
+        approval_payload = {
+            **execution_request,
+            "advisorEvidence": {
+                key: value for key, value in advisor_metadata.items() if value not in ("", None)
+            },
+        }
+        return approval_payload, execution_request
+
+    def _advisor_evidence_workspace_root(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        tool_name: str = "run_command",
+    ) -> Path:
         raw_root = ""
         if isinstance(context, dict):
             raw_root = str(context.get("workspace_root") or context.get("workspaceRoot") or "").strip()
@@ -1399,21 +1496,21 @@ class TaskLifecycleMixin:
                 session = self._store.get_session({"sessionId": session_id})["session"]
                 raw_root = str(session.get("workspaceRoot") or "").strip()
         if not raw_root:
-            raise ValueError("workspaceRoot is required for advisor evidence command approval")
+            raise ValueError("workspaceRoot is required for advisor evidence execution approval")
 
         root = Path(raw_root).resolve()
         if hasattr(self, "_apply_task_worktree_to_tool_arguments"):
             try:
                 bound = self._apply_task_worktree_to_tool_arguments(
                     task_id=task["id"],
-                    tool_name="run_command",
+                    tool_name=tool_name,
                     arguments={"workspaceRoot": str(root), "cwd": "."},
                 )
                 bound_root = bound.get("workspaceRoot") if isinstance(bound, dict) else None
                 if isinstance(bound_root, str) and bound_root.strip():
                     root = Path(bound_root).resolve()
             except Exception:  # noqa: BLE001
-                logger.debug("Failed to bind advisor evidence command to task worktree", exc_info=True)
+                logger.debug("Failed to bind advisor evidence execution to task worktree", exc_info=True)
         if not root.exists() or not root.is_dir():
             raise ValueError(f"Workspace root does not exist: {root}")
         return root
@@ -1455,6 +1552,7 @@ class TaskLifecycleMixin:
             request = json.loads(approval.get("requestJson") or "{}")
         except json.JSONDecodeError:
             request = {}
+        kind = str(approval.get("kind") or request.get("kind") or "advisor_tool")
         self._publish(
             session_id=session_id,
             task=task,
@@ -1462,7 +1560,7 @@ class TaskLifecycleMixin:
             payload={
                 "approvalId": approval["id"],
                 "taskId": task["id"],
-                "kind": "run_command",
+                "kind": kind,
                 "request": request,
                 "source": "llm_product_surface_advisor",
                 "advisorEvidence": advisor_evidence,
@@ -1474,7 +1572,7 @@ class TaskLifecycleMixin:
             task,
             extra_context={
                 "approvalId": approval["id"],
-                "kind": "run_command",
+                "kind": kind,
                 "source": "llm_product_surface_advisor",
                 "advisorEvidence": advisor_evidence,
             },
@@ -1491,15 +1589,58 @@ class TaskLifecycleMixin:
         for index, request in enumerate(requested_evidence):
             if not isinstance(request, dict):
                 continue
-            command = request.get("suggestedCommand")
-            if not isinstance(command, str) or not command.strip():
-                continue
             if request.get("status") == "satisfied":
                 continue
-            permission = self._advisor_evidence_permission_summary(
+            command = request.get("suggestedCommand")
+            if isinstance(command, str) and command.strip():
+                permission = self._advisor_evidence_permission_summary(
+                    task=task,
+                    request=request,
+                    command=command.strip(),
+                )
+                decision = str(permission.get("decision") or "approval_required")
+                execution_state = "ready_for_executor"
+                if decision == "approval_required":
+                    execution_state = "approval_required"
+                elif decision == "deny":
+                    execution_state = "denied_by_policy"
+                suggestion: dict[str, Any] = {
+                    "type": "run_command",
+                    "toolName": "run_command",
+                    "command": command.strip(),
+                    "requestIndex": index,
+                    "requestKind": request.get("kind"),
+                    "summary": request.get("summary"),
+                    "target": request.get("target"),
+                    "blocking": request.get("blocking") is True,
+                    "source": "llm_product_surface_advisor",
+                    "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
+                    "executionState": execution_state,
+                    "executionMode": "suggestion_only",
+                    "permissionDecision": decision,
+                    "requiresApproval": decision == "approval_required",
+                }
+                if request.get("domain") not in (None, ""):
+                    suggestion["domain"] = request.get("domain")
+                if permission.get("reason"):
+                    suggestion["permissionReason"] = permission["reason"]
+                if permission.get("approvalKind"):
+                    suggestion["approvalKind"] = permission["approvalKind"]
+                suggestions.append({key: value for key, value in suggestion.items() if value not in (None, "")})
+
+            suggested_tool = request.get("suggestedTool")
+            if not isinstance(suggested_tool, dict):
+                continue
+            tool_name = str(suggested_tool.get("name") or suggested_tool.get("toolName") or "").strip()
+            if not tool_name or tool_name == "run_command":
+                continue
+            raw_arguments = suggested_tool.get("arguments")
+            arguments = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
+            permission = self._advisor_evidence_tool_permission_summary(
                 task=task,
                 request=request,
-                command=command.strip(),
+                tool_name=tool_name,
+                arguments=arguments,
             )
             decision = str(permission.get("decision") or "approval_required")
             execution_state = "ready_for_executor"
@@ -1508,9 +1649,9 @@ class TaskLifecycleMixin:
             elif decision == "deny":
                 execution_state = "denied_by_policy"
             suggestion: dict[str, Any] = {
-                "type": "run_command",
-                "toolName": "run_command",
-                "command": command.strip(),
+                "type": "tool",
+                "toolName": tool_name,
+                "arguments": arguments,
                 "requestIndex": index,
                 "requestKind": request.get("kind"),
                 "summary": request.get("summary"),
@@ -1523,6 +1664,8 @@ class TaskLifecycleMixin:
                 "permissionDecision": decision,
                 "requiresApproval": decision == "approval_required",
             }
+            if permission.get("capability"):
+                suggestion["capability"] = permission["capability"]
             if request.get("domain") not in (None, ""):
                 suggestion["domain"] = request.get("domain")
             if permission.get("reason"):
@@ -1569,6 +1712,63 @@ class TaskLifecycleMixin:
                 "capability": "runCommand",
                 "reason": f"Permission evaluation failed; approval required before execution: {exc}",
                 "approvalKind": "run_command",
+            }
+
+    def _advisor_evidence_tool_permission_summary(
+        self,
+        *,
+        task: dict[str, Any],
+        request: dict[str, Any],
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not getattr(self._tool_registry, "has_tool", lambda _name: False)(tool_name):
+            return {
+                "decision": "deny",
+                "capability": TOOL_CAPABILITIES.get(tool_name, "unknown"),
+                "reason": f"Tool {tool_name!r} is not registered in this runtime.",
+            }
+        capability = TOOL_CAPABILITIES.get(tool_name)
+        if not capability:
+            return {
+                "decision": "deny",
+                "capability": "unknown",
+                "reason": f"Tool {tool_name!r} has no registered capability mapping.",
+            }
+        try:
+            config_result = self._store.get_config({}) if hasattr(self._store, "get_config") else {}
+            config = config_result.get("config") if isinstance(config_result, dict) else {}
+            if not isinstance(config, dict):
+                config = {}
+            decision = PermissionEngine(config).evaluate(PermissionRequest(
+                capability=capability,
+                tool_name=tool_name,
+                context={
+                    "taskId": task.get("id"),
+                    "sessionId": task.get("sessionId"),
+                    "evidenceKind": request.get("kind"),
+                    "target": request.get("target"),
+                    "toolName": tool_name,
+                    "arguments": arguments,
+                    "source": "llm_product_surface_advisor",
+                },
+            ))
+            approval_kind = decision.approval_kind
+            if decision.decision == "approval_required":
+                approval_kind = "advisor_tool"
+            return {
+                "decision": decision.decision,
+                "capability": decision.capability,
+                "reason": decision.reason,
+                "approvalKind": approval_kind,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to evaluate advisor evidence tool permission", exc_info=True)
+            return {
+                "decision": "approval_required",
+                "capability": capability,
+                "reason": f"Permission evaluation failed; approval required before tool execution: {exc}",
+                "approvalKind": "advisor_tool",
             }
 
     def _consult_product_surface_advisor(
@@ -1785,6 +1985,7 @@ class TaskLifecycleMixin:
         *,
         advice: dict[str, Any],
         completion_evidence: dict[str, Any],
+        tool_results: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         if advice.get("accepted") is not True:
             return []
@@ -1798,6 +1999,7 @@ class TaskLifecycleMixin:
                 "status": self._advisor_evidence_request_status(
                     request=request,
                     completion_evidence=completion_evidence,
+                    tool_results=tool_results or [],
                 ),
                 "source": "llm_product_surface_advisor",
                 "proposalRecordId": advice.get("proposalRecordId"),
@@ -1834,9 +2036,24 @@ class TaskLifecycleMixin:
                 "summary": summary,
                 "blocking": bool(item.get("blocking")) if isinstance(item.get("blocking"), bool) else False,
             }
+            if item.get("suggestedCommand") in (None, "") and item.get("suggested_command") not in (None, ""):
+                item = {**item, "suggestedCommand": item.get("suggested_command")}
             for key in ("target", "rationale", "suggestedCommand", "domain", "cwd", "shell"):
                 if item.get(key) not in (None, ""):
                     request[key] = item[key]
+            suggested_tool = item.get("suggestedTool")
+            if suggested_tool is None:
+                suggested_tool = item.get("suggested_tool")
+            if isinstance(suggested_tool, dict):
+                tool_name = suggested_tool.get("name") or suggested_tool.get("toolName")
+                arguments = suggested_tool.get("arguments")
+                normalized_tool: dict[str, Any] = {}
+                if isinstance(tool_name, str) and tool_name.strip():
+                    normalized_tool["name"] = tool_name.strip()
+                if isinstance(arguments, dict):
+                    normalized_tool["arguments"] = dict(arguments)
+                if normalized_tool:
+                    request["suggestedTool"] = normalized_tool
             for key in ("timeoutMs", "timeout_ms", "background"):
                 if key in item and item.get(key) not in (None, ""):
                     request[key] = item[key]
@@ -1852,6 +2069,7 @@ class TaskLifecycleMixin:
         *,
         request: dict[str, Any],
         completion_evidence: dict[str, Any],
+        tool_results: list[dict[str, Any]] | None = None,
     ) -> str:
         if request.get("satisfied") is True:
             return "satisfied"
@@ -1865,6 +2083,11 @@ class TaskLifecycleMixin:
         if self._advisor_evidence_suggested_command_satisfied(
             request=request,
             completion_evidence=completion_evidence,
+        ):
+            return "satisfied"
+        if self._advisor_evidence_suggested_tool_satisfied(
+            request=request,
+            tool_results=tool_results or [],
         ):
             return "satisfied"
         return "missing" if request.get("blocking") is True else "requested"
@@ -1902,6 +2125,54 @@ class TaskLifecycleMixin:
     @staticmethod
     def _advisor_evidence_command_key(command: Any) -> str:
         return " ".join(str(command or "").strip().split()).casefold()
+
+    def _advisor_evidence_suggested_tool_satisfied(
+        self,
+        *,
+        request: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+    ) -> bool:
+        suggested_tool = request.get("suggestedTool")
+        if not isinstance(suggested_tool, dict):
+            return False
+        tool_name = str(suggested_tool.get("name") or suggested_tool.get("toolName") or "").strip()
+        if not tool_name:
+            return False
+        expected_arguments = suggested_tool.get("arguments")
+        expected_subset = expected_arguments if isinstance(expected_arguments, dict) else {}
+        for tool_result in tool_results:
+            if not isinstance(tool_result, dict):
+                continue
+            if str(tool_result.get("name") or "").strip() != tool_name:
+                continue
+            result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+            if self._completion_tool_result_failed(result):
+                continue
+            arguments = tool_result.get("arguments") if isinstance(tool_result.get("arguments"), dict) else {}
+            if self._advisor_evidence_arguments_match_subset(arguments, expected_subset):
+                return True
+        return False
+
+    def _advisor_evidence_arguments_match_subset(
+        self,
+        actual: dict[str, Any],
+        expected: dict[str, Any],
+    ) -> bool:
+        for key, expected_value in expected.items():
+            if key not in actual:
+                return False
+            if not self._advisor_evidence_argument_values_equal(actual.get(key), expected_value):
+                return False
+        return True
+
+    def _advisor_evidence_argument_values_equal(self, actual: Any, expected: Any) -> bool:
+        if isinstance(actual, dict) and isinstance(expected, dict):
+            return self._advisor_evidence_arguments_match_subset(actual, expected)
+        if isinstance(actual, list) and isinstance(expected, list):
+            return actual == expected
+        if isinstance(actual, str) and isinstance(expected, str):
+            return actual.replace("\\", "/").strip() == expected.replace("\\", "/").strip()
+        return actual == expected
 
     @staticmethod
     def _completion_string_list(value: Any) -> list[str]:

@@ -18,6 +18,7 @@ from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.policy.permission_engine import PermissionEngine
 from local_agent_runtime.services.hook_service import HookService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
+from local_agent_runtime.tools.read_file import build_read_file_tool
 from local_agent_runtime.tools.registry import ToolRegistry
 from local_agent_runtime.tools.run_command import build_run_command_tool
 
@@ -32,8 +33,12 @@ def _make_runtime(
     event_bus = EventBus()
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     tools = {}
+    config = store.get_config({})["config"]
+    tools["read_file"] = build_read_file_tool(
+        PolicyGuard(approval_mode=config["policy"]["approvalMode"]),
+        store,
+    )["handler"]
     if enable_run_command:
-        config = store.get_config({})["config"]
         tools["run_command"] = build_run_command_tool(
             PolicyGuard(approval_mode=config["policy"]["approvalMode"]),
             store,
@@ -2078,6 +2083,203 @@ class TestCompletionHardGate:
         assert completed_evidence["advisorRequestedEvidence"][0]["status"] == "satisfied"
         assert completed_task["commands"][0]["command"] == command
         assert completed_task["commands"][0]["status"] == "completed"
+
+    def test_blocking_advisor_suggested_tool_waits_for_approval_then_completes(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor wants to inspect the produced artifact before completion.",
+                        fallback_reason=None,
+                        proposal_id="surface_blocking_tool_1",
+                        confidence=0.88,
+                        payload={
+                            "surface_type": "generic_runtime_artifact",
+                            "evidence_requests": [
+                                {
+                                    "kind": "artifact_readback",
+                                    "summary": "Read back the generated README artifact.",
+                                    "target": "README.md",
+                                    "suggestedTool": {
+                                        "name": "read_file",
+                                        "arguments": {"path": "README.md"},
+                                    },
+                                    "blocking": True,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="Completion is acceptable once the requested readback evidence is present.",
+                    fallback_reason=None,
+                    proposal_id="completion_blocking_tool_1",
+                    confidence=0.84,
+                    payload={"is_complete": True, "surface_type": "generic_runtime_artifact"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        store.update_config({
+            "config": {
+                "permissions": {
+                    "capabilities": {
+                        "readFile": {"mode": "ask", "scope": "*"},
+                    },
+                },
+            },
+        })
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text("# Artifact\n\nRuntime evidence.\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="blocking advisor tool")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Update the runtime artifact README",
+            plan=[],
+            routing={"scenario": "doc_write"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "README.md", "summary": "updated artifact readme"}],
+            verification=[
+                {"command": "markdown lint README.md", "status": "passed", "summary": "markdown ok"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated the runtime artifact README.",
+            context={"workspace_root": str(project), "routing": {"scenario": "doc_write"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        evidence = result["structuredResult"]["completionEvidence"]
+        suggestion = evidence["advisorEvidenceExecutionSuggestions"][0]
+        approval_id = suggestion["approvalId"]
+        assert suggestion["type"] == "tool"
+        assert suggestion["toolName"] == "read_file"
+        assert suggestion["arguments"] == {"path": "README.md"}
+        assert suggestion["executionMode"] == "approval_then_tool"
+        assert suggestion["approvalKind"] == "advisor_tool"
+        assert suggestion["permissionDecision"] == "approval_required"
+        assert result["structuredResult"]["completionGate"]["approvalIds"] == [approval_id]
+        approval_events = [
+            event for event in captured_events
+            if event.type == "approval.requested" and event.payload.get("kind") == "advisor_tool"
+        ]
+        assert len(approval_events) == 1
+        assert approval_events[0].payload["advisorEvidence"]["requestKind"] == "artifact_readback"
+        completion_reviews = store._conn.execute(
+            "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",
+            (task["id"], "completion_review"),
+        ).fetchall()
+        assert completion_reviews == []
+
+        approved = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
+        completed_task = approved["task"]
+        assert completed_task["status"] == "completed"
+        completed_evidence = completed_task["structuredResult"]["completionEvidence"]
+        assert completed_evidence["advisorRequestedEvidence"][0]["status"] == "satisfied"
+        tool_evidence = completed_evidence["toolResults"][0]
+        assert tool_evidence["name"] == "read_file"
+        assert tool_evidence["status"] == "completed"
+
+    def test_advisor_suggested_tool_denies_unregistered_tool_without_execution(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor suggested a hardware probe tool that is not registered here.",
+                        fallback_reason=None,
+                        proposal_id="surface_unknown_tool_1",
+                        confidence=0.82,
+                        payload={
+                            "surface_type": "embedded_firmware_update",
+                            "evidence_requests": [
+                                {
+                                    "kind": "hardware_probe",
+                                    "summary": "Capture target-board telemetry when the tool is available.",
+                                    "target": "target board",
+                                    "suggestedTool": {
+                                        "name": "hardware_probe",
+                                        "arguments": {"port": "COM3"},
+                                    },
+                                    "blocking": False,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="The optional probe is tracked as follow-up evidence.",
+                    fallback_reason=None,
+                    proposal_id="completion_unknown_tool_1",
+                    confidence=0.8,
+                    payload={"is_complete": True, "surface_type": "embedded_firmware_update"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        project = tmp_path / "project"
+        src = project / "firmware"
+        src.mkdir(parents=True)
+        (src / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="unknown advisor tool")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Update the firmware startup path",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "firmware/main.c", "summary": "updated startup path"}],
+            verification=[
+                {"command": "cmake --build build --target firmware", "status": "passed", "summary": "native build passed"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated firmware startup path and verified the native build.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        suggestion = result["structuredResult"]["completionEvidence"]["advisorEvidenceExecutionSuggestions"][0]
+        assert suggestion["type"] == "tool"
+        assert suggestion["toolName"] == "hardware_probe"
+        assert suggestion["permissionDecision"] == "deny"
+        assert suggestion["executionState"] == "denied_by_policy"
+        assert suggestion["requiresApproval"] is False
+        assert "not registered" in suggestion["permissionReason"]
+        evidence_event = next(event for event in captured_events if event.type == "agent.evidence.requested")
+        assert evidence_event.payload["executionSuggestions"][0]["executionState"] == "denied_by_policy"
+        assert not [
+            event for event in captured_events
+            if event.type == "approval.requested" and event.payload.get("kind") == "advisor_tool"
+        ]
 
     def test_advisor_suggested_command_records_permission_denial_without_execution(self, tmp_path: Any) -> None:
         class RecordingAdvisor:

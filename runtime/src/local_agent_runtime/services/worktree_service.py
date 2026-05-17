@@ -419,10 +419,20 @@ class WorktreeService:
         is_child = bool(routing.get("rootTaskId") or routing.get("parentTaskId") or routing.get("childCollaborationTaskId"))
         if not strategy:
             strategy = "isolated_child_worktrees" if is_child else "root_worktree"
+        parent_task_id = routing.get("parentTaskId") or routing.get("rootTaskId")
         return {
             "strategy": strategy,
             "taskRole": task.get("role") or routing.get("role") or ("child" if is_child else "root"),
             "rootTaskId": routing.get("rootTaskId") or task.get("rootTaskId"),
+            "parentTaskId": parent_task_id,
+            "childCollaborationTaskId": routing.get("childCollaborationTaskId"),
+            "isolation": "isolated" if strategy == "isolated_child_worktrees" else "shared_root",
+            "dependencyHandling": (
+                "child worktrees merge only after their own review and verification"
+                if strategy == "isolated_child_worktrees"
+                else "root worktree serializes integration for dependent work"
+            ),
+            "conflictHandling": "merge conflicts keep the worktree failed and preserve approval context",
             "reason": (
                 "Child write scopes merge independently before root integration."
                 if strategy == "isolated_child_worktrees"

@@ -486,6 +486,130 @@ class TestWorktreeServiceMergeGate:
         assert request["verificationStatus"] == "passed"
         assert result["verification"][0]["status"] == "passed"
 
+    def test_real_git_child_worktrees_report_isolated_strategy_and_conflict_context(self, tmp_path: Any) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _run_git(repo, "init")
+        _run_git(repo, "checkout", "-b", "main")
+        _run_git(repo, "config", "user.email", "test@example.com")
+        _run_git(repo, "config", "user.name", "Test User")
+        (repo / "feature.txt").write_text("base\n", encoding="utf-8")
+        _run_git(repo, "add", "feature.txt")
+        _run_git(repo, "commit", "-m", "init")
+
+        store = _make_store(tmp_path)
+        workspace = store.upsert_workspace(str(repo))
+        session = store.create_session(workspace["id"], "multi child worktrees")
+        root_task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="coordinate child worktrees",
+            plan=[],
+            status="completed",
+        )
+        child_a = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="child a",
+            plan=[],
+            status="completed",
+            root_task_id=root_task["id"],
+            role="worker",
+            routing={
+                "rootTaskId": root_task["id"],
+                "parentTaskId": root_task["id"],
+                "childCollaborationTaskId": "ctask_a",
+            },
+        )
+        child_b = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="child b",
+            plan=[],
+            status="completed",
+            root_task_id=root_task["id"],
+            role="worker",
+            routing={
+                "rootTaskId": root_task["id"],
+                "parentTaskId": root_task["id"],
+                "childCollaborationTaskId": "ctask_b",
+            },
+        )
+        service = WorktreeService(store, GitWorktreeAdapter(repo))
+
+        child_a_path = tmp_path / "child-a"
+        child_b_path = tmp_path / "child-b"
+        child_a_wt = service.create_for_task({
+            "workspaceId": workspace["id"],
+            "sessionId": session["id"],
+            "taskId": child_a["id"],
+            "baseRef": "HEAD",
+            "branchName": f"agent/{child_a['id']}",
+            "worktreePath": str(child_a_path),
+            "cleanupPolicy": "ask_user",
+            "mergePolicy": "approval_required",
+        })["worktree"]
+        child_b_wt = service.create_for_task({
+            "workspaceId": workspace["id"],
+            "sessionId": session["id"],
+            "taskId": child_b["id"],
+            "baseRef": "HEAD",
+            "branchName": f"agent/{child_b['id']}",
+            "worktreePath": str(child_b_path),
+            "cleanupPolicy": "ask_user",
+            "mergePolicy": "approval_required",
+        })["worktree"]
+
+        (child_a_path / "feature.txt").write_text("child-a\n", encoding="utf-8")
+        _run_git(child_a_path, "add", "feature.txt")
+        _run_git(child_a_path, "commit", "-m", "child a update")
+        (child_b_path / "feature.txt").write_text("child-b\n", encoding="utf-8")
+        _run_git(child_b_path, "add", "feature.txt")
+        _run_git(child_b_path, "commit", "-m", "child b update")
+
+        approval_a = service.request_merge_approval({
+            "worktreeId": child_a_wt["id"],
+            "targetBranch": "main",
+            "reviewStatus": "approved",
+            "reviewerSummary": "Child A scope approved.",
+            "verificationCommands": ["python -c \"print('child a ready')\""],
+        })["approval"]
+        request_a = json.loads(approval_a["requestJson"])
+        assert request_a["multiAgentWorktreeStrategy"]["strategy"] == "isolated_child_worktrees"
+        assert request_a["multiAgentWorktreeStrategy"]["isolation"] == "isolated"
+        assert request_a["multiAgentWorktreeStrategy"]["parentTaskId"] == root_task["id"]
+        assert request_a["multiAgentWorktreeStrategy"]["childCollaborationTaskId"] == "ctask_a"
+        store.resolve_approval(approval_a["id"], "approved")
+        merge_a = service.merge({
+            "worktreeId": child_a_wt["id"],
+            "targetBranch": "main",
+            "approvalId": approval_a["id"],
+        })
+        assert merge_a["merged"] is True
+
+        approval_b = service.request_merge_approval({
+            "worktreeId": child_b_wt["id"],
+            "targetBranch": "main",
+            "reviewStatus": "approved",
+            "reviewerSummary": "Child B scope approved.",
+        })["approval"]
+        store.resolve_approval(approval_b["id"], "approved")
+        merge_b = service.merge({
+            "worktreeId": child_b_wt["id"],
+            "targetBranch": "main",
+            "approvalId": approval_b["id"],
+        })
+
+        assert merge_b["merged"] is False
+        assert merge_b["result"]["result"] == "conflict"
+        assert merge_b["multiAgentWorktreeStrategy"]["strategy"] == "isolated_child_worktrees"
+        assert merge_b["multiAgentWorktreeStrategy"]["conflictHandling"].startswith("merge conflicts")
+        stored_b = store.get_worktree({"worktreeId": child_b_wt["id"]})["worktree"]
+        assert stored_b["status"] == "failed"
+        assert stored_b["lastStatus"]["mergeResult"]["result"] == "conflict"
+        assert stored_b["lastStatus"]["multiAgentWorktreeStrategy"]["childCollaborationTaskId"] == "ctask_b"
+        assert stored_b["lastStatus"]["mergeApproval"]["decision"] == "approved"
+
     def test_request_merge_approval_truncates_large_diff_preview(self, tmp_path: Any) -> None:
         store = _make_store(tmp_path)
         ws_id = _make_workspace(store, tmp_path)

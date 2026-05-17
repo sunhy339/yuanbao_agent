@@ -1536,6 +1536,96 @@ def test_background_task_preserves_routing_fields(
     assert fg_routing["enable_planning"] == bg_routing["enable_planning"]
     assert fg_routing["enable_reflection"] == bg_routing["enable_reflection"]
 
+    for routing in (fg_routing, bg_routing):
+        workflow = routing.get("mainWorkflow")
+        assert isinstance(workflow, dict)
+        assert workflow["intentConfidence"]["band"] in {"low", "medium", "high"}
+        assert workflow["automation"]["level"] in {"assist", "auto", "full-auto"}
+        assert workflow["budget"]["maxSteps"] == routing["max_steps"]
+        assert workflow["budget"]["commandTimeoutMs"] >= 1
+        assert workflow["workspaceSnapshot"]["workspaceId"] == workspace["id"]
+        assert workflow["workspaceSnapshot"]["exists"] is True
+        assert workflow["userTakeover"]["state"] == "none"
+
+
+def test_queued_task_records_main_workflow_state(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call("session.create", {"workspaceId": workspace["id"], "title": "queued workflow"}),
+        "session",
+    )
+    active = runtime_harness.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="active task",
+        plan=[],
+        status="running",
+        routing={"scenario": "code_edit", "strategy": "react_standard"},
+    )
+
+    queued = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "queued follow-up update", "mode": "queued"},
+        ),
+        "task",
+    )
+
+    assert active["id"] != queued["id"]
+    assert queued["status"] == "queued"
+    workflow = queued["routing"]["mainWorkflow"]
+    assert workflow["userTakeover"]["mode"] == "queued"
+    assert workflow["workspaceSnapshot"]["workspaceId"] == workspace["id"]
+    assert workflow["budget"]["maxSteps"] == queued["routing"]["max_steps"]
+
+
+def test_supplement_records_user_takeover_state(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call("session.create", {"workspaceId": workspace["id"], "title": "takeover"}),
+        "session",
+    )
+    active = runtime_harness.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="long task",
+        plan=[],
+        status="running",
+        routing={
+            "scenario": "code_edit",
+            "strategy": "react_standard",
+            "mainWorkflow": {"userTakeover": {"state": "none"}},
+        },
+    )
+
+    result = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "不用了我看过了，停止吧"},
+    )
+    assert result["result"]["acceptedMode"] == "supplement"
+    updated = _call_result(
+        runtime_harness.call("task.get", {"taskId": active["id"]}),
+        "task",
+    )
+
+    takeover = updated["routing"]["mainWorkflow"]["userTakeover"]
+    assert takeover["state"] == "stop_requested"
+    assert takeover["taskStatusAtReceipt"] == "running"
+    assert updated["routing"]["mainWorkflow"]["takeoverHistory"][-1]["state"] == "stop_requested"
+    assert updated["status"] == "cancelled"
+    assert "task.user_takeover.received" in _event_types(runtime_harness.events)
+    assert "task.cancelled" in _event_types(runtime_harness.events)
+
 
 # ── Observability tests ──────────────────────────────────────────────────
 

@@ -50,11 +50,13 @@ class SupplementFlowMixin:
             content=content,
             message_id=user_msg["id"],
         )
+        routing = self._routing_with_user_takeover(task=task, content=content)
         updated_task = self._store.update_task(
             task_id=task["id"],
             status=task["status"],
             plan=task.get("plan") or [],
             current_step=task.get("currentStep"),
+            routing=routing,
         )
         runtime_task = {**updated_task, "plan": updated_task.get("plan") or task.get("plan") or []}
         self._publish(
@@ -78,7 +80,16 @@ class SupplementFlowMixin:
                 "content": content,
             },
         )
-        acknowledgement = "\u5df2\u8865\u5145\u5230\u5f53\u524d\u672a\u5b8c\u6210\u4efb\u52a1\uff0c\u7ee7\u7eed\u6cbf\u7528\u539f\u4efb\u52a1\u8ba1\u5212\u3002"
+        takeover = (routing.get("mainWorkflow") or {}).get("userTakeover")
+        if isinstance(takeover, dict) and takeover.get("state") != "supplement":
+            self._publish(
+                session_id=session_id,
+                task=runtime_task,
+                event_type="task.user_takeover.received",
+                payload=takeover,
+            )
+            runtime_task = self._apply_user_takeover_transition(runtime_task, takeover)
+        acknowledgement = self._supplement_acknowledgement(takeover)
         self._store.create_message(
             session_id=session_id,
             task_id=runtime_task["id"],
@@ -102,6 +113,67 @@ class SupplementFlowMixin:
         if routing_result:
             result["supplementRouting"] = routing_result
         return result
+
+    def _apply_user_takeover_transition(
+        self,
+        task: dict[str, Any],
+        takeover: dict[str, Any],
+    ) -> dict[str, Any]:
+        state = takeover.get("state")
+        if state != "stop_requested":
+            return task
+        try:
+            return self.cancel_task({"taskId": task["id"]})["task"]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to apply stop takeover for task %s: %s", task.get("id"), exc)
+            return task
+
+    @staticmethod
+    def _supplement_acknowledgement(takeover: dict[str, Any] | None) -> str:
+        state = takeover.get("state") if isinstance(takeover, dict) else None
+        if state == "stop_requested":
+            return "\u5df2\u505c\u6b62\u5f53\u524d\u4efb\u52a1\u3002"
+        if state == "pause_requested":
+            return "\u5df2\u8bb0\u5f55\u6682\u505c\u8bf7\u6c42\uff0c\u5f53\u524d\u4efb\u52a1\u4f1a\u5728\u53ef\u4e2d\u65ad\u70b9\u5904\u7406\u3002"
+        if state == "wrap_up_requested":
+            return "\u5df2\u8bb0\u5f55\u6536\u5c3e\u8bf7\u6c42\uff0c\u540e\u7eed\u4f18\u5148\u8fdb\u5165\u603b\u7ed3\u548c\u9a8c\u6536\u3002"
+        if state == "continue_requested":
+            return "\u5df2\u8bb0\u5f55\u7ee7\u7eed\u8bf7\u6c42\u3002"
+        if state == "change_requested":
+            return "\u5df2\u8bb0\u5f55\u76ee\u6807\u53d8\u66f4\u8bf7\u6c42\uff0c\u540e\u7eed\u4f1a\u6309\u65b0\u76ee\u6807\u91cd\u65b0\u5bf9\u9f50\u3002"
+        return "\u5df2\u8865\u5145\u5230\u5f53\u524d\u672a\u5b8c\u6210\u4efb\u52a1\uff0c\u7ee7\u7eed\u6cbf\u7528\u539f\u4efb\u52a1\u8ba1\u5212\u3002"
+
+    def _routing_with_user_takeover(self, *, task: dict[str, Any], content: str) -> dict[str, Any]:
+        routing = dict(task.get("routing") or {})
+        workflow = dict(routing.get("mainWorkflow") or {})
+        takeover_history = list(workflow.get("takeoverHistory") or [])
+        takeover = {
+            "state": self._classify_user_takeover(content),
+            "messagePreview": str(content or "")[:200],
+            "taskStatusAtReceipt": task.get("status"),
+        }
+        takeover_history.append(takeover)
+        workflow["userTakeover"] = takeover
+        workflow["takeoverHistory"] = takeover_history[-20:]
+        routing["mainWorkflow"] = workflow
+        return routing
+
+    @staticmethod
+    def _classify_user_takeover(content: str) -> str:
+        text = str(content or "").strip().lower()
+        if not text:
+            return "supplement"
+        if any(marker in text for marker in ("暂停", "停一下", "等一下", "pause", "hold on")):
+            return "pause_requested"
+        if any(marker in text for marker in ("继续", "接着", "resume", "continue")):
+            return "continue_requested"
+        if any(marker in text for marker in ("收尾", "总结", "wrap up", "finish up")):
+            return "wrap_up_requested"
+        if any(marker in text for marker in ("不用了", "关闭", "停止", "取消", "stop", "cancel", "abort")):
+            return "stop_requested"
+        if any(marker in text for marker in ("改成", "换成", "转为", "instead", "change to")):
+            return "change_requested"
+        return "supplement"
 
     @staticmethod
     def _extract_file_paths(text: str) -> list[str]:

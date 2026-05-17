@@ -794,14 +794,14 @@ Supervisor/Swarm 更适合多 agent 协作，但应满足：
 | LLM 上下文压缩建议 | 部分接通 | compactor 支持 provider advisory；ReAct 当前仍有固定 60000 阈值。 |
 | LLM 拆任务/并行建议 | 规划/部分基础 | DecisionAdvisor 有 `decomposition` 类型，DAG/worker 基础存在，但默认完整闭环还需补齐。 |
 | Proposal 审计 | 已有基础 | proposal_records 已存在；需要保证所有关键默认路径都写入 proposal record。 |
-| 通用 Hooks | 生命周期已接通 | runtime hooks 的 CRUD、执行记录、HookService、hook RPC 已有；`before/after task`、`before/after tool`、`before/after provider turn`、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已统一触发，hook side effect 已接入 PermissionEngine。剩余主要是 Settings UI 管理入口与更多动作类型。 |
+| 通用 Hooks | 生命周期与 Settings UI 已接通 | runtime hooks 的 CRUD、执行记录、HookService、hook RPC 已有；`before/after task`、`before/after tool`、`before/after provider turn`、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已统一触发，hook side effect 已接入 PermissionEngine。Settings UI 管理入口已完成；剩余主要是 P2 动作类型与真实 provider + hook side effect 组合 smoke。 |
 
 状态总览图：
 
 ```mermaid
 flowchart LR
   Done["已接通\nRPC / Events / ReAct / Tools / Basic Memory"] --> Partial["部分接通\nAutonomy / AgentSoul / LLM Routing / Proposal Audit"]
-  Partial --> Todo["待补齐\nDefault LLM decisions / Hook settings UI / Replay polish / Parallel governance"]
+  Partial --> Todo["待补齐\nMCP+Skills acceptance / Structured handoff / Runtime cockpit / Product gates"]
 ```
 
 ## 13. 默认配置速查
@@ -1525,3 +1525,53 @@ Open risks:
 | Provider failures are provider-specific and intermittent. | Classify errors by observable behavior and use conservative retry/split rules. |
 | Generated app can pass tests while being rough for users. | Add browser/product acceptance in addition to pytest. |
 | Windows shell/path quirks create false failures. | Continue command compatibility hardening for quoting, explicit executables, temp dirs, and local runtime paths. |
+
+### 2026-05-17 Current Completion And Remaining Task Scan
+
+This scan reconciles older P0/P1 notes with the later completion records. When an older section and a later status disagree, this section should be treated as the current planning snapshot.
+
+Completed or effectively closed:
+
+| Area | Current status | Evidence / note |
+| --- | --- | --- |
+| Commit completeness for hook repository | Done | Earlier P0 about missing `hook_repository.py` is closed by the committed hook store/RPC work. |
+| Permission Policy V2 Lite | Done | PermissionEngine presets, config normalization, tool integrations, blocked-tool pipeline, and focused tests are recorded as closed. |
+| Provider API format alignment | Done | `openai-responses` and `anthropic-messages` are implemented and no longer just planned settings values. |
+| Real provider base URL/env handling | Done | Bare OpenAI-compatible base URLs normalize to `/v1/chat/completions`; explicit provider env no longer loses to stored mock defaults. |
+| DecisionAdvisor JSON extraction baseline | Done for current baseline | Markdown fences, surrounding text, top-level `proposal`, and reasoning/explanation fallback are handled; remaining work is provider-specific robustness, not the original blocker. |
+| ToolPolicyResolver + Dynamic Agent Profile core | Done | Provider turns use unified tool policy decisions; role snapshots and policy explanations are captured; profile CRUD/settings and preview tools are wired. |
+| Skill/MCP policy resolver merge | Done at policy layer | Resolver supports skill strict whitelist / inherit MCP and MCP server/tool allowlist, denylist, and disabled modes. Remaining work is real end-to-end MCP/Skills task coverage. |
+| Completion / Stop hard gates | Done through current hard-gate layers | Summary-only, failed verification, missing verification, acceptance failures, unresolved tool failures, and weak structural-only validation for code/test changes are gated. |
+| Completion review UI baseline | Done | Approval cards and runtime activity can show completion evidence, gate status, metrics, and issue summaries. |
+| Worktree write isolation | Done through current planned closure | Write tasks auto-bind worktrees; tools run in worktree cwd; merge approval, verification, reviewer summary, dirty protection, cleanup protection, and UI panel are wired. |
+| Hooks lifecycle and Settings UI | Done | Task/tool/provider/compaction/context/worktree hooks and Settings management are wired; `run_command` side effects pass through PermissionEngine. |
+| Real LLM smoke baseline | Done | Real LLM smoke is default-skipped and environment-gated; GLM full-coverage and heavy follow-up smokes passed in recorded runs. |
+| Long-running subagent workflow hardening | Done in latest runtime commit | `ff8aa40` records broader runtime workflow coverage, command compatibility support, child worker/orphan cleanup coverage, code search tests, policy guard tests, and long-run plan documentation. |
+| Pytest temporary directory hygiene | Done | `.pytest-*/` is ignored so focused/long-run temp directories do not pollute git status. |
+| Main workflow state baseline | Done in current follow-up | Each foreground, background, and queued task now persists `routing.mainWorkflow` with intent confidence, automation level, budgets, workspace/git snapshot, and initial user takeover state. Stop/cancel takeover supplements are recorded and routed through the existing task cancellation path. |
+
+Still open / next implementation queue:
+
+| Priority | Task | Current next step |
+| --- | --- | --- |
+| P0/P1 | MCP + Skills real acceptance coverage | Add a real scenario that triggers a skill, reads `SKILL.md`, uses MCP/tool output, edits or inspects local artifacts, and survives compaction. Include unavailable MCP/skill fallback cases. |
+| P0/P1 | Main workflow state machine phase 2 | Use the persisted `mainWorkflow` state to drive convergence behavior, budget-exceeded transitions, pause/continue takeover handling, and frontend cockpit state. |
+| P0/P1 | Structured compaction handoff | Store `handoffSummary` fields for objective, completed work, modified files, failed commands, verification status, decisions, risks, and next command; add downstream recovery tests. |
+| P1 | Provider failure recovery | Classify timeout, HTTP parameter/context-too-large, auth/key, and refusal failures; retry or split context only when recoverable. |
+| P1 | Product acceptance gate | Add generated-artifact checks beyond unit tests: server/browser smoke, visible copy/mojibake check, persistence/API flow, and readable docs/README verification. |
+| P1 | Frontend runtime cockpit | Implement task cockpit, plan/progress panel, tool timeline, and acceptance/run report first; then MCP/Skills, context/memory, automation controls, and workspace panel. |
+| P1 | Completion audit refinement | Continue language/framework-specific verification matching and include reviewer/approval conclusions in the completion audit trail. |
+| P1 | Real multi-agent worktree strategy validation | Run real multi-agent worktree smoke for shared vs isolated child worktrees, conflict/dependency handling, and strategy reporting. |
+| P1/P2 | Hook action expansion | Add notification/webhook, memory write, automatic verification suggestion, and external-system sync actions as P2 hook side effects. |
+| P1/P2 | Real provider + hook side effect smoke | Keep as a manual/release gate so default tests do not depend on local secrets. |
+| P1/P2 | Dynamic profile real-provider smoke and UX polish | Validate profile + provider combinations with real providers and smooth the settings/profile authoring experience. |
+| P1/P2 | Memory recall quality tuning | Continue validating cross-session workspace memory recall quality, deduplication, and injection budget behavior under long tasks. |
+| P2 | Minimal smoke gate split | Keep only a fast daily safety smoke and a manual/release long stress smoke; do not let smoke structure distract from main workflow hardening. |
+
+Current priority order:
+
+1. MCP + Skills real acceptance coverage.
+2. Structured compaction handoff.
+3. Product acceptance gate and runtime cockpit/reporting.
+4. Provider recovery and multi-agent worktree strategy validation.
+5. Main workflow phase 2: convergence and pause/continue takeover execution.

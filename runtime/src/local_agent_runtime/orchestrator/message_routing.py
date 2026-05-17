@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 import threading
 from copy import deepcopy
 from inspect import Parameter, signature
@@ -67,6 +68,190 @@ class MessageRoutingMixin:
                 "riskLevel": "medium",
                 "budget": {},
             },
+        }
+
+    def _attach_main_workflow_state(
+        self,
+        *,
+        routing: dict[str, Any],
+        session: dict[str, Any],
+        goal: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Attach auditable main-workflow state to routing metadata."""
+        config = self._store.get_config({})["config"]
+        autonomy_profile = self._active_config_profile(config, "autonomy") or {}
+        policy = config.get("policy") if isinstance(config.get("policy"), dict) else {}
+        approval_mode = str(policy.get("approvalMode") or "on_write_or_command")
+        confidence = self._safe_float(routing.get("confidence"), 0.0)
+        workflow = {
+            "intentConfidence": {
+                "score": confidence,
+                "band": self._intent_confidence_band(confidence),
+                "scenario": routing.get("scenario"),
+                "strategy": routing.get("strategy"),
+                "reasoning": routing.get("reasoning"),
+            },
+            "automation": {
+                "level": self._automation_level(
+                    approval_mode=approval_mode,
+                    autonomy_profile=autonomy_profile,
+                    background=params.get("background") is True,
+                ),
+                "approvalMode": approval_mode,
+                "autonomyProfileId": autonomy_profile.get("id"),
+                "autonomyLevel": autonomy_profile.get("level"),
+                "background": params.get("background") is True,
+                "source": "config.policy+autonomy",
+            },
+            "budget": self._main_workflow_budget(
+                routing=routing,
+                config=config,
+                autonomy_profile=autonomy_profile,
+            ),
+            "workspaceSnapshot": self._main_workflow_workspace_snapshot(session),
+            "userTakeover": {
+                "state": "none",
+                "mode": params.get("mode") or ("background" if params.get("background") is True else "new_task"),
+                "targetTaskId": params.get("taskId") or params.get("task_id"),
+                "latestUserMessagePreview": str(goal or "")[:200],
+            },
+        }
+        return {**routing, "mainWorkflow": workflow}
+
+    @staticmethod
+    def _safe_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _intent_confidence_band(confidence: float) -> str:
+        if confidence >= 0.8:
+            return "high"
+        if confidence >= 0.5:
+            return "medium"
+        return "low"
+
+    @staticmethod
+    def _automation_level(
+        *,
+        approval_mode: str,
+        autonomy_profile: dict[str, Any],
+        background: bool,
+    ) -> str:
+        mode = approval_mode.strip().lower()
+        if mode in {"none", "never", "off"}:
+            return "full-auto"
+        if mode == "strict":
+            return "assist"
+        level = str(autonomy_profile.get("level") or "").upper()
+        if background or level in {"L3", "L4"}:
+            return "auto"
+        if mode in {"on_write_or_command", "write", "high_risk"}:
+            return "auto"
+        return "assist"
+
+    def _main_workflow_budget(
+        self,
+        *,
+        routing: dict[str, Any],
+        config: dict[str, Any],
+        autonomy_profile: dict[str, Any],
+    ) -> dict[str, Any]:
+        policy = config.get("policy") if isinstance(config.get("policy"), dict) else {}
+        provider = config.get("provider") if isinstance(config.get("provider"), dict) else {}
+        return {
+            "maxSteps": self._safe_int(routing.get("max_steps"), autonomy_profile.get("maxSteps"), policy.get("maxTaskSteps"), 20),
+            "maxParallelSubtasks": self._safe_int(autonomy_profile.get("maxParallelSubtasks"), 4),
+            "retryLimit": self._safe_int(autonomy_profile.get("retryLimit"), 0),
+            "taskTimeoutMs": self._safe_int(autonomy_profile.get("timeoutMs"), policy.get("commandTimeoutMs"), 600000),
+            "commandTimeoutMs": self._safe_int(policy.get("commandTimeoutMs"), 600000),
+            "providerTimeoutSeconds": self._safe_int(provider.get("timeout"), 30),
+            "maxContextTokens": self._safe_int(provider.get("maxContextTokens"), 256000),
+            "convergenceRequired": True,
+        }
+
+    @staticmethod
+    def _safe_int(*values: Any) -> int:
+        for value in values:
+            try:
+                if value is None:
+                    continue
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    def _main_workflow_workspace_snapshot(self, session: dict[str, Any]) -> dict[str, Any]:
+        workspace_root = self._session_workspace_root(session)
+        snapshot: dict[str, Any] = {
+            "workspaceId": session.get("workspaceId"),
+            "workspaceRoot": workspace_root,
+            "exists": bool(workspace_root and Path(workspace_root).exists()),
+            "git": {"isRepo": False},
+        }
+        if not workspace_root or not Path(workspace_root).exists():
+            return snapshot
+        root = Path(workspace_root)
+        git_info = self._git_workspace_status(root)
+        snapshot["git"] = git_info
+        snapshot["dirty"] = bool(git_info.get("dirty"))
+        snapshot["dirtyFileCount"] = git_info.get("dirtyFileCount", 0)
+        return snapshot
+
+    def _session_workspace_root(self, session: dict[str, Any]) -> str:
+        root = session.get("workspaceRoot")
+        if isinstance(root, str) and root.strip():
+            return str(Path(root).resolve())
+        workspace_id = session.get("workspaceId")
+        if not workspace_id:
+            return ""
+        try:
+            workspace = self._store.require_workspace(workspace_id)
+        except Exception:  # noqa: BLE001
+            return ""
+        workspace_root = workspace.get("rootPath")
+        if isinstance(workspace_root, str) and workspace_root.strip():
+            return str(Path(workspace_root).resolve())
+        return ""
+
+    def _git_workspace_status(self, workspace_root: Path) -> dict[str, Any]:
+        def run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", *args],
+                cwd=workspace_root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=3,
+            )
+
+        try:
+            inside = run_git(["rev-parse", "--is-inside-work-tree"])
+        except (subprocess.SubprocessError, OSError):
+            return {"isRepo": False}
+        if inside.returncode != 0 or inside.stdout.strip().lower() != "true":
+            return {"isRepo": False}
+
+        branch = run_git(["branch", "--show-current"])
+        status = run_git(["status", "--porcelain"])
+        lines = [line for line in status.stdout.splitlines() if line.strip()] if status.returncode == 0 else []
+        changed = [
+            {
+                "status": line[:2].strip() or "??",
+                "path": line[3:].strip() if len(line) > 3 else line.strip(),
+            }
+            for line in lines[:25]
+        ]
+        return {
+            "isRepo": True,
+            "branch": branch.stdout.strip() if branch.returncode == 0 else "",
+            "dirty": bool(lines),
+            "dirtyFileCount": len(lines),
+            "changedFilesPreview": changed,
         }
 
     def _persist_task_routing(
@@ -249,6 +434,12 @@ class MessageRoutingMixin:
             if active_task is not None:
                 routing = self._route_goal(goal)
                 routing_dict = self._routing_dict_from_decision(routing)
+                routing_dict = self._attach_main_workflow_state(
+                    routing=routing_dict,
+                    session=session,
+                    goal=goal,
+                    params=params,
+                )
                 queued_task = self._store.create_task(
                     session_id=session["id"],
                     task_type="edit",
@@ -296,6 +487,12 @@ class MessageRoutingMixin:
             raise
         _route_latency_ms = int((_time.monotonic() - _route_t0) * 1000)
         routing_dict = self._routing_dict_from_decision(routing)
+        routing_dict = self._attach_main_workflow_state(
+            routing=routing_dict,
+            session=session,
+            goal=goal,
+            params=params,
+        )
         self._tracer.end_span(
             routing_span.span_id,
             status="ok",

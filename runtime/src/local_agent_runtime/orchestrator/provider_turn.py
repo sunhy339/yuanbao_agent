@@ -226,10 +226,13 @@ class ProviderTurnMixin:
         provider_context: dict[str, Any],
         budget: Any | None,
         fallback_from_stream: bool = False,
+        recovery_retry: bool = False,
     ) -> dict[str, Any]:
         payload = self._provider_trace_payload(provider_context)
         if fallback_from_stream:
             payload["fallbackFromStream"] = True
+        if recovery_retry:
+            payload["recoveryRetry"] = provider_context.get("_provider_recovery_retry") or True
         self._append_provider_trace(task=task, event_type="provider.request", payload=payload)
         span = self._tracer.start_span(
             "llm_generate",
@@ -240,16 +243,42 @@ class ProviderTurnMixin:
             response = self._provider.generate(goal, provider_context)
         except Exception as exc:
             self._tracer.end_span(span.span_id, status="error")
+            recovery = classify_provider_failure(exc)
             self._append_provider_trace(
                 task=task,
                 event_type="provider.failure.classified",
                 payload={
                     **self._provider_trace_payload(provider_context),
                     "fallbackFromStream": fallback_from_stream,
+                    "recoveryRetry": recovery_retry,
                     "error": str(exc)[:500],
-                    "failureRecovery": classify_provider_failure(exc).to_dict(),
+                    "failureRecovery": recovery.to_dict(),
+                    "willRetry": (not recovery_retry and self._provider_recovery_should_retry(recovery)),
                 },
             )
+            if not recovery_retry and self._provider_recovery_should_retry(recovery):
+                retry_context = self._provider_recovery_retry_context(
+                    provider_context=provider_context,
+                    recovery=recovery,
+                )
+                self._append_provider_trace(
+                    task=task,
+                    event_type="provider.failure.recovery_retry",
+                    payload={
+                        **self._provider_trace_payload(retry_context),
+                        "failureRecovery": recovery.to_dict(),
+                        "strategy": retry_context.get("_provider_recovery_retry"),
+                    },
+                )
+                return self._request_non_streaming_provider_response(
+                    session_id=session_id,
+                    task=task,
+                    goal=goal,
+                    provider_context=retry_context,
+                    budget=budget,
+                    fallback_from_stream=fallback_from_stream,
+                    recovery_retry=True,
+                )
             raise
         self._tracer.end_span(span.span_id, status="ok")
         self._consume_budget_from_provider_response(
@@ -261,9 +290,84 @@ class ProviderTurnMixin:
         self._append_provider_trace(
             task=task,
             event_type="provider.response",
-            payload={**self._provider_response_trace(response), "fallbackFromStream": fallback_from_stream},
+            payload={
+                **self._provider_response_trace(response),
+                "fallbackFromStream": fallback_from_stream,
+                "recoveryRetry": recovery_retry,
+            },
         )
         return response
+
+    @staticmethod
+    def _provider_recovery_should_retry(recovery: Any) -> bool:
+        if not bool(getattr(recovery, "recoverable", False)):
+            return False
+        category = str(getattr(recovery, "category", "") or "")
+        return category in {
+            "context_too_large",
+            "timeout",
+            "rate_limit",
+            "network",
+            "server_error",
+            "invalid_response",
+        }
+
+    def _provider_recovery_retry_context(
+        self,
+        *,
+        provider_context: dict[str, Any],
+        recovery: Any,
+    ) -> dict[str, Any]:
+        retry_context = dict(provider_context)
+        messages = provider_context.get("messages")
+        if isinstance(messages, list):
+            retry_context["messages"] = self._provider_recovery_compact_messages(messages, recovery=recovery)
+        retry_context["_provider_recovery_retry"] = {
+            "category": getattr(recovery, "category", None),
+            "recommendedAction": getattr(recovery, "recommended_action", None),
+            "originalMessageCount": len(messages) if isinstance(messages, list) else None,
+            "retryMessageCount": len(retry_context.get("messages") or []) if isinstance(retry_context.get("messages"), list) else None,
+            "strategy": "compact_recent_context",
+        }
+        return retry_context
+
+    def _provider_recovery_compact_messages(
+        self,
+        messages: list[Any],
+        *,
+        recovery: Any,
+    ) -> list[Any]:
+        system_messages: list[dict[str, Any]] = []
+        conversation_messages: list[dict[str, Any]] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            normalized = self._provider_recovery_trim_message(item)
+            role = str(normalized.get("role") or "").strip().lower()
+            if role in {"system", "developer"} and len(system_messages) < 2:
+                system_messages.append(normalized)
+            else:
+                conversation_messages.append(normalized)
+        notice = {
+            "role": "system",
+            "content": (
+                "A previous provider request failed with "
+                f"{getattr(recovery, 'category', 'recoverable_provider_failure')}. "
+                "Continue from the recent context below; ask for missing details only if required."
+            ),
+        }
+        tail = conversation_messages[-6:]
+        return [*system_messages, notice, *tail]
+
+    @staticmethod
+    def _provider_recovery_trim_message(message: dict[str, Any], max_chars: int = 6000) -> dict[str, Any]:
+        trimmed = dict(message)
+        content = trimmed.get("content")
+        if isinstance(content, str) and len(content) > max_chars:
+            head = content[: max_chars // 2]
+            tail = content[-(max_chars // 2):]
+            trimmed["content"] = f"{head}\n...[provider recovery compacted middle]...\n{tail}"
+        return trimmed
 
     @staticmethod
     def _provider_stream_flag(provider_config: dict[str, Any]) -> bool | None:

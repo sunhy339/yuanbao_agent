@@ -391,6 +391,106 @@ class TestProviderTurnSchema:
 
 
 # ---------------------------------------------------------------------------
+# Test: provider failure recovery retry
+# ---------------------------------------------------------------------------
+
+class TestProviderRecoveryRetry:
+    def test_recoverable_provider_failure_retries_with_compacted_context(self, tmp_path: Any) -> None:
+        from local_agent_runtime.provider.openai_compatible import ProviderAdapterError
+
+        class FailsThenRecoversProvider:
+            def __init__(self) -> None:
+                self.contexts: list[dict[str, Any]] = []
+
+            def generate(self, _goal: str, context: dict[str, Any]) -> dict[str, Any]:
+                self.contexts.append(context)
+                if len(self.contexts) == 1:
+                    raise ProviderAdapterError("context_length_exceeded: maximum context length")
+                return {"message": "Recovered", "final": "Recovered"}
+
+        provider = FailsThenRecoversProvider()
+        orchestrator, store, _events = _make_orchestrator(tmp_path, provider)
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="provider recovery")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="chat",
+            goal="Recover provider failure",
+            plan=[],
+            routing={"scenario": "provider_recovery"},
+        )
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            *[
+                {"role": "user", "content": f"message {index} " + ("x" * 8000)}
+                for index in range(10)
+            ],
+        ]
+
+        response = orchestrator._request_non_streaming_provider_response(
+            session_id=session["id"],
+            task=task,
+            goal="Recover provider failure",
+            provider_context={"messages": messages, "config": {"provider": FAKE_PROVIDER_CONFIG}},
+            budget=None,
+        )
+
+        assert response["final"] == "Recovered"
+        assert len(provider.contexts) == 2
+        retry_context = provider.contexts[1]
+        assert retry_context["_provider_recovery_retry"]["category"] == "context_too_large"
+        assert len(retry_context["messages"]) < len(messages)
+        assert "provider recovery compacted middle" in retry_context["messages"][-1]["content"]
+        trace_types = [
+            event["type"]
+            for event in store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        ]
+        assert "provider.failure.classified" in trace_types
+        assert "provider.failure.recovery_retry" in trace_types
+        assert trace_types[-1] == "provider.response"
+
+    def test_auth_provider_failure_does_not_retry(self, tmp_path: Any) -> None:
+        from local_agent_runtime.provider.openai_compatible import ProviderAdapterError
+
+        class AuthFailureProvider:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate(self, _goal: str, _context: dict[str, Any]) -> dict[str, Any]:
+                self.calls += 1
+                raise ProviderAdapterError("HTTP 401 Unauthorized: invalid api key")
+
+        provider = AuthFailureProvider()
+        orchestrator, store, _events = _make_orchestrator(tmp_path, provider)
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="provider recovery")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="chat",
+            goal="Recover provider failure",
+            plan=[],
+            routing={"scenario": "provider_recovery"},
+        )
+
+        with pytest.raises(ProviderAdapterError, match="401"):
+            orchestrator._request_non_streaming_provider_response(
+                session_id=session["id"],
+                task=task,
+                goal="Recover provider failure",
+                provider_context={
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "config": {"provider": FAKE_PROVIDER_CONFIG},
+                },
+                budget=None,
+            )
+
+        assert provider.calls == 1
+        traces = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        assert [event["type"] for event in traces] == ["provider.request", "provider.failure.classified"]
+        assert traces[-1]["payload"]["failureRecovery"]["category"] == "auth"
+
+
+# ---------------------------------------------------------------------------
 # Test: agent.decision.react_turn event during ReAct loop
 # ---------------------------------------------------------------------------
 

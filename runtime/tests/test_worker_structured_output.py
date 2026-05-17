@@ -1353,6 +1353,117 @@ class TestCompletionHardGate:
         assert route["assetType"] == "route"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_acceptance_review"
 
+    def test_frontend_api_reference_without_backend_route_waits_for_review(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "index.html").write_text(
+            '<!doctype html><script src="app.js"></script><main>Feedback</main>\n',
+            encoding="utf-8",
+        )
+        (project / "app.js").write_text(
+            "fetch('/api/feedback', { method: 'POST', body: JSON.stringify({ note: 'ok' }) });\n",
+            encoding="utf-8",
+        )
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="product gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Create a feedback frontend that submits to /api/feedback",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "index.html", "summary": "generated frontend"},
+                {"path": "app.js", "summary": "generated API call"},
+            ],
+            verification=[{"command": "node --check app.js", "status": "passed", "summary": "syntax ok"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Generated feedback frontend files.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        evidence = result["structuredResult"]["completionEvidence"]
+        api = [
+            item for item in evidence["acceptance"]
+            if item["criterion"] == "Frontend API route reachable: app.js -> POST /api/feedback"
+        ][0]
+        assert api["status"] == "failed"
+        assert api["source"] == "api_contract_reachability"
+        assert "no matching backend route found" in api["issues"]
+        assert result["structuredResult"]["completionGate"]["status"] == "needs_acceptance_review"
+
+    def test_frontend_api_reference_with_matching_backend_route_completes(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "index.html").write_text(
+            '<!doctype html><script src="app.js"></script><main>Feedback</main>\n',
+            encoding="utf-8",
+        )
+        (project / "app.js").write_text(
+            "fetch('/api/feedback', { method: 'POST', body: JSON.stringify({ note: 'ok' }) });\n",
+            encoding="utf-8",
+        )
+        (project / "server.py").write_text(
+            "from fastapi import FastAPI\n"
+            "app = FastAPI()\n\n"
+            "@app.post('/api/feedback')\n"
+            "def create_feedback():\n"
+            "    return {'ok': True}\n",
+            encoding="utf-8",
+        )
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="product gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Create a feedback frontend and backend API",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "index.html", "summary": "generated frontend"},
+                {"path": "app.js", "summary": "generated API call"},
+                {"path": "server.py", "summary": "generated API route"},
+            ],
+            verification=[
+                {"command": "node --check app.js", "status": "passed", "summary": "syntax ok"},
+                {"command": "pytest -q", "status": "passed", "summary": "1 passed"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Generated feedback frontend and backend API.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]
+        api = [
+            item for item in evidence["acceptance"]
+            if item["criterion"] == "Frontend API route reachable: app.js -> POST /api/feedback"
+        ][0]
+        assert api["status"] == "supported"
+        assert api["source"] == "api_contract_reachability"
+        assert api["backendRoute"]["sourcePath"] == "server.py"
+
     def test_static_frontend_script_syntax_failure_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

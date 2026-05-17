@@ -1497,6 +1497,7 @@ class TaskLifecycleMixin:
             })
         records.extend(self._completion_product_readability_records(root=root, task=task))
         records.extend(self._completion_static_frontend_asset_records(root=root, task=task))
+        records.extend(self._completion_api_contract_records(root=root, task=task))
         test_expectation = self._completion_expected_pytest_file_count(text)
         if test_expectation is not None:
             found = len([
@@ -1510,6 +1511,299 @@ class TaskLifecycleMixin:
                 "source": "structural_test_file_count",
             })
         return records
+
+    def _completion_api_contract_records(
+        self,
+        *,
+        root: Path,
+        task: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        references = self._completion_frontend_api_references(root=root, task=task)
+        if not references:
+            return []
+        backend_routes = self._completion_backend_api_routes(root=root, task=task)
+        records: list[dict[str, Any]] = []
+        for reference in references:
+            match = self._completion_match_backend_api_route(reference, backend_routes)
+            method = str(reference.get("method") or "GET").upper()
+            path = str(reference.get("path") or "")
+            source_path = str(reference.get("sourcePath") or "")
+            issues: list[str] = []
+            if match is None:
+                issues.append("no matching backend route found")
+            records.append({
+                "criterion": f"Frontend API route reachable: {source_path} -> {method} {path}",
+                "status": "supported" if match is not None else "failed",
+                "evidenceLevel": "product_quality",
+                "source": "api_contract_reachability",
+                "apiMethod": method,
+                "apiPath": path,
+                "backendRoute": match,
+                "issues": issues,
+            })
+        return records
+
+    def _completion_frontend_api_references(
+        self,
+        *,
+        root: Path,
+        task: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        references: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for path_text in self._completion_frontend_api_artifact_paths(task):
+            path = self._completion_safe_workspace_path(root=root, relative_path=path_text)
+            if path is None or not path.is_file():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for item in self._completion_api_references_from_text(content):
+                key = (path_text, item["method"], item["path"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                references.append({"sourcePath": path_text, **item})
+        return references
+
+    def _completion_frontend_api_artifact_paths(self, task: dict[str, Any]) -> list[str]:
+        paths: list[str] = []
+        for item in task.get("changedFiles") or []:
+            if not isinstance(item, dict):
+                continue
+            path = self._completion_changed_file_path(item)
+            if path and self._completion_path_may_contain_frontend_api_reference(path):
+                paths.append(path)
+        return list(dict.fromkeys(paths))
+
+    @staticmethod
+    def _completion_path_may_contain_frontend_api_reference(path: str) -> bool:
+        normalized = path.casefold().replace("\\", "/")
+        return normalized.endswith((
+            ".html",
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".mjs",
+            ".cjs",
+            ".vue",
+            ".svelte",
+        ))
+
+    def _completion_api_references_from_text(self, content: str) -> list[dict[str, str]]:
+        references: list[dict[str, str]] = []
+        for match in re.finditer(
+            r"fetch\s*\(\s*['\"](?P<url>/?api/[^'\"]+)['\"](?P<args>[^)]*)\)",
+            content,
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            method_match = re.search(
+                r"method\s*:\s*['\"](?P<method>[A-Za-z]+)['\"]",
+                match.group("args") or "",
+                flags=re.IGNORECASE,
+            )
+            references.append({
+                "method": (method_match.group("method") if method_match else "GET").upper(),
+                "path": self._completion_normalize_api_path(match.group("url")),
+            })
+        for match in re.finditer(
+            r"axios(?:\s*\.\s*(?P<method>get|post|put|patch|delete|head|options))?"
+            r"\s*\(\s*['\"](?P<url>/?api/[^'\"]+)['\"]",
+            content,
+            flags=re.IGNORECASE,
+        ):
+            method = match.group("method") or "GET"
+            references.append({
+                "method": method.upper(),
+                "path": self._completion_normalize_api_path(match.group("url")),
+            })
+        return [
+            item for item in references
+            if item.get("path") and str(item.get("path")).startswith("/api/")
+        ]
+
+    def _completion_backend_api_routes(
+        self,
+        *,
+        root: Path,
+        task: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        routes: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for path in self._completion_backend_route_candidate_files(root=root, task=task):
+            try:
+                if path.stat().st_size > 2_000_000:
+                    continue
+                content = path.read_text(encoding="utf-8", errors="replace")
+                display = path.relative_to(root.resolve()).as_posix()
+            except (OSError, ValueError):
+                continue
+            for item in self._completion_backend_routes_from_text(content):
+                key = (item["method"], item["path"], display)
+                if key in seen:
+                    continue
+                seen.add(key)
+                routes.append({"sourcePath": display, **item})
+        return routes
+
+    def _completion_backend_route_candidate_files(
+        self,
+        *,
+        root: Path,
+        task: dict[str, Any],
+    ) -> list[Path]:
+        files: list[Path] = []
+        seen: set[Path] = set()
+        for item in task.get("changedFiles") or []:
+            if not isinstance(item, dict):
+                continue
+            path_text = self._completion_changed_file_path(item)
+            if not self._completion_path_may_contain_backend_route(path_text):
+                continue
+            path = self._completion_safe_workspace_path(root=root, relative_path=path_text)
+            if path is not None and path.is_file():
+                seen.add(path)
+                files.append(path)
+        for path in root.rglob("*"):
+            if len(files) >= 500:
+                break
+            if path in seen or not path.is_file():
+                continue
+            if self._completion_path_is_in_ignored_tree(path):
+                continue
+            try:
+                display = path.relative_to(root.resolve()).as_posix()
+            except ValueError:
+                continue
+            if not self._completion_path_may_contain_backend_route(display):
+                continue
+            seen.add(path)
+            files.append(path)
+        return files
+
+    @staticmethod
+    def _completion_path_is_in_ignored_tree(path: Path) -> bool:
+        ignored = {
+            ".git",
+            ".hg",
+            ".svn",
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".venv",
+            "venv",
+            "node_modules",
+            "dist",
+            "build",
+            ".next",
+            ".nuxt",
+        }
+        return any(part in ignored for part in path.parts)
+
+    @staticmethod
+    def _completion_path_may_contain_backend_route(path: str) -> bool:
+        normalized = path.casefold().replace("\\", "/")
+        return normalized.endswith((".py", ".js", ".ts", ".mjs", ".cjs"))
+
+    def _completion_backend_routes_from_text(self, content: str) -> list[dict[str, str]]:
+        routes: list[dict[str, str]] = []
+        for match in re.finditer(
+            r"@[\w.]+\.(?P<method>get|post|put|patch|delete|head|options)"
+            r"\s*\(\s*['\"](?P<path>/api/[^'\"]*)['\"]",
+            content,
+            flags=re.IGNORECASE,
+        ):
+            routes.append({
+                "method": match.group("method").upper(),
+                "path": self._completion_normalize_api_path(match.group("path")),
+            })
+        for match in re.finditer(
+            r"@[\w.]+\.route\s*\(\s*['\"](?P<path>/api/[^'\"]*)['\"](?P<args>[^)]*)\)",
+            content,
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            methods = re.findall(r"['\"]([A-Za-z]+)['\"]", match.group("args") or "")
+            if methods:
+                for method in methods:
+                    routes.append({
+                        "method": method.upper(),
+                        "path": self._completion_normalize_api_path(match.group("path")),
+                    })
+            else:
+                routes.append({
+                    "method": "*",
+                    "path": self._completion_normalize_api_path(match.group("path")),
+                })
+        for match in re.finditer(
+            r"\b(?:app|router|server)\s*\.\s*(?P<method>get|post|put|patch|delete|head|options|all|use)"
+            r"\s*\(\s*['\"](?P<path>/api/[^'\"]*)['\"]",
+            content,
+            flags=re.IGNORECASE,
+        ):
+            method = match.group("method").upper()
+            routes.append({
+                "method": "*" if method in {"ALL", "USE"} else method,
+                "path": self._completion_normalize_api_path(match.group("path")),
+            })
+        return [
+            route for route in routes
+            if route.get("path") and str(route.get("path")).startswith("/api/")
+        ]
+
+    def _completion_match_backend_api_route(
+        self,
+        reference: dict[str, str],
+        routes: list[dict[str, str]],
+    ) -> dict[str, str] | None:
+        method = str(reference.get("method") or "GET").upper()
+        path = str(reference.get("path") or "")
+        for route in routes:
+            route_method = str(route.get("method") or "").upper()
+            if route_method not in {"*", method}:
+                continue
+            if self._completion_api_route_path_matches(str(route.get("path") or ""), path):
+                return route
+        return None
+
+    def _completion_api_route_path_matches(self, route_path: str, reference_path: str) -> bool:
+        route = self._completion_normalize_api_path(route_path)
+        reference = self._completion_normalize_api_path(reference_path)
+        if route == reference:
+            return True
+        pattern = self._completion_api_route_pattern(route)
+        return bool(re.fullmatch(pattern, reference))
+
+    @staticmethod
+    def _completion_api_route_pattern(route_path: str) -> str:
+        segments = route_path.strip("/").split("/")
+        pattern_segments: list[str] = []
+        for segment in segments:
+            if not segment:
+                continue
+            if (
+                segment.startswith(":")
+                or (segment.startswith("{") and segment.endswith("}"))
+                or (segment.startswith("<") and segment.endswith(">"))
+            ):
+                pattern_segments.append(r"[^/]+")
+            elif segment == "*":
+                pattern_segments.append(r".*")
+            else:
+                pattern_segments.append(re.escape(segment))
+        return "/" + "/".join(pattern_segments)
+
+    @staticmethod
+    def _completion_normalize_api_path(value: str) -> str:
+        path = str(value or "").split("#", 1)[0].split("?", 1)[0].strip()
+        if not path:
+            return ""
+        if not path.startswith("/"):
+            path = "/" + path
+        if len(path) > 1:
+            path = path.rstrip("/")
+        return path
 
     def _completion_static_frontend_asset_records(
         self,

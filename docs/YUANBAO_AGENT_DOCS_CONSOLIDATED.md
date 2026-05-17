@@ -1558,6 +1558,19 @@ Completed or effectively closed:
 | Multi-agent worktree strategy validation | Done in current follow-up | Real git regression covers root/child strategy reporting, isolated child worktrees, merge verification/approval, and child merge conflict failure context. |
 | Frontend runtime cockpit phase 1 | Done in current follow-up | Session workspace now shows a compact runtime cockpit above the conversation stream. It summarizes task phase, completion gate, pending approval, changed files, commands, verification ratio, failed signals, first acceptance issue, and context budget without exposing raw context preview content. |
 
+### Hardcoded decision audit and first remediation
+
+Principle for this pass: LLM/DecisionAdvisor should own semantic judgments such as artifact shape, evidence needs, routing, continuation, and recovery strategy. Runtime code may keep deterministic guards for permissions, budgets, state transitions, schema validation, filesystem facts, objective command failures, and other safety boundaries.
+
+| Decision point | Audit result | Current status |
+| --- | --- | --- |
+| Routing intent / scenario | Keyword rules are acceptable only as cheap candidate or fallback. They should not override an available valid advisor proposal by default. | Done: MetaRouter passes the rule candidate to DecisionAdvisor and defaults to semantic routing when available. |
+| Parent continuation after child results | Earlier strategy-based continuation was too rigid for complex workflows. | Done: routing advisor can provide generic `tool_continuation`; the old strategy rule is only compatibility fallback. |
+| Product/artifact acceptance shape | Fixed API/browser/server assumptions are too narrow for embedded, design, migration, docs, libraries, and other task shapes. | Done: product-surface advisor now requests generic evidence and emits `agent.evidence.requested` / `on_evidence_requested`. |
+| Advisor-requested follow-up evidence | Evidence execution must not be hard-coded to frontend/API/browser probes, and must not auto-run LLM-suggested commands. | First remediation done: `suggestedCommand` now becomes a generic `executionSuggestions` entry with `PermissionEngine` allow/approval/deny metadata, copied into completion evidence, event payload, and hook context. No command is executed automatically. |
+| Completion verification matching | Current language/framework matching is useful objective evidence, but still contains fixed families and command tokens. | Remaining: keep it as a conservative guard, but let advisor-requested evidence and completion advisor explain/override domain-specific verification needs in a later pass. |
+| Provider recovery | Failure classification is objective; deciding whether to split, retry smaller, or fallback provider should become advisor-proposed where possible. | Remaining: bounded task splitting and guarded provider fallback should use advisor strategy while runtime enforces retry budgets and non-retryable auth/refusal. |
+
 Still open / next implementation queue:
 
 | Priority | Task | Current next step |
@@ -1576,7 +1589,7 @@ Still open / next implementation queue:
 
 Current priority order:
 
-1. Product acceptance phase 2 follow-up: optional evidence executors can now consume generic `agent.evidence.requested` / `on_evidence_requested` signals from the product-surface/completion advisors; remaining work is permission-gated execution for advisor-suggested commands or tools, still covering different domains rather than a fixed task taxonomy.
+1. Product acceptance phase 2 follow-up: optional evidence executors can now consume generic `agent.evidence.requested` / `on_evidence_requested` signals from the product-surface/completion advisors; advisor-suggested commands are now surfaced as permission-gated `executionSuggestions` without auto-execution. Remaining work is an approved executor loop for those suggestions and non-command tool suggestions, still covering different domains rather than a fixed task taxonomy.
 2. Provider recovery phase 2: bounded task splitting and guarded provider fallback after the new smaller-context retry path; audit remaining fixed recovery rules so LLM/advisor proposes recovery strategy while runtime enforces retry budgets and safety.
 3. Frontend runtime cockpit phase 2 plus main workflow phase 3: wrap-up/change-target takeover, resumable handoff UI, and richer budget convergence policies.
 4. MCP + Skills fallback polish: missing skill/unavailable server/partial response strategy selection remains, while failed MCP/tool handoff is now structured.

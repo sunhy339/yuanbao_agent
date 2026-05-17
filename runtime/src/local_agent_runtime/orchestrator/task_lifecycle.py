@@ -7,6 +7,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
+from ..policy.permission_engine import PermissionEngine, PermissionRequest
+
 logger = logging.getLogger(__name__)
 
 
@@ -1036,8 +1038,15 @@ class TaskLifecycleMixin:
             advice=advice,
             completion_evidence=completion_evidence,
         )
+        execution_suggestions = self._advisor_evidence_execution_suggestions(
+            task=task,
+            advice=advice,
+            requested_evidence=requested_evidence,
+        )
         if requested_evidence:
             completion_evidence["advisorRequestedEvidence"] = requested_evidence
+        if execution_suggestions:
+            completion_evidence["advisorEvidenceExecutionSuggestions"] = execution_suggestions
         advisory = self._product_surface_advisory_from_advice(advice)
         if advisory is not None:
             completion_evidence.setdefault("productAdvisories", []).append(advisory)
@@ -1047,6 +1056,7 @@ class TaskLifecycleMixin:
                 task=task,
                 advice=advice,
                 requested_evidence=requested_evidence,
+                execution_suggestions=execution_suggestions,
                 advisory=advisory,
             )
         return advice
@@ -1058,10 +1068,12 @@ class TaskLifecycleMixin:
         task: dict[str, Any],
         advice: dict[str, Any],
         requested_evidence: list[dict[str, Any]],
+        execution_suggestions: list[dict[str, Any]] | None,
         advisory: dict[str, Any] | None,
     ) -> None:
         payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
         verification_intents = payload.get("verification_intents") if isinstance(payload.get("verification_intents"), list) else []
+        execution_suggestions = execution_suggestions or []
         blocking_count = len([
             item for item in requested_evidence
             if isinstance(item, dict) and item.get("blocking") is True
@@ -1085,6 +1097,8 @@ class TaskLifecycleMixin:
             "missingBlockingCount": missing_blocking_count,
             "hasBlockingEvidenceRequest": blocking_count > 0,
         }
+        if execution_suggestions:
+            event_payload["executionSuggestions"] = execution_suggestions[:20]
         self._publish(
             session_id=session_id,
             task=task,
@@ -1099,11 +1113,101 @@ class TaskLifecycleMixin:
                 "surfaceType": event_payload["surfaceType"],
                 "proposalRecordId": event_payload["proposalRecordId"],
                 "evidenceRequests": requested_evidence[:20],
+                "executionSuggestions": execution_suggestions[:20],
                 "verificationIntents": verification_intents[:10],
                 "blockingCount": blocking_count,
                 "missingBlockingCount": missing_blocking_count,
             },
         )
+
+    def _advisor_evidence_execution_suggestions(
+        self,
+        *,
+        task: dict[str, Any],
+        advice: dict[str, Any],
+        requested_evidence: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        suggestions: list[dict[str, Any]] = []
+        for index, request in enumerate(requested_evidence):
+            if not isinstance(request, dict):
+                continue
+            command = request.get("suggestedCommand")
+            if not isinstance(command, str) or not command.strip():
+                continue
+            permission = self._advisor_evidence_permission_summary(
+                task=task,
+                request=request,
+                command=command.strip(),
+            )
+            decision = str(permission.get("decision") or "approval_required")
+            execution_state = "ready_for_executor"
+            if decision == "approval_required":
+                execution_state = "approval_required"
+            elif decision == "deny":
+                execution_state = "denied_by_policy"
+            suggestion: dict[str, Any] = {
+                "type": "run_command",
+                "toolName": "run_command",
+                "command": command.strip(),
+                "requestIndex": index,
+                "requestKind": request.get("kind"),
+                "summary": request.get("summary"),
+                "target": request.get("target"),
+                "blocking": request.get("blocking") is True,
+                "source": "llm_product_surface_advisor",
+                "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
+                "executionState": execution_state,
+                "executionMode": "suggestion_only",
+                "permissionDecision": decision,
+                "requiresApproval": decision == "approval_required",
+            }
+            if request.get("domain") not in (None, ""):
+                suggestion["domain"] = request.get("domain")
+            if permission.get("reason"):
+                suggestion["permissionReason"] = permission["reason"]
+            if permission.get("approvalKind"):
+                suggestion["approvalKind"] = permission["approvalKind"]
+            suggestions.append({key: value for key, value in suggestion.items() if value not in (None, "")})
+        return suggestions[:20]
+
+    def _advisor_evidence_permission_summary(
+        self,
+        *,
+        task: dict[str, Any],
+        request: dict[str, Any],
+        command: str,
+    ) -> dict[str, Any]:
+        try:
+            config_result = self._store.get_config({}) if hasattr(self._store, "get_config") else {}
+            config = config_result.get("config") if isinstance(config_result, dict) else {}
+            if not isinstance(config, dict):
+                config = {}
+            decision = PermissionEngine(config).evaluate(PermissionRequest(
+                capability="runCommand",
+                tool_name="advisor.evidence.run_command",
+                context={
+                    "taskId": task.get("id"),
+                    "sessionId": task.get("sessionId"),
+                    "evidenceKind": request.get("kind"),
+                    "target": request.get("target"),
+                    "command": command,
+                    "source": "llm_product_surface_advisor",
+                },
+            ))
+            return {
+                "decision": decision.decision,
+                "capability": decision.capability,
+                "reason": decision.reason,
+                "approvalKind": decision.approval_kind,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to evaluate advisor evidence permission", exc_info=True)
+            return {
+                "decision": "approval_required",
+                "capability": "runCommand",
+                "reason": f"Permission evaluation failed; approval required before execution: {exc}",
+                "approvalKind": "run_command",
+            }
 
     def _consult_product_surface_advisor(
         self,

@@ -1882,6 +1882,181 @@ class TestCompletionHardGate:
         assert len(hook_events) == 1
         assert hook_events[0].payload["checks"] == ["advisor_requested_evidence"]
 
+    def test_advisor_suggested_command_becomes_permission_gated_evidence_suggestion(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor wants one extra domain-specific proof command.",
+                        fallback_reason=None,
+                        proposal_id="surface_command_1",
+                        confidence=0.86,
+                        payload={
+                            "surface_type": "firmware_module",
+                            "evidence_requests": [
+                                {
+                                    "kind": "target_probe",
+                                    "summary": "Build the target probe binary when hardware is unavailable.",
+                                    "target": "firmware/probe",
+                                    "suggestedCommand": "cmake --build build --target probe",
+                                    "blocking": False,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="The available evidence is enough; the probe command is an optional follow-up.",
+                    fallback_reason=None,
+                    proposal_id="completion_command_1",
+                    confidence=0.82,
+                    payload={"is_complete": True, "surface_type": "firmware_module"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        project = tmp_path / "project"
+        firmware = project / "firmware"
+        firmware.mkdir(parents=True)
+        (firmware / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="advisor command")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Update the firmware probe module",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "firmware/main.c", "summary": "updated probe path"}],
+            verification=[
+                {"command": "cmake --build build --target firmware", "status": "passed", "summary": "native build passed"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated firmware probe module and verified the native build.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]
+        suggestion = evidence["advisorEvidenceExecutionSuggestions"][0]
+        assert suggestion["type"] == "run_command"
+        assert suggestion["command"] == "cmake --build build --target probe"
+        assert suggestion["requestKind"] == "target_probe"
+        assert suggestion["executionMode"] == "suggestion_only"
+        assert suggestion["executionState"] == "approval_required"
+        assert suggestion["permissionDecision"] == "approval_required"
+        assert suggestion["approvalKind"] == "run_command"
+        assert suggestion["requiresApproval"] is True
+        evidence_event = next(event for event in captured_events if event.type == "agent.evidence.requested")
+        assert evidence_event.payload["executionSuggestions"][0]["command"] == "cmake --build build --target probe"
+        assert not [
+            event for event in captured_events
+            if event.type == "approval.requested" and event.payload.get("kind") == "run_command"
+        ]
+
+    def test_advisor_suggested_command_records_permission_denial_without_execution(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor suggested a local command, but policy may forbid it.",
+                        fallback_reason=None,
+                        proposal_id="surface_denied_command_1",
+                        confidence=0.84,
+                        payload={
+                            "surface_type": "migration_plan",
+                            "evidence_requests": [
+                                {
+                                    "kind": "dry_run",
+                                    "summary": "Run the migration dry-run before release.",
+                                    "target": "database migration",
+                                    "suggestedCommand": "python manage.py migrate --dry-run",
+                                    "blocking": False,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="The document is complete; the dry-run is tracked as a policy-gated follow-up.",
+                    fallback_reason=None,
+                    proposal_id="completion_denied_command_1",
+                    confidence=0.8,
+                    payload={"is_complete": True, "surface_type": "migration_plan"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        store.update_config({
+            "permissions": {
+                "capabilities": {
+                    "runCommand": {"mode": "blocked", "scope": "*"},
+                },
+            },
+        })
+        project = tmp_path / "project"
+        docs = project / "docs"
+        docs.mkdir(parents=True)
+        (docs / "migration.md").write_text("# Migration\n\nDry-run plan documented.\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="denied advisor command")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Document the migration plan",
+            plan=[],
+            routing={"scenario": "doc_write"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "docs/migration.md", "summary": "documented migration plan"}],
+            verification=[
+                {"command": "markdown lint docs/migration.md", "status": "passed", "summary": "markdown ok"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Documented the migration plan.",
+            context={"workspace_root": str(project), "routing": {"scenario": "doc_write"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        suggestion = result["structuredResult"]["completionEvidence"]["advisorEvidenceExecutionSuggestions"][0]
+        assert suggestion["command"] == "python manage.py migrate --dry-run"
+        assert suggestion["permissionDecision"] == "deny"
+        assert suggestion["executionState"] == "denied_by_policy"
+        assert suggestion["requiresApproval"] is False
+        assert "blocked" in suggestion["permissionReason"]
+        evidence_event = next(event for event in captured_events if event.type == "agent.evidence.requested")
+        assert evidence_event.payload["executionSuggestions"][0]["executionState"] == "denied_by_policy"
+        assert not [
+            event for event in captured_events
+            if event.type == "approval.requested" and event.payload.get("kind") == "run_command"
+        ]
+
     def test_static_frontend_script_syntax_failure_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

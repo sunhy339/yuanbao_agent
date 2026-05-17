@@ -828,6 +828,18 @@ class TestHookP2Actions:
         })
         assert hook["action"]["type"] == "external_sync"
 
+    def test_create_hook_for_advisor_evidence_requested_event(self, tmp_path: Any) -> None:
+        store, _ = _make_store(tmp_path)
+        ws_id = _make_workspace(store, tmp_path)
+        hook = _create_hook(
+            store,
+            ws_id,
+            event="on_evidence_requested",
+            action={"type": "auto_verification_suggestion", "checks": ["advisor_requested_evidence"]},
+        )
+        assert hook["event"] == "on_evidence_requested"
+        assert hook["action"]["type"] == "auto_verification_suggestion"
+
     def test_auto_verification_suggestion_executes(self, tmp_path: Any) -> None:
         store, event_bus = _make_store(tmp_path)
         ws_id = _make_workspace(store, tmp_path)

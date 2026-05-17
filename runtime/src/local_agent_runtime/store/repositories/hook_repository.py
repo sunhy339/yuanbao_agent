@@ -18,6 +18,7 @@ class HookStoreMixin:
         "before_provider_turn", "after_provider_turn",
         "before_compaction", "after_compaction",
         "on_task_resume",
+        "on_evidence_requested",
         # P2: Advanced Integration
         "before_subagent_start", "after_subagent_complete", "on_subagent_failed",
         "before_worktree_create", "after_worktree_create",

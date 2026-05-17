@@ -864,6 +864,12 @@ class TaskLifecycleMixin:
             "cargo build",
             "go build",
             "dotnet build",
+            "cmake",
+            "cmake --build",
+            "ctest",
+            "ninja",
+            "ninja test",
+            "make test",
         )
         return any(token in normalized for token in targeted_tokens)
 
@@ -911,16 +917,20 @@ class TaskLifecycleMixin:
         decision: str | None,
         skip_drain: bool,
     ) -> dict[str, Any]:
+        advisor_requested_evidence = completion_evidence.get("advisorRequestedEvidence")
+        approval_request = {
+            "summary": summary,
+            "risk": risk or "completion evidence requires review",
+            "reason": reason,
+            "completionEvidence": completion_evidence,
+            "structuredResult": structured_result,
+        }
+        if isinstance(advisor_requested_evidence, list):
+            approval_request["advisorRequestedEvidence"] = advisor_requested_evidence
         approval = self._store.create_approval(
             task["id"],
             "completion_review",
-            {
-                "summary": summary,
-                "risk": risk or "completion evidence requires review",
-                "reason": reason,
-                "completionEvidence": completion_evidence,
-                "structuredResult": structured_result,
-            },
+            approval_request,
         )
         review_structured_result = {
             **structured_result,
@@ -931,6 +941,8 @@ class TaskLifecycleMixin:
                 "approvalId": approval["id"],
             },
         }
+        if isinstance(advisor_requested_evidence, list):
+            review_structured_result["completionGate"]["advisorRequestedEvidence"] = advisor_requested_evidence
         self._validate_task_transition(task["status"], "waiting_approval", task["id"], silent=True)
         review_task = self._store.update_task(
             task_id=task["id"],
@@ -1029,7 +1041,69 @@ class TaskLifecycleMixin:
         advisory = self._product_surface_advisory_from_advice(advice)
         if advisory is not None:
             completion_evidence.setdefault("productAdvisories", []).append(advisory)
+        if requested_evidence:
+            self._publish_advisor_evidence_requests(
+                session_id=session_id,
+                task=task,
+                advice=advice,
+                requested_evidence=requested_evidence,
+                advisory=advisory,
+            )
         return advice
+
+    def _publish_advisor_evidence_requests(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        advice: dict[str, Any],
+        requested_evidence: list[dict[str, Any]],
+        advisory: dict[str, Any] | None,
+    ) -> None:
+        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
+        verification_intents = payload.get("verification_intents") if isinstance(payload.get("verification_intents"), list) else []
+        blocking_count = len([
+            item for item in requested_evidence
+            if isinstance(item, dict) and item.get("blocking") is True
+        ])
+        missing_blocking_count = len([
+            item for item in requested_evidence
+            if isinstance(item, dict)
+            and item.get("blocking") is True
+            and item.get("status") == "missing"
+        ])
+        event_payload = {
+            "source": "llm_product_surface_advisor",
+            "surfaceType": payload.get("surface_type") or (advisory or {}).get("surfaceType"),
+            "proposalRecordId": advice.get("proposalRecordId"),
+            "confidence": advice.get("confidence"),
+            "rationale": advice.get("rationale"),
+            "recommendedVerification": self._completion_string_list(payload.get("recommended_verification"))[:10],
+            "verificationIntents": verification_intents[:10],
+            "evidenceRequests": requested_evidence[:20],
+            "blockingCount": blocking_count,
+            "missingBlockingCount": missing_blocking_count,
+            "hasBlockingEvidenceRequest": blocking_count > 0,
+        }
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="agent.evidence.requested",
+            payload=event_payload,
+        )
+        self._fire_hooks(
+            "on_evidence_requested",
+            session_id,
+            task,
+            extra_context={
+                "surfaceType": event_payload["surfaceType"],
+                "proposalRecordId": event_payload["proposalRecordId"],
+                "evidenceRequests": requested_evidence[:20],
+                "verificationIntents": verification_intents[:10],
+                "blockingCount": blocking_count,
+                "missingBlockingCount": missing_blocking_count,
+            },
+        )
 
     def _consult_product_surface_advisor(
         self,

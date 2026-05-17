@@ -14,11 +14,17 @@ import pytest
 
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestrator.service import Orchestrator
+from local_agent_runtime.services.hook_service import HookService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.registry import ToolRegistry
 
 
-def _make_runtime(tmp_path: Any, decision_advisor: Any | None = None) -> SimpleNamespace:
+def _make_runtime(
+    tmp_path: Any,
+    decision_advisor: Any | None = None,
+    *,
+    enable_hooks: bool = False,
+) -> SimpleNamespace:
     event_bus = EventBus()
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     tool_registry = ToolRegistry()
@@ -31,6 +37,7 @@ def _make_runtime(tmp_path: Any, decision_advisor: Any | None = None) -> SimpleN
         store=store, event_bus=event_bus,
         tool_registry=tool_registry, provider=DummyProvider(),
         decision_advisor=decision_advisor,
+        hook_service=HookService(store, event_bus) if enable_hooks else None,
     )
     return SimpleNamespace(orchestrator=orchestrator, store=store, event_bus=event_bus)
 
@@ -1576,10 +1583,12 @@ class TestCompletionHardGate:
                         "blocking_issues": ["Missing end-to-end evidence for the requested feedback flow."],
                         "recommended_verification": ["Provide flow evidence that submits feedback and verifies the outcome."],
                     },
-                )
+        )
 
         advisor = RecordingAdvisor()
-        rt = _make_runtime(tmp_path, decision_advisor=advisor)
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
         store = rt.store
         project = tmp_path / "project"
         project.mkdir()
@@ -1652,6 +1661,11 @@ class TestCompletionHardGate:
         assert surface_proposals[0]["proposal"]["evidence_requests"][0]["kind"] == "flow_evidence"
         assert evidence["advisorRequestedEvidence"][0]["kind"] == "flow_evidence"
         assert evidence["advisorRequestedEvidence"][0]["status"] == "missing"
+        evidence_events = [event for event in captured_events if event.type == "agent.evidence.requested"]
+        assert len(evidence_events) == 1
+        assert evidence_events[0].payload["surfaceType"] == "interactive_feedback_flow"
+        assert evidence_events[0].payload["evidenceRequests"][0]["kind"] == "flow_evidence"
+        assert evidence_events[0].payload["missingBlockingCount"] == 1
         llm_advisory = [
             item for item in evidence["productAdvisories"]
             if item.get("source") == "llm_product_surface_advisor"
@@ -1720,7 +1734,9 @@ class TestCompletionHardGate:
                 )
 
         advisor = RecordingAdvisor()
-        rt = _make_runtime(tmp_path, decision_advisor=advisor)
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
         store = rt.store
         project = tmp_path / "project"
         docs = project / "docs"
@@ -1762,6 +1778,109 @@ class TestCompletionHardGate:
         assert evidence["advisorRequestedEvidence"][0]["kind"] == "design_review"
         assert evidence["advisorRequestedEvidence"][0]["status"] == "missing"
         assert result["structuredResult"]["completionGate"]["status"] == "advisor_evidence_requested"
+        evidence_events = [event for event in captured_events if event.type == "agent.evidence.requested"]
+        assert len(evidence_events) == 1
+        assert evidence_events[0].payload["surfaceType"] == "architecture_design"
+        assert evidence_events[0].payload["evidenceRequests"][0]["target"] == "docs/auth-storage-adr.md"
+        approval_event = next(event for event in captured_events if event.type == "approval.requested")
+        request = approval_event.payload["request"]
+        assert request["advisorRequestedEvidence"][0]["kind"] == "design_review"
+        assert result["structuredResult"]["completionGate"]["advisorRequestedEvidence"][0]["kind"] == "design_review"
+
+    def test_product_surface_advisor_nonblocking_evidence_event_is_generic(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The artifact is embedded firmware, so hardware evidence may be useful but is not blocking.",
+                        fallback_reason=None,
+                        proposal_id="surface_embedded_1",
+                        confidence=0.83,
+                        payload={
+                            "surface_type": "embedded_firmware_update",
+                            "recommended_verification": ["Capture UART telemetry on target hardware when available."],
+                            "verification_intents": [
+                                {"kind": "hardware_in_loop", "target": "UART telemetry"},
+                            ],
+                            "evidence_requests": [
+                                {
+                                    "kind": "hardware_in_loop",
+                                    "summary": "Run the firmware on the target board and capture UART telemetry.",
+                                    "target": "target board",
+                                    "blocking": False,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="The available build evidence is enough for this slice; hardware evidence can follow later.",
+                    fallback_reason=None,
+                    proposal_id="completion_embedded_1",
+                    confidence=0.81,
+                    payload={"is_complete": True, "surface_type": "embedded_firmware_update"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        project = tmp_path / "project"
+        firmware = project / "firmware"
+        firmware.mkdir(parents=True)
+        (firmware / "main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        store.create_hook({
+            "workspaceId": workspace["id"],
+            "name": "Advisor evidence suggestion",
+            "event": "on_evidence_requested",
+            "action": {
+                "type": "auto_verification_suggestion",
+                "checks": ["advisor_requested_evidence"],
+                "suggestion": "Review the advisor-requested evidence for this task.",
+            },
+        })
+        session = store.create_session(workspace_id=workspace["id"], title="embedded evidence")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Update the embedded firmware startup path",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "firmware/main.c", "summary": "updated startup path"}],
+            verification=[
+                {"command": "cmake --build build --target firmware", "status": "passed", "summary": "native firmware build passed"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated firmware startup path and verified the native build.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert evidence["advisorRequestedEvidence"][0]["kind"] == "hardware_in_loop"
+        assert evidence["advisorRequestedEvidence"][0]["status"] == "requested"
+        evidence_events = [event for event in captured_events if event.type == "agent.evidence.requested"]
+        assert len(evidence_events) == 1
+        assert evidence_events[0].payload["surfaceType"] == "embedded_firmware_update"
+        assert evidence_events[0].payload["evidenceRequests"][0]["kind"] == "hardware_in_loop"
+        assert evidence_events[0].payload["blockingCount"] == 0
+        assert evidence_events[0].payload["missingBlockingCount"] == 0
+        hook_events = [event for event in captured_events if event.type == "hook.auto_verification_suggestion"]
+        assert len(hook_events) == 1
+        assert hook_events[0].payload["checks"] == ["advisor_requested_evidence"]
 
     def test_static_frontend_script_syntax_failure_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)

@@ -161,6 +161,7 @@ export type RuntimeHookEvent =
   | "before_compaction"
   | "after_compaction"
   | "on_task_resume"
+  | "on_evidence_requested"
   | "before_subagent_start"
   | "after_subagent_complete"
   | "on_subagent_failed"

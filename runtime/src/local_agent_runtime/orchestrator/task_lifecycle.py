@@ -14,10 +14,14 @@ class _StaticAssetReferenceParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.references: list[tuple[str, str]] = []
+        self._text_depth = 0
+        self.visible_text: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = {name.casefold(): value for name, value in attrs if value}
         normalized_tag = tag.casefold()
+        if normalized_tag in {"script", "style", "noscript"}:
+            self._text_depth += 1
         if normalized_tag == "script" and attributes.get("src"):
             self.references.append(("script", attributes["src"] or ""))
         elif normalized_tag == "link":
@@ -25,6 +29,21 @@ class _StaticAssetReferenceParser(HTMLParser):
             href = attributes.get("href")
             if href and "stylesheet" in rel:
                 self.references.append(("stylesheet", href))
+        elif normalized_tag == "img" and attributes.get("src"):
+            self.references.append(("image", attributes["src"] or ""))
+        elif normalized_tag == "a" and attributes.get("href"):
+            self.references.append(("route", attributes["href"] or ""))
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() in {"script", "style", "noscript"} and self._text_depth > 0:
+            self._text_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._text_depth > 0:
+            return
+        text = " ".join(data.split())
+        if text:
+            self.visible_text.append(text)
 
 
 class TaskLifecycleMixin:
@@ -1507,11 +1526,13 @@ class TaskLifecycleMixin:
                 content = html_path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
+            records.append(self._completion_html_route_health_record(html_path_text=html_path_text, content=content))
             for kind, reference in self._completion_html_asset_references(content):
                 asset_path = self._completion_resolve_html_asset(
                     root=root,
                     html_path=html_path,
                     reference=reference,
+                    kind=kind,
                 )
                 if asset_path is None:
                     continue
@@ -1554,6 +1575,29 @@ class TaskLifecycleMixin:
             if self._completion_is_local_static_reference(reference)
         ]
 
+    def _completion_html_route_health_record(self, *, html_path_text: str, content: str) -> dict[str, Any]:
+        parser = _StaticAssetReferenceParser()
+        issues: list[str] = []
+        try:
+            parser.feed(content)
+        except Exception as exc:  # noqa: BLE001
+            issues.append(f"html parse warning: {exc}")
+        visible_text = " ".join(parser.visible_text).strip()
+        if len(visible_text) < 3:
+            issues.append("no visible text found")
+        lowered = visible_text.casefold()
+        if "lorem ipsum" in lowered:
+            issues.append("placeholder lorem ipsum copy")
+        if "[todo]" in lowered or "todo:" in lowered:
+            issues.append("visible TODO placeholder")
+        return {
+            "criterion": f"Static frontend route opens: {html_path_text}",
+            "status": "failed" if issues else "supported",
+            "evidenceLevel": "product_quality",
+            "source": "static_frontend_route_health",
+            "issues": issues[:5],
+        }
+
     @staticmethod
     def _completion_is_local_static_reference(reference: str) -> bool:
         value = reference.strip()
@@ -1570,6 +1614,7 @@ class TaskLifecycleMixin:
         root: Path,
         html_path: Path,
         reference: str,
+        kind: str,
     ) -> Path | None:
         clean_reference = reference.split("#", 1)[0].split("?", 1)[0].replace("\\", "/").strip()
         if not clean_reference:
@@ -1579,6 +1624,15 @@ class TaskLifecycleMixin:
             candidate.relative_to(root.resolve())
         except ValueError:
             return None
+        if kind == "route" and candidate.is_dir():
+            return candidate / "index.html"
+        if kind == "route" and not candidate.suffix:
+            html_candidate = candidate.with_suffix(".html")
+            if html_candidate.exists():
+                return html_candidate
+            index_candidate = candidate / "index.html"
+            if index_candidate.exists():
+                return index_candidate
         return candidate
 
     def _completion_safe_workspace_path(self, *, root: Path, relative_path: str) -> Path | None:

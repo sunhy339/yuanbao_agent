@@ -1256,6 +1256,103 @@ class TestCompletionHardGate:
         assert asset["status"] == "supported"
         assert asset["source"] == "static_asset_reachability"
 
+    def test_static_frontend_blank_route_waits_for_review(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "index.html").write_text(
+            '<!doctype html><script src="app.js"></script>\n',
+            encoding="utf-8",
+        )
+        (project / "app.js").write_text("console.log('ready');\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="product gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Create a static frontend in index.html",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "index.html", "summary": "generated static frontend"},
+                {"path": "app.js", "summary": "generated script"},
+            ],
+            verification=[{"command": "node --check app.js", "status": "passed", "summary": "syntax ok"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Generated static frontend files.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        evidence = result["structuredResult"]["completionEvidence"]
+        route = [
+            item for item in evidence["acceptance"]
+            if item["criterion"] == "Static frontend route opens: index.html"
+        ][0]
+        assert route["status"] == "failed"
+        assert route["source"] == "static_frontend_route_health"
+        assert "no visible text found" in route["issues"]
+        assert result["structuredResult"]["completionGate"]["status"] == "needs_acceptance_review"
+
+    def test_static_frontend_missing_route_link_waits_for_review(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "index.html").write_text(
+            '<!doctype html><main><a href="about.html">About</a></main>\n',
+            encoding="utf-8",
+        )
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="product gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Create a static frontend in index.html with about route",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "index.html", "summary": "generated static frontend"}],
+            commands=[
+                {
+                    "id": "cmd_exists",
+                    "command": "dir index.html",
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "index.html exists",
+                }
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Generated index.html.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        evidence = result["structuredResult"]["completionEvidence"]
+        route = [
+            item for item in evidence["acceptance"]
+            if item["criterion"] == "Static frontend asset reachable: index.html -> about.html"
+        ][0]
+        assert route["status"] == "failed"
+        assert route["assetType"] == "route"
+        assert result["structuredResult"]["completionGate"]["status"] == "needs_acceptance_review"
+
     def test_static_frontend_script_syntax_failure_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

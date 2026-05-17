@@ -3,10 +3,28 @@ from __future__ import annotations
 import json
 import logging
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+class _StaticAssetReferenceParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.references: list[tuple[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {name.casefold(): value for name, value in attrs if value}
+        normalized_tag = tag.casefold()
+        if normalized_tag == "script" and attributes.get("src"):
+            self.references.append(("script", attributes["src"] or ""))
+        elif normalized_tag == "link":
+            rel = str(attributes.get("rel") or "").casefold()
+            href = attributes.get("href")
+            if href and "stylesheet" in rel:
+                self.references.append(("stylesheet", href))
 
 
 class TaskLifecycleMixin:
@@ -1458,6 +1476,8 @@ class TaskLifecycleMixin:
                 "evidenceLevel": "structural",
                 "source": "structural_file_check",
             })
+        records.extend(self._completion_product_readability_records(root=root, task=task))
+        records.extend(self._completion_static_frontend_asset_records(root=root, task=task))
         test_expectation = self._completion_expected_pytest_file_count(text)
         if test_expectation is not None:
             found = len([
@@ -1471,6 +1491,216 @@ class TaskLifecycleMixin:
                 "source": "structural_test_file_count",
             })
         return records
+
+    def _completion_static_frontend_asset_records(
+        self,
+        *,
+        root: Path,
+        task: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for html_path_text in self._completion_static_html_artifact_paths(task):
+            html_path = self._completion_safe_workspace_path(root=root, relative_path=html_path_text)
+            if html_path is None or not html_path.is_file():
+                continue
+            try:
+                content = html_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for kind, reference in self._completion_html_asset_references(content):
+                asset_path = self._completion_resolve_html_asset(
+                    root=root,
+                    html_path=html_path,
+                    reference=reference,
+                )
+                if asset_path is None:
+                    continue
+                try:
+                    display = asset_path.relative_to(root.resolve()).as_posix()
+                except ValueError:
+                    continue
+                exists = asset_path.is_file()
+                records.append({
+                    "criterion": f"Static frontend asset reachable: {html_path_text} -> {reference}",
+                    "status": "supported" if exists else "failed",
+                    "evidenceLevel": "product_quality",
+                    "source": "static_asset_reachability",
+                    "path": display,
+                    "assetType": kind,
+                })
+                if exists and kind == "script" and self._completion_path_requires_node_check(display):
+                    records.append(self._completion_node_check_record(root=root, script_path=asset_path))
+        return records
+
+    def _completion_static_html_artifact_paths(self, task: dict[str, Any]) -> list[str]:
+        paths: list[str] = []
+        for item in task.get("changedFiles") or []:
+            if not isinstance(item, dict):
+                continue
+            path = self._completion_changed_file_path(item)
+            if path.casefold().replace("\\", "/").endswith(".html"):
+                paths.append(path)
+        return list(dict.fromkeys(paths))
+
+    def _completion_html_asset_references(self, content: str) -> list[tuple[str, str]]:
+        parser = _StaticAssetReferenceParser()
+        try:
+            parser.feed(content)
+        except Exception:  # noqa: BLE001
+            return []
+        return [
+            (kind, reference)
+            for kind, reference in parser.references
+            if self._completion_is_local_static_reference(reference)
+        ]
+
+    @staticmethod
+    def _completion_is_local_static_reference(reference: str) -> bool:
+        value = reference.strip()
+        if not value or value.startswith(("#", "/", "\\", "data:", "mailto:", "tel:")):
+            return False
+        lowered = value.casefold()
+        if lowered.startswith(("http://", "https://", "//", "javascript:")):
+            return False
+        return True
+
+    def _completion_resolve_html_asset(
+        self,
+        *,
+        root: Path,
+        html_path: Path,
+        reference: str,
+    ) -> Path | None:
+        clean_reference = reference.split("#", 1)[0].split("?", 1)[0].replace("\\", "/").strip()
+        if not clean_reference:
+            return None
+        candidate = (html_path.parent / clean_reference).resolve()
+        try:
+            candidate.relative_to(root.resolve())
+        except ValueError:
+            return None
+        return candidate
+
+    def _completion_safe_workspace_path(self, *, root: Path, relative_path: str) -> Path | None:
+        candidate = (root / relative_path).resolve()
+        try:
+            candidate.relative_to(root.resolve())
+        except ValueError:
+            return None
+        return candidate
+
+    @staticmethod
+    def _completion_path_requires_node_check(path: str) -> bool:
+        return path.casefold().replace("\\", "/").endswith((".js", ".mjs", ".cjs"))
+
+    def _completion_node_check_record(self, *, root: Path, script_path: Path) -> dict[str, Any]:
+        import subprocess
+
+        try:
+            display = script_path.relative_to(root.resolve()).as_posix()
+        except ValueError:
+            display = script_path.name
+        try:
+            proc = subprocess.run(
+                ["node", "--check", str(script_path)],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+            output = (proc.stderr or proc.stdout or "").strip()
+            return {
+                "criterion": f"Static frontend script syntax: {display}",
+                "status": "supported" if proc.returncode == 0 else "failed",
+                "evidenceLevel": "product_quality",
+                "source": "static_frontend_node_check",
+                "command": f"node --check {display}",
+                "exitCode": proc.returncode,
+                "summary": output.splitlines()[0][:200] if output else "node --check passed",
+            }
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                "criterion": f"Static frontend script syntax: {display}",
+                "status": "unverified",
+                "evidenceLevel": "product_quality",
+                "source": "static_frontend_node_check",
+                "command": f"node --check {display}",
+                "summary": str(exc),
+            }
+
+    def _completion_product_readability_records(
+        self,
+        *,
+        root: Path,
+        task: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for path_text in self._completion_readable_artifact_paths(task):
+            path = (root / path_text).resolve()
+            try:
+                path.relative_to(root.resolve())
+            except ValueError:
+                continue
+            if not path.exists() or not path.is_file():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            issues = self._completion_readability_issues(content)
+            records.append({
+                "criterion": f"Readable artifact copy: {path_text}",
+                "status": "failed" if issues else "supported",
+                "evidenceLevel": "product_quality",
+                "source": "product_readability_check",
+                "issues": issues[:5],
+            })
+        return records
+
+    def _completion_readable_artifact_paths(self, task: dict[str, Any]) -> list[str]:
+        paths: list[str] = []
+        for item in task.get("changedFiles") or []:
+            if not isinstance(item, dict):
+                continue
+            path = self._completion_changed_file_path(item)
+            if path and self._completion_path_requires_readability_check(path):
+                paths.append(path)
+        return list(dict.fromkeys(paths))
+
+    @staticmethod
+    def _completion_path_requires_readability_check(path: str) -> bool:
+        normalized = path.casefold().replace("\\", "/")
+        return normalized.endswith((
+            ".html",
+            ".md",
+            ".txt",
+            ".css",
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".vue",
+            ".svelte",
+        ))
+
+    @staticmethod
+    def _completion_readability_issues(content: str) -> list[str]:
+        checks = [
+            ("replacement character", "\ufffd"),
+            ("common mojibake token", "鈥"),
+            ("common mojibake token", "鏂"),
+            ("common mojibake token", "涓"),
+            ("common mojibake token", "浜"),
+            ("common mojibake token", "鍙"),
+            ("common mojibake token", "绋"),
+        ]
+        issues: list[str] = []
+        for label, token in checks:
+            if token in content:
+                issues.append(f"{label}: {token}")
+        return issues
 
     def _completion_expected_artifact_paths(self, text: str) -> list[str]:
         path_pattern = re.compile(
@@ -1879,6 +2109,7 @@ class TaskLifecycleMixin:
                 "resultSummary": summary,
                 "detail": summary,
                 "errorCode": error_code,
+                **({"structuredResult": structured_result} if structured_result is not None else {}),
             },
         )
         # Fire on_task_failed hooks

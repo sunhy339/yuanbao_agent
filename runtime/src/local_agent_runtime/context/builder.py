@@ -78,12 +78,14 @@ class ContextBuilder(HistoryMixin):
         store: Any,
         tool_schemas: list[dict[str, Any]] | None = None,
         *,
+        tool_schema_provider: Any | None = None,
         compactor: ContextCompactor | None = None,
         scratchpad: Scratchpad | None = None,
         skill_registry: Any | None = None,
     ) -> None:
         self._store = store
         self._tool_schemas = tool_schemas
+        self._tool_schema_provider = tool_schema_provider
         self._compactor = compactor
         self._scratchpad = scratchpad
         self._skill_registry = skill_registry
@@ -104,7 +106,7 @@ class ContextBuilder(HistoryMixin):
             "glob": search_glob,
             "ignore": list(dict.fromkeys([*workspace_ignore, *search_ignore])),
         }
-        tools = DEFAULT_TOOL_SCHEMAS if self._tool_schemas is None else self._tool_schemas
+        tools = self._resolve_tool_schemas()
 
         # Resolve skill preset if skill_id is provided
         skill_preset = self._resolve_skill(skill_id)
@@ -218,6 +220,15 @@ class ContextBuilder(HistoryMixin):
         return {
             "command": command.strip() if isinstance(command, str) and command.strip() else None,
         }
+
+    def _resolve_tool_schemas(self) -> list[dict[str, Any]]:
+        if self._tool_schemas is not None:
+            return list(self._tool_schemas)
+        if self._tool_schema_provider is not None:
+            provided = self._tool_schema_provider()
+            if isinstance(provided, list):
+                return list(provided)
+        return list(DEFAULT_TOOL_SCHEMAS)
 
     def _build_messages(
         self,

@@ -516,6 +516,9 @@ class ContextCompactor:
                 scenario = routing.get("scenario")
                 if strategy or scenario:
                     decisions.append(f"routing: scenario={scenario or 'unknown'}, strategy={strategy or 'unknown'}")
+                skill_id = routing.get("skill_id") or routing.get("skillId")
+                if skill_id:
+                    decisions.append(f"skill: {skill_id}")
                 workflow = routing.get("mainWorkflow")
                 if isinstance(workflow, dict):
                     takeover = workflow.get("userTakeover")

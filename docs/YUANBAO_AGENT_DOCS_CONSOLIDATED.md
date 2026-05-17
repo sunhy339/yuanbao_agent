@@ -1550,12 +1550,12 @@ Completed or effectively closed:
 | Pytest temporary directory hygiene | Done | `.pytest-*/` is ignored so focused/long-run temp directories do not pollute git status. |
 | Main workflow state baseline + phase 2 execution | Done in current follow-up | Each foreground, background, and queued task now persists `routing.mainWorkflow` with intent confidence, automation level, budgets, workspace/git snapshot, and initial user takeover state. Stop/cancel, pause, and continue takeover supplements are routed through the existing task lifecycle paths; ReAct `maxTaskSteps` exhaustion now records `mainWorkflow.budget` exhaustion, emits `task.budget.exhausted`, and converges into a partial completion/review path instead of hard failing the loop. |
 | Structured compaction handoff | Done in current follow-up | Context compaction now emits and persists `handoffSummary` with objective, current step, completed work, modified files, failed commands, verification status, decisions, risks, next action, and recent context. The structured handoff is injected into the compacted system summary and exposed through `context.budget` / `autonomy.report` for recovery UI and follow-up turns. |
+| MCP + Skills main-flow acceptance | Done in current follow-up | ContextBuilder now exposes built-in tools plus live ToolRegistry/MCP schemas to provider turns. A main-flow acceptance test routes through a skill with `inherit_mcp`, calls an MCP tool, compacts after the tool result, and verifies the MCP result plus skill decision survive in `handoffSummary`. |
 
 Still open / next implementation queue:
 
 | Priority | Task | Current next step |
 | --- | --- | --- |
-| P0/P1 | MCP + Skills real acceptance coverage | Add a real scenario that triggers a skill, reads `SKILL.md`, uses MCP/tool output, edits or inspects local artifacts, and survives compaction. Include unavailable MCP/skill fallback cases. |
 | P0/P1 | Main workflow state machine phase 3 | Extend the execution state into frontend cockpit/reporting, wrap-up/change-target takeover behavior, richer budget dimensions, and resumable handoff UI. |
 | P1 | Provider failure recovery | Classify timeout, HTTP parameter/context-too-large, auth/key, and refusal failures; retry or split context only when recoverable. |
 | P1 | Product acceptance gate | Add generated-artifact checks beyond unit tests: server/browser smoke, visible copy/mojibake check, persistence/API flow, and readable docs/README verification. |
@@ -1570,8 +1570,8 @@ Still open / next implementation queue:
 
 Current priority order:
 
-1. MCP + Skills real acceptance coverage.
-2. Product acceptance gate and runtime cockpit/reporting.
-3. Provider recovery and multi-agent worktree strategy validation.
-4. Main workflow phase 3: cockpit/reporting, wrap-up/change-target takeover, and richer budget convergence policies.
+1. Product acceptance gate and runtime cockpit/reporting.
+2. Provider recovery and multi-agent worktree strategy validation.
+3. Main workflow phase 3: cockpit/reporting, wrap-up/change-target takeover, and richer budget convergence policies.
+4. MCP + Skills fallback polish against unavailable servers/skills and partial MCP responses.
 5. Completion audit refinement and release-grade smoke coverage.

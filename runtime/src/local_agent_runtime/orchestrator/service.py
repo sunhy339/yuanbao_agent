@@ -29,6 +29,7 @@ from ..planner.coverage import CoverageEvaluator
 from ..orchestration import SupervisorOrchestrator, SwarmOrchestrator
 from ..services.hook_service import HookService
 from ..store.sqlite_store import SQLiteStore
+from ..tools.registry import BUILTIN_TOOL_SCHEMAS
 from ..observability.tracer import Tracer
 from ..execution.tool_pipeline import ToolExecutionMixin
 from ..state.task_state_machine import TaskStateMachine
@@ -106,9 +107,11 @@ class Orchestrator(
         self._scratchpad = Scratchpad(store)
         self._compactor = ContextCompactor(store, provider=provider)
         self._skill_registry = SkillRegistry(store)
+        context_tool_schemas = self._context_tool_schemas()
         self._context_builder = ContextBuilder(
             store,
-            tool_schemas=self._context_tool_schemas(),
+            tool_schemas=context_tool_schemas,
+            tool_schema_provider=None if context_tool_schemas is not None else self._merged_context_tool_schemas,
             compactor=self._compactor,
             scratchpad=self._scratchpad,
             skill_registry=self._skill_registry,
@@ -147,6 +150,16 @@ class Orchestrator(
             evaluation_prompt=rc.get("evaluationPrompt", ""),
         )
         return ReflectionEvaluator(provider=provider, config=reflection_config)
+
+    def _merged_context_tool_schemas(self) -> list[dict[str, Any]]:
+        schemas = list(BUILTIN_TOOL_SCHEMAS)
+        seen = {schema.get("name") for schema in schemas}
+        for schema in self._tool_registry.schemas:
+            name = schema.get("name")
+            if name and name not in seen:
+                schemas.append(schema)
+                seen.add(name)
+        return schemas
 
     # ── validation helpers ──────────────────────────────────────────
 

@@ -395,6 +395,7 @@ class ContextCompactor:
         messages = history + recents
         commands = self._handoff_commands(task)
         verification = self._handoff_verification(task)
+        failed_tools = self._handoff_failed_tools(messages)
         return {
             "version": 1,
             "sessionId": session_id,
@@ -404,11 +405,12 @@ class ContextCompactor:
             "completedWork": self._handoff_completed_work(task, summary)[:8],
             "modifiedFiles": self._handoff_modified_files(task)[:20],
             "failedCommands": [item for item in commands if self._is_failed_status(item.get("status"))][:8],
-            "verificationStatus": self._handoff_verification_status(verification, commands),
+            "failedTools": failed_tools[:8],
+            "verificationStatus": self._handoff_verification_status(verification, commands, failed_tools),
             "verification": verification[:8],
             "decisions": self._handoff_decisions(task, summary)[:8],
             "risks": self._handoff_risks(task)[:8],
-            "nextCommand": self._handoff_next_action(task, commands),
+            "nextCommand": self._handoff_next_action(task, commands, failed_tools),
             "recentContext": self._handoff_recent_context(messages),
         }
 
@@ -496,6 +498,44 @@ class ContextCompactor:
         return verification
 
     @staticmethod
+    def _handoff_failed_tools(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        failures: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for message in messages:
+            if message.get("role") != "tool":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            try:
+                payload = json.loads(content)
+            except Exception:  # noqa: BLE001
+                continue
+            if not isinstance(payload, dict):
+                continue
+            status = str(payload.get("status") or "").strip()
+            if not ContextCompactor._is_failed_status(status) and payload.get("ok") is not False:
+                continue
+            tool_name = str(message.get("name") or payload.get("tool") or payload.get("name") or "unknown")
+            summary = (
+                payload.get("summary")
+                or payload.get("error")
+                or payload.get("message")
+                or payload.get("content")
+                or "Tool failed."
+            )
+            key = (tool_name, status, str(summary)[:200])
+            if key in seen:
+                continue
+            seen.add(key)
+            failures.append({
+                "name": tool_name,
+                "status": status or "failed",
+                "summary": str(summary)[:500],
+            })
+        return failures
+
+    @staticmethod
     def _handoff_risks(task: dict[str, Any] | None) -> list[str]:
         if not task:
             return []
@@ -535,8 +575,11 @@ class ContextCompactor:
     def _handoff_verification_status(
         verification: list[dict[str, Any]],
         commands: list[dict[str, Any]],
+        failed_tools: list[dict[str, Any]] | None = None,
     ) -> str:
         statuses = [str(item.get("status") or "").lower() for item in verification + commands]
+        if failed_tools:
+            return "failed"
         if any(ContextCompactor._is_failed_status(status) for status in statuses):
             return "failed"
         if any(status in {"passed", "completed", "success", "ok"} for status in statuses):
@@ -544,10 +587,17 @@ class ContextCompactor:
         return "missing"
 
     @staticmethod
-    def _handoff_next_action(task: dict[str, Any] | None, commands: list[dict[str, Any]]) -> str | None:
+    def _handoff_next_action(
+        task: dict[str, Any] | None,
+        commands: list[dict[str, Any]],
+        failed_tools: list[dict[str, Any]] | None = None,
+    ) -> str | None:
         for command in commands:
             if ContextCompactor._is_failed_status(command.get("status")) and command.get("command"):
                 return f"Fix or rerun failed command: {command['command']}"
+        if failed_tools:
+            first = failed_tools[0]
+            return f"Recover failed tool: {first.get('name')}"
         if task:
             for step in task.get("plan") or []:
                 if isinstance(step, dict) and step.get("status") in {"active", "pending"}:
@@ -587,6 +637,10 @@ class ContextCompactor:
             lines.append("Failed commands:")
             for item in handoff["failedCommands"][:5]:
                 lines.append(f"- {item.get('command')} ({item.get('status')})")
+        if handoff.get("failedTools"):
+            lines.append("Failed tools:")
+            for item in handoff["failedTools"][:5]:
+                lines.append(f"- {item.get('name')} ({item.get('status')}): {item.get('summary')}")
         if handoff.get("risks"):
             lines.append("Risks:")
             lines.extend(f"- {item}" for item in handoff["risks"][:5])

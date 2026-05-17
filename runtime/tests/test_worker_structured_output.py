@@ -14,9 +14,12 @@ import pytest
 
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestrator.service import Orchestrator
+from local_agent_runtime.policy.guard import PolicyGuard
+from local_agent_runtime.policy.permission_engine import PermissionEngine
 from local_agent_runtime.services.hook_service import HookService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.registry import ToolRegistry
+from local_agent_runtime.tools.run_command import build_run_command_tool
 
 
 def _make_runtime(
@@ -24,10 +27,19 @@ def _make_runtime(
     decision_advisor: Any | None = None,
     *,
     enable_hooks: bool = False,
+    enable_run_command: bool = False,
 ) -> SimpleNamespace:
     event_bus = EventBus()
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
-    tool_registry = ToolRegistry()
+    tools = {}
+    if enable_run_command:
+        config = store.get_config({})["config"]
+        tools["run_command"] = build_run_command_tool(
+            PolicyGuard(approval_mode=config["policy"]["approvalMode"]),
+            store,
+            permission_engine=PermissionEngine(config=config, store=store),
+        )["handler"]
+    tool_registry = ToolRegistry(tools=tools)
 
     class DummyProvider:
         def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
@@ -1967,6 +1979,105 @@ class TestCompletionHardGate:
             event for event in captured_events
             if event.type == "approval.requested" and event.payload.get("kind") == "run_command"
         ]
+
+    def test_blocking_advisor_suggested_command_waits_for_approval_then_completes(self, tmp_path: Any) -> None:
+        command = "python -c \"print('advisor evidence ok')\""
+
+        class RecordingAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor wants one blocking proof command before completion.",
+                        fallback_reason=None,
+                        proposal_id="surface_blocking_command_1",
+                        confidence=0.88,
+                        payload={
+                            "surface_type": "generic_runtime_artifact",
+                            "evidence_requests": [
+                                {
+                                    "kind": "runtime_probe",
+                                    "summary": "Run the generic probe command before completing.",
+                                    "target": "runtime evidence",
+                                    "suggestedCommand": command,
+                                    "blocking": True,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="Completion is acceptable once the requested evidence is present.",
+                    fallback_reason=None,
+                    proposal_id="completion_blocking_command_1",
+                    confidence=0.84,
+                    payload={"is_complete": True, "surface_type": "generic_runtime_artifact"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True, enable_run_command=True)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        project = tmp_path / "project"
+        src = project / "src"
+        src.mkdir(parents=True)
+        (src / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="blocking advisor command")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Update the runtime artifact",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "src/feature.py", "summary": "updated runtime artifact"}],
+            verification=[
+                {"command": "python -m pytest", "status": "passed", "summary": "tests passed"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated the runtime artifact and verified tests.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        evidence = result["structuredResult"]["completionEvidence"]
+        suggestion = evidence["advisorEvidenceExecutionSuggestions"][0]
+        approval_id = suggestion["approvalId"]
+        assert suggestion["executionMode"] == "approval_then_run_command"
+        assert suggestion["executionState"] == "approval_pending"
+        assert suggestion["approvalRequest"]["command"] == command
+        assert result["structuredResult"]["completionGate"]["approvalIds"] == [approval_id]
+        approval_events = [
+            event for event in captured_events
+            if event.type == "approval.requested" and event.payload.get("kind") == "run_command"
+        ]
+        assert len(approval_events) == 1
+        assert approval_events[0].payload["approvalId"] == approval_id
+        assert approval_events[0].payload["advisorEvidence"]["requestKind"] == "runtime_probe"
+        completion_reviews = store._conn.execute(
+            "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",
+            (task["id"], "completion_review"),
+        ).fetchall()
+        assert completion_reviews == []
+
+        approved = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
+        completed_task = approved["task"]
+        assert completed_task["status"] == "completed"
+        completed_evidence = completed_task["structuredResult"]["completionEvidence"]
+        assert completed_evidence["advisorRequestedEvidence"][0]["status"] == "satisfied"
+        assert completed_task["commands"][0]["command"] == command
+        assert completed_task["commands"][0]["status"] == "completed"
 
     def test_advisor_suggested_command_records_permission_denial_without_execution(self, tmp_path: Any) -> None:
         class RecordingAdvisor:

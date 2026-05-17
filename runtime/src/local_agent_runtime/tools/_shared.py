@@ -736,6 +736,21 @@ def approval_request(
     }
 
 
+_RUN_COMMAND_APPROVAL_EXECUTION_KEYS = (
+    "taskId",
+    "command",
+    "cwd",
+    "shell",
+    "timeoutMs",
+    "workspaceRoot",
+    "background",
+)
+
+
+def _run_command_approval_execution_fields(request: dict[str, Any]) -> dict[str, Any]:
+    return {key: request.get(key) for key in _RUN_COMMAND_APPROVAL_EXECUTION_KEYS}
+
+
 def approval_for_request(
     store: Any,
     task_id: str | None,
@@ -749,17 +764,26 @@ def approval_for_request(
         if approval["kind"] != "run_command":
             raise ValueError("Approval kind mismatch")
         stored_request = json.loads(approval["requestJson"])
-        if stored_request != request:
+        if _run_command_approval_execution_fields(stored_request) != _run_command_approval_execution_fields(request):
             raise ValueError("Approval request does not match the command")
         return approval
 
     if task_id is None:
         return None
-    return store.find_approval(
+    approval = store.find_approval(
         task_id=task_id,
         kind="run_command",
         request=request,
     )
+    if approval is not None:
+        return approval
+    if hasattr(store, "find_approval_by_request_fields"):
+        return store.find_approval_by_request_fields(
+            task_id=task_id,
+            kind="run_command",
+            fields=_run_command_approval_execution_fields(request),
+        )
+    return None
 
 
 # ── git helpers ─────────────────────────────────────────────────────

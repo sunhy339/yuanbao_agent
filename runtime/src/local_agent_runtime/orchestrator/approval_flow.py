@@ -122,6 +122,26 @@ class ApprovalFlowMixin:
                 )
                 self._finalize_child_collaboration_after_approval(approval=approval, runtime_task=failed_task)
             return {"approval": approval}
+        if approval["decision"] == "rejected" and approval["kind"] == "run_command":
+            try:
+                request = json.loads(approval.get("requestJson") or "{}")
+            except json.JSONDecodeError:
+                request = {}
+            advisor_evidence = request.get("advisorEvidence") if isinstance(request, dict) else None
+            if not isinstance(advisor_evidence, dict):
+                return {"approval": approval, "task": task}
+            summary = (
+                "Advisor-requested evidence command was rejected by the user."
+                if isinstance(advisor_evidence, dict)
+                else "Run command approval was rejected by the user."
+            )
+            task = self._fail_task(
+                session_id=task["sessionId"],
+                task=task,
+                summary=summary,
+                error_code="APPROVAL_REJECTED",
+            )
+            return {"approval": approval, "task": task}
         if approval["decision"] == "approved" and approval["kind"] == "plan":
             task = self._resume_approved_plan(task=task, approval=approval)
         if approval["decision"] == "approved" and approval["kind"] == "run_command":
@@ -137,7 +157,7 @@ class ApprovalFlowMixin:
                 summary="Plan was rejected by the user.",
                 error_code="PLAN_REJECTED",
             )
-        return {"approval": approval}
+        return {"approval": approval, "task": task}
 
     def _submit_worktree_merge_approval(
         self,

@@ -10,6 +10,7 @@ import { getTaskPhase, getTaskPhaseLabel, buildTaskProgressSummary, shouldDispla
 import { buildRuntimeItems } from "./runtimeItemBuilder";
 import { buildConversationActivity, ConversationActivity } from "./ConversationActivity";
 import { TaskProgressPanel } from "./TaskProgressPanel";
+import { RuntimeCockpitPanel } from "./RuntimeCockpitPanel";
 import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
 import { TraceFilterBar } from "./TraceFilterBar";
 import { WorktreePanel } from "./WorktreePanel";
@@ -227,6 +228,13 @@ export function SessionWorkspace({
               <span>{activityItems.length} 个事件</span>
             </header>
             <div className="message-stream message-stream-chat-only" aria-label="会话消息">
+              <RuntimeCockpitPanel
+                activeTask={visibleActiveTask}
+                approvals={approvals}
+                patches={patches}
+                traces={traces}
+                contextPreview={contextPreview}
+              />
               <WorktreePanel
                 worktree={visibleActiveTask?.activeWorktree}
                 status={worktreeStatus}

@@ -345,6 +345,9 @@
   .task-result-grid,
   .worktree-meta,
   .worktree-state-grid,
+  .runtime-cockpit-header,
+  .runtime-cockpit-metrics,
+  .runtime-cockpit-lower,
   .session-runtime-lanes {
     grid-template-columns: 1fr;
   }

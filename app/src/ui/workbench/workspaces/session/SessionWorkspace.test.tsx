@@ -1065,6 +1065,67 @@ describe("SessionWorkspace", () => {
     expect(within(evidence).getByText("Code/test changes need targeted test, build, or typecheck verification.")).toBeInTheDocument();
   });
 
+  it("summarizes runtime gate, verification, and context budget in the cockpit", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_1",
+          status: "completion_review",
+          goal: "Ship the guarded frontend",
+          changedFiles: [
+            { path: "index.html", status: "modified" },
+            { path: "app.js", status: "modified" },
+          ],
+          commands: [{ id: "cmd_1", command: "node --check app.js", status: "completed" }],
+          verification: [
+            { id: "verify_1", command: "node --check app.js", status: "passed" },
+            { id: "verify_2", command: "npm test", status: "failed" },
+          ],
+        }}
+        messages={[{ id: "m1", role: "assistant", content: "Completion needs review.", createdAt: 1 }]}
+        approvals={[
+          {
+            id: "approval_completion",
+            title: "Completion review",
+            status: "pending",
+            kind: "completion_review",
+            summary: "Generated artifact needs acceptance review.",
+            completionEvidence: {
+              gateStatus: "needs_acceptance_review",
+              evidenceLevel: "product_quality",
+              status: "review",
+              summary: "Readable artifact copy needs review.",
+              metrics: [{ label: "failed criteria", value: "1" }],
+              issues: ["failed: Static frontend asset reachable: index.html -> app.js"],
+            },
+          },
+        ]}
+        traces={[{ id: "trace_failed", type: "runtime.error", status: "failed", summary: "Provider failed." }]}
+        contextPreview={{
+          budgetStats: {
+            estimatedInputTokens: 7200,
+            maxContextTokens: 10000,
+          },
+          projectFocus: "Internal focus should stay hidden.",
+        }}
+      />,
+    );
+
+    const cockpit = screen.getByLabelText("Runtime cockpit");
+    expect(within(cockpit).getByText("Ship the guarded frontend")).toBeInTheDocument();
+    expect(within(cockpit).getByText("needs_acceptance_review")).toBeInTheDocument();
+    expect(within(cockpit).getByText("Files")).toBeInTheDocument();
+    expect(within(cockpit).getByText("2")).toBeInTheDocument();
+    expect(within(cockpit).getByText("Verified")).toBeInTheDocument();
+    expect(within(cockpit).getByText("1/2")).toBeInTheDocument();
+    expect(within(cockpit).getByText("Approvals")).toBeInTheDocument();
+    expect(within(cockpit).getByText("Context budget")).toBeInTheDocument();
+    expect(within(cockpit).getByText("72%")).toBeInTheDocument();
+    expect(within(cockpit).getByText("failed: Static frontend asset reachable: index.html -> app.js")).toBeInTheDocument();
+    expect(screen.queryByText("Internal focus should stay hidden.")).not.toBeInTheDocument();
+  });
+
   it("renders trace filter bar with task id, visibility, and agent type filters", () => {
     render(
       <SessionWorkspace

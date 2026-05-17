@@ -1555,15 +1555,16 @@ Completed or effectively closed:
 | Provider failure recovery baseline | Done in current follow-up | Provider failures are classified as auth, rate limit, timeout, context too large, refusal, server/network, unsupported format, request validation, invalid response, or unknown. Adapter retry is conservative; stream timeout/network/server/invalid-response failures fall back to a non-stream turn when available; provider turns, task failures, trace events, and failure-recovery proposals preserve the structured recovery decision. |
 | Hook P2 actions + live smoke gate | Done in current follow-up | Runtime hooks now support `webhook`, `memory_write`, `auto_verification_suggestion`, and `external_sync` with PermissionEngine/audit handling; Settings UI can configure those actions. An env-gated real provider smoke verifies provider-turn hooks plus memory/verification side effects when credentials are available. |
 | Multi-agent worktree strategy validation | Done in current follow-up | Real git regression covers root/child strategy reporting, isolated child worktrees, merge verification/approval, and child merge conflict failure context. |
+| Frontend runtime cockpit phase 1 | Done in current follow-up | Session workspace now shows a compact runtime cockpit above the conversation stream. It summarizes task phase, completion gate, pending approval, changed files, commands, verification ratio, failed signals, first acceptance issue, and context budget without exposing raw context preview content. |
 
 Still open / next implementation queue:
 
 | Priority | Task | Current next step |
 | --- | --- | --- |
-| P0/P1 | Main workflow state machine phase 3 | Extend the execution state into frontend cockpit/reporting, wrap-up/change-target takeover behavior, richer budget dimensions, and resumable handoff UI. |
+| P0/P1 | Main workflow state machine phase 3 | Extend wrap-up/change-target takeover behavior, richer budget dimensions, and resumable handoff UI. Cockpit phase 1 is visible; phase 2 should add expanded drill-downs and recovery actions. |
 | P1 | Provider failure recovery phase 2 | Use the recovery classification to drive smaller-context retries, task splitting, or provider fallback when appropriate; keep auth/refusal failures non-retryable and user-visible. |
 | P1 | Product acceptance gate phase 2 | Add generated-artifact checks beyond unit tests for server/browser smoke, persistence/API flow, route/API health, and deeper README/docs quality beyond mojibake detection. |
-| P1 | Frontend runtime cockpit | Implement task cockpit, plan/progress panel, tool timeline, and acceptance/run report first; then MCP/Skills, context/memory, automation controls, and workspace panel. |
+| P1 | Frontend runtime cockpit phase 2 | Add expandable drill-downs for acceptance/run report, provider recovery, MCP/Skills signals, memory/context handoff, automation controls, and workspace status. |
 | P1 | Completion audit refinement | Continue language/framework-specific verification matching and include reviewer/approval conclusions in the completion audit trail. |
 | P1 | Optional live multi-agent worktree smoke | Real git regression 已完成：root/child strategy reporting、isolated child worktrees、merge verification/approval、以及 child merge conflict failure context 均已覆盖。后续可选真实 LLM 并行多 agent smoke，不再是 worktree 策略闭环 blocker。 |
 | P1/P2 | Hook provider templates | Baseline P2 actions are implemented for webhook, memory write, automatic verification suggestion, and external-system sync. Remaining work is GitHub/Jira/Slack 等 provider-specific templates and release-gate live run with real credentials. |
@@ -1574,8 +1575,8 @@ Still open / next implementation queue:
 
 Current priority order:
 
-1. Runtime cockpit/reporting plus product acceptance phase 2.
+1. Product acceptance phase 2: browser/server smoke, persistence/API flow, and route health.
 2. Provider recovery phase 2: smaller-context retry, task splitting, and guarded provider fallback.
-3. Main workflow phase 3: wrap-up/change-target takeover, resumable handoff UI, and richer budget convergence policies.
+3. Frontend runtime cockpit phase 2 plus main workflow phase 3: wrap-up/change-target takeover, resumable handoff UI, and richer budget convergence policies.
 4. MCP + Skills fallback polish against unavailable servers/skills and partial MCP responses.
 5. Completion audit refinement and release-grade smoke coverage.

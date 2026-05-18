@@ -694,11 +694,11 @@ class ReactRunnerMixin:
             return None
 
     def _compaction_threshold(self, context: dict[str, Any]) -> int:
-        """Get compaction threshold from autonomy profile, falling back to 60000."""
+        """Get compaction threshold from autonomy profile, falling back to 150000."""
         threshold = self._autonomy_profile_int(context, "compactionThreshold")
         if threshold is not None:
             return threshold
-        return 60000
+        return 150000
 
     def _consult_context_policy_advisor(
         self,

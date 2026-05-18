@@ -2578,6 +2578,200 @@ class TestCompletionHardGate:
         assert tool_evidence["name"] == "read_file"
         assert tool_evidence["status"] == "completed"
 
+    def test_blocking_advisor_suggested_mcp_tool_waits_for_approval_then_completes(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor wants an MCP knowledge-base readback before completion.",
+                        fallback_reason=None,
+                        proposal_id="surface_blocking_mcp_tool_1",
+                        confidence=0.88,
+                        payload={
+                            "surface_type": "release_notes_with_external_context",
+                            "evidence_requests": [
+                                {
+                                    "kind": "mcp_readback",
+                                    "summary": "Read the release checklist through the MCP knowledge base.",
+                                    "target": "release checklist",
+                                    "suggestedTool": {
+                                        "name": "mcp__kb__lookup",
+                                        "arguments": {"query": "release checklist"},
+                                    },
+                                    "blocking": True,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="Completion is acceptable once the requested MCP readback is present.",
+                    fallback_reason=None,
+                    proposal_id="completion_blocking_mcp_tool_1",
+                    confidence=0.84,
+                    payload={"is_complete": True, "surface_type": "release_notes_with_external_context"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True)
+        rt.orchestrator._tool_registry.register(
+            "mcp__kb__lookup",
+            lambda params: {
+                "status": "completed",
+                "content": f"KB result for {params['query']}",
+            },
+            {"name": "mcp__kb__lookup", "description": "Lookup KB content."},
+        )
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "release.md").write_text("# Release\n\nChecklist updated.\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="blocking advisor mcp tool")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Update release notes using external KB context",
+            plan=[],
+            routing={"scenario": "doc_write"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "release.md", "summary": "updated release notes"}],
+            verification=[
+                {"command": "git diff -- release.md", "status": "passed", "summary": "release notes reviewed"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated release notes.",
+            context={"workspace_root": str(project), "routing": {"scenario": "doc_write"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        evidence = result["structuredResult"]["completionEvidence"]
+        suggestion = evidence["advisorEvidenceExecutionSuggestions"][0]
+        approval_id = suggestion["approvalId"]
+        assert suggestion["type"] == "tool"
+        assert suggestion["toolName"] == "mcp__kb__lookup"
+        assert suggestion["capability"] == "mcpTool"
+        assert suggestion["executionMode"] == "approval_then_tool"
+        assert suggestion["permissionDecision"] == "approval_required"
+        assert result["structuredResult"]["completionGate"]["approvalIds"] == [approval_id]
+        approval_events = [
+            event for event in captured_events
+            if event.type == "approval.requested" and event.payload.get("kind") == "advisor_tool"
+        ]
+        assert len(approval_events) == 1
+
+        approved = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
+        completed_task = approved["task"]
+        assert completed_task["status"] == "completed"
+        completed_evidence = completed_task["structuredResult"]["completionEvidence"]
+        assert completed_evidence["advisorRequestedEvidence"][0]["status"] == "satisfied"
+        tool_evidence = completed_evidence["toolResults"][0]
+        assert tool_evidence["name"] == "mcp__kb__lookup"
+        assert tool_evidence["status"] == "completed"
+
+    def test_advisor_suggested_mcp_tool_respects_mcp_policy_denial(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor suggested an optional MCP lookup.",
+                        fallback_reason=None,
+                        proposal_id="surface_denied_mcp_tool_1",
+                        confidence=0.82,
+                        payload={
+                            "surface_type": "release_notes",
+                            "evidence_requests": [
+                                {
+                                    "kind": "mcp_readback",
+                                    "summary": "Optionally read the release checklist through MCP.",
+                                    "target": "release checklist",
+                                    "suggestedTool": {
+                                        "name": "mcp__kb__lookup",
+                                        "arguments": {"query": "release checklist"},
+                                    },
+                                    "blocking": False,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="The optional MCP lookup is policy-denied and tracked as a follow-up.",
+                    fallback_reason=None,
+                    proposal_id="completion_denied_mcp_tool_1",
+                    confidence=0.8,
+                    payload={"is_complete": True, "surface_type": "release_notes"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True)
+        rt.orchestrator._tool_registry.register(
+            "mcp__kb__lookup",
+            lambda _params: {"status": "completed", "content": "KB result"},
+            {"name": "mcp__kb__lookup", "description": "Lookup KB content."},
+        )
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "release.md").write_text("# Release\n\nChecklist updated.\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="denied advisor mcp tool")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Update release notes",
+            plan=[],
+            routing={"scenario": "doc_write"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "release.md", "summary": "updated release notes"}],
+            verification=[
+                {"command": "git diff -- release.md", "status": "passed", "summary": "release notes reviewed"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated release notes.",
+            context={
+                "workspace_root": str(project),
+                "routing": {"scenario": "doc_write"},
+                "mcpPolicy": {"mode": "disabled"},
+            },
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        suggestion = result["structuredResult"]["completionEvidence"]["advisorEvidenceExecutionSuggestions"][0]
+        assert suggestion["toolName"] == "mcp__kb__lookup"
+        assert suggestion["permissionDecision"] == "deny"
+        assert suggestion["executionState"] == "denied_by_policy"
+        assert suggestion["requiresApproval"] is False
+        assert "disabled" in suggestion["permissionReason"]
+        assert not [
+            event for event in captured_events
+            if event.type == "approval.requested" and event.payload.get("kind") == "advisor_tool"
+        ]
+
     def test_advisor_suggested_tool_denies_unregistered_tool_without_execution(self, tmp_path: Any) -> None:
         class RecordingAdvisor:
             def advise(self, kind: str, input_context: dict[str, Any]) -> Any:

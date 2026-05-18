@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..policy.permission_engine import PermissionEngine, PermissionRequest
-from ..policy.tool_policy_resolver import TOOL_CAPABILITIES
+from ..policy.tool_policy_resolver import TOOL_CAPABILITIES, ToolPolicyResolver
 from ..tools._shared import approval_request, normalize_shell
 from ..tools.run_command import _powershell_execution_command
 
@@ -1132,6 +1132,7 @@ class TaskLifecycleMixin:
         )
         execution_suggestions = self._advisor_evidence_execution_suggestions(
             task=task,
+            context=context,
             advice=advice,
             requested_evidence=requested_evidence,
         )
@@ -1584,6 +1585,7 @@ class TaskLifecycleMixin:
         self,
         *,
         task: dict[str, Any],
+        context: dict[str, Any],
         advice: dict[str, Any],
         requested_evidence: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
@@ -1640,6 +1642,7 @@ class TaskLifecycleMixin:
             arguments = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
             permission = self._advisor_evidence_tool_permission_summary(
                 task=task,
+                context=context,
                 request=request,
                 tool_name=tool_name,
                 arguments=arguments,
@@ -1720,6 +1723,7 @@ class TaskLifecycleMixin:
         self,
         *,
         task: dict[str, Any],
+        context: dict[str, Any],
         request: dict[str, Any],
         tool_name: str,
         arguments: dict[str, Any],
@@ -1730,12 +1734,24 @@ class TaskLifecycleMixin:
                 "capability": TOOL_CAPABILITIES.get(tool_name, "unknown"),
                 "reason": f"Tool {tool_name!r} is not registered in this runtime.",
             }
+        policy_summary = self._advisor_evidence_tool_policy_summary(
+            task=task,
+            context=context,
+            tool_name=tool_name,
+        )
+        if policy_summary.get("decision") == "deny":
+            return policy_summary
         capability = TOOL_CAPABILITIES.get(tool_name)
         if not capability:
             return {
-                "decision": "deny",
-                "capability": "unknown",
-                "reason": f"Tool {tool_name!r} has no registered capability mapping.",
+                "decision": "approval_required",
+                "capability": "mcpTool" if tool_name.startswith("mcp__") else "customTool",
+                "reason": (
+                    "Registered dynamic tool requires explicit advisor evidence approval."
+                    if tool_name.startswith("mcp__")
+                    else "Registered custom tool requires explicit advisor evidence approval."
+                ),
+                "approvalKind": "advisor_tool",
             }
         try:
             config_result = self._store.get_config({}) if hasattr(self._store, "get_config") else {}
@@ -1772,6 +1788,36 @@ class TaskLifecycleMixin:
                 "reason": f"Permission evaluation failed; approval required before tool execution: {exc}",
                 "approvalKind": "advisor_tool",
             }
+
+    def _advisor_evidence_tool_policy_summary(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        tool_name: str,
+    ) -> dict[str, Any]:
+        policy_context = dict(context) if isinstance(context, dict) else {}
+        if not isinstance(policy_context.get("config"), dict):
+            try:
+                config_result = self._store.get_config({}) if hasattr(self._store, "get_config") else {}
+                config = config_result.get("config") if isinstance(config_result, dict) else {}
+                if isinstance(config, dict):
+                    policy_context["config"] = config
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to load config for advisor evidence tool policy", exc_info=True)
+        decision = ToolPolicyResolver().resolve(
+            task=task,
+            context=policy_context,
+            tool_results=[],
+            registered_tools=[{"name": tool_name}],
+        )
+        if tool_name in decision.denied_tool_names:
+            return {
+                "decision": "deny",
+                "capability": TOOL_CAPABILITIES.get(tool_name, "mcpTool" if tool_name.startswith("mcp__") else "customTool"),
+                "reason": decision.reasons.get(tool_name) or f"Tool {tool_name!r} is denied by tool policy.",
+            }
+        return {"decision": "allow"}
 
     def _consult_product_surface_advisor(
         self,

@@ -159,6 +159,8 @@ class ProviderTurnMixin:
             risk_level = "medium"
         else:
             risk_level = "low"
+        available_profiles = self._provider_preflight_available_profiles(provider_context)
+        profile_ranking = self._provider_preflight_profile_ranking(available_profiles)
         return {
             **self._provider_trace_payload(provider_context),
             "messageCount": len(messages) if isinstance(messages, list) else None,
@@ -174,7 +176,9 @@ class ProviderTurnMixin:
             "maxSteps": provider_context.get("max_steps"),
             "childWorker": provider_context.get("_child_worker") is True,
             "alreadyProviderPreflightSplit": bool(routing.get("providerPreflightSplit")),
-            "availableProviderProfiles": self._provider_preflight_available_profiles(provider_context),
+            "availableProviderProfiles": available_profiles,
+            "providerProfileRanking": profile_ranking,
+            "topProviderProfile": profile_ranking[0] if profile_ranking else None,
             **prior_failure,
         }
 
@@ -315,12 +319,15 @@ class ProviderTurnMixin:
         if not isinstance(target, str) or not target.strip():
             return None
         target = target.strip()
-        for profile in facts.get("availableProviderProfiles") or []:
+        ranked_profiles = facts.get("providerProfileRanking")
+        if not isinstance(ranked_profiles, list) or not ranked_profiles:
+            ranked_profiles = facts.get("availableProviderProfiles") or []
+        for profile in ranked_profiles:
             if not isinstance(profile, dict) or profile.get("id") != target:
                 continue
-            if profile.get("isActive") is True:
+            if profile.get("switchEligible") is False:
                 return None
-            if profile.get("enabled") is False:
+            if profile.get("isActive") is True or profile.get("enabled") is False:
                 return None
             last_status = str(profile.get("lastStatus") or "").strip().lower()
             if last_status in {"failed", "missing_env", "unsupported"}:
@@ -370,6 +377,15 @@ class ProviderTurnMixin:
             "reason": self._provider_preflight_reason(facts=facts, advice=advice),
             "scope": "provider_turn",
         }
+        ranking = facts.get("providerProfileRanking")
+        if isinstance(ranking, list):
+            ranked = next((item for item in ranking if isinstance(item, dict) and item.get("id") == target), None)
+            if isinstance(ranked, dict):
+                switch["health"] = {
+                    key: ranked.get(key)
+                    for key in ("healthState", "lastStatus", "lastCheckedAt", "lastErrorSummary", "score", "rank", "rankReason")
+                    if ranked.get(key) not in (None, "", [])
+                }
         return {"provider_context": updated_context, "switch": switch}
 
     def _provider_preflight_available_profiles(self, provider_context: dict[str, Any]) -> list[dict[str, Any]]:
@@ -395,10 +411,65 @@ class ProviderTurnMixin:
                 "model": profile.get("model") or profile.get("defaultModel"),
                 "apiFormat": profile.get("apiFormat") or provider_config.get("apiFormat"),
                 "lastStatus": profile.get("lastStatus"),
+                "lastCheckedAt": profile.get("lastCheckedAt"),
+                "lastErrorSummary": profile.get("lastErrorSummary"),
                 "enabled": profile.get("enabled", True),
                 "isActive": profile_id == active_profile_id,
             })
         return result
+
+    def _provider_preflight_profile_ranking(self, profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        ranked: list[dict[str, Any]] = []
+        for profile in profiles:
+            if not isinstance(profile, dict):
+                continue
+            health = self._provider_profile_health(profile)
+            item = {
+                **profile,
+                **health,
+            }
+            ranked.append(item)
+        ranked.sort(key=lambda item: (int(item.get("score") or 0), 0 if item.get("isActive") else 1), reverse=True)
+        for index, item in enumerate(ranked, start=1):
+            item["rank"] = index
+        return ranked
+
+    @staticmethod
+    def _provider_profile_health(profile: dict[str, Any]) -> dict[str, Any]:
+        enabled = profile.get("enabled", True) is not False
+        is_active = profile.get("isActive") is True
+        last_status = str(profile.get("lastStatus") or "").strip().lower()
+        if not enabled:
+            health_state = "disabled"
+            score = 0
+            reason = "profile disabled"
+        elif last_status in {"ok", "success", "succeeded", "healthy"}:
+            health_state = "healthy"
+            score = 90
+            reason = "last provider check succeeded"
+        elif not last_status:
+            health_state = "unknown"
+            score = 65
+            reason = "no provider health check recorded"
+        elif last_status in {"missing_env", "unsupported", "auth", "failed", "error"}:
+            health_state = "unhealthy"
+            score = 10
+            reason = f"last provider check status: {last_status}"
+        else:
+            health_state = "degraded"
+            score = 45
+            reason = f"last provider check status: {last_status}"
+        if is_active:
+            score = max(0, score - 15)
+        switch_eligible = enabled and not is_active and health_state in {"healthy", "unknown", "degraded"}
+        if not switch_eligible and is_active:
+            reason = f"{reason}; currently active"
+        return {
+            "healthState": health_state,
+            "score": score,
+            "rankReason": reason,
+            "switchEligible": switch_eligible,
+        }
 
     def _provider_preflight_compact_messages(self, messages: list[Any]) -> list[Any]:
         system_messages: list[dict[str, Any]] = []

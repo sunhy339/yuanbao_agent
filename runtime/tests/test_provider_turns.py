@@ -1222,6 +1222,16 @@ class TestAdvisorGuidedProviderPreflight:
                             "model": "secondary-model",
                             "enabled": True,
                             "lastStatus": "ok",
+                            "lastCheckedAt": 1778734168000,
+                        },
+                        {
+                            "id": "broken",
+                            "name": "Broken",
+                            "mode": "openai-compatible",
+                            "model": "broken-model",
+                            "enabled": True,
+                            "lastStatus": "missing_env",
+                            "lastErrorSummary": "Set BROKEN_PROVIDER_KEY.",
                         },
                     ],
                 },
@@ -1260,6 +1270,11 @@ class TestAdvisorGuidedProviderPreflight:
         assert runtime_proposal["proposal"]["contextStrategy"] == "switch_provider_profile_for_turn"
         assert runtime_proposal["proposal"]["fallbackProviderId"] == "secondary"
         assert runtime_proposal["proposal"]["providerSwitch"]["toProfileId"] == "secondary"
+        assert runtime_proposal["proposal"]["providerSwitch"]["health"]["healthState"] == "healthy"
+        ranking = runtime_proposal["proposal"]["providerProfileRanking"]
+        assert ranking[0]["id"] == "secondary"
+        assert ranking[0]["switchEligible"] is True
+        assert next(item for item in ranking if item["id"] == "broken")["switchEligible"] is False
         assert runtime_proposal["proposal"]["runtimeApplied"] is True
 
         trace = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
@@ -1267,6 +1282,65 @@ class TestAdvisorGuidedProviderPreflight:
         assert preflight_trace["payload"]["runtimeAction"] == "switch_provider"
         assert preflight_trace["payload"]["runtimeApplied"] is True
         assert preflight_trace["payload"]["providerSwitch"]["toProfileId"] == "secondary"
+        assert preflight_trace["payload"]["facts"]["providerProfileRanking"][0]["id"] == "secondary"
+
+    def test_provider_preflight_rejects_unhealthy_switch_target(self, tmp_path: Any) -> None:
+        provider = PreflightSwitchProvider(fallback_provider_id="secondary")
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            decision_advisor=DecisionAdvisor(provider=provider),
+        )
+        runtime.store.update_config({
+            "config": {
+                "advisor": {"alwaysProviderPreflight": True},
+                "provider": {
+                    "activeProfileId": "primary",
+                    "model": "primary-model",
+                    "maxContextTokens": 256000,
+                    "profiles": [
+                        {
+                            "id": "primary",
+                            "name": "Primary",
+                            "mode": "openai-compatible",
+                            "model": "primary-model",
+                            "enabled": True,
+                            "lastStatus": "ok",
+                        },
+                        {
+                            "id": "secondary",
+                            "name": "Secondary",
+                            "mode": "openai-compatible",
+                            "model": "secondary-model",
+                            "enabled": True,
+                            "lastStatus": "missing_env",
+                            "lastErrorSummary": "Set SECONDARY_KEY.",
+                        },
+                    ],
+                },
+            }
+        })
+        session = _open_session(runtime, tmp_path)
+
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "try unhealthy fallback provider"}),
+            "task",
+        )
+
+        assert task["status"] == "completed"
+        assert len(provider.main_calls) == 1
+        main_provider_config = provider.main_calls[0]["context"]["config"]["provider"]
+        assert main_provider_config["activeProfileId"] == "primary"
+        assert main_provider_config["model"] == "primary-model"
+
+        trace = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        preflight_trace = next(event for event in trace if event["type"] == "provider.preflight.decision")
+        assert preflight_trace["payload"]["runtimeAction"] == "proceed"
+        ranking = preflight_trace["payload"]["facts"]["providerProfileRanking"]
+        secondary = next(item for item in ranking if item["id"] == "secondary")
+        assert secondary["healthState"] == "unhealthy"
+        assert secondary["switchEligible"] is False
+        assert "providerSwitch" not in preflight_trace["payload"]
 
     def test_provider_preflight_split_executes_existing_planning_path(
         self,

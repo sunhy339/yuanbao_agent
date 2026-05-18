@@ -409,6 +409,9 @@ class Orchestrator(
                 "nearContextLimit": facts.get("nearContextLimit"),
                 "overContextLimit": facts.get("overContextLimit"),
                 "hasPriorProviderFailure": facts.get("hasPriorProviderFailure"),
+                "topProviderProfile": (
+                    facts.get("topProviderProfile") or {}
+                ).get("id") if isinstance(facts.get("topProviderProfile"), dict) else None,
             }, ensure_ascii=False, sort_keys=True)[:500]
             runtime_action = str(decision.get("runtimeAction") or "proceed")
             provider_preflight = (
@@ -453,6 +456,9 @@ class Orchestrator(
                 "maxContextTokens": facts.get("maxContextTokens"),
                 "compactionThreshold": facts.get("compactionThreshold"),
             }
+            profile_ranking = facts.get("providerProfileRanking")
+            if isinstance(profile_ranking, list) and profile_ranking:
+                runtime_proposal["providerProfileRanking"] = profile_ranking[:10]
             if proposal_action == "propose_split" and isinstance(split_plan, dict):
                 runtime_proposal["splitRecommendation"] = {
                     "subtasks": list(split_plan.get("subtasks") or []),
@@ -505,6 +511,11 @@ class Orchestrator(
                             "nearContextLimit": facts.get("nearContextLimit"),
                             "overContextLimit": facts.get("overContextLimit"),
                             "hasPriorProviderFailure": facts.get("hasPriorProviderFailure"),
+                            "providerProfileRanking": (
+                                facts.get("providerProfileRanking")[:10]
+                                if isinstance(facts.get("providerProfileRanking"), list)
+                                else []
+                            ),
                         },
                     }
                     status = "accepted" if bool(getattr(advice, "accepted", False)) else "rejected"
@@ -529,6 +540,9 @@ class Orchestrator(
             }
             if isinstance(provider_switch, dict):
                 runtime_source["providerSwitch"] = provider_switch
+            profile_ranking = facts.get("providerProfileRanking")
+            if isinstance(profile_ranking, list) and profile_ranking:
+                runtime_source["providerProfileRanking"] = profile_ranking[:10]
 
             _create_and_validate(
                 proposal=runtime_proposal,

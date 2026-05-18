@@ -526,6 +526,10 @@ def validate_provider_preflight(payload: dict[str, Any]) -> list[str]:
         value = payload.get(field)
         if value is not None and not isinstance(value, str):
             reasons.append(f"{field} must be a string when provided")
+    if action == "switch_provider":
+        fallback_provider_id = payload.get("fallbackProviderId")
+        if not isinstance(fallback_provider_id, str) or not fallback_provider_id.strip():
+            reasons.append("fallbackProviderId must be a non-empty string when action is switch_provider")
     split = payload.get("splitRecommendation")
     if split is not None and not isinstance(split, (str, dict, list)):
         reasons.append("splitRecommendation must be a string, object, or list when provided")

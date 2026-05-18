@@ -74,6 +74,19 @@ class ProviderTurnMixin:
                 "originalTokenEstimate": original_tokens,
                 "tokenEstimate": token_estimate,
             }
+        switch_result = None
+        if runtime_action == "switch_provider":
+            switch_result = self._provider_preflight_switch_provider_context(
+                provider_context=result_context,
+                facts=facts,
+                advice=advice,
+            )
+            if switch_result is not None:
+                result_context = switch_result["provider_context"]
+                result_context["_provider_preflight_provider_switch"] = switch_result["switch"]
+                applied = True
+                if isinstance(result_context.get("_provider_preflight"), dict):
+                    result_context["_provider_preflight"]["providerSwitch"] = switch_result["switch"]
         split_plan = self._provider_preflight_split_plan_payload(advice=advice)
         if runtime_action == "execute_split" and split_plan is not None:
             result_context["_provider_preflight_split_plan"] = split_plan
@@ -97,6 +110,7 @@ class ProviderTurnMixin:
             "runtimeApplied": applied,
             "providerPreflight": result_context.get("_provider_preflight"),
             "splitPlan": split_plan if runtime_action == "execute_split" else None,
+            "providerSwitch": switch_result["switch"] if isinstance(switch_result, dict) else None,
         }
         return {
             "provider_context": result_context,
@@ -160,6 +174,7 @@ class ProviderTurnMixin:
             "maxSteps": provider_context.get("max_steps"),
             "childWorker": provider_context.get("_child_worker") is True,
             "alreadyProviderPreflightSplit": bool(routing.get("providerPreflightSplit")),
+            "availableProviderProfiles": self._provider_preflight_available_profiles(provider_context),
             **prior_failure,
         }
 
@@ -202,9 +217,10 @@ class ProviderTurnMixin:
             "preflight_facts": facts,
             "runtime_limits": {
                 "autoActions": ["proceed", "compact_context"],
-                "executableActions": ["propose_split"],
-                "advisoryOnlyActions": ["ask_user", "switch_provider", "abort"],
+                "executableActions": ["propose_split", "switch_provider"],
+                "advisoryOnlyActions": ["ask_user", "abort"],
                 "splitExecution": "validated split plans run through the existing root planning/DAG path",
+                "switchProviderExecution": "validated provider profile switches apply only to this provider turn context",
                 "runtimeWillNotCallProviderAfterTransportFailureForAdvice": True,
             },
             "available_actions": [
@@ -278,12 +294,111 @@ class ProviderTurnMixin:
         split_allowed = not facts.get("childWorker") and not facts.get("alreadyProviderPreflightSplit")
         if proposed == "propose_split" and split_allowed and self._provider_preflight_split_plan_payload(advice=advice) is not None:
             return "execute_split"
+        if proposed == "switch_provider" and self._provider_preflight_switch_target(facts=facts, advice=advice) is not None:
+            return "switch_provider"
         if facts.get("overContextLimit"):
             return "compact_context"
         return "proceed"
 
     def _provider_preflight_split_plan_payload(self, *, advice: Any | None) -> dict[str, Any] | None:
         return build_provider_preflight_split_plan_payload(advice=advice)
+
+    def _provider_preflight_switch_target(self, *, facts: dict[str, Any], advice: Any | None) -> str | None:
+        if facts.get("childWorker") or facts.get("alreadyProviderPreflightSplit"):
+            return None
+        if advice is None or not bool(getattr(advice, "accepted", False)):
+            return None
+        payload = getattr(advice, "payload", {}) or {}
+        if not isinstance(payload, dict) or payload.get("action") != "switch_provider":
+            return None
+        target = payload.get("fallbackProviderId")
+        if not isinstance(target, str) or not target.strip():
+            return None
+        target = target.strip()
+        for profile in facts.get("availableProviderProfiles") or []:
+            if not isinstance(profile, dict) or profile.get("id") != target:
+                continue
+            if profile.get("isActive") is True:
+                return None
+            if profile.get("enabled") is False:
+                return None
+            last_status = str(profile.get("lastStatus") or "").strip().lower()
+            if last_status in {"failed", "missing_env", "unsupported"}:
+                return None
+            return target
+        return None
+
+    def _provider_preflight_switch_provider_context(
+        self,
+        *,
+        provider_context: dict[str, Any],
+        facts: dict[str, Any],
+        advice: Any | None,
+    ) -> dict[str, Any] | None:
+        target = self._provider_preflight_switch_target(facts=facts, advice=advice)
+        if target is None:
+            return None
+        config = provider_context.get("config")
+        if not isinstance(config, dict):
+            return None
+        provider_config = config.get("provider")
+        if not isinstance(provider_config, dict):
+            return None
+        profiles = provider_config.get("profiles")
+        if not isinstance(profiles, list):
+            return None
+        selected = next((profile for profile in profiles if isinstance(profile, dict) and profile.get("id") == target), None)
+        if not isinstance(selected, dict):
+            return None
+
+        updated_config = dict(config)
+        updated_provider = dict(provider_config)
+        updated_provider["activeProfileId"] = target
+        for key, value in selected.items():
+            if key not in {"id", "name", "profiles", "activeProfileId"}:
+                updated_provider[key] = value
+        updated_config["provider"] = updated_provider
+        updated_context = dict(provider_context)
+        updated_context["config"] = updated_config
+        current = str(provider_config.get("activeProfileId") or "").strip() or None
+        switch = {
+            "fromProfileId": current,
+            "toProfileId": target,
+            "profileName": selected.get("name"),
+            "model": selected.get("model") or selected.get("defaultModel"),
+            "mode": selected.get("mode") or updated_provider.get("mode"),
+            "reason": self._provider_preflight_reason(facts=facts, advice=advice),
+            "scope": "provider_turn",
+        }
+        return {"provider_context": updated_context, "switch": switch}
+
+    def _provider_preflight_available_profiles(self, provider_context: dict[str, Any]) -> list[dict[str, Any]]:
+        config = provider_context.get("config") if isinstance(provider_context, dict) else None
+        provider_config = config.get("provider") if isinstance(config, dict) else None
+        if not isinstance(provider_config, dict):
+            return []
+        active_profile_id = provider_config.get("activeProfileId")
+        profiles = provider_config.get("profiles")
+        if not isinstance(profiles, list):
+            return []
+        result: list[dict[str, Any]] = []
+        for profile in profiles:
+            if not isinstance(profile, dict):
+                continue
+            profile_id = profile.get("id")
+            if not isinstance(profile_id, str) or not profile_id.strip():
+                continue
+            result.append({
+                "id": profile_id.strip(),
+                "name": profile.get("name"),
+                "mode": profile.get("mode") or provider_config.get("mode"),
+                "model": profile.get("model") or profile.get("defaultModel"),
+                "apiFormat": profile.get("apiFormat") or provider_config.get("apiFormat"),
+                "lastStatus": profile.get("lastStatus"),
+                "enabled": profile.get("enabled", True),
+                "isActive": profile_id == active_profile_id,
+            })
+        return result
 
     def _provider_preflight_compact_messages(self, messages: list[Any]) -> list[Any]:
         system_messages: list[dict[str, Any]] = []
@@ -327,6 +442,11 @@ class ProviderTurnMixin:
             "runtimeApplied": bool(decision.get("runtimeApplied")),
             "providerPreflight": decision.get("providerPreflight"),
         }
+        provider_switch = decision.get("providerSwitch")
+        if provider_switch is None and isinstance(decision.get("providerPreflight"), dict):
+            provider_switch = decision["providerPreflight"].get("providerSwitch")
+        if isinstance(provider_switch, dict):
+            payload["providerSwitch"] = provider_switch
         split_plan = self._provider_preflight_split_plan_payload(advice=advice)
         if split_plan is not None:
             payload["splitPlan"] = split_plan

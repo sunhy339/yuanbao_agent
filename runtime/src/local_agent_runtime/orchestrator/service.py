@@ -420,6 +420,14 @@ class Orchestrator(
             if split_plan is None and isinstance(provider_preflight, dict):
                 candidate = provider_preflight.get("splitPlan")
                 split_plan = candidate if isinstance(candidate, dict) else None
+            provider_switch = (
+                decision.get("providerSwitch")
+                if isinstance(decision.get("providerSwitch"), dict)
+                else None
+            )
+            if provider_switch is None and isinstance(provider_preflight, dict):
+                candidate = provider_preflight.get("providerSwitch")
+                provider_switch = candidate if isinstance(candidate, dict) else None
             proposal_action = "propose_split" if runtime_action == "execute_split" else runtime_action
             if advice is None and runtime_action == "proceed" and facts.get("riskLevel") == "low":
                 return
@@ -427,6 +435,8 @@ class Orchestrator(
                 context_strategy = "compact_recent_context"
             elif runtime_action == "execute_split":
                 context_strategy = "split_into_bounded_subtasks"
+            elif runtime_action == "switch_provider":
+                context_strategy = "switch_provider_profile_for_turn"
             else:
                 context_strategy = "preserve_context"
             runtime_proposal = {
@@ -450,6 +460,9 @@ class Orchestrator(
                     "executionOrder": split_plan.get("execution_order") or split_plan.get("executionOrder"),
                     "reason": split_plan.get("reason"),
                 }
+            if proposal_action == "switch_provider" and isinstance(provider_switch, dict):
+                runtime_proposal["fallbackProviderId"] = provider_switch.get("toProfileId")
+                runtime_proposal["providerSwitch"] = provider_switch
 
             def _create_and_validate(
                 *,
@@ -507,15 +520,19 @@ class Orchestrator(
                         model_id=getattr(advice, "model_id", None),
                     )
 
+            runtime_source = {
+                "type": "runtime_provider_preflight",
+                "advisorAccepted": bool(getattr(advice, "accepted", False)) if advice is not None else False,
+                "advisorAction": (
+                    getattr(advice, "payload", {}) or {}
+                ).get("action") if advice is not None and isinstance(getattr(advice, "payload", None), dict) else None,
+            }
+            if isinstance(provider_switch, dict):
+                runtime_source["providerSwitch"] = provider_switch
+
             _create_and_validate(
                 proposal=runtime_proposal,
-                source={
-                    "type": "runtime_provider_preflight",
-                    "advisorAccepted": bool(getattr(advice, "accepted", False)) if advice is not None else False,
-                    "advisorAction": (
-                        getattr(advice, "payload", {}) or {}
-                    ).get("action") if advice is not None and isinstance(getattr(advice, "payload", None), dict) else None,
-                },
+                source=runtime_source,
                 status="accepted",
                 reasons=[],
             )

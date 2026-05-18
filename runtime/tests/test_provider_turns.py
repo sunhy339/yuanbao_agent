@@ -255,6 +255,49 @@ class PreflightSplitProvider:
         return {"final": "Main provider should not be used after executable preflight split."}
 
 
+class PreflightSwitchProvider:
+    """Provider that asks preflight to switch provider profiles before the main call."""
+
+    def __init__(self, *, fallback_provider_id: str = "secondary") -> None:
+        self.fallback_provider_id = fallback_provider_id
+        self.main_calls: list[dict[str, Any]] = []
+        self.advisor_calls: list[dict[str, Any]] = []
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        if "runtime decision advisor" in prompt:
+            self.advisor_calls.append({"prompt": prompt, "context": context})
+            if "provider_preflight" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {
+                        "action": "switch_provider",
+                        "riskLevel": "medium",
+                        "fallbackProviderId": self.fallback_provider_id,
+                        "reason": "Use the configured fallback profile for this provider turn.",
+                    },
+                    "confidence": 0.83,
+                    "rationale": "The preflight facts include an available fallback provider profile.",
+                })}
+            if "completion_decision" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {"is_complete": True, "why_complete": "Main turn completed after provider switch."},
+                    "confidence": 0.8,
+                    "rationale": "The provider returned a final answer.",
+                })}
+            if "product_surface_decision" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {"surface_type": "backend_flow", "recommended_verification": []},
+                    "confidence": 0.6,
+                    "rationale": "This test is focused on provider preflight switching.",
+                })}
+            return {"message": json.dumps({
+                "proposal": {"mode": "task"},
+                "confidence": 0.5,
+                "rationale": "Generic advisor fallback for this test.",
+            })}
+        self.main_calls.append({"prompt": prompt, "context": context})
+        return {"final": "Completed after provider preflight switched profiles."}
+
+
 def _call_result(response: dict[str, Any], key: str) -> dict[str, Any]:
     assert "result" in response, f"Expected 'result' in response, got: {response}"
     return response["result"][key]
@@ -1148,6 +1191,82 @@ class TestAdvisorGuidedProviderPreflight:
         preflight_trace = next(event for event in trace if event["type"] == "provider.preflight.decision")
         assert preflight_trace["payload"]["runtimeAction"] == "compact_context"
         assert preflight_trace["payload"]["runtimeApplied"] is True
+
+    def test_provider_preflight_switches_provider_profile_for_turn(self, tmp_path: Any) -> None:
+        provider = PreflightSwitchProvider()
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            decision_advisor=DecisionAdvisor(provider=provider),
+        )
+        runtime.store.update_config({
+            "config": {
+                "advisor": {"alwaysProviderPreflight": True},
+                "provider": {
+                    "activeProfileId": "primary",
+                    "model": "primary-model",
+                    "maxContextTokens": 256000,
+                    "profiles": [
+                        {
+                            "id": "primary",
+                            "name": "Primary",
+                            "mode": "openai-compatible",
+                            "model": "primary-model",
+                            "enabled": True,
+                            "lastStatus": "ok",
+                        },
+                        {
+                            "id": "secondary",
+                            "name": "Secondary",
+                            "mode": "openai-compatible",
+                            "model": "secondary-model",
+                            "enabled": True,
+                            "lastStatus": "ok",
+                        },
+                    ],
+                },
+            }
+        })
+        session = _open_session(runtime, tmp_path)
+
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "use the fallback provider for this turn"}),
+            "task",
+        )
+
+        assert task["status"] == "completed"
+        assert any("provider_preflight" in call["prompt"] for call in provider.advisor_calls)
+        assert len(provider.main_calls) == 1
+        main_provider_config = provider.main_calls[0]["context"]["config"]["provider"]
+        assert main_provider_config["activeProfileId"] == "secondary"
+        assert main_provider_config["model"] == "secondary-model"
+        assert runtime.store.get_config({})["config"]["provider"]["activeProfileId"] == "primary"
+
+        turns = runtime.store.list_provider_turns(task["id"])
+        assert len(turns) == 1
+        assert turns[0]["model"] == "secondary-model"
+
+        proposals = runtime.store.list_proposals({
+            "taskId": task["id"],
+            "kind": "provider_preflight",
+        })["proposals"]
+        llm_proposal = next(p for p in proposals if p["source"].get("type") == "llm")
+        runtime_proposal = next(p for p in proposals if p["source"].get("type") == "runtime_provider_preflight")
+        assert llm_proposal["proposal"]["action"] == "switch_provider"
+        assert llm_proposal["proposal"]["fallbackProviderId"] == "secondary"
+        assert llm_proposal["proposal"]["runtimeAction"] == "switch_provider"
+        assert llm_proposal["proposal"]["runtimeApplied"] is True
+        assert runtime_proposal["proposal"]["action"] == "switch_provider"
+        assert runtime_proposal["proposal"]["contextStrategy"] == "switch_provider_profile_for_turn"
+        assert runtime_proposal["proposal"]["fallbackProviderId"] == "secondary"
+        assert runtime_proposal["proposal"]["providerSwitch"]["toProfileId"] == "secondary"
+        assert runtime_proposal["proposal"]["runtimeApplied"] is True
+
+        trace = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        preflight_trace = next(event for event in trace if event["type"] == "provider.preflight.decision")
+        assert preflight_trace["payload"]["runtimeAction"] == "switch_provider"
+        assert preflight_trace["payload"]["runtimeApplied"] is True
+        assert preflight_trace["payload"]["providerSwitch"]["toProfileId"] == "secondary"
 
     def test_provider_preflight_split_executes_existing_planning_path(
         self,

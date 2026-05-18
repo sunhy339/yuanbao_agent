@@ -249,6 +249,7 @@ class ReactRunnerMixin:
                 compaction_threshold=context.get("_advised_compaction_threshold") or ctx_threshold,
             )
             provider_context = preflight_result["provider_context"]
+            context = provider_context
             preflight_messages = preflight_result.get("messages")
             if isinstance(preflight_messages, list):
                 messages = preflight_messages

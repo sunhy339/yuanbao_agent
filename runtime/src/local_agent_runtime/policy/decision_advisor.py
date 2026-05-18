@@ -188,10 +188,11 @@ register_decision(DecisionKindEntry(
     kind="provider_preflight",
     description=(
         "Review provider-call facts before the request is sent and propose a bounded "
-        "action such as proceeding, compacting context, asking the user, or recording "
-        "a split/provider-switch recommendation. The runtime may auto-apply safe "
-        "context compaction or execute a validated bounded split through the existing "
-        "planning/DAG path; provider switching and user-intervention advice remain audited."
+        "action such as proceeding, compacting context, asking the user, proposing a "
+        "split, or switching to a validated provider profile. The runtime may auto-apply "
+        "safe context compaction, execute a validated bounded split through the existing "
+        "planning/DAG path, or apply a turn-scoped provider switch when fallbackProviderId "
+        "resolves to an available profile; user-intervention advice remains audited."
     ),
     required_input_fields=("goal", "preflight_facts"),
     allowed_proposal_schema=(

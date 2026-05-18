@@ -586,6 +586,62 @@ class TestDecisionAdvisorProviderPreflight:
         assert result.payload["action"] == "propose_split"
         assert len(result.payload["subtasks"]) == 2
 
+    def test_provider_preflight_accepts_switch_provider(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "action": "switch_provider",
+                "riskLevel": "medium",
+                "fallbackProviderId": "secondary",
+                "reason": "The secondary profile is better suited for this turn.",
+            },
+            "confidence": 0.81,
+            "rationale": "The runtime facts include an available fallback profile.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "provider_preflight",
+            {
+                "goal": "Prepare provider request with available fallback",
+                "preflight_facts": {
+                    "estimatedInputTokens": 100,
+                    "riskLevel": "medium",
+                    "availableProviderProfiles": [
+                        {"id": "primary", "isActive": True},
+                        {"id": "secondary", "isActive": False},
+                    ],
+                },
+            },
+        )
+
+        assert result.accepted is True
+        assert result.payload["action"] == "switch_provider"
+        assert result.payload["fallbackProviderId"] == "secondary"
+
+    def test_provider_preflight_rejects_switch_without_fallback_provider_id(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "action": "switch_provider",
+                "riskLevel": "medium",
+                "reason": "Switch without a target should not pass validation.",
+            },
+            "confidence": 0.75,
+            "rationale": "Missing target.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "provider_preflight",
+            {
+                "goal": "Prepare provider request",
+                "preflight_facts": {"estimatedInputTokens": 100, "riskLevel": "medium"},
+            },
+        )
+
+        assert result.accepted is False
+        assert result.source == "validation_rejected"
+        assert any("fallbackProviderId" in reason for reason in result.validation_reasons)
+
     def test_provider_preflight_rejects_invalid_action(self) -> None:
         provider = _GoodProvider(response=json.dumps({
             "proposal": {"action": "silently_retry_forever", "riskLevel": "high"},

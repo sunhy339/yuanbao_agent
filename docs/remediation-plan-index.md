@@ -277,8 +277,9 @@ Current state:
 
 - `DecisionAdvisor` tests cover accepted/rejected routing proposals, but the
   default runtime entry still needs to pass the advisor into `MetaRouter`;
-- context builder uses a default context budget of `256000`, but the ReAct loop
-  still calls compaction with a hard-coded `60000` threshold;
+- context builder uses a default context budget of `256000`, and the ReAct loop
+  now uses progressive compaction (tier 1: <50K no-op, tier 2: 50K-220K truncate
+  tool outputs, tier 3: >=220K full compact);
 - `ContextCompactor.should_compact()` can ask the provider near budget, but that
   advisory path does not yet create `context_policy` proposal records;
 - `completion_decision` is registered and completion trace events are emitted,
@@ -491,7 +492,7 @@ on commit history or checklist state.
 | --- | --- | --- | --- |
 | ~~Default LLM routing advisory~~ | **Closed** (`18e3be1`). `build_server()` wires `DecisionAdvisor(provider=provider)` into `MetaRouter`; proposal records and `agent.decision.routing_strategy` events created on low-confidence routes. | — | — |
 | ~~Completion decision~~ | **Closed** (`18e3be1`). `_complete_task()` consults `DecisionAdvisor("completion_decision")` before final status commit; accepted/rejected/fallback outcomes persisted. | — | — |
-| ~~ReAct context compaction~~ | **Closed** (`18e3be1`). ReAct compaction reads `compactionThreshold` from autonomy profile snapshot via `_autonomy_profile_int()`, falls back to `60000`. | — | — |
+| ~~ReAct context compaction~~ | **Closed** (`b315596`). ReAct compaction reads `compactionThreshold` from autonomy profile snapshot via `_autonomy_profile_int()`, falls back to `256000`. Uses progressive compaction: tier 1 (<50K) no-op, tier 2 (50K-220K) truncate tool outputs, tier 3 (>=220K) full primer/summary/recent compact. | — | — |
 | ~~Context policy proposal records~~ | **Closed** (`18e3be1`). `_consult_context_policy_advisor()` creates proposal records with token budget, threshold, and trace linkage via `agent.decision.context_policy` events. | — | — |
 | ~~Worktree RPC and service~~ | **Closed** (`18e3be1`). `worktree.create/status/diff/cleanup` route through `WorktreeService`; `worktree.merge` RPC added. | — | — |
 | Task-worktree binding | `task_worktrees` records exist. | Write-capable tasks are not automatically bound to a task branch/worktree record. | Planning/edit tasks can allocate or resolve a worktree, write tools execute in the correct worktree root, and task reports show worktree id/path/branch. See `docs/worktree-isolation-design-plan.md`. |

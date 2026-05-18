@@ -32,7 +32,7 @@ LLM 建议的命令、工具、provider 切换、外部 webhook 或后续自动�
 | 默认配置 | `runtime/src/local_agent_runtime/store/sqlite_store.py` | 默认 provider mode 是 `mock`，默认 `maxContextTokens` 是 256000，默认 autonomy profile 是 `balanced`。 |
 | 前端配置模型 | `shared/src/config.ts`, `app/src/lib/runtimeClient.ts` | 前后端都已有 `autonomy` 与 `agentSoul` 配置结构。 |
 | 上下文构建 | `runtime/src/local_agent_runtime/context/builder.py` | 会记录 `autonomy_profile`、`agent_soul_profile`、`prompt_layers`、预算统计。 |
-| 压缩判断 | `runtime/src/local_agent_runtime/context/compactor.py` | 支持规则判断与 provider advisory；ReAct 循环内当前使用 60000 阈值。 |
+| 压缩判断 | `runtime/src/local_agent_runtime/context/compactor.py` | 三档渐进压缩：<50K 原样保留，50K-220K 截断工具输出，≥220K 完整 compact（primer/summary/recent）。 |
 | 路由决策 | `runtime/src/local_agent_runtime/router/meta_router.py` | 规则路由提供 cheap candidate/fallback；配置了 DecisionAdvisor 时默认让 LLM 参与语义路由，高置信规则也会作为 `rule_candidate` 给 advisor，必要时可用 `routingStrategyUseForHighConfidence=false` 退回低成本规则直走。 |
 | LLM 决策接口 | `runtime/src/local_agent_runtime/policy/decision_advisor.py` | 已注册 routing/context/decomposition/react/product-surface/completion 等决策类型；主流程原则是 LLM 负责语义判断，runtime validator/PermissionEngine/硬 gate 负责安全边界和客观失败。 |
 | Proposal 审计 | `runtime/src/local_agent_runtime/store/sqlite_store.py` | 已有 `proposal_records` 表和 create/validate/apply/list 能力；routing/failure recovery/product-surface/completion advisor 等关键 LLM 或 runtime decision 会落表审计。 |
@@ -48,7 +48,7 @@ LLM 建议的命令、工具、provider 切换、外部 webhook 或后续自动�
 | `TOOLS_MCP.md` | 主体正确 | 文档标题写 16 个内置工具，但当前代码实际是 17 个：13 个基础工具 + 2 个 memory 工具 + 2 个 scratchpad 工具。 |
 | `DAG_PLANNING.md` | 主体正确 | DAG 独立节点可并行；Supervisor/Swarm 更偏受控编排，不应误解为所有拆分任务都会天然并行。 |
 | `API_EVENTS.md` | 主体正确 | RPC handler 数需要从 120+ 改为 90；事件通道和 `events.after` 口径正确。 |
-| `CONTEXT_MEMORY.md` | 需要明显更新 | 记忆系统不是 `MEMORY.md` frontmatter，而是 SQLite 结构化 memory；ReAct 压缩阈值是 60000，默认上下文预算是 256000。 |
+| `CONTEXT_MEMORY.md` | 需要明显更新 | 记忆系统不是 `MEMORY.md` frontmatter，而是 SQLite 结构化 memory；ReAct 压缩阈值是 256000（与上下文窗口一致），采用三档渐进压缩策略。 |
 | `AGENT_EXECUTION_FLOW.md` | 主体正确 | `maxSteps` 是上限，不是必跑次数；无 final/无工具时不一定 fallback，只有存在 deterministic fallback provider 时才 fallback，否则任务失败。 |
 
 ## 2. 项目总体架构
@@ -252,14 +252,30 @@ stateDiagram-v2
 
 ## 6. 上下文与压缩
 
-当前默认上下文预算是 256000 tokens，对应 `DEFAULT_MAX_CONTEXT_TOKENS` 与默认配置 `maxContextTokens`。
+当前默认上下文预算是 256000 tokens，对应 `DEFAULT_MAX_CONTEXT_TOKENS` 与默认配置 `maxContextTokens`。压缩阈值与上下文窗口一致（256000），采用三档渐进压缩策略。
 
-ReAct 过程中，工具结果累积后会调用 `ContextCompactor.should_compact(messages, 60000)` 做滚动压缩判断。因此这里有两个不同口径：
+### 压缩策略
 
-| 口径 | 当前值 | 含义 |
+| 阶段 | Token 范围 | 行为 |
 | --- | --- | --- |
-| 默认最大上下文预算 | 256000 | 构建任务上下文时的 provider/context 预算上限。 |
-| ReAct 滚动压缩阈值 | 60000 | 工具观察结果累积后，为避免循环上下文膨胀而使用的压缩阈值。 |
+| Tier 1 | < 50K | 原样保留，不做任何压缩 |
+| Tier 2 | 50K - 220K | 截断过大的工具输出（保留头 600 字符 + 尾 400 字符），压缩日志为错误摘要 |
+| Tier 3 | ≥ 220K | 完整 compact（primer/summary/recent 三段式），保留任务状态 + 最近 6 轮 + 结构化 handoff |
+
+### 三段式压缩（Tier 3）
+
+完整压缩时将上下文分为三段：
+1. **Primers** — system prompt 等前导消息，完整保留
+2. **Summary** — 中间历史由 LLM 生成摘要（无 provider 时用启发式头尾截断）
+3. **Recents** — 末尾 6 轮对话，逐字保留
+
+### 结构化 Handoff Summary
+
+每次完整压缩时生成，跨压缩保留关键信息：
+- `objective`（任务目标）、`completedWork`（已完成工作）
+- `modifiedFiles`（修改文件）、`failedCommands`/`failedTools`（失败记录）
+- `verificationStatus`（验证状态）、`risks`（风险）
+- `nextCommand`（下一步行动）、`recentContext`（最近上下文）
 
 压缩不等于删除信息。正确目标是把较早的交互、工具观察、阶段性结论压成可继续推理的摘要，同时保留当前任务所需的关键事实、约束、文件路径、审批状态和未完成动作。
 
@@ -277,9 +293,11 @@ flowchart TD
   D --> E{"有工具调用?"}
   E -->|否，给出 final| F["任务完成"]
   E -->|是| G["执行工具并写入 observation"]
-  G --> H{"超过 ReAct 压缩阈值 60000?"}
-  H -->|是| I["ContextCompactor"]
-  H -->|否| D
+  G --> H{"检查压缩策略"}
+  H -->|"< 50K"| D
+  H -->|"50K-220K, 有大工具输出"| J["截断工具输出"]
+  H -->|">= 220K 或超预算"| I["三段式 Compact"]
+  J --> D
   I --> D
 ```
 
@@ -782,7 +800,7 @@ Supervisor/Swarm 更适合多 agent 协作，但应满足：
 | 原文档 RPC 数量写 120+ | 会误导 API 覆盖判断 | 改为“当前 90 个 handler，以代码为准”。 |
 | 原文档工具数量写 16 | 与当前 registry 不一致 | 改为 17，并列出 memory/scratchpad 工具。 |
 | 原文档 memory 描述为 `MEMORY.md` | 与 SQLite 结构化 memory 不一致 | 改为 MemoryStore/MemoryManager/MemoryEntry 口径。 |
-| 原文档压缩阈值有 6000 的旧口径 | 与当前配置不一致 | 改为默认上下文 256000，ReAct 滚动压缩 60000。 |
+| 原文档压缩阈值有 6000 的旧口径 | 与当前配置不一致 | 改为默认上下文 256000，三档渐进压缩（<50K/50K-220K/≥220K）。 |
 | 原文档把 `maxSteps` 容易读成固定步数 | 会误解 agent 结束条件 | 明确它是上限，final answer 可提前结束。 |
 | 原文档 fallback 描述过宽 | 会误解 provider 无输出时的行为 | 明确只有 deterministic fallback provider 可用才 fallback。 |
 
@@ -801,7 +819,7 @@ Supervisor/Swarm 更适合多 agent 协作，但应满足：
 | 结构化 memory | 已有基础 | SQLite memory 类型、scope、source、recall 能力存在。 |
 | 跨 session workspace memory | 部分接通 | memory 数据模型支持；实际召回质量还需要持续验证和调参。 |
 | LLM routing proposal | 已接入主路径 | MetaRouter 先生成规则候选，再默认让 DecisionAdvisor 做语义路由；规则候选作为 advisor 上下文和 fallback，真实 LLM 需要配置 provider。 |
-| LLM 上下文压缩建议 | 部分接通 | compactor 支持 provider advisory；ReAct 当前仍有固定 60000 阈值。 |
+| LLM 上下文压缩建议 | 已接通 | compactor 支持三档渐进压缩（<50K 原样/50K-220K 截断工具/≥220K 完整 compact），Tier 2 区域可让 LLM 判断是否需要完整压缩。 |
 | LLM 拆任务/并行建议 | 规划/部分基础 | DecisionAdvisor 有 `decomposition` 类型，DAG/worker 基础存在，但默认完整闭环还需补齐。 |
 | Proposal 审计 | 持续补齐 | proposal_records 已存在；routing_strategy、failure_recovery、product_surface_decision、completion_decision 已写入并 validate，后续继续保证所有关键默认路径都写入 proposal record。 |
 | 通用 Hooks | 生命周期、P2 actions 与 Settings UI 已接通 | runtime hooks 的 CRUD、执行记录、HookService、hook RPC 已有；`before/after task`、`before/after tool`、`before/after provider turn`、pause/cancel/resume、compaction、context snapshot、worktree create/merge 已统一触发。`run_command`、`webhook`、`memory_write`、`auto_verification_suggestion`、`external_sync` 已走 PermissionEngine/审计记录；Settings UI 管理入口已完成。剩余主要是真实 provider + hook side effect 组合 smoke。 |

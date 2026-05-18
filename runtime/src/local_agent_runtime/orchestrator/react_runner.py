@@ -341,6 +341,7 @@ class ReactRunnerMixin:
                 snapshot_id=snapshot["id"],
                 turn_decision=turn_result.decision.value,
                 thought_summary=turn_result.thought_summary[:500] if turn_result.thought_summary else None,
+                failure_recovery=provider_context.get("_provider_failure_recovery_payload"),
             )
             self._fire_hooks("after_provider_turn", session_id, task, extra_context={"providerTurnId": provider_turn["id"], "turnDecision": turn_result.decision.value, "step": steps})
             # --- Publish agent.decision.react_turn event ---

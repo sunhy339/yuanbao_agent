@@ -66,6 +66,13 @@ class _CanGenerate(Protocol):
 _RECENT_TURN_DEFAULT = 6
 _SUMMARY_MAX_CHARS = 4000
 
+# -- Progressive compaction thresholds (tokens) --
+# Tier 1 (< TIER1): keep as-is, only compact if forced
+# Tier 2 (TIER1 - TIER2): truncate tool outputs, compress logs to error summaries
+# Tier 3 (>= TIER2): full compact (primer/summary/recent)
+_TIER1_THRESHOLD = 50_000
+_TIER2_THRESHOLD = 220_000
+
 
 class ContextCompactor:
     """Compresses a message list to fit within a token budget."""
@@ -95,9 +102,13 @@ class ContextCompactor:
     ) -> CompactionResult:
         """Compact *messages* to fit within *max_tokens*.
 
+        Uses progressive compaction:
+        - Tier 1 (<50K tokens): keep as-is unless forced.
+        - Tier 2 (50K-220K): truncate tool outputs, compress logs.
+        - Tier 3 (>=220K): full compact (primer/summary/recent).
+
         Returns a ``CompactionResult`` with the retained message list and
-        bookkeeping metadata.  When the messages already fit, no summary is
-        generated.
+        bookkeeping metadata.
 
         *message_ids* maps to the input messages for traceability.
         *task_id* is the task that triggered this compaction.
@@ -105,12 +116,28 @@ class ContextCompactor:
         # Compute per-message tokens once
         msg_tokens = [estimate_tokens(m.get("content", "")) for m in messages]
         tokens_before = sum(msg_tokens)
+
+        # Tier 1: within budget and not forced — no-op
         if tokens_before <= max_tokens and not force:
             return CompactionResult(
                 kept_messages=list(messages),
                 tokens_before=tokens_before,
                 tokens_after=tokens_before,
             )
+
+        # -- Progressive compaction --
+        # If we are between TIER1 and TIER2, try lightweight truncation first.
+        if tokens_before < _TIER2_THRESHOLD and not force:
+            truncated = self._truncate_tool_outputs(messages, msg_tokens)
+            truncated_tokens = sum(estimate_tokens(m.get("content", "")) for m in truncated)
+            if truncated_tokens <= max_tokens:
+                return CompactionResult(
+                    kept_messages=truncated,
+                    tokens_before=tokens_before,
+                    tokens_after=truncated_tokens,
+                    strategy="tool_output_truncation",
+                )
+            # Truncation alone wasn't enough; fall through to full compact.
 
         # --- Split into segments ---
         primers, history, recents = self._split_segments(messages)
@@ -210,11 +237,15 @@ class ContextCompactor:
         near_budget_ratio: float = 0.80,
         force_budget_ratio: float = 1.0,
     ) -> CompactionDecision:
-        """Decide whether to compact now.
+        """Decide whether to compact now using progressive thresholds.
 
-        Runtime rules keep hard safety boundaries deterministic:
-        over budget always compacts, well below budget never asks the model,
-        and near-budget contexts may use the provider as an advisory signal.
+        Three tiers:
+        - Tier 1 (<50K): no compaction unless forced.
+        - Tier 2 (50K-220K): lightweight compaction (tool output truncation).
+        - Tier 3 (>=220K or over budget): full compact.
+
+        The ``force_budget_ratio`` still controls the hard ceiling — anything
+        at or above ``max_tokens * force_budget_ratio`` always compacts.
         """
         tokens_before = sum(estimate_tokens(m.get("content", "")) for m in messages)
         if max_tokens <= 0:
@@ -226,14 +257,42 @@ class ContextCompactor:
                 source="rule",
                 force=True,
             )
+
+        # Tier 3: over hard budget → force full compact
         if tokens_before >= int(max_tokens * force_budget_ratio):
             return CompactionDecision(
                 should_compact=True,
-                reason="context exceeds token budget",
+                reason="context exceeds token budget (tier 3: full compact)",
                 tokens_before=tokens_before,
                 max_tokens=max_tokens,
                 source="rule",
             )
+
+        # Tier 1: well below 50K → no compaction needed
+        if tokens_before < _TIER1_THRESHOLD:
+            return CompactionDecision(
+                should_compact=False,
+                reason="context is small (tier 1: no compaction)",
+                tokens_before=tokens_before,
+                max_tokens=max_tokens,
+                source="rule",
+            )
+
+        # Tier 2 (50K to hard budget): lightweight compaction
+        # Check if we have oversized tool outputs that can be truncated first.
+        if tokens_before >= _TIER1_THRESHOLD:
+            has_large_tools = self._has_oversized_tool_outputs(messages)
+            if has_large_tools:
+                return CompactionDecision(
+                    should_compact=True,
+                    reason="tier 2: truncate oversized tool outputs",
+                    tokens_before=tokens_before,
+                    max_tokens=max_tokens,
+                    source="rule",
+                    force=False,
+                )
+
+        # If near budget but no large tools, ask the LLM or fall back
         if tokens_before < int(max_tokens * near_budget_ratio):
             return CompactionDecision(
                 should_compact=False,
@@ -723,3 +782,52 @@ class ContextCompactor:
     def _hash_primers(primers: list[dict]) -> str:
         content = "|".join(m.get("content", "") for m in primers)
         return hashlib.sha256(content.encode()).hexdigest()[:16]
+
+    # -- Progressive compaction helpers --
+
+    # Tool output is often the largest single contributor to context bloat.
+    # Keep the head and tail with a truncation marker in between.
+    _TOOL_OUTPUT_HEAD_CHARS = 600
+    _TOOL_OUTPUT_TAIL_CHARS = 400
+    _TOOL_OUTPUT_MAX_CHARS = _TOOL_OUTPUT_HEAD_CHARS + _TOOL_OUTPUT_TAIL_CHARS
+
+    @classmethod
+    def _truncate_tool_outputs(
+        cls,
+        messages: list[dict[str, Any]],
+        msg_tokens: list[int] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return a shallow copy with oversized tool outputs truncated.
+
+        Only tool-role messages longer than ``_TOOL_OUTPUT_MAX_CHARS`` are
+        truncated; everything else is preserved as-is.
+        """
+        result: list[dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content")
+            if role == "tool" and isinstance(content, str) and len(content) > cls._TOOL_OUTPUT_MAX_CHARS:
+                truncated = (
+                    content[: cls._TOOL_OUTPUT_HEAD_CHARS]
+                    + f"\n…[truncated {len(content) - cls._TOOL_OUTPUT_MAX_CHARS} chars]…\n"
+                    + content[len(content) - cls._TOOL_OUTPUT_TAIL_CHARS :]
+                )
+                new_msg = dict(msg)
+                new_msg["content"] = truncated
+                result.append(new_msg)
+            else:
+                result.append(msg)
+        return result
+
+    @classmethod
+    def _has_oversized_tool_outputs(cls, messages: list[dict[str, Any]]) -> bool:
+        """Return True if any tool-role message exceeds the truncation limit."""
+        for msg in messages:
+            content = msg.get("content")
+            if (
+                msg.get("role") == "tool"
+                and isinstance(content, str)
+                and len(content) > cls._TOOL_OUTPUT_MAX_CHARS
+            ):
+                return True
+        return False

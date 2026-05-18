@@ -1275,6 +1275,100 @@ class TestCompletionHardGate:
         gate = result["structuredResult"].get("completionGate") or {}
         assert gate.get("status") != "needs_acceptance_review"
 
+    def test_changed_surface_observation_feeds_product_advisor_without_hard_gate(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def __init__(self) -> None:
+                self.product_surface_inputs: list[dict[str, Any]] = []
+
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    self.product_surface_inputs.append(input_context)
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The observed surfaces are enough for this task.",
+                        fallback_reason=None,
+                        proposal_id="surface_observation_1",
+                        confidence=0.83,
+                        payload={
+                            "surface_type": "cli_with_persistence_migration",
+                            "evidence_requests": [],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="Completion is acceptable with the current verification.",
+                    fallback_reason=None,
+                    proposal_id="completion_surface_observation_1",
+                    confidence=0.82,
+                    payload={"is_complete": True, "surface_type": "cli_with_persistence_migration"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor)
+        store = rt.store
+        project = tmp_path / "project"
+        migrations = project / "migrations"
+        migrations.mkdir(parents=True)
+        (project / "cli.py").write_text(
+            "import argparse\n\n"
+            "def main():\n"
+            "    parser = argparse.ArgumentParser()\n"
+            "    parser.parse_args()\n\n"
+            "if __name__ == \"__main__\":\n"
+            "    main()\n",
+            encoding="utf-8",
+        )
+        (migrations / "001_init.sql").write_text("CREATE TABLE feedback (id integer primary key);\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="surface observation")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Add a local CLI and database migration",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "cli.py", "summary": "added CLI entrypoint"},
+                {"path": "migrations/001_init.sql", "summary": "added schema migration"},
+            ],
+            verification=[{"command": "python -m pytest -q", "status": "passed", "summary": "tests passed"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Added CLI and migration.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]
+        advisory = [
+            item for item in evidence["productAdvisories"]
+            if item["kind"] == "changed_surface_observation"
+        ][0]
+        assert advisory["severity"] == "info"
+        assert advisory["roleCounts"]["cli_or_entrypoint"] == 1
+        assert advisory["roleCounts"]["persistence_or_migration"] >= 1
+        assert any(
+            surface["path"] == "cli.py" and "cli_or_entrypoint" in surface["roles"]
+            for surface in advisory["surfaces"]
+        )
+        assert any(
+            surface["path"] == "migrations/001_init.sql" and "persistence_or_migration" in surface["roles"]
+            for surface in advisory["surfaces"]
+        )
+        objective_advisories = advisor.product_surface_inputs[0]["objective_signals"]["objective_product_advisories"]
+        assert any(item["kind"] == "changed_surface_observation" for item in objective_advisories)
+        gate = result["structuredResult"].get("completionGate") or {}
+        assert gate.get("status") != "needs_acceptance_review"
+
     def test_static_frontend_missing_asset_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

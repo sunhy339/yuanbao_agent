@@ -2940,7 +2940,232 @@ class TaskLifecycleMixin:
                     for item in docs_observations[:10]
                 ],
             })
+        surface_observations = self._completion_changed_surface_records(root=root, task=task)
+        if surface_observations:
+            role_counts: dict[str, int] = {}
+            for item in surface_observations:
+                for role in item.get("roles") or []:
+                    role_text = str(role or "").strip()
+                    if role_text:
+                        role_counts[role_text] = role_counts.get(role_text, 0) + 1
+            advisories.append({
+                "kind": "changed_surface_observation",
+                "severity": "info",
+                "source": "objective_surface_scan",
+                "summary": (
+                    f"{len(surface_observations)} changed artifact surface(s) were classified from paths and file structure; "
+                    "ask the product-surface advisor what evidence matters for this task."
+                ),
+                "recommendedVerification": [],
+                "surfaces": surface_observations[:20],
+                "roleCounts": dict(sorted(role_counts.items())),
+            })
         return advisories
+
+    def _completion_changed_surface_records(
+        self,
+        *,
+        root: Path,
+        task: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in task.get("changedFiles") or []:
+            if not isinstance(item, dict):
+                continue
+            path_text = self._completion_changed_file_path(item)
+            if not path_text or path_text in seen:
+                continue
+            seen.add(path_text)
+            record = self._completion_changed_surface_record(root=root, path_text=path_text)
+            if record is not None:
+                records.append(record)
+        return records[:30]
+
+    def _completion_changed_surface_record(self, *, root: Path, path_text: str) -> dict[str, Any] | None:
+        roles = set(self._completion_path_surface_roles(path_text))
+        families = sorted(self._completion_path_verification_families(path_text))
+        path = self._completion_safe_workspace_path(root=root, relative_path=path_text)
+        exists = path is not None and path.is_file()
+        record: dict[str, Any] = {
+            "path": path_text,
+            "exists": exists,
+            "roles": sorted(roles),
+            "verificationFamilies": families,
+        }
+        suffix = Path(path_text).suffix.casefold()
+        if suffix:
+            record["extension"] = suffix
+        content = ""
+        if exists and path is not None:
+            try:
+                size = path.stat().st_size
+                record["sizeBytes"] = size
+                if size <= 500_000 and self._completion_path_is_text_surface_candidate(path_text):
+                    content = path.read_text(encoding="utf-8", errors="replace")
+                    record["lineCount"] = content.count("\n") + (1 if content else 0)
+            except OSError:
+                content = ""
+        if content:
+            content_signals = self._completion_content_surface_signals(path_text=path_text, content=content)
+            if content_signals:
+                record["contentSignals"] = content_signals[:10]
+                roles.update(
+                    str(signal.get("role") or "")
+                    for signal in content_signals
+                    if str(signal.get("role") or "").strip()
+                )
+            api_routes = self._completion_backend_routes_from_text(content)
+            if api_routes:
+                roles.add("backend_api_route")
+                record["apiRoutes"] = api_routes[:10]
+            if self._completion_path_may_contain_frontend_api_reference(path_text):
+                api_references = self._completion_api_references_from_text(content)
+                if api_references:
+                    roles.add("frontend_api_client")
+                    record["apiReferences"] = api_references[:10]
+            package_scripts = self._completion_package_json_scripts(path_text=path_text, content=content)
+            if package_scripts:
+                roles.add("package_manifest")
+                record["packageScripts"] = package_scripts[:20]
+        record["roles"] = sorted(role for role in roles if role)
+        if not record["roles"] and not families:
+            return None
+        return {
+            key: value
+            for key, value in record.items()
+            if value not in ("", None, [], {})
+        }
+
+    def _completion_path_surface_roles(self, path_text: str) -> list[str]:
+        normalized = path_text.casefold().replace("\\", "/")
+        filename = normalized.rsplit("/", 1)[-1]
+        roles: list[str] = []
+        if self._completion_path_requires_docs_quality_check(path_text):
+            roles.append("documentation")
+        if self._completion_path_may_contain_frontend_api_reference(path_text) or normalized.endswith((".css", ".scss", ".sass")):
+            roles.append("ui_or_client_artifact")
+        if self._completion_path_may_contain_backend_route(path_text):
+            roles.append("code_artifact")
+        if self._completion_path_is_test_artifact(normalized):
+            roles.append("test_artifact")
+        if self._completion_path_is_persistence_artifact(normalized):
+            roles.append("persistence_or_migration")
+        if filename in {
+            "package.json",
+            "pyproject.toml",
+            "requirements.txt",
+            "setup.py",
+            "cargo.toml",
+            "go.mod",
+            "pom.xml",
+        } or filename.endswith((".csproj", ".sln")):
+            roles.append("manifest_or_dependency")
+        if normalized.endswith((".csv", ".tsv", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini")):
+            roles.append("data_or_config")
+        return list(dict.fromkeys(roles))
+
+    @staticmethod
+    def _completion_path_is_test_artifact(normalized_path: str) -> bool:
+        filename = normalized_path.rsplit("/", 1)[-1]
+        return (
+            normalized_path.startswith(("test/", "tests/"))
+            or "/test/" in normalized_path
+            or "/tests/" in normalized_path
+            or filename.startswith("test_")
+            or filename.endswith((".test.js", ".test.ts", ".spec.js", ".spec.ts", "_test.go"))
+        )
+
+    @staticmethod
+    def _completion_path_is_persistence_artifact(normalized_path: str) -> bool:
+        filename = normalized_path.rsplit("/", 1)[-1]
+        return (
+            "migration" in normalized_path
+            or "schema" in filename
+            or "database" in normalized_path
+            or "/db/" in normalized_path
+            or normalized_path.endswith((".sql", ".sqlite", ".sqlite3"))
+        )
+
+    @staticmethod
+    def _completion_path_is_text_surface_candidate(path_text: str) -> bool:
+        normalized = path_text.casefold().replace("\\", "/")
+        return normalized.endswith((
+            ".adoc",
+            ".asciidoc",
+            ".c",
+            ".cc",
+            ".cpp",
+            ".css",
+            ".go",
+            ".h",
+            ".hpp",
+            ".html",
+            ".ini",
+            ".java",
+            ".js",
+            ".json",
+            ".jsonl",
+            ".jsx",
+            ".kt",
+            ".kts",
+            ".md",
+            ".mdx",
+            ".mjs",
+            ".php",
+            ".py",
+            ".pyw",
+            ".rb",
+            ".rs",
+            ".rst",
+            ".scss",
+            ".sql",
+            ".svelte",
+            ".swift",
+            ".toml",
+            ".ts",
+            ".tsx",
+            ".txt",
+            ".vue",
+            ".yaml",
+            ".yml",
+        ))
+
+    def _completion_content_surface_signals(self, *, path_text: str, content: str) -> list[dict[str, Any]]:
+        normalized = path_text.casefold().replace("\\", "/")
+        lowered = content.casefold()
+        signals: list[dict[str, Any]] = []
+        if normalized.endswith((".py", ".pyw")) and (
+            "argparse" in lowered
+            or "typer." in lowered
+            or "click." in lowered
+            or re.search(r"if\s+__name__\s*==\s*['\"]__main__['\"]", content)
+        ):
+            signals.append({"kind": "python_entrypoint", "role": "cli_or_entrypoint"})
+        if normalized.endswith((".js", ".ts", ".mjs", ".cjs")) and re.search(r"\bprocess\.argv\b|\bcommander\b|\byargs\b", content):
+            signals.append({"kind": "javascript_entrypoint", "role": "cli_or_entrypoint"})
+        if normalized.endswith(".sql") or re.search(r"\b(create|alter|drop)\s+table\b", lowered):
+            signals.append({"kind": "schema_statement", "role": "persistence_or_migration"})
+        if re.search(r"\b(localstorage|indexeddb|sqlite|postgres|mysql|redis)\b", lowered):
+            signals.append({"kind": "persistence_reference", "role": "persistence_or_migration"})
+        return signals
+
+    @staticmethod
+    def _completion_package_json_scripts(*, path_text: str, content: str) -> list[str]:
+        if path_text.casefold().replace("\\", "/").rsplit("/", 1)[-1] != "package.json":
+            return []
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            return []
+        scripts = payload.get("scripts") if isinstance(payload, dict) else None
+        if not isinstance(scripts, dict):
+            return []
+        return [
+            str(name)
+            for name in scripts.keys()
+            if isinstance(name, str) and name.strip()
+        ]
 
     def _completion_api_contract_observations(
         self,

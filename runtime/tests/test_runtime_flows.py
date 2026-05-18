@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import subprocess
@@ -1715,6 +1716,125 @@ def test_supplement_continue_takeover_resumes_paused_task(runtime_harness: Any, 
 
 
 # ── Observability tests ──────────────────────────────────────────────────
+
+
+def test_supplement_wrap_up_takeover_records_resumable_convergence(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call("session.create", {"workspaceId": workspace["id"], "title": "wrap takeover"}),
+        "session",
+    )
+    active = runtime_harness.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="long task",
+        plan=[],
+        status="running",
+        routing={
+            "scenario": "code_edit",
+            "strategy": "react_standard",
+            "mainWorkflow": {"userTakeover": {"state": "none"}},
+        },
+    )
+
+    result = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "wrap up with the current results"},
+    )
+    assert result["result"]["acceptedMode"] == "supplement"
+    updated = _call_result(
+        runtime_harness.call("task.get", {"taskId": active["id"]}),
+        "task",
+    )
+
+    workflow = updated["routing"]["mainWorkflow"]
+    assert workflow["userTakeover"]["state"] == "wrap_up_requested"
+    assert workflow["convergence"]["state"] == "wrap_up_requested"
+    assert workflow["convergence"]["resumable"] is True
+    assert updated["status"] == "running"
+    event_types = _event_types(runtime_harness.events)
+    assert "task.user_takeover.received" in event_types
+    assert "task.user_takeover.convergence" in event_types
+
+
+def test_supplement_change_takeover_uses_advisor_and_records_proposal(runtime_harness: Any, tmp_path: Path) -> None:
+    class Advisor:
+        def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+            assert kind == "user_takeover"
+            assert input_context["task_status"] == "running"
+            return SimpleNamespace(
+                accepted=True,
+                source="llm",
+                rationale="The user is changing the target of the active task.",
+                fallback_reason=None,
+                proposal_id="takeover_1",
+                model_id="test-model",
+                validation_reasons=[],
+                confidence=0.91,
+                payload={
+                    "state": "change_requested",
+                    "intent": "redirect active work",
+                    "target_goal": "Implement the API contract first.",
+                    "handoff_focus": "Preserve current UI notes for later.",
+                },
+            )
+
+    runtime_harness.server._orchestrator._decision_advisor = Advisor()
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call("session.create", {"workspaceId": workspace["id"], "title": "change takeover"}),
+        "session",
+    )
+    active = runtime_harness.store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="long task",
+        plan=[],
+        status="running",
+        routing={
+            "scenario": "code_edit",
+            "strategy": "react_standard",
+            "mainWorkflow": {"userTakeover": {"state": "none"}},
+        },
+    )
+
+    result = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "actually change to the API contract first"},
+    )
+    assert result["result"]["acceptedMode"] == "supplement"
+    updated = _call_result(
+        runtime_harness.call("task.get", {"taskId": active["id"]}),
+        "task",
+    )
+
+    takeover = updated["routing"]["mainWorkflow"]["userTakeover"]
+    assert takeover["state"] == "change_requested"
+    assert takeover["source"] == "llm"
+    assert takeover["targetGoal"] == "Implement the API contract first."
+    convergence = updated["routing"]["mainWorkflow"]["convergence"]
+    assert convergence["state"] == "change_requested"
+    assert convergence["targetGoal"] == "Implement the API contract first."
+    proposals = runtime_harness.store.list_proposals({
+        "taskId": active["id"],
+        "kind": "user_takeover",
+    })["proposals"]
+    assert len(proposals) == 1
+    assert proposals[0]["status"] == "accepted"
+    assert proposals[0]["proposal"]["state"] == "change_requested"
+    assert takeover["proposalRecordId"] == proposals[0]["id"]
+    event_types = _event_types(runtime_harness.events)
+    assert "task.user_takeover.convergence" in event_types
 
 
 def test_routing_emits_decided_event(runtime_harness: Any, tmp_path: Path) -> None:

@@ -43,6 +43,7 @@ REQUIRED_FIELDS_BY_KIND: dict[str, list[str]] = {
     "todo_maintenance": ["updates"],
     "completion_decision": ["is_complete"],
     "product_surface_decision": ["surface_type"],
+    "user_takeover": ["state"],
 }
 
 
@@ -317,6 +318,10 @@ def validate_proposal(kind: str, payload: dict[str, Any]) -> list[str]:
     if kind == "product_surface_decision":
         reasons.extend(validate_product_surface_decision(payload))
 
+    # User takeover validator
+    if kind == "user_takeover":
+        reasons.extend(validate_user_takeover(payload))
+
     # Skill policy validator
     if kind == "skill_policy":
         reasons.extend(validate_skill_availability(payload))
@@ -378,6 +383,27 @@ def validate_product_surface_decision(payload: dict[str, Any]) -> list[str]:
                     arguments = suggested_tool.get("arguments", {})
                     if arguments is not None and not isinstance(arguments, dict):
                         reasons.append(f"evidence_requests[{index}].suggestedTool.arguments must be an object when provided")
+    return reasons
+
+
+def validate_user_takeover(payload: dict[str, Any]) -> list[str]:
+    """Validate LLM-advised user takeover intent without applying side effects."""
+    reasons: list[str] = []
+    valid_states = {
+        "supplement",
+        "pause_requested",
+        "continue_requested",
+        "wrap_up_requested",
+        "stop_requested",
+        "change_requested",
+    }
+    state = payload.get("state")
+    if state not in valid_states:
+        reasons.append(f"Invalid user takeover state: {state!r}")
+    for field in ("intent", "reason", "target_goal", "handoff_focus"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            reasons.append(f"{field} must be a string when provided")
     return reasons
 
 

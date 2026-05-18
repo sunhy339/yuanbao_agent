@@ -234,6 +234,7 @@ class ResumeFlowMixin:
                 task=task,
                 summary=summary,
                 context=state["context"],
+                force_complete_after_review=True,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("DAG resume failed for task=%s: %s", task["id"], exc, exc_info=True)

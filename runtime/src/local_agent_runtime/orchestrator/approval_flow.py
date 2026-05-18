@@ -427,6 +427,7 @@ class ApprovalFlowMixin:
             return self._complete_task(
                 session_id=session_id, task=task,
                 summary=result.summary, context=state["context"],
+                force_complete_after_review=True,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Supervisor resume failed for task=%s: %s", task["id"], exc, exc_info=True)
@@ -473,6 +474,7 @@ class ApprovalFlowMixin:
             return self._complete_task(
                 session_id=session_id, task=task,
                 summary=result.summary, context=state["context"],
+                force_complete_after_review=True,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Swarm resume failed for task=%s: %s", task["id"], exc, exc_info=True)
@@ -590,6 +592,7 @@ class ApprovalFlowMixin:
                     goal=task.get("goal") or summary,
                 ),
                 tool_results=[tool_result],
+                force_complete_after_review=True,
             )
             return runtime_task
         except Exception as exc:  # noqa: BLE001
@@ -715,6 +718,7 @@ class ApprovalFlowMixin:
                     goal=task.get("goal") or summary,
                 ),
                 tool_results=[tool_result],
+                force_complete_after_review=True,
             )
             return runtime_task
         except Exception as exc:  # noqa: BLE001

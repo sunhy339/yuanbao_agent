@@ -184,6 +184,18 @@ register_decision(DecisionKindEntry(
     fallback="use conservative provider failure classifier",
     trace_event="agent.decision.failure_recovery",
 ))
+register_decision(DecisionKindEntry(
+    kind="user_takeover",
+    description=(
+        "Classify a supplemental user message against the active task as a supplement, "
+        "pause, continue, stop, wrap-up, or target-change request. The runtime will "
+        "still enforce task state transitions and preserve resumable workflow state."
+    ),
+    required_input_fields=("message", "task_status"),
+    allowed_proposal_schema=("state", "intent", "reason", "target_goal", "handoff_focus"),
+    fallback="use conservative user takeover classifier",
+    trace_event="agent.decision.user_takeover",
+))
 
 
 # ---------------------------------------------------------------------------

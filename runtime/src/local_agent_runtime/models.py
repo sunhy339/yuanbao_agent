@@ -60,6 +60,7 @@ ProposalKind = Literal[
     "react_turn_decision",
     "completion_decision",
     "product_surface_decision",
+    "user_takeover",
 ]
 
 ProposalStatus = Literal["pending", "accepted", "rejected", "applied"]

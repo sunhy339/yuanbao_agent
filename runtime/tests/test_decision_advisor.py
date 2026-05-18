@@ -31,6 +31,7 @@ class TestDecisionRegistry:
         assert "context_policy" in kinds
         assert "decomposition" in kinds
         assert "failure_recovery" in kinds
+        assert "user_takeover" in kinds
 
     def test_get_decision_kind_returns_entry(self) -> None:
         entry = get_decision_kind("intent_mode")
@@ -55,7 +56,7 @@ class TestDecisionRegistry:
         assert "test_custom" in list_decision_kinds()
 
     def test_entry_has_trace_event(self) -> None:
-        for kind in ("intent_mode", "routing_strategy", "context_policy", "decomposition", "failure_recovery"):
+        for kind in ("intent_mode", "routing_strategy", "context_policy", "decomposition", "failure_recovery", "user_takeover"):
             entry = get_decision_kind(kind)
             assert entry is not None
             assert entry.trace_event.startswith("agent.decision.")
@@ -595,6 +596,48 @@ class TestDecisionAdvisorProductSurfaceDecision:
         assert "evidence_requests[0].kind must be a string when provided" in result.validation_reasons
         assert "evidence_requests[0].blocking must be a boolean when provided" in result.validation_reasons
         assert "recommended_verification must be a list when provided" in result.validation_reasons
+
+
+class TestDecisionAdvisorUserTakeover:
+    """User takeover decisions use LLM semantics, bounded by runtime transitions."""
+
+    def test_user_takeover_accepts_change_request(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "state": "change_requested",
+                "intent": "User wants to redirect the active task.",
+                "target_goal": "Focus on the API contract first.",
+                "handoff_focus": "Preserve current findings before switching.",
+            },
+            "confidence": 0.83,
+            "rationale": "The message changes the target of the active task.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise("user_takeover", {
+            "message": "instead focus on the API contract first",
+            "task_status": "running",
+        })
+
+        assert result.accepted is True
+        assert result.payload["state"] == "change_requested"
+        assert result.payload["target_goal"] == "Focus on the API contract first."
+
+    def test_user_takeover_rejects_unknown_state(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {"state": "teleport"},
+            "confidence": 0.75,
+            "rationale": "bad state",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise("user_takeover", {
+            "message": "do something impossible",
+            "task_status": "running",
+        })
+
+        assert result.accepted is False
+        assert "Invalid user takeover state" in result.validation_reasons[0]
 
 
 class TestDecisionAdvisorContextPolicy:

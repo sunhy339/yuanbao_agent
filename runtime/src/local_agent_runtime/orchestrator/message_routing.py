@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import logging
 import re
-import subprocess
 import threading
 from copy import deepcopy
 from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any
+from subprocess import CompletedProcess, DEVNULL, PIPE, SubprocessError, run as subprocess_run
 
 logger = logging.getLogger(__name__)
 
@@ -245,11 +245,12 @@ class MessageRoutingMixin:
         return ""
 
     def _git_workspace_status(self, workspace_root: Path) -> dict[str, Any]:
-        def run_git(args: list[str]) -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
+        def run_git(args: list[str]) -> CompletedProcess[str]:
+            return subprocess_run(
                 ["git", *args],
                 cwd=workspace_root,
-                capture_output=True,
+                stdout=PIPE,
+                stderr=DEVNULL,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -258,7 +259,7 @@ class MessageRoutingMixin:
 
         try:
             inside = run_git(["rev-parse", "--is-inside-work-tree"])
-        except (subprocess.SubprocessError, OSError):
+        except (SubprocessError, OSError):
             return {"isRepo": False}
         if inside.returncode != 0 or inside.stdout.strip().lower() != "true":
             return {"isRepo": False}

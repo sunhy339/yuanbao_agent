@@ -255,4 +255,6 @@ def test_failed_mcp_tool_is_structured_in_compaction_handoff(tmp_path: Any) -> N
     assert handoff["verificationStatus"] == "failed"
     assert handoff["failedTools"][0]["name"] == "mcp__kb__lookup"
     assert handoff["failedTools"][0]["summary"] == "MCP server kb is unavailable"
+    assert handoff["failedTools"][0]["failureKind"] == "mcp_server_unavailable"
+    assert "refresh tools" in handoff["failedTools"][0]["recoveryHint"]
     assert handoff["nextCommand"] == "Recover failed tool: mcp__kb__lookup"

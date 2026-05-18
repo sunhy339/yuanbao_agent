@@ -1597,6 +1597,20 @@ Principle for this pass: LLM/DecisionAdvisor should own semantic judgments such 
 | Completion verification matching | Current language/framework matching is useful objective evidence, but fixed families and command tokens should not be the final semantic authority. | Done: fixed matching remains the conservative fallback/review trigger. When objective passing verification exists but the token family does not match the changed file family, a high-confidence completion advisor can explicitly mark the verification as domain-sufficient; runtime requires `is_complete=true`, no blocking issues, confidence >= 0.8, and `verification_sufficient` or `verification_assessment.status`, then records `verificationRequirements.advisorResolution` for audit. Without that advisor resolution, the old review gate remains. |
 | Provider recovery | Failure classification remains objective; no-partial failures are runtime-bounded, context-too-large gets only an objective compact retry, and advisor/fallback recovery requires partial output or preflight evidence. Provider preflight is now advisor-audited before risky calls; runtime may safely compact context, execute validated bounded task-splitting through the existing planning/DAG path, or switch this provider turn to an enabled switch-eligible fallback profile. | Done baseline. Current product direction is single primary LLM/model first, so richer candidate-provider ranking and provider health-history scoring are deferred rather than treated as the next main-flow item. Auth/refusal stay non-retryable and user-visible. |
 
+### 2026-05-18 Single-Model Real LLM Long Smoke
+
+Added `runtime/smoke_runs/single_model_incident_rules_smoke.py` as the manual/release long-flow smoke for the current single-model direction. It creates a new backend/data-processing task, **Incident Operations Rules Engine**, instead of reusing the older Feedback Hub module. The task asks the real LLM to build a multi-module Python rules engine with persistence, SLA/rule escalation, reporting, import/export, at least two child tasks, pytest coverage, `py_compile`, memory/context pressure, completion advisor evidence, proposal records, and final audit assertions.
+
+The runner intentionally uses only the active provider profile, or an explicit `YUANBAO_SMOKE_PROVIDER_*` override, and does not scan candidate/fallback providers. This keeps the smoke aligned with the current rule: one primary real LLM/model first.
+
+Live run result:
+
+| Command | Result | Notes |
+| --- | --- | --- |
+| `python runtime\smoke_runs\single_model_incident_rules_smoke.py` | failed before task execution | Active provider `GLM` / `GLM-5.1` was contacted as a real LLM through `/v1/chat/completions`, but the upstream returned HTTP 503: `No upstream channel available for this model`. The runner now classifies this as `provider_unavailable` rather than a generic script crash. |
+
+Coverage status: no main workflow nodes were exercised in this live attempt because provider probe failed before `workspace.open` / `message.send`. Next valid action is to rerun the same command after the active real provider is available, or supply one explicit real provider through `YUANBAO_SMOKE_PROVIDER_BASE_URL`, `YUANBAO_SMOKE_PROVIDER_MODEL`, and `YUANBAO_SMOKE_PROVIDER_API_KEY`.
+
 Still open / next implementation queue:
 
 | Priority | Task | Current next step |

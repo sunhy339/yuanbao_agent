@@ -411,21 +411,45 @@ class Orchestrator(
                 "hasPriorProviderFailure": facts.get("hasPriorProviderFailure"),
             }, ensure_ascii=False, sort_keys=True)[:500]
             runtime_action = str(decision.get("runtimeAction") or "proceed")
+            provider_preflight = (
+                decision.get("providerPreflight")
+                if isinstance(decision.get("providerPreflight"), dict)
+                else {}
+            )
+            split_plan = decision.get("splitPlan") if isinstance(decision.get("splitPlan"), dict) else None
+            if split_plan is None and isinstance(provider_preflight, dict):
+                candidate = provider_preflight.get("splitPlan")
+                split_plan = candidate if isinstance(candidate, dict) else None
+            proposal_action = "propose_split" if runtime_action == "execute_split" else runtime_action
             if advice is None and runtime_action == "proceed" and facts.get("riskLevel") == "low":
                 return
+            if runtime_action == "compact_context":
+                context_strategy = "compact_recent_context"
+            elif runtime_action == "execute_split":
+                context_strategy = "split_into_bounded_subtasks"
+            else:
+                context_strategy = "preserve_context"
             runtime_proposal = {
-                "action": runtime_action,
+                "action": proposal_action,
                 "riskLevel": facts.get("riskLevel") or "low",
-                "reason": (decision.get("providerPreflight") or {}).get("reason")
-                if isinstance(decision.get("providerPreflight"), dict)
+                "reason": provider_preflight.get("reason")
+                if isinstance(provider_preflight, dict)
                 else "Provider preflight runtime decision.",
-                "contextStrategy": "compact_recent_context" if runtime_action == "compact_context" else "preserve_context",
+                "contextStrategy": context_strategy,
+                "runtimeAction": runtime_action,
                 "runtimeApplied": bool(decision.get("runtimeApplied")),
                 "estimatedInputTokens": facts.get("estimatedInputTokens"),
                 "estimatedInputTokensAfter": facts.get("estimatedInputTokensAfter"),
                 "maxContextTokens": facts.get("maxContextTokens"),
                 "compactionThreshold": facts.get("compactionThreshold"),
             }
+            if proposal_action == "propose_split" and isinstance(split_plan, dict):
+                runtime_proposal["splitRecommendation"] = {
+                    "subtasks": list(split_plan.get("subtasks") or []),
+                    "dag": split_plan.get("dag"),
+                    "executionOrder": split_plan.get("execution_order") or split_plan.get("executionOrder"),
+                    "reason": split_plan.get("reason"),
+                }
 
             def _create_and_validate(
                 *,
@@ -455,7 +479,7 @@ class Orchestrator(
                 advice_payload = getattr(advice, "payload", None)
                 if isinstance(advice_payload, dict) and advice_payload:
                     proposal = dict(advice_payload)
-                    proposal.setdefault("action", runtime_action)
+                    proposal.setdefault("action", proposal_action)
                     proposal.setdefault("riskLevel", facts.get("riskLevel") or "low")
                     proposal["runtimeAction"] = runtime_action
                     proposal["runtimeApplied"] = bool(decision.get("runtimeApplied"))

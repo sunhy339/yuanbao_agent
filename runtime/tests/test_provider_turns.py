@@ -196,6 +196,65 @@ class PreflightCompactProvider:
         return {"final": "Completed after provider preflight."}
 
 
+class PreflightSplitProvider:
+    """Provider that asks preflight to split before the main provider call."""
+
+    def __init__(self) -> None:
+        self.main_calls: list[dict[str, Any]] = []
+        self.advisor_calls: list[dict[str, Any]] = []
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        if "runtime decision advisor" in prompt:
+            self.advisor_calls.append({"prompt": prompt, "context": context})
+            if "provider_preflight" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {
+                        "action": "propose_split",
+                        "riskLevel": "high",
+                        "reason": "The request should be split before the main provider turn.",
+                        "splitRecommendation": {
+                            "subtasks": [
+                                {
+                                    "id": "sub-0",
+                                    "title": "Inspect provider preflight planning",
+                                    "description": "Inspect provider preflight split planning inputs and summarize task evidence.",
+                                    "dependencies": [],
+                                    "agentType": "planner",
+                                },
+                                {
+                                    "id": "sub-1",
+                                    "title": "Implement and verify provider preflight split",
+                                    "description": "Implement and verify provider preflight split planning behavior using the inspection result.",
+                                    "dependencies": ["sub-0"],
+                                    "agentType": "worker",
+                                },
+                            ]
+                        },
+                    },
+                    "confidence": 0.88,
+                    "rationale": "The preflight facts and goal show a bounded two-step split.",
+                })}
+            if "completion_decision" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {"is_complete": True, "why_complete": "Planning subtasks completed."},
+                    "confidence": 0.8,
+                    "rationale": "The split execution produced completed subtask summaries.",
+                })}
+            if "product_surface_decision" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {"surface_type": "backend_flow", "recommended_verification": []},
+                    "confidence": 0.6,
+                    "rationale": "This test is focused on provider preflight split execution.",
+                })}
+            return {"message": json.dumps({
+                "proposal": {"mode": "task"},
+                "confidence": 0.5,
+                "rationale": "Generic advisor fallback for this test.",
+            })}
+        self.main_calls.append({"prompt": prompt, "context": context})
+        return {"final": "Main provider should not be used after executable preflight split."}
+
+
 def _call_result(response: dict[str, Any], key: str) -> dict[str, Any]:
     assert "result" in response, f"Expected 'result' in response, got: {response}"
     return response["result"][key]
@@ -221,7 +280,7 @@ def _make_runtime(
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
     events: list[dict[str, Any]] = []
     event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
-    return SimpleNamespace(server=server, store=store, events=events)
+    return SimpleNamespace(server=server, store=store, events=events, orchestrator=orchestrator)
 
 
 def _rpc(runtime: SimpleNamespace, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -1089,6 +1148,83 @@ class TestAdvisorGuidedProviderPreflight:
         preflight_trace = next(event for event in trace if event["type"] == "provider.preflight.decision")
         assert preflight_trace["payload"]["runtimeAction"] == "compact_context"
         assert preflight_trace["payload"]["runtimeApplied"] is True
+
+    def test_provider_preflight_split_executes_existing_planning_path(
+        self,
+        tmp_path: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        provider = PreflightSplitProvider()
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            decision_advisor=DecisionAdvisor(provider=provider),
+        )
+        runtime.store.update_config({
+            "config": {
+                "advisor": {"alwaysProviderPreflight": True},
+                "provider": {"model": "fake-chat", "maxContextTokens": 256000},
+                "policy": {"approvalMode": "none"},
+            }
+        })
+        dispatched: list[dict[str, Any]] = []
+
+        def fake_dispatch(params: dict[str, Any]) -> dict[str, Any]:
+            dispatched.append(dict(params))
+            return {
+                "status": "completed",
+                "summary": f"{params.get('title')} completed",
+            }
+
+        monkeypatch.setattr(runtime.orchestrator._subagent_service, "dispatch", fake_dispatch)
+
+        session = _open_session(runtime, tmp_path)
+        task = _call_result(
+            _rpc(
+                runtime,
+                "message.send",
+                {"sessionId": session["id"], "content": "inspect implement verify provider preflight split planning"},
+            ),
+            "task",
+        )
+
+        assert task["status"] == "completed"
+        assert len(provider.main_calls) == 0
+        assert any("provider_preflight" in call["prompt"] for call in provider.advisor_calls)
+        assert [call["agentType"] for call in dispatched] == ["planner", "worker"]
+        assert [call["title"] for call in dispatched] == [
+            "Inspect provider preflight planning",
+            "Implement and verify provider preflight split",
+        ]
+
+        turns = runtime.store.list_provider_turns(task["id"])
+        assert len(turns) == 1
+        assert turns[0]["response_finish_reason"] == "provider_preflight_split"
+        assert turns[0]["turn_decision"] == "continue"
+
+        proposals = runtime.store.list_proposals({
+            "taskId": task["id"],
+            "kind": "provider_preflight",
+        })["proposals"]
+        llm_proposal = next(p for p in proposals if p["source"].get("type") == "llm")
+        runtime_proposal = next(p for p in proposals if p["source"].get("type") == "runtime_provider_preflight")
+        assert llm_proposal["proposal"]["action"] == "propose_split"
+        assert llm_proposal["proposal"]["runtimeAction"] == "execute_split"
+        assert runtime_proposal["proposal"]["action"] == "propose_split"
+        assert runtime_proposal["proposal"]["runtimeAction"] == "execute_split"
+        assert runtime_proposal["proposal"]["runtimeApplied"] is True
+        assert len(runtime_proposal["proposal"]["splitRecommendation"]["subtasks"]) == 2
+
+        trace = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        preflight_trace = next(event for event in trace if event["type"] == "provider.preflight.decision")
+        assert preflight_trace["payload"]["runtimeAction"] == "execute_split"
+        assert preflight_trace["payload"]["runtimeApplied"] is True
+        assert preflight_trace["payload"]["splitPlan"]["execution_order"] == ["sub-0", "sub-1"]
+
+        event_types = [event["type"] for event in runtime.events]
+        assert "task.provider_preflight.split.started" in event_types
+        assert "task.planning.decomposed" in event_types
+        assert "task.planning.completed" in event_types
 
 
 class TestE2ESnapshotIncremental:

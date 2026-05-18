@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 from ..policy.guard import PolicyGuard
 from ..provider.failure_recovery import classify_provider_failure
 from ..provider.adapter import ProviderAdapter
+from ..planner.preflight_split import build_provider_preflight_plan_from_payload
 from ..services.collaboration_service import CollaborationService
 from ..services.subagent_service import SubagentService
 from ..context.scratchpad import Scratchpad
@@ -78,6 +79,14 @@ class MessageExecutionMixin:
                 return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
             if react_result["status"] == "paused":
                 return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
+            if react_result["status"] == "provider_preflight_split":
+                return self._execute_provider_preflight_split(
+                    session_id=session_id,
+                    task=task,
+                    goal=goal,
+                    context=context,
+                    react_result=react_result,
+                )
             if react_result["status"] == "completed":
                 return {
                     "task": self._complete_task(
@@ -151,6 +160,14 @@ class MessageExecutionMixin:
                 return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
             if react_result["status"] == "paused":
                 return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
+            if react_result["status"] == "provider_preflight_split":
+                return self._execute_provider_preflight_split(
+                    session_id=session_id,
+                    task=task,
+                    goal=goal,
+                    context=context,
+                    react_result=react_result,
+                )
             summary = react_result.get("summary") or self._provider.summarize_findings(
                 goal=goal,
                 context=context,
@@ -185,6 +202,56 @@ class MessageExecutionMixin:
                 )
             }
 
+    def _execute_provider_preflight_split(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+        react_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        plan = build_provider_preflight_plan_from_payload(react_result.get("preflight_split_plan"))
+        if plan is None:
+            return {
+                "task": self._fail_task(
+                    session_id=session_id,
+                    task=task,
+                    summary="Provider preflight requested splitting, but the split plan was invalid.",
+                    error_code="PROVIDER_PREFLIGHT_SPLIT_INVALID",
+                    structured_result={"providerPreflight": react_result.get("preflight")},
+                )
+            }
+        updated_context = dict(context)
+        updated_context["providerPreflight"] = react_result.get("preflight")
+        updated_context["providerPreflightSplitPlan"] = react_result.get("preflight_split_plan")
+        updated_context["routing"] = {
+            **(context.get("routing") if isinstance(context.get("routing"), dict) else {}),
+            "strategy": "plan_execute",
+            "enable_planning": True,
+            "providerPreflightSplit": True,
+        }
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="task.provider_preflight.split.started",
+            payload={
+                "subtaskCount": len(plan.subtasks),
+                "executionOrder": plan.execution_order,
+                "reason": (react_result.get("preflight_split_plan") or {}).get("reason")
+                if isinstance(react_result.get("preflight_split_plan"), dict)
+                else None,
+            },
+        )
+        return self._execute_with_planning(
+            session_id=session_id,
+            task=task,
+            goal=goal,
+            context=updated_context,
+            plan_override=plan,
+            plan_source="provider_preflight",
+        )
+
     def _execute_with_planning(
         self,
         *,
@@ -192,6 +259,8 @@ class MessageExecutionMixin:
         task: dict[str, Any],
         goal: str,
         context: dict[str, Any],
+        plan_override: Any | None = None,
+        plan_source: str = "decomposer",
     ) -> dict[str, Any]:
         """Planning mode: decompose goal → execute subtasks → synthesize."""
         plan_span = self._tracer.start_span(
@@ -210,20 +279,23 @@ class MessageExecutionMixin:
             plan_context = json.dumps(
                 context.get("tool_results", []), ensure_ascii=False,
             )[:2000]
-            decomp_span = self._tracer.start_span(
-                "plan_decomposition",
-                trace_id=getattr(self, "_active_trace_id", None),
-                attributes={"goal": goal[:200]},
-            )
-            plan = self._decomposer.decompose(
-                goal=goal,
-                context=plan_context,
-                provider_context=self._planning_provider_context(context),
-            )
-            self._tracer.end_span(
-                decomp_span.span_id, status="ok",
-                attributes={"subtask_count": len(plan.subtasks), "execution_order": plan.execution_order},
-            )
+            if plan_override is not None:
+                plan = plan_override
+            else:
+                decomp_span = self._tracer.start_span(
+                    "plan_decomposition",
+                    trace_id=getattr(self, "_active_trace_id", None),
+                    attributes={"goal": goal[:200]},
+                )
+                plan = self._decomposer.decompose(
+                    goal=goal,
+                    context=plan_context,
+                    provider_context=self._planning_provider_context(context),
+                )
+                self._tracer.end_span(
+                    decomp_span.span_id, status="ok",
+                    attributes={"subtask_count": len(plan.subtasks), "execution_order": plan.execution_order},
+                )
 
             self._publish(
                 session_id=session_id, task=task,
@@ -231,6 +303,7 @@ class MessageExecutionMixin:
                 payload={
                     "subtaskCount": len(plan.subtasks),
                     "executionOrder": plan.execution_order,
+                    "source": plan_source,
                 },
             )
             # --- Decision trace: decomposition ---
@@ -241,6 +314,7 @@ class MessageExecutionMixin:
                     "decision": "decomposed",
                     "subtaskCount": len(plan.subtasks),
                     "parallel": plan.execution_order != [list(range(len(plan.subtasks)))],
+                    "source": plan_source,
                 },
             )
 

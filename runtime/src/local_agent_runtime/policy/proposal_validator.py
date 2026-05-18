@@ -120,7 +120,7 @@ def validate_dependency_graph(
         if not isinstance(st, dict):
             reasons.append(f"subtasks[{i}] must be a dict")
             continue
-        tid = st.get("id") or st.get("taskId")
+        tid = st.get("id") or st.get("taskId") or st.get("task_id")
         if tid:
             task_ids.add(tid)
     # Check dependency references
@@ -137,7 +137,7 @@ def validate_dependency_graph(
     for i, st in enumerate(subtasks):
         if not isinstance(st, dict):
             continue
-        tid = st.get("id") or st.get("taskId")
+        tid = st.get("id") or st.get("taskId") or st.get("task_id")
         deps = st.get("dependencies", [])
         if tid and tid in deps:
             reasons.append(f"subtasks[{i}] has self-dependency: {tid!r}")
@@ -146,7 +146,7 @@ def validate_dependency_graph(
     for st in subtasks:
         if not isinstance(st, dict):
             continue
-        tid = st.get("id") or st.get("taskId")
+        tid = st.get("id") or st.get("taskId") or st.get("task_id")
         deps = st.get("dependencies", [])
         if tid and isinstance(deps, list):
             graph[str(tid)] = [str(dep) for dep in deps if dep in task_ids]
@@ -529,6 +529,47 @@ def validate_provider_preflight(payload: dict[str, Any]) -> list[str]:
     split = payload.get("splitRecommendation")
     if split is not None and not isinstance(split, (str, dict, list)):
         reasons.append("splitRecommendation must be a string, object, or list when provided")
+    if action == "propose_split":
+        if isinstance(split, dict):
+            split_subtasks = split.get("subtasks")
+        elif isinstance(split, list):
+            split_subtasks = split
+        else:
+            split_subtasks = payload.get("subtasks")
+        if not isinstance(split_subtasks, list):
+            reasons.append("splitRecommendation.subtasks or subtasks must be a list when action is propose_split")
+            return reasons
+        if len(split_subtasks) < 2:
+            reasons.append("splitRecommendation.subtasks must contain at least 2 subtasks")
+        if len(split_subtasks) > 10:
+            reasons.append("splitRecommendation.subtasks must contain at most 10 subtasks")
+        task_ids: set[str] = set()
+        for index, item in enumerate(split_subtasks):
+            if not isinstance(item, dict):
+                reasons.append(f"splitRecommendation.subtasks[{index}] must be an object")
+                continue
+            subtask_id = item.get("id") or item.get("taskId") or item.get("task_id")
+            title = item.get("title")
+            description = item.get("description") or item.get("prompt") or item.get("instructions")
+            if not isinstance(subtask_id, str) or not subtask_id.strip():
+                reasons.append(f"splitRecommendation.subtasks[{index}].id must be a non-empty string")
+            elif subtask_id in task_ids:
+                reasons.append(f"Duplicate split subtask id: {subtask_id!r}")
+            else:
+                task_ids.add(subtask_id)
+            if not isinstance(title, str) or not title.strip():
+                reasons.append(f"splitRecommendation.subtasks[{index}].title must be a non-empty string")
+            if not isinstance(description, str) or not description.strip():
+                reasons.append(f"splitRecommendation.subtasks[{index}].description must be a non-empty string")
+            dependencies = item.get("dependencies", [])
+            if dependencies is not None and not isinstance(dependencies, list):
+                reasons.append(f"splitRecommendation.subtasks[{index}].dependencies must be a list when provided")
+            agent_type = item.get("agentType") or item.get("agent_type")
+            normalized_agent_type = agent_type.strip().lower() if isinstance(agent_type, str) else agent_type
+            if normalized_agent_type is not None and normalized_agent_type not in {"planner", "worker", "reviewer", "summarizer"}:
+                reasons.append(f"splitRecommendation.subtasks[{index}].agentType is invalid: {agent_type!r}")
+        reasons.extend(validate_dependency_graph(split_subtasks))
+        reasons.extend(validate_write_scopes(split_subtasks))
     return reasons
 
 

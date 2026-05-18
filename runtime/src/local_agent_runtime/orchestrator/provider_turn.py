@@ -10,6 +10,7 @@ import logging
 from typing import Any
 
 from ..context.token_budget import estimate_tokens
+from ..planner.preflight_split import build_provider_preflight_split_plan_payload
 from ..provider.failure_recovery import classify_provider_failure
 from ..react.types import ProviderTurnResult, TurnDecision
 
@@ -73,6 +74,16 @@ class ProviderTurnMixin:
                 "originalTokenEstimate": original_tokens,
                 "tokenEstimate": token_estimate,
             }
+        split_plan = self._provider_preflight_split_plan_payload(advice=advice)
+        if runtime_action == "execute_split" and split_plan is not None:
+            result_context["_provider_preflight_split_plan"] = split_plan
+            applied = True
+            if isinstance(result_context.get("_provider_preflight"), dict):
+                result_context["_provider_preflight"]["splitPlan"] = {
+                    "subtaskCount": len(split_plan.get("subtasks") or []),
+                    "executionOrder": split_plan.get("execution_order"),
+                    "reason": split_plan.get("reason"),
+                }
 
         facts_after = dict(facts)
         facts_after.update({
@@ -85,6 +96,7 @@ class ProviderTurnMixin:
             "runtimeAction": runtime_action,
             "runtimeApplied": applied,
             "providerPreflight": result_context.get("_provider_preflight"),
+            "splitPlan": split_plan if runtime_action == "execute_split" else None,
         }
         return {
             "provider_context": result_context,
@@ -102,6 +114,7 @@ class ProviderTurnMixin:
     ) -> dict[str, Any]:
         messages = provider_context.get("messages")
         tools = provider_context.get("openai_tools") or provider_context.get("tools") or []
+        routing = provider_context.get("routing") if isinstance(provider_context.get("routing"), dict) else {}
         budget_stats = provider_context.get("budgetStats") if isinstance(provider_context, dict) else None
         max_context_tokens = None
         if isinstance(budget_stats, dict):
@@ -145,6 +158,8 @@ class ProviderTurnMixin:
             "streamingEnabled": self._should_stream_provider(provider_context),
             "step": provider_context.get("step"),
             "maxSteps": provider_context.get("max_steps"),
+            "childWorker": provider_context.get("_child_worker") is True,
+            "alreadyProviderPreflightSplit": bool(routing.get("providerPreflightSplit")),
             **prior_failure,
         }
 
@@ -187,7 +202,9 @@ class ProviderTurnMixin:
             "preflight_facts": facts,
             "runtime_limits": {
                 "autoActions": ["proceed", "compact_context"],
-                "advisoryOnlyActions": ["propose_split", "ask_user", "switch_provider", "abort"],
+                "executableActions": ["propose_split"],
+                "advisoryOnlyActions": ["ask_user", "switch_provider", "abort"],
+                "splitExecution": "validated split plans run through the existing root planning/DAG path",
                 "runtimeWillNotCallProviderAfterTransportFailureForAdvice": True,
             },
             "available_actions": [
@@ -258,9 +275,15 @@ class ProviderTurnMixin:
                 proposed = str(payload.get("action") or "").strip()
         if proposed == "compact_context":
             return "compact_context"
+        split_allowed = not facts.get("childWorker") and not facts.get("alreadyProviderPreflightSplit")
+        if proposed == "propose_split" and split_allowed and self._provider_preflight_split_plan_payload(advice=advice) is not None:
+            return "execute_split"
         if facts.get("overContextLimit"):
             return "compact_context"
         return "proceed"
+
+    def _provider_preflight_split_plan_payload(self, *, advice: Any | None) -> dict[str, Any] | None:
+        return build_provider_preflight_split_plan_payload(advice=advice)
 
     def _provider_preflight_compact_messages(self, messages: list[Any]) -> list[Any]:
         system_messages: list[dict[str, Any]] = []
@@ -304,6 +327,9 @@ class ProviderTurnMixin:
             "runtimeApplied": bool(decision.get("runtimeApplied")),
             "providerPreflight": decision.get("providerPreflight"),
         }
+        split_plan = self._provider_preflight_split_plan_payload(advice=advice)
+        if split_plan is not None:
+            payload["splitPlan"] = split_plan
         if advice is not None:
             payload["advisor"] = {
                 "source": getattr(advice, "source", None),

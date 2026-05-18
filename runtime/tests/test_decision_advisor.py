@@ -504,6 +504,88 @@ class TestDecisionAdvisorProviderPreflight:
         assert result.payload["action"] == "compact_context"
         assert result.payload["riskLevel"] == "high"
 
+    def test_provider_preflight_accepts_split_recommendation(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "action": "propose_split",
+                "riskLevel": "high",
+                "reason": "The request should be split before the provider call.",
+                "splitRecommendation": {
+                    "subtasks": [
+                        {
+                            "id": "sub-0",
+                            "title": "Inspect",
+                            "description": "Inspect the existing runtime facts and files.",
+                            "dependencies": [],
+                            "agentType": "planner",
+                        },
+                        {
+                            "id": "sub-1",
+                            "title": "Implement",
+                            "description": "Implement the bounded follow-up work using inspection results.",
+                            "dependencies": ["sub-0"],
+                            "agentType": "worker",
+                        },
+                    ]
+                },
+            },
+            "confidence": 0.86,
+            "rationale": "The task has a clear inspect-then-implement shape.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "provider_preflight",
+            {
+                "goal": "Continue a broad coding task",
+                "preflight_facts": {"estimatedInputTokens": 100, "riskLevel": "medium"},
+            },
+        )
+
+        assert result.accepted is True
+        assert result.payload["action"] == "propose_split"
+        assert len(result.payload["splitRecommendation"]["subtasks"]) == 2
+
+    def test_provider_preflight_accepts_top_level_split_subtasks(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "action": "propose_split",
+                "riskLevel": "medium",
+                "reason": "Use a small bounded split.",
+                "subtasks": [
+                    {
+                        "id": "sub-0",
+                        "title": "Plan",
+                        "description": "Plan the change and identify verification.",
+                        "dependencies": [],
+                        "agentType": "planner",
+                    },
+                    {
+                        "id": "sub-1",
+                        "title": "Verify",
+                        "description": "Verify the planned change using the stated checks.",
+                        "dependencies": ["sub-0"],
+                        "agentType": "reviewer",
+                    },
+                ],
+            },
+            "confidence": 0.8,
+            "rationale": "Top-level subtasks are a supported compact proposal shape.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "provider_preflight",
+            {
+                "goal": "Preflight split with compact proposal shape",
+                "preflight_facts": {"estimatedInputTokens": 100, "riskLevel": "medium"},
+            },
+        )
+
+        assert result.accepted is True
+        assert result.payload["action"] == "propose_split"
+        assert len(result.payload["subtasks"]) == 2
+
     def test_provider_preflight_rejects_invalid_action(self) -> None:
         provider = _GoodProvider(response=json.dumps({
             "proposal": {"action": "silently_retry_forever", "riskLevel": "high"},

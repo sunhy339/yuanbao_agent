@@ -276,6 +276,22 @@ class ReactRunnerMixin:
                 provider_turn_id=provider_turn["id"],
                 decision=preflight_result.get("decision"),
             )
+            if provider_context.get("_provider_preflight_runtime_action") == "execute_split":
+                self._store.complete_provider_turn(
+                    turn_id=provider_turn["id"],
+                    finish_reason="provider_preflight_split",
+                    usage={},
+                    tool_call_count=0,
+                    turn_decision="continue",
+                    thought_summary="Provider preflight recommended bounded task splitting before the model call.",
+                )
+                return {
+                    "status": "provider_preflight_split",
+                    "summary": "Provider preflight recommended bounded task splitting before the model call.",
+                    "preflight_split_plan": provider_context.get("_provider_preflight_split_plan"),
+                    "preflight": provider_context.get("_provider_preflight"),
+                    "tool_results": tool_results,
+                }
             self._fire_hooks("before_provider_turn", session_id, task, extra_context={"turnIndex": steps, "providerTurnId": provider_turn["id"]})
             # --- ContextSnapshot: capture what the model will see ---
             snapshot_meta = (context.get("_build_result") or context).get("snapshot_metadata", {}) or {}

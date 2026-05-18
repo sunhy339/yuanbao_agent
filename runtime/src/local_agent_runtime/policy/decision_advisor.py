@@ -144,6 +144,8 @@ register_decision(DecisionKindEntry(
         "surface_type",
         "blocking_issues",
         "recommended_verification",
+        "verification_sufficient",
+        "verification_assessment",
     ),
     fallback="accept provider's final answer",
     trace_event="agent.decision.completion",

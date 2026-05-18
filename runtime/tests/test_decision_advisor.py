@@ -784,6 +784,11 @@ class TestDecisionAdvisorCompletionDecision:
                 "remaining_risks": ["No end-to-end API smoke was requested."],
                 "surface_type": "backend_module",
                 "recommended_verification": ["targeted unit test"],
+                "verification_sufficient": True,
+                "verification_assessment": {
+                    "status": "sufficient",
+                    "reason": "The targeted storage unit test covers the changed module.",
+                },
             },
             "confidence": 0.82,
             "rationale": "Evidence supports completion with a non-blocking risk.",
@@ -808,6 +813,8 @@ class TestDecisionAdvisorCompletionDecision:
         assert result.payload["is_complete"] is True
         assert result.payload["surface_type"] == "backend_module"
         assert result.payload["remaining_risks"] == ["No end-to-end API smoke was requested."]
+        assert result.payload["verification_sufficient"] is True
+        assert result.payload["verification_assessment"]["status"] == "sufficient"
 
     def test_completion_decision_rejects_non_boolean_verdict(self) -> None:
         provider = _GoodProvider(response=json.dumps({

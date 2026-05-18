@@ -499,6 +499,12 @@ class TaskLifecycleMixin:
                     missing,
                 ):
                     return None
+                if self._completion_advisor_accepts_verification_gap(
+                    completion_evidence=completion_evidence,
+                    gap_kind="framework_mismatch",
+                    missing=missing,
+                ):
+                    return None
                 return {
                     "action": "review",
                     "decision": "needs_verification",
@@ -511,6 +517,12 @@ class TaskLifecycleMixin:
                 }
         if self._completion_has_targeted_verification(completion_evidence):
             return None
+        if self._completion_advisor_accepts_verification_gap(
+            completion_evidence=completion_evidence,
+            gap_kind="targeted_signal_missing",
+            missing=[],
+        ):
+            return None
         return {
             "action": "review",
             "decision": "needs_verification",
@@ -521,6 +533,71 @@ class TaskLifecycleMixin:
                 "does not include a targeted test, build, or typecheck signal."
             ),
         }
+
+    def _completion_advisor_accepts_verification_gap(
+        self,
+        *,
+        completion_evidence: dict[str, Any],
+        gap_kind: str,
+        missing: list[str],
+    ) -> bool:
+        if not self._completion_has_any_passing_verification_signal(completion_evidence):
+            return False
+        advice = completion_evidence.get("completionAdvisor")
+        if not isinstance(advice, dict) or advice.get("accepted") is not True:
+            return False
+        payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
+        if payload.get("is_complete") is not True:
+            return False
+        confidence = advice.get("confidence")
+        if not isinstance(confidence, (int, float)) or confidence < 0.8:
+            return False
+        blocking = [
+            str(item).strip()
+            for item in (payload.get("blocking_issues") or [])
+            if str(item).strip()
+        ]
+        if blocking:
+            return False
+        assessment = payload.get("verification_assessment")
+        assessment_status = ""
+        assessment_reason = ""
+        if isinstance(assessment, dict):
+            assessment_status = str(assessment.get("status") or "").strip().casefold()
+            assessment_reason = str(assessment.get("reason") or assessment.get("summary") or "").strip()
+        advisor_says_sufficient = payload.get("verification_sufficient") is True or assessment_status in {
+            "sufficient",
+            "acceptable",
+            "covered",
+            "satisfied",
+            "not_required",
+            "domain_sufficient",
+        }
+        if not advisor_says_sufficient:
+            return False
+        requirements = completion_evidence.get("verificationRequirements")
+        if isinstance(requirements, dict):
+            resolution = {
+                "status": "advisor_accepted",
+                "gapKind": gap_kind,
+                "missing": missing,
+                "confidence": confidence,
+                "source": advice.get("source"),
+                "proposalRecordId": advice.get("proposalRecordId"),
+                "rationale": str(advice.get("rationale") or "")[:500],
+            }
+            if assessment_status:
+                resolution["assessmentStatus"] = assessment_status
+            if assessment_reason:
+                resolution["assessmentReason"] = assessment_reason[:500]
+            requirements["advisorResolution"] = {
+                key: value
+                for key, value in resolution.items()
+                if value not in (None, "", [])
+            }
+            if requirements.get("status") == "missing":
+                requirements["status"] = "advisor_accepted"
+        return True
 
     def _completion_needs_verification_review(self, completion_evidence: dict[str, Any]) -> bool:
         if completion_evidence.get("evidenceLevel") != "runtime_evidence":

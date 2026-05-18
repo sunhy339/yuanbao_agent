@@ -350,6 +350,11 @@ def validate_completion_decision(payload: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     if "is_complete" in payload and not isinstance(payload.get("is_complete"), bool):
         reasons.append("is_complete must be a boolean")
+    if "verification_sufficient" in payload and not isinstance(payload.get("verification_sufficient"), bool):
+        reasons.append("verification_sufficient must be a boolean")
+    verification_assessment = payload.get("verification_assessment")
+    if verification_assessment is not None and not isinstance(verification_assessment, dict):
+        reasons.append("verification_assessment must be an object when provided")
     for field in ("remaining_risks", "blocking_issues", "recommended_verification"):
         value = payload.get(field)
         if value is not None and not isinstance(value, list):

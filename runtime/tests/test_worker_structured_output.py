@@ -952,6 +952,89 @@ class TestCompletionHardGate:
         assert evidence["verificationRequirements"]["required"] == ["javascript"]
         assert evidence["verificationRequirements"]["missing"] == ["javascript"]
 
+    def test_completion_advisor_can_accept_domain_specific_verification_gap(self, tmp_path: Any) -> None:
+        class VerificationAdvisor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, Any]]] = []
+
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                self.calls.append((kind, input_context))
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The TSX change is exercised through the Python integration smoke.",
+                        fallback_reason=None,
+                        proposal_id="surface_verification_gap",
+                        confidence=0.82,
+                        payload={
+                            "surface_type": "integration_backed_ui",
+                            "recommended_verification": [],
+                            "evidence_requests": [],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="The integration smoke is the requested product proof even though it is not a JavaScript test command.",
+                    fallback_reason=None,
+                    proposal_id="completion_verification_gap",
+                    confidence=0.86,
+                    payload={
+                        "is_complete": True,
+                        "surface_type": "integration_backed_ui",
+                        "verification_sufficient": True,
+                        "verification_assessment": {
+                            "status": "domain_sufficient",
+                            "reason": "The passed Python smoke drives the changed UI through the app integration path.",
+                        },
+                    },
+                )
+
+        advisor = VerificationAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion advisor verification")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="modify the frontend integration path",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "app/src/App.tsx", "action": "modified"}],
+            verification=[{
+                "command": "pytest runtime/tests/test_frontend_integration.py",
+                "status": "passed",
+                "summary": "integration smoke exercised the UI path",
+            }],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Frontend integration path updated and exercised by smoke.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert [call[0] for call in advisor.calls] == [
+            "product_surface_decision",
+            "completion_decision",
+        ]
+        assert evidence["verificationRequirements"]["required"] == ["javascript"]
+        assert evidence["verificationRequirements"]["missing"] == ["javascript"]
+        assert evidence["verificationRequirements"]["status"] == "advisor_accepted"
+        resolution = evidence["verificationRequirements"]["advisorResolution"]
+        assert resolution["gapKind"] == "framework_mismatch"
+        assert resolution["assessmentStatus"] == "domain_sufficient"
+        assert resolution["proposalRecordId"]
+
     def test_javascript_change_with_javascript_verification_completes(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

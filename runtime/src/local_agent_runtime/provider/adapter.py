@@ -249,11 +249,30 @@ class ProviderAdapter:
             yield {"type": "final", "response": response}
             return
 
-        yield from self._openai_client.stream(
-            settings=settings,
-            messages=messages,
-            tools=tools,
-        )
+        last_error: ProviderAdapterError | None = None
+        for attempt in range(PROVIDER_RETRY_ATTEMPTS):
+            emitted_event = False
+            try:
+                for event in self._openai_client.stream(
+                    settings=settings,
+                    messages=messages,
+                    tools=tools,
+                ):
+                    emitted_event = True
+                    yield event
+                return
+            except ProviderAdapterError as exc:
+                last_error = exc
+                if (
+                    emitted_event
+                    or attempt + 1 >= PROVIDER_RETRY_ATTEMPTS
+                    or not _is_retryable_provider_error(exc)
+                ):
+                    raise
+
+        if last_error is not None:
+            raise last_error
+        raise ProviderAdapterError("Provider stream failed before a response was returned.")
 
     def stream(self, prompt: str, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
         messages = context.get("messages")

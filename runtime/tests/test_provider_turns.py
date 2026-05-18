@@ -60,6 +60,53 @@ class FailingProvider:
         raise self._error
 
 
+class PartialStreamFailureProvider:
+    """Streaming provider that emits partial text before transport failure."""
+
+    def __init__(self) -> None:
+        self.stream_calls: list[dict[str, Any]] = []
+        self.generate_calls: list[dict[str, Any]] = []
+        self.advisor_calls: list[dict[str, Any]] = []
+
+    def stream(self, prompt: str, context: dict[str, Any]) -> Any:
+        self.stream_calls.append({"prompt": prompt, "context": context})
+        yield {"type": "content_delta", "delta": "Partial answer before failure."}
+        raise ProviderAdapterError("Provider streaming response exceeded 30s before completion.")
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        if "runtime decision advisor" in prompt:
+            self.advisor_calls.append({"prompt": prompt, "context": context})
+            if "failure_recovery" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {
+                        "strategy": "fallback",
+                        "maxRetries": 0,
+                        "reason": "Use the partial stream evidence and switch to non-stream fallback.",
+                    },
+                    "confidence": 0.82,
+                    "rationale": "The stream already produced partial content before failing.",
+                })}
+            if "completion_decision" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {"is_complete": True, "why_complete": "Fallback final answered the task."},
+                    "confidence": 0.8,
+                    "rationale": "The task has a final answer after fallback.",
+                })}
+            if "product_surface_decision" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {"surface_type": "backend_flow", "recommended_verification": []},
+                    "confidence": 0.6,
+                    "rationale": "Provider recovery test does not require product evidence.",
+                })}
+            return {"message": json.dumps({
+                "proposal": {"mode": "task"},
+                "confidence": 0.5,
+                "rationale": "Generic advisor response.",
+            })}
+        self.generate_calls.append({"prompt": prompt, "context": context})
+        return {"final": "Recovered through non-stream fallback."}
+
+
 class AdvisorRecoveryProvider:
     """Provider that can fail main turns while answering advisor prompts."""
 
@@ -794,9 +841,9 @@ class TestE2EProviderFailure:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestAdvisorGuidedProviderRecovery:
-    """Advisor-guided provider recovery should remain bounded by runtime guardrails."""
+    """Provider recovery should respect runtime gates before consulting an advisor."""
 
-    def test_advisor_guided_failure_recovery_retries_with_bounded_context(self, tmp_path: Any) -> None:
+    def test_context_too_large_retries_with_runtime_compaction_without_advisor(self, tmp_path: Any) -> None:
         provider = AdvisorRecoveryProvider()
         runtime = _make_runtime(
             tmp_path,
@@ -812,30 +859,33 @@ class TestAdvisorGuidedProviderRecovery:
 
         assert task["status"] == "completed"
         assert len(provider.main_calls) == 2
-        assert len(provider.advisor_calls) == 1
+        assert len(provider.advisor_calls) == 0
         retry_meta = provider.main_calls[1]["context"]["_provider_recovery_retry"]
         assert retry_meta["strategy"] == "compact_or_split_context"
-        assert retry_meta["advisorAccepted"] is True
+        assert retry_meta["advisorAccepted"] is False
 
         proposals = runtime.store.list_proposals({
             "taskId": task["id"],
             "kind": "failure_recovery",
         })["proposals"]
-        assert any(p["source"].get("type") == "llm" for p in proposals)
-        assert any(p["source"].get("type") == "runtime_bounded_recovery" for p in proposals)
-        llm_proposal = next(p for p in proposals if p["source"].get("type") == "llm")
-        assert llm_proposal["proposal"]["strategy"] == "compact_or_split_context"
-        assert llm_proposal["proposal"]["runtimeStrategy"] == "compact_or_split_context"
+        assert not any(p["source"].get("type") == "llm" for p in proposals)
+        runtime_proposal = next(p for p in proposals if p["source"].get("type") == "runtime_classifier")
+        assert runtime_proposal["proposal"]["strategy"] == "compact_or_split_context"
+        assert runtime_proposal["proposal"]["maxRetries"] == 1
 
-        trace_types = [
-            event["type"]
-            for event in runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
-        ]
+        trace = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        trace_types = [event["type"] for event in trace]
         assert "provider.failure.recovery_decision" in trace_types
         assert "provider.failure.recovery_retry" in trace_types
+        recovery_trace = next(event for event in trace if event["type"] == "provider.failure.recovery_decision")
+        recovery = recovery_trace["payload"]["failureRecovery"]
+        assert recovery["advisorAvailable"] is False
+        assert recovery["advisorGate"]["reason"] == "no_partial_output"
 
-    def test_malformed_failure_recovery_advisor_falls_back_to_runtime_strategy(self, tmp_path: Any) -> None:
-        provider = AdvisorRecoveryProvider(advisor_response="not-json")
+    def test_timeout_without_partial_output_does_not_call_advisor_or_retry(self, tmp_path: Any) -> None:
+        provider = AdvisorRecoveryProvider(
+            error=ProviderAdapterError("Provider request timed out after 30s")
+        )
         runtime = _make_runtime(
             tmp_path,
             provider,
@@ -844,22 +894,77 @@ class TestAdvisorGuidedProviderRecovery:
         session = _open_session(runtime, tmp_path)
 
         task = _call_result(
-            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "recover from malformed advisor"}),
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "trigger provider timeout"}),
             "task",
         )
 
-        assert task["status"] == "completed"
-        assert len(provider.main_calls) == 2
-        assert len(provider.advisor_calls) == 1
+        assert task["status"] == "failed"
+        assert len(provider.main_calls) == 1
+        assert len(provider.advisor_calls) == 0
+        turns = runtime.store.list_provider_turns(task["id"])
+        recovery = turns[0]["failureRecovery"]
+        assert recovery["category"] == "timeout"
+        assert recovery["strategy"] == "surface_error"
+        assert recovery["maxRetries"] == 0
+        assert recovery["advisorGate"]["reason"] == "no_partial_output"
 
         proposals = runtime.store.list_proposals({
             "taskId": task["id"],
             "kind": "failure_recovery",
         })["proposals"]
         assert not any(p["source"].get("type") == "llm" for p in proposals)
-        bounded = next(p for p in proposals if p["source"].get("type") == "runtime_bounded_recovery")
-        assert bounded["proposal"]["strategy"] == "compact_or_split_context"
-        assert bounded["source"]["advisorAccepted"] is False
+        runtime_proposal = next(p for p in proposals if p["source"].get("type") == "runtime_classifier")
+        assert runtime_proposal["proposal"]["strategy"] == "surface_error"
+        assert runtime_proposal["proposal"]["maxRetries"] == 0
+
+        trace_types = [
+            event["type"]
+            for event in runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        ]
+        assert "provider.failure.recovery_retry" not in trace_types
+
+    def test_stream_partial_output_allows_recovery_advisor_and_fallback(self, tmp_path: Any) -> None:
+        provider = PartialStreamFailureProvider()
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            decision_advisor=DecisionAdvisor(provider=provider),
+        )
+        runtime.store.update_config({
+            "config": {
+                "provider": {
+                    "mode": "openai-compatible",
+                    "apiFormat": "openai-chat",
+                    "stream": True,
+                    "model": "fake-chat",
+                }
+            }
+        })
+        session = _open_session(runtime, tmp_path)
+
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "recover after partial stream"}),
+            "task",
+        )
+
+        assert task["status"] == "completed"
+        assert len(provider.stream_calls) == 1
+        assert len(provider.generate_calls) == 1
+        assert any("failure_recovery" in call["prompt"] for call in provider.advisor_calls)
+        turns = runtime.store.list_provider_turns(task["id"])
+        recovery = turns[0]["failureRecovery"]
+        assert recovery["category"] == "timeout"
+        assert recovery["strategy"] == "fallback"
+        assert recovery["hasPartialOutput"] is True
+        assert recovery["advisorGate"]["reason"] == "partial_output_available"
+        assert recovery["advisorAvailable"] is True
+        assert recovery["advisorAccepted"] is True
+
+        trace_types = [
+            event["type"]
+            for event in runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        ]
+        assert "provider.stream.fallback_non_stream" in trace_types
 
     def test_auth_failure_with_advisor_does_not_call_advisor_or_retry(self, tmp_path: Any) -> None:
         provider = AdvisorRecoveryProvider(

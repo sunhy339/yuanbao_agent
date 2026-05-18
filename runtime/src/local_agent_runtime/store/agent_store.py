@@ -205,6 +205,7 @@ class AgentStoreMixin:
         snapshot_id: str | None = None,
         turn_decision: str | None = None,
         thought_summary: str | None = None,
+        failure_recovery: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = self.now()
         usage_json = json.dumps(usage, ensure_ascii=False) if usage else None
@@ -218,12 +219,21 @@ class AgentStoreMixin:
                 context_snapshot_id = ?,
                 turn_decision = ?,
                 thought_summary = ?,
-                failure_recovery_json = NULL,
+                failure_recovery_json = ?,
                 completed_at = ?
             WHERE id = ?
             """,
-            (finish_reason, usage_json, tool_call_count, snapshot_id,
-             turn_decision, thought_summary, now, turn_id),
+            (
+                finish_reason,
+                usage_json,
+                tool_call_count,
+                snapshot_id,
+                turn_decision,
+                thought_summary,
+                json.dumps(failure_recovery, ensure_ascii=False, sort_keys=True) if failure_recovery else None,
+                now,
+                turn_id,
+            ),
         )
         self._conn.commit()
         row = self._conn.execute("SELECT * FROM provider_turns WHERE id = ?", (turn_id,)).fetchone()

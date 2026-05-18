@@ -82,8 +82,19 @@ class ScriptedSseProvider:
 
 
 class ScriptedSseThenPostProvider:
-    def __init__(self, *, stream_error: Exception, post_responses: list[dict[str, Any]], stream_responses: list[list[bytes]]) -> None:
-        self._stream_error = stream_error
+    def __init__(
+        self,
+        *,
+        stream_error: Exception | list[Exception] | None,
+        post_responses: list[dict[str, Any]],
+        stream_responses: list[list[bytes]],
+    ) -> None:
+        if isinstance(stream_error, list):
+            self._stream_errors = list(stream_error)
+        elif stream_error is not None:
+            self._stream_errors = [stream_error]
+        else:
+            self._stream_errors = []
         self._post_responses = list(post_responses)
         self._stream_responses = list(stream_responses)
         self.post_requests: list[dict[str, Any]] = []
@@ -123,9 +134,8 @@ class ScriptedSseThenPostProvider:
                 "json": json.loads(kwargs["body"].decode("utf-8")),
             }
         )
-        if self._stream_error is not None:
-            error = self._stream_error
-            self._stream_error = None
+        if self._stream_errors:
+            error = self._stream_errors.pop(0)
             raise error
         if not self._stream_responses:
             raise AssertionError("Fake provider received more SSE requests than scripted")
@@ -464,26 +474,40 @@ def test_streaming_openai_compatible_e2e_smoke_applies_approved_patch(tmp_path: 
     assert provider.requests[1]["json"]["messages"][-1]["role"] == "tool"
 
 
-def test_streaming_provider_failure_falls_back_to_non_streaming_turn(tmp_path: Path) -> None:
+def test_streaming_provider_failure_without_partial_output_does_not_fallback(tmp_path: Path) -> None:
     provider = ScriptedSseThenPostProvider(
-        stream_error=ProviderAdapterError("Provider streaming response exceeded 1s before completion."),
-        post_responses=[
-            _routing_response(),
-            _tool_call_response({"files": [{"path": "todo.txt", "content": "status: new\n"}]}),
+        stream_error=[
+            ProviderAdapterError("Provider streaming response exceeded 1s before completion."),
+            ProviderAdapterError("Provider streaming response exceeded 1s before completion."),
         ],
-        stream_responses=[_streaming_final_response()],
+        post_responses=[_routing_response()],
+        stream_responses=[],
     )
     runtime = _make_runtime(tmp_path, provider)
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    session = _open_session(runtime, workspace_root)
     try:
-        final_task = _run_patch_approval_smoke(runtime, tmp_path / "workspace")
-        trace = _rpc(runtime, "trace.list", {"taskId": final_task["id"], "limit": 200})["result"]["traceEvents"]
+        task = _result(
+            _rpc(
+                runtime,
+                "message.send",
+                {"sessionId": session["id"], "content": "Change todo.txt status to new"},
+            ),
+            "task",
+        )
+        trace = _rpc(runtime, "trace.list", {"taskId": task["id"], "limit": 200})["result"]["traceEvents"]
+        turns = runtime.store.list_provider_turns(task["id"])
     finally:
         runtime.store.close()
 
+    assert task["status"] == "failed"
     assert len(provider.stream_requests) == 2
-    assert len(provider.post_requests) == 2
-    assert provider.post_requests[1]["json"]["tools"]
-    assert any(event["type"] == "provider.stream.fallback_non_stream" for event in trace)
+    assert len(provider.post_requests) == 1
+    assert turns[0]["failureRecovery"]["category"] == "timeout"
+    assert turns[0]["failureRecovery"]["strategy"] == "surface_error"
+    assert turns[0]["failureRecovery"]["advisorGate"]["reason"] == "no_partial_output"
+    assert not any(event["type"] == "provider.stream.fallback_non_stream" for event in trace)
 
 
 def test_streaming_provider_auth_failure_does_not_retry_non_streaming(tmp_path: Path) -> None:

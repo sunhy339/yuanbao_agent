@@ -106,6 +106,7 @@ class ProviderTurnMixin:
             except Exception as stream_exc:
                 from ..provider.openai_compatible import ProviderAdapterError
                 recovery = classify_provider_failure(stream_exc)
+                has_partial_output = bool(streamed_content or _stream_text_parts or final_response)
                 recovery_decision = self._provider_failure_recovery_decision(
                     session_id=session_id,
                     task=task,
@@ -115,6 +116,7 @@ class ProviderTurnMixin:
                     error=stream_exc,
                     stage="stream",
                     recovery_retry=False,
+                    has_partial_output=has_partial_output,
                 )
                 self._record_provider_failure_recovery_decision(
                     session_id=session_id,
@@ -127,12 +129,19 @@ class ProviderTurnMixin:
                 strategy = str(recovery_decision.get("strategy") or "")
                 is_retryable = (
                     isinstance(stream_exc, ProviderAdapterError)
-                    and self._provider_recovery_should_retry(recovery, strategy=strategy)
+                    and self._provider_recovery_should_retry(
+                        recovery,
+                        strategy=strategy,
+                        has_partial_output=has_partial_output,
+                    )
                 )
                 if (
                     strategy == "fallback"
                     and hasattr(self._provider, "generate")
-                    and self._can_fallback_to_non_stream(recovery)
+                    and self._can_fallback_to_non_stream(
+                        recovery,
+                        has_partial_output=has_partial_output,
+                    )
                 ):
                     logger.warning(
                         "Provider stream failed for task=%s; falling back to non-streaming request: %s",
@@ -248,8 +257,11 @@ class ProviderTurnMixin:
         return mode in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}
 
     @staticmethod
-    def _can_fallback_to_non_stream(recovery: Any) -> bool:
-        return getattr(recovery, "category", None) in {"timeout", "network", "server_error", "invalid_response"}
+    def _can_fallback_to_non_stream(recovery: Any, *, has_partial_output: bool = False) -> bool:
+        category = getattr(recovery, "category", None)
+        if category == "invalid_response":
+            return True
+        return bool(has_partial_output) and category in {"timeout", "network", "server_error"}
 
     def _request_non_streaming_provider_response(
         self,
@@ -287,6 +299,7 @@ class ProviderTurnMixin:
                 error=exc,
                 stage="non_stream",
                 recovery_retry=recovery_retry,
+                has_partial_output=False,
             )
             self._record_provider_failure_recovery_decision(
                 session_id=session_id,
@@ -299,7 +312,11 @@ class ProviderTurnMixin:
             strategy = str(recovery_decision.get("strategy") or "")
             will_retry = (
                 not recovery_retry
-                and self._provider_recovery_should_retry(recovery, strategy=strategy)
+                and self._provider_recovery_should_retry(
+                    recovery,
+                    strategy=strategy,
+                    has_partial_output=False,
+                )
             )
             self._append_provider_trace(
                 task=task,
@@ -368,7 +385,14 @@ class ProviderTurnMixin:
         error: BaseException | str,
         stage: str,
         recovery_retry: bool,
+        has_partial_output: bool = False,
     ) -> dict[str, Any]:
+        advisor_gate = self._provider_failure_advisor_gate(
+            recovery=recovery,
+            stage=stage,
+            recovery_retry=recovery_retry,
+            has_partial_output=has_partial_output,
+        )
         advice = self._provider_failure_recovery_advice(
             goal=goal,
             provider_context=provider_context,
@@ -376,22 +400,36 @@ class ProviderTurnMixin:
             error=error,
             stage=stage,
             recovery_retry=recovery_retry,
+            advisor_gate=advisor_gate,
         )
-        can_non_stream = bool(hasattr(self._provider, "generate") and self._can_fallback_to_non_stream(recovery))
+        can_non_stream = bool(
+            hasattr(self._provider, "generate")
+            and self._can_fallback_to_non_stream(
+                recovery,
+                has_partial_output=has_partial_output,
+            )
+        )
         strategy = self._provider_recovery_strategy(
             recovery=recovery,
             advice=advice,
             stage=stage,
             can_non_stream=can_non_stream,
+            has_partial_output=has_partial_output,
         )
         max_retries = 0
-        if not recovery_retry and self._provider_recovery_should_retry(recovery, strategy=strategy):
+        if not recovery_retry and self._provider_recovery_should_retry(
+            recovery,
+            strategy=strategy,
+            has_partial_output=has_partial_output,
+        ):
             max_retries = 1
         payload = {
             **recovery.to_dict(),
             "strategy": strategy,
             "maxRetries": max_retries,
             "stage": stage,
+            "hasPartialOutput": has_partial_output,
+            "advisorGate": advisor_gate,
             "advisorAvailable": advice is not None,
             "advisorAccepted": bool(getattr(advice, "accepted", False)) if advice is not None else False,
         }
@@ -414,7 +452,16 @@ class ProviderTurnMixin:
         error: BaseException | str,
         stage: str,
         recovery_retry: bool,
+        advisor_gate: dict[str, Any] | None = None,
     ) -> Any | None:
+        gate = advisor_gate or self._provider_failure_advisor_gate(
+            recovery=recovery,
+            stage=stage,
+            recovery_retry=recovery_retry,
+            has_partial_output=False,
+        )
+        if not bool(gate.get("allowAdvisor")):
+            return None
         advisor = getattr(self, "_decision_advisor", None)
         if advisor is None:
             return None
@@ -434,13 +481,19 @@ class ProviderTurnMixin:
             "runtime_limits": {
                 "maxRetriesRemaining": 0 if recovery_retry else 1,
                 "canFallbackToNonStream": bool(
-                    hasattr(self._provider, "generate") and self._can_fallback_to_non_stream(recovery)
+                    hasattr(self._provider, "generate")
+                    and self._can_fallback_to_non_stream(
+                        recovery,
+                        has_partial_output=bool(gate.get("hasPartialOutput")),
+                    )
                 ),
                 "authAndRefusalAreNonRetryable": True,
+                "advisorRequiresPartialOutputOrSemanticRepair": True,
             },
             "available_actions": self._provider_recovery_available_actions(
                 recovery=recovery,
                 stage=stage,
+                has_partial_output=bool(gate.get("hasPartialOutput")),
             ),
             "provider_request": self._provider_trace_payload(provider_context),
             "context_shape": {
@@ -448,6 +501,7 @@ class ProviderTurnMixin:
                 "toolCount": len(tools) if isinstance(tools, list) else None,
                 "step": provider_context.get("step"),
             },
+            "advisor_gate": gate,
         }
         config = provider_context.get("config")
         if isinstance(config, dict):
@@ -458,16 +512,60 @@ class ProviderTurnMixin:
             logger.debug("Failure recovery advisor failed", exc_info=True)
             return None
 
-    def _provider_recovery_available_actions(self, *, recovery: Any, stage: str) -> list[str]:
+    def _provider_failure_advisor_gate(
+        self,
+        *,
+        recovery: Any,
+        stage: str,
+        recovery_retry: bool,
+        has_partial_output: bool,
+    ) -> dict[str, Any]:
+        category = str(getattr(recovery, "category", "") or "")
+        if recovery_retry:
+            return {
+                "allowAdvisor": False,
+                "reason": "recovery_retry_already_used",
+                "hasPartialOutput": has_partial_output,
+            }
+        if category in {"auth", "refusal"} or not bool(getattr(recovery, "recoverable", False)):
+            return {
+                "allowAdvisor": False,
+                "reason": "hard_provider_failure",
+                "hasPartialOutput": has_partial_output,
+            }
+        if has_partial_output:
+            return {
+                "allowAdvisor": True,
+                "reason": "partial_output_available",
+                "hasPartialOutput": True,
+            }
+        return {
+            "allowAdvisor": False,
+            "reason": "no_partial_output",
+            "hasPartialOutput": False,
+        }
+
+    def _provider_recovery_available_actions(
+        self,
+        *,
+        recovery: Any,
+        stage: str,
+        has_partial_output: bool = False,
+    ) -> list[str]:
         category = str(getattr(recovery, "category", "") or "")
         if category in {"auth", "refusal"} or not bool(getattr(recovery, "recoverable", False)):
             return ["ask_user", "surface_error", "abort"]
         actions = ["ask_user", "surface_error", "abort"]
         if bool(getattr(recovery, "retryable", False)):
             actions.extend(["retry", "retry_with_backoff"])
-        if category in {"context_too_large", "timeout", "rate_limit", "network", "server_error", "invalid_response"}:
+        if category == "context_too_large" or (
+            has_partial_output and category in {"timeout", "rate_limit", "network", "server_error", "invalid_response"}
+        ):
             actions.append("compact_or_split_context")
-        if stage == "stream" and self._can_fallback_to_non_stream(recovery):
+        if stage == "stream" and self._can_fallback_to_non_stream(
+            recovery,
+            has_partial_output=has_partial_output,
+        ):
             actions.append("fallback")
         if category == "unsupported_format":
             actions.append("fix_provider_api_format")
@@ -482,6 +580,7 @@ class ProviderTurnMixin:
         advice: Any | None,
         stage: str,
         can_non_stream: bool,
+        has_partial_output: bool = False,
     ) -> str:
         category = str(getattr(recovery, "category", "") or "")
         if category == "auth":
@@ -501,15 +600,19 @@ class ProviderTurnMixin:
                 return proposed
             if proposed in {"fix_provider_request", "fix_provider_api_format", "inspect_provider_response"}:
                 return proposed
-            if proposed in {"retry", "retry_with_backoff"} and bool(getattr(recovery, "retryable", False)):
+            if (
+                proposed in {"retry", "retry_with_backoff"}
+                and bool(getattr(recovery, "retryable", False))
+                and has_partial_output
+            ):
                 return proposed
-            if proposed == "compact_or_split_context" and category in {
-                "context_too_large",
+            if proposed == "compact_or_split_context" and category in {"context_too_large", "invalid_response"}:
+                return proposed
+            if proposed == "compact_or_split_context" and has_partial_output and category in {
                 "timeout",
                 "rate_limit",
                 "network",
                 "server_error",
-                "invalid_response",
             }:
                 return proposed
             if proposed == "fallback" and stage == "stream" and can_non_stream:
@@ -525,7 +628,7 @@ class ProviderTurnMixin:
             return "fix_provider_request"
         if category == "invalid_response":
             return "inspect_provider_response"
-        if bool(getattr(recovery, "retryable", False)):
+        if bool(getattr(recovery, "retryable", False)) and has_partial_output:
             return "retry_with_backoff" if category in {"rate_limit", "server_error"} else "retry"
         return "surface_error"
 
@@ -581,7 +684,12 @@ class ProviderTurnMixin:
             )
 
     @staticmethod
-    def _provider_recovery_should_retry(recovery: Any, *, strategy: str | None = None) -> bool:
+    def _provider_recovery_should_retry(
+        recovery: Any,
+        *,
+        strategy: str | None = None,
+        has_partial_output: bool = False,
+    ) -> bool:
         if not bool(getattr(recovery, "recoverable", False)):
             return False
         category = str(getattr(recovery, "category", "") or "")
@@ -590,24 +698,14 @@ class ProviderTurnMixin:
         if strategy in {"fix_provider_credentials", "fix_provider_request", "fix_provider_api_format", "inspect_provider_response"}:
             return False
         if strategy in {"retry", "retry_with_backoff"}:
-            return bool(getattr(recovery, "retryable", False))
+            return bool(getattr(recovery, "retryable", False)) and has_partial_output
         if strategy == "compact_or_split_context":
-            return category in {
-                "context_too_large",
-                "timeout",
-                "rate_limit",
-                "network",
-                "server_error",
-                "invalid_response",
-            }
-        return category in {
-            "context_too_large",
-            "timeout",
-            "rate_limit",
-            "network",
-            "server_error",
-            "invalid_response",
-        }
+            return category == "context_too_large" or (
+                has_partial_output and category in {"timeout", "rate_limit", "network", "server_error", "invalid_response"}
+            )
+        return category == "context_too_large" or (
+            has_partial_output and category in {"timeout", "rate_limit", "network", "server_error", "invalid_response"}
+        )
 
     def _provider_recovery_retry_context(
         self,

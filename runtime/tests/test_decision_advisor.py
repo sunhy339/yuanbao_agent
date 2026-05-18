@@ -32,6 +32,7 @@ class TestDecisionRegistry:
         assert "decomposition" in kinds
         assert "failure_recovery" in kinds
         assert "user_takeover" in kinds
+        assert "tool_recovery" in kinds
 
     def test_get_decision_kind_returns_entry(self) -> None:
         entry = get_decision_kind("intent_mode")
@@ -56,7 +57,7 @@ class TestDecisionRegistry:
         assert "test_custom" in list_decision_kinds()
 
     def test_entry_has_trace_event(self) -> None:
-        for kind in ("intent_mode", "routing_strategy", "context_policy", "decomposition", "failure_recovery", "user_takeover"):
+        for kind in ("intent_mode", "routing_strategy", "context_policy", "decomposition", "failure_recovery", "user_takeover", "tool_recovery"):
             entry = get_decision_kind(kind)
             assert entry is not None
             assert entry.trace_event.startswith("agent.decision.")
@@ -466,6 +467,59 @@ class TestDecisionAdvisorFailureRecovery:
         assert result.accepted is False
         assert result.source == "validation_rejected"
         assert any("Invalid recovery strategy" in reason for reason in result.validation_reasons)
+
+
+class TestDecisionAdvisorToolRecovery:
+    """Tool/MCP recovery decisions use LLM action advice under runtime guardrails."""
+
+    def test_tool_recovery_accepts_mcp_refresh_action(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "action": "refresh_mcp_tools",
+                "refreshMcpTools": True,
+                "reason": "The MCP server is unavailable; refresh registered tools before retry.",
+            },
+            "confidence": 0.82,
+            "rationale": "The failure facts point to stale or disconnected MCP tooling.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "tool_recovery",
+            {
+                "goal": "Use knowledge base evidence",
+                "tool_failure": {
+                    "name": "mcp__kb__lookup",
+                    "failureKind": "mcp_server_unavailable",
+                    "summary": "MCP server kb is unavailable",
+                    "recoveryHint": "Refresh tools and retry.",
+                },
+            },
+        )
+
+        assert result.accepted is True
+        assert result.payload["action"] == "refresh_mcp_tools"
+        assert result.payload["refreshMcpTools"] is True
+
+    def test_tool_recovery_rejects_invalid_action(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {"action": "auto_delete_workspace"},
+            "confidence": 0.7,
+            "rationale": "bad action",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "tool_recovery",
+            {
+                "goal": "Recover failed tool",
+                "tool_failure": {"name": "read_file", "failureKind": "tool_failed"},
+            },
+        )
+
+        assert result.accepted is False
+        assert result.source == "validation_rejected"
+        assert any("Invalid tool recovery action" in reason for reason in result.validation_reasons)
 
 
 class TestDecisionAdvisorCompletionDecision:

@@ -34,6 +34,7 @@ from ..store.sqlite_store import SQLiteStore
 from ..tools.registry import BUILTIN_TOOL_SCHEMAS
 from ..observability.tracer import Tracer
 from ..execution.tool_pipeline import ToolExecutionMixin
+from ..execution.tool_recovery import ToolRecoveryMixin
 from ..state.task_state_machine import TaskStateMachine
 from .approval_flow import ApprovalFlowMixin
 from .child_task import ChildTaskMixin
@@ -65,6 +66,7 @@ class Orchestrator(
     ApprovalFlowMixin,
     ChildTaskMixin,
     ConfigFlowMixin,
+    ToolRecoveryMixin,
     ToolExecutionMixin,
     McpFlowMixin,
     MessageExecutionMixin,

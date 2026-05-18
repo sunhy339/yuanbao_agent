@@ -44,6 +44,7 @@ REQUIRED_FIELDS_BY_KIND: dict[str, list[str]] = {
     "completion_decision": ["is_complete"],
     "product_surface_decision": ["surface_type"],
     "user_takeover": ["state"],
+    "tool_recovery": ["action"],
 }
 
 
@@ -322,6 +323,10 @@ def validate_proposal(kind: str, payload: dict[str, Any]) -> list[str]:
     if kind == "user_takeover":
         reasons.extend(validate_user_takeover(payload))
 
+    # Tool/MCP recovery validator
+    if kind == "tool_recovery":
+        reasons.extend(validate_tool_recovery(payload))
+
     # Skill policy validator
     if kind == "skill_policy":
         reasons.extend(validate_skill_availability(payload))
@@ -453,6 +458,45 @@ def validate_user_takeover(payload: dict[str, Any]) -> list[str]:
         value = payload.get(field)
         if value is not None and not isinstance(value, str):
             reasons.append(f"{field} must be a string when provided")
+    return reasons
+
+
+def validate_tool_recovery(payload: dict[str, Any]) -> list[str]:
+    """Validate advisor-selected tool recovery without executing it."""
+    reasons: list[str] = []
+    valid_actions = {
+        "retry_same",
+        "retry_narrower",
+        "refresh_mcp_tools",
+        "request_permission",
+        "use_partial_evidence",
+        "fallback_tool",
+        "ask_user",
+        "skip_with_risk",
+        "abort",
+    }
+    action = payload.get("action")
+    if action not in valid_actions:
+        reasons.append(f"Invalid tool recovery action: {action!r}")
+    for field in ("reason", "userMessage", "risk"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            reasons.append(f"{field} must be a string when provided")
+    for field in ("retryWithNarrowerArgs", "usePartialEvidence", "requestPermission", "refreshMcpTools"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, bool):
+            reasons.append(f"{field} must be a boolean when provided")
+    fallback_tool = payload.get("fallbackTool")
+    if fallback_tool is not None:
+        if not isinstance(fallback_tool, dict):
+            reasons.append("fallbackTool must be an object when provided")
+        else:
+            name = fallback_tool.get("name") or fallback_tool.get("toolName")
+            if not isinstance(name, str) or not name.strip():
+                reasons.append("fallbackTool.name must be a non-empty string")
+            arguments = fallback_tool.get("arguments", {})
+            if arguments is not None and not isinstance(arguments, dict):
+                reasons.append("fallbackTool.arguments must be an object when provided")
     return reasons
 
 

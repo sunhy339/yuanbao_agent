@@ -15,13 +15,10 @@ Design target:
 from __future__ import annotations
 
 import json
-import logging
 import re as _re
 from typing import Any
 
 from ..services.worker_budget import WorkerBudget
-
-logger = logging.getLogger(__name__)
 
 _WORKTREE_BOUND_TOOLS = {
     "list_dir",
@@ -271,6 +268,14 @@ class ToolExecutionMixin:
             return tool_result
 
         if result.get("status") == "blocked":
+            failure = self._annotate_failed_tool_recovery(
+                session_id=session_id,
+                task=task,
+                tool_call_id=tool_call_id,
+                tool_name=tool_spec["name"],
+                arguments=tool_arguments,
+                result=result,
+            )
             self._publish(
                 session_id=session_id,
                 task=task,
@@ -279,6 +284,9 @@ class ToolExecutionMixin:
                     "toolCallId": tool_call_id,
                     "toolName": tool_spec["name"],
                     "reason": result.get("error", "Blocked by permission policy."),
+                    "failureKind": failure.get("failureKind"),
+                    "recoveryHint": failure.get("recoveryHint"),
+                    "recoveryDecision": result.get("recoveryDecision"),
                 },
             )
             return {
@@ -349,6 +357,14 @@ class ToolExecutionMixin:
             return tool_result
 
         if self._is_patch_validation_failure(tool_spec["name"], result):
+            self._annotate_failed_tool_recovery(
+                session_id=session_id,
+                task=task,
+                tool_call_id=tool_call_id,
+                tool_name=tool_spec["name"],
+                arguments=tool_arguments,
+                result=result,
+            )
             tool_result = {
                 "id": tool_call_id,
                 "name": tool_spec["name"],
@@ -369,6 +385,14 @@ class ToolExecutionMixin:
             return tool_result
 
         if self._tool_failed(tool_spec["name"], result):
+            failure = self._annotate_failed_tool_recovery(
+                session_id=session_id,
+                task=task,
+                tool_call_id=tool_call_id,
+                tool_name=tool_spec["name"],
+                arguments=tool_arguments,
+                result=result,
+            )
             tool_result = {
                 "id": tool_call_id,
                 "name": tool_spec["name"],
@@ -397,6 +421,9 @@ class ToolExecutionMixin:
                     "serverId": mcp_server_id,
                     "error": result.get("error", f"Tool returned status: {result.get('status')}"),
                     "timeout": is_timeout,
+                    "failureKind": failure.get("failureKind"),
+                    "recoveryHint": failure.get("recoveryHint"),
+                    "recoveryDecision": result.get("recoveryDecision"),
                 })
             return tool_result
 

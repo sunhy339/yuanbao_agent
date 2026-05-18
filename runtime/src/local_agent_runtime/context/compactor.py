@@ -19,6 +19,7 @@ from typing import Any, Protocol
 
 from ..store.sqlite_store import SQLiteStore
 from .token_budget import estimate_tokens
+from ..tools.failure_analysis import build_tool_failure_record
 
 
 # ---------------------------------------------------------------------------
@@ -525,66 +526,20 @@ class ContextCompactor:
                 or "Tool failed."
             )
             summary_text = str(summary)[:500]
-            failure_kind = ContextCompactor._handoff_tool_failure_kind(
+            failure = build_tool_failure_record(
                 tool_name=tool_name,
+                payload=payload,
                 status=status,
                 summary=summary_text,
-                payload=payload,
             )
             key = (tool_name, status, summary_text[:200])
             if key in seen:
                 continue
             seen.add(key)
-            failures.append({
-                "name": tool_name,
-                "status": status or "failed",
-                "summary": summary_text,
-                "failureKind": failure_kind,
-                "recoveryHint": ContextCompactor._handoff_tool_recovery_hint(
-                    tool_name=tool_name,
-                    failure_kind=failure_kind,
-                ),
-            })
+            if isinstance(payload.get("recoveryDecision"), dict):
+                failure["recoveryDecision"] = payload["recoveryDecision"]
+            failures.append(failure)
         return failures
-
-    @staticmethod
-    def _handoff_tool_failure_kind(
-        *,
-        tool_name: str,
-        status: str,
-        summary: str,
-        payload: dict[str, Any],
-    ) -> str:
-        text = " ".join([tool_name, status, summary]).casefold()
-        if payload.get("timeout") is True or "timeout" in text or "timed out" in text:
-            return "timeout"
-        if status.casefold() in {"blocked", "approval_required"} or any(
-            token in text for token in ("permission", "denied", "blocked", "not allowed", "allowlist")
-        ):
-            return "permission_denied"
-        if status.casefold() == "partial" or "partial" in text or "incomplete" in text:
-            return "partial_response"
-        if tool_name.startswith("mcp__") and any(
-            token in text for token in ("unavailable", "not connected", "connection", "server", "transport")
-        ):
-            return "mcp_server_unavailable"
-        if tool_name.startswith("mcp__"):
-            return "mcp_tool_failed"
-        return "tool_failed"
-
-    @staticmethod
-    def _handoff_tool_recovery_hint(*, tool_name: str, failure_kind: str) -> str:
-        if failure_kind == "mcp_server_unavailable":
-            return f"Check MCP server configuration/connection, refresh tools, then retry {tool_name}."
-        if failure_kind == "permission_denied":
-            return f"Adjust tool, MCP, or skill policy, or choose an allowed fallback before retrying {tool_name}."
-        if failure_kind == "partial_response":
-            return f"Use the partial result if sufficient; otherwise retry {tool_name} with narrower arguments."
-        if failure_kind == "timeout":
-            return f"Retry {tool_name} with a smaller request or longer timeout if policy allows."
-        if failure_kind == "mcp_tool_failed":
-            return f"Inspect MCP tool error details and retry {tool_name} only after the server/tool state is healthy."
-        return f"Inspect the tool error and choose a safe fallback before retrying {tool_name}."
 
     @staticmethod
     def _handoff_risks(task: dict[str, Any] | None) -> list[str]:

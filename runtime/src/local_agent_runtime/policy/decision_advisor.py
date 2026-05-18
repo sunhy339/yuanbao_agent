@@ -196,6 +196,28 @@ register_decision(DecisionKindEntry(
     fallback="use conservative user takeover classifier",
     trace_event="agent.decision.user_takeover",
 ))
+register_decision(DecisionKindEntry(
+    kind="tool_recovery",
+    description=(
+        "Choose a bounded recovery action for a failed tool or MCP call from "
+        "structured failure facts. The runtime will not execute the action "
+        "directly; permissions, approvals, tool policy, and state gates still apply."
+    ),
+    required_input_fields=("goal", "tool_failure"),
+    allowed_proposal_schema=(
+        "action",
+        "reason",
+        "userMessage",
+        "retryWithNarrowerArgs",
+        "usePartialEvidence",
+        "fallbackTool",
+        "requestPermission",
+        "refreshMcpTools",
+        "risk",
+    ),
+    fallback="use structured recovery hint and continue under normal tool policy",
+    trace_event="agent.decision.tool_recovery",
+))
 
 
 # ---------------------------------------------------------------------------

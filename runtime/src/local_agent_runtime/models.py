@@ -61,6 +61,7 @@ ProposalKind = Literal[
     "completion_decision",
     "product_surface_decision",
     "user_takeover",
+    "tool_recovery",
 ]
 
 ProposalStatus = Literal["pending", "accepted", "rejected", "applied"]

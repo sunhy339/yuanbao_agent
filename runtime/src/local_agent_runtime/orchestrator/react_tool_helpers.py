@@ -15,7 +15,7 @@ class ReactToolHelpersMixin:
 
     def _tool_failed(self, tool_name: str, result: dict[str, Any]) -> bool:
         status = result.get("status")
-        return status in {"failed", "timeout", "killed"} or result.get("ok") is False
+        return status in {"failed", "error", "timeout", "killed", "partial"} or result.get("ok") is False
 
     def _is_patch_validation_failure(self, tool_name: str, result: dict[str, Any]) -> bool:
         return tool_name == "apply_patch" and result.get("status") == "validation_failed"

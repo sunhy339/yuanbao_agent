@@ -1077,6 +1077,78 @@ class TestCompletionHardGate:
         assert review["decision"] == "approved"
         assert completed["structuredResult"]["completionEvidence"]["reviewConclusion"]["decision"] == "approved"
 
+    def test_completion_audit_includes_approval_conclusions_for_advisor_and_trace(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, Any]]] = []
+
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                self.calls.append((kind, input_context))
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="Audit-aware completion decision.",
+                    fallback_reason=None,
+                    proposal_id=f"{kind}_{len(self.calls)}",
+                    confidence=0.8,
+                    payload={
+                        "is_complete": True,
+                        "why_complete": "Completion review and audit facts are available.",
+                    },
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion audit")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="modify the implementation",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+
+        waiting = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="I changed the implementation.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+        approval_id = waiting["structuredResult"]["completionGate"]["approvalId"]
+
+        result = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
+
+        assert result["task"]["status"] == "completed"
+        completion_calls = [context for kind, context in advisor.calls if kind == "completion_decision"]
+        assert len(completion_calls) == 2
+        final_audit = completion_calls[-1]["completion_audit"]
+        assert final_audit["approvalCounts"] == {"total": 1, "approved": 1, "rejected": 0, "pending": 0}
+        assert final_audit["reviewConclusion"]["approvalId"] == approval_id
+        assert final_audit["reviewConclusion"]["decision"] == "approved"
+        assert final_audit["approvals"][0]["kind"] == "completion_review"
+        assert final_audit["approvals"][0]["decision"] == "approved"
+
+        completed = store.get_task({"taskId": task["id"]})["task"]
+        evidence_audit = completed["structuredResult"]["completionEvidence"]["audit"]
+        assert evidence_audit["approvalCounts"]["approved"] == 1
+        assert evidence_audit["completionAdvisor"]["proposalRecordId"]
+        completion_event = [
+            event for event in captured_events
+            if event.type == "agent.decision.completion" and event.payload.get("decision") == "completed"
+        ][-1]
+        assert completion_event.payload["audit"]["approvalCounts"]["approved"] == 1
+        assert completion_event.payload["audit"]["completionAdvisor"]["proposalRecordId"]
+        proposal = store.list_proposals({
+            "taskId": task["id"],
+            "kind": "completion_decision",
+        })["proposals"][0]
+        assert proposal["source"]["completionAudit"]["approvalCounts"]["approved"] == 1
+
     def test_swarm_task_summary_only_requires_completion_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

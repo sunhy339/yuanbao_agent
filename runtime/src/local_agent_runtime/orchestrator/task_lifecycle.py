@@ -81,6 +81,12 @@ class TaskLifecycleMixin:
         completion_review = self._completion_review_conclusion(context or {})
         if completion_review:
             completion_evidence["reviewConclusion"] = completion_review
+        completion_audit = self._completion_audit_context(
+            task=task,
+            completion_evidence=completion_evidence,
+        )
+        if completion_audit:
+            completion_evidence["audit"] = completion_audit
 
         # --- Reflection phase ---
         reflection_data = None
@@ -128,8 +134,15 @@ class TaskLifecycleMixin:
                 task=task,
                 summary=final_summary,
                 completion_advice=completion_advice,
+                completion_evidence=completion_evidence,
             )
             completion_evidence["completionAdvisor"] = completion_advice
+            refreshed_audit = self._completion_audit_context(
+                task=task,
+                completion_evidence=completion_evidence,
+            )
+            if refreshed_audit:
+                completion_evidence["audit"] = refreshed_audit
         # Build structured result from task fields
         structured_result = {
             "summary": final_summary,
@@ -240,6 +253,13 @@ class TaskLifecycleMixin:
                 completion_payload["advisorRationale"] = completion_advice["rationale"]
             if completion_advice.get("fallback_reason"):
                 completion_payload["advisorFallbackReason"] = completion_advice["fallback_reason"]
+        final_completion_audit = (
+            completion_evidence.get("audit")
+            if isinstance(completion_evidence.get("audit"), dict)
+            else completion_audit
+        )
+        if final_completion_audit:
+            completion_payload["audit"] = final_completion_audit
         self._publish(
             session_id=session_id,
             task=runtime_task,
@@ -910,6 +930,115 @@ class TaskLifecycleMixin:
         if gate_status:
             conclusion["gateStatus"] = gate_status
         return {key: value for key, value in conclusion.items() if value not in ("", None)}
+
+    def _completion_audit_context(
+        self,
+        *,
+        task: dict[str, Any],
+        completion_evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        approvals = self._completion_approval_audit(task.get("id"))
+        review_conclusion = (
+            completion_evidence.get("reviewConclusion")
+            if isinstance(completion_evidence.get("reviewConclusion"), dict)
+            else {}
+        )
+        audit: dict[str, Any] = {
+            "approvals": approvals,
+            "approvalCounts": self._completion_approval_counts(approvals),
+        }
+        if review_conclusion:
+            audit["reviewConclusion"] = review_conclusion
+        if completion_evidence.get("completionAdvisor"):
+            advisor = completion_evidence["completionAdvisor"]
+            if isinstance(advisor, dict):
+                audit["completionAdvisor"] = {
+                    key: advisor.get(key)
+                    for key in ("accepted", "source", "confidence", "proposalRecordId", "fallback_reason")
+                    if advisor.get(key) not in (None, "", [])
+                }
+        return {key: value for key, value in audit.items() if value not in (None, "", [], {})}
+
+    def _completion_approval_audit(self, task_id: Any) -> list[dict[str, Any]]:
+        if not isinstance(task_id, str) or not task_id.strip():
+            return []
+        try:
+            rows = self._store._conn.execute(  # noqa: SLF001
+                "SELECT * FROM approvals WHERE task_id = ? ORDER BY created_at ASC",
+                (task_id,),
+            ).fetchall()
+            approvals = [self._store._serialize_approval(dict(row)) for row in rows]  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to load approvals for completion audit", exc_info=True)
+            return []
+        result: list[dict[str, Any]] = []
+        for approval in approvals:
+            item = self._completion_approval_audit_item(approval)
+            if item:
+                result.append(item)
+        return result[-20:]
+
+    def _completion_approval_audit_item(self, approval: dict[str, Any]) -> dict[str, Any]:
+        try:
+            request = json.loads(approval.get("requestJson") or "{}")
+        except json.JSONDecodeError:
+            request = {}
+        if not isinstance(request, dict):
+            request = {}
+        kind = str(approval.get("kind") or request.get("kind") or "").strip()
+        item: dict[str, Any] = {
+            "approvalId": approval.get("id"),
+            "kind": kind,
+            "decision": approval.get("decision") or "pending",
+            "decidedBy": approval.get("decidedBy"),
+            "createdAt": approval.get("createdAt"),
+            "decidedAt": approval.get("decidedAt"),
+        }
+        for key in ("reason", "risk", "gateStatus", "source"):
+            value = request.get(key)
+            if isinstance(value, str) and value.strip():
+                item[key] = value.strip()
+        if kind == "completion_review":
+            evidence = request.get("completionEvidence") if isinstance(request.get("completionEvidence"), dict) else {}
+            item["evidenceLevel"] = evidence.get("evidenceLevel")
+            structured = request.get("structuredResult") if isinstance(request.get("structuredResult"), dict) else {}
+            gate = structured.get("completionGate") if isinstance(structured.get("completionGate"), dict) else {}
+            item["gateStatus"] = item.get("gateStatus") or gate.get("status")
+            item["summary"] = str(request.get("summary") or "").strip()[:500]
+        elif kind == "worktree_merge":
+            review = request.get("review") if isinstance(request.get("review"), dict) else {}
+            item["reviewStatus"] = review.get("status") or request.get("reviewStatus")
+            item["reviewer"] = review.get("reviewer") or request.get("reviewer")
+            item["reviewerSummary"] = review.get("summary") or request.get("reviewerSummary")
+            item["verificationStatus"] = request.get("verificationStatus")
+            item["targetBranch"] = request.get("targetBranch")
+        elif kind in {"run_command", "advisor_tool"}:
+            advisor_evidence = request.get("advisorEvidence") if isinstance(request.get("advisorEvidence"), dict) else {}
+            if advisor_evidence:
+                item["advisorEvidence"] = {
+                    key: advisor_evidence.get(key)
+                    for key in ("summary", "requestKind", "target", "surfaceType", "proposalRecordId")
+                    if advisor_evidence.get(key) not in (None, "", [])
+                }
+        return {key: value for key, value in item.items() if value not in (None, "", [], {})}
+
+    @staticmethod
+    def _completion_approval_counts(approvals: list[dict[str, Any]]) -> dict[str, int]:
+        counts = {
+            "total": len(approvals),
+            "approved": 0,
+            "rejected": 0,
+            "pending": 0,
+        }
+        for approval in approvals:
+            decision = str(approval.get("decision") or "pending").strip().lower()
+            if decision == "approved":
+                counts["approved"] += 1
+            elif decision == "rejected":
+                counts["rejected"] += 1
+            else:
+                counts["pending"] += 1
+        return counts
 
     def _is_write_or_verification_task(self, *, task: dict[str, Any], context: dict[str, Any]) -> bool:
         routing = task.get("routing") if isinstance(task.get("routing"), dict) else {}
@@ -2328,6 +2457,7 @@ class TaskLifecycleMixin:
                 "summary": summary[:2000],
                 "acceptance_criteria": task.get("acceptanceCriteria") or [],
                 "completion_evidence": evidence,
+                "completion_audit": evidence.get("audit") or {},
                 "product_advisories": evidence.get("productAdvisories") or [],
                 "changed_files": [
                     f.get("path", "") for f in (task.get("changedFiles") or [])
@@ -2360,6 +2490,7 @@ class TaskLifecycleMixin:
         task: dict[str, Any],
         summary: str,
         completion_advice: dict[str, Any],
+        completion_evidence: dict[str, Any] | None = None,
     ) -> str | None:
         try:
             payload = completion_advice.get("payload")
@@ -2376,8 +2507,21 @@ class TaskLifecycleMixin:
                 source["validationReasons"] = completion_advice["validation_reasons"]
             if completion_advice.get("model_id"):
                 source["model_id"] = completion_advice["model_id"]
+            if isinstance(completion_evidence, dict) and isinstance(completion_evidence.get("audit"), dict):
+                source["completionAudit"] = completion_evidence["audit"]
             goal = str(task.get("goal") or "")
-            input_summary = f"goal: {goal}\nsummary: {summary}"[:500]
+            audit = completion_evidence.get("audit") if isinstance(completion_evidence, dict) else {}
+            audit_counts = audit.get("approvalCounts") if isinstance(audit, dict) else {}
+            audit_summary = ""
+            if isinstance(audit_counts, dict) and audit_counts:
+                audit_summary = (
+                    "\napprovals: "
+                    f"total={audit_counts.get('total', 0)} "
+                    f"approved={audit_counts.get('approved', 0)} "
+                    f"rejected={audit_counts.get('rejected', 0)} "
+                    f"pending={audit_counts.get('pending', 0)}"
+                )
+            input_summary = f"goal: {goal}\nsummary: {summary}{audit_summary}"[:500]
             record = self._store.create_proposal({
                 "kind": "completion_decision",
                 "sessionId": session_id,

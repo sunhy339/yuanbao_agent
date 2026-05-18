@@ -298,39 +298,99 @@ class Orchestrator(
         provider_turn_id: str | None,
         failure_recovery: dict[str, Any] | None = None,
         error: BaseException | str | None = None,
+        advice: Any | None = None,
     ) -> None:
         try:
             recovery = failure_recovery or classify_provider_failure(error or "").to_dict()
-            record = self._store.create_proposal({
-                "kind": "failure_recovery",
-                "sessionId": session_id,
-                "taskId": task["id"],
-                "proposal": {
-                    "strategy": self._failure_recovery_proposal_strategy(recovery),
-                    "maxRetries": 1 if recovery.get("retryable") else 0,
-                    "retryable": bool(recovery.get("retryable")),
-                    "recoverable": bool(recovery.get("recoverable")),
-                    "category": recovery.get("category"),
-                    "httpStatus": recovery.get("httpStatus"),
-                },
-                "source": {
-                    "type": "runtime_classifier",
+            max_retries = recovery.get("maxRetries")
+            if not isinstance(max_retries, int):
+                max_retries = 1 if recovery.get("retryable") else 0
+            runtime_proposal = {
+                "strategy": self._failure_recovery_proposal_strategy(recovery),
+                "maxRetries": max_retries,
+                "retryable": bool(recovery.get("retryable")),
+                "recoverable": bool(recovery.get("recoverable")),
+                "category": recovery.get("category"),
+                "httpStatus": recovery.get("httpStatus"),
+            }
+
+            def _create_and_validate(
+                *,
+                proposal: dict[str, Any],
+                source: dict[str, Any],
+                status: str,
+                reasons: list[str],
+                model_id: str | None = None,
+            ) -> None:
+                record = self._store.create_proposal({
+                    "kind": "failure_recovery",
+                    "sessionId": session_id,
+                    "taskId": task["id"],
+                    "proposal": proposal,
+                    "source": source,
+                    "inputSummary": str(error or recovery.get("userMessage") or "")[:500],
+                    "modelId": model_id,
+                    "turnId": provider_turn_id,
+                })
+                self._store.validate_proposal({
+                    "proposalId": record["proposal"]["id"],
+                    "status": status,
+                    "reasons": reasons,
+                })
+
+            if advice is not None:
+                advice_payload = getattr(advice, "payload", None)
+                if isinstance(advice_payload, dict) and advice_payload:
+                    proposal = dict(advice_payload)
+                    proposal.setdefault("strategy", runtime_proposal["strategy"])
+                    proposal.update({
+                        "category": recovery.get("category"),
+                        "httpStatus": recovery.get("httpStatus"),
+                        "runtimeStrategy": runtime_proposal["strategy"],
+                    })
+                    source = {
+                        "type": getattr(advice, "source", "llm"),
+                        "confidence": getattr(advice, "confidence", None),
+                        "rationale": getattr(advice, "rationale", None),
+                        "fallbackReason": getattr(advice, "fallback_reason", None),
+                        "runtimeClassifier": {
+                            "category": recovery.get("category"),
+                            "reason": recovery.get("reason"),
+                            "userMessage": recovery.get("userMessage"),
+                        },
+                    }
+                    status = "accepted" if bool(getattr(advice, "accepted", False)) else "rejected"
+                    reasons = [] if status == "accepted" else (
+                        list(getattr(advice, "validation_reasons", None) or [])
+                        or [str(getattr(advice, "fallback_reason", None) or "advisor rejected")]
+                    )
+                    _create_and_validate(
+                        proposal=proposal,
+                        source=source,
+                        status=status,
+                        reasons=reasons,
+                        model_id=getattr(advice, "model_id", None),
+                    )
+
+            _create_and_validate(
+                proposal=runtime_proposal,
+                source={
+                    "type": "runtime_bounded_recovery" if advice is not None else "runtime_classifier",
                     "reason": recovery.get("reason"),
                     "userMessage": recovery.get("userMessage"),
+                    "advisorAccepted": bool(getattr(advice, "accepted", False)) if advice is not None else False,
                 },
-                "inputSummary": str(error or recovery.get("userMessage") or "")[:500],
-                "turnId": provider_turn_id,
-            })
-            self._store.validate_proposal({
-                "proposalId": record["proposal"]["id"],
-                "status": "accepted",
-                "reasons": [],
-            })
+                status="accepted",
+                reasons=[],
+            )
         except Exception:  # noqa: BLE001
             logger.debug("Failed to record failure recovery proposal", exc_info=True)
 
     @staticmethod
     def _failure_recovery_proposal_strategy(recovery: dict[str, Any]) -> str:
+        strategy = recovery.get("strategy")
+        if isinstance(strategy, str) and strategy.strip():
+            return strategy.strip()
         action = str(recovery.get("recommendedAction") or "")
         if action.startswith("retry"):
             return "retry"

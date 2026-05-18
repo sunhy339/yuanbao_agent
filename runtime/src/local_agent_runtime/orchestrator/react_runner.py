@@ -252,6 +252,7 @@ class ReactRunnerMixin:
                 tool_policy_decision=tool_policy_decision.to_dict(),
                 role_snapshot=tool_policy_decision.role_snapshot,
             )
+            provider_context["_provider_turn_id"] = provider_turn["id"]
             self._fire_hooks("before_provider_turn", session_id, task, extra_context={"turnIndex": steps, "providerTurnId": provider_turn["id"]})
             # --- ContextSnapshot: capture what the model will see ---
             snapshot_meta = (context.get("_build_result") or context).get("snapshot_metadata", {}) or {}
@@ -288,7 +289,12 @@ class ReactRunnerMixin:
                     budget=budget,
                 )
             except Exception as exc:
-                failure_recovery = classify_provider_failure(exc).to_dict()
+                recorded_recovery = provider_context.get("_provider_failure_recovery_payload")
+                failure_recovery = (
+                    recorded_recovery
+                    if isinstance(recorded_recovery, dict)
+                    else classify_provider_failure(exc).to_dict()
+                )
                 self._store.fail_provider_turn(
                     turn_id=provider_turn["id"],
                     error_summary=str(exc)[:500],
@@ -305,13 +311,14 @@ class ReactRunnerMixin:
                     },
                     visibility="panel",
                 )
-                self._record_failure_recovery_proposal(
-                    session_id=session_id,
-                    task=task,
-                    provider_turn_id=provider_turn["id"],
-                    failure_recovery=failure_recovery,
-                    error=str(exc),
-                )
+                if not provider_context.get("_provider_failure_recovery_recorded"):
+                    self._record_failure_recovery_proposal(
+                        session_id=session_id,
+                        task=task,
+                        provider_turn_id=provider_turn["id"],
+                        failure_recovery=failure_recovery,
+                        error=str(exc),
+                    )
                 raise
             parsed = self._parse_provider_response(
                 response,

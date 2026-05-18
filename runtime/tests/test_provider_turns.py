@@ -21,6 +21,8 @@ import pytest
 
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestrator.service import Orchestrator
+from local_agent_runtime.policy.decision_advisor import DecisionAdvisor
+from local_agent_runtime.provider.openai_compatible import ProviderAdapterError
 from local_agent_runtime.router.meta_router import MetaRouter
 from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.store.sqlite_store import SQLiteStore
@@ -58,12 +60,64 @@ class FailingProvider:
         raise self._error
 
 
+class AdvisorRecoveryProvider:
+    """Provider that can fail main turns while answering advisor prompts."""
+
+    def __init__(self, *, advisor_response: str | None = None, error: Exception | None = None) -> None:
+        self.advisor_response = advisor_response or json.dumps({
+            "proposal": {
+                "strategy": "compact_or_split_context",
+                "maxRetries": 1,
+                "reason": "Compact context and retry once.",
+            },
+            "confidence": 0.9,
+            "rationale": "The provider failure is recoverable with smaller context.",
+        })
+        self.error = error or ProviderAdapterError("context_length_exceeded: maximum context length")
+        self.main_calls: list[dict[str, Any]] = []
+        self.advisor_calls: list[dict[str, Any]] = []
+        self.other_advisor_calls: list[dict[str, Any]] = []
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        if "runtime decision advisor" in prompt:
+            if "failure_recovery" in prompt:
+                self.advisor_calls.append({"prompt": prompt, "context": context})
+                return {"message": self.advisor_response}
+            self.other_advisor_calls.append({"prompt": prompt, "context": context})
+            if "completion_decision" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {"is_complete": True, "why_complete": "Recovered response completed the task."},
+                    "confidence": 0.8,
+                    "rationale": "The task produced a final answer after recovery.",
+                })}
+            if "product_surface_decision" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {"surface_type": "backend_flow", "recommended_verification": []},
+                    "confidence": 0.6,
+                    "rationale": "This test is focused on provider recovery flow.",
+                })}
+            return {"message": json.dumps({
+                "proposal": {"mode": "task"},
+                "confidence": 0.5,
+                "rationale": "Generic advisor fallback for the test provider.",
+            })}
+        self.main_calls.append({"prompt": prompt, "context": context})
+        if len(self.main_calls) == 1:
+            raise self.error
+        return {"final": "Recovered after provider failure."}
+
+
 def _call_result(response: dict[str, Any], key: str) -> dict[str, Any]:
     assert "result" in response, f"Expected 'result' in response, got: {response}"
     return response["result"][key]
 
 
-def _make_runtime(tmp_path: Any, provider: Any, tools: dict[str, Any] | None = None) -> SimpleNamespace:
+def _make_runtime(
+    tmp_path: Any,
+    provider: Any,
+    tools: dict[str, Any] | None = None,
+    decision_advisor: DecisionAdvisor | None = None,
+) -> SimpleNamespace:
     event_bus = EventBus()
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     tool_registry = ToolRegistry(tools or {})
@@ -73,6 +127,7 @@ def _make_runtime(tmp_path: Any, provider: Any, tools: dict[str, Any] | None = N
         tool_registry=tool_registry,
         provider=provider,
         meta_router=MetaRouter(provider=None),
+        decision_advisor=decision_advisor,
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
     events: list[dict[str, Any]] = []
@@ -737,6 +792,103 @@ class TestE2EProviderFailure:
 # ═══════════════════════════════════════════════════════════════════════════
 # G. E2E: Multiple turns — snapshot tracks incremental context
 # ═══════════════════════════════════════════════════════════════════════════
+
+class TestAdvisorGuidedProviderRecovery:
+    """Advisor-guided provider recovery should remain bounded by runtime guardrails."""
+
+    def test_advisor_guided_failure_recovery_retries_with_bounded_context(self, tmp_path: Any) -> None:
+        provider = AdvisorRecoveryProvider()
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            decision_advisor=DecisionAdvisor(provider=provider),
+        )
+        session = _open_session(runtime, tmp_path)
+
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "recover from context failure"}),
+            "task",
+        )
+
+        assert task["status"] == "completed"
+        assert len(provider.main_calls) == 2
+        assert len(provider.advisor_calls) == 1
+        retry_meta = provider.main_calls[1]["context"]["_provider_recovery_retry"]
+        assert retry_meta["strategy"] == "compact_or_split_context"
+        assert retry_meta["advisorAccepted"] is True
+
+        proposals = runtime.store.list_proposals({
+            "taskId": task["id"],
+            "kind": "failure_recovery",
+        })["proposals"]
+        assert any(p["source"].get("type") == "llm" for p in proposals)
+        assert any(p["source"].get("type") == "runtime_bounded_recovery" for p in proposals)
+        llm_proposal = next(p for p in proposals if p["source"].get("type") == "llm")
+        assert llm_proposal["proposal"]["strategy"] == "compact_or_split_context"
+        assert llm_proposal["proposal"]["runtimeStrategy"] == "compact_or_split_context"
+
+        trace_types = [
+            event["type"]
+            for event in runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        ]
+        assert "provider.failure.recovery_decision" in trace_types
+        assert "provider.failure.recovery_retry" in trace_types
+
+    def test_malformed_failure_recovery_advisor_falls_back_to_runtime_strategy(self, tmp_path: Any) -> None:
+        provider = AdvisorRecoveryProvider(advisor_response="not-json")
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            decision_advisor=DecisionAdvisor(provider=provider),
+        )
+        session = _open_session(runtime, tmp_path)
+
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "recover from malformed advisor"}),
+            "task",
+        )
+
+        assert task["status"] == "completed"
+        assert len(provider.main_calls) == 2
+        assert len(provider.advisor_calls) == 1
+
+        proposals = runtime.store.list_proposals({
+            "taskId": task["id"],
+            "kind": "failure_recovery",
+        })["proposals"]
+        assert not any(p["source"].get("type") == "llm" for p in proposals)
+        bounded = next(p for p in proposals if p["source"].get("type") == "runtime_bounded_recovery")
+        assert bounded["proposal"]["strategy"] == "compact_or_split_context"
+        assert bounded["source"]["advisorAccepted"] is False
+
+    def test_auth_failure_with_advisor_does_not_call_advisor_or_retry(self, tmp_path: Any) -> None:
+        provider = AdvisorRecoveryProvider(
+            error=ProviderAdapterError("HTTP 401 Unauthorized: invalid api key")
+        )
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            decision_advisor=DecisionAdvisor(provider=provider),
+        )
+        session = _open_session(runtime, tmp_path)
+
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "trigger auth error"}),
+            "task",
+        )
+
+        assert task["status"] == "failed"
+        assert len(provider.main_calls) == 1
+        assert len(provider.advisor_calls) == 0
+        assert task["structuredResult"]["failureRecovery"]["category"] == "auth"
+
+        proposals = runtime.store.list_proposals({
+            "taskId": task["id"],
+            "kind": "failure_recovery",
+        })["proposals"]
+        assert len(proposals) == 1
+        assert proposals[0]["source"]["type"] == "runtime_classifier"
+        assert proposals[0]["proposal"]["maxRetries"] == 0
 
 
 class TestE2ESnapshotIncremental:

@@ -164,6 +164,26 @@ register_decision(DecisionKindEntry(
     fallback="use objective completion evidence only",
     trace_event="agent.decision.product_surface",
 ))
+register_decision(DecisionKindEntry(
+    kind="failure_recovery",
+    description=(
+        "Suggest how to recover from a provider failure using the supplied failure "
+        "facts and runtime limits. The runtime will still clamp auth/refusal, retry "
+        "budgets, provider availability, and other hard boundaries."
+    ),
+    required_input_fields=("goal", "provider_failure"),
+    allowed_proposal_schema=(
+        "strategy",
+        "maxRetries",
+        "retryDelayMs",
+        "reason",
+        "userMessage",
+        "contextStrategy",
+        "fallbackProviderId",
+    ),
+    fallback="use conservative provider failure classifier",
+    trace_event="agent.decision.failure_recovery",
+))
 
 
 # ---------------------------------------------------------------------------

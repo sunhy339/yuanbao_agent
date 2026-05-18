@@ -30,6 +30,7 @@ class TestDecisionRegistry:
         assert "routing_strategy" in kinds
         assert "context_policy" in kinds
         assert "decomposition" in kinds
+        assert "failure_recovery" in kinds
 
     def test_get_decision_kind_returns_entry(self) -> None:
         entry = get_decision_kind("intent_mode")
@@ -54,7 +55,7 @@ class TestDecisionRegistry:
         assert "test_custom" in list_decision_kinds()
 
     def test_entry_has_trace_event(self) -> None:
-        for kind in ("intent_mode", "routing_strategy", "context_policy", "decomposition"):
+        for kind in ("intent_mode", "routing_strategy", "context_policy", "decomposition", "failure_recovery"):
             entry = get_decision_kind(kind)
             assert entry is not None
             assert entry.trace_event.startswith("agent.decision.")
@@ -410,6 +411,60 @@ class TestDecisionAdvisorRoutingStrategy:
         assert result.accepted is True
         assert provider_config["timeout"] == 150
         assert provider_config["profiles"][0]["timeout"] == 150
+
+
+class TestDecisionAdvisorFailureRecovery:
+    """Failure recovery decisions use LLM strategy advice under runtime guardrails."""
+
+    def test_failure_recovery_accepts_compact_strategy(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "strategy": "compact_or_split_context",
+                "maxRetries": 1,
+                "retryDelayMs": 250,
+                "reason": "The request exceeded context limits; compact recent context and retry once.",
+            },
+            "confidence": 0.86,
+            "rationale": "Context limit failures are recoverable with smaller context.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "failure_recovery",
+            {
+                "goal": "Continue the coding task",
+                "provider_failure": {
+                    "category": "context_too_large",
+                    "retryable": False,
+                    "recoverable": True,
+                    "recommendedAction": "compact_or_split_context",
+                },
+            },
+        )
+
+        assert result.accepted is True
+        assert result.payload["strategy"] == "compact_or_split_context"
+        assert result.payload["maxRetries"] == 1
+
+    def test_failure_recovery_rejects_invalid_strategy(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {"strategy": "ignore", "maxRetries": 2},
+            "confidence": 0.7,
+            "rationale": "bad shape",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "failure_recovery",
+            {
+                "goal": "Recover the provider turn",
+                "provider_failure": {"category": "timeout", "recoverable": True},
+            },
+        )
+
+        assert result.accepted is False
+        assert result.source == "validation_rejected"
+        assert any("Invalid recovery strategy" in reason for reason in result.validation_reasons)
 
 
 class TestDecisionAdvisorCompletionDecision:

@@ -494,7 +494,12 @@ class TestProviderRecoveryRetry:
 
         assert provider.calls == 1
         traces = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
-        assert [event["type"] for event in traces] == ["provider.request", "provider.failure.classified"]
+        trace_types = [event["type"] for event in traces]
+        assert trace_types == [
+            "provider.request",
+            "provider.failure.recovery_decision",
+            "provider.failure.classified",
+        ]
         assert traces[-1]["payload"]["failureRecovery"]["category"] == "auth"
 
 

@@ -106,8 +106,34 @@ class ProviderTurnMixin:
             except Exception as stream_exc:
                 from ..provider.openai_compatible import ProviderAdapterError
                 recovery = classify_provider_failure(stream_exc)
-                is_retryable = isinstance(stream_exc, ProviderAdapterError) and recovery.retryable
-                if hasattr(self._provider, "generate") and self._can_fallback_to_non_stream(recovery):
+                recovery_decision = self._provider_failure_recovery_decision(
+                    session_id=session_id,
+                    task=task,
+                    goal=goal,
+                    provider_context=provider_context,
+                    recovery=recovery,
+                    error=stream_exc,
+                    stage="stream",
+                    recovery_retry=False,
+                )
+                self._record_provider_failure_recovery_decision(
+                    session_id=session_id,
+                    task=task,
+                    provider_context=provider_context,
+                    recovery_decision=recovery_decision,
+                    error=stream_exc,
+                )
+                recovery_payload = recovery_decision["failureRecovery"]
+                strategy = str(recovery_decision.get("strategy") or "")
+                is_retryable = (
+                    isinstance(stream_exc, ProviderAdapterError)
+                    and self._provider_recovery_should_retry(recovery, strategy=strategy)
+                )
+                if (
+                    strategy == "fallback"
+                    and hasattr(self._provider, "generate")
+                    and self._can_fallback_to_non_stream(recovery)
+                ):
                     logger.warning(
                         "Provider stream failed for task=%s; falling back to non-streaming request: %s",
                         task["id"],
@@ -119,7 +145,7 @@ class ProviderTurnMixin:
                         payload={
                             "attempt": _stream_attempt + 1,
                             "error": str(stream_exc)[:500],
-                            "failureRecovery": recovery.to_dict(),
+                            "failureRecovery": recovery_payload,
                         },
                     )
                     return self._request_non_streaming_provider_response(
@@ -131,6 +157,13 @@ class ProviderTurnMixin:
                         fallback_from_stream=True,
                     )
                 if is_retryable and _stream_attempt < _max_stream_retries:
+                    if strategy == "compact_or_split_context":
+                        provider_context = self._provider_recovery_retry_context(
+                            provider_context=provider_context,
+                            recovery=recovery,
+                            strategy=strategy,
+                            recovery_decision=recovery_decision,
+                        )
                     logger.warning(
                         "Provider stream timed out (attempt %d/%d), retrying: %s",
                         _stream_attempt + 1, _max_stream_retries + 1, stream_exc,
@@ -141,7 +174,8 @@ class ProviderTurnMixin:
                         payload={
                             "attempt": _stream_attempt + 1,
                             "error": str(stream_exc),
-                            "failureRecovery": recovery.to_dict(),
+                            "failureRecovery": recovery_payload,
+                            "strategy": provider_context.get("_provider_recovery_retry"),
                         },
                     )
                     continue
@@ -244,6 +278,29 @@ class ProviderTurnMixin:
         except Exception as exc:
             self._tracer.end_span(span.span_id, status="error")
             recovery = classify_provider_failure(exc)
+            recovery_decision = self._provider_failure_recovery_decision(
+                session_id=session_id,
+                task=task,
+                goal=goal,
+                provider_context=provider_context,
+                recovery=recovery,
+                error=exc,
+                stage="non_stream",
+                recovery_retry=recovery_retry,
+            )
+            self._record_provider_failure_recovery_decision(
+                session_id=session_id,
+                task=task,
+                provider_context=provider_context,
+                recovery_decision=recovery_decision,
+                error=exc,
+            )
+            recovery_payload = recovery_decision["failureRecovery"]
+            strategy = str(recovery_decision.get("strategy") or "")
+            will_retry = (
+                not recovery_retry
+                and self._provider_recovery_should_retry(recovery, strategy=strategy)
+            )
             self._append_provider_trace(
                 task=task,
                 event_type="provider.failure.classified",
@@ -252,21 +309,23 @@ class ProviderTurnMixin:
                     "fallbackFromStream": fallback_from_stream,
                     "recoveryRetry": recovery_retry,
                     "error": str(exc)[:500],
-                    "failureRecovery": recovery.to_dict(),
-                    "willRetry": (not recovery_retry and self._provider_recovery_should_retry(recovery)),
+                    "failureRecovery": recovery_payload,
+                    "willRetry": will_retry,
                 },
             )
-            if not recovery_retry and self._provider_recovery_should_retry(recovery):
+            if will_retry:
                 retry_context = self._provider_recovery_retry_context(
                     provider_context=provider_context,
                     recovery=recovery,
+                    strategy=strategy,
+                    recovery_decision=recovery_decision,
                 )
                 self._append_provider_trace(
                     task=task,
                     event_type="provider.failure.recovery_retry",
                     payload={
                         **self._provider_trace_payload(retry_context),
-                        "failureRecovery": recovery.to_dict(),
+                        "failureRecovery": recovery_payload,
                         "strategy": retry_context.get("_provider_recovery_retry"),
                     },
                 )
@@ -298,11 +357,249 @@ class ProviderTurnMixin:
         )
         return response
 
+    def _provider_failure_recovery_decision(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        provider_context: dict[str, Any],
+        recovery: Any,
+        error: BaseException | str,
+        stage: str,
+        recovery_retry: bool,
+    ) -> dict[str, Any]:
+        advice = self._provider_failure_recovery_advice(
+            goal=goal,
+            provider_context=provider_context,
+            recovery=recovery,
+            error=error,
+            stage=stage,
+            recovery_retry=recovery_retry,
+        )
+        can_non_stream = bool(hasattr(self._provider, "generate") and self._can_fallback_to_non_stream(recovery))
+        strategy = self._provider_recovery_strategy(
+            recovery=recovery,
+            advice=advice,
+            stage=stage,
+            can_non_stream=can_non_stream,
+        )
+        max_retries = 0
+        if not recovery_retry and self._provider_recovery_should_retry(recovery, strategy=strategy):
+            max_retries = 1
+        payload = {
+            **recovery.to_dict(),
+            "strategy": strategy,
+            "maxRetries": max_retries,
+            "stage": stage,
+            "advisorAvailable": advice is not None,
+            "advisorAccepted": bool(getattr(advice, "accepted", False)) if advice is not None else False,
+        }
+        if advice is not None:
+            payload["advisorSource"] = getattr(advice, "source", None)
+            if getattr(advice, "fallback_reason", None):
+                payload["advisorFallbackReason"] = getattr(advice, "fallback_reason")
+        return {
+            "strategy": strategy,
+            "failureRecovery": payload,
+            "advice": advice,
+        }
+
+    def _provider_failure_recovery_advice(
+        self,
+        *,
+        goal: str,
+        provider_context: dict[str, Any],
+        recovery: Any,
+        error: BaseException | str,
+        stage: str,
+        recovery_retry: bool,
+    ) -> Any | None:
+        advisor = getattr(self, "_decision_advisor", None)
+        if advisor is None:
+            return None
+        if not bool(getattr(recovery, "recoverable", False)):
+            return None
+        category = str(getattr(recovery, "category", "") or "")
+        if category in {"auth", "refusal"}:
+            return None
+        messages = provider_context.get("messages")
+        tools = provider_context.get("openai_tools") or provider_context.get("tools") or []
+        input_context = {
+            "goal": goal,
+            "provider_failure": recovery.to_dict(),
+            "error_summary": str(error)[:500],
+            "stage": stage,
+            "attempt": 2 if recovery_retry else 1,
+            "runtime_limits": {
+                "maxRetriesRemaining": 0 if recovery_retry else 1,
+                "canFallbackToNonStream": bool(
+                    hasattr(self._provider, "generate") and self._can_fallback_to_non_stream(recovery)
+                ),
+                "authAndRefusalAreNonRetryable": True,
+            },
+            "available_actions": self._provider_recovery_available_actions(
+                recovery=recovery,
+                stage=stage,
+            ),
+            "provider_request": self._provider_trace_payload(provider_context),
+            "context_shape": {
+                "messageCount": len(messages) if isinstance(messages, list) else None,
+                "toolCount": len(tools) if isinstance(tools, list) else None,
+                "step": provider_context.get("step"),
+            },
+        }
+        config = provider_context.get("config")
+        if isinstance(config, dict):
+            input_context["config"] = config
+        try:
+            return advisor.advise("failure_recovery", input_context)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failure recovery advisor failed", exc_info=True)
+            return None
+
+    def _provider_recovery_available_actions(self, *, recovery: Any, stage: str) -> list[str]:
+        category = str(getattr(recovery, "category", "") or "")
+        if category in {"auth", "refusal"} or not bool(getattr(recovery, "recoverable", False)):
+            return ["ask_user", "surface_error", "abort"]
+        actions = ["ask_user", "surface_error", "abort"]
+        if bool(getattr(recovery, "retryable", False)):
+            actions.extend(["retry", "retry_with_backoff"])
+        if category in {"context_too_large", "timeout", "rate_limit", "network", "server_error", "invalid_response"}:
+            actions.append("compact_or_split_context")
+        if stage == "stream" and self._can_fallback_to_non_stream(recovery):
+            actions.append("fallback")
+        if category == "unsupported_format":
+            actions.append("fix_provider_api_format")
+        if category == "request_validation":
+            actions.append("fix_provider_request")
+        return actions
+
+    def _provider_recovery_strategy(
+        self,
+        *,
+        recovery: Any,
+        advice: Any | None,
+        stage: str,
+        can_non_stream: bool,
+    ) -> str:
+        category = str(getattr(recovery, "category", "") or "")
+        if category == "auth":
+            return "fix_provider_credentials"
+        if category == "refusal":
+            return "ask_user_or_change_request"
+        if not bool(getattr(recovery, "recoverable", False)):
+            return "surface_error"
+
+        proposed = ""
+        if advice is not None and bool(getattr(advice, "accepted", False)):
+            payload = getattr(advice, "payload", {}) or {}
+            if isinstance(payload, dict):
+                proposed = str(payload.get("strategy") or "").strip()
+        if proposed:
+            if proposed in {"ask_user", "ask_user_or_change_request", "abort", "surface_error"}:
+                return proposed
+            if proposed in {"fix_provider_request", "fix_provider_api_format", "inspect_provider_response"}:
+                return proposed
+            if proposed in {"retry", "retry_with_backoff"} and bool(getattr(recovery, "retryable", False)):
+                return proposed
+            if proposed == "compact_or_split_context" and category in {
+                "context_too_large",
+                "timeout",
+                "rate_limit",
+                "network",
+                "server_error",
+                "invalid_response",
+            }:
+                return proposed
+            if proposed == "fallback" and stage == "stream" and can_non_stream:
+                return proposed
+
+        if stage == "stream" and can_non_stream:
+            return "fallback"
+        if category == "context_too_large":
+            return "compact_or_split_context"
+        if category == "unsupported_format":
+            return "fix_provider_api_format"
+        if category == "request_validation":
+            return "fix_provider_request"
+        if category == "invalid_response":
+            return "inspect_provider_response"
+        if bool(getattr(recovery, "retryable", False)):
+            return "retry_with_backoff" if category in {"rate_limit", "server_error"} else "retry"
+        return "surface_error"
+
+    def _record_provider_failure_recovery_decision(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        provider_context: dict[str, Any],
+        recovery_decision: dict[str, Any],
+        error: BaseException | str,
+    ) -> None:
+        payload = {
+            "providerTurnId": provider_context.get("_provider_turn_id"),
+            "failureRecovery": recovery_decision.get("failureRecovery"),
+            "strategy": recovery_decision.get("strategy"),
+            "error": str(error)[:500],
+        }
+        provider_context["_provider_failure_recovery_recorded"] = True
+        if isinstance(recovery_decision.get("failureRecovery"), dict):
+            provider_context["_provider_failure_recovery_payload"] = recovery_decision["failureRecovery"]
+        advice = recovery_decision.get("advice")
+        if advice is not None:
+            payload["advisor"] = {
+                "source": getattr(advice, "source", None),
+                "accepted": bool(getattr(advice, "accepted", False)),
+                "confidence": getattr(advice, "confidence", None),
+                "rationale": getattr(advice, "rationale", None),
+                "fallbackReason": getattr(advice, "fallback_reason", None),
+            }
+        self._append_provider_trace(
+            task=task,
+            event_type="provider.failure.recovery_decision",
+            payload=payload,
+        )
+        if hasattr(self, "_publish"):
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="agent.decision.failure_recovery",
+                payload=payload,
+                visibility="trace",
+            )
+        recorder = getattr(self, "_record_failure_recovery_proposal", None)
+        if callable(recorder):
+            recorder(
+                session_id=session_id,
+                task=task,
+                provider_turn_id=provider_context.get("_provider_turn_id"),
+                failure_recovery=recovery_decision.get("failureRecovery"),
+                error=str(error),
+                advice=advice,
+            )
+
     @staticmethod
-    def _provider_recovery_should_retry(recovery: Any) -> bool:
+    def _provider_recovery_should_retry(recovery: Any, *, strategy: str | None = None) -> bool:
         if not bool(getattr(recovery, "recoverable", False)):
             return False
         category = str(getattr(recovery, "category", "") or "")
+        if strategy in {"ask_user", "ask_user_or_change_request", "abort", "surface_error"}:
+            return False
+        if strategy in {"fix_provider_credentials", "fix_provider_request", "fix_provider_api_format", "inspect_provider_response"}:
+            return False
+        if strategy in {"retry", "retry_with_backoff"}:
+            return bool(getattr(recovery, "retryable", False))
+        if strategy == "compact_or_split_context":
+            return category in {
+                "context_too_large",
+                "timeout",
+                "rate_limit",
+                "network",
+                "server_error",
+                "invalid_response",
+            }
         return category in {
             "context_too_large",
             "timeout",
@@ -317,17 +614,23 @@ class ProviderTurnMixin:
         *,
         provider_context: dict[str, Any],
         recovery: Any,
+        strategy: str = "compact_or_split_context",
+        recovery_decision: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         retry_context = dict(provider_context)
         messages = provider_context.get("messages")
-        if isinstance(messages, list):
+        should_compact = strategy == "compact_or_split_context" or getattr(recovery, "category", None) == "context_too_large"
+        if isinstance(messages, list) and should_compact:
             retry_context["messages"] = self._provider_recovery_compact_messages(messages, recovery=recovery)
         retry_context["_provider_recovery_retry"] = {
             "category": getattr(recovery, "category", None),
             "recommendedAction": getattr(recovery, "recommended_action", None),
             "originalMessageCount": len(messages) if isinstance(messages, list) else None,
             "retryMessageCount": len(retry_context.get("messages") or []) if isinstance(retry_context.get("messages"), list) else None,
-            "strategy": "compact_recent_context",
+            "strategy": strategy,
+            "advisorAccepted": bool(
+                getattr((recovery_decision or {}).get("advice"), "accepted", False)
+            ) if isinstance(recovery_decision, dict) else False,
         }
         return retry_context
 

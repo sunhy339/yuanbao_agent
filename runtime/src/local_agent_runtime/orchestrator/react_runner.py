@@ -240,6 +240,22 @@ class ReactRunnerMixin:
                 "step": steps + 1,
                 "max_steps": max_steps,
             }
+            preflight_result = self._provider_preflight_decision(
+                session_id=session_id,
+                task=task,
+                goal=goal,
+                provider_context=provider_context,
+                token_estimate=_msg_token_total,
+                compaction_threshold=context.get("_advised_compaction_threshold") or ctx_threshold,
+            )
+            provider_context = preflight_result["provider_context"]
+            preflight_messages = preflight_result.get("messages")
+            if isinstance(preflight_messages, list):
+                messages = preflight_messages
+                context = dict(context)
+                context["messages"] = messages
+                _msg_count_at_last_check = len(messages)
+            _msg_token_total = int(preflight_result.get("token_estimate") or _msg_token_total)
             # --- ProviderTurn: create before provider call ---
             provider_turn = self._store.create_provider_turn(
                 task_id=task["id"],
@@ -253,6 +269,13 @@ class ReactRunnerMixin:
                 role_snapshot=tool_policy_decision.role_snapshot,
             )
             provider_context["_provider_turn_id"] = provider_turn["id"]
+            self._record_provider_preflight_decision(
+                session_id=session_id,
+                task=task,
+                provider_context=provider_context,
+                provider_turn_id=provider_turn["id"],
+                decision=preflight_result.get("decision"),
+            )
             self._fire_hooks("before_provider_turn", session_id, task, extra_context={"turnIndex": steps, "providerTurnId": provider_turn["id"]})
             # --- ContextSnapshot: capture what the model will see ---
             snapshot_meta = (context.get("_build_result") or context).get("snapshot_metadata", {}) or {}

@@ -154,6 +154,48 @@ class AdvisorRecoveryProvider:
         return {"final": "Recovered after provider failure."}
 
 
+class PreflightCompactProvider:
+    """Provider that asks preflight to compact, then completes the main turn."""
+
+    def __init__(self) -> None:
+        self.main_calls: list[dict[str, Any]] = []
+        self.advisor_calls: list[dict[str, Any]] = []
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        if "runtime decision advisor" in prompt:
+            self.advisor_calls.append({"prompt": prompt, "context": context})
+            if "provider_preflight" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {
+                        "action": "compact_context",
+                        "riskLevel": "high",
+                        "contextStrategy": "compact recent context before the provider call",
+                        "reason": "The request is large enough to reduce before sending.",
+                    },
+                    "confidence": 0.87,
+                    "rationale": "Preflight facts indicate context pressure.",
+                })}
+            if "completion_decision" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {"is_complete": True, "why_complete": "Main turn completed after preflight."},
+                    "confidence": 0.8,
+                    "rationale": "The provider returned a final answer.",
+                })}
+            if "product_surface_decision" in prompt:
+                return {"message": json.dumps({
+                    "proposal": {"surface_type": "backend_flow", "recommended_verification": []},
+                    "confidence": 0.6,
+                    "rationale": "This test is focused on provider preflight.",
+                })}
+            return {"message": json.dumps({
+                "proposal": {"mode": "task"},
+                "confidence": 0.5,
+                "rationale": "Generic advisor fallback for this test.",
+            })}
+        self.main_calls.append({"prompt": prompt, "context": context})
+        return {"final": "Completed after provider preflight."}
+
+
 def _call_result(response: dict[str, Any], key: str) -> dict[str, Any]:
     assert "result" in response, f"Expected 'result' in response, got: {response}"
     return response["result"][key]
@@ -994,6 +1036,59 @@ class TestAdvisorGuidedProviderRecovery:
         assert len(proposals) == 1
         assert proposals[0]["source"]["type"] == "runtime_classifier"
         assert proposals[0]["proposal"]["maxRetries"] == 0
+
+
+class TestAdvisorGuidedProviderPreflight:
+    """Provider preflight can consult advisor before sending the provider request."""
+
+    def test_provider_preflight_compacts_before_provider_turn(self, tmp_path: Any) -> None:
+        provider = PreflightCompactProvider()
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            decision_advisor=DecisionAdvisor(provider=provider),
+        )
+        runtime.store.update_config({
+            "config": {
+                "advisor": {"alwaysProviderPreflight": True},
+                "provider": {"model": "fake-chat", "maxContextTokens": 256000},
+            }
+        })
+        session = _open_session(runtime, tmp_path)
+        long_request = "summarize this large context " + ("details " * 2500)
+
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": long_request}),
+            "task",
+        )
+
+        assert task["status"] == "completed"
+        assert any("provider_preflight" in call["prompt"] for call in provider.advisor_calls)
+        assert len(provider.main_calls) == 1
+        main_messages = provider.main_calls[0]["context"]["messages"]
+        assert any(
+            "Provider preflight compacted the request context" in message.get("content", "")
+            for message in main_messages
+        )
+
+        turns = runtime.store.list_provider_turns(task["id"])
+        assert len(turns) == 1
+        assert turns[0]["request_message_count"] == len(main_messages)
+        assert turns[0]["request_token_estimate"] == provider.main_calls[0]["context"]["_provider_preflight"]["tokenEstimate"]
+
+        proposals = runtime.store.list_proposals({
+            "taskId": task["id"],
+            "kind": "provider_preflight",
+        })["proposals"]
+        assert any(p["source"].get("type") == "llm" for p in proposals)
+        runtime_proposal = next(p for p in proposals if p["source"].get("type") == "runtime_provider_preflight")
+        assert runtime_proposal["proposal"]["action"] == "compact_context"
+        assert runtime_proposal["proposal"]["runtimeApplied"] is True
+
+        trace = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        preflight_trace = next(event for event in trace if event["type"] == "provider.preflight.decision")
+        assert preflight_trace["payload"]["runtimeAction"] == "compact_context"
+        assert preflight_trace["payload"]["runtimeApplied"] is True
 
 
 class TestE2ESnapshotIncremental:

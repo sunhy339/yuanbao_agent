@@ -185,6 +185,28 @@ register_decision(DecisionKindEntry(
     trace_event="agent.decision.failure_recovery",
 ))
 register_decision(DecisionKindEntry(
+    kind="provider_preflight",
+    description=(
+        "Review provider-call facts before the request is sent and propose a bounded "
+        "action such as proceeding, compacting context, asking the user, or recording "
+        "a split/provider-switch recommendation. The runtime may only auto-apply "
+        "safe context compaction; other actions remain audited advice until explicit "
+        "execution infrastructure and approvals exist."
+    ),
+    required_input_fields=("goal", "preflight_facts"),
+    allowed_proposal_schema=(
+        "action",
+        "reason",
+        "riskLevel",
+        "contextStrategy",
+        "splitRecommendation",
+        "fallbackProviderId",
+        "userMessage",
+    ),
+    fallback="proceed under runtime token and provider limits",
+    trace_event="agent.decision.provider_preflight",
+))
+register_decision(DecisionKindEntry(
     kind="user_takeover",
     description=(
         "Classify a supplemental user message against the active task as a supplement, "

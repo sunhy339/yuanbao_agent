@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -387,6 +388,115 @@ class Orchestrator(
             )
         except Exception:  # noqa: BLE001
             logger.debug("Failed to record failure recovery proposal", exc_info=True)
+
+    def _record_provider_preflight_proposal(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        provider_turn_id: str | None,
+        preflight: dict[str, Any] | None,
+        advice: Any | None = None,
+    ) -> None:
+        try:
+            decision = preflight if isinstance(preflight, dict) else {}
+            facts = decision.get("facts") if isinstance(decision.get("facts"), dict) else {}
+            input_summary = json.dumps({
+                "riskLevel": facts.get("riskLevel"),
+                "estimatedInputTokens": facts.get("estimatedInputTokens"),
+                "estimatedInputTokensAfter": facts.get("estimatedInputTokensAfter"),
+                "maxContextTokens": facts.get("maxContextTokens"),
+                "nearContextLimit": facts.get("nearContextLimit"),
+                "overContextLimit": facts.get("overContextLimit"),
+                "hasPriorProviderFailure": facts.get("hasPriorProviderFailure"),
+            }, ensure_ascii=False, sort_keys=True)[:500]
+            runtime_action = str(decision.get("runtimeAction") or "proceed")
+            if advice is None and runtime_action == "proceed" and facts.get("riskLevel") == "low":
+                return
+            runtime_proposal = {
+                "action": runtime_action,
+                "riskLevel": facts.get("riskLevel") or "low",
+                "reason": (decision.get("providerPreflight") or {}).get("reason")
+                if isinstance(decision.get("providerPreflight"), dict)
+                else "Provider preflight runtime decision.",
+                "contextStrategy": "compact_recent_context" if runtime_action == "compact_context" else "preserve_context",
+                "runtimeApplied": bool(decision.get("runtimeApplied")),
+                "estimatedInputTokens": facts.get("estimatedInputTokens"),
+                "estimatedInputTokensAfter": facts.get("estimatedInputTokensAfter"),
+                "maxContextTokens": facts.get("maxContextTokens"),
+                "compactionThreshold": facts.get("compactionThreshold"),
+            }
+
+            def _create_and_validate(
+                *,
+                proposal: dict[str, Any],
+                source: dict[str, Any],
+                status: str,
+                reasons: list[str],
+                model_id: str | None = None,
+            ) -> None:
+                record = self._store.create_proposal({
+                    "kind": "provider_preflight",
+                    "sessionId": session_id,
+                    "taskId": task["id"],
+                    "proposal": proposal,
+                    "source": source,
+                    "inputSummary": input_summary,
+                    "modelId": model_id,
+                    "turnId": provider_turn_id,
+                })
+                self._store.validate_proposal({
+                    "proposalId": record["proposal"]["id"],
+                    "status": status,
+                    "reasons": reasons,
+                })
+
+            if advice is not None:
+                advice_payload = getattr(advice, "payload", None)
+                if isinstance(advice_payload, dict) and advice_payload:
+                    proposal = dict(advice_payload)
+                    proposal.setdefault("action", runtime_action)
+                    proposal.setdefault("riskLevel", facts.get("riskLevel") or "low")
+                    proposal["runtimeAction"] = runtime_action
+                    proposal["runtimeApplied"] = bool(decision.get("runtimeApplied"))
+                    source = {
+                        "type": getattr(advice, "source", "llm"),
+                        "confidence": getattr(advice, "confidence", None),
+                        "rationale": getattr(advice, "rationale", None),
+                        "fallbackReason": getattr(advice, "fallback_reason", None),
+                        "runtimeFacts": {
+                            "nearContextLimit": facts.get("nearContextLimit"),
+                            "overContextLimit": facts.get("overContextLimit"),
+                            "hasPriorProviderFailure": facts.get("hasPriorProviderFailure"),
+                        },
+                    }
+                    status = "accepted" if bool(getattr(advice, "accepted", False)) else "rejected"
+                    reasons = [] if status == "accepted" else (
+                        list(getattr(advice, "validation_reasons", None) or [])
+                        or [str(getattr(advice, "fallback_reason", None) or "advisor rejected")]
+                    )
+                    _create_and_validate(
+                        proposal=proposal,
+                        source=source,
+                        status=status,
+                        reasons=reasons,
+                        model_id=getattr(advice, "model_id", None),
+                    )
+
+            _create_and_validate(
+                proposal=runtime_proposal,
+                source={
+                    "type": "runtime_provider_preflight",
+                    "advisorAccepted": bool(getattr(advice, "accepted", False)) if advice is not None else False,
+                    "advisorAction": (
+                        getattr(advice, "payload", {}) or {}
+                    ).get("action") if advice is not None and isinstance(getattr(advice, "payload", None), dict) else None,
+                },
+                status="accepted",
+                reasons=[],
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to record provider preflight proposal", exc_info=True)
 
     @staticmethod
     def _failure_recovery_proposal_strategy(recovery: dict[str, Any]) -> str:

@@ -54,6 +54,7 @@ ProposalKind = Literal[
     "approval_policy",
     "test_strategy",
     "failure_recovery",
+    "provider_preflight",
     "event_presentation",
     "synthesis_strategy",
     "todo_maintenance",

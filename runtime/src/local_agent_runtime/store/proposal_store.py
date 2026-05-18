@@ -442,7 +442,7 @@ class ProposalStoreMixin:
         "intent_mode", "routing_strategy", "decomposition", "agent_profile", "model_policy",
         "skill_policy", "tool_policy", "mcp_policy", "context_policy",
         "memory_policy", "artifact_contract", "risk_policy", "approval_policy",
-        "test_strategy", "failure_recovery", "event_presentation",
+        "test_strategy", "failure_recovery", "provider_preflight", "event_presentation",
         "synthesis_strategy", "todo_maintenance",
         "react_turn_decision", "completion_decision", "product_surface_decision",
         "user_takeover", "tool_recovery",

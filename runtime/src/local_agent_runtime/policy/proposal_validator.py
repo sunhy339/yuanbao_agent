@@ -38,6 +38,7 @@ REQUIRED_FIELDS_BY_KIND: dict[str, list[str]] = {
     "approval_policy": ["gates"],
     "test_strategy": ["commands"],
     "failure_recovery": ["strategy"],
+    "provider_preflight": ["action"],
     "event_presentation": ["grouping"],
     "synthesis_strategy": ["structure"],
     "todo_maintenance": ["updates"],
@@ -303,6 +304,10 @@ def validate_proposal(kind: str, payload: dict[str, Any]) -> list[str]:
     if kind == "failure_recovery":
         reasons.extend(validate_retry_budget(payload))
 
+    # Provider preflight validator
+    if kind == "provider_preflight":
+        reasons.extend(validate_provider_preflight(payload))
+
     # Event presentation validator
     if kind == "event_presentation":
         reasons.extend(validate_frontend_visibility(payload))
@@ -497,6 +502,33 @@ def validate_tool_recovery(payload: dict[str, Any]) -> list[str]:
             arguments = fallback_tool.get("arguments", {})
             if arguments is not None and not isinstance(arguments, dict):
                 reasons.append("fallbackTool.arguments must be an object when provided")
+    return reasons
+
+
+def validate_provider_preflight(payload: dict[str, Any]) -> list[str]:
+    """Validate pre-provider-call advice while keeping runtime actions bounded."""
+    reasons: list[str] = []
+    valid_actions = {
+        "proceed",
+        "compact_context",
+        "propose_split",
+        "ask_user",
+        "switch_provider",
+        "abort",
+    }
+    action = payload.get("action")
+    if action not in valid_actions:
+        reasons.append(f"Invalid provider preflight action: {action!r}")
+    risk_level = payload.get("riskLevel")
+    if risk_level is not None and risk_level not in VALID_RISK_LEVELS:
+        reasons.append(f"Invalid riskLevel: {risk_level!r}. Must be one of {sorted(VALID_RISK_LEVELS)}")
+    for field in ("reason", "contextStrategy", "fallbackProviderId", "userMessage"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            reasons.append(f"{field} must be a string when provided")
+    split = payload.get("splitRecommendation")
+    if split is not None and not isinstance(split, (str, dict, list)):
+        reasons.append("splitRecommendation must be a string, object, or list when provided")
     return reasons
 
 

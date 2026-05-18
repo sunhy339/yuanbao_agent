@@ -9,6 +9,7 @@ import json
 import logging
 from typing import Any
 
+from ..context.token_budget import estimate_tokens
 from ..provider.failure_recovery import classify_provider_failure
 from ..react.types import ProviderTurnResult, TurnDecision
 
@@ -17,6 +18,324 @@ logger = logging.getLogger(__name__)
 
 class ProviderTurnMixin:
     """Mixin providing provider turn handling, streaming, and response parsing."""
+
+    def _provider_preflight_decision(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        provider_context: dict[str, Any],
+        token_estimate: int,
+        compaction_threshold: int,
+    ) -> dict[str, Any]:
+        facts = self._provider_preflight_facts(
+            provider_context=provider_context,
+            token_estimate=token_estimate,
+            compaction_threshold=compaction_threshold,
+        )
+        advice = self._provider_preflight_advice(
+            goal=goal,
+            provider_context=provider_context,
+            facts=facts,
+        )
+        runtime_action = self._provider_preflight_runtime_action(
+            facts=facts,
+            advice=advice,
+        )
+        result_context = dict(provider_context)
+        result_messages = provider_context.get("messages")
+        original_message_count = len(result_messages) if isinstance(result_messages, list) else None
+        original_tokens = token_estimate
+        applied = False
+        if runtime_action == "compact_context" and isinstance(result_messages, list):
+            compacted_messages = self._provider_preflight_compact_messages(result_messages)
+            result_context["messages"] = compacted_messages
+            result_context["_provider_preflight_runtime_action"] = runtime_action
+            result_context["_provider_preflight"] = {
+                "runtimeAction": runtime_action,
+                "reason": self._provider_preflight_reason(facts=facts, advice=advice),
+                "originalMessageCount": original_message_count,
+                "messageCount": len(compacted_messages),
+                "originalTokenEstimate": original_tokens,
+                "tokenEstimate": sum(estimate_tokens(message.get("content", "")) for message in compacted_messages),
+            }
+            result_messages = compacted_messages
+            token_estimate = int(result_context["_provider_preflight"]["tokenEstimate"])
+            applied = True
+        else:
+            result_context["_provider_preflight_runtime_action"] = runtime_action
+            result_context["_provider_preflight"] = {
+                "runtimeAction": runtime_action,
+                "reason": self._provider_preflight_reason(facts=facts, advice=advice),
+                "originalMessageCount": original_message_count,
+                "messageCount": original_message_count,
+                "originalTokenEstimate": original_tokens,
+                "tokenEstimate": token_estimate,
+            }
+
+        facts_after = dict(facts)
+        facts_after.update({
+            "messageCountAfter": len(result_messages) if isinstance(result_messages, list) else None,
+            "estimatedInputTokensAfter": token_estimate,
+        })
+        decision = {
+            "facts": facts_after,
+            "advice": advice,
+            "runtimeAction": runtime_action,
+            "runtimeApplied": applied,
+            "providerPreflight": result_context.get("_provider_preflight"),
+        }
+        return {
+            "provider_context": result_context,
+            "messages": result_messages,
+            "token_estimate": token_estimate,
+            "decision": decision,
+        }
+
+    def _provider_preflight_facts(
+        self,
+        *,
+        provider_context: dict[str, Any],
+        token_estimate: int,
+        compaction_threshold: int,
+    ) -> dict[str, Any]:
+        messages = provider_context.get("messages")
+        tools = provider_context.get("openai_tools") or provider_context.get("tools") or []
+        budget_stats = provider_context.get("budgetStats") if isinstance(provider_context, dict) else None
+        max_context_tokens = None
+        if isinstance(budget_stats, dict):
+            max_context_tokens = budget_stats.get("maxContextTokens")
+        if max_context_tokens is None:
+            config = provider_context.get("config") if isinstance(provider_context, dict) else None
+            provider_config = config.get("provider") if isinstance(config, dict) else None
+            if isinstance(provider_config, dict):
+                max_context_tokens = provider_config.get("maxContextTokens")
+            if max_context_tokens is None and isinstance(config, dict):
+                max_context_tokens = config.get("maxContextTokens")
+        try:
+            max_context = int(max_context_tokens) if max_context_tokens is not None else None
+        except (TypeError, ValueError):
+            max_context = None
+        threshold = max(1, int(compaction_threshold or max_context or 1))
+        risk_ratio_base = max_context if isinstance(max_context, int) and max_context > 0 else threshold
+        token_ratio = float(token_estimate) / float(max(1, risk_ratio_base))
+        threshold_ratio = float(token_estimate) / float(threshold)
+        near_context_limit = token_ratio >= 0.8 or threshold_ratio >= 0.9
+        over_context_limit = token_estimate >= threshold or (
+            isinstance(max_context, int) and max_context > 0 and token_estimate >= max_context
+        )
+        prior_failure = self._provider_preflight_recent_failure(provider_context)
+        if over_context_limit or prior_failure.get("hasPriorProviderFailure"):
+            risk_level = "high"
+        elif near_context_limit:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+        return {
+            **self._provider_trace_payload(provider_context),
+            "messageCount": len(messages) if isinstance(messages, list) else None,
+            "toolCount": len(tools) if isinstance(tools, list) else None,
+            "estimatedInputTokens": int(token_estimate),
+            "maxContextTokens": max_context,
+            "compactionThreshold": threshold,
+            "nearContextLimit": near_context_limit,
+            "overContextLimit": over_context_limit,
+            "riskLevel": risk_level,
+            "streamingEnabled": self._should_stream_provider(provider_context),
+            "step": provider_context.get("step"),
+            "maxSteps": provider_context.get("max_steps"),
+            **prior_failure,
+        }
+
+    def _provider_preflight_recent_failure(self, provider_context: dict[str, Any]) -> dict[str, Any]:
+        tool_results = provider_context.get("tool_results")
+        if not isinstance(tool_results, list):
+            return {"hasPriorProviderFailure": False}
+        for item in reversed(tool_results[-5:]):
+            if not isinstance(item, dict):
+                continue
+            result = item.get("result")
+            if not isinstance(result, dict):
+                continue
+            recovery = result.get("failureRecovery") or result.get("failure_recovery")
+            if isinstance(recovery, dict):
+                return {
+                    "hasPriorProviderFailure": True,
+                    "priorProviderFailure": {
+                        "category": recovery.get("category"),
+                        "strategy": recovery.get("strategy"),
+                        "recoverable": recovery.get("recoverable"),
+                    },
+                }
+        return {"hasPriorProviderFailure": False}
+
+    def _provider_preflight_advice(
+        self,
+        *,
+        goal: str,
+        provider_context: dict[str, Any],
+        facts: dict[str, Any],
+    ) -> Any | None:
+        advisor = getattr(self, "_decision_advisor", None)
+        if advisor is None:
+            return None
+        if not self._should_consult_provider_preflight_advisor(provider_context=provider_context, facts=facts):
+            return None
+        input_context: dict[str, Any] = {
+            "goal": goal[:2000],
+            "preflight_facts": facts,
+            "runtime_limits": {
+                "autoActions": ["proceed", "compact_context"],
+                "advisoryOnlyActions": ["propose_split", "ask_user", "switch_provider", "abort"],
+                "runtimeWillNotCallProviderAfterTransportFailureForAdvice": True,
+            },
+            "available_actions": [
+                "proceed",
+                "compact_context",
+                "propose_split",
+                "ask_user",
+                "switch_provider",
+                "abort",
+            ],
+        }
+        config = provider_context.get("config")
+        if isinstance(config, dict):
+            input_context["config"] = config
+        try:
+            return advisor.advise("provider_preflight", input_context)
+        except Exception:  # noqa: BLE001
+            logger.debug("Provider preflight advisor failed", exc_info=True)
+            return None
+
+    def _should_consult_provider_preflight_advisor(
+        self,
+        *,
+        provider_context: dict[str, Any],
+        facts: dict[str, Any],
+    ) -> bool:
+        config = provider_context.get("config") if isinstance(provider_context, dict) else None
+        advisor_config = {}
+        if isinstance(config, dict):
+            advisor = config.get("advisor")
+            if isinstance(advisor, dict):
+                advisor_config = advisor
+            autonomy = config.get("autonomy")
+            if not advisor_config and isinstance(autonomy, dict) and isinstance(autonomy.get("advisor"), dict):
+                advisor_config = autonomy["advisor"]
+        if advisor_config.get("providerPreflight") is False:
+            return False
+        if advisor_config.get("alwaysProviderPreflight") is True:
+            return True
+        return bool(
+            facts.get("nearContextLimit")
+            or facts.get("overContextLimit")
+            or facts.get("hasPriorProviderFailure")
+        )
+
+    @staticmethod
+    def _provider_preflight_reason(*, facts: dict[str, Any], advice: Any | None) -> str:
+        if advice is not None and bool(getattr(advice, "accepted", False)):
+            payload = getattr(advice, "payload", {}) or {}
+            if isinstance(payload, dict) and isinstance(payload.get("reason"), str):
+                return payload["reason"][:500]
+            rationale = getattr(advice, "rationale", None)
+            if isinstance(rationale, str) and rationale.strip():
+                return rationale[:500]
+        if facts.get("overContextLimit"):
+            return "Runtime detected provider context at or above the configured context limit."
+        if facts.get("nearContextLimit"):
+            return "Runtime detected provider context near the configured context limit."
+        if facts.get("hasPriorProviderFailure"):
+            return "Runtime detected a prior provider failure in recent tool results."
+        return "Provider request is within preflight runtime bounds."
+
+    def _provider_preflight_runtime_action(self, *, facts: dict[str, Any], advice: Any | None) -> str:
+        proposed = ""
+        if advice is not None and bool(getattr(advice, "accepted", False)):
+            payload = getattr(advice, "payload", {}) or {}
+            if isinstance(payload, dict):
+                proposed = str(payload.get("action") or "").strip()
+        if proposed == "compact_context":
+            return "compact_context"
+        if facts.get("overContextLimit"):
+            return "compact_context"
+        return "proceed"
+
+    def _provider_preflight_compact_messages(self, messages: list[Any]) -> list[Any]:
+        system_messages: list[dict[str, Any]] = []
+        conversation_messages: list[dict[str, Any]] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            normalized = self._provider_recovery_trim_message(item)
+            role = str(normalized.get("role") or "").strip().lower()
+            if role in {"system", "developer"} and len(system_messages) < 2:
+                system_messages.append(normalized)
+            else:
+                conversation_messages.append(normalized)
+        notice = {
+            "role": "system",
+            "content": (
+                "Provider preflight compacted the request context before the model call. "
+                "Continue from the recent context below; ask for missing details only if required."
+            ),
+        }
+        tail = conversation_messages[-8:]
+        return [*system_messages, notice, *tail]
+
+    def _record_provider_preflight_decision(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        provider_context: dict[str, Any],
+        provider_turn_id: str | None,
+        decision: dict[str, Any] | None,
+    ) -> None:
+        if not isinstance(decision, dict):
+            return
+        facts = decision.get("facts") if isinstance(decision.get("facts"), dict) else {}
+        advice = decision.get("advice")
+        payload: dict[str, Any] = {
+            "providerTurnId": provider_turn_id,
+            "facts": facts,
+            "runtimeAction": decision.get("runtimeAction"),
+            "runtimeApplied": bool(decision.get("runtimeApplied")),
+            "providerPreflight": decision.get("providerPreflight"),
+        }
+        if advice is not None:
+            payload["advisor"] = {
+                "source": getattr(advice, "source", None),
+                "accepted": bool(getattr(advice, "accepted", False)),
+                "confidence": getattr(advice, "confidence", None),
+                "rationale": getattr(advice, "rationale", None),
+                "fallbackReason": getattr(advice, "fallback_reason", None),
+                "validationReasons": list(getattr(advice, "validation_reasons", None) or []),
+                "proposal": getattr(advice, "payload", None),
+            }
+        self._append_provider_trace(
+            task=task,
+            event_type="provider.preflight.decision",
+            payload=payload,
+        )
+        if hasattr(self, "_publish"):
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="agent.decision.provider_preflight",
+                payload=payload,
+                visibility="trace",
+            )
+        recorder = getattr(self, "_record_provider_preflight_proposal", None)
+        if callable(recorder):
+            recorder(
+                session_id=session_id,
+                task=task,
+                provider_turn_id=provider_turn_id,
+                preflight=decision,
+                advice=advice,
+            )
 
     def _request_provider_response(
         self,

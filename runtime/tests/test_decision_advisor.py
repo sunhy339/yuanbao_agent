@@ -31,6 +31,7 @@ class TestDecisionRegistry:
         assert "context_policy" in kinds
         assert "decomposition" in kinds
         assert "failure_recovery" in kinds
+        assert "provider_preflight" in kinds
         assert "user_takeover" in kinds
         assert "tool_recovery" in kinds
 
@@ -57,7 +58,7 @@ class TestDecisionRegistry:
         assert "test_custom" in list_decision_kinds()
 
     def test_entry_has_trace_event(self) -> None:
-        for kind in ("intent_mode", "routing_strategy", "context_policy", "decomposition", "failure_recovery", "user_takeover", "tool_recovery"):
+        for kind in ("intent_mode", "routing_strategy", "context_policy", "decomposition", "failure_recovery", "provider_preflight", "user_takeover", "tool_recovery"):
             entry = get_decision_kind(kind)
             assert entry is not None
             assert entry.trace_event.startswith("agent.decision.")
@@ -467,6 +468,61 @@ class TestDecisionAdvisorFailureRecovery:
         assert result.accepted is False
         assert result.source == "validation_rejected"
         assert any("Invalid recovery strategy" in reason for reason in result.validation_reasons)
+
+
+class TestDecisionAdvisorProviderPreflight:
+    """Provider preflight decisions can advise before a provider call is sent."""
+
+    def test_provider_preflight_accepts_compact_context(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "action": "compact_context",
+                "riskLevel": "high",
+                "contextStrategy": "compact recent context before sending provider request",
+                "reason": "The request is at the context boundary.",
+            },
+            "confidence": 0.84,
+            "rationale": "The preflight facts show context pressure before the provider call.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "provider_preflight",
+            {
+                "goal": "Continue the coding task",
+                "preflight_facts": {
+                    "estimatedInputTokens": 990,
+                    "maxContextTokens": 1000,
+                    "nearContextLimit": True,
+                    "overContextLimit": False,
+                    "riskLevel": "medium",
+                },
+            },
+        )
+
+        assert result.accepted is True
+        assert result.payload["action"] == "compact_context"
+        assert result.payload["riskLevel"] == "high"
+
+    def test_provider_preflight_rejects_invalid_action(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {"action": "silently_retry_forever", "riskLevel": "high"},
+            "confidence": 0.7,
+            "rationale": "bad shape",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "provider_preflight",
+            {
+                "goal": "Prepare provider request",
+                "preflight_facts": {"estimatedInputTokens": 10, "riskLevel": "low"},
+            },
+        )
+
+        assert result.accepted is False
+        assert result.source == "validation_rejected"
+        assert any("Invalid provider preflight action" in reason for reason in result.validation_reasons)
 
 
 class TestDecisionAdvisorToolRecovery:

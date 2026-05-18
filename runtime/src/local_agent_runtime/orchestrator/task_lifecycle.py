@@ -2882,34 +2882,63 @@ class TaskLifecycleMixin:
         root = Path(workspace_root)
         if not root.exists() or not root.is_dir():
             return []
+        advisories: list[dict[str, Any]] = []
         references = self._completion_frontend_api_references(root=root, task=task)
-        if not references:
-            return []
-        backend_routes = self._completion_backend_api_routes(root=root, task=task)
-        api_observations = self._completion_api_contract_observations(
-            references=references,
-            backend_routes=backend_routes,
-        )
-        signals = self._completion_product_advisory_signals(
-            verification=verification,
-            tests_run=tests_run,
-            commands=commands,
-        )
-        matched = [item for item in api_observations if item.get("backendRoute")]
-        return [{
-            "kind": "api_reference_observation",
-            "severity": "info" if signals else "suggestion",
-            "source": "objective_surface_scan",
-            "summary": (
-                "Changed files include API calls and runtime verification evidence was found."
-                if signals
-                else "Changed files include API calls; ask the product-surface advisor what evidence matters for this task."
-            ),
-            "recommendedVerification": [],
-            "apiReferences": api_observations[:10],
-            "localBackendRouteMatches": len(matched),
-            "signals": signals[:10],
-        }]
+        if references:
+            backend_routes = self._completion_backend_api_routes(root=root, task=task)
+            api_observations = self._completion_api_contract_observations(
+                references=references,
+                backend_routes=backend_routes,
+            )
+            signals = self._completion_product_advisory_signals(
+                verification=verification,
+                tests_run=tests_run,
+                commands=commands,
+            )
+            matched = [item for item in api_observations if item.get("backendRoute")]
+            advisories.append({
+                "kind": "api_reference_observation",
+                "severity": "info" if signals else "suggestion",
+                "source": "objective_surface_scan",
+                "summary": (
+                    "Changed files include API calls and runtime verification evidence was found."
+                    if signals
+                    else "Changed files include API calls; ask the product-surface advisor what evidence matters for this task."
+                ),
+                "recommendedVerification": [],
+                "apiReferences": api_observations[:10],
+                "localBackendRouteMatches": len(matched),
+                "signals": signals[:10],
+            })
+        docs_observations = self._completion_docs_quality_records(root=root, task=task)
+        if docs_observations:
+            issue_count = sum(len(item.get("issues") or []) for item in docs_observations)
+            advisories.append({
+                "kind": "docs_quality_observation",
+                "severity": "suggestion" if issue_count else "info",
+                "source": "objective_surface_scan",
+                "summary": (
+                    f"{len(docs_observations)} changed docs or README file(s) include {issue_count} structure issue(s); "
+                    "ask the product-surface advisor what evidence matters for this task."
+                    if issue_count
+                    else f"{len(docs_observations)} changed docs or README file(s) look structurally healthy."
+                ),
+                "recommendedVerification": [],
+                "documents": docs_observations[:10],
+                "issueCount": issue_count,
+                "signals": [
+                    {
+                        "path": item.get("path"),
+                        "kind": item.get("kind"),
+                        "issueCount": len(item.get("issues") or []),
+                        "headingCount": item.get("headingCount"),
+                        "codeFenceCount": item.get("codeFenceCount"),
+                        "relativeLinkCount": item.get("relativeLinkCount"),
+                    }
+                    for item in docs_observations[:10]
+                ],
+            })
+        return advisories
 
     def _completion_api_contract_observations(
         self,
@@ -2966,6 +2995,149 @@ class TaskLifecycleMixin:
         status = str(item.get("status") or "").strip().casefold()
         exit_code = item.get("exitCode")
         return status in {"passed", "success", "completed", "ok"} and exit_code in (0, "0", None)
+
+    def _completion_docs_quality_records(
+        self,
+        *,
+        root: Path,
+        task: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for path_text in self._completion_docs_artifact_paths(task):
+            path = self._completion_safe_workspace_path(root=root, relative_path=path_text)
+            if path is None or not path.is_file():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            records.append(self._completion_docs_quality_record(root=root, path_text=path_text, content=content))
+        return records
+
+    def _completion_docs_quality_record(
+        self,
+        *,
+        root: Path,
+        path_text: str,
+        content: str,
+    ) -> dict[str, Any]:
+        word_count = len(re.findall(r"\b\w+\b", content))
+        heading_count = len(re.findall(r"(?m)^\s{0,3}#{1,6}\s+\S", content))
+        code_fence_count = len(re.findall(r"(?m)^\s*(```|~~~)", content))
+        relative_links = self._completion_docs_relative_link_targets(content)
+        issues = self._completion_docs_quality_issues(
+            root=root,
+            path_text=path_text,
+            content=content,
+            word_count=word_count,
+            heading_count=heading_count,
+            code_fence_count=code_fence_count,
+        )
+        return {
+            "path": path_text,
+            "kind": self._completion_docs_artifact_kind(path_text),
+            "lineCount": content.count("\n") + (1 if content else 0),
+            "wordCount": word_count,
+            "headingCount": heading_count,
+            "codeFenceCount": code_fence_count,
+            "relativeLinkCount": len(relative_links),
+            "issues": issues[:10],
+        }
+
+    def _completion_docs_quality_issues(
+        self,
+        *,
+        root: Path,
+        path_text: str,
+        content: str,
+        word_count: int,
+        heading_count: int,
+        code_fence_count: int,
+    ) -> list[str]:
+        issues: list[str] = []
+        for pattern, label in (
+            (r"\bTODO\b", "visible TODO placeholder"),
+            (r"\bTBD\b", "visible TBD placeholder"),
+            (r"\bFIXME\b", "visible FIXME placeholder"),
+            (r"\blorem ipsum\b", "placeholder lorem ipsum copy"),
+            (r"\bplaceholder\b", "placeholder copy"),
+        ):
+            if re.search(pattern, content, flags=re.IGNORECASE):
+                issues.append(label)
+        if code_fence_count % 2 == 1:
+            issues.append("unbalanced fenced code blocks")
+        if heading_count == 0 and (self._completion_docs_artifact_kind(path_text) == "readme" or word_count >= 40):
+            issues.append("missing heading structure")
+        issues.extend(self._completion_docs_relative_link_issues(root=root, path_text=path_text, content=content))
+        return list(dict.fromkeys(issues))
+
+    @staticmethod
+    def _completion_docs_relative_link_targets(content: str) -> list[str]:
+        targets: list[str] = []
+        seen: set[str] = set()
+        for match in re.finditer(r"!?\[[^\]]*\]\((?P<target>[^)]+)\)", content):
+            target = (match.group("target") or "").strip().strip("'\"")
+            if not target or target.startswith(("#", "http://", "https://", "//", "mailto:", "tel:", "data:", "javascript:")):
+                continue
+            target = target.split("#", 1)[0].split("?", 1)[0].strip()
+            if not target or target in seen:
+                continue
+            seen.add(target)
+            targets.append(target)
+        return targets
+
+    def _completion_docs_relative_link_issues(
+        self,
+        *,
+        root: Path,
+        path_text: str,
+        content: str,
+    ) -> list[str]:
+        doc_path = self._completion_safe_workspace_path(root=root, relative_path=path_text)
+        if doc_path is None:
+            return []
+        issues: list[str] = []
+        for target in self._completion_docs_relative_link_targets(content):
+            candidate = (doc_path.parent / target).resolve()
+            try:
+                candidate.relative_to(root.resolve())
+            except ValueError:
+                issues.append(f"relative link escapes workspace: {target}")
+                continue
+            fallback_candidates = [candidate]
+            if not candidate.suffix:
+                fallback_candidates.extend([
+                    candidate.with_suffix(".md"),
+                    candidate.with_suffix(".mdx"),
+                    candidate / "README.md",
+                    candidate / "index.md",
+                ])
+            if not any(option.exists() for option in fallback_candidates):
+                issues.append(f"missing relative link target: {target}")
+        return issues
+
+    def _completion_docs_artifact_paths(self, task: dict[str, Any]) -> list[str]:
+        paths: list[str] = []
+        for item in task.get("changedFiles") or []:
+            if not isinstance(item, dict):
+                continue
+            path = self._completion_changed_file_path(item)
+            if path and self._completion_path_requires_docs_quality_check(path):
+                paths.append(path)
+        return list(dict.fromkeys(paths))
+
+    @staticmethod
+    def _completion_path_requires_docs_quality_check(path: str) -> bool:
+        normalized = path.casefold().replace("\\", "/")
+        if normalized.endswith((".md", ".mdx", ".rst", ".adoc", ".asciidoc", ".txt")):
+            return True
+        basename = normalized.rsplit("/", 1)[-1]
+        return basename.startswith("readme")
+
+    @staticmethod
+    def _completion_docs_artifact_kind(path_text: str) -> str:
+        basename = path_text.casefold().replace("\\", "/").rsplit("/", 1)[-1]
+        return "readme" if basename.startswith("readme") else "docs"
 
     def _completion_frontend_api_references(
         self,

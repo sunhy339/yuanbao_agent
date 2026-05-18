@@ -1178,6 +1178,103 @@ class TestCompletionHardGate:
         assert readability["source"] == "product_readability_check"
         assert result["structuredResult"]["completionGate"]["status"] == "needs_acceptance_review"
 
+    def test_readme_quality_observation_records_healthy_docs_without_blocking_completion(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text(
+            "# Feedback Service\n\n"
+            "## Overview\n\n"
+            "The service stores feedback entries and exposes a review workflow.\n\n"
+            "## Usage\n\n"
+            "```bash\npytest -q\n```\n",
+            encoding="utf-8",
+        )
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="docs gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Update README.md with usage docs",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "README.md", "summary": "updated docs"}],
+            verification=[{"command": "git diff -- README.md", "status": "passed", "summary": "docs reviewed"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated README.md.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]
+        advisory = [
+            item for item in evidence["productAdvisories"]
+            if item["kind"] == "docs_quality_observation"
+        ][0]
+        assert advisory["severity"] == "info"
+        assert advisory["issueCount"] == 0
+        assert advisory["documents"][0]["kind"] == "readme"
+        assert advisory["documents"][0]["headingCount"] == 3
+
+    def test_readme_quality_observation_surfaces_draft_signals_without_hard_gate(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "README.md").write_text(
+            "Feedback service TODO TBD placeholder copy.\n"
+            "See [missing guide](docs/missing-guide.md).\n"
+            "```python\nprint('unfinished')\n",
+            encoding="utf-8",
+        )
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="docs gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Draft README.md for the feedback service",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "README.md", "summary": "drafted docs"}],
+            verification=[{"command": "git diff -- README.md", "status": "passed", "summary": "docs reviewed"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Drafted README.md.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]
+        advisory = [
+            item for item in evidence["productAdvisories"]
+            if item["kind"] == "docs_quality_observation"
+        ][0]
+        assert advisory["severity"] == "suggestion"
+        assert advisory["issueCount"] >= 4
+        issues = advisory["documents"][0]["issues"]
+        assert "visible TODO placeholder" in issues
+        assert "visible TBD placeholder" in issues
+        assert "unbalanced fenced code blocks" in issues
+        assert "missing relative link target: docs/missing-guide.md" in issues
+        gate = result["structuredResult"].get("completionGate") or {}
+        assert gate.get("status") != "needs_acceptance_review"
+
     def test_static_frontend_missing_asset_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

@@ -68,6 +68,8 @@ export type TraceEventType =
   | "tool.blocked"
   | "approval.requested"
   | "approval.resolved"
+  | "agent.evidence.requested"
+  | "agent.evidence.executor.updated"
   | "patch.proposed"
   | "patch.approved"
   | "patch.applied"

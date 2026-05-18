@@ -2326,6 +2326,11 @@ class TestCompletionHardGate:
         assert suggestion["executionState"] == "approval_pending"
         assert suggestion["approvalRequest"]["command"] == command
         assert result["structuredResult"]["completionGate"]["approvalIds"] == [approval_id]
+        executor = evidence["advisorEvidenceExecutor"][0]
+        assert executor["id"]
+        assert executor["status"] == "approval_requested"
+        assert executor["executionType"] == "run_command"
+        assert executor["approvalId"] == approval_id
         approval_events = [
             event for event in captured_events
             if event.type == "approval.requested" and event.payload.get("kind") == "run_command"
@@ -2333,6 +2338,10 @@ class TestCompletionHardGate:
         assert len(approval_events) == 1
         assert approval_events[0].payload["approvalId"] == approval_id
         assert approval_events[0].payload["advisorEvidence"]["requestKind"] == "runtime_probe"
+        assert approval_events[0].payload["advisorEvidence"]["executorId"] == executor["id"]
+        executor_events = [event for event in captured_events if event.type == "agent.evidence.executor.updated"]
+        assert executor_events[-1].payload["executor"]["id"] == executor["id"]
+        assert executor_events[-1].payload["executor"]["status"] == "approval_requested"
         completion_reviews = store._conn.execute(
             "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",
             (task["id"], "completion_review"),
@@ -2346,6 +2355,13 @@ class TestCompletionHardGate:
         assert completed_evidence["advisorRequestedEvidence"][0]["status"] == "satisfied"
         assert completed_task["commands"][0]["command"] == command
         assert completed_task["commands"][0]["status"] == "completed"
+        transitions = [
+            event.payload["executor"]["status"]
+            for event in captured_events
+            if event.type == "agent.evidence.executor.updated"
+            and event.payload["executor"]["id"] == executor["id"]
+        ]
+        assert transitions[-2:] == ["running", "satisfied"]
 
     def test_blocking_advisor_suggested_command_list_creates_independent_approvals(self, tmp_path: Any) -> None:
         commands = [
@@ -2629,12 +2645,18 @@ class TestCompletionHardGate:
         assert suggestion["approvalKind"] == "advisor_tool"
         assert suggestion["permissionDecision"] == "approval_required"
         assert result["structuredResult"]["completionGate"]["approvalIds"] == [approval_id]
+        executor = evidence["advisorEvidenceExecutor"][0]
+        assert executor["status"] == "approval_requested"
+        assert executor["executionType"] == "tool"
+        assert executor["toolName"] == "read_file"
+        assert executor["approvalId"] == approval_id
         approval_events = [
             event for event in captured_events
             if event.type == "approval.requested" and event.payload.get("kind") == "advisor_tool"
         ]
         assert len(approval_events) == 1
         assert approval_events[0].payload["advisorEvidence"]["requestKind"] == "artifact_readback"
+        assert approval_events[0].payload["advisorEvidence"]["executorId"] == executor["id"]
         completion_reviews = store._conn.execute(
             "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",
             (task["id"], "completion_review"),
@@ -2649,6 +2671,13 @@ class TestCompletionHardGate:
         tool_evidence = completed_evidence["toolResults"][0]
         assert tool_evidence["name"] == "read_file"
         assert tool_evidence["status"] == "completed"
+        transitions = [
+            event.payload["executor"]["status"]
+            for event in captured_events
+            if event.type == "agent.evidence.executor.updated"
+            and event.payload["executor"]["id"] == executor["id"]
+        ]
+        assert transitions[-2:] == ["running", "satisfied"]
 
     def test_blocking_advisor_suggested_mcp_tool_waits_for_approval_then_completes(self, tmp_path: Any) -> None:
         class RecordingAdvisor:
@@ -2839,6 +2868,10 @@ class TestCompletionHardGate:
         assert suggestion["executionState"] == "denied_by_policy"
         assert suggestion["requiresApproval"] is False
         assert "disabled" in suggestion["permissionReason"]
+        executor = result["structuredResult"]["completionEvidence"]["advisorEvidenceExecutor"][0]
+        assert executor["status"] == "blocked"
+        assert executor["toolName"] == "mcp__kb__lookup"
+        assert executor["permissionDecision"] == "deny"
         assert not [
             event for event in captured_events
             if event.type == "approval.requested" and event.payload.get("kind") == "advisor_tool"
@@ -3014,10 +3047,92 @@ class TestCompletionHardGate:
         assert "blocked" in suggestion["permissionReason"]
         evidence_event = next(event for event in captured_events if event.type == "agent.evidence.requested")
         assert evidence_event.payload["executionSuggestions"][0]["executionState"] == "denied_by_policy"
+        assert evidence_event.payload["executor"][0]["status"] == "blocked"
+        assert evidence_event.payload["executor"][0]["command"] == "python manage.py migrate --dry-run"
         assert not [
             event for event in captured_events
             if event.type == "approval.requested" and event.payload.get("kind") == "run_command"
         ]
+
+    def test_rejected_advisor_evidence_command_updates_executor_state(self, tmp_path: Any) -> None:
+        command = "python -c \"print('should not run')\""
+
+        class RecordingAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor wants a blocking proof command before completion.",
+                        fallback_reason=None,
+                        proposal_id="surface_rejected_command_1",
+                        confidence=0.88,
+                        payload={
+                            "surface_type": "generic_runtime_artifact",
+                            "evidence_requests": [
+                                {
+                                    "kind": "runtime_probe",
+                                    "summary": "Run a proof command before completing.",
+                                    "target": "runtime evidence",
+                                    "suggestedCommand": command,
+                                    "blocking": True,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="Completion depends on the requested proof command.",
+                    fallback_reason=None,
+                    proposal_id="completion_rejected_command_1",
+                    confidence=0.84,
+                    payload={"is_complete": True, "surface_type": "generic_runtime_artifact"},
+                )
+
+        rt = _make_runtime(tmp_path, decision_advisor=RecordingAdvisor(), enable_hooks=True, enable_run_command=True)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="rejected advisor command")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Update the runtime artifact",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "feature.py", "summary": "updated runtime artifact"}],
+            verification=[{"command": "python -m pytest", "status": "passed", "summary": "tests passed"}],
+        )
+
+        waiting = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated the runtime artifact.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        approval_id = waiting["structuredResult"]["completionGate"]["approvalIds"][0]
+        executor_id = waiting["structuredResult"]["completionEvidence"]["advisorEvidenceExecutor"][0]["id"]
+        result = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "rejected"})
+
+        assert result["task"]["status"] == "failed"
+        assert result["task"]["errorCode"] == "APPROVAL_REJECTED"
+        transitions = [
+            event.payload["executor"]["status"]
+            for event in captured_events
+            if event.type == "agent.evidence.executor.updated"
+            and event.payload["executor"]["id"] == executor_id
+        ]
+        assert transitions[-1] == "rejected"
 
     def test_static_frontend_script_syntax_failure_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)

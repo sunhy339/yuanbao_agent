@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -947,6 +948,12 @@ class TaskLifecycleMixin:
             "approvals": approvals,
             "approvalCounts": self._completion_approval_counts(approvals),
         }
+        executor_records = completion_evidence.get("advisorEvidenceExecutor")
+        if isinstance(executor_records, list) and executor_records:
+            audit["advisorEvidenceExecutor"] = [
+                record for record in executor_records
+                if isinstance(record, dict)
+            ][:20]
         if review_conclusion:
             audit["reviewConclusion"] = review_conclusion
         if completion_evidence.get("completionAdvisor"):
@@ -1017,7 +1024,7 @@ class TaskLifecycleMixin:
             if advisor_evidence:
                 item["advisorEvidence"] = {
                     key: advisor_evidence.get(key)
-                    for key in ("summary", "requestKind", "target", "surfaceType", "proposalRecordId")
+                    for key in ("summary", "requestKind", "target", "surfaceType", "proposalRecordId", "executorId")
                     if advisor_evidence.get(key) not in (None, "", [])
                 }
         return {key: value for key, value in item.items() if value not in (None, "", [], {})}
@@ -1265,6 +1272,10 @@ class TaskLifecycleMixin:
             advice=advice,
             requested_evidence=requested_evidence,
         )
+        executor_records = self._advisor_evidence_executor_records(
+            requested_evidence=requested_evidence,
+            execution_suggestions=execution_suggestions,
+        )
         if requested_evidence:
             completion_evidence["advisorRequestedEvidence"] = requested_evidence
         if execution_suggestions:
@@ -1279,6 +1290,12 @@ class TaskLifecycleMixin:
             if advisor_approvals:
                 completion_evidence["advisorEvidenceApprovals"] = advisor_approvals
             completion_evidence["advisorEvidenceExecutionSuggestions"] = execution_suggestions
+            executor_records = self._advisor_evidence_executor_records(
+                requested_evidence=requested_evidence,
+                execution_suggestions=execution_suggestions,
+            )
+        if executor_records:
+            completion_evidence["advisorEvidenceExecutor"] = executor_records
         advisory = self._product_surface_advisory_from_advice(advice)
         if advisory is not None:
             completion_evidence.setdefault("productAdvisories", []).append(advisory)
@@ -1289,6 +1306,7 @@ class TaskLifecycleMixin:
                 advice=advice,
                 requested_evidence=requested_evidence,
                 execution_suggestions=execution_suggestions,
+                executor_records=executor_records,
                 advisory=advisory,
             )
         return advice
@@ -1301,11 +1319,13 @@ class TaskLifecycleMixin:
         advice: dict[str, Any],
         requested_evidence: list[dict[str, Any]],
         execution_suggestions: list[dict[str, Any]] | None,
+        executor_records: list[dict[str, Any]] | None,
         advisory: dict[str, Any] | None,
     ) -> None:
         payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
         verification_intents = payload.get("verification_intents") if isinstance(payload.get("verification_intents"), list) else []
         execution_suggestions = execution_suggestions or []
+        executor_records = executor_records or []
         blocking_count = len([
             item for item in requested_evidence
             if isinstance(item, dict) and item.get("blocking") is True
@@ -1331,6 +1351,8 @@ class TaskLifecycleMixin:
         }
         if execution_suggestions:
             event_payload["executionSuggestions"] = execution_suggestions[:20]
+        if executor_records:
+            event_payload["executor"] = executor_records[:20]
         self._publish(
             session_id=session_id,
             task=task,
@@ -1346,6 +1368,7 @@ class TaskLifecycleMixin:
                 "proposalRecordId": event_payload["proposalRecordId"],
                 "evidenceRequests": requested_evidence[:20],
                 "executionSuggestions": execution_suggestions[:20],
+                "executor": executor_records[:20],
                 "verificationIntents": verification_intents[:10],
                 "blockingCount": blocking_count,
                 "missingBlockingCount": missing_blocking_count,
@@ -1366,6 +1389,276 @@ class TaskLifecycleMixin:
             if approval_id:
                 ids.append(approval_id)
         return ids
+
+    def _advisor_evidence_executor_records(
+        self,
+        *,
+        requested_evidence: list[dict[str, Any]],
+        execution_suggestions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        suggestions_by_index: dict[int, list[dict[str, Any]]] = {}
+        for suggestion in execution_suggestions:
+            if not isinstance(suggestion, dict):
+                continue
+            index = suggestion.get("requestIndex")
+            if isinstance(index, int):
+                suggestions_by_index.setdefault(index, []).append(suggestion)
+
+        for index, request in enumerate(requested_evidence):
+            if not isinstance(request, dict):
+                continue
+            suggestions = suggestions_by_index.get(index) or []
+            if not suggestions:
+                status = "satisfied" if request.get("status") == "satisfied" else "requested"
+                reason = "Advisor requested semantic evidence without a runnable suggestion."
+                if request.get("status") == "satisfied":
+                    reason = "Advisor-requested evidence is already satisfied by available runtime evidence."
+                records.append(self._advisor_evidence_executor_record(
+                    request=request,
+                    request_index=index,
+                    suggestion=None,
+                    status=status,
+                    reason=reason,
+                ))
+                continue
+            for suggestion in suggestions:
+                records.append(self._advisor_evidence_executor_record(
+                    request=request,
+                    request_index=index,
+                    suggestion=suggestion,
+                ))
+        return records[:20]
+
+    def _advisor_evidence_executor_record(
+        self,
+        *,
+        request: dict[str, Any],
+        request_index: int,
+        suggestion: dict[str, Any] | None,
+        status: str | None = None,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        suggestion = suggestion if isinstance(suggestion, dict) else {}
+        status = status or self._advisor_evidence_executor_status(request=request, suggestion=suggestion)
+        record: dict[str, Any] = {
+            "id": self._advisor_evidence_executor_id(request=request, request_index=request_index, suggestion=suggestion),
+            "status": status,
+            "source": request.get("source") or suggestion.get("source") or "llm_product_surface_advisor",
+            "requestIndex": request_index,
+            "requestKind": request.get("kind") or suggestion.get("requestKind"),
+            "summary": request.get("summary") or suggestion.get("summary"),
+            "target": request.get("target") or suggestion.get("target"),
+            "blocking": request.get("blocking") is True,
+            "evidenceStatus": request.get("status"),
+            "proposalRecordId": request.get("proposalRecordId") or suggestion.get("proposalRecordId"),
+            "reason": reason or self._advisor_evidence_executor_reason(status=status, suggestion=suggestion),
+        }
+        if suggestion:
+            execution_type = suggestion.get("type") or suggestion.get("toolName")
+            record.update({
+                "executionType": execution_type,
+                "toolName": suggestion.get("toolName"),
+                "executionMode": suggestion.get("executionMode"),
+                "permissionDecision": suggestion.get("permissionDecision"),
+                "permissionReason": suggestion.get("permissionReason"),
+                "requiresApproval": suggestion.get("requiresApproval") is True,
+                "approvalId": suggestion.get("approvalId"),
+                "approvalKind": suggestion.get("approvalKind"),
+                "approvalDecision": suggestion.get("approvalDecision"),
+                "capability": suggestion.get("capability"),
+            })
+            if suggestion.get("type") == "run_command":
+                record["command"] = suggestion.get("command")
+            elif isinstance(suggestion.get("arguments"), dict):
+                record["arguments"] = suggestion.get("arguments")
+        if isinstance(request.get("suggestedTool"), dict) and not record.get("toolName"):
+            record["toolName"] = request["suggestedTool"].get("name") or request["suggestedTool"].get("toolName")
+        if request.get("suggestedCommand") and not record.get("command"):
+            record["command"] = request.get("suggestedCommand")
+            record.setdefault("toolName", "run_command")
+            record.setdefault("executionType", "run_command")
+        return {key: value for key, value in record.items() if value not in (None, "", [], {})}
+
+    def _advisor_evidence_executor_status(
+        self,
+        *,
+        request: dict[str, Any],
+        suggestion: dict[str, Any],
+    ) -> str:
+        if request.get("status") == "satisfied":
+            return "satisfied"
+        state = str(suggestion.get("executionState") or "").strip()
+        if state == "approval_pending":
+            return "approval_requested"
+        if state == "approval_approved":
+            return "approved"
+        if state == "approval_rejected":
+            return "rejected"
+        if state == "approval_unavailable":
+            return "failed"
+        if state == "denied_by_policy":
+            return "blocked"
+        if state in {"approval_required", "ready_for_executor"}:
+            return state
+        if not suggestion:
+            return "requested"
+        return state or "requested"
+
+    @staticmethod
+    def _advisor_evidence_executor_reason(status: str, suggestion: dict[str, Any]) -> str:
+        if status == "satisfied":
+            return "Evidence is satisfied by a matching successful runtime result."
+        if status == "approval_requested":
+            return "Runtime created an explicit approval before executing advisor-requested evidence."
+        if status == "approved":
+            return "Evidence execution was approved and is ready to resume."
+        if status == "rejected":
+            return "Evidence execution approval was rejected."
+        if status == "blocked":
+            return str(suggestion.get("permissionReason") or "Evidence execution is blocked by policy.")
+        if status == "failed":
+            return str(suggestion.get("executionError") or "Evidence executor setup failed.")
+        if status == "approval_required":
+            return "Advisor suggested executable evidence; runtime requires approval before running it."
+        if status == "ready_for_executor":
+            return "Advisor suggested executable evidence and policy permits it; runtime will still gate blocking evidence through approval."
+        return "Advisor requested semantic evidence for runtime tracking."
+
+    @staticmethod
+    def _advisor_evidence_executor_id(
+        *,
+        request: dict[str, Any],
+        request_index: int,
+        suggestion: dict[str, Any],
+    ) -> str:
+        raw = {
+            "requestIndex": request_index,
+            "kind": request.get("kind"),
+            "target": request.get("target"),
+            "summary": request.get("summary"),
+            "command": suggestion.get("command") or request.get("suggestedCommand"),
+            "toolName": suggestion.get("toolName") or (
+                request.get("suggestedTool", {}).get("name")
+                if isinstance(request.get("suggestedTool"), dict)
+                else None
+            ),
+            "arguments": suggestion.get("arguments") or (
+                request.get("suggestedTool", {}).get("arguments")
+                if isinstance(request.get("suggestedTool"), dict)
+                else None
+            ),
+            "proposalRecordId": request.get("proposalRecordId") or suggestion.get("proposalRecordId"),
+        }
+        encoded = json.dumps(raw, ensure_ascii=False, sort_keys=True, default=str)
+        return "evexec_" + hashlib.sha1(encoded.encode("utf-8")).hexdigest()[:16]
+
+    def _publish_advisor_evidence_executor_event(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        record: dict[str, Any],
+        transition: str | None = None,
+    ) -> None:
+        payload = {
+            "executor": record,
+            "transition": transition or record.get("status"),
+            "source": record.get("source") or "llm_product_surface_advisor",
+        }
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="agent.evidence.executor.updated",
+            payload={key: value for key, value in payload.items() if value not in (None, "", [], {})},
+            visibility="panel",
+        )
+
+    def _publish_advisor_evidence_executor_event_from_approval(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        approval: dict[str, Any],
+        request: dict[str, Any],
+        status: str,
+        transition: str | None = None,
+        result: dict[str, Any] | None = None,
+        reason: str | None = None,
+    ) -> None:
+        advisor_evidence = request.get("advisorEvidence") if isinstance(request.get("advisorEvidence"), dict) else {}
+        if not advisor_evidence:
+            return
+        executor_id = str(advisor_evidence.get("executorId") or "").strip()
+        if not executor_id:
+            return
+        tool_name = str(request.get("toolName") or request.get("name") or "").strip()
+        if not tool_name and approval.get("kind") == "run_command":
+            tool_name = "run_command"
+        record: dict[str, Any] = {
+            "id": executor_id,
+            "status": status,
+            "source": advisor_evidence.get("source") or "llm_product_surface_advisor",
+            "requestIndex": advisor_evidence.get("requestIndex"),
+            "requestKind": advisor_evidence.get("requestKind"),
+            "summary": advisor_evidence.get("summary"),
+            "target": advisor_evidence.get("target"),
+            "blocking": advisor_evidence.get("blocking") is True,
+            "proposalRecordId": advisor_evidence.get("proposalRecordId"),
+            "approvalId": approval.get("id"),
+            "approvalKind": approval.get("kind"),
+            "approvalDecision": approval.get("decision"),
+            "toolName": tool_name,
+            "reason": reason or self._advisor_evidence_executor_result_reason(status=status, result=result),
+        }
+        if approval.get("kind") == "run_command":
+            record.update({
+                "executionType": "run_command",
+                "command": request.get("command"),
+                "cwd": request.get("cwd"),
+                "shell": request.get("shell"),
+            })
+        else:
+            record.update({
+                "executionType": "tool",
+                "arguments": request.get("arguments") if isinstance(request.get("arguments"), dict) else None,
+                "capability": request.get("capability"),
+            })
+        if isinstance(result, dict):
+            record["result"] = {
+                key: result.get(key)
+                for key in ("status", "exitCode", "durationMs", "commandLogId", "toolCallId", "failureKind", "recoveryHint")
+                if result.get(key) not in (None, "", [], {})
+            }
+            command_log = result.get("commandLog") if isinstance(result.get("commandLog"), dict) else {}
+            if command_log.get("id"):
+                record.setdefault("result", {})["commandLogId"] = command_log.get("id")
+        self._publish_advisor_evidence_executor_event(
+            session_id=session_id,
+            task=task,
+            record={key: value for key, value in record.items() if value not in (None, "", [], {})},
+            transition=transition or status,
+        )
+
+    @staticmethod
+    def _advisor_evidence_executor_result_reason(
+        *,
+        status: str,
+        result: dict[str, Any] | None,
+    ) -> str:
+        result = result if isinstance(result, dict) else {}
+        if status == "running":
+            return "Approved advisor-requested evidence is now executing."
+        if status == "satisfied":
+            return "Advisor-requested evidence executed successfully."
+        if status == "failed":
+            result_status = str(result.get("status") or "").strip()
+            if result_status:
+                return f"Advisor-requested evidence execution failed with status {result_status}."
+            return "Advisor-requested evidence execution failed."
+        if status == "rejected":
+            return "Advisor-requested evidence execution was rejected by the user."
+        return "Advisor-requested evidence executor state changed."
 
     def _create_advisor_evidence_execution_approvals(
         self,
@@ -1398,6 +1691,16 @@ class TaskLifecycleMixin:
             except Exception as exc:  # noqa: BLE001
                 suggestion["executionState"] = "approval_unavailable"
                 suggestion["executionError"] = str(exc)
+                self._publish_advisor_evidence_executor_event(
+                    session_id=session_id,
+                    task=task,
+                    record=self._advisor_evidence_executor_record(
+                        request=request,
+                        request_index=int(suggestion.get("requestIndex") or 0),
+                        suggestion=suggestion,
+                    ),
+                    transition="approval_unavailable",
+                )
                 continue
 
             approval = None
@@ -1454,6 +1757,17 @@ class TaskLifecycleMixin:
                     "capability": execution_request.get("capability"),
                 })
             approvals.append({key: value for key, value in record.items() if value not in ("", None)})
+            executor_record = self._advisor_evidence_executor_record(
+                request=request,
+                request_index=int(suggestion.get("requestIndex") or 0),
+                suggestion=suggestion,
+            )
+            self._publish_advisor_evidence_executor_event(
+                session_id=session_id,
+                task=task,
+                record=executor_record,
+                transition=execution_state,
+            )
             if created:
                 self._publish_advisor_evidence_approval_requested(
                     session_id=session_id,
@@ -1545,6 +1859,11 @@ class TaskLifecycleMixin:
         advisor_metadata = {
             "source": "llm_product_surface_advisor",
             "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
+            "executorId": self._advisor_evidence_executor_id(
+                request=request,
+                request_index=int(suggestion.get("requestIndex") or 0),
+                suggestion=suggestion,
+            ),
             "requestIndex": suggestion.get("requestIndex"),
             "requestKind": suggestion.get("requestKind"),
             "summary": suggestion.get("summary"),
@@ -1596,6 +1915,11 @@ class TaskLifecycleMixin:
         advisor_metadata = {
             "source": "llm_product_surface_advisor",
             "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
+            "executorId": self._advisor_evidence_executor_id(
+                request=request,
+                request_index=int(suggestion.get("requestIndex") or 0),
+                suggestion=suggestion,
+            ),
             "requestIndex": suggestion.get("requestIndex"),
             "requestKind": suggestion.get("requestKind"),
             "summary": suggestion.get("summary"),

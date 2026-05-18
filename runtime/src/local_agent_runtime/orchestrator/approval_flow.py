@@ -144,6 +144,14 @@ class ApprovalFlowMixin:
             advisor_evidence = request.get("advisorEvidence") if isinstance(request, dict) else None
             if not isinstance(advisor_evidence, dict):
                 return {"approval": approval, "task": task}
+            self._publish_advisor_evidence_executor_event_from_approval(
+                session_id=task["sessionId"],
+                task=task,
+                approval=approval,
+                request=request,
+                status="rejected",
+                transition="approval_rejected",
+            )
             summary = (
                 "Advisor-requested evidence command was rejected by the user."
                 if approval["kind"] == "run_command"
@@ -508,6 +516,14 @@ class ApprovalFlowMixin:
 
     def _resume_approved_command(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
         request = json.loads(approval.get("requestJson") or "{}")
+        self._publish_advisor_evidence_executor_event_from_approval(
+            session_id=task["sessionId"],
+            task=task,
+            approval=approval,
+            request=request,
+            status="running",
+            transition="execution_started",
+        )
         tool_spec = {
             "name": "run_command",
             "arguments": {
@@ -541,6 +557,15 @@ class ApprovalFlowMixin:
 
             if cmd_status == "failed":
                 summary = f"Command failed with status {cmd_status} and exit code {exit_code}."
+                self._publish_advisor_evidence_executor_event_from_approval(
+                    session_id=task["sessionId"],
+                    task=runtime_task,
+                    approval=approval,
+                    request=request,
+                    status="failed",
+                    transition="execution_failed",
+                    result=command_result,
+                )
                 runtime_task["plan"] = self._planner.advance(
                     runtime_task["plan"],
                     "run-command",
@@ -605,6 +630,15 @@ class ApprovalFlowMixin:
                 f"Approved command finished with status {cmd_status} "
                 f"and exit code {exit_code}."
             )
+            self._publish_advisor_evidence_executor_event_from_approval(
+                session_id=task["sessionId"],
+                task=runtime_task,
+                approval=approval,
+                request=request,
+                status="satisfied",
+                transition="execution_succeeded",
+                result=command_result,
+            )
             runtime_task = self._complete_task(
                 session_id=task["sessionId"],
                 task=runtime_task,
@@ -618,6 +652,15 @@ class ApprovalFlowMixin:
             )
             return runtime_task
         except Exception as exc:  # noqa: BLE001
+            self._publish_advisor_evidence_executor_event_from_approval(
+                session_id=task["sessionId"],
+                task=runtime_task,
+                approval=approval,
+                request=request,
+                status="failed",
+                transition="execution_failed",
+                result={"status": "failed", "error": str(exc)},
+            )
             return self._fail_task(
                 session_id=task["sessionId"],
                 task={**runtime_task, "sessionId": task["sessionId"]},
@@ -645,6 +688,14 @@ class ApprovalFlowMixin:
                 summary="Advisor evidence run_command approvals must use the run_command approval flow.",
                 error_code="ADVISOR_TOOL_APPROVAL_INVALID",
             )
+        self._publish_advisor_evidence_executor_event_from_approval(
+            session_id=task["sessionId"],
+            task=task,
+            approval=approval,
+            request=request,
+            status="running",
+            transition="execution_started",
+        )
         raw_arguments = request.get("arguments")
         arguments = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
         workspace_root = str(request.get("workspaceRoot") or arguments.get("workspaceRoot") or "").strip()
@@ -678,6 +729,15 @@ class ApprovalFlowMixin:
                     f"Advisor evidence tool {tool_name} could not complete"
                     f" with status {status or 'failed'}."
                 )
+                self._publish_advisor_evidence_executor_event_from_approval(
+                    session_id=task["sessionId"],
+                    task=runtime_task,
+                    approval=approval,
+                    request=request,
+                    status="failed",
+                    transition="execution_failed",
+                    result=result,
+                )
                 return self._fail_task(
                     session_id=task["sessionId"],
                     task={**runtime_task, "sessionId": task["sessionId"]},
@@ -685,6 +745,18 @@ class ApprovalFlowMixin:
                     error_code="ADVISOR_TOOL_EXECUTION_FAILED",
                 )
             summary = f"Approved advisor evidence tool {tool_name} finished."
+            self._publish_advisor_evidence_executor_event_from_approval(
+                session_id=task["sessionId"],
+                task=runtime_task,
+                approval=approval,
+                request=request,
+                status="satisfied",
+                transition="execution_succeeded",
+                result={
+                    **result,
+                    "toolCallId": tool_result.get("toolCallId") or tool_result.get("id"),
+                },
+            )
             return self._complete_task(
                 session_id=task["sessionId"],
                 task=runtime_task,
@@ -694,6 +766,15 @@ class ApprovalFlowMixin:
                 skip_reflection=True,
             )
         except Exception as exc:  # noqa: BLE001
+            self._publish_advisor_evidence_executor_event_from_approval(
+                session_id=task["sessionId"],
+                task=runtime_task,
+                approval=approval,
+                request=request,
+                status="failed",
+                transition="execution_failed",
+                result={"status": "failed", "error": str(exc)},
+            )
             return self._fail_task(
                 session_id=task["sessionId"],
                 task={**runtime_task, "sessionId": task["sessionId"]},

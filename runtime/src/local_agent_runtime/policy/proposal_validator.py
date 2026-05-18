@@ -370,6 +370,34 @@ def validate_product_surface_decision(payload: dict[str, Any]) -> list[str]:
             status = item.get("status")
             if status is not None and not isinstance(status, str):
                 reasons.append(f"evidence_requests[{index}].status must be a string when provided")
+            suggested_command = item.get("suggestedCommand")
+            if suggested_command is None:
+                suggested_command = item.get("suggested_command")
+            if suggested_command is not None and not isinstance(suggested_command, str):
+                reasons.append(f"evidence_requests[{index}].suggestedCommand must be a string when provided")
+            suggested_commands = item.get("suggestedCommands")
+            if suggested_commands is None:
+                suggested_commands = item.get("suggested_commands")
+            if suggested_commands is not None:
+                if not isinstance(suggested_commands, list):
+                    reasons.append(f"evidence_requests[{index}].suggestedCommands must be a list when provided")
+                else:
+                    for command_index, command_item in enumerate(suggested_commands):
+                        if isinstance(command_item, str):
+                            if not command_item.strip():
+                                reasons.append(
+                                    f"evidence_requests[{index}].suggestedCommands[{command_index}] must not be empty"
+                                )
+                        elif isinstance(command_item, dict):
+                            command = command_item.get("suggestedCommand") or command_item.get("suggested_command") or command_item.get("command")
+                            if not isinstance(command, str) or not command.strip():
+                                reasons.append(
+                                    f"evidence_requests[{index}].suggestedCommands[{command_index}].command must be a non-empty string"
+                                )
+                        else:
+                            reasons.append(
+                                f"evidence_requests[{index}].suggestedCommands[{command_index}] must be a string or object"
+                            )
             suggested_tool = item.get("suggestedTool")
             if suggested_tool is None:
                 suggested_tool = item.get("suggested_tool")
@@ -383,6 +411,27 @@ def validate_product_surface_decision(payload: dict[str, Any]) -> list[str]:
                     arguments = suggested_tool.get("arguments", {})
                     if arguments is not None and not isinstance(arguments, dict):
                         reasons.append(f"evidence_requests[{index}].suggestedTool.arguments must be an object when provided")
+            suggested_tools = item.get("suggestedTools")
+            if suggested_tools is None:
+                suggested_tools = item.get("suggested_tools")
+            if suggested_tools is not None:
+                if not isinstance(suggested_tools, list):
+                    reasons.append(f"evidence_requests[{index}].suggestedTools must be a list when provided")
+                else:
+                    for tool_index, tool_item in enumerate(suggested_tools):
+                        if not isinstance(tool_item, dict):
+                            reasons.append(f"evidence_requests[{index}].suggestedTools[{tool_index}] must be an object")
+                            continue
+                        name = tool_item.get("name") or tool_item.get("toolName")
+                        if not isinstance(name, str) or not name.strip():
+                            reasons.append(
+                                f"evidence_requests[{index}].suggestedTools[{tool_index}].name must be a non-empty string"
+                            )
+                        arguments = tool_item.get("arguments", {})
+                        if arguments is not None and not isinstance(arguments, dict):
+                            reasons.append(
+                                f"evidence_requests[{index}].suggestedTools[{tool_index}].arguments must be an object when provided"
+                            )
     return reasons
 
 

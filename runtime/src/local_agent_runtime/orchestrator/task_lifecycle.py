@@ -2038,24 +2038,16 @@ class TaskLifecycleMixin:
                 "summary": summary,
                 "blocking": bool(item.get("blocking")) if isinstance(item.get("blocking"), bool) else False,
             }
-            if item.get("suggestedCommand") in (None, "") and item.get("suggested_command") not in (None, ""):
-                item = {**item, "suggestedCommand": item.get("suggested_command")}
             for key in ("target", "rationale", "suggestedCommand", "domain", "cwd", "shell"):
                 if item.get(key) not in (None, ""):
                     request[key] = item[key]
-            suggested_tool = item.get("suggestedTool")
-            if suggested_tool is None:
-                suggested_tool = item.get("suggested_tool")
-            if isinstance(suggested_tool, dict):
-                tool_name = suggested_tool.get("name") or suggested_tool.get("toolName")
-                arguments = suggested_tool.get("arguments")
-                normalized_tool: dict[str, Any] = {}
-                if isinstance(tool_name, str) and tool_name.strip():
-                    normalized_tool["name"] = tool_name.strip()
-                if isinstance(arguments, dict):
-                    normalized_tool["arguments"] = dict(arguments)
-                if normalized_tool:
-                    request["suggestedTool"] = normalized_tool
+            if request.get("suggestedCommand") in (None, "") and item.get("suggested_command") not in (None, ""):
+                request["suggestedCommand"] = item.get("suggested_command")
+            suggested_tool = self._normalize_advisor_evidence_tool_spec(
+                item.get("suggestedTool") if item.get("suggestedTool") is not None else item.get("suggested_tool")
+            )
+            if suggested_tool:
+                request["suggestedTool"] = suggested_tool
             for key in ("timeoutMs", "timeout_ms", "background"):
                 if key in item and item.get(key) not in (None, ""):
                     request[key] = item[key]
@@ -2063,8 +2055,80 @@ class TaskLifecycleMixin:
                 request["satisfied"] = item["satisfied"]
             if isinstance(item.get("status"), str) and item["status"].strip():
                 request["advisorStatus"] = item["status"].strip()
-            requests.append(request)
+            expanded = self._expand_advisor_evidence_execution_requests(request=request, source=item)
+            requests.extend(expanded or [request])
         return requests[:20]
+
+    def _expand_advisor_evidence_execution_requests(
+        self,
+        *,
+        request: dict[str, Any],
+        source: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        commands = self._normalize_advisor_evidence_command_list(
+            source.get("suggestedCommands") if source.get("suggestedCommands") is not None else source.get("suggested_commands")
+        )
+        tools = self._normalize_advisor_evidence_tool_list(
+            source.get("suggestedTools") if source.get("suggestedTools") is not None else source.get("suggested_tools")
+        )
+        if not commands and not tools:
+            return []
+        expanded: list[dict[str, Any]] = []
+        for command in commands:
+            item = {key: value for key, value in request.items() if key != "suggestedTool"}
+            item.update(command)
+            expanded.append(item)
+        for tool in tools:
+            item = {key: value for key, value in request.items() if key != "suggestedCommand"}
+            item["suggestedTool"] = tool
+            expanded.append(item)
+        return expanded
+
+    @staticmethod
+    def _normalize_advisor_evidence_command_list(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        commands: list[dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, str):
+                command = item.strip()
+                if command:
+                    commands.append({"suggestedCommand": command})
+                continue
+            if not isinstance(item, dict):
+                continue
+            command = str(item.get("suggestedCommand") or item.get("suggested_command") or item.get("command") or "").strip()
+            if not command:
+                continue
+            normalized: dict[str, Any] = {"suggestedCommand": command}
+            for key in ("cwd", "shell", "timeoutMs", "timeout_ms", "background", "target", "rationale"):
+                if item.get(key) not in (None, ""):
+                    normalized[key] = item[key]
+            commands.append(normalized)
+        return commands
+
+    def _normalize_advisor_evidence_tool_list(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        tools: list[dict[str, Any]] = []
+        for item in value:
+            normalized = self._normalize_advisor_evidence_tool_spec(item)
+            if normalized:
+                tools.append(normalized)
+        return tools
+
+    @staticmethod
+    def _normalize_advisor_evidence_tool_spec(value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        tool_name = value.get("name") or value.get("toolName")
+        arguments = value.get("arguments")
+        normalized_tool: dict[str, Any] = {}
+        if isinstance(tool_name, str) and tool_name.strip():
+            normalized_tool["name"] = tool_name.strip()
+        if isinstance(arguments, dict):
+            normalized_tool["arguments"] = dict(arguments)
+        return normalized_tool
 
     def _advisor_evidence_request_status(
         self,

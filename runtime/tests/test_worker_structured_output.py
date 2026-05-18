@@ -2275,6 +2275,94 @@ class TestCompletionHardGate:
         assert completed_task["commands"][0]["command"] == command
         assert completed_task["commands"][0]["status"] == "completed"
 
+    def test_blocking_advisor_suggested_command_list_creates_independent_approvals(self, tmp_path: Any) -> None:
+        commands = [
+            "python -c \"print('server smoke ok')\"",
+            "python -c \"print('persistence smoke ok')\"",
+        ]
+
+        class RecordingAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor wants two proof commands before completion.",
+                        fallback_reason=None,
+                        proposal_id="surface_blocking_command_list_1",
+                        confidence=0.88,
+                        payload={
+                            "surface_type": "fullstack_local_flow",
+                            "evidence_requests": [
+                                {
+                                    "kind": "flow_probe",
+                                    "summary": "Run server and persistence proof commands before completing.",
+                                    "target": "local flow evidence",
+                                    "suggestedCommands": commands,
+                                    "blocking": True,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="Completion is acceptable once the requested probes pass.",
+                    fallback_reason=None,
+                    proposal_id="completion_blocking_command_list_1",
+                    confidence=0.84,
+                    payload={"is_complete": True, "surface_type": "fullstack_local_flow"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True, enable_run_command=True)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        project = tmp_path / "project"
+        src = project / "src"
+        src.mkdir(parents=True)
+        (src / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="blocking advisor command list")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Update the full-stack local flow",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "src/feature.py", "summary": "updated runtime artifact"}],
+            verification=[
+                {"command": "python -m pytest", "status": "passed", "summary": "tests passed"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated the full-stack local flow and verified tests.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        evidence = result["structuredResult"]["completionEvidence"]
+        requested = evidence["advisorRequestedEvidence"]
+        suggestions = evidence["advisorEvidenceExecutionSuggestions"]
+        approval_ids = result["structuredResult"]["completionGate"]["approvalIds"]
+        assert [item["suggestedCommand"] for item in requested] == commands
+        assert [item["command"] for item in suggestions] == commands
+        assert len(approval_ids) == 2
+        assert all(item["executionMode"] == "approval_then_run_command" for item in suggestions)
+        approval_events = [
+            event for event in captured_events
+            if event.type == "approval.requested" and event.payload.get("kind") == "run_command"
+        ]
+        assert len(approval_events) == 2
+
     def test_blocking_advisor_suggested_command_with_allow_still_requires_approval(self, tmp_path: Any) -> None:
         command = "python -c \"print('advisor allow evidence ok')\""
 

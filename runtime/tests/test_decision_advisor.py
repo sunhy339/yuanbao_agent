@@ -567,12 +567,56 @@ class TestDecisionAdvisorProductSurfaceDecision:
         assert result.payload["evidence_requests"][0]["kind"] == "design_review"
         assert result.payload["evidence_requests"][0]["blocking"] is True
 
+    def test_product_surface_decision_accepts_multi_step_evidence_requests(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "surface_type": "local_fullstack_flow",
+                "evidence_requests": [
+                    {
+                        "kind": "flow_probe",
+                        "summary": "Run multiple objective proof steps.",
+                        "blocking": True,
+                        "suggestedCommands": [
+                            "python -m pytest -q",
+                            {"command": "npm run build", "cwd": "app"},
+                        ],
+                        "suggestedTools": [
+                            {"name": "read_file", "arguments": {"path": "README.md"}},
+                        ],
+                    },
+                ],
+            },
+            "confidence": 0.84,
+            "rationale": "The task needs multiple proof steps.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "product_surface_decision",
+            {
+                "goal": "Verify local full-stack artifact",
+                "summary": "Implemented backend, frontend, and docs.",
+                "changed_files": ["app/main.py", "app/package.json", "README.md"],
+                "objective_signals": {"acceptance": []},
+            },
+        )
+
+        assert result.accepted is True
+        request = result.payload["evidence_requests"][0]
+        assert request["suggestedCommands"][1]["command"] == "npm run build"
+        assert request["suggestedTools"][0]["name"] == "read_file"
+
     def test_product_surface_decision_rejects_bad_evidence_request_shape(self) -> None:
         provider = _GoodProvider(response=json.dumps({
             "proposal": {
                 "surface_type": "backend_module",
                 "evidence_requests": [
-                    {"kind": 123, "blocking": "yes"},
+                    {
+                        "kind": 123,
+                        "blocking": "yes",
+                        "suggestedCommands": "pytest",
+                        "suggestedTools": [{"name": "", "arguments": []}],
+                    },
                 ],
                 "recommended_verification": "pytest",
             },
@@ -595,6 +639,9 @@ class TestDecisionAdvisorProductSurfaceDecision:
         assert result.source == "validation_rejected"
         assert "evidence_requests[0].kind must be a string when provided" in result.validation_reasons
         assert "evidence_requests[0].blocking must be a boolean when provided" in result.validation_reasons
+        assert "evidence_requests[0].suggestedCommands must be a list when provided" in result.validation_reasons
+        assert "evidence_requests[0].suggestedTools[0].name must be a non-empty string" in result.validation_reasons
+        assert "evidence_requests[0].suggestedTools[0].arguments must be an object when provided" in result.validation_reasons
         assert "recommended_verification must be a list when provided" in result.validation_reasons
 
 

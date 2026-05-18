@@ -277,6 +277,7 @@ function buildCompletionEvidenceView(request: Record<string, unknown>): Approval
     summary: compactCompletionSummary(reason, gateStatus, evidenceLevel),
     metrics,
     issues,
+    audit: readCompletionAudit(evidence["audit"]),
     reviewConclusion: readCompletionReviewConclusion(
       evidence["reviewConclusion"] ?? request["completionReviewConclusion"],
     ),
@@ -301,6 +302,61 @@ function mergeCompletionReviewConclusion(
     ...evidence,
     reviewConclusion,
   };
+}
+
+function readCompletionAudit(raw: unknown): ApprovalCompletionEvidenceView["audit"] | undefined {
+  const record = readRecord(raw);
+  if (!record) return undefined;
+  const audit: NonNullable<ApprovalCompletionEvidenceView["audit"]> = {};
+  const approvalCounts = readRecord(record["approvalCounts"]);
+  if (approvalCounts) {
+    const counts: NonNullable<NonNullable<ApprovalCompletionEvidenceView["audit"]>["approvalCounts"]> = {};
+    for (const key of ["total", "approved", "rejected", "pending"] as const) {
+      const value = approvalCounts[key];
+      if (typeof value === "number" && Number.isFinite(value)) {
+        counts[key] = value;
+      }
+    }
+    if (Object.keys(counts).length) {
+      audit.approvalCounts = counts;
+    }
+  }
+  if (Array.isArray(record["approvals"])) {
+    const approvals = record["approvals"]
+      .map((item) => readRecord(item))
+      .filter((item): item is Record<string, unknown> => Boolean(item))
+      .map((item) => ({
+        approvalId: readString(item["approvalId"]),
+        kind: readString(item["kind"]),
+        decision: readString(item["decision"]),
+        decidedBy: readString(item["decidedBy"]),
+        gateStatus: readString(item["gateStatus"]),
+        evidenceLevel: readString(item["evidenceLevel"]),
+        summary: readString(item["summary"]),
+        reviewStatus: readString(item["reviewStatus"]),
+        verificationStatus: readString(item["verificationStatus"]),
+      }))
+      .map((item) => Object.fromEntries(Object.entries(item).filter(([, value]) => value !== undefined)));
+    if (approvals.length) {
+      audit.approvals = approvals;
+    }
+  }
+  const completionAdvisor = readRecord(record["completionAdvisor"]);
+  if (completionAdvisor) {
+    const advisor: NonNullable<NonNullable<ApprovalCompletionEvidenceView["audit"]>["completionAdvisor"]> = {};
+    const accepted = completionAdvisor["accepted"];
+    if (typeof accepted === "boolean") advisor.accepted = accepted;
+    const confidence = completionAdvisor["confidence"];
+    if (typeof confidence === "number" && Number.isFinite(confidence)) advisor.confidence = confidence;
+    for (const key of ["source", "proposalRecordId", "fallback_reason"] as const) {
+      const value = readString(completionAdvisor[key]);
+      if (value) advisor[key] = value;
+    }
+    if (Object.keys(advisor).length) {
+      audit.completionAdvisor = advisor;
+    }
+  }
+  return Object.keys(audit).length ? audit : undefined;
 }
 
 function readCompletionReviewConclusion(raw: unknown): ApprovalCompletionEvidenceView["reviewConclusion"] | undefined {

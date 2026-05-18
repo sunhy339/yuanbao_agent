@@ -348,8 +348,14 @@
   .runtime-cockpit-header,
   .runtime-cockpit-metrics,
   .runtime-cockpit-lower,
+  .runtime-cockpit-detail summary,
+  .runtime-cockpit-detail dl div,
   .session-runtime-lanes {
     grid-template-columns: 1fr;
+  }
+
+  .runtime-cockpit-detail summary strong {
+    justify-self: start;
   }
 }
 

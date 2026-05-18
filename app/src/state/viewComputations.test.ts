@@ -85,6 +85,29 @@ describe("computeApprovalCards completion evidence", () => {
         completionEvidence: {
           evidenceLevel: "summary_only",
           counts: {},
+          audit: {
+            approvalCounts: {
+              total: 1,
+              approved: 1,
+              rejected: 0,
+              pending: 0,
+            },
+            approvals: [
+              {
+                approvalId: "approval_1",
+                kind: "completion_review",
+                decision: "approved",
+                decidedBy: "user",
+                summary: "Completion review approved by user.",
+              },
+            ],
+            completionAdvisor: {
+              accepted: true,
+              source: "llm",
+              confidence: 0.8,
+              proposalRecordId: "proposal_1",
+            },
+          },
         },
       }),
       {
@@ -110,5 +133,8 @@ describe("computeApprovalCards completion evidence", () => {
     expect(card.status).toBe("approved");
     expect(card.completionEvidence?.reviewConclusion?.decision).toBe("approved");
     expect(card.completionEvidence?.reviewConclusion?.decidedBy).toBe("user");
+    expect(card.completionEvidence?.audit?.approvalCounts?.approved).toBe(1);
+    expect(card.completionEvidence?.audit?.approvals?.[0]?.kind).toBe("completion_review");
+    expect(card.completionEvidence?.audit?.completionAdvisor?.proposalRecordId).toBe("proposal_1");
   });
 });

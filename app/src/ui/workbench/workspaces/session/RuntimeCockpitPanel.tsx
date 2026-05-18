@@ -29,6 +29,12 @@ interface CockpitMetric {
   tone?: "neutral" | "success" | "warning" | "danger" | "primary" | "info";
 }
 
+interface CockpitSignal {
+  label: string;
+  value: string;
+  tone?: CockpitMetric["tone"];
+}
+
 function formatBudgetRatio(contextPreview?: SessionWorkspaceContextPreview) {
   const stats = contextPreview?.budgetStats;
   const used = stats?.estimatedInputTokens ?? stats?.estimatedTokens ?? stats?.messageTokens;
@@ -55,6 +61,179 @@ function latestBlockingApproval(approvals?: SessionWorkspaceApproval[]) {
   return approvals
     ?.filter((approval) => approval.status === "pending")
     .sort((left, right) => (right.requestedAt ?? 0) - (left.requestedAt ?? 0))[0];
+}
+
+function compactSignals(signals: Array<CockpitSignal | null | undefined>, limit = 4): CockpitSignal[] {
+  return signals.filter((signal): signal is CockpitSignal => Boolean(signal?.value)).slice(0, limit);
+}
+
+function latestTraceSignals(
+  traces: SessionWorkspaceTrace[] | undefined,
+  matcher: (trace: SessionWorkspaceTrace) => boolean,
+  limit = 3,
+): CockpitSignal[] {
+  return [...(traces ?? [])]
+    .filter(matcher)
+    .sort((left, right) => (right.time ?? 0) - (left.time ?? 0))
+    .slice(0, limit)
+    .map((trace) => ({
+      label: trace.type,
+      value: trace.summary || trace.detail || trace.status || trace.source || "recorded",
+      tone: ["failed", "error", "cancelled"].includes(String(trace.status ?? "").toLowerCase())
+        ? "danger"
+        : trace.status === "completed"
+          ? "success"
+          : "neutral",
+    }));
+}
+
+function isProviderTrace(trace: SessionWorkspaceTrace) {
+  const type = trace.type.toLowerCase();
+  const haystack = `${trace.source ?? ""} ${trace.title ?? ""} ${trace.summary ?? ""}`.toLowerCase();
+  return (
+    type.includes("provider.failure") ||
+    type.includes("provider.preflight") ||
+    type.includes("provider.switch") ||
+    type.includes("failure_recovery") ||
+    (type.includes("provider") && (haystack.includes("recovery") || haystack.includes("preflight") || haystack.includes("failed")))
+  );
+}
+
+function isMcpSkillTrace(trace: SessionWorkspaceTrace) {
+  const haystack = `${trace.type} ${trace.source ?? ""} ${trace.title ?? ""} ${trace.summary ?? ""}`.toLowerCase();
+  return haystack.includes("mcp") || haystack.includes("skill") || haystack.includes("tool_recovery");
+}
+
+function approvalAuditSignals(completionEvidence: ReturnType<typeof latestCompletionEvidence>): CockpitSignal[] {
+  const audit = completionEvidence?.audit;
+  const counts = audit?.approvalCounts;
+  const signals = compactSignals([
+    counts
+      ? {
+          label: "Approval audit",
+          value: `${counts.approved ?? 0} approved / ${counts.pending ?? 0} pending / ${counts.rejected ?? 0} rejected`,
+          tone: (counts.rejected ?? 0) > 0 ? "danger" : (counts.pending ?? 0) > 0 ? "warning" : "success",
+        }
+      : null,
+    audit?.completionAdvisor
+      ? {
+          label: "Completion advisor",
+          value: compactSignals([
+            { label: "source", value: audit.completionAdvisor.source ?? "" },
+            {
+              label: "confidence",
+              value:
+                typeof audit.completionAdvisor.confidence === "number"
+                  ? `${Math.round(audit.completionAdvisor.confidence * 100)}%`
+                  : "",
+            },
+            { label: "proposal", value: audit.completionAdvisor.proposalRecordId ?? "" },
+          ], 3)
+            .map((signal) => signal.value)
+            .join(" | "),
+          tone: audit.completionAdvisor.accepted === false ? "warning" : "info",
+        }
+      : null,
+  ]);
+  const approvalRows =
+    audit?.approvals?.slice(-3).map((approval): CockpitSignal => ({
+      label: approval.kind || "approval",
+      value: [approval.decision, approval.gateStatus, approval.summary].filter(Boolean).join(" | ") || "recorded",
+      tone: approval.decision === "rejected" ? "danger" : approval.decision === "approved" ? "success" : "warning",
+    })) ?? [];
+  return [...signals, ...approvalRows].slice(0, 5);
+}
+
+function contextSignals(
+  contextPreview: SessionWorkspaceContextPreview | undefined,
+  budget: ReturnType<typeof formatBudgetRatio>,
+): CockpitSignal[] {
+  const stats = contextPreview?.budgetStats;
+  const taskFocus = contextPreview?.taskFocus;
+  return compactSignals([
+    budget
+      ? {
+          label: "Budget",
+          value: `${budget.percent}% (${budget.used}/${budget.max})`,
+          tone: budget.tone,
+        }
+      : null,
+    stats?.trimmedSections?.length
+      ? {
+          label: "Trimmed",
+          value: stats.trimmedSections.join(", "),
+          tone: "warning",
+        }
+      : null,
+    stats?.droppedSections?.length
+      ? {
+          label: "Dropped",
+          value: stats.droppedSections.join(", "),
+          tone: "danger",
+        }
+      : null,
+    taskFocus?.currentStep
+      ? {
+          label: "Current step",
+          value: taskFocus.currentStep,
+          tone: "info",
+        }
+      : null,
+  ]);
+}
+
+function workspaceSignals(activeTask?: SessionWorkspaceActiveTask | null): CockpitSignal[] {
+  const latestCommands = [...(activeTask?.commands ?? [])].slice(-3).reverse();
+  const latestVerification = [...(activeTask?.verification ?? [])].slice(-3).reverse();
+  return compactSignals([
+    activeTask?.changedFiles?.length
+      ? {
+          label: "Changed files",
+          value: activeTask.changedFiles.slice(0, 4).map((file) => file.path).join(", "),
+          tone: "primary",
+        }
+      : null,
+    ...latestCommands.map((command): CockpitSignal => ({
+      label: "Command",
+      value: [command.command, command.status].filter(Boolean).join(" | "),
+      tone: command.status === "failed" ? "danger" : command.status === "completed" ? "success" : "neutral",
+    })),
+    ...latestVerification.map((item): CockpitSignal => ({
+      label: "Verification",
+      value: [item.command ?? item.id ?? "check", item.status].filter(Boolean).join(" | "),
+      tone: item.status === "failed" || item.status === "error" ? "danger" : item.status === "passed" ? "success" : "neutral",
+    })),
+  ], 6);
+}
+
+function CockpitDetailSection({
+  title,
+  summary,
+  signals,
+}: {
+  title: string;
+  summary: string;
+  signals: CockpitSignal[];
+}) {
+  if (!signals.length) {
+    return null;
+  }
+  return (
+    <details className="runtime-cockpit-detail">
+      <summary>
+        <span>{title}</span>
+        <strong>{summary}</strong>
+      </summary>
+      <dl>
+        {signals.map((signal, index) => (
+          <div key={`${signal.label}-${index}`} data-tone={signal.tone ?? "neutral"}>
+            <dt>{signal.label}</dt>
+            <dd>{signal.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </details>
+  );
 }
 
 function buildCockpitMetrics({
@@ -110,6 +289,30 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
   const gateStatus = completionEvidence?.gateStatus;
   const reviewSummary = completionEvidence?.summary;
   const primarySummary = reviewSummary || blockingApproval?.summary || buildTaskProgressSummary(activeTask);
+  const acceptanceSignals = compactSignals([
+    completionEvidence?.evidenceLevel ? { label: "Evidence level", value: completionEvidence.evidenceLevel, tone: "info" } : null,
+    completionEvidence?.status ? { label: "Evidence status", value: completionEvidence.status, tone: "neutral" } : null,
+    ...(completionEvidence?.metrics ?? []).map((metric) => ({ label: metric.label, value: metric.value, tone: "neutral" as const })),
+    ...(completionEvidence?.issues ?? []).map((issue) => ({ label: "Issue", value: issue, tone: "warning" as const })),
+    completionEvidence?.reviewConclusion
+      ? {
+          label: "Review conclusion",
+          value: [
+            completionEvidence.reviewConclusion.decision,
+            completionEvidence.reviewConclusion.decidedBy,
+            completionEvidence.reviewConclusion.summary,
+          ]
+            .filter(Boolean)
+            .join(" | "),
+          tone: completionEvidence.reviewConclusion.decision === "rejected" ? "danger" : "success",
+        }
+      : null,
+    ...approvalAuditSignals(completionEvidence),
+  ], 10);
+  const providerSignals = latestTraceSignals(props.traces, isProviderTrace);
+  const mcpSkillSignals = latestTraceSignals(props.traces, isMcpSkillTrace);
+  const contextDetailSignals = contextSignals(contextPreview, budget);
+  const workspaceDetailSignals = workspaceSignals(activeTask);
 
   return (
     <section className="runtime-cockpit-panel" aria-label="Runtime cockpit">
@@ -168,6 +371,34 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
             </i>
           </article>
         ) : null}
+      </div>
+
+      <div className="runtime-cockpit-details" aria-label="Runtime cockpit drill-down">
+        <CockpitDetailSection
+          title="Acceptance audit"
+          summary={gateStatus ? gateStatus.replace(/_/g, " ") : "evidence trail"}
+          signals={acceptanceSignals}
+        />
+        <CockpitDetailSection
+          title="Provider recovery"
+          summary={providerSignals.length ? `${providerSignals.length} signal(s)` : "quiet"}
+          signals={providerSignals}
+        />
+        <CockpitDetailSection
+          title="MCP / Skills"
+          summary={mcpSkillSignals.length ? `${mcpSkillSignals.length} signal(s)` : "quiet"}
+          signals={mcpSkillSignals}
+        />
+        <CockpitDetailSection
+          title="Memory / Context"
+          summary={budget ? `${budget.percent}% budget` : "no pressure"}
+          signals={contextDetailSignals}
+        />
+        <CockpitDetailSection
+          title="Workspace status"
+          summary={workspaceDetailSignals.length ? `${workspaceDetailSignals.length} latest signal(s)` : "unchanged"}
+          signals={workspaceDetailSignals}
+        />
       </div>
     </section>
   );

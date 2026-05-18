@@ -186,6 +186,32 @@ export interface SessionWorkspaceApproval {
     summary: string;
     metrics: Array<{ label: string; value: string }>;
     issues: string[];
+    audit?: {
+      approvalCounts?: {
+        total?: number;
+        approved?: number;
+        rejected?: number;
+        pending?: number;
+      };
+      approvals?: Array<{
+        approvalId?: string;
+        kind?: string;
+        decision?: string;
+        decidedBy?: string;
+        gateStatus?: string;
+        evidenceLevel?: string;
+        summary?: string;
+        reviewStatus?: string;
+        verificationStatus?: string;
+      }>;
+      completionAdvisor?: {
+        accepted?: boolean;
+        source?: string;
+        confidence?: number;
+        proposalRecordId?: string;
+        fallback_reason?: string;
+      };
+    };
     reviewConclusion?: {
       approvalId?: string;
       decision?: string;

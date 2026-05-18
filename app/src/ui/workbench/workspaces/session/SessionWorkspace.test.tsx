@@ -1098,14 +1098,44 @@ describe("SessionWorkspace", () => {
               summary: "Readable artifact copy needs review.",
               metrics: [{ label: "failed criteria", value: "1" }],
               issues: ["failed: Static frontend asset reachable: index.html -> app.js"],
+              audit: {
+                approvalCounts: {
+                  total: 1,
+                  approved: 1,
+                  rejected: 0,
+                  pending: 0,
+                },
+                approvals: [
+                  {
+                    approvalId: "approval_completion",
+                    kind: "completion_review",
+                    decision: "approved",
+                    decidedBy: "user",
+                    summary: "Completion review approved by user.",
+                  },
+                ],
+                completionAdvisor: {
+                  accepted: true,
+                  source: "llm",
+                  confidence: 0.82,
+                  proposalRecordId: "proposal_completion",
+                },
+              },
             },
           },
         ]}
-        traces={[{ id: "trace_failed", type: "runtime.error", status: "failed", summary: "Provider failed." }]}
+        traces={[
+          { id: "trace_failed", type: "provider.failure.recovery_decision", status: "completed", summary: "Switched provider profile." },
+          { id: "trace_mcp", type: "agent.decision.tool_recovery", status: "completed", summary: "MCP server refresh recommended." },
+        ]}
         contextPreview={{
           budgetStats: {
             estimatedInputTokens: 7200,
             maxContextTokens: 10000,
+            trimmedSections: ["tool_output"],
+          },
+          taskFocus: {
+            currentStep: "Review generated frontend acceptance evidence.",
           },
           projectFocus: "Internal focus should stay hidden.",
         }}
@@ -1122,7 +1152,16 @@ describe("SessionWorkspace", () => {
     expect(within(cockpit).getByText("Approvals")).toBeInTheDocument();
     expect(within(cockpit).getByText("Context budget")).toBeInTheDocument();
     expect(within(cockpit).getByText("72%")).toBeInTheDocument();
-    expect(within(cockpit).getByText("failed: Static frontend asset reachable: index.html -> app.js")).toBeInTheDocument();
+    expect(within(cockpit).getAllByText("failed: Static frontend asset reachable: index.html -> app.js").length).toBeGreaterThan(0);
+    expect(within(cockpit).getByText("Acceptance audit")).toBeInTheDocument();
+    expect(within(cockpit).getByText("1 approved / 0 pending / 0 rejected")).toBeInTheDocument();
+    expect(within(cockpit).getByText("llm | 82% | proposal_completion")).toBeInTheDocument();
+    expect(within(cockpit).getByText("Provider recovery")).toBeInTheDocument();
+    expect(within(cockpit).getByText("Switched provider profile.")).toBeInTheDocument();
+    expect(within(cockpit).getByText("MCP / Skills")).toBeInTheDocument();
+    expect(within(cockpit).getByText("MCP server refresh recommended.")).toBeInTheDocument();
+    expect(within(cockpit).getByText("Memory / Context")).toBeInTheDocument();
+    expect(within(cockpit).getByText("Review generated frontend acceptance evidence.")).toBeInTheDocument();
     expect(screen.queryByText("Internal focus should stay hidden.")).not.toBeInTheDocument();
   });
 

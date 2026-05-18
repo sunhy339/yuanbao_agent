@@ -291,6 +291,124 @@
   white-space: nowrap;
 }
 
+.runtime-cockpit-details {
+  display: grid;
+  gap: 6px;
+}
+
+.runtime-cockpit-detail {
+  min-width: 0;
+  border: 1px solid rgba(120, 98, 95, 0.12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.runtime-cockpit-detail summary {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.runtime-cockpit-detail summary::-webkit-details-marker {
+  display: none;
+}
+
+.runtime-cockpit-detail summary::before {
+  content: "+";
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+}
+
+.runtime-cockpit-detail[open] summary {
+  border-bottom: 1px solid rgba(120, 98, 95, 0.1);
+}
+
+.runtime-cockpit-detail summary span {
+  overflow: hidden;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-cockpit-detail summary strong {
+  overflow: hidden;
+  justify-self: end;
+  color: #756c67;
+  font-family: var(--session-mono);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.runtime-cockpit-detail dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 8px;
+}
+
+.runtime-cockpit-detail dl div {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.36fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
+  border: 1px solid rgba(120, 98, 95, 0.1);
+  border-radius: 7px;
+  padding: 7px 8px;
+  background: #fbfaf7;
+}
+
+.runtime-cockpit-detail dl div[data-tone="success"] {
+  border-color: rgba(22, 163, 74, 0.2);
+}
+
+.runtime-cockpit-detail dl div[data-tone="warning"] {
+  border-color: rgba(217, 119, 6, 0.24);
+}
+
+.runtime-cockpit-detail dl div[data-tone="danger"] {
+  border-color: rgba(225, 29, 72, 0.22);
+}
+
+.runtime-cockpit-detail dl div[data-tone="primary"],
+.runtime-cockpit-detail dl div[data-tone="info"] {
+  border-color: rgba(8, 145, 178, 0.2);
+}
+
+.runtime-cockpit-detail dt {
+  overflow: hidden;
+  color: #756c67;
+  font-family: var(--session-mono);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.runtime-cockpit-detail dd {
+  overflow: hidden;
+  margin: 0;
+  color: #20242c;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .task-progress-panel::before {
   content: "";
   position: absolute;

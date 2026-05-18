@@ -73,6 +73,20 @@ class ApprovalFlowMixin:
                 },
             )
             return {"approval": approval}
+        if approval.get("kind") == "advisor_tool" and self._is_tool_recovery_approval(approval):
+            self._publish(
+                session_id=task["sessionId"],
+                task=task,
+                event_type="approval.resolved",
+                payload={
+                    "approvalId": approval["id"],
+                    "taskId": task["id"],
+                    "decision": approval["decision"],
+                },
+            )
+            if approval["decision"] == "approved":
+                task = self._resume_approved_advisor_tool(task=task, approval=approval)
+            return {"approval": approval, "task": task}
         if approval["decision"] == "approved":
             self._validate_task_transition(task["status"], "running", task["id"])
             task = self._store.update_task_status(task_id=approval["taskId"], status="running")
@@ -160,6 +174,14 @@ class ApprovalFlowMixin:
                 error_code="PLAN_REJECTED",
             )
         return {"approval": approval, "task": task}
+
+    @staticmethod
+    def _is_tool_recovery_approval(approval: dict[str, Any]) -> bool:
+        try:
+            request = json.loads(approval.get("requestJson") or "{}")
+        except json.JSONDecodeError:
+            return False
+        return isinstance(request, dict) and bool(request.get("toolRecoveryAction"))
 
     def _submit_worktree_merge_approval(
         self,
@@ -605,6 +627,9 @@ class ApprovalFlowMixin:
 
     def _resume_approved_advisor_tool(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
         request = json.loads(approval.get("requestJson") or "{}")
+        recovery_action = str(request.get("toolRecoveryAction") or "").strip()
+        if recovery_action == "refresh_mcp_tools":
+            return self._resume_approved_mcp_refresh_recovery(task=task, approval=approval, request=request)
         tool_name = str(request.get("toolName") or request.get("name") or "").strip()
         if not tool_name:
             return self._fail_task(
@@ -674,6 +699,54 @@ class ApprovalFlowMixin:
                 task={**runtime_task, "sessionId": task["sessionId"]},
                 summary=str(exc),
                 error_code="ADVISOR_TOOL_EXECUTION_FAILED",
+            )
+
+    def _resume_approved_mcp_refresh_recovery(
+        self,
+        *,
+        task: dict[str, Any],
+        approval: dict[str, Any],
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        server_id = str(request.get("serverId") or "").strip()
+        params = {"serverId": server_id} if server_id and server_id != "all" else {}
+        try:
+            result = self.mcp_tools_refresh(params)
+            self._publish(
+                session_id=task["sessionId"],
+                task=task,
+                event_type="tool.recovery.executed",
+                payload={
+                    "approvalId": approval["id"],
+                    "toolRecoveryAction": "refresh_mcp_tools",
+                    "failedToolName": request.get("failedToolName"),
+                    "toolCallId": request.get("toolCallId"),
+                    "serverId": server_id or "all",
+                    "result": result,
+                    "advisorEvidence": request.get("advisorEvidence"),
+                },
+            )
+            return task
+        except Exception as exc:  # noqa: BLE001
+            self._publish(
+                session_id=task["sessionId"],
+                task=task,
+                event_type="tool.recovery.failed",
+                payload={
+                    "approvalId": approval["id"],
+                    "toolRecoveryAction": "refresh_mcp_tools",
+                    "failedToolName": request.get("failedToolName"),
+                    "toolCallId": request.get("toolCallId"),
+                    "serverId": server_id or "all",
+                    "error": str(exc),
+                    "advisorEvidence": request.get("advisorEvidence"),
+                },
+            )
+            return self._fail_task(
+                session_id=task["sessionId"],
+                task=task,
+                summary=f"Approved MCP tool refresh recovery failed: {exc}",
+                error_code="TOOL_RECOVERY_EXECUTION_FAILED",
             )
 
     def _resume_approved_patch(self, task: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:

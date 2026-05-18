@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -186,13 +187,37 @@ class TestMcpToolLifecycleEvents:
         assert result["failureKind"] == "mcp_server_unavailable"
         assert result["recoveryDecision"]["action"] == "refresh_mcp_tools"
         assert result["recoveryDecision"]["advisorAccepted"] is True
-        assert result["recoveryDecision"]["execution"] == "not_auto_executed"
+        assert result["recoveryDecision"]["execution"] == "approval_pending"
+        assert result["recoveryDecision"]["followup"]["toolRecoveryAction"] == "refresh_mcp_tools"
+        assert result["recoveryDecision"]["followup"]["approvalKind"] == "advisor_tool"
+        approval_id = result["recoveryDecision"]["followup"]["approvalId"]
+        approval = runtime.store.get_approval({"approvalId": approval_id})["approval"]
+        assert approval["kind"] == "advisor_tool"
+        assert "toolRecoveryAction" in approval["requestJson"]
         recovery_events = [e for e in runtime.events if e["type"] == "agent.decision.tool_recovery"]
         assert len(recovery_events) == 1
         assert recovery_events[0]["payload"]["decision"]["action"] == "refresh_mcp_tools"
+        approval_events = [
+            e for e in runtime.events
+            if e["type"] == "approval.requested" and e["payload"].get("source") == "tool_recovery_advisor"
+        ]
+        assert approval_events[0]["payload"]["approvalId"] == approval_id
         proposals = runtime.store.list_proposals({"taskId": task["id"], "kind": "tool_recovery"})["proposals"]
         assert len(proposals) == 2
         assert {proposal["source"]["type"] for proposal in proposals} == {"llm", "runtime_bounded_recovery"}
+
+        refreshed_schema = {
+            "name": "mcp__kb__lookup",
+            "description": "Lookup KB",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+        with patch.object(runtime.orchestrator._mcp_manager, "sync_refresh_tools", return_value=[refreshed_schema]) as refresh:
+            runtime.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
+
+        refresh.assert_called_once_with("kb")
+        executed_events = [e for e in runtime.events if e["type"] == "tool.recovery.executed"]
+        assert executed_events[-1]["payload"]["toolRecoveryAction"] == "refresh_mcp_tools"
+        assert executed_events[-1]["payload"]["serverId"] == "kb"
 
     def test_partial_tool_result_uses_recovery_advisor(self, tmp_path: Any) -> None:
         """Partial responses are recovery decisions, not silent success."""

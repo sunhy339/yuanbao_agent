@@ -112,6 +112,20 @@ class ToolRecoveryMixin:
         ):
             if key in selected_payload:
                 decision[key] = selected_payload[key]
+        followup = self._create_tool_recovery_followup_approval(
+            session_id=session_id,
+            task=task,
+            tool_call_id=tool_call_id,
+            failed_tool_name=tool_name,
+            failed_arguments=arguments,
+            failure=failure,
+            selected_payload=selected_payload,
+            decision=decision,
+        )
+        if followup:
+            decision["followup"] = followup
+            if followup.get("executionState") == "approval_pending":
+                decision["execution"] = "approval_pending"
         self._publish(
             session_id=session_id,
             task=task,
@@ -125,6 +139,351 @@ class ToolRecoveryMixin:
             visibility="panel",
         )
         return decision
+
+    def _create_tool_recovery_followup_approval(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        tool_call_id: str,
+        failed_tool_name: str,
+        failed_arguments: dict[str, Any],
+        failure: dict[str, Any],
+        selected_payload: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        action = str(selected_payload.get("action") or "").strip()
+        if action == "refresh_mcp_tools":
+            request = self._tool_recovery_refresh_mcp_approval_request(
+                task=task,
+                tool_call_id=tool_call_id,
+                failed_tool_name=failed_tool_name,
+                failure=failure,
+                selected_payload=selected_payload,
+                decision=decision,
+            )
+            fields = {
+                "toolRecoveryAction": "refresh_mcp_tools",
+                "toolCallId": tool_call_id,
+            }
+            return self._create_tool_recovery_approval(
+                session_id=session_id,
+                task=task,
+                request=request,
+                fields=fields,
+            )
+        if action == "fallback_tool":
+            request = self._tool_recovery_fallback_tool_approval_request(
+                task=task,
+                tool_call_id=tool_call_id,
+                failed_tool_name=failed_tool_name,
+                failed_arguments=failed_arguments,
+                failure=failure,
+                selected_payload=selected_payload,
+                decision=decision,
+            )
+            if request is None:
+                return {
+                    "executionState": "unavailable",
+                    "reason": "Fallback tool is not available or is denied by policy.",
+                }
+            fields = {
+                "toolRecoveryAction": "fallback_tool",
+                "toolCallId": tool_call_id,
+                "toolName": request.get("toolName"),
+            }
+            return self._create_tool_recovery_approval(
+                session_id=session_id,
+                task=task,
+                request=request,
+                fields=fields,
+            )
+        return None
+
+    def _tool_recovery_refresh_mcp_approval_request(
+        self,
+        *,
+        task: dict[str, Any],
+        tool_call_id: str,
+        failed_tool_name: str,
+        failure: dict[str, Any],
+        selected_payload: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any]:
+        server_id = self._mcp_server_id_from_tool_name(failed_tool_name) or "all"
+        permission = self._tool_recovery_permission_summary(
+            task=task,
+            capability="mcpTool",
+            tool_name="mcp.tools.refresh",
+            context={
+                "taskId": task.get("id"),
+                "sessionId": task.get("sessionId"),
+                "toolCallId": tool_call_id,
+                "failedToolName": failed_tool_name,
+                "serverId": server_id,
+                "source": "tool_recovery_advisor",
+            },
+        )
+        advisor_metadata = self._tool_recovery_advisor_metadata(
+            tool_call_id=tool_call_id,
+            failed_tool_name=failed_tool_name,
+            failure=failure,
+            selected_payload=selected_payload,
+            decision=decision,
+        )
+        return {
+            "taskId": str(task.get("id") or ""),
+            "toolName": "mcp.tools.refresh",
+            "arguments": {"serverId": server_id},
+            "toolRecoveryAction": "refresh_mcp_tools",
+            "toolCallId": tool_call_id,
+            "failedToolName": failed_tool_name,
+            "serverId": server_id,
+            "permissionDecision": permission.get("decision"),
+            "capability": permission.get("capability"),
+            "permissionReason": permission.get("reason"),
+            "advisorEvidence": advisor_metadata,
+        }
+
+    def _tool_recovery_fallback_tool_approval_request(
+        self,
+        *,
+        task: dict[str, Any],
+        tool_call_id: str,
+        failed_tool_name: str,
+        failed_arguments: dict[str, Any],
+        failure: dict[str, Any],
+        selected_payload: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        fallback_tool = selected_payload.get("fallbackTool")
+        if not isinstance(fallback_tool, dict) or fallback_tool.get("available") is False:
+            return None
+        fallback_name = str(fallback_tool.get("name") or fallback_tool.get("toolName") or "").strip()
+        if not fallback_name or fallback_name == "run_command":
+            return None
+        fallback_arguments = fallback_tool.get("arguments")
+        arguments = dict(fallback_arguments) if isinstance(fallback_arguments, dict) else {}
+        policy_context = {}
+        try:
+            policy_context = self._context_builder.build(
+                session_id=str(task.get("sessionId") or ""),
+                goal=task.get("goal") or "",
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to build fallback tool policy context", exc_info=True)
+        permission = self._tool_recovery_fallback_tool_permission_summary(
+            task=task,
+            context=policy_context,
+            tool_name=fallback_name,
+            arguments=arguments,
+        )
+        if permission.get("decision") == "deny":
+            return None
+        advisor_metadata = self._tool_recovery_advisor_metadata(
+            tool_call_id=tool_call_id,
+            failed_tool_name=failed_tool_name,
+            failure=failure,
+            selected_payload=selected_payload,
+            decision=decision,
+        )
+        advisor_metadata["fallbackForArguments"] = self._redacted_tool_arguments(failed_arguments)
+        return {
+            "taskId": str(task.get("id") or ""),
+            "toolName": fallback_name,
+            "arguments": arguments,
+            "toolRecoveryAction": "fallback_tool",
+            "toolCallId": tool_call_id,
+            "failedToolName": failed_tool_name,
+            "permissionDecision": permission.get("decision"),
+            "capability": permission.get("capability"),
+            "permissionReason": permission.get("reason"),
+            "advisorEvidence": advisor_metadata,
+        }
+
+    def _create_tool_recovery_approval(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        request: dict[str, Any],
+        fields: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not task.get("id") or not task.get("sessionId"):
+            return {
+                "executionState": "unavailable",
+                "reason": "Tool recovery approval requires a persisted runtime task.",
+            }
+        permission_decision = str(request.get("permissionDecision") or "").strip()
+        if permission_decision == "deny":
+            return {
+                "executionState": "denied_by_policy",
+                "reason": request.get("permissionReason") or "Tool recovery follow-up denied by policy.",
+            }
+        approval = None
+        if hasattr(self._store, "find_approval_by_request_fields"):
+            approval = self._store.find_approval_by_request_fields(
+                task_id=task["id"],
+                kind="advisor_tool",
+                fields=fields,
+            )
+        created = False
+        if approval is None:
+            approval = self._store.create_approval(task["id"], "advisor_tool", request)
+            created = True
+        decision = approval.get("decision")
+        execution_state = "approval_pending"
+        if decision == "approved":
+            execution_state = "approval_approved"
+        elif decision == "rejected":
+            execution_state = "approval_rejected"
+        elif decision not in (None, ""):
+            execution_state = "approval_resolved"
+        followup = {
+            "approvalId": approval["id"],
+            "approvalKind": "advisor_tool",
+            "approvalDecision": decision or "pending",
+            "executionMode": "approval_then_tool",
+            "executionState": execution_state,
+            "toolRecoveryAction": request.get("toolRecoveryAction"),
+            "toolName": request.get("toolName"),
+            "serverId": request.get("serverId"),
+            "created": created,
+        }
+        if created:
+            self._publish_tool_recovery_approval_requested(
+                session_id=session_id,
+                task=task,
+                approval=approval,
+                request=request,
+            )
+        return {key: value for key, value in followup.items() if value not in (None, "")}
+
+    def _publish_tool_recovery_approval_requested(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        approval: dict[str, Any],
+        request: dict[str, Any],
+    ) -> None:
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="approval.requested",
+            payload={
+                "approvalId": approval["id"],
+                "taskId": task["id"],
+                "kind": approval["kind"],
+                "request": request,
+                "source": "tool_recovery_advisor",
+                "advisorEvidence": request.get("advisorEvidence"),
+            },
+        )
+        self._fire_hooks(
+            "on_approval_required",
+            session_id,
+            task,
+            extra_context={
+                "approvalId": approval["id"],
+                "kind": approval["kind"],
+                "source": "tool_recovery_advisor",
+                "advisorEvidence": request.get("advisorEvidence"),
+            },
+        )
+
+    def _tool_recovery_advisor_metadata(
+        self,
+        *,
+        tool_call_id: str,
+        failed_tool_name: str,
+        failure: dict[str, Any],
+        selected_payload: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any]:
+        proposal_ids = decision.get("proposalIds") if isinstance(decision.get("proposalIds"), list) else []
+        metadata = {
+            "source": "tool_recovery_advisor",
+            "requestKind": "tool_recovery",
+            "summary": selected_payload.get("reason") or failure.get("recoveryHint"),
+            "target": failed_tool_name,
+            "blocking": True,
+            "toolCallId": tool_call_id,
+            "failureKind": failure.get("failureKind"),
+            "recoveryAction": selected_payload.get("action"),
+            "proposalRecordId": proposal_ids[0] if proposal_ids else None,
+            "proposalIds": proposal_ids,
+            "rationale": decision.get("rationale"),
+        }
+        return {key: value for key, value in metadata.items() if value not in ("", None, [])}
+
+    def _tool_recovery_permission_summary(
+        self,
+        *,
+        task: dict[str, Any],
+        capability: str,
+        tool_name: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            from ..policy.permission_engine import PermissionEngine, PermissionRequest
+
+            config_result = self._store.get_config({}) if hasattr(self._store, "get_config") else {}
+            config = config_result.get("config") if isinstance(config_result, dict) else {}
+            if not isinstance(config, dict):
+                config = {}
+            decision = PermissionEngine(config).evaluate(PermissionRequest(
+                capability=capability,
+                tool_name=tool_name,
+                context=context,
+            ))
+            return {
+                "decision": decision.decision,
+                "capability": decision.capability,
+                "reason": decision.reason,
+                "approvalKind": decision.approval_kind,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Failed to evaluate tool recovery permission", exc_info=True)
+            return {
+                "decision": "approval_required",
+                "capability": capability,
+                "reason": f"Permission evaluation failed; approval required before recovery execution: {exc}",
+                "approvalKind": "advisor_tool",
+            }
+
+    def _tool_recovery_fallback_tool_permission_summary(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        if hasattr(self, "_advisor_evidence_tool_permission_summary"):
+            return self._advisor_evidence_tool_permission_summary(
+                task=task,
+                context=context,
+                request={
+                    "kind": "tool_recovery",
+                    "target": tool_name,
+                },
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+        capability = "mcpTool" if tool_name.startswith("mcp__") else "customTool"
+        return self._tool_recovery_permission_summary(
+            task=task,
+            capability=capability,
+            tool_name=tool_name,
+            context={
+                "taskId": task.get("id"),
+                "sessionId": task.get("sessionId"),
+                "toolName": tool_name,
+                "arguments": arguments,
+                "source": "tool_recovery_advisor",
+            },
+        )
 
     def _tool_recovery_advisor_context(
         self,

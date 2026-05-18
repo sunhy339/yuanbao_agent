@@ -7,6 +7,16 @@
 
 这份文档的定位是“当前项目总导引 + 昨日文档校正版”。后续讨论架构、执行流、记忆、上下文、工具、MCP、多 agent、Autonomy、AgentSoul 时，优先以本文件为入口。
 
+### 0.1 总原则：LLM-first，硬边界托底
+
+后续主流程设计应优先让 LLM / DecisionAdvisor 参与语义判断，而不是把复杂场景写成固定规则。路由意图、任务是否该拆分、产物形态、验收证据、父任务是否继续用工具、恢复策略、是否接近完成等判断，都应尽量由 advisor 在上下文中给出可审计建议；runtime 负责校验、限权和落地。
+
+固定规则只适合做安全边界和客观事实判断：权限、审批、预算、状态机迁移、schema 校验、文件系统事实、命令/工具客观失败、密钥与危险操作保护、可复现的测试结果。规则可以作为 cheap candidate、fallback 或 guardrail，但不应在有可用 advisor proposal 时直接覆盖语义判断。
+
+验收与产物判断必须保持 domain-neutral。不要把“完成”写死成自动启动 server、浏览器 smoke、API probe 或某一种前端/后端形态；嵌入式、库函数、迁移脚本、设计方案、文档、数据处理、CLI、研究验证等任务都可能需要不同证据。正确做法是收集客观信号，把不确定的产物形态和证据需求交给 product-surface / completion advisor，再由 runtime 执行权限、审批和失败 gate。
+
+LLM 建议的命令、工具、provider 切换、外部 webhook 或后续自动化不能直接执行，必须进入 PermissionEngine、approval gate、ToolPolicyResolver 和普通工具管线。关键 LLM proposal、runtime fallback、completion gate、provider recovery、evidence request 都要进入事件或 proposal audit，方便回放、解释和调试。
+
 建议阅读顺序：
 
 1. 先看第 1 节，确认昨日文档哪些地方是对的、哪些地方需要校正。

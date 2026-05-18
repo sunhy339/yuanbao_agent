@@ -168,10 +168,10 @@ def classify_provider_failure(error: BaseException | str) -> ProviderFailureReco
         return _decision(
             "invalid_response",
             http_status,
-            retryable=False,
+            retryable=True,
             recoverable=True,
-            action="inspect_provider_response",
-            reason="provider returned a malformed response",
+            action="retry",
+            reason="provider returned a malformed response that may be transient",
             message=message,
         )
     return _decision(

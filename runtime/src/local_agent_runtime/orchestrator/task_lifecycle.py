@@ -195,6 +195,7 @@ class TaskLifecycleMixin:
                 task=task,
                 summary=completion_gate["reason"],
                 error_code="COMPLETION_EVIDENCE_INSUFFICIENT",
+                structured_result=structured_result,
                 skip_drain=skip_drain,
             )
         completed_task = self._store.update_task(
@@ -328,31 +329,43 @@ class TaskLifecycleMixin:
         tool_failure_gate = self._completion_tool_failure_gate(completion_evidence)
         if tool_failure_gate is not None:
             if reviews_disabled and tool_failure_gate.get("action") == "review":
-                return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
+                return self._completion_reviews_disabled_failure(
+                    tool_failure_gate.get("reason") or "Completion evidence requires review."
+                )
             return tool_failure_gate
         acceptance_gate = self._completion_acceptance_gate(completion_evidence)
         if acceptance_gate is not None:
             if reviews_disabled and acceptance_gate.get("action") == "review":
-                return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
+                return self._completion_reviews_disabled_failure(
+                    acceptance_gate.get("reason") or "Completion evidence requires review."
+                )
             return acceptance_gate
         verification_match_gate = self._completion_verification_match_gate(completion_evidence)
         if verification_match_gate is not None:
             if reviews_disabled and verification_match_gate.get("action") == "review":
-                return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
+                return self._completion_reviews_disabled_failure(
+                    verification_match_gate.get("reason") or "Completion evidence requires review."
+                )
             return verification_match_gate
         advisor_gate = self._completion_advisor_gate(completion_evidence)
         if advisor_gate is not None:
             if reviews_disabled and advisor_gate.get("action") == "review":
-                return {"action": "complete", "reason": "Completion advisor review skipped because approvalMode disables approvals."}
+                return self._completion_reviews_disabled_failure(
+                    advisor_gate.get("reason") or "Completion evidence requires review."
+                )
             return advisor_gate
         advisor_evidence_gate = self._completion_advisor_evidence_gate(completion_evidence)
         if advisor_evidence_gate is not None:
             if reviews_disabled and advisor_evidence_gate.get("action") == "review":
-                return {"action": "complete", "reason": "Advisor-requested evidence review skipped because approvalMode disables approvals."}
+                return self._completion_reviews_disabled_failure(
+                    advisor_evidence_gate.get("reason") or "Completion evidence requires review."
+                )
             return advisor_evidence_gate
         if self._completion_needs_verification_review(completion_evidence):
             if reviews_disabled:
-                return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
+                return self._completion_reviews_disabled_failure(
+                    "Write-oriented task produced runtime evidence but no passing verification."
+                )
             return {
                 "action": "review",
                 "decision": "needs_verification",
@@ -366,7 +379,9 @@ class TaskLifecycleMixin:
         if completion_evidence.get("evidenceLevel") != "summary_only":
             return {"action": "complete", "reason": "Runtime evidence is present."}
         if reviews_disabled:
-            return {"action": "complete", "reason": "Completion review skipped because approvalMode disables approvals."}
+            return self._completion_reviews_disabled_failure(
+                "Write-oriented task produced only a summary without verification."
+            )
         return {
             "action": "review",
             "decision": "needs_user_review",
@@ -375,6 +390,18 @@ class TaskLifecycleMixin:
             "reason": (
                 "Write-oriented task produced only a natural-language summary. "
                 "Verification or user review is required before marking it completed."
+            ),
+        }
+
+    def _completion_reviews_disabled_failure(self, reason: str) -> dict[str, str]:
+        clean_reason = reason.strip().rstrip(".")
+        if not clean_reason:
+            clean_reason = "Completion review is required"
+        return {
+            "action": "fail",
+            "reason": (
+                f"{clean_reason}. Completion reviews are disabled, so this write-oriented task "
+                "cannot be auto-completed without passing verification or user approval."
             ),
         }
 
@@ -2988,6 +3015,15 @@ class TaskLifecycleMixin:
             dict(item) for item in (task.get("commands") or [])
             if isinstance(item, dict)
         ]
+        child_evidence = self._completion_child_task_evidence(task)
+        changed_files = self._merge_completion_changed_files(
+            changed_files,
+            child_evidence["changedFiles"],
+        )
+        commands = self._merge_completion_commands(
+            commands,
+            child_evidence["commands"],
+        )
         commands = self._merge_completion_commands(
             commands,
             self._completion_commands_from_store(task.get("id")),
@@ -2996,12 +3032,21 @@ class TaskLifecycleMixin:
             dict(item) for item in (task.get("verification") or [])
             if isinstance(item, dict)
         ]
+        verification = self._merge_completion_verification_records(
+            verification,
+            child_evidence["verification"],
+        )
         tests_run = [
             dict(item) for item in (task.get("testsRun") or [])
             if isinstance(item, dict)
         ]
+        tests_run = self._merge_completion_tests_run(
+            tests_run,
+            child_evidence["testsRun"],
+        )
         patches = self._completed_patch_results(tool_results)
         tool_evidence = self._completion_tool_evidence(tool_results)
+        tool_evidence.extend(child_evidence["toolResults"])
         changed_files = self._merge_completion_changed_files(
             changed_files,
             self._completion_changed_files_from_tool_evidence(tool_evidence),
@@ -3113,6 +3158,7 @@ class TaskLifecycleMixin:
             "testsRun": tests_run,
             "patches": patches,
             "toolResults": tool_evidence,
+            "childTasks": child_evidence["childTasks"],
             "unresolvedToolFailures": failed_tool_results,
             "productAdvisories": product_advisories,
             "validation": {
@@ -3135,6 +3181,7 @@ class TaskLifecycleMixin:
                 "resolvedFailedTestsRun": len(resolved_failed_tests_run),
                 "patches": len(patches),
                 "toolResults": len(tool_evidence),
+                "childTasks": len(child_evidence["childTasks"]),
                 "failedToolResults": len(failed_tool_results),
                 "resolvedFailedToolResults": len(resolved_failed_tool_results),
                 "acceptedAcceptanceCriteria": len([
@@ -3228,6 +3275,159 @@ class TaskLifecycleMixin:
             })
         return commands
 
+    def _completion_child_task_evidence(self, task: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        empty: dict[str, list[dict[str, Any]]] = {
+            "changedFiles": [],
+            "commands": [],
+            "verification": [],
+            "testsRun": [],
+            "toolResults": [],
+            "childTasks": [],
+        }
+        task_id = str(task.get("id") or "").strip()
+        root_task_id = str(task.get("rootTaskId") or task_id).strip()
+        session_id = str(task.get("sessionId") or "").strip()
+        if not task_id or not session_id:
+            return empty
+
+        for child in self._completion_child_runtime_tasks(task_id=task_id, root_task_id=root_task_id, session_id=session_id):
+            child_id = str(child.get("id") or "").strip()
+            if not child_id:
+                continue
+            child_status = str(child.get("status") or "").strip().lower()
+            child_summary = str(child.get("resultSummary") or child.get("summary") or "").strip()
+            child_record = {
+                "id": child_id,
+                "status": child_status,
+                "role": child.get("role") or "root",
+                "summary": child_summary[:500],
+                "source": "child_runtime_task",
+            }
+            empty["childTasks"].append({key: value for key, value in child_record.items() if value not in (None, "", [])})
+            empty["changedFiles"].extend(self._completion_child_items(child, "changedFiles", child_id))
+            empty["commands"].extend(self._completion_child_items(child, "commands", child_id))
+            empty["verification"].extend(self._completion_child_items(child, "verification", child_id))
+            empty["testsRun"].extend(self._completion_child_items(child, "testsRun", child_id))
+            empty["commands"] = self._merge_completion_commands(
+                empty["commands"],
+                [
+                    {**item, "source": "child_command_log", "childTaskId": child_id}
+                    for item in self._completion_commands_from_store(child_id)
+                ],
+            )
+            if child_status in {"failed", "cancelled"}:
+                empty["toolResults"].append({
+                    "name": "child_task",
+                    "status": child_status,
+                    "failed": True,
+                    "summary": child_summary or f"Child task {child_status}",
+                    "childTaskId": child_id,
+                    "source": "child_runtime_task",
+                })
+
+        for collab in self._completion_collaboration_tasks(parent_task_id=task_id, session_id=session_id):
+            collab_id = str(collab.get("id") or "").strip()
+            if not collab_id:
+                continue
+            status = str(collab.get("status") or "").strip().lower()
+            result = collab.get("result") if isinstance(collab.get("result"), dict) else {}
+            summary = str(result.get("summary") or collab.get("title") or "").strip()
+            empty["childTasks"].append({
+                "id": collab_id,
+                "status": status,
+                "title": collab.get("title"),
+                "agentType": (collab.get("metadata") or {}).get("agentType") if isinstance(collab.get("metadata"), dict) else None,
+                "summary": summary[:500],
+                "source": "collaboration_task",
+            })
+            empty["changedFiles"].extend(self._completion_child_items(result, "changedFiles", collab_id))
+            empty["commands"].extend(self._completion_child_items(result, "commands", collab_id))
+            empty["verification"].extend(self._completion_child_items(result, "verification", collab_id))
+            empty["testsRun"].extend(self._completion_child_items(result, "testsRun", collab_id))
+            if status in {"failed", "cancelled"}:
+                empty["toolResults"].append({
+                    "name": "child_task",
+                    "status": status,
+                    "failed": True,
+                    "summary": summary or f"Collaboration task {status}",
+                    "childTaskId": collab_id,
+                    "source": "collaboration_task",
+                })
+        empty["childTasks"] = self._dedupe_completion_child_tasks(empty["childTasks"])
+        return empty
+
+    def _completion_child_runtime_tasks(
+        self,
+        *,
+        task_id: str,
+        root_task_id: str,
+        session_id: str,
+    ) -> list[dict[str, Any]]:
+        if not hasattr(self._store, "list_tasks"):
+            return []
+        try:
+            tasks = self._store.list_tasks({"sessionId": session_id}).get("tasks", [])
+        except Exception:  # noqa: BLE001
+            return []
+        children: list[dict[str, Any]] = []
+        for candidate in tasks:
+            if not isinstance(candidate, dict):
+                continue
+            candidate_id = str(candidate.get("id") or "").strip()
+            if not candidate_id or candidate_id == task_id:
+                continue
+            candidate_root = str(candidate.get("rootTaskId") or candidate_id).strip()
+            routing = candidate.get("routing") if isinstance(candidate.get("routing"), dict) else {}
+            parent_id = str(routing.get("parentRuntimeTaskId") or "").strip()
+            if candidate_root == root_task_id or parent_id == task_id:
+                children.append(candidate)
+        return children
+
+    def _completion_collaboration_tasks(self, *, parent_task_id: str, session_id: str) -> list[dict[str, Any]]:
+        if not hasattr(self._store, "list_collaboration_tasks"):
+            return []
+        try:
+            tasks = self._store.list_collaboration_tasks({"parentTaskId": parent_task_id}).get("tasks", [])
+        except Exception:  # noqa: BLE001
+            tasks = []
+        if not tasks:
+            try:
+                tasks = self._store.list_collaboration_tasks({"sessionId": session_id}).get("tasks", [])
+            except Exception:  # noqa: BLE001
+                tasks = []
+            tasks = [
+                item for item in tasks
+                if isinstance(item, dict) and str(item.get("parentTaskId") or "").strip() == parent_task_id
+            ]
+        return [item for item in tasks if isinstance(item, dict)]
+
+    def _completion_child_items(self, source: dict[str, Any], key: str, child_id: str) -> list[dict[str, Any]]:
+        value = source.get(key)
+        if not isinstance(value, list):
+            return []
+        items: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            record = dict(item)
+            record.setdefault("childTaskId", child_id)
+            record.setdefault("source", "child_task")
+            items.append(record)
+        return items
+
+    def _dedupe_completion_child_tasks(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen: set[tuple[str, str]] = set()
+        deduped: list[dict[str, Any]] = []
+        for item in items:
+            item_id = str(item.get("id") or "").strip()
+            source = str(item.get("source") or "").strip()
+            key = (item_id, source)
+            if not item_id or key in seen:
+                continue
+            seen.add(key)
+            deduped.append({k: v for k, v in item.items() if v not in (None, "", [])})
+        return deduped
+
     def _merge_completion_commands(
         self,
         current: list[dict[str, Any]],
@@ -3240,6 +3440,27 @@ class TaskLifecycleMixin:
             status = str(item.get("status") or "").strip()
             key = (command, status)
             if not command or key in seen:
+                continue
+            seen.add(key)
+            merged.append(dict(item))
+        return merged
+
+    def _merge_completion_verification_records(
+        self,
+        current: list[dict[str, Any]],
+        additions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for item in [*current, *additions]:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("id") or "").strip(),
+                str(item.get("command") or item.get("name") or item.get("suite") or "").strip(),
+                str(item.get("status") or "").strip(),
+            )
+            if key in seen:
                 continue
             seen.add(key)
             merged.append(dict(item))

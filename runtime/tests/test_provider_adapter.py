@@ -896,6 +896,26 @@ def test_provider_error_is_readable() -> None:
         adapter.chat(messages=[{"role": "user", "content": "hi"}])
 
 
+def test_provider_retries_malformed_json_response() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return 200, b""
+        return 200, b'{"id":"chatcmpl_1","model":"test-chat","choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"total_tokens":7}}'
+
+    adapter = ProviderAdapter(
+        config={"provider": {"mode": "openai-compatible", "apiKey": "sk-test", "model": "test-chat"}},
+        http_post=fake_post,
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "hello"
+    assert len(calls) == 2
+
+
 @pytest.mark.parametrize(
     ("message", "category", "retryable", "action"),
     [
@@ -904,6 +924,7 @@ def test_provider_error_is_readable() -> None:
         ("Provider request failed with HTTP 413: context length exceeded", "context_too_large", False, "compact_or_split_context"),
         ("Environment variable MISSING_KEY is not set.", "auth", False, "fix_provider_credentials"),
         ("Provider refused due to content filter", "refusal", False, "ask_user_or_change_request"),
+        ("Provider returned invalid JSON: Expecting value", "invalid_response", True, "retry"),
     ],
 )
 def test_provider_failure_recovery_classifier(

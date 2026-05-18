@@ -1364,9 +1364,49 @@ class TestAdvisorGuidedProviderPreflight:
 
         def fake_dispatch(params: dict[str, Any]) -> dict[str, Any]:
             dispatched.append(dict(params))
+            title = str(params.get("title") or "Subtask")
+            result = {
+                "summary": f"{title} completed",
+                "changedFiles": [
+                    {
+                        "path": "runtime/src/local_agent_runtime/orchestrator/message_execution.py",
+                        "status": "modified",
+                        "reason": f"{title} exercised provider preflight split planning",
+                    }
+                ],
+                "verification": [
+                    {
+                        "name": "provider preflight split fixture",
+                        "command": "pytest runtime/tests/test_provider_turns.py::TestAdvisorGuidedProviderPreflight",
+                        "status": "passed",
+                        "summary": f"{title} verification passed",
+                    }
+                ],
+                "testsRun": [
+                    {
+                        "name": "provider preflight split fixture",
+                        "command": "pytest runtime/tests/test_provider_turns.py::TestAdvisorGuidedProviderPreflight",
+                        "status": "passed",
+                    }
+                ],
+            }
+            child = runtime.store.create_collaboration_task({
+                "sessionId": params.get("sessionId"),
+                "parentTaskId": params.get("taskId"),
+                "title": title,
+                "description": params.get("prompt"),
+                "metadata": {"agentType": params.get("agentType")},
+            })["task"]
+            runtime.store.update_collaboration_task({
+                "taskId": child["id"],
+                "status": "completed",
+                "result": result,
+            })
             return {
                 "status": "completed",
-                "summary": f"{params.get('title')} completed",
+                "childTaskId": child["id"],
+                "summary": result["summary"],
+                "result": result,
             }
 
         monkeypatch.setattr(runtime.orchestrator._subagent_service, "dispatch", fake_dispatch)
@@ -1389,6 +1429,11 @@ class TestAdvisorGuidedProviderPreflight:
             "Inspect provider preflight planning",
             "Implement and verify provider preflight split",
         ]
+        evidence = task["structuredResult"]["completionEvidence"]
+        assert evidence["evidenceLevel"] == "verified"
+        assert evidence["counts"]["childTasks"] == 2
+        assert evidence["counts"]["passedVerification"] >= 1
+        assert evidence["childTasks"][0]["source"] == "collaboration_task"
 
         turns = runtime.store.list_provider_turns(task["id"])
         assert len(turns) == 1

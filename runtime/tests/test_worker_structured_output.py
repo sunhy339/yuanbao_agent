@@ -230,7 +230,7 @@ class TestCompletionHardGate:
         ).fetchall()
         assert len(approvals) == 1
 
-    def test_no_approval_mode_skips_completion_review(self, tmp_path: Any) -> None:
+    def test_no_approval_mode_fails_summary_only_write_task(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
         workspace = store.upsert_workspace(str(tmp_path / "project"))
@@ -254,7 +254,10 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert result["status"] == "completed"
+        assert result["status"] == "failed"
+        assert result["errorCode"] == "COMPLETION_EVIDENCE_INSUFFICIENT"
+        assert "summary" in result["resultSummary"].lower()
+        assert "disabled" in result["resultSummary"].lower()
         assert result["structuredResult"]["completionEvidence"]["evidenceLevel"] == "summary_only"
         approvals = store._conn.execute(
             "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",

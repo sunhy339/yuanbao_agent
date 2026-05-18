@@ -1457,8 +1457,8 @@ Optimization layers:
 | Execution stability | Enforce per-child budgets for time, token, tool calls, and file scope; require partial result handoff before timeout; checkpoint after every completed collaboration task. | A child timeout leaves a resumable handoff record with changed files, failed command, and next action. |
 | Task decomposition | Reject overloaded plans that collapse backend, frontend, tests, docs, and verification into one worker. Expand them into bounded file/domain slices. | Complex local app goals consistently create at least backend, frontend, tests, and verification/documentation tasks when those deliverables are named. |
 | Provider recovery | Baseline classification, provider-turn audit, and one-shot compacted-context retry are in place. Recoverable provider failures now also consult `DecisionAdvisor` through the `failure_recovery` decision kind; advisor proposals can choose retry, backoff, compact-context retry, ask-user, abort, or stream-to-nonstream fallback, while runtime still clamps auth/refusal and retry budgets. Remaining deeper work is bounded task splitting and true switch-provider recovery when infrastructure exists. | GLM timeout / HTTP 400 scenarios produce an advisor-audited retry or smaller continuation rather than an opaque child failure. |
-| Context and memory | Change compaction summaries to a structured handoff: objective, completed work, modified files, failed commands, decisions, next steps, risks. Deduplicate repeated compaction content. | Later child tasks can recover exact file/test state from compaction without rereading the entire transcript. |
-| Product acceptance | Add automatic product checks: start local server when applicable, run browser or DOM smoke, submit one real feedback item, verify persistence/API state, and check for mojibake-visible UI copy. | Full-stack artifact acceptance includes unit tests, integration tests, browser smoke, and readable documentation. |
+| Context and memory | Structured handoff is implemented with objective, current step, completed work, modified files, failed commands, failed tools, decisions, next steps, risks, verification status, and recent context. Remaining work is recall-quality tuning across very long sessions and better UI drill-down. | Later child tasks can recover exact file/test/MCP failure state from compaction without rereading the entire transcript. |
+| Product acceptance | Objective artifact checks, static route/content health, docs-quality observations, product-surface advisory, and advisor-requested evidence approvals are in place. Remaining work is richer domain signal discovery plus true server/browser/persistence flow verification where the advisor or task shape asks for it. | Full-stack artifact acceptance includes unit tests, integration tests, browser smoke, persistence/API proof, and readable documentation when those are the right evidence for the product shape. |
 
 Main workflow additions:
 
@@ -1499,41 +1499,37 @@ Frontend runtime additions:
 
 Frontend implementation priority should follow the runtime risk, not visual polish: task cockpit, plan/progress, tool timeline, and acceptance report first; MCP/Skills, context/memory, automation controls, and workspace status second.
 
-Near-term implementation order:
+Near-term implementation order reconciliation as of 2026-05-18:
 
-1. Add real MCP + Skills acceptance coverage:
-   - one scenario must trigger a skill, read its instructions, use MCP/tool output, edit or inspect local artifacts, and preserve the result through compaction;
-   - include unavailable MCP/skill fallback cases.
-2. Upgrade the main workflow state machine:
-   - add intent confidence, automation level, user takeover, task budget, and workspace snapshot records;
-   - make these fields visible in run reports and available to compaction.
-3. Add provider error recovery:
-   - context shrink retry for HTTP 400 that looks like invalid/oversized request;
-   - retry with shorter provider timeout budget for transient DNS/TCP timeouts;
-   - explicit auth/key failure classification with no retry.
-4. Upgrade compaction records:
-   - store structured `handoffSummary` fields alongside free-text summary;
-   - include modified files, latest failing command, verification status, and next recommended command;
-   - add regression tests for summary quality on long-running child tasks.
-5. Add generated-artifact product gate:
-   - for static frontend: serve files, run `node --check`, fetch `index.html`, and inspect visible copy for mojibake tokens;
-   - for Python backend: run one programmatic submit/list/analytics/export flow against a temp SQLite DB;
-   - for full-stack apps with HTTP server: run a browser submit flow and verify persisted state.
-6. Add a run report and frontend cockpit surface:
-   - show each agent, task status, runtime, files touched, commands, compactions, recalls, retries, and remaining risks;
-   - make the report usable as the first source for debugging failed long runs.
-7. Keep smoke gates minimal:
-   - `short_fullstack_smoke`: fast daily safety check for the core path;
-   - `long_fullstack_stress_smoke`: release/manual pressure test for compaction, memory, recovery, and generated product quality.
+1. MCP + Skills acceptance coverage — **Partial / mostly done**:
+   - Done: skill-routed MCP tool call, `inherit_mcp` policy, compaction survival, and failed MCP/tool handoff via `handoffSummary.failedTools`.
+   - Remaining: missing skill, unavailable server, partial response, and permission-denied fallback strategy selection.
+2. Main workflow state machine — **Partial / main baseline done**:
+   - Done: `routing.mainWorkflow`, intent confidence, automation level, budgets, workspace/git snapshot, user takeover state, budget exhaustion convergence, and advisor-audited wrap-up/change-target convergence.
+   - Remaining: richer budget dimensions and resumable handoff UI/cockpit recovery actions.
+3. Provider error recovery — **Partial / recovery baseline done**:
+   - Done: objective failure classification, advisor-guided bounded retry/backoff/compact/stream-fallback, compacted-context retry, auth/refusal non-retry, provider trace/proposal audit.
+   - Remaining: bounded task splitting and true guarded provider switching when infrastructure exists.
+4. Compaction records — **Done for current baseline**:
+   - Done: structured `handoffSummary` fields, modified files, failed commands, failed tools, verification status, next action, recent context, context budget/autonomy report exposure, and regression coverage.
+   - Remaining: memory recall quality tuning under very long tasks.
+5. Generated-artifact / product acceptance — **Partial / advisor-led path active**:
+   - Done: readable artifact/mojibake checks, static frontend route/content health, local asset checks, `node --check`, `/api/...` objective observations, docs-quality observations, product-surface advisor, `agent.evidence.requested`, `on_evidence_requested`, and permission-gated advisor command/tool approvals.
+   - Remaining: richer domain signal discovery and true server/browser/persistence flow verification when the task shape/advisor asks for that evidence.
+6. Run report and frontend cockpit — **Partial**:
+   - Done: cockpit phase 1 status strip for task phase, completion gate, approvals, changed files, commands, verification ratio, failed signals, first acceptance issue, and context budget.
+   - Remaining: expandable drill-downs for acceptance/run report, provider recovery, MCP/Skills, memory/context handoff, automation controls, and workspace status.
+7. Smoke gates — **Still P2 discipline item**:
+   - Keep only a fast daily safety smoke and a manual/release long stress smoke; do not let smoke architecture distract from main workflow hardening.
 
 Open risks:
 
 | Risk | Mitigation |
 | --- | --- |
 | Long smoke feedback loop is too slow for daily development. | Keep the long smoke as manual/release gate and make the shorter smoke the default regression. |
-| Compression preserves volume but loses actionable detail. | Introduce structured handoff summaries and verify downstream recovery with tests. |
-| Provider failures are provider-specific and intermittent. | Classify errors by observable behavior and use conservative retry/split rules. |
-| Generated app can pass tests while being rough for users. | Add browser/product acceptance in addition to pytest. |
+| Compression preserves volume but loses actionable detail. | Structured handoff is now implemented and tested; continue tuning memory recall quality and UI visibility for long sessions. |
+| Provider failures are provider-specific and intermittent. | Classification and advisor-guided bounded recovery are implemented; remaining mitigation is task splitting and guarded provider switching. |
+| Generated app can pass tests while being rough for users. | Product-surface advisor and objective artifact checks are implemented; remaining mitigation is richer domain signal discovery plus browser/server/persistence proof when appropriate. |
 | Windows shell/path quirks create false failures. | Continue command compatibility hardening for quoting, explicit executables, temp dirs, and local runtime paths. |
 
 ### 2026-05-17 Current Completion And Remaining Task Scan

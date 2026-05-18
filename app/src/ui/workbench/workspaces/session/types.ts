@@ -101,6 +101,13 @@ export interface SessionWorkspaceActiveTask {
   resultSummary?: string;
   planSteps?: SessionWorkspacePlanStep[];
   activeWorktree?: SessionWorkspaceWorktree | null;
+  mainWorkflow?: {
+    automation?: Record<string, unknown>;
+    budgets?: Record<string, unknown>;
+    convergence?: Record<string, unknown>;
+    userTakeover?: Record<string, unknown>;
+    [key: string]: unknown;
+  } | null;
 }
 
 export interface SessionWorkspaceCollaborator {
@@ -349,6 +356,8 @@ export interface SessionWorkspaceProps {
   onRefreshCommandJob?(commandId: string): void | Promise<void>;
   onStopCommandJob?(commandId: string): void | Promise<void>;
   onRefreshTask?(): void | Promise<void>;
+  onPauseTask?(taskId: string): void | Promise<void>;
+  onResumeTask?(taskId: string): void | Promise<void>;
   onStopTask?(taskId: string): void | Promise<void>;
   onRefreshTrace?(): void | Promise<void>;
   onRefreshWorktree?(worktreeId: string): void | Promise<void>;
@@ -357,7 +366,7 @@ export interface SessionWorkspaceProps {
   onCleanupWorktree?(worktreeId: string, force?: boolean): void | Promise<void>;
   worktreeStatus?: SessionWorkspaceWorktreeStatus | null;
   worktreeDiff?: SessionWorkspaceWorktreeDiff | null;
-  taskBusyAction?: "refresh" | "stop" | null;
+  taskBusyAction?: "refresh" | "stop" | "pause" | "resume" | null;
   busyId?: string | null;
   worktreeBusyAction?: "status" | "diff" | "requestMergeApproval" | "merge" | "cleanup" | null;
   worktreeError?: string | null;

@@ -307,6 +307,7 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
                 summary: props.task.summary,
                 resultSummary: props.task.resultSummary,
                 activeWorktree: props.task.routing?.activeWorktree ?? null,
+                mainWorkflow: (props.task.routing?.mainWorkflow as any) ?? null,
                 planSteps: props.task.plan?.map((step: any) => ({
                   id: step.id,
                   title: step.title,
@@ -343,6 +344,8 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
         onRefreshCommandJob={props.handleRefreshCommandJob}
         onStopCommandJob={props.handleStopCommandJob}
         onRefreshTask={props.handleRefreshTask}
+        onPauseTask={() => props.handleTaskControl("pause")}
+        onResumeTask={() => props.handleTaskControl("resume")}
         onStopTask={() => props.handleTaskControl("cancel")}
         onRefreshTrace={props.handleRefreshTrace}
         onRefreshWorktree={props.handleRefreshWorktree}
@@ -353,7 +356,15 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
         worktreeDiff={props.worktreeDiff}
         worktreeBusyAction={props.worktreeBusyAction}
         worktreeError={props.worktreeError}
-        taskBusyAction={props.refreshBusy ? "refresh" : props.taskControlBusyAction === "cancel" ? "stop" : null}
+        taskBusyAction={
+          props.refreshBusy
+            ? "refresh"
+            : props.taskControlBusyAction === "cancel"
+              ? "stop"
+              : props.taskControlBusyAction === "pause" || props.taskControlBusyAction === "resume"
+                ? props.taskControlBusyAction
+                : null
+        }
         busyId={props.approvalBusyId ?? props.patchBusyId ?? props.commandJobBusyId ?? (props.traceBusy ? "trace" : null)}
       />
     );

@@ -205,6 +205,17 @@
   -webkit-line-clamp: 2;
 }
 
+.runtime-cockpit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.runtime-cockpit-actions .yb-button {
+  min-height: 30px;
+}
+
 .runtime-cockpit-metrics {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

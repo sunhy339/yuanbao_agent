@@ -1165,6 +1165,57 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText("Internal focus should stay hidden.")).not.toBeInTheDocument();
   });
 
+  it("surfaces resumable handoff controls in the cockpit", async () => {
+    const user = userEvent.setup();
+    const onRefreshTask = vi.fn();
+    const onResumeTask = vi.fn();
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_handoff",
+          status: "paused",
+          goal: "Resume the provider recovery follow-up",
+          mainWorkflow: {
+            automation: {
+              level: "supervised",
+            },
+            convergence: {
+              state: "wrap_up_requested",
+              reason: "User asked to wait for wrap-up.",
+              resumable: true,
+              targetGoal: "Continue provider recovery validation.",
+              handoffFocus: "Rerun the targeted provider preflight checks.",
+            },
+            userTakeover: {
+              state: "wrap_up_requested",
+              intent: "wait_for_wrap_up",
+            },
+          },
+        }}
+        messages={[{ id: "m1", role: "assistant", content: "Paused with handoff.", createdAt: 1 }]}
+        onRefreshTask={onRefreshTask}
+        onResumeTask={onResumeTask}
+      />,
+    );
+
+    const cockpit = screen.getByLabelText("Runtime cockpit");
+    const actions = within(cockpit).getByLabelText("Resumable task actions");
+
+    expect(within(cockpit).getByText("Handoff actions")).toBeInTheDocument();
+    expect(within(cockpit).getByText("wrap_up_requested | resumable | User asked to wait for wrap-up.")).toBeInTheDocument();
+    expect(within(cockpit).getByText("Continue provider recovery validation.")).toBeInTheDocument();
+    expect(within(cockpit).getByText("Rerun the targeted provider preflight checks.")).toBeInTheDocument();
+    expect(within(cockpit).getByText("wrap_up_requested | wait_for_wrap_up")).toBeInTheDocument();
+
+    await user.click(within(actions).getByRole("button", { name: "Refresh" }));
+    await user.click(within(actions).getByRole("button", { name: "Resume" }));
+
+    expect(onRefreshTask).toHaveBeenCalledTimes(1);
+    expect(onResumeTask).toHaveBeenCalledWith("task_handoff");
+  });
+
   it("renders trace filter bar with task id, visibility, and agent type filters", () => {
     render(
       <SessionWorkspace

@@ -1,4 +1,4 @@
-import { StatusBadge } from "../../../v2/components/ui";
+import { Button, StatusBadge } from "../../../v2/components/ui";
 import { formatStatusLabel } from "../../../copy";
 import type {
   SessionWorkspaceActiveTask,
@@ -21,6 +21,10 @@ interface RuntimeCockpitPanelProps {
   patches?: SessionWorkspacePatch[];
   traces?: SessionWorkspaceTrace[];
   contextPreview?: SessionWorkspaceContextPreview;
+  taskBusyAction?: "refresh" | "stop" | "pause" | "resume" | null;
+  onRefreshTask?(): void | Promise<void>;
+  onPauseTask?(taskId: string): void | Promise<void>;
+  onResumeTask?(taskId: string): void | Promise<void>;
 }
 
 interface CockpitMetric {
@@ -65,6 +69,19 @@ function latestBlockingApproval(approvals?: SessionWorkspaceApproval[]) {
 
 function compactSignals(signals: Array<CockpitSignal | null | undefined>, limit = 4): CockpitSignal[] {
   return signals.filter((signal): signal is CockpitSignal => Boolean(signal?.value)).slice(0, limit);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function readWorkflowString(record: Record<string, unknown> | null, key: string) {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readWorkflowBoolean(record: Record<string, unknown> | null, key: string) {
+  return record?.[key] === true;
 }
 
 function latestTraceSignals(
@@ -180,6 +197,66 @@ function contextSignals(
         }
       : null,
   ]);
+}
+
+function workflowSignals(activeTask?: SessionWorkspaceActiveTask | null): CockpitSignal[] {
+  const workflow = asRecord(activeTask?.mainWorkflow);
+  const convergence = asRecord(workflow?.convergence);
+  const takeover = asRecord(workflow?.userTakeover);
+  const automation = asRecord(workflow?.automation);
+  const status = activeTask?.status?.toLowerCase();
+  return compactSignals([
+    status
+      ? {
+          label: "Task state",
+          value: status,
+          tone: status === "paused" ? "warning" : status === "failed" ? "danger" : "neutral",
+        }
+      : null,
+    convergence
+      ? {
+          label: "Convergence",
+          value: [
+            readWorkflowString(convergence, "state"),
+            readWorkflowBoolean(convergence, "resumable") ? "resumable" : "",
+            readWorkflowString(convergence, "reason"),
+          ]
+            .filter(Boolean)
+            .join(" | ") || "recorded",
+          tone: readWorkflowBoolean(convergence, "resumable") ? "info" : "neutral",
+        }
+      : null,
+    readWorkflowString(convergence, "targetGoal")
+      ? {
+          label: "Target goal",
+          value: readWorkflowString(convergence, "targetGoal") ?? "",
+          tone: "primary",
+        }
+      : null,
+    readWorkflowString(convergence, "handoffFocus")
+      ? {
+          label: "Handoff focus",
+          value: readWorkflowString(convergence, "handoffFocus") ?? "",
+          tone: "info",
+        }
+      : null,
+    takeover
+      ? {
+          label: "User takeover",
+          value: [readWorkflowString(takeover, "state"), readWorkflowString(takeover, "intent")]
+            .filter(Boolean)
+            .join(" | ") || "recorded",
+          tone: "info",
+        }
+      : null,
+    readWorkflowString(automation, "level")
+      ? {
+          label: "Automation",
+          value: readWorkflowString(automation, "level") ?? "",
+          tone: "neutral",
+        }
+      : null,
+  ], 8);
 }
 
 function workspaceSignals(activeTask?: SessionWorkspaceActiveTask | null): CockpitSignal[] {
@@ -312,7 +389,16 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
   const providerSignals = latestTraceSignals(props.traces, isProviderTrace);
   const mcpSkillSignals = latestTraceSignals(props.traces, isMcpSkillTrace);
   const contextDetailSignals = contextSignals(contextPreview, budget);
+  const handoffSignals = workflowSignals(activeTask);
   const workspaceDetailSignals = workspaceSignals(activeTask);
+  const taskStatus = activeTask?.status?.toLowerCase();
+  const canPauseTask = Boolean(
+    activeTask?.id &&
+      props.onPauseTask &&
+      ["running", "planning", "verifying", "queued", "waiting_approval"].includes(taskStatus ?? ""),
+  );
+  const canResumeTask = Boolean(activeTask?.id && props.onResumeTask && taskStatus === "paused");
+  const hasTaskActions = Boolean(props.onRefreshTask || canPauseTask || canResumeTask);
 
   return (
     <section className="runtime-cockpit-panel" aria-label="Runtime cockpit">
@@ -335,6 +421,53 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
       </header>
 
       <p className="runtime-cockpit-summary">{primarySummary}</p>
+
+      {hasTaskActions ? (
+        <div className="runtime-cockpit-actions" aria-label="Resumable task actions">
+          {props.onRefreshTask ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={props.taskBusyAction === "refresh"}
+              onClick={() => {
+                void props.onRefreshTask?.();
+              }}
+            >
+              Refresh
+            </Button>
+          ) : null}
+          {props.onPauseTask ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={props.taskBusyAction === "pause"}
+              disabled={!canPauseTask || !activeTask?.id}
+              onClick={() => {
+                if (activeTask?.id) {
+                  void props.onPauseTask?.(activeTask.id);
+                }
+              }}
+            >
+              Pause
+            </Button>
+          ) : null}
+          {props.onResumeTask ? (
+            <Button
+              size="sm"
+              variant="primary"
+              loading={props.taskBusyAction === "resume"}
+              disabled={!canResumeTask || !activeTask?.id}
+              onClick={() => {
+                if (activeTask?.id) {
+                  void props.onResumeTask?.(activeTask.id);
+                }
+              }}
+            >
+              Resume
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
 
       <dl className="runtime-cockpit-metrics">
         {metrics.map((metric) => (
@@ -393,6 +526,11 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
           title="Memory / Context"
           summary={budget ? `${budget.percent}% budget` : "no pressure"}
           signals={contextDetailSignals}
+        />
+        <CockpitDetailSection
+          title="Handoff actions"
+          summary={handoffSignals.length ? `${handoffSignals.length} signal(s)` : "quiet"}
+          signals={handoffSignals}
         />
         <CockpitDetailSection
           title="Workspace status"

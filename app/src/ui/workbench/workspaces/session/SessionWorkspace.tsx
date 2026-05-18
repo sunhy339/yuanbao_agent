@@ -45,6 +45,8 @@ export function SessionWorkspace({
   onRefreshCommandJob,
   onStopCommandJob,
   onRefreshTask,
+  onPauseTask,
+  onResumeTask,
   onStopTask,
   onRefreshTrace,
   onRefreshWorktree,
@@ -234,6 +236,10 @@ export function SessionWorkspace({
                 patches={patches}
                 traces={traces}
                 contextPreview={contextPreview}
+                taskBusyAction={taskBusyAction}
+                onRefreshTask={onRefreshTask}
+                onPauseTask={onPauseTask}
+                onResumeTask={onResumeTask}
               />
               <WorktreePanel
                 worktree={visibleActiveTask?.activeWorktree}

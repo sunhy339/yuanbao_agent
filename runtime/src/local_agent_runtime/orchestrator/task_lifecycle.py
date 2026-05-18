@@ -1297,6 +1297,7 @@ class TaskLifecycleMixin:
                 "approvalDecision": decision or "pending",
                 "executionMode": "approval_then_run_command" if suggestion.get("type") == "run_command" else "approval_then_tool",
                 "executionState": execution_state,
+                "requiresApproval": True,
                 "approvalRequest": execution_request,
             })
             record = {
@@ -1349,10 +1350,11 @@ class TaskLifecycleMixin:
         suggestion: dict[str, Any],
         request: dict[str, Any],
     ) -> bool:
+        permission_decision = str(suggestion.get("permissionDecision") or "").strip()
         return (
             suggestion.get("type") in {"run_command", "tool"}
             and suggestion.get("blocking") is True
-            and suggestion.get("permissionDecision") == "approval_required"
+            and permission_decision in {"allow", "approval_required"}
             and request.get("status") == "missing"
         )
 

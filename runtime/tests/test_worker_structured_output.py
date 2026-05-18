@@ -2181,6 +2181,110 @@ class TestCompletionHardGate:
         assert completed_task["commands"][0]["command"] == command
         assert completed_task["commands"][0]["status"] == "completed"
 
+    def test_blocking_advisor_suggested_command_with_allow_still_requires_approval(self, tmp_path: Any) -> None:
+        command = "python -c \"print('advisor allow evidence ok')\""
+
+        class RecordingAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor wants explicit proof even though shell is generally allowed.",
+                        fallback_reason=None,
+                        proposal_id="surface_blocking_allowed_command_1",
+                        confidence=0.88,
+                        payload={
+                            "surface_type": "generic_runtime_artifact",
+                            "evidence_requests": [
+                                {
+                                    "kind": "runtime_probe",
+                                    "summary": "Run the generic proof command before completion.",
+                                    "target": "runtime evidence",
+                                    "suggestedCommand": command,
+                                    "blocking": True,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="Completion is acceptable once the requested proof command succeeds.",
+                    fallback_reason=None,
+                    proposal_id="completion_blocking_allowed_command_1",
+                    confidence=0.84,
+                    payload={"is_complete": True, "surface_type": "generic_runtime_artifact"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True, enable_run_command=True)
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        store.update_config({
+            "permissions": {
+                "capabilities": {
+                    "runCommand": {"mode": "allow", "scope": "*"},
+                },
+            },
+        })
+        project = tmp_path / "project"
+        src = project / "src"
+        src.mkdir(parents=True)
+        (src / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="allowed advisor command")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Update the runtime artifact",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "src/feature.py", "summary": "updated runtime artifact"}],
+            verification=[
+                {"command": "python -m pytest", "status": "passed", "summary": "tests passed"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated the runtime artifact and verified tests.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        evidence = result["structuredResult"]["completionEvidence"]
+        suggestion = evidence["advisorEvidenceExecutionSuggestions"][0]
+        approval_id = suggestion["approvalId"]
+        assert suggestion["permissionDecision"] == "allow"
+        assert suggestion["requiresApproval"] is True
+        assert suggestion["executionMode"] == "approval_then_run_command"
+        assert suggestion["executionState"] == "approval_pending"
+        assert suggestion["approvalRequest"]["command"] == command
+        assert result["structuredResult"]["completionGate"]["approvalIds"] == [approval_id]
+        approval_events = [
+            event for event in captured_events
+            if event.type == "approval.requested" and event.payload.get("kind") == "run_command"
+        ]
+        assert len(approval_events) == 1
+        completion_reviews = store._conn.execute(
+            "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",
+            (task["id"], "completion_review"),
+        ).fetchall()
+        assert completion_reviews == []
+
+        approved = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
+        completed_task = approved["task"]
+        assert completed_task["status"] == "completed"
+        assert completed_task["structuredResult"]["completionEvidence"]["advisorRequestedEvidence"][0]["status"] == "satisfied"
+        assert completed_task["commands"][0]["command"] == command
+
     def test_blocking_advisor_suggested_tool_waits_for_approval_then_completes(self, tmp_path: Any) -> None:
         class RecordingAdvisor:
             def advise(self, kind: str, input_context: dict[str, Any]) -> Any:

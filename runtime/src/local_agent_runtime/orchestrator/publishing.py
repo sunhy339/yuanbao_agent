@@ -135,6 +135,24 @@ class PublishingMixin:
         if not skill_id:
             return
         snapshot_meta = context.get("snapshot_metadata") or {}
+        skill_fallback = context.get("skillFallback") or snapshot_meta.get("skillFallback")
+        if isinstance(skill_fallback, dict):
+            session_id = context.get("session_id", "")
+            task_id = context.get("task_id") or ""
+            task = {"id": task_id, "goal": context.get("goal", "")}
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="skill.fallback",
+                payload={
+                    "skillId": skill_id,
+                    "requestedSkillId": skill_fallback.get("requestedSkillId") or skill_id,
+                    "reason": skill_fallback.get("reason"),
+                    "fallback": skill_fallback.get("fallback"),
+                    "status": skill_fallback.get("status"),
+                },
+            )
+            return
         filtered_names = snapshot_meta.get("filtered_tool_names")
         if filtered_names is None:
             return

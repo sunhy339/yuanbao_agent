@@ -610,6 +610,11 @@ class ContextCompactor:
                 skill_id = routing.get("skill_id") or routing.get("skillId")
                 if skill_id:
                     decisions.append(f"skill: {skill_id}")
+                skill_fallback = routing.get("skillFallback") or routing.get("skill_fallback")
+                if isinstance(skill_fallback, dict):
+                    requested = skill_fallback.get("requestedSkillId") or skill_fallback.get("requested_skill_id")
+                    reason = skill_fallback.get("reason") or "unknown"
+                    decisions.append(f"skill fallback: {requested or skill_id or 'unknown'} ({reason})")
                 workflow = routing.get("mainWorkflow")
                 if isinstance(workflow, dict):
                     takeover = workflow.get("userTakeover")

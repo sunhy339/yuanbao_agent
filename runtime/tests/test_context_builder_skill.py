@@ -80,6 +80,14 @@ class TestContextBuilderSkillSystemPrompt:
         messages = context["messages"]
         system_msg = next(m for m in messages if m["role"] == "system")
         assert "local coding agent" in system_msg["content"]
+        assert context["skillPolicy"] is None
+        assert context["skillFallback"] == {
+            "requestedSkillId": "nonexistent_skill",
+            "reason": "skill_not_found",
+            "fallback": "default_prompt_and_tools",
+            "status": "active",
+        }
+        assert context["snapshot_metadata"]["skillFallback"]["reason"] == "skill_not_found"
 
 
 class TestContextBuilderSkillToolFilter:

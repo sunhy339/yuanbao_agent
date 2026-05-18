@@ -624,6 +624,8 @@ class MessageRoutingMixin:
             return {"task": runtime_task, "userMessage": user_msg, "assistantMessage": assistant_msg}
 
         context = self._context_builder.build(session_id=session["id"], goal=goal, skill_id=routing.skill_id, lightweight=False)
+        if isinstance(context.get("skillFallback"), dict):
+            routing_dict["skillFallback"] = context["skillFallback"]
         routing_dict["profile_snapshot"] = self._runtime_profile_snapshot(context)
         # Inject routing decision into context as a plain dict for JSON safety.
         context["routing"] = routing_dict

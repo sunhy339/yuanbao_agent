@@ -132,6 +132,8 @@ class SkillFlowMixin:
         self, *, task_id: str, session_id: str, skill_id: str | None,
     ) -> None:
         if skill_id and hasattr(self._store, "record_skill_usage"):
+            if self._context_builder._resolve_skill(skill_id) is None:
+                return
             self._store.record_skill_usage(
                 task_id=task_id, session_id=session_id, skill_id=skill_id,
             )

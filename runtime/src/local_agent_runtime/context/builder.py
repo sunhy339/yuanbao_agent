@@ -110,6 +110,7 @@ class ContextBuilder(HistoryMixin):
 
         # Resolve skill preset if skill_id is provided
         skill_preset = self._resolve_skill(skill_id)
+        skill_fallback = self._skill_fallback_context(skill_id=skill_id, skill_preset=skill_preset)
         skill_policy_context: dict[str, Any] | None = None
         filtered_tool_names: list[str] | None = None
         original_tool_names: list[str] | None = None
@@ -193,6 +194,7 @@ class ContextBuilder(HistoryMixin):
             "tools": tools,
             "openai_tools": openai_tools,
             "skillPolicy": skill_policy_context,
+            "skillFallback": skill_fallback,
             "budgetStats": budget_stats,
             "snapshot_metadata": {
                 "included_sections": budget_stats.get("includedSections", []),
@@ -204,6 +206,7 @@ class ContextBuilder(HistoryMixin):
                 "filtered_tool_names": filtered_tool_names,
                 "original_tool_names": original_tool_names,
                 "skillPolicy": skill_policy_context,
+                "skillFallback": skill_fallback,
                 "autonomy_profile": self._active_autonomy_profile(config),
                 "agent_soul_profile": self._active_agent_soul_profile(config),
                 "prompt_layers": budget_stats.get("promptLayers", []),
@@ -619,6 +622,18 @@ class ContextBuilder(HistoryMixin):
         if skill_id is None or self._skill_registry is None:
             return None
         return self._skill_registry.get(skill_id)
+
+    def _skill_fallback_context(self, *, skill_id: str | None, skill_preset: Any | None) -> dict[str, Any] | None:
+        requested = str(skill_id or "").strip()
+        if not requested or skill_preset is not None:
+            return None
+        reason = "skill_registry_unavailable" if self._skill_registry is None else "skill_not_found"
+        return {
+            "requestedSkillId": requested,
+            "reason": reason,
+            "fallback": "default_prompt_and_tools",
+            "status": "active",
+        }
 
     def _skill_system_prompt(self, skill: Any, *, workspace_root: str) -> str:
         """Build a system prompt that combines the skill's role with safety boundaries."""

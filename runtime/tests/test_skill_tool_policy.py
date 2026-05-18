@@ -505,6 +505,41 @@ class TestSkillToolsFilteredEvent:
         filtered_events = [e for e in runtime.events if e.get("type") == "skill.tools.filtered"]
         assert len(filtered_events) == 0
 
+    def test_missing_skill_publishes_fallback_event(self, tmp_path: Any) -> None:
+        from unittest.mock import patch
+        from local_agent_runtime.router.types import RoutingDecision, Scenario, ExecutionStrategy
+
+        provider = ScriptedProvider([{"final": "Done."}])
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+
+        routing = RoutingDecision(
+            scenario=Scenario.SIMPLE_QUERY,
+            strategy=ExecutionStrategy.REACT_STANDARD,
+            confidence=0.95,
+            skill_id="missing_skill",
+            max_steps=3,
+        )
+
+        with patch.object(
+            runtime.server._orchestrator._meta_router, "route", return_value=routing,
+        ):
+            task = _call_result(
+                _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "edit with missing skill"}),
+                "task",
+            )
+
+        assert task["status"] == "completed"
+        fallback_events = [e for e in runtime.events if e.get("type") == "skill.fallback"]
+        assert len(fallback_events) == 1
+        payload = fallback_events[0].get("payload", {})
+        assert payload["requestedSkillId"] == "missing_skill"
+        assert payload["reason"] == "skill_not_found"
+        stored = runtime.store.get_task({"taskId": task["id"]})["task"]
+        assert stored["routing"]["skillFallback"]["fallback"] == "default_prompt_and_tools"
+        usage = runtime.store.list_skill_usage({"skillId": "missing_skill"})["usage"]
+        assert usage == []
+
     def test_no_filtered_event_with_inherit_all(self, tmp_path: Any) -> None:
         from unittest.mock import patch
         from local_agent_runtime.router.types import RoutingDecision, Scenario, ExecutionStrategy

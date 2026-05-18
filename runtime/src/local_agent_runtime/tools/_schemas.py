@@ -528,6 +528,7 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "hints": [
             "Keep patches small and focused.",
             "Prefer unified diffs for targeted edits and files[] for new small files.",
+            "For brand-new large files or full-file replacements, prefer write_file instead of a large patchText payload.",
         ],
         "metadata": {
             "rate_limit": None,
@@ -680,7 +681,7 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "hints": [
             "Prefer apply_patch for small edits to existing files.",
-            "Use write_file for creating new files or full replacements.",
+            "Use write_file for creating new files, large files, or full replacements.",
         ],
         "metadata": {
             "rate_limit": None,

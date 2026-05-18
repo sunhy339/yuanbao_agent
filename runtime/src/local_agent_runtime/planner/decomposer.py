@@ -68,12 +68,15 @@ class TaskDecomposer:
             **(provider_context or {}),
             "messages": [{"role": "user", "content": prompt}],
         }
-        response = self._provider.generate(
-            prompt,
-            request_context,
-        )
-        raw_text = response.get("message") or ""
-        subtasks = self._parse_subtasks(raw_text, fallback_goal=goal)
+        try:
+            response = self._provider.generate(
+                prompt,
+                request_context,
+            )
+            raw_text = response.get("message") or ""
+            subtasks = self._parse_subtasks(raw_text, fallback_goal=goal)
+        except Exception:  # noqa: BLE001
+            subtasks = self._fallback_subtasks_for_provider_failure(goal)
         subtasks = self._expand_overloaded_implementation_plan(subtasks, goal=goal)
         dag = self.build_dag(subtasks)
         all_ids = [s.id for s in subtasks]
@@ -161,6 +164,80 @@ class TaskDecomposer:
 
         # 3. Fallback
         return [Subtask(id="sub-0", title=fallback_goal[:80], description=fallback_goal)]
+
+    def _fallback_subtasks_for_provider_failure(self, goal: str) -> list[Subtask]:
+        """Keep orchestration moving when LLM decomposition times out or fails."""
+        if not self._goal_needs_execution_plan(goal):
+            return [Subtask(id="sub-0", title=goal[:80], description=goal)]
+
+        return [
+            Subtask(
+                id="sub-0",
+                title="Inspect requirements and workspace",
+                description=(
+                    "LLM decomposition was unavailable. Inspect the workspace, preserve the parent "
+                    "requirements, identify required files, tools, tests, and verification commands, "
+                    "and report concrete implementation constraints. Do not edit files."
+                ),
+                dependencies=[],
+                agent_type="planner",
+            ),
+            Subtask(
+                id="sub-1",
+                title="Implement requested changes",
+                description=(
+                    "Implement the parent task directly from the original goal and the inspection notes. "
+                    "Create or update the requested files, preserve explicit artifact names, and avoid "
+                    "unrelated refactors."
+                ),
+                dependencies=["sub-0"],
+                agent_type="worker",
+            ),
+            Subtask(
+                id="sub-2",
+                title="Verify and summarize result",
+                description=(
+                    "Run the parent task's requested verification commands, including tests or compile "
+                    "checks when applicable. Record changed files, commands, test results, and any "
+                    "remaining blockers before final synthesis."
+                ),
+                dependencies=["sub-1"],
+                agent_type="worker",
+            ),
+        ]
+
+    def _goal_needs_execution_plan(self, goal: str) -> bool:
+        normalized = goal.casefold()
+        return any(
+            token in normalized
+            for token in (
+                "build",
+                "implement",
+                "create",
+                "write",
+                "update",
+                "fix",
+                "refactor",
+                "test",
+                "verify",
+                "pytest",
+                "py_compile",
+                "compileall",
+                "module",
+                "file",
+                "sqlite",
+                "mcp",
+                "skill",
+                "实现",
+                "创建",
+                "写",
+                "更新",
+                "修复",
+                "测试",
+                "验证",
+                "文件",
+            )
+        )
 
     def _expand_overloaded_implementation_plan(self, subtasks: list[Subtask], *, goal: str) -> list[Subtask]:
         """Split generic plans when the goal names several concrete deliverable groups."""

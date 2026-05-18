@@ -26,6 +26,11 @@ class MockProvider:
         return {"message": self._response, "prompt": prompt}
 
 
+class FailingProvider:
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        raise TimeoutError("provider timed out")
+
+
 # ---------------------------------------------------------------------------
 # Decomposition tests
 # ---------------------------------------------------------------------------
@@ -102,6 +107,24 @@ class TestTaskDecomposerDecompose:
         decomposer = TaskDecomposer(provider)
         result = decomposer.decompose(goal="do stuff")
         assert len(result.subtasks) == 1  # fallback
+
+    def test_provider_failure_falls_back_to_execution_plan(self) -> None:
+        decomposer = TaskDecomposer(FailingProvider())
+
+        result = decomposer.decompose(goal="build modules, write pytest tests, and verify py_compile")
+
+        assert [subtask.agent_type for subtask in result.subtasks] == ["planner", "worker", "worker"]
+        assert result.execution_order == ["sub-0", "sub-1", "sub-2"]
+        assert result.dag == {"sub-0": [], "sub-1": ["sub-0"], "sub-2": ["sub-1"]}
+        assert "LLM decomposition was unavailable" in result.subtasks[0].description
+
+    def test_provider_failure_keeps_simple_read_task_single_step(self) -> None:
+        decomposer = TaskDecomposer(FailingProvider())
+
+        result = decomposer.decompose(goal="explain the current status")
+
+        assert len(result.subtasks) == 1
+        assert result.subtasks[0].description == "explain the current status"
 
     def test_subtasks_missing_id_get_generated(self) -> None:
         raw = json.dumps([

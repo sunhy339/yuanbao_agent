@@ -32,6 +32,8 @@ def classify_tool_failure(
         return "permission_denied"
     if status.casefold() == "partial" or "partial" in text or "incomplete" in text:
         return "partial_response"
+    if tool_name == "apply_patch" and status.casefold() == "validation_failed":
+        return "patch_validation_failed"
     if tool_name.startswith("mcp__") and any(
         token in text for token in ("unavailable", "not connected", "connection", "server", "transport")
     ):
@@ -48,6 +50,11 @@ def tool_recovery_hint(*, tool_name: str, failure_kind: str) -> str:
         return f"Adjust tool, MCP, or skill policy, or choose an allowed fallback before retrying {tool_name}."
     if failure_kind == "partial_response":
         return f"Use the partial result if sufficient; otherwise retry {tool_name} with narrower arguments."
+    if failure_kind == "patch_validation_failed":
+        return (
+            "Retry with a smaller valid patch, or use write_file for new files and full-file replacements "
+            "when that tool is available."
+        )
     if failure_kind == "timeout":
         return f"Retry {tool_name} with a smaller request or longer timeout if policy allows."
     if failure_kind == "mcp_tool_failed":

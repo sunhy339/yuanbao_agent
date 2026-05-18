@@ -53,12 +53,14 @@ def test_context_builder_injects_messages_tools_and_safety_prompt(store: SQLiteS
         "read_file",
         "run_command",
         "apply_patch",
+        "write_file",
         "git_status",
         "git_diff",
     }
 
     text = _message_text(context)
-    assert "write files only through apply_patch" in text
+    assert "write files only through apply_patch or write_file" in text
+    assert "use write_file for new/full files" in text
     assert "run commands only through run_command" in text
     assert "stay within the workspace root" in text
     assert "do not bypass the provided tools" in text

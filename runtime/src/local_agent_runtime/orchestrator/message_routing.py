@@ -111,6 +111,16 @@ class MessageRoutingMixin:
         policy = config.get("policy") if isinstance(config.get("policy"), dict) else {}
         approval_mode = str(policy.get("approvalMode") or "on_write_or_command")
         confidence = self._safe_float(routing.get("confidence"), 0.0)
+        automation = self._main_workflow_automation(
+            approval_mode=approval_mode,
+            autonomy_profile=autonomy_profile,
+            background=params.get("background") is True,
+        )
+        budget = self._main_workflow_budget(
+            routing=routing,
+            config=config,
+            autonomy_profile=autonomy_profile,
+        )
         workflow = {
             "intentConfidence": {
                 "score": confidence,
@@ -119,23 +129,9 @@ class MessageRoutingMixin:
                 "strategy": routing.get("strategy"),
                 "reasoning": routing.get("reasoning"),
             },
-            "automation": {
-                "level": self._automation_level(
-                    approval_mode=approval_mode,
-                    autonomy_profile=autonomy_profile,
-                    background=params.get("background") is True,
-                ),
-                "approvalMode": approval_mode,
-                "autonomyProfileId": autonomy_profile.get("id"),
-                "autonomyLevel": autonomy_profile.get("level"),
-                "background": params.get("background") is True,
-                "source": "config.policy+autonomy",
-            },
-            "budget": self._main_workflow_budget(
-                routing=routing,
-                config=config,
-                autonomy_profile=autonomy_profile,
-            ),
+            "automation": automation,
+            "budget": budget,
+            "convergence": self._initial_main_workflow_convergence(automation=automation, budget=budget),
             "workspaceSnapshot": self._main_workflow_workspace_snapshot(session),
             "userTakeover": {
                 "state": "none",
@@ -180,6 +176,41 @@ class MessageRoutingMixin:
             return "auto"
         return "assist"
 
+    def _main_workflow_automation(
+        self,
+        *,
+        approval_mode: str,
+        autonomy_profile: dict[str, Any],
+        background: bool,
+    ) -> dict[str, Any]:
+        level = self._automation_level(
+            approval_mode=approval_mode,
+            autonomy_profile=autonomy_profile,
+            background=background,
+        )
+        return {
+            "level": level,
+            "approvalMode": approval_mode,
+            "autonomyProfileId": autonomy_profile.get("id"),
+            "autonomyLevel": autonomy_profile.get("level"),
+            "background": background,
+            "source": "config.policy+autonomy",
+            "controls": {
+                "pause": True,
+                "resume": True,
+                "cancel": True,
+                "supplement": True,
+                "continueAfterBudgetExhaustion": "requires_user_action",
+                "continueAfterConvergence": "requires_user_action",
+            },
+            "convergencePolicy": {
+                "advisorKind": "budget_convergence",
+                "onBudgetPressure": "record_and_continue",
+                "onBudgetExhaustion": "summarize_partial_for_review",
+                "autoContinuePastHardBudget": False,
+            },
+        }
+
     def _main_workflow_budget(
         self,
         *,
@@ -189,15 +220,63 @@ class MessageRoutingMixin:
     ) -> dict[str, Any]:
         policy = config.get("policy") if isinstance(config.get("policy"), dict) else {}
         provider = config.get("provider") if isinstance(config.get("provider"), dict) else {}
+        max_steps = self._safe_int(routing.get("max_steps"), autonomy_profile.get("maxSteps"), policy.get("maxTaskSteps"), 20)
+        max_context_tokens = self._safe_int(provider.get("maxContextTokens"), 256000)
         return {
-            "maxSteps": self._safe_int(routing.get("max_steps"), autonomy_profile.get("maxSteps"), policy.get("maxTaskSteps"), 20),
+            "maxSteps": max_steps,
             "maxParallelSubtasks": self._safe_int(autonomy_profile.get("maxParallelSubtasks"), 4),
             "retryLimit": self._safe_int(autonomy_profile.get("retryLimit"), 0),
             "taskTimeoutMs": self._safe_int(autonomy_profile.get("timeoutMs"), policy.get("commandTimeoutMs"), 600000),
             "commandTimeoutMs": self._safe_int(policy.get("commandTimeoutMs"), 600000),
             "providerTimeoutSeconds": self._safe_int(provider.get("timeout"), 30),
-            "maxContextTokens": self._safe_int(provider.get("maxContextTokens"), 256000),
+            "maxContextTokens": max_context_tokens,
+            "pressure": "normal",
+            "exhausted": False,
             "convergenceRequired": True,
+            "dimensions": {
+                "steps": self._main_workflow_step_dimension(consumed=0, limit=max_steps),
+                "context": {
+                    "limit": max_context_tokens,
+                    "pressure": "unknown",
+                },
+            },
+        }
+
+    @staticmethod
+    def _main_workflow_step_dimension(*, consumed: int, limit: int) -> dict[str, Any]:
+        remaining = max(0, limit - consumed) if limit > 0 else 0
+        ratio = (consumed / limit) if limit > 0 else 1.0
+        if remaining <= 0:
+            pressure = "exhausted"
+        elif ratio >= 0.85 or remaining <= 1:
+            pressure = "critical"
+        elif ratio >= 0.65 or remaining <= 2:
+            pressure = "watch"
+        else:
+            pressure = "normal"
+        return {
+            "limit": limit,
+            "consumed": consumed,
+            "remaining": remaining,
+            "pressure": pressure,
+        }
+
+    @staticmethod
+    def _initial_main_workflow_convergence(
+        *,
+        automation: dict[str, Any],
+        budget: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "state": "active",
+            "reason": "within_budget",
+            "recommendedAction": "continue",
+            "resumable": True,
+            "requiresUserDecision": False,
+            "budgetPressure": budget.get("pressure") or "normal",
+            "automationLevel": automation.get("level"),
+            "availableActions": ["pause", "cancel", "supplement"],
+            "source": "runtime",
         }
 
     @staticmethod

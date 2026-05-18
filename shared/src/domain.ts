@@ -79,6 +79,9 @@ export type TraceEventType =
   | "command.completed"
   | "command.failed"
   | "policy.decision"
+  | "task.budget.pressure"
+  | "task.budget.exhausted"
+  | "agent.decision.budget_convergence"
   | string;
 
 export interface GitStatusChange {

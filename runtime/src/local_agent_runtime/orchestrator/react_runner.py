@@ -402,6 +402,16 @@ class ReactRunnerMixin:
 
             react_started = True
             steps += 1
+            task = self._record_main_workflow_budget_progress(
+                session_id=session_id,
+                task=task,
+                context=context,
+                goal=goal,
+                tool_results=tool_results,
+                steps=steps,
+                max_steps=max_steps,
+                terminal_success=parsed["status"] == "completed",
+            )
             assistant_text = parsed.get("message") or ""
             if parsed["status"] == "completed" and not assistant_text:
                 assistant_text = parsed["summary"]
@@ -556,19 +566,56 @@ class ReactRunnerMixin:
         routing = dict(task.get("routing") or context.get("routing") or {})
         workflow = dict(routing.get("mainWorkflow") or {})
         budget_state = dict(workflow.get("budget") or {})
+        step_dimension = self._main_workflow_step_dimension(consumed=steps, limit=max_steps)
         budget_state.update({
             "exhausted": True,
             "exhaustedReason": "max_steps",
             "consumedSteps": steps,
             "maxSteps": max_steps,
+            "pressure": "exhausted",
             "convergenceRequired": True,
         })
+        dimensions = dict(budget_state.get("dimensions") or {})
+        dimensions["steps"] = step_dimension
+        budget_state["dimensions"] = dimensions
         workflow["budget"] = budget_state
-        workflow["convergence"] = {
+        advice = self._budget_convergence_decision(
+            session_id=session_id,
+            task=task,
+            goal=goal,
+            budget_state=budget_state,
+            context=context,
+            tool_results=tool_results,
+            steps=steps,
+            max_steps=max_steps,
+            reason="max_steps_exhausted",
+        )
+        convergence = {
             "state": "partial_result",
             "reason": "max_steps_exhausted",
             "toolResultCount": len(tool_results),
+            "resumable": True,
+            "requiresUserDecision": True,
+            "recommendedAction": self._budget_convergence_runtime_action(advice),
+            "availableActions": ["review_partial", "continue_with_more_budget", "change_goal", "stop"],
+            "budgetPressure": "exhausted",
+            "source": advice.get("source") or "runtime",
         }
+        if advice.get("proposalRecordId"):
+            convergence["proposalRecordId"] = advice["proposalRecordId"]
+        if advice.get("advisorProposalId"):
+            convergence["advisorProposalId"] = advice["advisorProposalId"]
+        if advice.get("reason"):
+            convergence["advisorReason"] = advice["reason"]
+        if advice.get("handoffFocus"):
+            convergence["handoffFocus"] = advice["handoffFocus"]
+        if advice.get("resumePolicy"):
+            convergence["resumePolicy"] = advice["resumePolicy"]
+        if advice.get("nextUserOptions"):
+            convergence["nextUserOptions"] = advice["nextUserOptions"]
+        if advice.get("constraints"):
+            convergence["constraints"] = advice["constraints"]
+        workflow["convergence"] = convergence
         routing["mainWorkflow"] = workflow
         task = self._store.update_task(task_id=task["id"], routing=routing)
         self._publish(
@@ -580,6 +627,7 @@ class ReactRunnerMixin:
                 "consumedSteps": steps,
                 "maxSteps": max_steps,
                 "convergence": workflow["convergence"],
+                "budget": budget_state,
             },
         )
         summary = self._budget_exhausted_summary(goal=goal, tool_results=tool_results, steps=steps, max_steps=max_steps)
@@ -588,6 +636,333 @@ class ReactRunnerMixin:
             "summary": summary,
             "tool_results": tool_results,
             "budget_exhausted": True,
+        }
+
+    def _record_main_workflow_budget_progress(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        goal: str,
+        tool_results: list[dict[str, Any]],
+        steps: int,
+        max_steps: int,
+        terminal_success: bool = False,
+    ) -> dict[str, Any]:
+        routing = dict(task.get("routing") or context.get("routing") or {})
+        workflow = dict(routing.get("mainWorkflow") or {})
+        if not workflow:
+            return task
+        budget_state = dict(workflow.get("budget") or {})
+        step_dimension = self._main_workflow_step_dimension(consumed=steps, limit=max_steps)
+        previous_pressure = str(budget_state.get("pressure") or "normal")
+        pressure = str(step_dimension.get("pressure") or "normal")
+        if terminal_success and pressure == "exhausted":
+            step_dimension = {**step_dimension, "pressure": "critical", "completedAtLimit": True}
+            pressure = "critical"
+        budget_state.update({
+            "consumedSteps": steps,
+            "maxSteps": max_steps,
+            "remainingSteps": step_dimension.get("remaining"),
+            "pressure": pressure,
+            "exhausted": pressure == "exhausted",
+            "convergenceRequired": True,
+        })
+        dimensions = dict(budget_state.get("dimensions") or {})
+        dimensions["steps"] = step_dimension
+        context_dimension = self._main_workflow_context_dimension(context)
+        if context_dimension:
+            dimensions["context"] = context_dimension
+        budget_state["dimensions"] = dimensions
+        workflow["budget"] = budget_state
+        workflow["convergence"] = self._active_budget_convergence_state(
+            workflow=workflow,
+            pressure=pressure,
+            goal=goal,
+            tool_results=tool_results,
+        )
+        routing["mainWorkflow"] = workflow
+        task = self._store.update_task(task_id=task["id"], routing=routing)
+        if pressure in {"watch", "critical"} and previous_pressure != pressure:
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="task.budget.pressure",
+                payload={
+                    "dimension": "steps",
+                    "pressure": pressure,
+                    "consumedSteps": steps,
+                    "remainingSteps": step_dimension.get("remaining"),
+                    "maxSteps": max_steps,
+                    "budget": budget_state,
+                    "convergence": workflow["convergence"],
+                },
+                visibility="panel",
+            )
+        return task
+
+    def _active_budget_convergence_state(
+        self,
+        *,
+        workflow: dict[str, Any],
+        pressure: str,
+        goal: str,
+        tool_results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        existing = dict(workflow.get("convergence") or {})
+        if existing.get("reason") in {"max_steps_exhausted", "wrap_up_requested", "change_requested"}:
+            return existing
+        if pressure == "critical":
+            return {
+                **existing,
+                "state": "budget_pressure",
+                "reason": "step_budget_critical",
+                "recommendedAction": "focus_or_wrap_up",
+                "resumable": True,
+                "requiresUserDecision": False,
+                "budgetPressure": pressure,
+                "availableActions": ["continue", "pause", "wrap_up", "cancel"],
+                "handoffFocus": self._budget_handoff_focus(goal=goal, tool_results=tool_results),
+                "source": "runtime",
+            }
+        if pressure == "watch":
+            return {
+                **existing,
+                "state": "active",
+                "reason": "budget_watch",
+                "recommendedAction": "continue_with_focus",
+                "resumable": True,
+                "requiresUserDecision": False,
+                "budgetPressure": pressure,
+                "availableActions": ["continue", "pause", "cancel"],
+                "source": "runtime",
+            }
+        return {
+            **existing,
+            "state": "active",
+            "reason": "within_budget",
+            "recommendedAction": "continue",
+            "resumable": True,
+            "requiresUserDecision": False,
+            "budgetPressure": pressure,
+            "availableActions": ["pause", "cancel", "supplement"],
+            "source": existing.get("source") or "runtime",
+        }
+
+    @staticmethod
+    def _main_workflow_context_dimension(context: dict[str, Any]) -> dict[str, Any] | None:
+        stats = context.get("budgetStats") if isinstance(context, dict) else None
+        if not isinstance(stats, dict):
+            return None
+        limit = stats.get("maxContextTokens")
+        estimated = stats.get("estimatedInputTokens") or stats.get("estimatedTokens") or stats.get("messageTokens")
+        try:
+            limit_int = int(limit) if limit is not None else 0
+            estimated_int = int(estimated) if estimated is not None else 0
+        except (TypeError, ValueError):
+            return None
+        if limit_int <= 0:
+            return None
+        ratio = estimated_int / limit_int
+        if ratio >= 1:
+            pressure = "exhausted"
+        elif ratio >= 0.85:
+            pressure = "critical"
+        elif ratio >= 0.65:
+            pressure = "watch"
+        else:
+            pressure = "normal"
+        return {
+            "limit": limit_int,
+            "estimated": estimated_int,
+            "remaining": max(0, limit_int - estimated_int),
+            "pressure": pressure,
+        }
+
+    def _budget_convergence_runtime_action(self, advice: dict[str, Any]) -> str:
+        action = str(advice.get("action") or "")
+        if action in {"pause_for_user", "ask_user", "request_more_budget"}:
+            return "review_partial"
+        if action == "fail":
+            return "review_failure"
+        if action == "continue_with_constraints":
+            return "continue_requires_budget_update"
+        return "summarize_partial"
+
+    def _budget_convergence_decision(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        budget_state: dict[str, Any],
+        context: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+        steps: int,
+        max_steps: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        fallback = {
+            "action": "summarize_partial",
+            "reason": reason,
+            "handoffFocus": self._budget_handoff_focus(goal=goal, tool_results=tool_results),
+            "resumePolicy": "requires_user_follow_up",
+            "source": "runtime_fallback",
+        }
+        advisor = getattr(self, "_decision_advisor", None)
+        if advisor is None:
+            return fallback
+        advice = None
+        try:
+            input_context = {
+                "goal": goal,
+                "budget_state": budget_state,
+                "task_status": task.get("status"),
+                "automation": ((task.get("routing") or {}).get("mainWorkflow") or {}).get("automation"),
+                "reason": reason,
+                "steps": steps,
+                "max_steps": max_steps,
+                "tool_results_summary": self._tool_results_summary_for_budget(tool_results),
+                "main_workflow": ((task.get("routing") or {}).get("mainWorkflow"))
+                if isinstance(task.get("routing"), dict)
+                else None,
+                "config": context.get("config") if isinstance(context, dict) else None,
+            }
+            advice = advisor.advise("budget_convergence", input_context)
+            payload = advice.payload if isinstance(advice.payload, dict) else {}
+            if advice.accepted and payload.get("action"):
+                decision = {
+                    **fallback,
+                    "action": str(payload.get("action")),
+                    "reason": str(payload.get("reason") or advice.rationale or reason)[:500],
+                    "source": advice.source,
+                    "advisorProposalId": advice.proposal_id,
+                }
+                self._copy_optional_budget_advice_fields(payload, decision)
+            else:
+                decision = {
+                    **fallback,
+                    "source": getattr(advice, "source", "rule_fallback"),
+                    "fallbackReason": getattr(advice, "fallback_reason", None),
+                }
+            record_id = self._record_budget_convergence_proposal(
+                session_id=session_id,
+                task=task,
+                goal=goal,
+                advice=advice,
+                runtime_decision=decision,
+            )
+            if record_id:
+                decision["proposalRecordId"] = record_id
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="agent.decision.budget_convergence",
+                payload={
+                    "decision": decision,
+                    "budget": budget_state,
+                    "reason": reason,
+                },
+                visibility="panel",
+            )
+            return decision
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Budget convergence advisor failed for task %s: %s", task.get("id"), exc)
+            return fallback
+
+    @staticmethod
+    def _copy_optional_budget_advice_fields(payload: dict[str, Any], decision: dict[str, Any]) -> None:
+        field_map = {
+            "handoff_focus": "handoffFocus",
+            "resume_policy": "resumePolicy",
+            "next_user_options": "nextUserOptions",
+            "constraints": "constraints",
+            "userMessage": "userMessage",
+        }
+        for source_key, target_key in field_map.items():
+            value = payload.get(source_key)
+            if value:
+                decision[target_key] = value
+
+    def _record_budget_convergence_proposal(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        advice: Any,
+        runtime_decision: dict[str, Any],
+    ) -> str | None:
+        try:
+            proposal = dict(getattr(advice, "payload", None) or {})
+            proposal.setdefault("action", runtime_decision.get("action"))
+            proposal["runtimeAction"] = runtime_decision.get("action")
+            source = {
+                "type": getattr(advice, "source", runtime_decision.get("source") or "runtime"),
+                "confidence": getattr(advice, "confidence", None),
+                "rationale": getattr(advice, "rationale", None),
+                "fallbackReason": getattr(advice, "fallback_reason", None),
+                "advisorProposalId": getattr(advice, "proposal_id", None),
+            }
+            model_id = getattr(advice, "model_id", None)
+            if model_id:
+                source["model_id"] = model_id
+            record = self._store.create_proposal({
+                "kind": "budget_convergence",
+                "sessionId": session_id,
+                "taskId": task["id"],
+                "proposal": proposal,
+                "source": source,
+                "inputSummary": str(goal or "")[:500],
+                "modelId": model_id,
+            })
+            proposal_id = record["proposal"]["id"]
+            accepted = bool(getattr(advice, "accepted", False))
+            reasons = [] if accepted else (
+                list(getattr(advice, "validation_reasons", None) or [])
+                or [str(getattr(advice, "fallback_reason", None) or "advisor unavailable")]
+            )
+            self._store.validate_proposal({
+                "proposalId": proposal_id,
+                "status": "accepted" if accepted else "rejected",
+                "reasons": reasons,
+            })
+            return proposal_id
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to record budget convergence proposal", exc_info=True)
+            return None
+
+    @staticmethod
+    def _budget_handoff_focus(*, goal: str, tool_results: list[dict[str, Any]]) -> str:
+        completed = sum(1 for item in tool_results if (item.get("result") or {}).get("status") in {None, "completed", "applied", "written"})
+        failed = sum(1 for item in tool_results if (item.get("result") or {}).get("status") in {"failed", "error", "timeout"})
+        return (
+            f"Preserve partial progress for goal: {goal[:300]}. "
+            f"Tool results so far: {len(tool_results)} total, {completed} completed, {failed} failed."
+        )
+
+    @staticmethod
+    def _tool_results_summary_for_budget(tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+        recent: list[dict[str, Any]] = []
+        completed = 0
+        failed = 0
+        for item in tool_results:
+            result = item.get("result") if isinstance(item, dict) else None
+            status = result.get("status") if isinstance(result, dict) else None
+            if status in {None, "completed", "applied", "written"}:
+                completed += 1
+            if status in {"failed", "error", "timeout"}:
+                failed += 1
+            recent.append({
+                "name": item.get("name"),
+                "status": status or "completed",
+            })
+        return {
+            "total": len(tool_results),
+            "completed": completed,
+            "failed": failed,
+            "recent": recent[-5:],
         }
 
     @staticmethod

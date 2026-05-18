@@ -242,6 +242,28 @@ register_decision(DecisionKindEntry(
     fallback="use structured recovery hint and continue under normal tool policy",
     trace_event="agent.decision.tool_recovery",
 ))
+register_decision(DecisionKindEntry(
+    kind="budget_convergence",
+    description=(
+        "Advise how the runtime should converge when task automation or budget "
+        "limits are reached. The advisor may recommend partial summary, pause, "
+        "asking the user, requesting more budget, constrained continuation, or "
+        "failure, but the runtime still enforces budgets and never continues "
+        "past a hard limit without a fresh user/runtime transition."
+    ),
+    required_input_fields=("goal", "budget_state"),
+    allowed_proposal_schema=(
+        "action",
+        "reason",
+        "handoff_focus",
+        "resume_policy",
+        "next_user_options",
+        "constraints",
+        "userMessage",
+    ),
+    fallback="summarize partial progress and wait for an explicit follow-up",
+    trace_event="agent.decision.budget_convergence",
+))
 
 
 # ---------------------------------------------------------------------------

@@ -1542,8 +1542,16 @@ def test_background_task_preserves_routing_fields(
         assert isinstance(workflow, dict)
         assert workflow["intentConfidence"]["band"] in {"low", "medium", "high"}
         assert workflow["automation"]["level"] in {"assist", "auto", "full-auto"}
+        assert workflow["automation"]["controls"]["pause"] is True
+        assert workflow["automation"]["controls"]["continueAfterBudgetExhaustion"] == "requires_user_action"
+        assert workflow["automation"]["convergencePolicy"]["advisorKind"] == "budget_convergence"
         assert workflow["budget"]["maxSteps"] == routing["max_steps"]
         assert workflow["budget"]["commandTimeoutMs"] >= 1
+        assert workflow["budget"]["pressure"] in {"normal", "watch", "critical"}
+        assert workflow["budget"]["dimensions"]["steps"]["consumed"] >= 0
+        assert workflow["convergence"]["state"] in {"active", "budget_pressure"}
+        assert workflow["convergence"]["recommendedAction"] in {"continue", "continue_with_focus", "focus_or_wrap_up"}
+        assert workflow["convergence"]["resumable"] is True
         assert workflow["workspaceSnapshot"]["workspaceId"] == workspace["id"]
         assert workflow["workspaceSnapshot"]["exists"] is True
         assert workflow["userTakeover"]["state"] == "none"

@@ -46,6 +46,7 @@ REQUIRED_FIELDS_BY_KIND: dict[str, list[str]] = {
     "product_surface_decision": ["surface_type"],
     "user_takeover": ["state"],
     "tool_recovery": ["action"],
+    "budget_convergence": ["action"],
 }
 
 
@@ -332,6 +333,10 @@ def validate_proposal(kind: str, payload: dict[str, Any]) -> list[str]:
     if kind == "tool_recovery":
         reasons.extend(validate_tool_recovery(payload))
 
+    # Budget convergence validator
+    if kind == "budget_convergence":
+        reasons.extend(validate_budget_convergence(payload))
+
     # Skill policy validator
     if kind == "skill_policy":
         reasons.extend(validate_skill_availability(payload))
@@ -502,6 +507,33 @@ def validate_tool_recovery(payload: dict[str, Any]) -> list[str]:
             arguments = fallback_tool.get("arguments", {})
             if arguments is not None and not isinstance(arguments, dict):
                 reasons.append("fallbackTool.arguments must be an object when provided")
+    return reasons
+
+
+def validate_budget_convergence(payload: dict[str, Any]) -> list[str]:
+    """Validate budget-convergence advice without letting it bypass runtime gates."""
+    reasons: list[str] = []
+    valid_actions = {
+        "summarize_partial",
+        "pause_for_user",
+        "request_more_budget",
+        "continue_with_constraints",
+        "ask_user",
+        "fail",
+    }
+    action = payload.get("action")
+    if action not in valid_actions:
+        reasons.append(f"Invalid budget convergence action: {action!r}")
+    for field in ("reason", "handoff_focus", "resume_policy", "userMessage"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            reasons.append(f"{field} must be a string when provided")
+    next_options = payload.get("next_user_options")
+    if next_options is not None and not isinstance(next_options, list):
+        reasons.append("next_user_options must be a list when provided")
+    constraints = payload.get("constraints")
+    if constraints is not None and not isinstance(constraints, (dict, list, str)):
+        reasons.append("constraints must be a dict, list, or string when provided")
     return reasons
 
 

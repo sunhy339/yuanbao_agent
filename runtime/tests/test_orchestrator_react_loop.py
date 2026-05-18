@@ -1355,10 +1355,155 @@ def test_react_loop_converges_when_max_steps_are_exceeded(tmp_path: Any) -> None
     assert workflow["budget"]["exhausted"] is True
     assert workflow["budget"]["exhaustedReason"] == "max_steps"
     assert workflow["budget"]["consumedSteps"] == 1
+    assert workflow["budget"]["pressure"] == "exhausted"
+    assert workflow["budget"]["dimensions"]["steps"]["pressure"] == "exhausted"
     assert workflow["convergence"]["state"] == "partial_result"
+    assert workflow["convergence"]["requiresUserDecision"] is True
+    assert workflow["convergence"]["recommendedAction"] == "summarize_partial"
+    assert workflow["convergence"]["resumePolicy"] == "requires_user_follow_up"
     event_types = [event["type"] for event in runtime.events]
     assert "tool.completed" in event_types
     assert "task.budget.exhausted" in event_types
+
+
+def test_react_loop_records_budget_pressure_before_exhaustion(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_read_1",
+                        "name": "read_file",
+                        "arguments": {"path": "alpha.txt"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_read_2",
+                        "name": "read_file",
+                        "arguments": {"path": "beta.txt"},
+                    }
+                ]
+            },
+            {"final": "Done."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider, {"read_file": lambda params: {"content": params["path"]}})
+    runtime.store.update_config({"config": {
+        "policy": {"maxTaskSteps": 3},
+        "autonomy": {"activeProfileId": "test", "profiles": [{"id": "test", "maxSteps": 3}]},
+    }})
+    original_route = runtime.server._orchestrator._meta_router.route  # noqa: SLF001
+
+    def patched_route(goal: str):  # noqa: ANN001
+        decision = original_route(goal)
+        decision.max_steps = 3
+        return decision
+
+    runtime.server._orchestrator._meta_router.route = patched_route  # noqa: SLF001
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "read alpha then beta"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    workflow = task["routing"]["mainWorkflow"]
+    assert workflow["budget"]["pressure"] == "critical"
+    assert workflow["budget"]["dimensions"]["steps"]["consumed"] == 3
+    assert workflow["budget"]["dimensions"]["steps"]["remaining"] == 0
+    assert workflow["budget"]["dimensions"]["steps"]["completedAtLimit"] is True
+    assert workflow["convergence"]["reason"] == "step_budget_critical"
+    assert workflow["convergence"]["recommendedAction"] == "focus_or_wrap_up"
+    pressure_events = [event for event in runtime.events if event["type"] == "task.budget.pressure"]
+    assert pressure_events
+    assert pressure_events[-1]["payload"]["pressure"] == "critical"
+
+
+def test_react_loop_records_budget_convergence_advisor_proposal(tmp_path: Any) -> None:
+    class Advisor:
+        def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+            assert kind == "budget_convergence"
+            assert input_context["budget_state"]["exhausted"] is True
+            return SimpleNamespace(
+                accepted=True,
+                source="llm",
+                rationale="Summarize partial work and ask the user before continuing.",
+                fallback_reason=None,
+                proposal_id="budget_1",
+                model_id="test-model",
+                validation_reasons=[],
+                confidence=0.88,
+                payload={
+                    "action": "pause_for_user",
+                    "reason": "The task exhausted its step budget with useful partial work.",
+                    "handoff_focus": "Review alpha.txt before granting more steps.",
+                    "resume_policy": "requires_user_budget_update",
+                    "next_user_options": ["continue with more budget", "stop"],
+                },
+            )
+
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "name": "read_file",
+                        "arguments": {"path": "alpha.txt"},
+                    }
+                ]
+            },
+            {"final": "This answer should not be reached."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider, {"read_file": lambda _params: {"content": "alpha"}})
+    runtime.server._orchestrator._decision_advisor = Advisor()  # noqa: SLF001
+    runtime.store.update_config({"config": {
+        "policy": {"maxTaskSteps": 1},
+        "autonomy": {"activeProfileId": "test", "profiles": [{"id": "test", "maxSteps": 1}]},
+    }})
+    original_route = runtime.server._orchestrator._meta_router.route  # noqa: SLF001
+
+    def patched_route(goal: str):  # noqa: ANN001
+        decision = original_route(goal)
+        decision.max_steps = 1
+        return decision
+
+    runtime.server._orchestrator._meta_router.route = patched_route  # noqa: SLF001
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "read alpha"},
+        ),
+        "task",
+    )
+
+    workflow = task["routing"]["mainWorkflow"]
+    assert workflow["convergence"]["source"] == "llm"
+    assert workflow["convergence"]["recommendedAction"] == "review_partial"
+    assert workflow["convergence"]["handoffFocus"] == "Review alpha.txt before granting more steps."
+    assert workflow["convergence"]["resumePolicy"] == "requires_user_budget_update"
+    assert workflow["convergence"]["advisorProposalId"] == "budget_1"
+    proposals = runtime.store.list_proposals({
+        "taskId": task["id"],
+        "kind": "budget_convergence",
+    })["proposals"]
+    assert len(proposals) == 1
+    assert proposals[0]["status"] == "accepted"
+    assert workflow["convergence"]["proposalRecordId"] == proposals[0]["id"]
+    event_types = [event["type"] for event in runtime.events]
+    assert "agent.decision.budget_convergence" in event_types
 
 
 def test_react_loop_reuses_duplicate_read_file_results(tmp_path: Any) -> None:

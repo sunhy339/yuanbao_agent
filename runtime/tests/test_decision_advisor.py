@@ -34,6 +34,7 @@ class TestDecisionRegistry:
         assert "provider_preflight" in kinds
         assert "user_takeover" in kinds
         assert "tool_recovery" in kinds
+        assert "budget_convergence" in kinds
 
     def test_get_decision_kind_returns_entry(self) -> None:
         entry = get_decision_kind("intent_mode")
@@ -58,7 +59,7 @@ class TestDecisionRegistry:
         assert "test_custom" in list_decision_kinds()
 
     def test_entry_has_trace_event(self) -> None:
-        for kind in ("intent_mode", "routing_strategy", "context_policy", "decomposition", "failure_recovery", "provider_preflight", "user_takeover", "tool_recovery"):
+        for kind in ("intent_mode", "routing_strategy", "context_policy", "decomposition", "failure_recovery", "provider_preflight", "user_takeover", "tool_recovery", "budget_convergence"):
             entry = get_decision_kind(kind)
             assert entry is not None
             assert entry.trace_event.startswith("agent.decision.")
@@ -714,6 +715,62 @@ class TestDecisionAdvisorToolRecovery:
         assert result.accepted is False
         assert result.source == "validation_rejected"
         assert any("Invalid tool recovery action" in reason for reason in result.validation_reasons)
+
+
+class TestDecisionAdvisorBudgetConvergence:
+    """Budget convergence uses LLM advice while runtime keeps hard budget authority."""
+
+    def test_budget_convergence_accepts_partial_summary_action(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "action": "summarize_partial",
+                "reason": "The step budget is exhausted; preserve the useful work.",
+                "handoff_focus": "Review the last tool result before deciding whether to continue.",
+                "resume_policy": "requires_user_follow_up",
+                "next_user_options": ["continue with more budget", "change target", "stop"],
+            },
+            "confidence": 0.86,
+            "rationale": "The runtime hit a hard step limit but has partial evidence.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "budget_convergence",
+            {
+                "goal": "Implement the storage update",
+                "budget_state": {
+                    "exhausted": True,
+                    "exhaustedReason": "max_steps",
+                    "consumedSteps": 3,
+                    "maxSteps": 3,
+                },
+            },
+        )
+
+        assert result.accepted is True
+        assert result.payload["action"] == "summarize_partial"
+        assert result.payload["resume_policy"] == "requires_user_follow_up"
+        assert result.payload["next_user_options"] == ["continue with more budget", "change target", "stop"]
+
+    def test_budget_convergence_rejects_invalid_action(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {"action": "ignore_budget_and_continue"},
+            "confidence": 0.9,
+            "rationale": "bad action",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "budget_convergence",
+            {
+                "goal": "Continue forever",
+                "budget_state": {"exhausted": True},
+            },
+        )
+
+        assert result.accepted is False
+        assert result.source == "validation_rejected"
+        assert any("Invalid budget convergence action" in reason for reason in result.validation_reasons)
 
 
 class TestDecisionAdvisorCompletionDecision:

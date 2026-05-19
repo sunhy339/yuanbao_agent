@@ -41,7 +41,10 @@ class ToolExecutionMixin:
 
     def _ensure_tool_allowed_for_child_worker(self, tool_name: str) -> None:
         allowed = self._child_tool_allowlist()
-        if allowed is None or tool_name in set(allowed):
+        if allowed is None:
+            return
+        allowed_set = set(allowed)
+        if tool_name in allowed_set or (tool_name.startswith("mcp__") and "mcp__*" in allowed_set):
             return
         raise ValueError(f"Tool is not allowed in child worker process: {tool_name}")
 

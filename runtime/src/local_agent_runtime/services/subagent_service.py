@@ -61,6 +61,10 @@ class SubagentService:
             prompt=prompt,
             title=self._optional_string(params, "title") or self._title_from_prompt(prompt),
             planning_prompt=self._optional_string(params, "planningPrompt"),
+            skill_id=(
+                self._optional_string(params, "skillId")
+                or self._optional_string(params, "skill_id")
+            ),
             agent_type=self._optional_string(params, "agentType")
             or self._optional_string(params, "agent_type")
             or "explorer",
@@ -76,6 +80,8 @@ class SubagentService:
                 self._optional_string(params, "model")
                 or self._optional_string(params, "childModel")
             ),
+            mcp_policy=self._optional_object(params, "mcpPolicy") or self._optional_object(params, "mcp_policy"),
+            active_worktree=self._optional_object(params, "activeWorktree") or self._optional_object(params, "active_worktree"),
         )
         result = self._worker_runner.run_child_task(request)
         # P0.6: Annotate result with planning mode (may have been overridden by fallback)

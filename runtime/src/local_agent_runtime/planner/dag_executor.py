@@ -49,6 +49,9 @@ class DAGExecutor:
         *,
         session_id: str,
         parent_task_id: str,
+        skill_id: str | None = None,
+        mcp_policy: dict[str, Any] | None = None,
+        active_worktree: dict[str, Any] | None = None,
         max_workers: int = 4,
         parent_goal: str | None = None,
         child_timeout_ms: int | None = None,
@@ -147,6 +150,9 @@ class DAGExecutor:
                     self._execute_subtask(
                         subtask_index, sid, completed, failed, results,
                         session_id, parent_task_id, lock,
+                        skill_id=skill_id,
+                        mcp_policy=mcp_policy,
+                        active_worktree=active_worktree,
                         parent_goal=parent_goal,
                         child_timeout_ms=child_timeout_ms,
                         partial_handoffs=partial_handoffs,
@@ -161,6 +167,9 @@ class DAGExecutor:
                             self._execute_subtask,
                             subtask_index, sid, completed, failed, results,
                             session_id, parent_task_id, lock,
+                            skill_id=skill_id,
+                            mcp_policy=mcp_policy,
+                            active_worktree=active_worktree,
                             parent_goal=parent_goal,
                             child_timeout_ms=child_timeout_ms,
                             partial_handoffs=partial_handoffs,
@@ -233,6 +242,9 @@ class DAGExecutor:
         session_id: str,
         parent_task_id: str,
         lock: threading.Lock,
+        skill_id: str | None = None,
+        mcp_policy: dict[str, Any] | None = None,
+        active_worktree: dict[str, Any] | None = None,
         parent_goal: str | None = None,
         child_timeout_ms: int | None = None,
         partial_handoffs: list[dict[str, Any]] | None = None,
@@ -273,16 +285,29 @@ class DAGExecutor:
                     "title": subtask.title,
                     "sessionId": session_id,
                     "taskId": parent_task_id,
+                    **({"skillId": skill_id} if isinstance(skill_id, str) and skill_id.strip() else {}),
                     "agentType": normalize_subtask_agent_type(subtask.agent_type),
-                    "childToolAllowlist": child_tool_allowlist_for_agent(subtask.agent_type),
+                    "childToolAllowlist": self._child_tool_allowlist_for_subtask(
+                        subtask=subtask,
+                        skill_id=skill_id,
+                    ),
                     "profile": {
                         "ownedScope": list(subtask.owned_scope),
                         "expectedArtifacts": [dict(item) for item in subtask.expected_artifacts],
                         "verificationRequirements": [dict(item) for item in subtask.verification_requirements],
                     },
+                    **({"mcpPolicy": dict(mcp_policy)} if isinstance(mcp_policy, dict) else {}),
+                    **({"activeWorktree": dict(active_worktree)} if isinstance(active_worktree, dict) else {}),
                     **({"timeoutMs": child_timeout_ms} if child_timeout_ms is not None else {}),
                 })
-                if str(dispatch_result.get("status") or "").strip().lower() != "failed":
+                dispatch_status = str(dispatch_result.get("status") or "").strip().lower()
+                if dispatch_status == "waiting_approval":
+                    message = str(
+                        dispatch_result.get("summary")
+                        or "Child worker is waiting for parent approval."
+                    ).strip()
+                    raise RuntimeError(message)
+                if dispatch_status != "failed":
                     with lock:
                         subtask.status = "completed"
                         subtask.result = dispatch_result.get("summary") or "Completed"
@@ -336,6 +361,13 @@ class DAGExecutor:
                 })
             if span is not None:
                 tracer.end_span(span.span_id, status="error", attributes={"error": str(exc)})
+
+    @staticmethod
+    def _child_tool_allowlist_for_subtask(*, subtask: Subtask, skill_id: str | None) -> list[str]:
+        allowlist = list(child_tool_allowlist_for_agent(subtask.agent_type))
+        if isinstance(skill_id, str) and skill_id.strip():
+            allowlist.append("mcp__*")
+        return list(dict.fromkeys(allowlist))
 
     def _group_by_level(
         self,

@@ -59,6 +59,22 @@ class FailedStatusSubagentService:
         return {"summary": f"Result for {title}", "status": "completed"}
 
 
+class WaitingApprovalSubagentService:
+    def __init__(self, waiting_titles: set[str]) -> None:
+        self._waiting_titles = waiting_titles
+        self.calls: list[dict[str, Any]] = []
+
+    def dispatch(self, params: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(params)
+        title = params.get("title", "")
+        if title in self._waiting_titles:
+            return {
+                "status": "waiting_approval",
+                "summary": f"Awaiting approval: {title}",
+            }
+        return {"summary": f"Result for {title}", "status": "completed"}
+
+
 def _make_plan(subtasks: list[Subtask]) -> PlanResult:
     """Build a PlanResult with auto-computed DAG and execution order."""
     decomposer = __import__(
@@ -237,6 +253,21 @@ class TestDAGExecutorExecute:
         assert "Continue from the previous partial handoff" in subagent.calls[1]["prompt"]
         assert subagent.calls[1]["planningPrompt"] != "Write incident tests"
 
+    def test_waiting_approval_child_is_not_treated_as_completed(self) -> None:
+        subtasks = [
+            Subtask(id="a", title="Needs approval", description="Update README", dependencies=[]),
+        ]
+        plan = _make_plan(subtasks)
+        mock = WaitingApprovalSubagentService(waiting_titles={"Needs approval"})
+        executor = DAGExecutor(mock)
+
+        result = executor.execute(plan, session_id="sess-1", parent_task_id="task-1")
+
+        assert result["success"] is False
+        subtask = result["subtasks"][0]
+        assert subtask.status == "failed"
+        assert "Awaiting approval: Needs approval" in subtask.result
+
     def test_passes_session_and_parent_to_dispatch(self) -> None:
         subtasks = [
             Subtask(id="a", title="A", description="a", dependencies=[]),
@@ -327,6 +358,52 @@ class TestDAGExecutorExecute:
         )
 
         assert mock.calls[0]["timeoutMs"] == 600_000
+
+    def test_passes_parent_skill_and_mcp_policy_to_child_dispatch(self) -> None:
+        subtasks = [
+            Subtask(id="a", title="Consult KB", description="Consult MCP KB.", dependencies=[]),
+        ]
+        plan = _make_plan(subtasks)
+        mock = MockSubagentService()
+        executor = DAGExecutor(mock)
+
+        executor.execute(
+            plan,
+            session_id="my-session",
+            parent_task_id="my-task",
+            skill_id="worktree_mcp_skill",
+            mcp_policy={"mode": "allow", "allowedServers": ["kb"]},
+        )
+
+        call = mock.calls[0]
+        assert call["skillId"] == "worktree_mcp_skill"
+        assert call["mcpPolicy"] == {"mode": "allow", "allowedServers": ["kb"]}
+        assert "mcp__*" in call["childToolAllowlist"]
+
+    def test_passes_parent_active_worktree_to_child_dispatch(self) -> None:
+        subtasks = [
+            Subtask(id="a", title="Update docs", description="Edit README in worktree.", dependencies=[]),
+        ]
+        plan = _make_plan(subtasks)
+        mock = MockSubagentService()
+        executor = DAGExecutor(mock)
+
+        executor.execute(
+            plan,
+            session_id="my-session",
+            parent_task_id="my-task",
+            active_worktree={
+                "id": "wt_123",
+                "worktreePath": "D:/tmp/worktree",
+                "branchName": "agent/my-task",
+                "baseRef": "HEAD",
+                "status": "active",
+            },
+        )
+
+        call = mock.calls[0]
+        assert call["activeWorktree"]["id"] == "wt_123"
+        assert call["activeWorktree"]["worktreePath"] == "D:/tmp/worktree"
 
 
 # ---------------------------------------------------------------------------

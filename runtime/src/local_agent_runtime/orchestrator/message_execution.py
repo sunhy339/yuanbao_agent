@@ -408,10 +408,22 @@ class MessageExecutionMixin:
                 event_type = f"task.planning.subtask.{event}"
                 self._publish(session_id=session_id, task=task, event_type=event_type, payload=details)
 
+            routing = context.get("routing", {})
             execution = self._dag_executor.execute(
                 plan,
                 session_id=session_id,
                 parent_task_id=task["id"],
+                skill_id=(
+                    str(routing.get("skill_id")).strip()
+                    if isinstance(routing.get("skill_id"), str) and str(routing.get("skill_id")).strip()
+                    else None
+                ),
+                mcp_policy=context.get("mcpPolicy") if isinstance(context.get("mcpPolicy"), dict) else None,
+                active_worktree=(
+                    routing.get("activeWorktree")
+                    if isinstance(routing.get("activeWorktree"), dict)
+                    else None
+                ),
                 max_workers=self._max_parallel_subtasks(context),
                 parent_goal=goal,
                 child_timeout_ms=self._child_subtask_timeout_ms(context),
@@ -453,7 +465,6 @@ class MessageExecutionMixin:
             )
 
             # 4. Auto-supplement if coverage is insufficient
-            routing = context.get("routing", {})
             threshold = routing.get("coverage_threshold", 0.7)
             if coverage < threshold:
                 gaps = self._coverage_evaluator.find_gaps(goal, execution["subtasks"])
@@ -509,6 +520,43 @@ class MessageExecutionMixin:
                 )
 
             summary = execution["summary"]
+
+            if execution["success"] is False:
+                self._publish(
+                    session_id=session_id, task=task,
+                    event_type="task.planning.completed",
+                    payload={
+                        "coverage": coverage,
+                        "success": execution["success"],
+                        "partialHandoffs": execution.get("partialHandoffs", []),
+                    },
+                )
+                self._tracer.end_span(
+                    plan_span.span_id, status="error",
+                    attributes={"subtaskCount": len(execution["subtasks"]), "coverage": coverage},
+                )
+                return {
+                    "task": self._fail_task(
+                        session_id=session_id,
+                        task=task,
+                        summary=summary,
+                        error_code="PLANNING_SUBTASKS_FAILED",
+                        structured_result={
+                            "status": "failed",
+                            "coverage": coverage,
+                            "partialHandoffs": execution.get("partialHandoffs", []),
+                            "subtasks": [
+                                {
+                                    "id": subtask.id,
+                                    "title": subtask.title,
+                                    "status": subtask.status,
+                                    "result": subtask.result,
+                                }
+                                for subtask in execution["subtasks"]
+                            ],
+                        },
+                    ),
+                }
 
             self._publish(
                 session_id=session_id, task=task,

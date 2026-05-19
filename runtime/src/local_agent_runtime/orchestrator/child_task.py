@@ -44,6 +44,12 @@ class ChildTaskMixin:
         child_role = self._child_runtime_role(agent_type)
         profile = params.get("profile") if isinstance(params.get("profile"), dict) else {}
         planning_prompt = params.get("planningPrompt") if isinstance(params.get("planningPrompt"), str) else None
+        skill_id = params.get("skillId") if isinstance(params.get("skillId"), str) else params.get("skill_id")
+        skill_id = skill_id.strip() if isinstance(skill_id, str) and skill_id.strip() else None
+        mcp_policy = params.get("mcpPolicy") if isinstance(params.get("mcpPolicy"), dict) else params.get("mcp_policy")
+        mcp_policy = dict(mcp_policy) if isinstance(mcp_policy, dict) else None
+        active_worktree = params.get("activeWorktree") if isinstance(params.get("activeWorktree"), dict) else params.get("active_worktree")
+        active_worktree = dict(active_worktree) if isinstance(active_worktree, dict) else None
         owned_scope = profile.get("ownedScope")
         if isinstance(owned_scope, str):
             normalized_owned_scope = [owned_scope]
@@ -57,6 +63,7 @@ class ChildTaskMixin:
             session_id=session["id"],
             goal=child_goal,
             lightweight=False,
+            skill_id=skill_id,
             role=child_role,
             include_history=not clean_child_context,
             include_scratchpad=not clean_child_context,
@@ -70,6 +77,13 @@ class ChildTaskMixin:
         context["_worker_budget"] = params.get("budget") if isinstance(params.get("budget"), dict) else {}
         if profile:
             context["_child_profile"] = profile
+        if mcp_policy is not None:
+            context["mcpPolicy"] = mcp_policy
+        if active_worktree is not None:
+            child_routing_seed = dict(context.get("routing") if isinstance(context.get("routing"), dict) else {})
+            child_routing_seed["activeWorktree"] = active_worktree
+            context["routing"] = child_routing_seed
+            context = self._context_with_worktree_binding(context, active_worktree)
         child_allowlist = self._child_tool_allowlist_from_params(params)
         if child_allowlist is not None:
             context["_child_tool_allowlist"] = list(child_allowlist)
@@ -111,6 +125,10 @@ class ChildTaskMixin:
             "runtimeRole": child_role,
             "roleSnapshot": role_snapshot,
         }
+        if skill_id is not None:
+            child_routing["skill_id"] = skill_id
+        if active_worktree is not None:
+            child_routing["activeWorktree"] = active_worktree
         if profile:
             child_routing["profile"] = profile
         if collaboration_task_id:
@@ -280,7 +298,22 @@ class ChildTaskMixin:
         if allowed is None:
             return None
         allowed_set = set(allowed)
-        return [schema for schema in BUILTIN_TOOL_SCHEMAS if schema.get("name") in allowed_set]
+        def _allowed(schema: dict[str, Any]) -> bool:
+            name = str(schema.get("name") or "")
+            if not name:
+                return False
+            if name in allowed_set:
+                return True
+            return name.startswith("mcp__") and "mcp__*" in allowed_set
+
+        schemas = list(BUILTIN_TOOL_SCHEMAS)
+        registry = getattr(self, "_tool_registry", None)
+        if registry is not None:
+            for schema in getattr(registry, "schemas", []):
+                name = schema.get("name")
+                if name and not any(existing.get("name") == name for existing in schemas):
+                    schemas.append(schema)
+        return [schema for schema in schemas if _allowed(schema)]
 
     def _child_tool_allowlist(self) -> list[str] | None:
         raw = os.environ.get("LOCAL_AGENT_CHILD_TOOL_ALLOWLIST")

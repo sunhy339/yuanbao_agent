@@ -18,12 +18,14 @@ unit-level test_mcp_client.py:
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from local_agent_runtime.event_bus import EventBus
+from local_agent_runtime.execution.tool_pipeline import ToolExecutionMixin
 from local_agent_runtime.mcp.client import (
     McpClientManager,
     McpServerConfig,
@@ -302,6 +304,49 @@ class TestMcpToolExecution:
         assert orch._tool_registry.has_tool("mcp__mysql__query")
 
         store.close()
+
+    def test_child_worker_mcp_wildcard_allows_namespaced_tool(self, tmp_path):
+        class _DummyChildRunner(ToolExecutionMixin):
+            def __init__(self) -> None:
+                self._allowed = ["read_file", "mcp__*"]
+
+            def _child_tool_allowlist(self):
+                return list(self._allowed)
+
+        runner = _DummyChildRunner()
+
+        runner._ensure_tool_allowed_for_child_worker("mcp__kb__lookup")
+
+        with pytest.raises(ValueError, match="Tool is not allowed in child worker process: web_fetch"):
+            runner._ensure_tool_allowed_for_child_worker("web_fetch")
+
+
+class TestChildContextMcpSchemas:
+    def test_child_context_tool_schemas_include_registered_mcp_tools_when_wildcard_allowed(self, tmp_path):
+        _, store, orch, _ = _build_harness(tmp_path)
+        try:
+            schema = _make_schema("kb", "lookup", "Lookup knowledge base")
+            orch._tool_registry.register(
+                "mcp__kb__lookup",
+                lambda args: {"status": "ok", "items": []},
+                schema,
+            )
+
+            original = os.environ.get("LOCAL_AGENT_CHILD_TOOL_ALLOWLIST")
+            os.environ["LOCAL_AGENT_CHILD_TOOL_ALLOWLIST"] = "read_file,mcp__*"
+            try:
+                schemas = orch._context_tool_schemas()
+            finally:
+                if original is None:
+                    os.environ.pop("LOCAL_AGENT_CHILD_TOOL_ALLOWLIST", None)
+                else:
+                    os.environ["LOCAL_AGENT_CHILD_TOOL_ALLOWLIST"] = original
+
+            names = {schema.get("name") for schema in schemas or []}
+            assert "read_file" in names
+            assert "mcp__kb__lookup" in names
+        finally:
+            store.close()
 
 
 # ── refresh all servers ────────────────────────────────────────────────

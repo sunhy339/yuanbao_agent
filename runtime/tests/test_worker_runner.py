@@ -146,6 +146,58 @@ def test_subagent_service_dispatch_normalizes_profile_aliases_and_planning_promp
     ]
 
 
+def test_subagent_service_dispatch_preserves_skill_and_mcp_policy() -> None:
+    runner = RecordingRunner()
+    service = SubagentService(object(), object(), runner=runner)
+
+    service.dispatch(
+        {
+            "prompt": "Consult MCP KB and update docs",
+            "title": "Consult KB",
+            "skillId": "worktree_mcp_skill",
+            "mcpPolicy": {"mode": "allow", "allowedServers": ["kb"]},
+        }
+    )
+
+    assert runner.requests == [
+        ChildTaskRequest(
+            prompt="Consult MCP KB and update docs",
+            title="Consult KB",
+            skill_id="worktree_mcp_skill",
+            mcp_policy={"mode": "allow", "allowedServers": ["kb"]},
+        )
+    ]
+
+
+def test_subagent_service_dispatch_preserves_active_worktree() -> None:
+    runner = RecordingRunner()
+    service = SubagentService(object(), object(), runner=runner)
+
+    service.dispatch(
+        {
+            "prompt": "Update README in worktree",
+            "title": "Docs",
+            "activeWorktree": {
+                "id": "wt_1",
+                "worktreePath": "D:/tmp/wt",
+                "branchName": "agent/task_1",
+            },
+        }
+    )
+
+    assert runner.requests == [
+        ChildTaskRequest(
+            prompt="Update README in worktree",
+            title="Docs",
+            active_worktree={
+                "id": "wt_1",
+                "worktreePath": "D:/tmp/wt",
+                "branchName": "agent/task_1",
+            },
+        )
+    ]
+
+
 def test_subagent_service_dispatch_accepts_prompt_only() -> None:
     runner = RecordingRunner()
     service = SubagentService(object(), object(), runner=runner)

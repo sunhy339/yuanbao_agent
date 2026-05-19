@@ -6,6 +6,8 @@ containing summary, status, changedFiles, testsRun, risks, keyFindings.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -368,6 +370,70 @@ class TestCompletionHardGate:
             (task["id"], "completion_review"),
         ).fetchall()
         assert approvals == []
+
+    def test_child_worker_completion_uses_profile_scope_instead_of_parent_prompt_artifacts(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "blog_models.py").write_text("from dataclasses import dataclass\n", encoding="utf-8")
+        (project / "blog_service.py").write_text("def create_post():\n    return True\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="subagent",
+            goal=(
+                "Parent task asks for a full-stack blog system with index.html, app.js, styles.css, "
+                "tests/test_blog_service.py, and tests/test_blog_api.py."
+            ),
+            plan=[],
+            routing={
+                "scenario": "code_edit",
+                "profile": {
+                    "ownedScope": ["blog_models.py", "blog_service.py"],
+                    "expectedArtifacts": [],
+                    "verificationRequirements": [],
+                },
+            },
+            role="worker",
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "blog_models.py", "action": "modified"},
+                {"path": "blog_service.py", "action": "modified"},
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Backend child task completed its owned files.",
+            context={
+                "routing": {"scenario": "code_edit"},
+                "workspace_root": str(project),
+                "_child_profile": {
+                    "ownedScope": ["blog_models.py", "blog_service.py"],
+                    "expectedArtifacts": [],
+                    "verificationRequirements": [],
+                },
+                "config": {"policy": {"approvalMode": "none"}},
+            },
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        structural = [
+            item for item in evidence["acceptance"]
+            if item.get("source") == "structural_file_check"
+        ]
+        assert result["status"] == "completed"
+        assert evidence["verificationRequirements"]["status"] == "not_required"
+        assert {item["criterion"] for item in structural} == {
+            "Expected artifact exists: blog_models.py",
+            "Expected artifact exists: blog_service.py",
+        }
 
     def test_tool_result_py_compile_evidence_completes_without_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
@@ -3310,6 +3376,460 @@ class TestCompletionHardGate:
         ][0]
         assert syntax["status"] == "supported"
         assert syntax["source"] == "static_frontend_node_check"
+
+    def test_static_frontend_script_syntax_recovers_missing_node_command_from_runtime(self, tmp_path: Any, monkeypatch) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "index.html").write_text(
+            '<!doctype html><script src="app.js"></script><main>Ready</main>\n',
+            encoding="utf-8",
+        )
+        (project / "app.js").write_text("console.log('ready');\n", encoding="utf-8")
+        node_dir = tmp_path / "node" / "bin"
+        node_dir.mkdir(parents=True)
+        node_executable = node_dir / ("node.exe" if os.name == "nt" else "node")
+        node_executable.write_text("", encoding="utf-8")
+        monkeypatch.setenv("LOCAL_AGENT_NODE_EXECUTABLE", str(node_executable))
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="product gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Create a static frontend in index.html with app.js",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "index.html", "summary": "generated static frontend"},
+                {"path": "app.js", "summary": "generated script"},
+            ],
+            commands=[
+                {
+                    "id": "cmd_node_missing",
+                    "command": "node --check app.js",
+                    "status": "failed",
+                    "exitCode": 1,
+                    "summary": "node : 无法将“node”项识别为 cmdlet、函数、脚本文件或可运行程序的名称。",
+                    "startedAt": 100,
+                }
+            ],
+        )
+
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        try:
+            result = rt.orchestrator._complete_task(
+                session_id=session["id"],
+                task=task,
+                summary="Generated static frontend files.",
+                context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+                skip_reflection=True,
+            )
+        finally:
+            monkeypatch.setattr(subprocess, "run", real_run)
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]
+        syntax = [
+            item for item in evidence["acceptance"]
+            if item["criterion"] == "Static frontend script syntax: app.js"
+        ][0]
+        assert syntax["status"] == "supported"
+        assert calls
+        assert calls[0][0] == str(node_executable)
+
+    def test_node_check_recovery_marks_prior_failed_test_run_resolved(self, tmp_path: Any, monkeypatch) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "index.html").write_text(
+            '<!doctype html><script src="app.js"></script><main>Ready</main>\n',
+            encoding="utf-8",
+        )
+        (project / "app.js").write_text("console.log('ready');\n", encoding="utf-8")
+        node_dir = tmp_path / "node" / "bin"
+        node_dir.mkdir(parents=True)
+        node_executable = node_dir / ("node.exe" if os.name == "nt" else "node")
+        node_executable.write_text("", encoding="utf-8")
+        monkeypatch.setenv("LOCAL_AGENT_NODE_EXECUTABLE", str(node_executable))
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="product gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Create a static frontend in index.html with app.js",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "index.html", "summary": "generated static frontend"},
+                {"path": "app.js", "summary": "generated script"},
+            ],
+        )
+        command_log = store.create_command_log(
+            task_id=task["id"],
+            command="node --check app.js",
+            cwd=".",
+            shell="powershell",
+        )
+        stderr_path = store.write_command_artifact(
+            command_log["id"],
+            "stderr",
+            "node : not recognized as a command",
+        )
+        store.update_command_log(
+            command_log["id"],
+            status="failed",
+            exit_code=1,
+            finished_at=store.now(),
+            stdout_path=None,
+            stderr_path=stderr_path,
+        )
+
+        calls: list[list[str]] = []
+        real_run = subprocess.run
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        try:
+            result = rt.orchestrator._complete_task(
+                session_id=session["id"],
+                task=task,
+                summary="Generated static frontend files.",
+                context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+                skip_reflection=True,
+            )
+        finally:
+            monkeypatch.setattr(subprocess, "run", real_run)
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["counts"]["failedTestsRun"] == 0
+        assert evidence["counts"]["resolvedFailedTestsRun"] == 1
+        assert evidence["verificationRequirements"]["status"] == "satisfied"
+        assert calls
+
+    def test_windows_node_executable_check_counts_as_javascript_verification(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "app.js").write_text("console.log('ok');\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="subagent",
+            goal="Implement static frontend",
+            plan=[],
+            routing={
+                "profile": {
+                    "ownedScope": ["app.js"],
+                    "expectedArtifacts": [{"kind": "file", "path": "app.js"}],
+                    "verificationRequirements": [{"kind": "command", "command": "node --check app.js", "family": "javascript"}],
+                }
+            },
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "app.js", "summary": "updated frontend script"}],
+            commands=[
+                {
+                    "id": "cmd_node_path",
+                    "command": r'& "D:\Program Files\nodejs\node.EXE" --check app.js',
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "syntax ok",
+                    "startedAt": 100,
+                }
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Frontend implementation finished.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert evidence["verificationRequirements"]["matched"] == ["javascript", "javascript:typecheck"]
+        assert evidence["verificationRequirements"]["status"] == "satisfied"
+
+    def test_failed_child_task_is_resolved_by_later_successful_sibling_of_same_kind(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "index.html").write_text("<!doctype html><main>ok</main>\n", encoding="utf-8")
+        (project / "app.js").write_text("console.log('ok');\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Build frontend and verify it",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "index.html", "summary": "generated static frontend"},
+                {"path": "app.js", "summary": "generated script"},
+            ],
+            verification=[{"command": "node --check app.js", "status": "passed", "summary": "syntax ok"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Frontend is complete after retry.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            tool_results=[
+                {
+                    "name": "child_task",
+                    "failed": True,
+                    "status": "failed",
+                    "summary": "Implement static frontend",
+                    "agentType": "worker",
+                },
+                {
+                    "name": "child_task",
+                    "failed": False,
+                    "status": "completed",
+                    "summary": "Implemented the static frontend for the blog system.",
+                    "agentType": "worker",
+                },
+            ],
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert evidence["counts"]["failedToolResults"] == 0
+        assert evidence["counts"]["resolvedFailedToolResults"] == 1
+
+    def test_child_task_with_owned_scope_is_still_write_or_verification_work(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="subagent",
+            goal="Build frontend assets",
+            plan=[],
+            routing={
+                "profile": {
+                    "ownedScope": ["index.html", "app.js", "styles.css"],
+                    "expectedArtifacts": [],
+                    "verificationRequirements": [],
+                }
+            },
+        )
+
+        assert rt.orchestrator._is_write_or_verification_task(
+            task=task,
+            context={"workspace_root": str(project)},
+        ) is True
+
+    def test_child_task_with_not_required_verification_contract_can_complete_without_targeted_checks(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "blog_models.py").write_text("VALUE = 1\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="subagent",
+            goal="Implement backend module",
+            plan=[],
+            routing={
+                "profile": {
+                    "ownedScope": ["blog_models.py"],
+                    "expectedArtifacts": [],
+                    "verificationRequirements": [],
+                }
+            },
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "blog_models.py", "summary": "implemented backend module"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Implemented backend module.",
+            context={"workspace_root": str(project)},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        requirements = result["structuredResult"]["completionEvidence"]["verificationRequirements"]
+        assert requirements["status"] == "not_required"
+
+    def test_planner_child_with_owned_scope_only_is_not_treated_as_write_work(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="planner child")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="subagent",
+            goal="Review backend risks",
+            plan=[],
+            role="planner",
+            routing={
+                "runtimeRole": "planner",
+                "profile": {
+                    "ownedScope": [
+                        "backend architecture",
+                        "data model",
+                        "API contract",
+                    ],
+                    "expectedArtifacts": [],
+                    "verificationRequirements": [],
+                },
+            },
+        )
+
+        assert rt.orchestrator._is_write_or_verification_task(
+            task=task,
+            context={"workspace_root": str(project), "routing": dict(task.get("routing") or {})},
+        ) is False
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Backend risk review complete.",
+            context={"workspace_root": str(project), "routing": dict(task.get("routing") or {})},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+
+    def test_completion_ignores_glob_owned_scope_as_literal_expected_artifact(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "tests").mkdir()
+        (project / "tests" / "test_blog_service.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="glob scope child")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="subagent",
+            goal="Write pytest coverage",
+            plan=[],
+            role="worker",
+            routing={
+                "runtimeRole": "worker",
+                "profile": {
+                    "ownedScope": ["tests/**", "test_*.py"],
+                    "expectedArtifacts": [],
+                    "verificationRequirements": [],
+                },
+            },
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "tests/test_blog_service.py", "summary": "added pytest coverage"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Added pytest coverage.",
+            context={"workspace_root": str(project), "routing": dict(task.get("routing") or {})},
+            skip_reflection=True,
+        )
+
+        acceptance = result["structuredResult"]["completionEvidence"]["acceptance"]
+        assert not any(item["criterion"] == "Expected artifact exists: test_*.py" for item in acceptance)
+
+    def test_worker_child_does_not_inherit_parent_structural_artifacts_from_goal_text(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "tests").mkdir()
+        (project / "tests" / "test_blog_api.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+        (project / "tests" / "test_blog_service.py").write_text("def test_ok_two():\n    assert True\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="worker child acceptance scope")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="subagent",
+            goal=(
+                "Parent task mentions index.html, app.js, and styles.css. "
+                "Assigned subtask: author pytest coverage for backend and API."
+            ),
+            plan=[],
+            role="worker",
+            routing={
+                "runtimeRole": "worker",
+                "profile": {
+                    "ownedScope": ["tests/"],
+                    "expectedArtifacts": [],
+                    "verificationRequirements": [],
+                },
+            },
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "tests/test_blog_service.py", "summary": "added service tests"},
+                {"path": "tests/test_blog_api.py", "summary": "added api tests"},
+            ],
+            commands=[
+                {
+                    "id": "cmd_pytest",
+                    "command": '& "C:\\Python314\\python.exe" -m pytest -q',
+                    "cwd": "tests",
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "3 passed",
+                }
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Added pytest coverage and it passed.",
+            context={"workspace_root": str(project), "routing": dict(task.get("routing") or {})},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        acceptance = result["structuredResult"]["completionEvidence"]["acceptance"]
+        assert not any(item["criterion"] == "Expected artifact exists: app.js" for item in acceptance)
+        assert not any(item["criterion"] == "Expected artifact exists: styles.css" for item in acceptance)
 
     def test_completion_review_rejection_fails_task(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)

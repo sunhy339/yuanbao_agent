@@ -32,11 +32,14 @@ class HookService:
         event_bus: EventBus,
         permission_engine: PermissionEngine | None = None,
         memory_store: Any | None = None,
+        *,
+        refresh_permission_engine: bool = False,
     ) -> None:
         self._store = store
         self._event_bus = event_bus
         self._permission_engine = permission_engine
         self._memory_store = memory_store
+        self._refresh_permission_engine = refresh_permission_engine
 
     def invoke_hooks(self, event: str, context: dict[str, Any]) -> list[dict[str, Any]]:
         """Dispatch all matching hooks for a lifecycle event.
@@ -309,9 +312,10 @@ class HookService:
         command: str,
         context: dict[str, Any],
     ) -> Any | None:
-        if self._permission_engine is None:
+        permission_engine = self._current_permission_engine()
+        if permission_engine is None:
             return None
-        hook_decision = self._permission_engine.evaluate(PermissionRequest(
+        hook_decision = permission_engine.evaluate(PermissionRequest(
             capability="hooksExecute",
             tool_name="hook.run_command",
             context={
@@ -324,7 +328,7 @@ class HookService:
         ))
         if hook_decision.decision != "allow":
             return hook_decision
-        return self._permission_engine.evaluate(PermissionRequest(
+        return permission_engine.evaluate(PermissionRequest(
             capability="runCommand",
             tool_name="hook.run_command",
             context={
@@ -345,7 +349,8 @@ class HookService:
         capability: str | None = None,
         extra_context: dict[str, Any] | None = None,
     ) -> Any | None:
-        if self._permission_engine is None:
+        permission_engine = self._current_permission_engine()
+        if permission_engine is None:
             return None
         base_context = {
             **context,
@@ -354,7 +359,7 @@ class HookService:
             "hookName": hook.get("name"),
             "event": event,
         }
-        hook_decision = self._permission_engine.evaluate(PermissionRequest(
+        hook_decision = permission_engine.evaluate(PermissionRequest(
             capability="hooksExecute",
             tool_name=tool_name,
             context=base_context,
@@ -363,11 +368,24 @@ class HookService:
             return hook_decision
         if capability is None:
             return None
-        return self._permission_engine.evaluate(PermissionRequest(
+        return permission_engine.evaluate(PermissionRequest(
             capability=capability,
             tool_name=tool_name,
             context=base_context,
         ))
+
+    def _current_permission_engine(self) -> PermissionEngine | None:
+        if self._permission_engine is None:
+            return None
+        if not self._refresh_permission_engine:
+            return self._permission_engine
+        try:
+            latest = self._store.get_config({}).get("config")
+            if isinstance(latest, dict):
+                return PermissionEngine(config=latest, store=self._store)
+        except Exception:
+            return self._permission_engine
+        return self._permission_engine
 
     def _record_permission_outcome(
         self,

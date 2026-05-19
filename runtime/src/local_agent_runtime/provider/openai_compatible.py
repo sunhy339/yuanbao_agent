@@ -452,6 +452,7 @@ class OpenAICompatibleChatClient:
         return payload
 
     def _serialize_messages_for_request(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        messages = self._drop_orphan_tool_messages(messages)
         serialized: list[dict[str, Any]] = []
         for message in messages:
             if not isinstance(message, dict):
@@ -477,6 +478,29 @@ class OpenAICompatibleChatClient:
                 continue
             serialized.append(dict(message))
         return serialized
+
+    def _drop_orphan_tool_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        valid_tool_call_ids: set[str] = set()
+        filtered: list[dict[str, Any]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            if role == "assistant":
+                for item in message.get("tool_calls") or []:
+                    if isinstance(item, dict):
+                        tool_call_id = item.get("id")
+                        if isinstance(tool_call_id, str) and tool_call_id:
+                            valid_tool_call_ids.add(tool_call_id)
+                filtered.append(message)
+                continue
+            if role == "tool":
+                tool_call_id = message.get("tool_call_id")
+                if isinstance(tool_call_id, str) and tool_call_id and tool_call_id in valid_tool_call_ids:
+                    filtered.append(message)
+                continue
+            filtered.append(message)
+        return filtered
 
     def _serialize_tool_calls_for_request(self, tool_calls: Any) -> list[dict[str, Any]]:
         if not isinstance(tool_calls, list):
@@ -1020,6 +1044,7 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         *,
         tool_name_map: dict[str, str],
     ) -> list[dict[str, Any]]:
+        messages = self._drop_orphan_tool_messages(messages)
         serialized: list[dict[str, Any]] = []
         raw_to_safe = {raw: safe for safe, raw in tool_name_map.items()}
         for message in messages:
@@ -1250,6 +1275,7 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
         *,
         tool_name_map: dict[str, str],
     ) -> tuple[list[str], list[dict[str, Any]]]:
+        messages = self._drop_orphan_tool_messages(messages)
         system_parts: list[str] = []
         serialized: list[dict[str, Any]] = []
         raw_to_safe = {raw: safe for safe, raw in tool_name_map.items()}

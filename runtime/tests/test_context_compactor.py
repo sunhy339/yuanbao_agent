@@ -158,6 +158,40 @@ class TestLLMSummary:
         result = compactor._generate_summary(history, 10000)
         assert result is not None
 
+    def test_provider_context_is_forwarded_to_summary_and_compaction_decision(self) -> None:
+        provider = _FakeProvider("Summary from provider.")
+        compactor = ContextCompactor(
+            self.store,
+            provider=provider,
+            recent_turns=2,
+            provider_context={"config": {"provider": {"streamingEnabled": True, "model": "gpt-5.4"}}},
+        )
+
+        history = [_msg("user", "What changed?")]
+        summary = compactor._generate_summary(history, 1000)
+        assert summary is not None
+        assert provider.calls[-1]["context"]["config"]["provider"]["streamingEnabled"] is True
+        assert provider.calls[-1]["context"]["config"]["provider"]["model"] == "gpt-5.4"
+
+        class DecisionProvider(_FakeProvider):
+            def generate(self, prompt: str, context: dict) -> dict:
+                self.calls.append({"prompt": prompt, "context": context})
+                return {"message": '{"shouldCompact": true, "reason": "near budget"}'}
+
+        decision_provider = DecisionProvider()
+        compactor = ContextCompactor(
+            self.store,
+            provider=decision_provider,
+            recent_turns=2,
+            provider_context={"config": {"provider": {"streamingEnabled": True, "model": "gpt-5.4"}}},
+        )
+        messages = [_msg("system", "sys")] + [_msg("user", _long_content(1000)) for _ in range(60)]
+        tokens_before = sum(estimate_tokens(message["content"]) for message in messages)
+        decision = compactor._llm_compaction_decision(messages, tokens_before, max(tokens_before + 1, 1000))
+        assert decision is not None
+        assert decision_provider.calls[-1]["context"]["config"]["provider"]["streamingEnabled"] is True
+        assert decision_provider.calls[-1]["context"]["config"]["provider"]["model"] == "gpt-5.4"
+
 
 # ---------------------------------------------------------------------------
 # Test: compact() full flow
@@ -244,6 +278,23 @@ class TestCompact:
                 for item in message.get("tool_calls") or []:
                     assistant_ids.add(item.get("id"))
         assert "call_keep" in assistant_ids
+
+    def test_compaction_drops_unrecoverable_orphan_tool_result(self) -> None:
+        orphan_tool_result = {
+            "role": "tool",
+            "tool_call_id": "call_missing",
+            "content": '{"status":"completed"}',
+        }
+        msgs = [
+            _msg("system", "sys"),
+            *[_msg("user", _long_content(200)) for _ in range(8)],
+            orphan_tool_result,
+        ]
+        compactor = ContextCompactor(self.store, recent_turns=1)
+
+        result = compactor.compact("sess_orphan", msgs, max_tokens=80)
+
+        assert all(message.get("tool_call_id") != "call_missing" for message in result.kept_messages)
 
     def test_compaction_record_persisted(self) -> None:
         msgs = [_msg("system", "sys")] + [

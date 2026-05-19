@@ -259,6 +259,41 @@ def test_openai_compatible_serializes_internal_tool_messages_for_request() -> No
     ]
 
 
+def test_openai_compatible_drops_orphan_tool_messages_from_request() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(
+        messages=[
+            {"role": "user", "content": "find files"},
+            {
+                "role": "tool",
+                "tool_call_id": "call_missing",
+                "name": "search_files",
+                "content": '{"matches":[]}',
+            },
+        ]
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["messages"] == [{"role": "user", "content": "find files"}]
+
+
 def test_openai_compatible_request_can_be_configured_from_env() -> None:
     calls: list[dict[str, Any]] = []
 
@@ -492,6 +527,51 @@ def test_openai_responses_tool_call_response_is_normalized() -> None:
     ]
 
 
+def test_openai_responses_drops_orphan_tool_messages_from_request() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, json.dumps(
+            {
+                "id": "resp_3",
+                "model": "test-responses",
+                "status": "completed",
+                "output_text": "ok",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "ok"}],
+                    }
+                ],
+            }
+        ).encode("utf-8")
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(
+        messages=[
+            {"role": "user", "content": "read"},
+            {"role": "tool", "tool_call_id": "call_missing", "content": '{"status":"completed"}'},
+        ],
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["input"] == [{"role": "user", "content": "read"}]
+
+
 def test_anthropic_messages_api_format_posts_messages_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in (
         "LOCAL_AGENT_PROVIDER_MODEL",
@@ -549,6 +629,47 @@ def test_anthropic_messages_api_format_posts_messages_payload(monkeypatch: pytes
     assert payload["model"] == "claude-test"
     assert payload["max_tokens"] == 777
     assert payload["system"] == "be brief"
+    assert payload["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_anthropic_messages_drops_orphan_tool_messages_from_request() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, json.dumps(
+            {
+                "id": "msg_orphan",
+                "model": "claude-test",
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": 5, "output_tokens": 3},
+            }
+        ).encode("utf-8")
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "anthropic-messages",
+                "apiKey": "sk-ant",
+                "baseUrl": "https://api.anthropic.test",
+                "apiFormat": "anthropic-messages",
+                "model": "claude-test",
+                "maxTokens": 777,
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(
+        messages=[
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "tool_call_id": "call_missing", "content": '{"status":"completed"}'},
+        ]
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
     assert payload["messages"] == [{"role": "user", "content": "hi"}]
 
 
@@ -863,6 +984,55 @@ def test_generate_exposes_react_tool_calls() -> None:
             "arguments": {"path": "README.md"},
         }
     ]
+
+
+def test_generate_prefers_streaming_when_enabled() -> None:
+    stream_calls: list[dict[str, Any]] = []
+
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**kwargs: Any) -> tuple[int, Any]:
+        stream_calls.append(kwargs)
+        return 200, iter(
+            [
+                b'data: {"id":"chatcmpl_1","model":"test-chat","choices":[{"delta":{"role":"assistant","content":"Hel"},"index":0}]}\n\n',
+                b'data: {"id":"chatcmpl_1","model":"test-chat","choices":[{"delta":{"content":"lo"},"index":0,"finish_reason":"stop"}]}\n\n',
+                b"data: [DONE]\n\n",
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "model": "test-chat",
+                "streamingEnabled": False,
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-chat",
+            "streamingEnabled": True,
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "model": "test-chat",
+        }
+    }
+
+    response = adapter.generate("say hello", context)
+
+    assert len(stream_calls) == 1
+    assert response["message"] == "Hello"
+    assert response["final"] == "Hello"
+    assert response["finish_reason"] == "stop"
 
 
 def test_plain_text_response_is_normalized() -> None:

@@ -140,14 +140,15 @@ class SQLiteStore(
 
     def next_seq(self) -> int:
         """Allocate a monotonically increasing sequence number from a dedicated counter table."""
-        self._conn.execute(
-            "UPDATE seq_counter SET val = val + 1 WHERE id = 1"
-        )
-        row = self._conn.execute(
-            "SELECT val FROM seq_counter WHERE id = 1"
-        ).fetchone()
-        self._conn.commit()
-        return int(row["val"])
+        with self._conn._lock:
+            self._conn.execute(
+                "UPDATE seq_counter SET val = val + 1 WHERE id = 1"
+            )
+            row = self._conn.execute(
+                "SELECT val FROM seq_counter WHERE id = 1"
+            ).fetchone()
+            self._conn.commit()
+            return int(row["val"])
 
     def _serialize_workspace(self, row: dict[str, Any]) -> dict[str, Any]:
         return {

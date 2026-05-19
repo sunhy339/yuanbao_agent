@@ -108,6 +108,13 @@ class ReactToolHelpersMixin:
         if tool_name in workspace_tools:
             arguments.pop("workspace_root", None)
             arguments["workspaceRoot"] = context["workspace_root"]
+            original_root = context.get("original_workspace_root")
+            if original_root:
+                arguments.setdefault("originalWorkspaceRoot", original_root)
+            active_worktree = context.get("active_worktree") if isinstance(context.get("active_worktree"), dict) else {}
+            worktree_id = active_worktree.get("id") if isinstance(active_worktree, dict) else None
+            if worktree_id:
+                arguments.setdefault("activeWorktreeId", worktree_id)
 
         search_config = context.get("search_config", {})
         if tool_name == "list_dir":

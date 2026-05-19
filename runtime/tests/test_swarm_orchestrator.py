@@ -264,3 +264,43 @@ class TestSwarmInstanceIsolation:
         # Should use original description, NOT leaked handoff prompt from s1
         assert "Do X" in mock_sub2.calls[0]["prompt"]
         assert "Context from instance 1" not in mock_sub2.calls[0]["prompt"]
+
+
+class TestSwarmProviderContext:
+    def test_decompose_and_handoff_receive_provider_context(self) -> None:
+        seen_contexts: list[dict[str, Any]] = []
+
+        class CapturingProvider:
+            def __init__(self) -> None:
+                self._decompose_called = False
+                self._handoff_called = False
+
+            def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+                seen_contexts.append(context)
+                if "task decomposition specialist" in prompt and not self._decompose_called:
+                    self._decompose_called = True
+                    return {"message": json.dumps([
+                        {"id": "sub-0", "title": "Step A", "description": "Do A", "dependencies": []},
+                        {"id": "sub-1", "title": "Step B", "description": "Do B", "dependencies": []},
+                    ])}
+                if "swarm coordinator" in prompt and not self._handoff_called:
+                    self._handoff_called = True
+                    return {"message": json.dumps({"done": True})}
+                return {"message": "Synthesized result"}
+
+        swarm = SwarmOrchestrator(
+            provider=CapturingProvider(),
+            subagent_service=MockSubagentService(),
+        )
+
+        swarm.execute(
+            "Do A then B",
+            {"_provider_context": {"config": {"provider": {"streamingEnabled": True, "model": "gpt-5.4"}}}},
+            session_id="sess-1",
+            task=_make_task(),
+        )
+
+        assert len(seen_contexts) >= 2
+        for context in seen_contexts[:2]:
+            assert context["config"]["provider"]["streamingEnabled"] is True
+            assert context["config"]["provider"]["model"] == "gpt-5.4"

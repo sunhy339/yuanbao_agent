@@ -222,6 +222,53 @@ def test_react_loop_continues_with_non_task_tools_after_child_result(tmp_path: A
     assert {"read_file", "apply_patch", "run_command"}.issubset(second_tool_names)
 
 
+def test_react_loop_keeps_apply_patch_active_until_it_runs(tmp_path: Any) -> None:
+    provider = ScriptedProvider([
+        {
+            "message": "Search first.",
+            "tool_calls": [
+                {
+                    "id": "call_search",
+                    "name": "search_files",
+                    "arguments": {"query": "blog", "maxResults": 5},
+                }
+            ],
+        },
+        {"final": "I found the relevant files."},
+    ])
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    workspace_root = tmp_path / "workspace"
+    (workspace_root / "README.md").write_text("blog\n", encoding="utf-8")
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "implement a small blog backend"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    task_updates = [
+        event
+        for event in runtime.events
+        if event["type"] == "task.updated" and isinstance(event.get("payload", {}).get("plan"), list)
+    ]
+    plan_after_search = next(
+        event["payload"]["plan"]
+        for event in task_updates
+        if any(step["id"] == "search-relevant-files" and step["status"] == "completed" for step in event["payload"]["plan"])
+    )
+    plan_by_id = {step["id"]: step for step in plan_after_search}
+    assert plan_by_id["search-relevant-files"]["status"] == "completed"
+    assert plan_by_id["apply-patch"]["status"] == "active"
+    assert plan_by_id["run-command"]["status"] == "pending"
+    assert plan_by_id["summarize-findings"]["status"] == "pending"
+
+
 def test_swarm_execution_passes_autonomy_timeout_to_children(tmp_path: Any) -> None:
     provider = ScriptedProvider([])
     runtime = _make_runtime(tmp_path, provider)

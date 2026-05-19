@@ -4,12 +4,14 @@ import hashlib
 import json
 import logging
 import re
+import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
 from ..policy.permission_engine import PermissionEngine, PermissionRequest
 from ..policy.tool_policy_resolver import TOOL_CAPABILITIES, ToolPolicyResolver
+from ..services.runtime_dependencies import resolve_node_executable
 from ..tools._shared import approval_request, normalize_shell
 from ..tools.run_command import _powershell_execution_command
 
@@ -515,6 +517,10 @@ class TaskLifecycleMixin:
             return None
         requirements = completion_evidence.get("verificationRequirements")
         if isinstance(requirements, dict):
+            requirement_status = str(requirements.get("status") or "").strip().casefold()
+            if requirement_status == "not_required":
+                return None
+        if isinstance(requirements, dict):
             missing = [
                 str(item)
                 for item in (requirements.get("missing") or [])
@@ -629,6 +635,9 @@ class TaskLifecycleMixin:
     def _completion_needs_verification_review(self, completion_evidence: dict[str, Any]) -> bool:
         if completion_evidence.get("evidenceLevel") != "runtime_evidence":
             return False
+        requirements = completion_evidence.get("verificationRequirements")
+        if isinstance(requirements, dict) and str(requirements.get("status") or "").strip().casefold() == "not_required":
+            return False
         counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
         if self._completion_has_any_passing_verification_signal(completion_evidence):
             return False
@@ -682,19 +691,12 @@ class TaskLifecycleMixin:
     def _completion_verification_requirements(
         self,
         *,
+        task: dict[str, Any],
+        context: dict[str, Any],
         changed_files: list[dict[str, Any]],
         verification: list[dict[str, Any]],
         tests_run: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        required = sorted({
-            family
-            for item in changed_files
-            for family in self._completion_path_verification_families(
-                self._completion_changed_file_path(item)
-            )
-        })
-        if not required:
-            return {"required": [], "matched": [], "missing": [], "status": "not_required"}
         matched: set[str] = set()
         for item in verification:
             if item.get("status") != "passed":
@@ -704,6 +706,34 @@ class TaskLifecycleMixin:
             if item.get("status") not in {"passed", "success", "completed"}:
                 continue
             matched.update(self._completion_verification_item_families(item))
+        contract = self._completion_contract_profile(task=task, context=context)
+        if contract is not None and isinstance(contract.get("verificationRequirements"), list):
+            required = sorted(self._completion_contract_verification_families(contract))
+            if not required:
+                return {
+                    "required": [],
+                    "matched": sorted(matched),
+                    "missing": [],
+                    "status": "not_required",
+                    "source": "planner_profile",
+                }
+            missing = [family for family in required if family not in matched]
+            return {
+                "required": required,
+                "matched": sorted(matched),
+                "missing": missing,
+                "status": "satisfied" if not missing else "missing",
+                "source": "planner_profile",
+            }
+        required = sorted({
+            family
+            for item in changed_files
+            for family in self._completion_path_verification_families(
+                self._completion_changed_file_path(item)
+            )
+        })
+        if not required:
+            return {"required": [], "matched": sorted(matched), "missing": [], "status": "not_required"}
         missing = [family for family in required if family not in matched]
         return {
             "required": required,
@@ -798,6 +828,9 @@ class TaskLifecycleMixin:
         for family, tokens in token_map.items():
             if any(token in text for token in tokens):
                 families.add(family)
+        if "--check" in text and re.search(r"(?<![a-z0-9_])node(?:\.exe)?(?![a-z0-9_])", text):
+            families.add("javascript")
+            families.add("javascript:typecheck")
         if self._completion_text_mentions_targeted_verification(text) and not families:
             families.add("generic")
         return families
@@ -971,6 +1004,8 @@ class TaskLifecycleMixin:
         structural_only = {"git status", "git_status", "git diff", "git_diff"}
         if normalized.strip() in structural_only:
             return False
+        if "--check" in normalized and re.search(r"(?<![a-z0-9_])node(?:\.exe)?(?![a-z0-9_])", normalized):
+            return True
         targeted_tokens = (
             "pytest",
             "unittest",
@@ -1161,6 +1196,28 @@ class TaskLifecycleMixin:
             return True
         if routing.get("activeWorktree") or context_routing.get("activeWorktree"):
             return True
+        contract = self._completion_contract_profile(task=task, context=context)
+        if isinstance(contract, dict):
+            runtime_role = str(
+                routing.get("runtimeRole")
+                or context_routing.get("runtimeRole")
+                or task.get("role")
+                or ""
+            ).strip().lower()
+            owned_scope = contract.get("ownedScope")
+            if isinstance(owned_scope, str):
+                owned_scope = [owned_scope]
+            if isinstance(owned_scope, list) and runtime_role not in {"planner", "reviewer", "explorer", "summarizer"}:
+                for item in owned_scope:
+                    path_text = self._completion_contract_normalize_path(item)
+                    if path_text:
+                        return True
+            expected_artifacts = contract.get("expectedArtifacts")
+            if isinstance(expected_artifacts, list) and expected_artifacts:
+                return True
+            verification_requirements = contract.get("verificationRequirements")
+            if isinstance(verification_requirements, list) and verification_requirements:
+                return True
         return bool(task.get("changedFiles") or task.get("commands") or task.get("verification"))
 
     def _request_completion_review(
@@ -3055,7 +3112,7 @@ class TaskLifecycleMixin:
             commands,
             self._completion_commands_from_tool_evidence(tool_evidence),
         )
-        command_verification = self._completion_tests_run_from_commands(commands)
+        command_verification = self._completion_tests_run_from_commands(commands, context=context or {})
         tests_run = self._merge_completion_tests_run(tests_run, command_verification)
         failed_tool_results = self._unresolved_failed_tool_results(tool_evidence)
         resolved_failed_tool_results = [
@@ -3098,6 +3155,8 @@ class TaskLifecycleMixin:
             *command_verification,
         ]
         verification_requirements = self._completion_verification_requirements(
+            task=task,
+            context=context or {},
             changed_files=changed_files,
             verification=verification_for_requirements,
             tests_run=tests_run,
@@ -3198,7 +3257,12 @@ class TaskLifecycleMixin:
             "summaryPreview": summary[:500],
         }
 
-    def _completion_tests_run_from_commands(self, commands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _completion_tests_run_from_commands(
+        self,
+        commands: list[dict[str, Any]],
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         tests_run: list[dict[str, Any]] = []
         for command_record in commands:
             if not isinstance(command_record, dict):
@@ -3226,10 +3290,110 @@ class TaskLifecycleMixin:
                 "startedAt": command_record.get("startedAt"),
                 "finishedAt": command_record.get("finishedAt"),
             })
+            recovered = self._completion_recover_failed_command_verification(
+                command_record=command_record,
+                context=context or {},
+            )
+            if recovered is not None:
+                tests_run.append(recovered)
         return [
             {key: value for key, value in item.items() if value not in (None, "", [])}
             for item in tests_run
         ]
+
+    def _completion_recover_failed_command_verification(
+        self,
+        *,
+        command_record: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        command = str(command_record.get("command") or "").strip()
+        status = str(command_record.get("status") or "").strip().lower()
+        exit_code = command_record.get("exitCode")
+        failed = status in {"failed", "timeout", "killed", "validation_failed"} or (
+            isinstance(exit_code, int) and exit_code != 0
+        )
+        if not failed or not self._completion_command_is_node_check(command):
+            return None
+        if not self._completion_command_failure_looks_environmental(command_record):
+            return None
+        script_path, run_cwd = self._completion_node_check_command_target(command=command, context=context, cwd=command_record.get("cwd"))
+        if script_path is None or run_cwd is None:
+            return None
+        node_executable = resolve_node_executable()
+        if not node_executable:
+            return None
+        try:
+            proc = subprocess.run(
+                [node_executable, "--check", str(script_path)],
+                cwd=run_cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+            summary = str(exc)
+            normalized_status = "failed"
+            recovered_exit_code: int | None = 1
+        else:
+            summary = (proc.stderr or proc.stdout or "").strip()
+            normalized_status = "passed" if proc.returncode == 0 else "failed"
+            recovered_exit_code = proc.returncode
+        return {
+            "id": f"{command_record.get('id') or 'command'}:recovery",
+            "name": command,
+            "command": command,
+            "cwd": command_record.get("cwd"),
+            "status": normalized_status,
+            "exitCode": recovered_exit_code,
+            "summary": summary or ("Command passed after runtime recovery." if normalized_status == "passed" else "Command failed after runtime recovery."),
+            "source": "run_command_recovery",
+        }
+
+    @staticmethod
+    def _completion_command_is_node_check(command: str) -> bool:
+        return "node --check" in command.casefold()
+
+    @staticmethod
+    def _completion_command_failure_looks_environmental(command_record: dict[str, Any]) -> bool:
+        summary = str(command_record.get("summary") or "").casefold()
+        markers = (
+            "无法将“node”项识别为",
+            "无法将'node'项识别为",
+            "not recognized",
+            "command not found",
+            "no such file",
+            "file not found",
+        )
+        return any(marker in summary for marker in markers)
+
+    def _completion_node_check_command_target(
+        self,
+        *,
+        command: str,
+        context: dict[str, Any],
+        cwd: Any,
+    ) -> tuple[Path | None, Path | None]:
+        match = re.match(r"""^\s*node\s+--check\s+(?P<target>.+?)\s*$""", command, re.IGNORECASE)
+        if not match:
+            return None, None
+        target_text = str(match.group("target") or "").strip().strip("\"'")
+        if not target_text:
+            return None, None
+        workspace_root = str(context.get("workspace_root") or context.get("workspaceRoot") or "").strip()
+        if not workspace_root:
+            return None, None
+        root = Path(workspace_root).resolve()
+        run_cwd = root
+        cwd_text = str(cwd or "").strip()
+        if cwd_text and cwd_text != ".":
+            candidate_cwd = Path(cwd_text)
+            run_cwd = candidate_cwd.resolve() if candidate_cwd.is_absolute() else (root / candidate_cwd).resolve()
+        target_path = Path(target_text)
+        script_path = target_path.resolve() if target_path.is_absolute() else (run_cwd / target_path).resolve()
+        return script_path, run_cwd
 
     def _completion_commands_from_tool_evidence(self, tool_evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
         commands: list[dict[str, Any]] = []
@@ -3264,12 +3428,21 @@ class TaskLifecycleMixin:
             command = str(record.get("command") or "").strip()
             if not command:
                 continue
+            summary = record.get("summary")
+            if not summary:
+                stderr_path = str(record.get("stderrPath") or "").strip()
+                if stderr_path:
+                    try:
+                        summary = Path(stderr_path).read_text(encoding="utf-8", errors="replace").strip()
+                    except OSError:
+                        summary = None
             commands.append({
                 "id": record.get("id"),
                 "command": command,
                 "cwd": record.get("cwd"),
                 "status": record.get("status"),
                 "exitCode": record.get("exitCode"),
+                "summary": summary,
                 "startedAt": record.get("startedAt"),
                 "finishedAt": record.get("finishedAt"),
             })
@@ -3712,16 +3885,26 @@ class TaskLifecycleMixin:
         root = Path(workspace_root)
         if not root.exists() or not root.is_dir():
             return []
-        text = "\n".join(
-            str(value or "")
-            for value in [
-                task.get("goal"),
-                task.get("resultSummary"),
-                "\n".join(str(item) for item in (task.get("acceptanceCriteria") or [])),
-            ]
-        )
+        contract = self._completion_contract_profile(task=task, context=context)
+        expected_paths = self._completion_contract_expected_artifact_paths(contract)
+        if expected_paths:
+            test_expectation = None
+        else:
+            task_role = str(task.get("role") or "").strip().lower()
+            if task_role in {"planner", "worker", "reviewer", "summarizer"}:
+                return []
+            text = "\n".join(
+                str(value or "")
+                for value in [
+                    task.get("goal"),
+                    task.get("resultSummary"),
+                    "\n".join(str(item) for item in (task.get("acceptanceCriteria") or [])),
+                ]
+            )
+            expected_paths = self._completion_expected_artifact_paths(text)
+            test_expectation = self._completion_expected_pytest_file_count(text)
         records: list[dict[str, Any]] = []
-        for path in self._completion_expected_artifact_paths(text):
+        for path in expected_paths:
             exists = (root / path).exists()
             records.append({
                 "criterion": f"Expected artifact exists: {path}",
@@ -3731,7 +3914,6 @@ class TaskLifecycleMixin:
             })
         records.extend(self._completion_product_readability_records(root=root, task=task))
         records.extend(self._completion_static_frontend_asset_records(root=root, task=task))
-        test_expectation = self._completion_expected_pytest_file_count(text)
         if test_expectation is not None:
             found = len([
                 path for path in root.rglob("test_*.py")
@@ -4543,7 +4725,13 @@ class TaskLifecycleMixin:
                     "assetType": kind,
                 })
                 if exists and kind == "script" and self._completion_path_requires_node_check(display):
-                    records.append(self._completion_node_check_record(root=root, script_path=asset_path))
+                    records.append(
+                        self._completion_node_check_record(
+                            root=root,
+                            script_path=asset_path,
+                            task=task,
+                        )
+                    )
         return records
 
     def _completion_static_html_artifact_paths(self, task: dict[str, Any]) -> list[str]:
@@ -4640,16 +4828,100 @@ class TaskLifecycleMixin:
     def _completion_path_requires_node_check(path: str) -> bool:
         return path.casefold().replace("\\", "/").endswith((".js", ".mjs", ".cjs"))
 
-    def _completion_node_check_record(self, *, root: Path, script_path: Path) -> dict[str, Any]:
-        import subprocess
-
+    def _completion_node_check_record(
+        self,
+        *,
+        root: Path,
+        script_path: Path,
+        task: dict[str, Any],
+    ) -> dict[str, Any]:
         try:
             display = script_path.relative_to(root.resolve()).as_posix()
         except ValueError:
             display = script_path.name
+        existing = self._completion_existing_node_check_record(task=task, display=display)
+        if existing is not None:
+            if self._completion_node_check_record_needs_retry(existing):
+                retried = self._completion_run_node_check(root=root, script_path=script_path, display=display)
+                if retried is not None and retried.get("status") == "supported":
+                    return retried
+            return existing
+        retried = self._completion_run_node_check(root=root, script_path=script_path, display=display)
+        if retried is not None:
+            return retried
+        return {
+            "criterion": f"Static frontend script syntax: {display}",
+            "status": "unverified",
+            "evidenceLevel": "product_quality",
+            "source": "static_frontend_node_check",
+            "command": f"node --check {display}",
+            "summary": "No existing node --check verification was recorded, and no Node runtime was available for a recovery attempt.",
+        }
+
+    def _completion_existing_node_check_record(self, *, task: dict[str, Any], display: str) -> dict[str, Any] | None:
+        normalized_display = display.casefold()
+        command_candidates = [
+            dict(item) for item in (task.get("commands") or [])
+            if isinstance(item, dict)
+        ]
+        for item in self._completion_commands_from_store(task.get("id")):
+            if isinstance(item, dict):
+                command_candidates.append(dict(item))
+        for item in command_candidates:
+            command_text = str(item.get("command") or "").strip()
+            if "node --check" not in command_text.casefold():
+                continue
+            if normalized_display and normalized_display not in command_text.casefold():
+                continue
+            status = str(item.get("status") or "").strip().casefold()
+            exit_code = item.get("exitCode")
+            supported = status in {"completed", "passed", "success"} and exit_code in (0, "0", None)
+            failed = status in {"failed", "timeout", "killed", "validation_failed"} or (
+                isinstance(exit_code, int) and exit_code != 0
+            )
+            summary = str(item.get("summary") or "").strip()
+            return {
+                "criterion": f"Static frontend script syntax: {display}",
+                "status": "supported" if supported else "failed" if failed else "unverified",
+                "evidenceLevel": "product_quality",
+                "source": "static_frontend_node_check",
+                "command": f"node --check {display}",
+                "exitCode": exit_code,
+                "summary": summary or ("node --check passed" if supported else "node --check did not pass"),
+            }
+        return None
+
+    @staticmethod
+    def _completion_node_check_record_needs_retry(record: dict[str, Any]) -> bool:
+        if str(record.get("status") or "").strip().casefold() != "failed":
+            return False
+        summary = str(record.get("summary") or "").casefold()
+        command = str(record.get("command") or "").casefold()
+        if "node --check" not in command:
+            return False
+        retry_markers = (
+            "无法将“node”项识别为",
+            "无法将'node'项识别为",
+            "not recognized",
+            "command not found",
+            "no such file",
+            "file not found",
+        )
+        return any(marker in summary for marker in retry_markers)
+
+    def _completion_run_node_check(
+        self,
+        *,
+        root: Path,
+        script_path: Path,
+        display: str,
+    ) -> dict[str, Any] | None:
+        node_executable = resolve_node_executable()
+        if not node_executable:
+            return None
         try:
             proc = subprocess.run(
-                ["node", "--check", str(script_path)],
+                [node_executable, "--check", str(script_path)],
                 cwd=root,
                 capture_output=True,
                 text=True,
@@ -4785,6 +5057,90 @@ class TaskLifecycleMixin:
                 return chinese_digits[value]
         return None
 
+    def _completion_contract_profile(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        profile = context.get("_child_profile")
+        if isinstance(profile, dict):
+            return profile
+        routing = task.get("routing")
+        if not isinstance(routing, dict):
+            return None
+        profile = routing.get("profile")
+        return profile if isinstance(profile, dict) else None
+
+    def _completion_contract_expected_artifact_paths(self, contract: dict[str, Any] | None) -> list[str]:
+        if not isinstance(contract, dict):
+            return []
+        paths: list[str] = []
+        seen: set[str] = set()
+        expected_artifacts = contract.get("expectedArtifacts")
+        if isinstance(expected_artifacts, list):
+            for item in expected_artifacts:
+                if not isinstance(item, dict):
+                    continue
+                path_text = self._completion_contract_normalize_path(
+                    item.get("path") or item.get("file") or item.get("name")
+                )
+                if not path_text:
+                    continue
+                if any(ch in path_text for ch in "*?[]"):
+                    continue
+                key = path_text.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                paths.append(path_text)
+        if paths:
+            return paths
+        owned_scope = contract.get("ownedScope")
+        if isinstance(owned_scope, str):
+            owned_scope = [owned_scope]
+        if not isinstance(owned_scope, list):
+            return []
+        for item in owned_scope:
+            path_text = self._completion_contract_normalize_path(item)
+            if not path_text or path_text.endswith("/"):
+                continue
+            if any(ch in path_text for ch in "*?[]"):
+                continue
+            if "." not in Path(path_text).name:
+                continue
+            key = path_text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(path_text)
+        return paths
+
+    def _completion_contract_verification_families(self, contract: dict[str, Any]) -> set[str]:
+        families: set[str] = set()
+        requirements = contract.get("verificationRequirements")
+        if not isinstance(requirements, list):
+            return families
+        for item in requirements:
+            if not isinstance(item, dict):
+                continue
+            family = str(item.get("family") or item.get("framework") or "").strip().casefold()
+            if family:
+                families.add(family)
+            path_text = self._completion_contract_normalize_path(
+                item.get("path") or item.get("file") or item.get("target")
+            )
+            if path_text:
+                families.update(self._completion_path_verification_families(path_text))
+            command = str(item.get("command") or item.get("name") or "").strip()
+            if command:
+                families.update(self._completion_verification_item_families({"command": command, "status": "passed"}))
+        return {item for item in families if item}
+
+    @staticmethod
+    def _completion_contract_normalize_path(value: Any) -> str:
+        return str(value or "").strip().replace("\\", "/").lstrip("./").strip()
+
     def _completion_explicit_acceptance_records(
         self,
         *,
@@ -4887,9 +5243,16 @@ class TaskLifecycleMixin:
             if not isinstance(tool_result, dict):
                 continue
             name = tool_result.get("name")
-            result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
             if not isinstance(name, str) or not name:
                 continue
+            result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else None
+            if result is None:
+                normalized = {
+                    key: value
+                    for key, value in tool_result.items()
+                    if key not in {"name", "source"}
+                }
+                result = normalized if normalized else {}
             status = result.get("status") or ("completed" if result else "unknown")
             item = {
                 "name": name,
@@ -4907,7 +5270,7 @@ class TaskLifecycleMixin:
                     if name == "apply_patch"
                     else [result.get("path")] if isinstance(result.get("path"), str) else []
                 )
-            elif name == "task":
+            elif name in {"task", "child_task"}:
                 item["childStatus"] = result.get("status")
                 subagent = result.get("subagent") if isinstance(result.get("subagent"), dict) else {}
                 item["agentType"] = result.get("agentType") or subagent.get("agentType")
@@ -4935,6 +5298,8 @@ class TaskLifecycleMixin:
         failed_item: dict[str, Any],
         tool_evidence: list[dict[str, Any]],
     ) -> bool:
+        if failed_item.get("name") == "child_task":
+            return self._failed_child_task_has_equivalent_success(failed_item, tool_evidence)
         if failed_item.get("name") != "run_command":
             return False
         failed_key = self._structural_command_resolution_key(failed_item.get("command"))
@@ -4946,6 +5311,45 @@ class TaskLifecycleMixin:
             if self._structural_command_resolution_key(item.get("command")) == failed_key:
                 return True
         return False
+
+    def _failed_child_task_has_equivalent_success(
+        self,
+        failed_item: dict[str, Any],
+        tool_evidence: list[dict[str, Any]],
+    ) -> bool:
+        failed_title = str(failed_item.get("summary") or "").strip().casefold()
+        failed_kind = self._completion_child_task_kind(failed_item)
+        if not failed_title and not failed_kind:
+            return False
+        for item in tool_evidence:
+            if item is failed_item or item.get("name") != "child_task" or item.get("failed") is True:
+                continue
+            success_kind = self._completion_child_task_kind(item)
+            if failed_kind and success_kind and failed_kind == success_kind:
+                return True
+            success_title = str(item.get("summary") or "").strip().casefold()
+            if failed_title and success_title and failed_title == success_title:
+                return True
+            if failed_title and success_title:
+                failed_words = {word for word in re.findall(r"[a-z0-9_]+", failed_title) if len(word) > 2}
+                success_words = {word for word in re.findall(r"[a-z0-9_]+", success_title) if len(word) > 2}
+                overlap = failed_words & success_words
+                if len(overlap) >= 2 and not overlap.isdisjoint({"frontend", "backend", "pytest", "tests"}):
+                    return True
+        return False
+
+    def _completion_child_task_kind(self, item: dict[str, Any]) -> str:
+        text = " ".join(
+            str(item.get(key) or "")
+            for key in ("summary", "title", "agentType", "childTaskId")
+        ).casefold()
+        if any(token in text for token in ("frontend", "index.html", "app.js", "styles.css")):
+            return "frontend"
+        if any(token in text for token in ("pytest", "tests/", "test_", "test coverage")):
+            return "tests"
+        if any(token in text for token in ("backend", "blog_models.py", "blog_service.py", "blog_api.py", "blog_storage.py")):
+            return "backend"
+        return ""
 
     def _structural_command_resolution_key(self, command: Any) -> tuple[str, tuple[str, ...]] | None:
         text = str(command or "").strip().casefold()
@@ -5044,7 +5448,10 @@ class TaskLifecycleMixin:
             try:
                 retry_response = self._provider.generate(
                     retry_prompt,
-                    {"messages": [{"role": "user", "content": retry_prompt}]},
+                    {
+                        **(context.get("_provider_context") if isinstance(context.get("_provider_context"), dict) else {}),
+                        "messages": [{"role": "user", "content": retry_prompt}],
+                    },
                 )
                 return retry_response.get("message") or retry_response.get("final_answer") or summary
             except Exception:  # noqa: BLE001
@@ -5055,6 +5462,7 @@ class TaskLifecycleMixin:
             output=summary,
             context=tool_output,
             retry_fn=_retry_fn,
+            provider_context=context.get("_provider_context") if isinstance(context.get("_provider_context"), dict) else None,
         )
 
         self._publish(

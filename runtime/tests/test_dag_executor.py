@@ -218,10 +218,28 @@ class TestDAGExecutorExecute:
         )
 
         prompt = mock.calls[0]["prompt"]
-        assert "[Parent task]" in prompt
-        assert "feedback_models.py" in prompt
-        assert "at least 2 pytest files" in prompt
+        assert "[Parent task]" not in prompt
+        assert "Subtask: Implement" in prompt
         assert mock.calls[0]["planningPrompt"] == "Build the implementation."
+
+    def test_child_prompt_is_compact_for_execution(self) -> None:
+        subtasks = [
+            Subtask(id="a", title="Implement", description="Build the implementation.", dependencies=[]),
+        ]
+        plan = _make_plan(subtasks)
+        mock = MockSubagentService()
+        executor = DAGExecutor(mock)
+
+        executor.execute(
+            plan,
+            session_id="my-session",
+            parent_task_id="my-task",
+            parent_goal="Create feedback_models.py and at least 2 pytest files.",
+        )
+
+        prompt = mock.calls[0]["prompt"]
+        assert "[Parent task]" not in prompt
+        assert "Subtask: Implement" in prompt
 
     def test_passes_parent_timeout_budget_to_child_dispatch(self) -> None:
         subtasks = [

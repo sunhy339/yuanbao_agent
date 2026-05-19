@@ -5,6 +5,8 @@ import sys
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
+from .runtime_dependencies import lookup_env_value, resolve_node_executable
+
 
 DEFAULT_CHILD_TOOL_ALLOWLIST = (
     "list_dir",
@@ -32,6 +34,7 @@ DEFAULT_ENV_ALLOWLIST = (
     "LOCAL_AGENT_OPENAI_API_KEY",
     "LOCAL_AGENT_PROVIDER_BASE_URL",
     "LOCAL_AGENT_PROVIDER_MODEL",
+    "LOCAL_AGENT_CHILD_PROVIDER_MODEL",
     "LOCAL_AGENT_PROVIDER_TEMPERATURE",
     "LOCAL_AGENT_PROVIDER_MAX_TOKENS",
     "LOCAL_AGENT_PROVIDER_TIMEOUT",
@@ -65,6 +68,10 @@ DEFAULT_ENV_ALLOWLIST = (
     "YUANBAO_SMOKE_PROVIDER_NAME",
     "LOCAL_AGENT_NODE_EXECUTABLE",
 )
+
+DEFAULT_CHILD_PROVIDER_MODEL_MAP = {
+    "gpt-5.4": "gpt-5.4-mini",
+}
 
 WINDOWS_RUNTIME_ENV = (
     "PATH",
@@ -115,6 +122,7 @@ def build_child_worker_env(
     allowlist: Iterable[str] | None = None,
     env_allowlist: Sequence[str] | None = None,
     tool_allowlist: Sequence[str] | str | None = None,
+    child_model: str | None = None,
 ) -> dict[str, str]:
     child_database_path = _required_path_text(
         db_path if db_path is not None else database_path,
@@ -129,9 +137,14 @@ def build_child_worker_env(
 
     env: dict[str, str] = {}
     for key in allowed:
-        value = _lookup_env_value(parent_env, key)
+        value = lookup_env_value(parent_env, key)
         if _env_value_present(value):
             env[key] = str(value)
+
+    if isinstance(child_model, str) and child_model.strip():
+        normalized_child_model = child_model.strip()
+        env["LOCAL_AGENT_PROVIDER_MODEL"] = normalized_child_model
+        env["LOCAL_AGENT_CHILD_PROVIDER_MODEL"] = normalized_child_model
 
     node_executable = _node_executable(parent_env)
     if node_executable:
@@ -145,7 +158,7 @@ def build_child_worker_env(
         else:
             env["PATH"] = node_dir
 
-    existing_python_path = _lookup_env_value(parent_env, "PYTHONPATH")
+    existing_python_path = lookup_env_value(parent_env, "PYTHONPATH")
     python_path_entries = [runtime_src_path]
     if _env_value_present(existing_python_path):
         python_path_entries.append(str(existing_python_path))
@@ -227,30 +240,57 @@ def _env_value_present(value: object) -> bool:
     return isinstance(value, str) and value != ""
 
 
-def _lookup_env_value(env: Mapping[str, str], key: str) -> str | None:
-    if key in env:
-        return env[key]
-    if os.name != "nt":
-        return None
-
-    normalized_key = key.upper()
-    for candidate_key, value in env.items():
-        if candidate_key.upper() == normalized_key:
-            return value
-    return None
-
-
 def _node_executable(parent_env: Mapping[str, str]) -> str | None:
-    configured = _lookup_env_value(parent_env, "LOCAL_AGENT_NODE_EXECUTABLE")
-    if _env_value_present(configured) and Path(str(configured)).is_file():
-        return str(configured)
+    return resolve_node_executable(parent_env)
 
-    home = Path.home()
-    candidates = [
-        home / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node" / "bin" / "node.exe",
-        home / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node" / "bin" / "node",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
+
+def resolve_child_provider_model(
+    *,
+    parent_env: Mapping[str, str],
+    provider_config: Mapping[str, object] | None = None,
+    explicit_model: str | None = None,
+) -> str | None:
+    if isinstance(explicit_model, str) and explicit_model.strip():
+        return explicit_model.strip()
+
+    config = provider_config if isinstance(provider_config, Mapping) else {}
+    configured_child_model = _string_config_value(config, "childModel", "subagentModel")
+    if configured_child_model:
+        return configured_child_model
+
+    parent_model = (
+        lookup_env_value(parent_env, "LOCAL_AGENT_PROVIDER_MODEL")
+        or _string_config_value(config, "model", "defaultModel")
+    )
+    if not isinstance(parent_model, str) or not parent_model.strip():
+        return None
+    normalized_parent_model = parent_model.strip()
+
+    configured_map = _normalize_model_map(
+        config.get("childModelMap") or config.get("subagentModelMap"),
+    )
+    mapped_model = configured_map.get(normalized_parent_model)
+    if mapped_model:
+        return mapped_model
+
+    return DEFAULT_CHILD_PROVIDER_MODEL_MAP.get(normalized_parent_model)
+
+
+def _string_config_value(source: Mapping[str, object], *keys: str) -> str | None:
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return None
+
+
+def _normalize_model_map(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    normalized: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key).strip()
+        mapped = str(raw_value).strip()
+        if key and mapped:
+            normalized[key] = mapped
+    return normalized

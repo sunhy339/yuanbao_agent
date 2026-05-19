@@ -226,6 +226,18 @@ class TestEdgeCases:
         assert str(node) in command
         assert "C:\\Program Files\\nodejs\\node.exe" not in command
 
+    def test_bare_node_command_rewrites_to_configured_node(self, tmp_path, monkeypatch) -> None:
+        node_dir = tmp_path / "node" / "bin"
+        node_dir.mkdir(parents=True)
+        node = node_dir / "node.exe"
+        node.write_text("", encoding="utf-8")
+        monkeypatch.setenv("LOCAL_AGENT_NODE_EXECUTABLE", str(node))
+
+        command = _powershell_execution_command("node --check app.js", "powershell")
+
+        assert command.startswith(f'& "{node}"')
+        assert command.endswith(" --check app.js")
+
 
 # ── J. Mixed scenario ────────────────────────────────────────────────
 

@@ -20,8 +20,15 @@ class LLMCache:
         model: str | None = None,
     ) -> str:
         """Compute a deterministic SHA-256 hash for a prompt signature."""
+        # Strip dynamic database metadata, keeping only semantic-related keys
+        semantic_keys = ("role", "content", "name", "tool_calls", "tool_call_id")
+        cleaned_messages = []
+        for msg in messages:
+            cleaned_msg = {k: msg[k] for k in semantic_keys if k in msg}
+            cleaned_messages.append(cleaned_msg)
+
         canonical = json.dumps(
-            {"model": model or "", "messages": messages, "tools": tools or []},
+            {"model": model or "", "messages": cleaned_messages, "tools": tools or []},
             ensure_ascii=False,
             sort_keys=True,
         )

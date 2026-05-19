@@ -49,12 +49,16 @@ class ReflectionEvaluator:
         output: str,
         context: str = "",
         iteration: int = 0,
+        provider_context: dict[str, Any] | None = None,
     ) -> ReflectionIteration:
         """Call the LLM to score *output* against *goal*."""
         prompt = self._build_evaluation_prompt(goal, output, context)
         response = self._provider.generate(
             prompt,
-            {"messages": [{"role": "user", "content": prompt}]},
+            {
+                **(provider_context or {}),
+                "messages": [{"role": "user", "content": prompt}],
+            },
         )
         raw_text = response.get("message") or ""
         score, feedback = self._parse_evaluation(raw_text)
@@ -72,6 +76,7 @@ class ReflectionEvaluator:
         output: str,
         context: str = "",
         retry_fn: Callable[[str], str] | None = None,
+        provider_context: dict[str, Any] | None = None,
     ) -> ReflectionResult:
         """Run the full reflection loop.
 
@@ -85,7 +90,7 @@ class ReflectionEvaluator:
 
         for i in range(self._config.max_retries + 1):
             iteration = self.evaluate(
-                goal=goal, output=current_output, context=context, iteration=i,
+                goal=goal, output=current_output, context=context, iteration=i, provider_context=provider_context,
             )
             iterations.append(iteration)
 

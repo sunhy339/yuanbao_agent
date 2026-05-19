@@ -85,3 +85,36 @@
 1. 每个 P0/P1 模块单独读代码 + 写优化方案
 2. 用实际测试验证优化效果
 3. 逐步推进，不贪多
+
+```mermaid
+sequenceDiagram
+  participant UI as App 聊天 UI
+  participant Tauri as Tauri command
+  participant RPC as runtime JSON-RPC
+  participant Orch as Orchestrator
+  participant Ctx as ContextBuilder
+  participant Skill as Skill/Router
+  participant MCP as MCP Manager
+  participant LLM as Provider/大模型
+  participant Tools as ToolRegistry
+  participant Store as SQLite/消息任务存储
+  participant Bus as EventBus
+
+  UI->>UI: 用户输入 / 附件 / 补充按钮
+  UI->>Tauri: message_send(sessionId, content, mode, taskId)
+  Tauri->>RPC: message.send
+  RPC->>Orch: send_message
+  Orch->>Store: 存 user message / 创建或查找 task
+  Orch->>Skill: MetaRouter 判断场景/skill/策略
+  Orch->>Ctx: 填充系统提示、历史、workspace、memory、tools
+  Ctx->>MCP: MCP 工具 schema 已注册时进入工具列表
+  Orch->>LLM: stream/generate(messages, tools)
+  LLM-->>Orch: token / tool_call / final
+  Orch->>Tools: 执行 read_file/shell/MCP 等工具
+  Tools->>MCP: mcp__server__tool 调用远端 MCP
+  Orch->>Store: 存 assistant final / task 状态
+  Orch->>Bus: assistant.token / assistant.completed / task.failed
+  Bus-->>UI: 事件流
+  UI->>UI: 合并流式消息、失败消息、持久化刷新
+
+```

@@ -1546,6 +1546,7 @@ def test_background_task_preserves_routing_fields(
         assert workflow["automation"]["controls"]["continueAfterBudgetExhaustion"] == "requires_user_action"
         assert workflow["automation"]["convergencePolicy"]["advisorKind"] == "budget_convergence"
         assert workflow["budget"]["maxSteps"] == routing["max_steps"]
+        assert workflow["budget"]["childTaskTimeoutMs"] >= 1
         assert workflow["budget"]["commandTimeoutMs"] >= 1
         assert workflow["budget"]["pressure"] in {"normal", "watch", "critical"}
         assert workflow["budget"]["dimensions"]["steps"]["consumed"] >= 0
@@ -1555,6 +1556,32 @@ def test_background_task_preserves_routing_fields(
         assert workflow["workspaceSnapshot"]["workspaceId"] == workspace["id"]
         assert workflow["workspaceSnapshot"]["exists"] is True
         assert workflow["userTakeover"]["state"] == "none"
+
+
+def test_planning_provider_context_respects_configured_short_timeout(runtime_harness: Any) -> None:
+    context = {
+        "config": {
+            "provider": {
+                "timeout": 45,
+                "streamTimeout": 90,
+                "profiles": [
+                    {
+                        "id": "primary",
+                        "timeout": 30,
+                    }
+                ],
+            }
+        }
+    }
+
+    planning_context = runtime_harness.server._orchestrator._planning_provider_context(context)  # noqa: SLF001
+    provider = planning_context["config"]["provider"]
+
+    assert provider["timeout"] == 45
+    assert provider["timeoutSeconds"] == 45
+    assert provider["streamTimeout"] == 90
+    assert provider["profiles"][0]["timeout"] == 30
+    assert provider["profiles"][0]["timeoutSeconds"] == 30
 
 
 def test_queued_task_records_main_workflow_state(runtime_harness: Any, tmp_path: Path) -> None:

@@ -1465,6 +1465,20 @@ class TestAdvisorGuidedProviderPreflight:
         assert "task.planning.completed" in event_types
 
 
+class UsageAwareProvider:
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "final": "done",
+            "raw": {
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 7,
+                    "total_tokens": 18,
+                }
+            },
+        }
+
+
 class TestE2ESnapshotIncremental:
     """Verify that ContextSnapshot captures context state at each turn."""
 
@@ -1528,6 +1542,55 @@ class TestE2ESnapshotIncremental:
             assert turn["context_snapshot_id"] in snapshot_ids, (
                 f"Turn {turn['id']} references missing snapshot {turn['context_snapshot_id']}"
             )
+
+
+class TestProviderTurnTransportAndUsage:
+    def test_turn_persists_usage_from_raw_response(self, tmp_path: Any) -> None:
+        provider = UsageAwareProvider()
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "hello"}),
+            "task",
+        )
+
+        turns = runtime.store.list_provider_turns(task["id"])
+        assert len(turns) == 1
+        assert json.loads(turns[0]["response_usage_json"]) == {
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "total_tokens": 18,
+        }
+        assert turns[0]["response_transport"] == "non_stream"
+
+    def test_stream_fallback_turn_persists_transport(self, tmp_path: Any) -> None:
+        provider = PartialStreamFailureProvider()
+        runtime = _make_runtime(
+            tmp_path,
+            provider,
+            decision_advisor=DecisionAdvisor(provider=provider),
+        )
+        runtime.store.update_config({
+            "config": {
+                "provider": {
+                    "mode": "openai-compatible",
+                    "apiFormat": "openai-chat",
+                    "streamingEnabled": True,
+                    "model": "fake-stream",
+                }
+            }
+        })
+        session = _open_session(runtime, tmp_path)
+
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "stream then recover"}),
+            "task",
+        )
+
+        turns = runtime.store.list_provider_turns(task["id"])
+        assert len(turns) == 1
+        assert turns[0]["response_transport"] == "fallback_non_stream"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

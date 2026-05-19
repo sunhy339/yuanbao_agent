@@ -308,7 +308,7 @@ def test_context_builder_trims_low_priority_history_large_results_and_diff(
     workspace_root.mkdir()
     workspace = store.upsert_workspace(str(workspace_root))
     session = store.create_session(workspace_id=workspace["id"], title="Budget")
-    store.update_config({"config": {"provider": {"maxContextTokens": 240}}})
+    store.update_config({"config": {"provider": {"maxContextTokens": 280}}})
     old_task = store.create_task(
         session_id=session["id"],
         task_type="edit",
@@ -355,7 +355,7 @@ def test_context_builder_trims_low_priority_history_large_results_and_diff(
     assert "recent history should survive" in text
     assert "ancient history should be dropped" not in text
     assert "[truncated" in text
-    assert context["budgetStats"]["estimatedTokens"] <= 240
+    assert context["budgetStats"]["estimatedTokens"] <= 280
     assert context["budgetStats"]["droppedSections"]
     assert context["budgetStats"]["trimmedSections"]
 

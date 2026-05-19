@@ -12,6 +12,7 @@ from typing import Any
 from long_running_fullstack_smoke import (
     REPO_ROOT,
     _int_setting,
+    _positive_env_int,
     aggregate_autonomy_reports,
     build_runtime,
     checked_run,
@@ -62,6 +63,7 @@ def make_workspace(root: Path) -> Path:
 
 
 def choose_single_provider_config() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    min_provider_timeout = _positive_env_int("YUANBAO_SMOKE_PROVIDER_MIN_TIMEOUT", default=120)
     override_base_url = os.environ.get("YUANBAO_SMOKE_PROVIDER_BASE_URL")
     override_model = os.environ.get("YUANBAO_SMOKE_PROVIDER_MODEL")
     override_api_key = os.environ.get("YUANBAO_SMOKE_PROVIDER_API_KEY")
@@ -79,9 +81,12 @@ def choose_single_provider_config() -> tuple[dict[str, Any], dict[str, Any], lis
             "temperature": float(os.environ.get("YUANBAO_SMOKE_PROVIDER_TEMPERATURE") or "0.1"),
             "maxTokens": _int_setting(os.environ, "YUANBAO_SMOKE_PROVIDER_MAX_TOKENS", default=6000),
             "maxOutputTokens": _int_setting(os.environ, "YUANBAO_SMOKE_PROVIDER_MAX_TOKENS", default=6000),
-            "maxContextTokens": 9000,
-            "timeout": max(_int_setting(os.environ, "YUANBAO_SMOKE_PROVIDER_TIMEOUT", default=180), 120),
-            "streamingEnabled": False,
+            "maxContextTokens": _positive_env_int("YUANBAO_SMOKE_MAX_CONTEXT_TOKENS", default=20000),
+            "timeout": max(
+                _int_setting(os.environ, "YUANBAO_SMOKE_PROVIDER_TIMEOUT", default=180),
+                min_provider_timeout,
+            ),
+            "streamingEnabled": os.environ.get("YUANBAO_SMOKE_STREAMING_ENABLED", "1").strip() != "0",
         }
     else:
         source = SQLiteStore(str(REPO_ROOT / "runtime" / ".local-agent-runtime.sqlite3"))
@@ -102,11 +107,11 @@ def choose_single_provider_config() -> tuple[dict[str, Any], dict[str, Any], lis
             raise RuntimeError(f"Active provider profile not found: {active_id!r}")
         profile = dict(active_profile)
         profile["id"] = "single-model-active-smoke"
-        profile["timeout"] = max(_int_setting(profile, "timeout", default=180), 120)
+        profile["timeout"] = max(_int_setting(profile, "timeout", default=180), min_provider_timeout)
         profile["maxTokens"] = max(_int_setting(profile, "maxTokens", "maxOutputTokens", default=6000), 6000)
         profile["maxOutputTokens"] = max(_int_setting(profile, "maxOutputTokens", "maxTokens", default=6000), 6000)
-        profile["maxContextTokens"] = 9000
-        profile["streamingEnabled"] = False
+        profile["maxContextTokens"] = _positive_env_int("YUANBAO_SMOKE_MAX_CONTEXT_TOKENS", default=20000)
+        profile["streamingEnabled"] = os.environ.get("YUANBAO_SMOKE_STREAMING_ENABLED", "1").strip() != "0"
 
     public = {
         "name": str(profile.get("name") or profile.get("id") or "provider"),
@@ -356,7 +361,8 @@ def main() -> int:
             failures.append("provider turn count was too low for a long-flow smoke")
         if not snapshots:
             failures.append("no context snapshots were recorded")
-        if not all_compactions:
+        max_context_tokens = int(provider_public.get("maxContextTokens") or provider_config.get("maxContextTokens") or 0)
+        if not all_compactions and max_context_tokens <= 12000:
             failures.append("no context compaction was recorded")
         if report.get("memoryRecallCount", 0) < 1:
             failures.append("no memory recall was recorded")

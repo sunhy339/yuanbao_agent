@@ -252,6 +252,7 @@ class DAGExecutor:
                     parent_goal=parent_goal,
                     subtask=subtask,
                     completed_context=results,
+                    compact=True,
                 ),
                 "planningPrompt": subtask.description,
                 "title": subtask.title,

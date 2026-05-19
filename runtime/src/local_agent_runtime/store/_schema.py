@@ -893,6 +893,7 @@ class SchemaBootstrapMixin:
             "tool_policy_decision_json": "TEXT",
             "role_snapshot_json": "TEXT",
             "failure_recovery_json": "TEXT",
+            "response_transport": "TEXT",
         }
         for column, definition in expected.items():
             if column not in columns:

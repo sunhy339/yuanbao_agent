@@ -494,6 +494,13 @@ class TestPatchScopeValidator:
         )
         assert reasons == []
 
+    def test_glob_scope_matches_target(self):
+        reasons = validate_patch_in_scope(
+            {"targetPath": "tests/test_blog_service.py"},
+            allowed_scopes=["tests/**", "test_*.py"],
+        )
+        assert reasons == []
+
 
 # ---------------------------------------------------------------------------
 # P9: Write Safety — Patch Conflict Detection

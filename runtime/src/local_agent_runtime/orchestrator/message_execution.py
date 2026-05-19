@@ -564,19 +564,45 @@ class MessageExecutionMixin:
         adjusted = deepcopy(config)
         provider = adjusted.get("provider")
         if isinstance(provider, dict):
-            provider["timeout"] = max(float(provider.get("timeout") or 0), 180.0)
-            provider["timeoutSeconds"] = max(float(provider.get("timeoutSeconds") or 0), 180.0)
-            provider["streamTimeout"] = max(float(provider.get("streamTimeout") or 0), 600.0)
-            provider["streamTimeoutSeconds"] = max(float(provider.get("streamTimeoutSeconds") or 0), 600.0)
+            timeout = self._planning_timeout_seconds(provider)
+            stream_timeout = self._planning_stream_timeout_seconds(provider, timeout=timeout)
+            provider["timeout"] = timeout
+            provider["timeoutSeconds"] = timeout
+            provider["streamTimeout"] = stream_timeout
+            provider["streamTimeoutSeconds"] = stream_timeout
             profiles = provider.get("profiles")
             if isinstance(profiles, list):
                 for profile in profiles:
                     if isinstance(profile, dict):
-                        profile["timeout"] = max(float(profile.get("timeout") or 0), 180.0)
-                        profile["timeoutSeconds"] = max(float(profile.get("timeoutSeconds") or 0), 180.0)
-                        profile["streamTimeout"] = max(float(profile.get("streamTimeout") or 0), 600.0)
-                        profile["streamTimeoutSeconds"] = max(float(profile.get("streamTimeoutSeconds") or 0), 600.0)
+                        profile_timeout = self._planning_timeout_seconds(profile, fallback=timeout)
+                        profile_stream_timeout = self._planning_stream_timeout_seconds(profile, timeout=profile_timeout)
+                        profile["timeout"] = profile_timeout
+                        profile["timeoutSeconds"] = profile_timeout
+                        profile["streamTimeout"] = profile_stream_timeout
+                        profile["streamTimeoutSeconds"] = profile_stream_timeout
         return {"config": adjusted}
+
+    @staticmethod
+    def _planning_timeout_seconds(provider: dict[str, Any], *, fallback: float = 180.0) -> float:
+        for key in ("planningTimeoutSeconds", "planningTimeout", "timeout", "timeoutSeconds"):
+            try:
+                value = float(provider.get(key))
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return max(1.0, value)
+        return fallback
+
+    @staticmethod
+    def _planning_stream_timeout_seconds(provider: dict[str, Any], *, timeout: float) -> float:
+        for key in ("planningStreamTimeoutSeconds", "planningStreamTimeout", "streamTimeout", "streamTimeoutSeconds"):
+            try:
+                value = float(provider.get(key))
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return max(1.0, value)
+        return max(timeout, 600.0)
 
     @staticmethod
     def _is_plan_only_goal(goal: str) -> bool:
@@ -760,7 +786,7 @@ class MessageExecutionMixin:
                 return approval_response
 
             result = self._supervisor.execute(
-                goal, context,
+                goal, {**context, "_provider_context": self._planning_provider_context(context)},
                 session_id=session_id, task=task,
                 child_timeout_ms=self._child_subtask_timeout_ms(context),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",
@@ -855,7 +881,7 @@ class MessageExecutionMixin:
                 return approval_response
 
             result = self._swarm.execute(
-                goal, context,
+                goal, {**context, "_provider_context": self._planning_provider_context(context)},
                 session_id=session_id, task=task,
                 child_timeout_ms=self._child_subtask_timeout_ms(context),
                 is_paused_fn=lambda: self._store.get_task({"taskId": task["id"]})["task"]["status"] == "paused",

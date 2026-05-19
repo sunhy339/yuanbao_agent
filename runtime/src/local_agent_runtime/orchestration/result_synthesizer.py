@@ -52,6 +52,7 @@ class ResultSynthesizer:
         subtask_results: list[dict[str, Any]],
         *,
         mode: str = "auto",
+        provider_context: dict[str, Any] | None = None,
     ) -> str:
         """Synthesize sub-task results into a final summary.
 
@@ -70,7 +71,7 @@ class ResultSynthesizer:
             mode = "concat" if len(deduped) <= 3 else "llm"
 
         if mode == "llm" and self._provider is not None:
-            return self._synthesize_llm(goal, deduped)
+            return self._synthesize_llm(goal, deduped, provider_context=provider_context)
 
         return self._synthesize_concat(deduped)
 
@@ -112,7 +113,13 @@ class ResultSynthesizer:
         header = f"Plan execution completed ({len(results)} sub-tasks)"
         return header + "\n" + "\n".join(parts)
 
-    def _synthesize_llm(self, goal: str, results: list[dict[str, Any]]) -> str:
+    def _synthesize_llm(
+        self,
+        goal: str,
+        results: list[dict[str, Any]],
+        *,
+        provider_context: dict[str, Any] | None = None,
+    ) -> str:
         """LLM-based synthesis via ProviderAdapter."""
         results_text = "\n".join(
             f"- {r.get('title', 'Untitled')}: {r.get('result', 'Done')}"
@@ -122,7 +129,10 @@ class ResultSynthesizer:
         try:
             response = self._provider.generate(
                 prompt,
-                {"messages": [{"role": "user", "content": prompt}]},
+                {
+                    **(provider_context or {}),
+                    "messages": [{"role": "user", "content": prompt}],
+                },
             )
             return response.get("message") or self._synthesize_concat(results)
         except Exception as exc:  # noqa: BLE001

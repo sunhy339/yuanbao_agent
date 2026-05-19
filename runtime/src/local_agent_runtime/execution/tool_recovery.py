@@ -10,6 +10,26 @@ from ..tools.failure_analysis import build_tool_failure_record
 logger = logging.getLogger(__name__)
 
 
+def _looks_like_full_file_patch(arguments: dict[str, Any]) -> bool:
+    patch_text = str(arguments.get("patchText") or arguments.get("patch_text") or "")
+    if not patch_text.strip():
+        return False
+    lines = [line.strip() for line in patch_text.splitlines() if line.strip()]
+    delete_targets = [
+        line[len("*** Delete File: "):].strip()
+        for line in lines
+        if line.startswith("*** Delete File: ")
+    ]
+    add_targets = [
+        line[len("*** Add File: "):].strip()
+        for line in lines
+        if line.startswith("*** Add File: ")
+    ]
+    if not delete_targets or not add_targets:
+        return False
+    return any(target in set(add_targets) for target in delete_targets)
+
+
 class ToolRecoveryMixin:
     """Mixin for bounded, auditable tool recovery advice.
 
@@ -54,7 +74,11 @@ class ToolRecoveryMixin:
         arguments: dict[str, Any],
         failure: dict[str, Any],
     ) -> dict[str, Any]:
-        default_payload = self._default_tool_recovery_payload(failure)
+        default_payload = self._default_tool_recovery_payload(
+            failure,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
         advice = None
         advisor = getattr(self, "_decision_advisor", None)
         if advisor is not None:
@@ -72,7 +96,11 @@ class ToolRecoveryMixin:
             except Exception:  # noqa: BLE001
                 logger.debug("Tool recovery advisor failed", exc_info=True)
 
-        selected_payload = default_payload
+        selected_payload = self._bounded_tool_recovery_payload(
+            default_payload,
+            default_payload=default_payload,
+            tool_name=tool_name,
+        )
         if advice is not None and getattr(advice, "accepted", False):
             payload = getattr(advice, "payload", None)
             if isinstance(payload, dict):
@@ -604,12 +632,19 @@ class ToolRecoveryMixin:
         return proposal_ids
 
     @staticmethod
-    def _default_tool_recovery_payload(failure: dict[str, Any]) -> dict[str, Any]:
+    def _default_tool_recovery_payload(
+        failure: dict[str, Any],
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
         failure_kind = failure.get("failureKind")
         if failure_kind == "mcp_server_unavailable":
             action = "refresh_mcp_tools"
         elif failure_kind == "permission_denied":
             action = "request_permission"
+        elif failure_kind == "patch_validation_failed" and _looks_like_full_file_patch(arguments):
+            action = "fallback_tool"
         elif failure_kind in {"partial_response", "timeout", "mcp_tool_failed"}:
             action = "retry_narrower"
         else:
@@ -622,6 +657,10 @@ class ToolRecoveryMixin:
             payload["refreshMcpTools"] = True
         if action == "request_permission":
             payload["requestPermission"] = True
+        if action == "fallback_tool":
+            payload["fallbackTool"] = {
+                "name": "write_file",
+            }
         if action == "retry_narrower":
             payload["retryWithNarrowerArgs"] = True
         return payload
@@ -646,6 +685,11 @@ class ToolRecoveryMixin:
                     **fallback_tool,
                     "available": fallback_name.strip() in set(self._available_tool_names_for_recovery()),
                 }
+        elif action == "fallback_tool" and tool_name == "apply_patch":
+            bounded["fallbackTool"] = {
+                "name": "write_file",
+                "available": "write_file" in set(self._available_tool_names_for_recovery()),
+            }
         return bounded
 
     @staticmethod

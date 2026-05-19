@@ -42,7 +42,56 @@ def _int_setting(source: dict[str, Any], *keys: str, default: int) -> int:
     return default
 
 
+def _positive_env_int(*keys: str, default: int, minimum: int = 1) -> int:
+    return max(minimum, _int_setting(os.environ, *keys, default=default))
+
+
 def choose_glm_provider_config() -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    override_base_url = os.environ.get("YUANBAO_SMOKE_PROVIDER_BASE_URL")
+    override_model = os.environ.get("YUANBAO_SMOKE_PROVIDER_MODEL")
+    override_api_key = os.environ.get("YUANBAO_SMOKE_PROVIDER_API_KEY")
+    if override_base_url and override_model and override_api_key:
+        profile = {
+            "id": "glm-child-execution-env",
+            "name": os.environ.get("YUANBAO_SMOKE_PROVIDER_NAME") or override_model,
+            "mode": os.environ.get("YUANBAO_SMOKE_PROVIDER_MODE") or "openai-compatible",
+            "baseUrl": override_base_url,
+            "model": override_model,
+            "defaultModel": override_model,
+            "fallbackModel": override_model,
+            "apiKeyEnvVarName": "YUANBAO_SMOKE_PROVIDER_API_KEY",
+            "apiFormat": os.environ.get("YUANBAO_SMOKE_PROVIDER_API_FORMAT") or "openai-chat",
+            "temperature": float(os.environ.get("YUANBAO_SMOKE_PROVIDER_TEMPERATURE") or "0.1"),
+            "maxTokens": _int_setting(os.environ, "YUANBAO_SMOKE_PROVIDER_MAX_TOKENS", default=SMOKE_MIN_OUTPUT_TOKENS),
+            "maxOutputTokens": _int_setting(os.environ, "YUANBAO_SMOKE_PROVIDER_MAX_TOKENS", default=SMOKE_MIN_OUTPUT_TOKENS),
+            "maxContextTokens": _positive_env_int("YUANBAO_SMOKE_MAX_CONTEXT_TOKENS", default=20000),
+            "timeout": max(_int_setting(os.environ, "YUANBAO_SMOKE_PROVIDER_TIMEOUT", default=90), 90),
+            "streamingEnabled": os.environ.get("YUANBAO_SMOKE_STREAMING_ENABLED", "1").strip() != "0",
+        }
+        provider_config = {**profile, "activeProfileId": profile["id"], "profiles": [profile]}
+        public = {
+            "name": str(profile.get("name") or profile.get("id") or "provider"),
+            "mode": str(profile.get("mode") or ""),
+            "apiFormat": str(profile.get("apiFormat") or "openai-chat"),
+            "model": str(profile.get("model") or ""),
+            "source": "env_override",
+        }
+        probe_results: list[dict[str, Any]] = []
+        try:
+            adapter = ProviderAdapter(config={"provider": provider_config})
+            metadata = adapter.provider_request_metadata({"config": {"provider": provider_config}})
+            response = adapter.chat(
+                messages=[{"role": "user", "content": "Reply with exactly: ok"}],
+                tools=None,
+                context={"config": {"provider": provider_config}},
+            )
+            content = str((response.get("message") or {}).get("content") or "").strip()
+            probe_results.append({**public, "status": "ok", "requestPath": metadata.get("requestPath"), "sample": content[:40]})
+            return provider_config, public, probe_results
+        except Exception as exc:  # noqa: BLE001
+            probe_results.append({**public, "status": "failed", "error": str(exc)[:300]})
+            raise RuntimeError("Env smoke provider probe failed: " + json.dumps(probe_results, ensure_ascii=False)) from exc
+
     source = SQLiteStore(str(REPO_ROOT / "runtime" / ".local-agent-runtime.sqlite3"))
     try:
         provider = source.get_config({})["config"].get("provider", {})
@@ -129,8 +178,9 @@ def choose_glm_provider_config() -> tuple[dict[str, Any], dict[str, Any], list[d
                 _int_setting(base_profile, "maxOutputTokens", "maxTokens", default=SMOKE_MIN_OUTPUT_TOKENS),
                 SMOKE_MIN_OUTPUT_TOKENS,
             ),
-            "maxContextTokens": _int_setting(base_profile, "maxContextTokens", default=120000),
+            "maxContextTokens": _positive_env_int("YUANBAO_SMOKE_MAX_CONTEXT_TOKENS", default=20000),
             "timeout": _int_setting(base_profile, "timeout", default=90),
+            "streamingEnabled": os.environ.get("YUANBAO_SMOKE_STREAMING_ENABLED", "1").strip() != "0",
         }
         if base_profile.get("apiKey"):
             selected["apiKey"] = str(base_profile["apiKey"])

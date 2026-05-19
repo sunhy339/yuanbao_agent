@@ -6,7 +6,15 @@ from collections import deque
 from typing import Any
 
 from ..provider.adapter import ProviderAdapter
-from .types import PlanResult, Subtask, normalize_subtask_agent_type
+from .types import (
+    PlanResult,
+    Subtask,
+    normalize_subtask_agent_type,
+    normalize_subtask_expected_artifacts,
+    normalize_subtask_object_list,
+    normalize_subtask_owned_scope,
+    normalize_subtask_verification_requirements,
+)
 
 _DECOMPOSITION_PROMPT = """\
 You are a task decomposition specialist. Break the following goal into concrete, ordered sub-tasks.
@@ -21,6 +29,9 @@ Respond with a JSON array of sub-tasks. Each sub-task MUST have:
 - "description": a detailed description of what to do (this will be used as the prompt for a sub-agent)
 - "dependencies": an array of sub-task IDs that must complete before this one can start (use [] for tasks with no dependencies)
 - "agentType": choose exactly one of "planner", "worker", "reviewer", or "summarizer"
+- "ownedScope": optional array of file or path scopes owned by this sub-task
+- "expectedArtifacts": optional array describing concrete outputs this sub-task should produce
+- "verificationRequirements": optional array describing the checks or evidence this sub-task should satisfy
 
 Guidelines:
 - Each sub-task should be independently executable
@@ -43,6 +54,23 @@ Example response:
 ]
 ```
 """
+
+_FILE_PATH_RE = re.compile(
+    r"""(?:^|[\s`"'(])(?P<path>[\w./\\-]+\.(?:py|ts|tsx|js|jsx|json|yaml|yml|toml|md|rs|go|java|c|cpp|h|hpp|cs|rb|php|sh|bash|sql|html|css|scss|vue|svelte|graphql|proto))(?=[\s`"')\],;:.!?]|$)""",
+    re.IGNORECASE,
+)
+_COMMAND_RE = re.compile(
+    r"""(?P<command>(?:python(?:3)?|py|pytest|node|npm|pnpm|yarn|bun|go|cargo|dotnet|javac|java|tsc|mypy|ruff|eslint)\b(?:\s+(?!(?:and|plus|then)\b)[^,\n;]+)+)""",
+    re.IGNORECASE,
+)
+_COMMAND_BLOCK_RE = re.compile(r"`([^`\n]+)`")
+_COMMAND_TRIGGER_RE = re.compile(
+    r"""(?ix)
+    \b(?:run|execute|invoke|check|verify|using|use|command(?:s)?(?:\s+such\s+as)?|must\s+run)\b
+    (?P<tail>[^\n]+)
+    """
+)
+_COMMAND_SENTENCE_BREAK_RE = re.compile(r"[.!?](?:\s+|$)")
 
 
 class TaskDecomposer:
@@ -77,7 +105,7 @@ class TaskDecomposer:
             subtasks = self._parse_subtasks(raw_text, fallback_goal=goal)
         except Exception:  # noqa: BLE001
             subtasks = self._fallback_subtasks_for_provider_failure(goal)
-        subtasks = self._expand_overloaded_implementation_plan(subtasks, goal=goal)
+        subtasks = self._enforce_goal_contract(subtasks, goal=goal)
         dag = self.build_dag(subtasks)
         all_ids = [s.id for s in subtasks]
         execution_order = self.topological_sort(dag, all_ids)
@@ -186,9 +214,9 @@ class TaskDecomposer:
                 id="sub-1",
                 title="Implement requested changes",
                 description=(
-                    "Implement the parent task directly from the original goal and the inspection notes. "
-                    "Create or update the requested files, preserve explicit artifact names, and avoid "
-                    "unrelated refactors."
+                        "Implement the parent task directly from the original goal and the inspection notes. "
+                        "Create or update the requested files, preserve explicit artifact names, and avoid "
+                        "unrelated refactors."
                 ),
                 dependencies=["sub-0"],
                 agent_type="worker",
@@ -197,9 +225,9 @@ class TaskDecomposer:
                 id="sub-2",
                 title="Verify and summarize result",
                 description=(
-                    "Run the parent task's requested verification commands, including tests or compile "
-                    "checks when applicable. Record changed files, commands, test results, and any "
-                    "remaining blockers before final synthesis."
+                        "Run the parent task's requested verification commands, including tests or compile "
+                        "checks when applicable. Record changed files, commands, test results, and any "
+                        "remaining blockers before final synthesis."
                 ),
                 dependencies=["sub-1"],
                 agent_type="worker",
@@ -239,146 +267,513 @@ class TaskDecomposer:
             )
         )
 
-    def _expand_overloaded_implementation_plan(self, subtasks: list[Subtask], *, goal: str) -> list[Subtask]:
-        """Split generic plans when the goal names several concrete deliverable groups."""
-        if not self._looks_like_overloaded_implementation_plan(subtasks):
-            return subtasks
-
-        normalized_goal = goal.casefold()
-        has_backend = any(
-            token in normalized_goal
-            for token in (
-                "backend",
-                "feedback_models.py",
-                "feedback_storage.py",
-                "feedback_api.py",
-                "feedback_analytics.py",
-                "feedback_import_export.py",
-                "sqlite",
-            )
+    def _enforce_goal_contract(self, subtasks: list[Subtask], *, goal: str) -> list[Subtask]:
+        explicit_paths = self._extract_explicit_artifact_paths(goal)
+        explicit_commands = self._extract_explicit_commands(goal)
+        subtasks = self._ensure_missing_category_subtasks(
+            subtasks,
+            goal=goal,
+            explicit_paths=explicit_paths,
+            explicit_commands=explicit_commands,
         )
-        has_frontend = any(token in normalized_goal for token in ("frontend", "index.html", "app.js", "styles.css"))
-        has_tests = any(token in normalized_goal for token in ("pytest", "test_", "tests"))
-        has_docs = any(token in normalized_goal for token in ("readme", "docs", "documentation"))
-        has_verification = any(
-            token in normalized_goal
-            for token in ("py_compile", "node --check", "verification", "validate", "run tests")
-        )
-        deliverable_count = sum(1 for flag in (has_backend, has_frontend, has_tests, has_docs, has_verification) if flag)
-        if deliverable_count < 3:
-            return subtasks
+        claimed_paths: set[str] = set()
+        claimed_commands: set[str] = set()
+        for task in subtasks:
+            relevant_paths = [path for path in explicit_paths if self._path_belongs_to_task(task, path)]
+            if relevant_paths:
+                self._merge_task_paths(task, relevant_paths)
+                claimed_paths.update(path.casefold() for path in relevant_paths)
+            relevant_commands = [
+                command
+                for command in explicit_commands
+                if self._command_belongs_to_task(task, command, relevant_paths)
+            ]
+            if relevant_commands:
+                self._merge_task_commands(task, relevant_commands)
+                claimed_commands.update(command.casefold() for command in relevant_commands)
+        for path in explicit_paths:
+            key = path.casefold()
+            if key in claimed_paths:
+                continue
+            target = self._best_task_for_path(subtasks, path)
+            if target is None:
+                continue
+            self._merge_task_paths(target, [path])
+            claimed_paths.add(key)
+        for command in explicit_commands:
+            key = command.casefold()
+            if key in claimed_commands:
+                continue
+            target = self._best_task_for_command(subtasks, command)
+            if target is None:
+                continue
+            self._merge_task_commands(target, [command])
+            claimed_commands.add(key)
+        unclaimed_paths = [path for path in explicit_paths if path.casefold() not in claimed_paths]
+        unclaimed_commands = [command for command in explicit_commands if command.casefold() not in claimed_commands]
+        if self._goal_needs_document_and_verify(unclaimed_paths, unclaimed_commands):
+            subtasks.append(self._build_document_and_verify_subtask(subtasks, unclaimed_paths, unclaimed_commands))
+        return subtasks
 
-        expanded: list[Subtask] = [
-            Subtask(
-                id="sub-0",
-                title="Analyze codebase and constraints",
-                description=(
-                    "Inspect the workspace and summarize current files, constraints, required artifact names, "
-                    "and validation commands from the parent goal. Do not edit files."
-                ),
-                dependencies=[],
-                agent_type="planner",
-            )
-        ]
-        last_backend_id = "sub-0"
-        if has_backend:
-            expanded.append(
-                Subtask(
-                    id="sub-1",
-                    title="Implement backend models and storage",
-                    description=(
-                        "Implement the backend data model and persistence slice, preserving explicit artifact names "
-                        "from the parent goal such as feedback_models.py and feedback_storage.py. Ensure storage APIs "
-                        "accept explicit database paths or storage objects so tests can use isolated temporary databases."
-                    ),
-                    dependencies=["sub-0"],
-                    agent_type="worker",
-                )
-            )
-            expanded.append(
-                Subtask(
-                    id="sub-2",
-                    title="Implement API analytics import export",
-                    description=(
-                        "Implement the API, analytics, and import/export modules named by the parent goal. Pass explicit "
-                        "db_path or storage dependencies through analytics and import/export helpers; do not hard-code "
-                        "feedback.db in paths that tests exercise."
-                    ),
-                    dependencies=["sub-1"],
-                    agent_type="worker",
-                )
-            )
-            last_backend_id = "sub-2"
-        if has_frontend:
-            expanded.append(
-                Subtask(
-                    id="sub-3",
-                    title="Implement frontend static app",
-                    description=(
-                        "Implement the frontend files named by the parent goal, including index.html, app.js, and "
-                        "styles.css, with forms, queue/filter UI, analytics display, and import/export controls."
-                    ),
-                    dependencies=["sub-0"],
-                    agent_type="worker",
-                )
-            )
-        if has_tests:
-            test_deps = [last_backend_id]
-            if has_frontend:
-                test_deps.append("sub-3")
-            expanded.append(
-                Subtask(
-                    id="sub-4",
-                    title="Write pytest coverage",
-                    description=(
-                        "Write at least two pytest files covering validation failures, successful submission, persistence, "
-                        "status transitions, search/filter, analytics aggregation, and import/export or API flows. Use "
-                        "tmp_path database files and pass db_path/storage explicitly into the modules under test."
-                    ),
-                    dependencies=list(dict.fromkeys(test_deps)),
-                    agent_type="worker",
-                )
-            )
-        if has_docs or has_verification:
-            verify_deps = []
-            if has_backend:
-                verify_deps.append(last_backend_id)
-            if has_frontend:
-                verify_deps.append("sub-3")
-            if has_tests:
-                verify_deps.append("sub-4")
-            expanded.append(
-                Subtask(
-                    id="sub-5",
-                    title="Document and verify",
-                    description=(
-                        "Update README documentation if requested and run the parent goal's validation commands, such as "
-                        "python -m pytest -q, python -m py_compile for Python modules, node --check app.js, and file "
-                        "existence checks. Fix failures within the scoped files when possible."
-                    ),
-                    dependencies=list(dict.fromkeys(verify_deps or ["sub-0"])),
-                    agent_type="worker",
-                )
-            )
-        return expanded
+    def _extract_explicit_artifact_paths(self, text: str) -> list[str]:
+        seen: set[str] = set()
+        paths: list[str] = []
+        for match in _FILE_PATH_RE.finditer(text):
+            candidate = str(match.group("path") or "").strip().rstrip(".,:;!?").replace("\\", "/")
+            if not candidate:
+                continue
+            key = candidate.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            paths.append(candidate)
+        return paths
 
-    @staticmethod
-    def _looks_like_overloaded_implementation_plan(subtasks: list[Subtask]) -> bool:
-        if len(subtasks) > 3:
+    def _extract_explicit_commands(self, text: str) -> list[str]:
+        seen: set[str] = set()
+        commands: list[str] = []
+        segments: list[str] = []
+        segments.extend(match.group(1) for match in _COMMAND_BLOCK_RE.finditer(text))
+        segments.extend(str(match.group("tail") or "") for match in _COMMAND_TRIGGER_RE.finditer(text))
+        for segment in segments:
+            clauses = [clause.strip() for clause in _COMMAND_SENTENCE_BREAK_RE.split(str(segment or "")) if clause.strip()]
+            for clause in clauses:
+                for subsegment in re.split(r"\b(?:and|plus|then)\b", clause, flags=re.IGNORECASE):
+                    for match in _COMMAND_RE.finditer(subsegment):
+                        command = " ".join(str(match.group("command") or "").split()).strip("`\"' \t.,:;!?")
+                        if not command:
+                            continue
+                        key = command.casefold()
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        commands.append(command)
+        return commands
+
+    def _path_belongs_to_task(self, task: Subtask, path: str) -> bool:
+        if normalize_subtask_agent_type(task.agent_type) != "worker":
             return False
-        combined = " ".join(f"{task.title} {task.description}" for task in subtasks).casefold()
-        if "implement changes" in combined or "implement modules" in combined:
+        task_text = f"{task.title} {task.description}".casefold()
+        normalized_path = path.casefold()
+        basename = normalized_path.rsplit("/", 1)[-1]
+        if normalized_path in task_text or basename in task_text:
             return True
-        worker_tasks = [task for task in subtasks if task.agent_type == "worker"]
-        if len(worker_tasks) != 1:
+        if self._task_is_docs(task):
+            return basename == "readme.md" or normalized_path.startswith("docs/")
+        if self._task_is_tests(task):
+            return normalized_path.startswith("tests/") or basename.startswith("test_")
+        if self._task_is_frontend(task):
+            return any(normalized_path.endswith(ext) for ext in (".html", ".css", ".js", ".jsx", ".ts", ".tsx"))
+        if self._task_is_backend(task):
+            return normalized_path.endswith(".py") and not normalized_path.startswith("tests/") and basename != "readme.md"
+        return False
+
+    def _command_belongs_to_task(self, task: Subtask, command: str, candidate_paths: list[str]) -> bool:
+        if normalize_subtask_agent_type(task.agent_type) != "worker":
             return False
-        worker_text = f"{worker_tasks[0].title} {worker_tasks[0].description}".casefold()
-        deliverable_hits = sum(
-            1
-            for token in ("backend", "frontend", "pytest", "readme", "index.html", "feedback_api.py")
-            if token in worker_text
+        normalized = command.casefold()
+        if candidate_paths and any(
+            path.casefold() in normalized or path.casefold().rsplit("/", 1)[-1] in normalized
+            for path in candidate_paths
+        ):
+            return True
+        if self._task_is_tests(task):
+            return any(token in normalized for token in ("pytest", "unittest", "tox")) and not any(
+                token in normalized for token in ("node", "npm", "pnpm", "yarn", "bun", "eslint", "tsc")
+            )
+        if self._task_is_frontend(task):
+            return any(token in normalized for token in ("node", "npm", "pnpm", "yarn", "bun", "eslint", "tsc"))
+        if self._task_is_docs_or_verify(task) and not any(
+            checker(task) for checker in (self._task_is_tests, self._task_is_frontend, self._task_is_backend)
+        ):
+            return True
+        if self._task_is_backend(task):
+            return any(token in normalized for token in ("py_compile", "compileall", "mypy", "ruff"))
+        return False
+
+    def _merge_task_paths(self, task: Subtask, paths: list[str]) -> None:
+        existing_scope = {item.casefold() for item in task.owned_scope}
+        existing_artifacts = {
+            str(item.get("path") or item.get("file") or "").strip().casefold()
+            for item in task.expected_artifacts
+            if isinstance(item, dict)
+        }
+        for path in paths:
+            if path.casefold() not in existing_scope:
+                task.owned_scope.append(path)
+                existing_scope.add(path.casefold())
+            if path.casefold() not in existing_artifacts:
+                task.expected_artifacts.append({"kind": "file", "path": path})
+                existing_artifacts.add(path.casefold())
+
+    def _merge_task_commands(self, task: Subtask, commands: list[str]) -> None:
+        existing = {
+            str(item.get("command") or item.get("name") or "").strip().casefold()
+            for item in task.verification_requirements
+            if isinstance(item, dict)
+        }
+        for command in commands:
+            family = self._command_family(command)
+            key = command.casefold()
+            if key in existing:
+                continue
+            record: dict[str, Any] = {"kind": "command", "command": command}
+            if family:
+                record["family"] = family
+            task.verification_requirements.append(record)
+            existing.add(key)
+
+    def _best_task_for_path(self, subtasks: list[Subtask], path: str) -> Subtask | None:
+        best: tuple[int, int, Subtask] | None = None
+        for index, task in enumerate(subtasks):
+            score = self._score_task_for_path(task, path)
+            if score <= 0:
+                continue
+            candidate = (score, -index, task)
+            if best is None or candidate > best:
+                best = candidate
+        return best[2] if best is not None else None
+
+    def _best_task_for_command(self, subtasks: list[Subtask], command: str) -> Subtask | None:
+        best: tuple[int, int, Subtask] | None = None
+        for index, task in enumerate(subtasks):
+            score = self._score_task_for_command(task, command)
+            if score <= 0:
+                continue
+            candidate = (score, -index, task)
+            if best is None or candidate > best:
+                best = candidate
+        return best[2] if best is not None else None
+
+    def _score_task_for_path(self, task: Subtask, path: str) -> int:
+        if normalize_subtask_agent_type(task.agent_type) != "worker":
+            return 0
+        text = f"{task.title} {task.description}".casefold()
+        normalized_path = path.casefold()
+        basename = normalized_path.rsplit("/", 1)[-1]
+        category = self._artifact_category_for_path(path)
+        explicitly_named = normalized_path in text or basename in text
+        score = 0
+        if normalized_path in text:
+            score += 100
+        if basename in text:
+            score += 80
+        if category == "docs" and not explicitly_named and not self._task_is_docs(task):
+            return 0
+        if category != "docs" and explicitly_named:
+            score += 20
+        if category == "docs" and self._task_is_docs(task):
+            score += 40
+        elif category == "tests" and self._task_is_tests(task):
+            score += 40
+        elif category == "frontend" and self._task_is_frontend(task):
+            score += 40
+        elif category == "source" and self._task_is_backend(task):
+            score += 30
+        elif category == "javascript" and self._task_is_backend(task):
+            score += 25
+        elif category == "source" and self._task_is_generic_implementation(task):
+            score += 20
+        if score > 0 and any(token in text for token in ("implement", "build", "create", "write", "update", "fix")):
+            score += 10
+        if self._task_is_docs_or_verify(task) and category in {"docs", "tests"}:
+            score += 10
+        return score
+
+    def _score_task_for_command(self, task: Subtask, command: str) -> int:
+        if normalize_subtask_agent_type(task.agent_type) != "worker":
+            return 0
+        text = f"{task.title} {task.description}".casefold()
+        normalized = command.casefold()
+        family = self._command_family(command)
+        score = 0
+        if normalized in text:
+            score += 100
+        if family == "javascript" and self._task_is_frontend(task):
+            score += 40
+        if family == "python" and self._task_is_tests(task):
+            score += 45
+        elif family == "python" and self._task_is_backend(task) and "py_compile" in normalized:
+            score += 35
+        if "pytest" in normalized and self._task_is_tests(task):
+            score += 25
+        if self._task_is_docs_or_verify(task):
+            score += 20
+        if score > 0 and any(token in text for token in ("verify", "validation", "check", "tests", "coverage")):
+            score += 10
+        return score
+
+    def _artifact_category_for_path(self, path: str) -> str:
+        normalized = path.casefold().replace("\\", "/")
+        basename = normalized.rsplit("/", 1)[-1]
+        if normalized.startswith("tests/") or basename.startswith("test_"):
+            return "tests"
+        if basename in {"readme.md", "readme.rst", "readme.txt"} or normalized.startswith("docs/"):
+            return "docs"
+        if normalized.endswith((".md", ".rst", ".adoc", ".txt")):
+            return "docs"
+        if normalized.endswith((".html", ".css", ".scss", ".vue", ".svelte")):
+            return "frontend"
+        if normalized.endswith((".js", ".jsx", ".ts", ".tsx")):
+            if any(token in basename for token in ("server", "api", "backend", "service", "worker")):
+                return "javascript"
+            return "frontend"
+        if normalized.endswith((".py", ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".sql", ".graphql", ".proto")):
+            return "source"
+        return "other"
+
+    def _goal_needs_document_and_verify(self, unclaimed_paths: list[str], unclaimed_commands: list[str]) -> bool:
+        if unclaimed_commands:
+            return True
+        return any(self._artifact_category_for_path(path) == "docs" for path in unclaimed_paths)
+
+    def _ensure_missing_category_subtasks(
+        self,
+        subtasks: list[Subtask],
+        *,
+        goal: str,
+        explicit_paths: list[str],
+        explicit_commands: list[str],
+    ) -> list[Subtask]:
+        if not subtasks:
+            return subtasks
+        worker_tasks = [task for task in subtasks if normalize_subtask_agent_type(task.agent_type) == "worker"]
+        if not worker_tasks:
+            return subtasks
+        worker_ids = [task.id for task in worker_tasks]
+        requested = self._requested_goal_categories(goal, explicit_paths, explicit_commands)
+        covered = {category for category in requested if any(self._task_matches_category(task, category) for task in worker_tasks)}
+        missing = requested - covered
+        next_index = len(subtasks)
+        for category in ("frontend", "tests"):
+            if category not in missing:
+                continue
+            if any(self._task_explicitly_owns_category(task, category) for task in worker_tasks):
+                continue
+            title, description = self._category_subtask_template(category, explicit_paths, explicit_commands)
+            dependencies = list(worker_ids)
+            subtasks.append(
+                Subtask(
+                    id=f"sub-{next_index}",
+                    title=title,
+                    description=description,
+                    dependencies=dependencies,
+                    agent_type="worker",
+                )
+            )
+            worker_ids.append(f"sub-{next_index}")
+            next_index += 1
+        return subtasks
+
+    def _requested_goal_categories(self, goal: str, explicit_paths: list[str], explicit_commands: list[str]) -> set[str]:
+        normalized_goal = goal.casefold()
+        categories: set[str] = set()
+        if any(self._artifact_category_for_path(path) == "frontend" for path in explicit_paths) or any(
+            token in normalized_goal for token in ("frontend", "index.html", "app.js", "styles.css", "static ui", "static frontend")
+        ):
+            categories.add("frontend")
+        if any(self._artifact_category_for_path(path) == "tests" for path in explicit_paths) or any(
+            token in normalized_goal for token in ("pytest", "tests", "test coverage", "test files", "unittest")
+        ):
+            categories.add("tests")
+        if any(self._artifact_category_for_path(path) == "docs" for path in explicit_paths) or any(
+            token in normalized_goal for token in ("readme", "documentation", "docs")
+        ):
+            categories.add("docs")
+        if any(command.casefold().startswith(("python ", "py ", "pytest", "node ", "npm ", "pnpm ", "yarn ", "bun ")) for command in explicit_commands):
+            categories.add("verification")
+        return categories
+
+    def _task_matches_category(self, task: Subtask, category: str) -> bool:
+        if normalize_subtask_agent_type(task.agent_type) != "worker":
+            return False
+        if category == "frontend":
+            return self._task_contract_mentions_category(task, category)
+        if category == "tests":
+            return self._task_contract_mentions_category(task, category)
+        if category == "docs":
+            return self._task_contract_mentions_category(task, category)
+        if category == "verification":
+            return self._task_is_docs_or_verify(task) or bool(task.verification_requirements)
+        return False
+
+    def _task_contract_mentions_category(self, task: Subtask, category: str) -> bool:
+        paths = list(task.owned_scope)
+        paths.extend(
+            str(item.get("path") or item.get("file") or "").strip()
+            for item in task.expected_artifacts
+            if isinstance(item, dict)
         )
-        return deliverable_hits >= 3
+        if category == "frontend":
+            return any(self._artifact_category_for_path(path) == "frontend" for path in paths if path)
+        if category == "tests":
+            return any(self._artifact_category_for_path(path) == "tests" for path in paths if path) or any(
+                "pytest" in str(item.get("command") or "").casefold()
+                for item in task.verification_requirements
+                if isinstance(item, dict)
+            )
+        if category == "docs":
+            return any(self._artifact_category_for_path(path) == "docs" for path in paths if path)
+        return False
+
+    def _task_semantically_mentions_category(self, task: Subtask, category: str) -> bool:
+        if category == "frontend":
+            return self._task_is_frontend(task)
+        if category == "tests":
+            return self._task_is_tests(task)
+        if category == "docs":
+            return self._task_is_docs(task)
+        return False
+
+    def _task_explicitly_owns_category(self, task: Subtask, category: str) -> bool:
+        if self._task_contract_mentions_category(task, category):
+            return True
+        text = f"{task.title} {task.description}".casefold()
+        if category == "frontend":
+            return self._matches_category_execution_intent(
+                text,
+                nouns=("frontend", "ui", "client", "browser"),
+                artifacts=("index.html", "app.js", "styles.css"),
+                action_terms=("implement", "build", "create", "add", "write", "update", "develop"),
+            )
+        if category == "tests":
+            return self._matches_category_execution_intent(
+                text,
+                nouns=("pytest", "tests", "test coverage"),
+                artifacts=("tests/", "test_", "pytest"),
+                action_terms=("implement", "build", "create", "add", "write", "run", "cover"),
+            )
+        if category == "docs":
+            return self._matches_category_execution_intent(
+                text,
+                nouns=("readme", "docs", "documentation"),
+                artifacts=("readme.md",),
+                action_terms=("write", "update", "document", "add", "create"),
+            )
+        return False
+
+    def _matches_category_execution_intent(
+        self,
+        text: str,
+        *,
+        nouns: tuple[str, ...],
+        artifacts: tuple[str, ...] = (),
+        action_terms: tuple[str, ...] | None = None,
+    ) -> bool:
+        active_terms = action_terms or ("implement", "build", "create", "add", "write", "update", "develop", "run", "verify", "validate")
+        fragments = [fragment for fragment in re.split(r"[.!?\n;]+", text) if fragment.strip()]
+        for fragment in fragments:
+            has_action = any(self._text_has_term(fragment, action) for action in active_terms)
+            if not has_action:
+                continue
+            if any(self._text_has_term(fragment, noun) for noun in nouns):
+                return True
+            if any(artifact.casefold() in fragment for artifact in artifacts):
+                return True
+        return False
+
+    def _category_subtask_template(
+        self,
+        category: str,
+        explicit_paths: list[str],
+        explicit_commands: list[str],
+    ) -> tuple[str, str]:
+        if category == "frontend":
+            paths = [path for path in explicit_paths if self._artifact_category_for_path(path) == "frontend"]
+            command_text = ", ".join(command for command in explicit_commands if self._command_family(command) == "javascript")
+            description = (
+                "Implement the remaining frontend/client deliverables named in the parent task. "
+                f"Produce these files if requested: {', '.join(paths) if paths else 'the remaining frontend assets'}. "
+                "Keep the UI static and dependency-light, aligned with the intended backend contract."
+            )
+            if command_text:
+                description += f" Preserve the explicit frontend verification commands: {command_text}."
+            return "Implement remaining frontend deliverables", description
+        if category == "tests":
+            command_text = ", ".join(command for command in explicit_commands if "pytest" in command.casefold())
+            description = (
+                "Add the remaining automated Python test coverage required by the parent task. "
+                "Create the requested pytest files or equivalent focused tests, cover the named acceptance scenarios, "
+                "and keep tmp_path or injected storage/database usage isolated."
+            )
+            if command_text:
+                description += f" Preserve the explicit test verification commands: {command_text}."
+            return "Add remaining test coverage", description
+        return "Address remaining deliverables", "Address the remaining explicit deliverables from the parent task."
+
+    def _build_document_and_verify_subtask(
+        self,
+        subtasks: list[Subtask],
+        explicit_paths: list[str],
+        explicit_commands: list[str],
+    ) -> Subtask:
+        next_id = f"sub-{len(subtasks)}"
+        dependencies = [task.id for task in subtasks if normalize_subtask_agent_type(task.agent_type) == "worker"]
+        task = Subtask(
+            id=next_id,
+            title="Document and verify deliverables",
+            description=(
+                "Handle any remaining documentation deliverables and run any explicit verification commands that were "
+                "named in the parent task but not yet owned by another worker. Capture real command outcomes and file "
+                "existence evidence for the final summary."
+            ),
+            dependencies=dependencies or [subtasks[-1].id] if subtasks else [],
+            agent_type="worker",
+        )
+        relevant_paths = [path for path in explicit_paths if self._path_belongs_to_task(task, path)]
+        if relevant_paths:
+            self._merge_task_paths(task, relevant_paths)
+        if explicit_commands:
+            self._merge_task_commands(task, explicit_commands)
+        return task
+
+    def _task_is_frontend(self, task: Subtask) -> bool:
+        text = f"{task.title} {task.description}".casefold()
+        return self._matches_category_execution_intent(
+            text,
+            nouns=("frontend", "ui", "static app", "web", "browser", "client"),
+            artifacts=("index.html", "app.js", "styles.css"),
+            action_terms=("implement", "build", "create", "add", "write", "update", "develop"),
+        )
+
+    def _task_is_tests(self, task: Subtask) -> bool:
+        text = f"{task.title} {task.description}".casefold()
+        return self._matches_category_execution_intent(
+            text,
+            nouns=("pytest", "tests", "test coverage", "coverage"),
+            artifacts=("tests/", "test_", "pytest"),
+            action_terms=("implement", "build", "create", "add", "write", "run", "cover"),
+        )
+
+    def _task_is_docs(self, task: Subtask) -> bool:
+        text = f"{task.title} {task.description}".casefold()
+        return any(self._text_has_term(text, token) for token in ("readme", "docs", "documentation"))
+
+    def _task_is_docs_or_verify(self, task: Subtask) -> bool:
+        text = f"{task.title} {task.description}".casefold()
+        return self._task_is_docs(task) or any(self._text_has_term(text, token) for token in ("verify", "verification", "validate"))
+
+    def _task_is_backend(self, task: Subtask) -> bool:
+        text = f"{task.title} {task.description}".casefold()
+        return any(self._text_has_term(text, token) for token in ("backend", "python", "api", "server", "storage", "repository", "model"))
+
+    def _task_is_generic_implementation(self, task: Subtask) -> bool:
+        text = f"{task.title} {task.description}".casefold()
+        return any(self._text_has_term(text, token) for token in ("implement", "implementation", "requested files", "source files", "create"))
+
+    def _text_has_term(self, text: str, term: str) -> bool:
+        escaped = re.escape(term.casefold())
+        if any(ch.isalnum() for ch in term):
+            return re.search(rf"(?<![a-z0-9_]){escaped}(?![a-z0-9_])", text) is not None
+        return term.casefold() in text
+
+    def _command_family(self, command: str) -> str | None:
+        normalized = command.casefold()
+        if any(token in normalized for token in ("node", "npm", "pnpm", "yarn", "bun", "eslint", "tsc")):
+            return "javascript"
+        if any(token in normalized for token in ("pytest", "py_compile", "compileall", "python", "mypy", "ruff")):
+            return "python"
+        return None
 
     @staticmethod
     def _try_parse_array(text: str) -> list[Subtask] | None:
@@ -415,9 +810,15 @@ class TaskDecomposer:
                         agent_type = normalize_subtask_agent_type(
                             item.get("agentType") or item.get("agent_type") or item.get("role"),
                         )
+                        owned_scope = normalize_subtask_owned_scope(item.get("ownedScope") or item.get("owned_scope") or item.get("writeScope") or item.get("write_scope"))
+                        expected_artifacts = normalize_subtask_expected_artifacts(item.get("expectedArtifacts") or item.get("expected_artifacts"))
+                        verification_requirements = normalize_subtask_verification_requirements(item.get("verificationRequirements") or item.get("verification_requirements"))
                         subtasks.append(Subtask(
                             id=sub_id, title=title,
                             description=desc, dependencies=deps, agent_type=agent_type,
+                            owned_scope=owned_scope,
+                            expected_artifacts=expected_artifacts,
+                            verification_requirements=verification_requirements,
                         ))
                     return subtasks if subtasks else None
         return None

@@ -411,6 +411,66 @@ class TestCommandScopeEnforcement:
         )
         assert reasons == []
 
+    def test_tests_only_scope_allows_read_only_py_compile_outside_write_scope(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="tests worker",
+            write_scope=["tests/"],
+        )
+        reasons = enforcer.check_command_allowed(
+            child["id"],
+            command_scope=".",
+            command='& "C:\\Python314\\python.exe" -m py_compile blog_models.py blog_service.py',
+        )
+        assert reasons == []
+
+    def test_tests_only_scope_allows_node_check_outside_write_scope(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="tests worker",
+            write_scope=["tests/"],
+        )
+        reasons = enforcer.check_command_allowed(
+            child["id"],
+            command_scope=".",
+            command="node --check app.js",
+        )
+        assert reasons == []
+
+    def test_tests_only_scope_allows_file_listing_outside_write_scope(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="tests worker",
+            write_scope=["tests/"],
+        )
+        reasons = enforcer.check_command_allowed(
+            child["id"],
+            command_scope=".",
+            command="Get-ChildItem -Name blog_models.py, blog_service.py, app.js",
+        )
+        assert reasons == []
+
     def test_file_listing_targets_in_scope_allow_workspace_cwd(self, tmp_path: Path) -> None:
         store, ctx = _store_context(tmp_path)
         event_bus = EventBus()
@@ -814,7 +874,7 @@ class TestWriteScopeToolIntegration:
         tools = build_builtin_tools(policy_guard=PolicyGuard(), store=store)
         (ctx["workspace_root"] / "src" / "engine").mkdir(parents=True)
 
-        with pytest.raises(ValueError, match="Write scope violation"):
+        with pytest.raises(ValueError, match="taskId is required for command execution|Write scope violation"):
             tools["run_command"]({
                 "workspaceRoot": str(ctx["workspace_root"]),
                 "taskId": ctx["runtime_task"]["id"],

@@ -70,12 +70,47 @@ def test_child_subtask_timeout_falls_back_to_policy_command_timeout() -> None:
     assert _ReactRunnerHarness()._child_subtask_timeout_ms(context) == 900_000
 
 
+def test_child_subtask_timeout_prefers_main_workflow_budget() -> None:
+    context = {
+        "routing": {
+            "mainWorkflow": {
+                "budget": {
+                    "childTaskTimeoutMs": 45_000,
+                }
+            }
+        },
+        "config": {
+            "autonomy": {
+                "activeProfileId": "long-run",
+                "profiles": [{"id": "long-run", "childTaskTimeoutMs": 700_000}],
+            },
+            "policy": {"childTaskTimeoutMs": 300_000, "commandTimeoutMs": 900_000},
+        },
+    }
+
+    assert _ReactRunnerHarness()._child_subtask_timeout_ms(context) == 45_000
+
+
+def test_child_subtask_timeout_prefers_child_specific_policy_over_command_timeout() -> None:
+    context = {
+        "config": {
+            "autonomy": {
+                "activeProfileId": "long-run",
+                "profiles": [{"id": "long-run", "maxSteps": 40}],
+            },
+            "policy": {"childTaskTimeoutMs": 120_000, "commandTimeoutMs": 900_000},
+        }
+    }
+
+    assert _ReactRunnerHarness()._child_subtask_timeout_ms(context) == 120_000
+
+
 def test_child_subtask_timeout_prefers_autonomy_profile_timeout() -> None:
     context = {
         "config": {
             "autonomy": {
                 "activeProfileId": "long-run",
-                "profiles": [{"id": "long-run", "timeoutMs": 700_000}],
+                "profiles": [{"id": "long-run", "childTaskTimeoutMs": 700_000, "timeoutMs": 800_000}],
             },
             "policy": {"commandTimeoutMs": 900_000},
         }

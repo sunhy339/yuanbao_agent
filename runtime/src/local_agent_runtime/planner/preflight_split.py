@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from .types import PlanResult, Subtask, normalize_subtask_agent_type
+from .types import (
+    PlanResult,
+    Subtask,
+    normalize_subtask_agent_type,
+    normalize_subtask_expected_artifacts,
+    normalize_subtask_owned_scope,
+    normalize_subtask_verification_requirements,
+)
 
 
 MAX_PREFLIGHT_SPLIT_SUBTASKS = 10
@@ -75,6 +82,9 @@ def build_provider_preflight_plan_from_subtasks(raw_subtasks: list[Any]) -> Plan
                 description=description,
                 dependencies=dependencies,
                 agent_type=normalize_subtask_agent_type(item.get("agentType") or item.get("agent_type")),
+                owned_scope=normalize_subtask_owned_scope(item.get("ownedScope") or item.get("owned_scope") or item.get("writeScope") or item.get("write_scope")),
+                expected_artifacts=normalize_subtask_expected_artifacts(item.get("expectedArtifacts") or item.get("expected_artifacts")),
+                verification_requirements=normalize_subtask_verification_requirements(item.get("verificationRequirements") or item.get("verification_requirements")),
             )
         )
         seen_ids.add(subtask_id)
@@ -105,6 +115,9 @@ def serialize_provider_preflight_plan(
                 "description": subtask.description,
                 "dependencies": list(subtask.dependencies),
                 "agentType": normalize_subtask_agent_type(subtask.agent_type),
+                "ownedScope": list(subtask.owned_scope),
+                "expectedArtifacts": [dict(item) for item in subtask.expected_artifacts],
+                "verificationRequirements": [dict(item) for item in subtask.verification_requirements],
                 "status": subtask.status,
                 "result": subtask.result,
             }

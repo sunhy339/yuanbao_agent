@@ -143,10 +143,10 @@ class ProviderAdapter:
                 if cached is not None:
                     return json.loads(cached)
 
-            provider_response = self.chat(
-                messages=messages,
-                tools=tools,
-                context=context,
+            provider_response = (
+                self._generate_via_stream(messages=messages, tools=tools, context=context)
+                if self._should_generate_via_stream(context)
+                else self.chat(messages=messages, tools=tools, context=context)
             )
             assistant_message = provider_response["message"]
             response = {
@@ -280,6 +280,45 @@ class ProviderAdapter:
             messages = [{"role": "user", "content": prompt}]
         tools = self._normalize_tools(context.get("openai_tools") or context.get("tools"))
         yield from self.chat_stream(messages=messages, tools=tools, context=context)
+
+    def _generate_via_stream(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        final_response: dict[str, Any] | None = None
+        content_parts: list[str] = []
+        finish_reason: str | None = None
+        for event in self.chat_stream(messages=messages, tools=tools, context=context):
+            event_type = event.get("type")
+            if event_type == "content_delta":
+                delta = event.get("delta")
+                if isinstance(delta, str) and delta:
+                    content_parts.append(delta)
+            elif event_type == "finish_reason":
+                raw_finish_reason = event.get("finish_reason")
+                if isinstance(raw_finish_reason, str) and raw_finish_reason:
+                    finish_reason = raw_finish_reason
+            elif event_type == "final":
+                response = event.get("response")
+                if isinstance(response, dict):
+                    final_response = response
+        if final_response is None:
+            raise ProviderAdapterError("Provider stream finished without a final response.")
+        message = final_response.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if (content is None or content == "") and content_parts:
+                patched_message = dict(message)
+                patched_message["content"] = "".join(content_parts)
+                final_response = dict(final_response)
+                final_response["message"] = patched_message
+        if finish_reason and not final_response.get("finish_reason"):
+            final_response = dict(final_response)
+            final_response["finish_reason"] = finish_reason
+        return final_response
 
     def provider_request_metadata(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
         settings = self._resolve_settings(context)
@@ -504,6 +543,14 @@ class ProviderAdapter:
     def _real_provider_enabled(self, context: dict[str, Any] | None) -> bool:
         return self._resolve_settings(context) is not None
 
+    def _should_generate_via_stream(self, context: dict[str, Any] | None) -> bool:
+        settings = self._resolve_settings(context)
+        if settings is None or settings.api_format != "openai-chat":
+            return False
+        provider_config = self._merged_provider_config(context)
+        stream_flag = self._provider_stream_flag(provider_config)
+        return stream_flag is True
+
     @staticmethod
     def _settings_for_request(
         settings: OpenAICompatibleSettings,
@@ -685,6 +732,20 @@ class ProviderAdapter:
         if parsed.path in {"", "/"}:
             return urlunsplit((parsed.scheme, parsed.netloc, "/v1", "", ""))
         return trimmed
+
+    @staticmethod
+    def _provider_stream_flag(provider_config: dict[str, Any]) -> bool | None:
+        for key in ("streamingEnabled", "streamResponses", "stream"):
+            value = provider_config.get(key)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in {"true", "1", "yes", "on"}:
+                    return True
+                if normalized in {"false", "0", "no", "off"}:
+                    return False
+        return None
 
     def _merged_provider_config(self, context: dict[str, Any] | None) -> dict[str, Any]:
         merged = self._resolve_active_provider_config(self._config.get("provider", self._config))

@@ -736,6 +736,17 @@ def approval_request(
     }
 
 
+def approval_by_id_or_none(store: Any, approval_id: str | None) -> dict[str, Any] | None:
+    if not approval_id:
+        return None
+    try:
+        return store.get_approval({"approvalId": approval_id})["approval"]
+    except ValueError as exc:
+        if "not found" in str(exc).casefold():
+            return None
+        raise
+
+
 _RUN_COMMAND_APPROVAL_EXECUTION_KEYS = (
     "taskId",
     "command",
@@ -757,8 +768,8 @@ def approval_for_request(
     request: dict[str, Any],
     approval_id: str | None,
 ) -> dict[str, Any] | None:
-    if approval_id:
-        approval = store.get_approval({"approvalId": approval_id})["approval"]
+    approval = approval_by_id_or_none(store, approval_id)
+    if approval is not None:
         if task_id and approval["taskId"] != task_id:
             raise ValueError("Approval does not belong to the active task")
         if approval["kind"] != "run_command":

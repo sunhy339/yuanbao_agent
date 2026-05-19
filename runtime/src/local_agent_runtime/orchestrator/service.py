@@ -110,7 +110,11 @@ class Orchestrator(
         self._memory_manager = memory_manager
         self._planner = Planner()
         self._scratchpad = Scratchpad(store)
-        self._compactor = ContextCompactor(store, provider=provider)
+        self._compactor = ContextCompactor(
+            store,
+            provider=provider,
+            provider_context={"config": store.get_config({}).get("config", {})},
+        )
         self._skill_registry = SkillRegistry(store)
         context_tool_schemas = self._context_tool_schemas()
         self._context_builder = ContextBuilder(

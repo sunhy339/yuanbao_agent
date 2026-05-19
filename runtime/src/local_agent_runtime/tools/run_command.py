@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import re
-import os
 from pathlib import Path
 from typing import Any
 
 from ._shared import (
+    approval_by_id_or_none,
     approval_for_request,
     approval_request,
     background_requested,
@@ -21,6 +21,7 @@ from ._shared import (
 from .command_compat import CommandCompatAdapter
 from ..policy.permission_engine import PermissionRequest as PermRequest
 from ..services.command_background import BackgroundCommandRequest, get_background_command_service
+from ..services.runtime_dependencies import resolve_node_executable
 from ..services.write_scope_enforcement import WriteScopeEnforcer
 
 
@@ -29,6 +30,7 @@ _POWERSHELL_NODE_EXECUTABLE_RE = re.compile(
     r"""(?P<prefix>(?:^|\s)&\s*)(?P<quote>["'])(?P<path>[^"']*\\node(?:\.exe)?)(?P=quote)""",
     re.IGNORECASE,
 )
+_POWERSHELL_BARE_NODE_RE = re.compile(r"""^(?P<prefix>\s*)(?P<command>node)(?P<suffix>(?:\s+.*)?)$""", re.IGNORECASE)
 
 
 def _powershell_execution_command(command: str, shell_name: str) -> str:
@@ -46,31 +48,26 @@ def _powershell_execution_command(command: str, shell_name: str) -> str:
 
 def _rewrite_missing_node_executable(command: str) -> str:
     match = _POWERSHELL_NODE_EXECUTABLE_RE.search(command)
-    if not match:
-        return command
-    requested = Path(match.group("path"))
-    if requested.is_file():
-        return command
     replacement = _available_node_executable()
     if replacement is None:
         return command
-    quote = match.group("quote")
-    replacement_text = f"{match.group('prefix')}{quote}{replacement}{quote}"
-    return command[:match.start()] + replacement_text + command[match.end():]
+    if match:
+        requested = Path(match.group("path"))
+        if requested.is_file():
+            return command
+        quote = match.group("quote")
+        replacement_text = f"{match.group('prefix')}{quote}{replacement}{quote}"
+        return command[:match.start()] + replacement_text + command[match.end():]
+    bare = _POWERSHELL_BARE_NODE_RE.match(command)
+    if not bare:
+        return command
+    prefix = bare.group("prefix") or ""
+    suffix = bare.group("suffix") or ""
+    return f'{prefix}& "{replacement}"{suffix}'
 
 
 def _available_node_executable() -> str | None:
-    configured = os.environ.get("LOCAL_AGENT_NODE_EXECUTABLE")
-    if configured and Path(configured).is_file():
-        return configured
-    home = Path.home()
-    for candidate in (
-        home / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node" / "bin" / "node.exe",
-        home / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "node" / "bin" / "node",
-    ):
-        if candidate.is_file():
-            return str(candidate)
-    return None
+    return resolve_node_executable()
 
 
 def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None, *, permission_engine: Any | None = None) -> dict[str, Any]:
@@ -109,11 +106,14 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         cwd_abs = cwd_path.resolve() if cwd_path.is_absolute() else (workspace_root / cwd_path).resolve()
         request_task_id = task_id or None
         if approval_id and not request_task_id:
-            request_task_id = store.get_approval({"approvalId": approval_id})["approval"]["taskId"]
+            approval = approval_by_id_or_none(store, approval_id)
+            if approval is not None:
+                request_task_id = approval["taskId"]
         if request_task_id:
             scope_reasons = WriteScopeEnforcer(store).check_command_allowed(
                 request_task_id,
                 command_scope=cwd_rel,
+                command=command,
             )
             if scope_reasons:
                 raise ValueError("Write scope violation: " + "; ".join(scope_reasons))

@@ -77,6 +77,96 @@ def test_real_llm_provider_smoke_is_env_gated() -> None:
     assert metadata["requestPath"].startswith("/")
 
 
+@pytest.mark.real_llm
+def test_real_llm_streaming_smoke_is_env_gated() -> None:
+    if _env("YUANBAO_REAL_LLM_SMOKE") != "1":
+        pytest.skip("Set YUANBAO_REAL_LLM_SMOKE=1 to contact a live provider.")
+
+    config = _real_smoke_config()
+    config["provider"]["streamingEnabled"] = True
+    adapter = ProviderAdapter(config=config)
+
+    events = list(
+        adapter.chat_stream(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Reply with exactly one short sentence confirming this runtime stream smoke is connected.",
+                }
+            ],
+            tools=None,
+            context={"config": config},
+        )
+    )
+
+    assert events
+    final_event = next((event for event in reversed(events) if event.get("type") == "final"), None)
+    assert isinstance(final_event, dict)
+    response = final_event["response"]
+    message = response.get("message") or {}
+    content = message.get("content")
+    assert isinstance(content, str)
+    assert content.strip()
+    assert response.get("finish_reason")
+
+
+@pytest.mark.real_llm
+def test_real_llm_accepts_tool_result_roundtrip_messages() -> None:
+    if _env("YUANBAO_REAL_LLM_SMOKE") != "1":
+        pytest.skip("Set YUANBAO_REAL_LLM_SMOKE=1 to contact a live provider.")
+
+    config = _real_smoke_config()
+    adapter = ProviderAdapter(config=config)
+
+    response = adapter.chat(
+        messages=[
+            {
+                "role": "user",
+                "content": "Use the tool result and reply with exactly: tool roundtrip connected",
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_roundtrip_1",
+                        "type": "function",
+                        "name": "search_files",
+                        "arguments": {"query": "incident"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_roundtrip_1",
+                "name": "search_files",
+                "content": '{"matches":[{"path":"incident_seed.py"}]}',
+            },
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_files",
+                    "description": "Search files in the workspace.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            }
+        ],
+        context={"config": config},
+    )
+
+    message = response.get("message") or {}
+    content = message.get("content")
+    assert isinstance(content, str)
+    assert "tool roundtrip connected" in content.lower()
+    assert response.get("finish_reason")
+
+
 def _force_simple_react_route(server: Any) -> None:
     router = server._orchestrator._meta_router  # noqa: SLF001
 

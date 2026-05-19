@@ -18,7 +18,7 @@ from .worker_process_transport import (
     WorkerProcessTimeoutError,
     WorkerProcessTransport,
 )
-from .worker_environment import build_child_worker_env
+from .worker_environment import build_child_worker_env, resolve_child_provider_model
 from .worker_policy import WorkerRunPolicy, normalize_worker_policy
 
 
@@ -36,6 +36,7 @@ class ChildTaskRequest:
     cancellation: dict[str, Any] | None = None
     budget: dict[str, Any] | None = None
     profile: dict[str, Any] | None = None
+    model: str | None = None
 
 
 @dataclass(slots=True)
@@ -286,6 +287,11 @@ class WorkerRunner:
             cancellation=deepcopy(metadata.get("cancellation")) if isinstance(metadata.get("cancellation"), dict) else None,
             budget=deepcopy(metadata.get("budget")) if isinstance(metadata.get("budget"), dict) else None,
             profile=deepcopy(metadata.get("profile")) if isinstance(metadata.get("profile"), dict) else None,
+            model=(
+                str(metadata.get("model")).strip()
+                if isinstance(metadata.get("model"), str) and str(metadata.get("model")).strip()
+                else None
+            ),
         )
 
     def _worker_for_blocked_child_task(self, child_task: dict[str, Any]) -> dict[str, Any]:
@@ -520,6 +526,7 @@ class WorkerRunner:
             runtime_src=self._runtime_src(),
             database_path=database_path,
             tool_allowlist=self._child_tool_allowlist_from_request(request),
+            child_model=self._child_model_from_request(request),
         )
 
     def _child_tool_allowlist_from_request(self, request: ChildTaskRequest | None) -> Any:
@@ -1027,6 +1034,8 @@ class WorkerRunner:
             "parentRuntimeTaskId": request.parent_runtime_task_id,
             "executionMode": self._default_execution_mode(request),
         }
+        if isinstance(request.model, str) and request.model.strip():
+            metadata["model"] = request.model.strip()
         if request.planning_prompt is not None:
             metadata["planningPrompt"] = request.planning_prompt
         if request.profile is not None:
@@ -1056,3 +1065,36 @@ class WorkerRunner:
 
     def _default_execution_mode(self, request: ChildTaskRequest) -> str:
         return "process-rpc" if self._can_use_process_worker(request) else "process-required"
+
+    def _child_model_from_request(self, request: ChildTaskRequest | None) -> str | None:
+        if request is None:
+            return self._default_child_model()
+        if isinstance(request.model, str) and request.model.strip():
+            return request.model.strip()
+        if isinstance(request.profile, dict):
+            profile_model = request.profile.get("model") or request.profile.get("childModel")
+            if isinstance(profile_model, str) and profile_model.strip():
+                return profile_model.strip()
+        return self._default_child_model()
+
+    def _default_child_model(self) -> str | None:
+        provider_config = self._provider_config()
+        return resolve_child_provider_model(
+            parent_env=os.environ,
+            provider_config=provider_config,
+        )
+
+    def _provider_config(self) -> dict[str, Any]:
+        store = getattr(self._collaboration, "store", None)
+        if store is None:
+            store = getattr(self._collaboration, "_store", None)
+        if store is None or not hasattr(store, "get_config"):
+            return {}
+        try:
+            config = store.get_config({}).get("config", {})
+        except Exception:
+            return {}
+        if not isinstance(config, dict):
+            return {}
+        provider = config.get("provider")
+        return dict(provider) if isinstance(provider, dict) else {}

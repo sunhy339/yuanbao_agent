@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from local_agent_runtime.planner.decomposer import TaskDecomposer
-from local_agent_runtime.planner.types import Subtask
+from local_agent_runtime.planner.types import Subtask, looks_like_shell_command, normalize_subtask_verification_requirements
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +84,38 @@ class TestTaskDecomposerDecompose:
         assert '"agentType"' in prompt
         assert 'Use "worker" for implementation' in prompt
         assert "Preserve explicit artifact names" in prompt
+
+    def test_parses_llm_structured_subtask_contract_fields(self) -> None:
+        raw = json.dumps([
+            {
+                "id": "sub-0",
+                "title": "Implement frontend slice",
+                "description": "Build the static app files.",
+                "dependencies": [],
+                "agentType": "worker",
+                "ownedScope": ["web/index.html", "web/app.js"],
+                "expectedArtifacts": [
+                    {"kind": "file", "path": "web/index.html"},
+                    {"kind": "file", "path": "web/app.js"},
+                ],
+                "verificationRequirements": [
+                    {"kind": "command", "command": "node --check web/app.js"},
+                ],
+            }
+        ])
+        provider = MockProvider(response=raw)
+        decomposer = TaskDecomposer(provider)
+
+        result = decomposer.decompose(goal="build the web UI")
+
+        assert result.subtasks[0].owned_scope == ["web/index.html", "web/app.js"]
+        assert result.subtasks[0].expected_artifacts == [
+            {"kind": "file", "path": "web/index.html"},
+            {"kind": "file", "path": "web/app.js"},
+        ]
+        assert result.subtasks[0].verification_requirements == [
+            {"kind": "command", "command": "node --check web/app.js"},
+        ]
 
     def test_parses_fenced_json_block(self) -> None:
         raw = 'Here is the plan:\n```json\n[\n  {"id": "sub-0", "title": "Analyze", "description": "Read files", "dependencies": []}\n]\n```\nDone.'
@@ -175,7 +207,7 @@ class TestTaskDecomposerDecompose:
         assert result.dag == {"s0": [], "s1": ["s0"]}
         assert result.execution_order == ["s0", "s1"]
 
-    def test_expands_generic_full_stack_implementation_plan(self) -> None:
+    def test_preserves_llm_plan_without_hardcoded_fullstack_expansion(self) -> None:
         raw = json.dumps([
             {
                 "id": "sub-0",
@@ -211,17 +243,289 @@ class TestTaskDecomposerDecompose:
         )
 
         titles = [task.title for task in result.subtasks]
-        assert titles == [
-            "Analyze codebase and constraints",
-            "Implement backend models and storage",
-            "Implement API analytics import export",
-            "Implement frontend static app",
-            "Write pytest coverage",
-            "Document and verify",
+        assert titles == ["Analyze codebase", "Implement changes", "Verify results"]
+        implement = next(task for task in result.subtasks if task.title == "Implement changes")
+        verify = next(task for task in result.subtasks if task.title == "Verify results")
+        assert {"kind": "file", "path": "feedback_models.py"} in implement.expected_artifacts
+        assert {"kind": "file", "path": "index.html"} in implement.expected_artifacts
+        assert {"kind": "command", "command": "python -m pytest tests", "family": "python"} not in verify.verification_requirements
+
+    def test_goal_contract_assigns_explicit_frontend_artifacts_without_hardcoded_frontend_rule(self) -> None:
+        raw = json.dumps([
+            {
+                "id": "sub-0",
+                "title": "Implement static frontend",
+                "description": "Build the frontend UI.",
+                "dependencies": [],
+                "agentType": "worker",
+            }
+        ])
+        provider = MockProvider(response=raw)
+        decomposer = TaskDecomposer(provider)
+
+        result = decomposer.decompose(
+            goal="Implement a static frontend with index.html, app.js, styles.css and run node --check app.js",
+        )
+
+        frontend = result.subtasks[0]
+        assert frontend.owned_scope == ["index.html", "app.js", "styles.css"]
+        assert frontend.expected_artifacts == [
+            {"kind": "file", "path": "index.html"},
+            {"kind": "file", "path": "app.js"},
+            {"kind": "file", "path": "styles.css"},
         ]
-        test_task = next(task for task in result.subtasks if task.title == "Write pytest coverage")
-        assert set(test_task.dependencies) == {"sub-2", "sub-3"}
-        assert "db_path" in test_task.description
+        assert frontend.verification_requirements == [
+            {"kind": "command", "command": "node --check app.js", "family": "javascript"},
+        ]
+
+    def test_goal_contract_adds_document_and_verify_when_explicit_requirements_are_unclaimed(self) -> None:
+        raw = json.dumps([
+            {
+                "id": "sub-0",
+                "title": "Implement backend",
+                "description": "Build the Python backend files.",
+                "dependencies": [],
+                "agentType": "worker",
+            },
+            {
+                "id": "sub-1",
+                "title": "Implement static frontend",
+                "description": "Build the static frontend UI.",
+                "dependencies": ["sub-0"],
+                "agentType": "worker",
+            },
+        ])
+        provider = MockProvider(response=raw)
+        decomposer = TaskDecomposer(provider)
+
+        result = decomposer.decompose(
+            goal=(
+                "Build blog_models.py, blog_api.py, index.html, app.js, styles.css, update README.md, "
+                "and run python -m pytest -q plus node --check app.js."
+            ),
+        )
+
+        titles = [task.title for task in result.subtasks]
+        assert "Document and verify deliverables" in titles
+        verify = next(task for task in result.subtasks if task.title == "Document and verify deliverables")
+        frontend = next(task for task in result.subtasks if task.title == "Implement static frontend")
+        assert {"kind": "file", "path": "README.md"} in verify.expected_artifacts
+        assert {"kind": "command", "command": "node --check app.js", "family": "javascript"} in frontend.verification_requirements
+        assert verify.verification_requirements == []
+
+    def test_goal_contract_routes_test_files_and_commands_to_test_worker(self) -> None:
+        raw = json.dumps([
+            {
+                "id": "sub-0",
+                "title": "Implement backend",
+                "description": "Build the Python backend files.",
+                "dependencies": [],
+                "agentType": "worker",
+            },
+            {
+                "id": "sub-1",
+                "title": "Add pytest coverage for backend and API",
+                "description": "Write backend tests.",
+                "dependencies": ["sub-0"],
+                "agentType": "worker",
+            },
+        ])
+        provider = MockProvider(response=raw)
+        decomposer = TaskDecomposer(provider)
+
+        result = decomposer.decompose(
+            goal="Build blog_service.py, tests/test_blog_api.py, and run python -m pytest -q.",
+        )
+
+        backend = next(task for task in result.subtasks if task.title == "Implement backend")
+        tests_task = next(task for task in result.subtasks if task.title == "Add pytest coverage for backend and API")
+        assert {"kind": "file", "path": "blog_service.py"} in backend.expected_artifacts
+        assert {"kind": "file", "path": "tests/test_blog_api.py"} in tests_task.expected_artifacts
+        assert {"kind": "command", "command": "python -m pytest -q", "family": "python"} in tests_task.verification_requirements
+
+    def test_goal_contract_does_not_assign_artifacts_to_planner(self) -> None:
+        raw = json.dumps([
+            {
+                "id": "sub-0",
+                "title": "Analyze current architecture",
+                "description": "Inspect the project before implementation.",
+                "dependencies": [],
+                "agentType": "planner",
+            },
+            {
+                "id": "sub-1",
+                "title": "Implement requested files",
+                "description": "Create the requested source files.",
+                "dependencies": ["sub-0"],
+                "agentType": "worker",
+            },
+        ])
+        provider = MockProvider(response=raw)
+        decomposer = TaskDecomposer(provider)
+
+        result = decomposer.decompose(goal="Create README.md and blog_api.py.")
+
+        planner = next(task for task in result.subtasks if task.agent_type == "planner")
+        worker = next(task for task in result.subtasks if task.agent_type == "worker")
+        assert planner.expected_artifacts == []
+        assert {"kind": "file", "path": "blog_api.py"} in worker.expected_artifacts
+
+    def test_goal_contract_extracts_only_explicit_command_phrases(self) -> None:
+        provider = MockProvider(response="[]")
+        decomposer = TaskDecomposer(provider)
+
+        commands = decomposer._extract_explicit_commands(
+            "Write at least two pytest files. You must run `python -m pytest -q`, "
+            "`python -m py_compile blog_models.py`, and `node --check app.js`."
+        )
+
+        assert commands == [
+            "python -m pytest -q",
+            "python -m py_compile blog_models.py",
+            "node --check app.js",
+        ]
+
+    def test_goal_contract_adds_missing_frontend_and_test_subtasks_when_llm_omits_categories(self) -> None:
+        raw = json.dumps([
+            {
+                "id": "sub-0",
+                "title": "Review backend, data model, and API risks",
+                "description": "Read-only backend review.",
+                "dependencies": [],
+                "agentType": "planner",
+            },
+            {
+                "id": "sub-1",
+                "title": "Implement Python backend blog system",
+                "description": "Build the backend modules.",
+                "dependencies": ["sub-0"],
+                "agentType": "worker",
+            },
+        ])
+        provider = MockProvider(response=raw)
+        decomposer = TaskDecomposer(provider)
+
+        result = decomposer.decompose(
+            goal=(
+                "Build blog_models.py, blog_api.py, index.html, app.js, styles.css, "
+                "write at least two pytest files, and run python -m pytest -q plus node --check app.js."
+            ),
+        )
+
+        titles = [task.title for task in result.subtasks]
+        assert "Implement remaining frontend deliverables" in titles
+        assert "Add remaining test coverage" in titles
+        frontend = next(task for task in result.subtasks if task.title == "Implement remaining frontend deliverables")
+        tests_task = next(task for task in result.subtasks if task.title == "Add remaining test coverage")
+        assert "index.html" in frontend.description
+        assert "python -m pytest -q" in tests_task.description
+
+    def test_goal_contract_still_adds_frontend_and_test_subtasks_when_backend_worker_mentions_them_only_as_context(self) -> None:
+        raw = json.dumps([
+            {
+                "id": "sub-0",
+                "title": "Implement Python backend and README",
+                "description": (
+                    "Build the Python backend modules and README. Mention how the frontend will later use "
+                    "index.html/app.js/styles.css and how pytest should validate tmp_path isolation."
+                ),
+                "dependencies": [],
+                "agentType": "worker",
+            },
+        ])
+        provider = MockProvider(response=raw)
+        decomposer = TaskDecomposer(provider)
+
+        result = decomposer.decompose(
+            goal=(
+                "Build blog_models.py, blog_api.py, index.html, app.js, styles.css, "
+                "write at least two pytest files, and run python -m pytest -q plus node --check app.js."
+            ),
+        )
+
+        titles = [task.title for task in result.subtasks]
+        assert "Implement remaining frontend deliverables" in titles
+        assert "Add remaining test coverage" in titles
+
+    def test_goal_contract_keeps_frontend_node_check_off_tests_worker(self) -> None:
+        raw = json.dumps([
+            {
+                "id": "sub-0",
+                "title": "Implement Python backend blog system",
+                "description": "Build the backend modules and API.",
+                "dependencies": [],
+                "agentType": "worker",
+            },
+            {
+                "id": "sub-1",
+                "title": "Write pytest coverage for backend and API",
+                "description": "Add the backend pytest suite and verify behavior.",
+                "dependencies": ["sub-0"],
+                "agentType": "worker",
+            },
+            {
+                "id": "sub-2",
+                "title": "Implement frontend static app",
+                "description": "Create index.html, app.js, and styles.css for the blog UI.",
+                "dependencies": ["sub-0"],
+                "agentType": "worker",
+            },
+        ])
+        provider = MockProvider(response=raw)
+        decomposer = TaskDecomposer(provider)
+
+        result = decomposer.decompose(
+            goal=(
+                "Build blog_models.py, blog_storage.py, blog_service.py, blog_api.py, blog_server.py, "
+                "index.html, app.js, styles.css, tests/test_blog_service.py, tests/test_blog_api.py, "
+                "README.md, run python -m pytest -q, run python -m py_compile blog_models.py blog_storage.py "
+                "blog_service.py blog_api.py blog_server.py, and run node --check app.js."
+            ),
+        )
+
+        tests_task = next(task for task in result.subtasks if "pytest coverage" in task.title.casefold())
+        frontend_task = next(task for task in result.subtasks if "frontend" in task.title.casefold())
+
+        assert {"kind": "command", "command": "python -m pytest -q", "family": "python"} in tests_task.verification_requirements
+        assert {"kind": "command", "command": "node --check app.js", "family": "javascript"} not in tests_task.verification_requirements
+        assert {"kind": "command", "command": "node --check app.js", "family": "javascript"} in frontend_task.verification_requirements
+
+    def test_normalize_verification_requirements_filters_non_command_sentences(self) -> None:
+        requirements = normalize_subtask_verification_requirements([
+            {"kind": "command", "command": "pytest tmp_path databases remain isolated. Implement a static frontend with index.html"},
+            {"kind": "command", "command": "python -m pytest -q"},
+            {"kind": "command", "command": "`node --check app.js`"},
+            {"kind": "note", "message": "keep anchors in README"},
+        ])
+
+        assert requirements == [
+            {"kind": "command", "command": "python -m pytest -q"},
+            {"kind": "command", "command": "node --check app.js"},
+            {"kind": "note", "message": "keep anchors in README"},
+        ]
+
+    def test_looks_like_shell_command_rejects_natural_language_python_and_pytest_phrases(self) -> None:
+        assert looks_like_shell_command("python -m pytest -q")
+        assert looks_like_shell_command("python -m py_compile blog_models.py")
+        assert not looks_like_shell_command("Python backend with close equivalents of models")
+        assert not looks_like_shell_command("pytest tmp_path databases remain isolated")
+        assert not looks_like_shell_command("python -m py_compile for the backend Python modules")
+
+    def test_goal_contract_extracts_commands_without_swallowing_following_sentences(self) -> None:
+        provider = MockProvider(response="[]")
+        decomposer = TaskDecomposer(provider)
+
+        commands = decomposer._extract_explicit_commands(
+            "Update README.md with architecture. "
+            "You must run python -m pytest -q. "
+            "Implement a static frontend with index.html, app.js, and styles.css. "
+            "Then run node --check app.js."
+        )
+
+        assert commands == [
+            "python -m pytest -q",
+            "node --check app.js",
+        ]
 
 
 # ---------------------------------------------------------------------------

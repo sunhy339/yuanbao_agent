@@ -48,6 +48,9 @@ DEFAULT_CONFIG = {
         "baseUrl": "https://api.openai.com/v1",
         "model": "gpt-5-codex",
         "defaultModel": "gpt-5-codex",
+        "childModelMap": {
+            "gpt-5.4": "gpt-5.4-mini",
+        },
         "fallbackModel": "claude-sonnet",
         "apiKeyEnvVarName": "LOCAL_AGENT_PROVIDER_API_KEY",
         "temperature": 0.2,
@@ -64,6 +67,9 @@ DEFAULT_CONFIG = {
                 "baseUrl": "https://api.openai.com/v1",
                 "model": "gpt-5-codex",
                 "defaultModel": "gpt-5-codex",
+                "childModelMap": {
+                    "gpt-5.4": "gpt-5.4-mini",
+                },
                 "fallbackModel": "claude-sonnet",
                 "apiKeyEnvVarName": "LOCAL_AGENT_PROVIDER_API_KEY",
                 "temperature": 0.2,

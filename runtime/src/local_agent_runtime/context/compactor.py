@@ -83,10 +83,12 @@ class ContextCompactor:
         *,
         provider: _CanGenerate | None = None,
         recent_turns: int = _RECENT_TURN_DEFAULT,
+        provider_context: dict[str, Any] | None = None,
     ) -> None:
         self._store = store
         self._provider = provider
         self._recent_turns = recent_turns
+        self._provider_context = provider_context or {}
 
     # -- public API --
 
@@ -375,7 +377,14 @@ class ContextCompactor:
                     boundary = index
                     break
             if boundary is None:
-                return repaired_history, repaired_recents
+                repaired_recents = [
+                    message
+                    for message in repaired_recents
+                    if self._tool_result_id(message) not in orphan_set
+                ]
+                if not repaired_recents:
+                    return repaired_history, repaired_recents
+                continue
 
             repaired_recents = repaired_history[boundary:] + repaired_recents
             repaired_history = repaired_history[:boundary]
@@ -426,7 +435,13 @@ class ContextCompactor:
                     "Preserve key decisions, facts, and any code references.\n\n"
                     f"{history_text[:8000]}"
                 )
-                result = self._provider.generate(prompt, {})
+                result = self._provider.generate(
+                    prompt,
+                    {
+                        **self._provider_context,
+                        "messages": [{"role": "user", "content": prompt}],
+                    },
+                )
                 raw = result.get("message", "") or result.get("content", "")
                 if raw:
                     max_chars = max(token_budget * 4, 500) if token_budget > 0 else _SUMMARY_MAX_CHARS
@@ -758,7 +773,13 @@ class ContextCompactor:
             f"Recent context preview:\n{preview}"
         )
         try:
-            result = self._provider.generate(prompt, {})
+            result = self._provider.generate(
+                prompt,
+                {
+                    **self._provider_context,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
             raw = result.get("message") or result.get("content") or ""
             match_start = raw.find("{")
             match_end = raw.rfind("}")

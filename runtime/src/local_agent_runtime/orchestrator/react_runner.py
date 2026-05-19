@@ -285,6 +285,7 @@ class ReactRunnerMixin:
                     tool_call_count=0,
                     turn_decision="continue",
                     thought_summary="Provider preflight recommended bounded task splitting before the model call.",
+                    response_transport="provider_preflight_split",
                 )
                 return {
                     "status": "provider_preflight_split",
@@ -372,7 +373,8 @@ class ReactRunnerMixin:
                 allow_plain_message_final=react_started,
             )
             # --- ProviderTurn: mark completed with turn decision ---
-            raw_usage = response.get("usage") or {}
+            raw = response.get("raw") if isinstance(response.get("raw"), dict) else {}
+            raw_usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else response.get("usage") or {}
             self._store.complete_provider_turn(
                 turn_id=provider_turn["id"],
                 finish_reason=response.get("finish_reason"),
@@ -382,6 +384,7 @@ class ReactRunnerMixin:
                 turn_decision=turn_result.decision.value,
                 thought_summary=turn_result.thought_summary[:500] if turn_result.thought_summary else None,
                 failure_recovery=provider_context.get("_provider_failure_recovery_payload"),
+                response_transport=str(response.get("_response_transport") or "non_stream"),
             )
             self._fire_hooks("after_provider_turn", session_id, task, extra_context={"providerTurnId": provider_turn["id"], "turnDecision": turn_result.decision.value, "step": steps})
             # --- Publish agent.decision.react_turn event ---
@@ -531,7 +534,8 @@ class ReactRunnerMixin:
                             f"{self._tool_failure_summary(tool_spec, tool_result['result'])}"
                         )
                     continue
-                self._advance_after_tool(session_id=session_id, task=task, tool_spec=tool_spec)
+                if not self._tool_failed(tool_spec["name"], tool_result["result"]):
+                    self._advance_after_tool(session_id=session_id, task=task, tool_spec=tool_spec)
 
             # After all tool calls in this step, check for cooperative pause
             task = self._store.get_task({"taskId": task["id"]})["task"]
@@ -1098,12 +1102,43 @@ class ReactRunnerMixin:
         return self._autonomy_profile_int(context, "maxParallelSubtasks") or 4
 
     def _child_subtask_timeout_ms(self, context: dict[str, Any]) -> int | None:
+        routing = context.get("routing") if isinstance(context, dict) else {}
+        workflow = routing.get("mainWorkflow") if isinstance(routing, dict) else {}
+        budget = workflow.get("budget") if isinstance(workflow, dict) else {}
+        if isinstance(budget, dict):
+            for key in ("childTaskTimeoutMs", "childTimeoutMs"):
+                raw_budget_timeout = budget.get(key)
+                try:
+                    if raw_budget_timeout is not None:
+                        return max(1000, int(raw_budget_timeout))
+                except (TypeError, ValueError):
+                    continue
+        profile_timeout = (
+            self._autonomy_profile_int(context, "childTaskTimeoutMs")
+            or self._autonomy_profile_int(context, "childTimeoutMs")
+            or self._autonomy_profile_int(context, "subtaskTimeoutMs")
+        )
+        if profile_timeout is not None:
+            return profile_timeout
+        policy_timeout = self._policy_timeout_ms(
+            context,
+            "childTaskTimeoutMs",
+            "childTimeoutMs",
+            "subtaskTimeoutMs",
+        )
+        if policy_timeout is not None:
+            return policy_timeout
         profile_timeout = self._autonomy_profile_int(context, "timeoutMs")
         if profile_timeout is not None:
             return profile_timeout
+        return self._policy_timeout_ms(context, "commandTimeoutMs")
+
+    def _policy_timeout_ms(self, context: dict[str, Any], *keys: str) -> int | None:
         config = context.get("config") if isinstance(context, dict) else {}
         policy = config.get("policy") if isinstance(config, dict) else {}
-        raw_value = policy.get("commandTimeoutMs") if isinstance(policy, dict) else None
+        if not isinstance(policy, dict):
+            return None
+        raw_value = next((policy.get(key) for key in keys if policy.get(key) is not None), None)
         try:
             return max(1000, int(raw_value)) if raw_value is not None else None
         except (TypeError, ValueError):
@@ -1243,10 +1278,11 @@ class ReactRunnerMixin:
         return updated_context
 
     def _advance_after_tool(self, session_id: str, task: dict[str, Any], tool_spec: dict[str, Any]) -> None:
+        next_step_id = self._next_plan_step_id(task.get("plan") or [], tool_spec["plan_step_id"])
         task["plan"] = self._planner.advance(
             task.get("plan") or [],
             tool_spec["plan_step_id"],
-            next_step_id="summarize-findings",
+            next_step_id=next_step_id,
         )
         updated_task = self._store.update_task(
             task_id=task["id"],
@@ -1293,7 +1329,12 @@ class ReactRunnerMixin:
             task["plan"] = self._planner.advance(
                 task["plan"],
                 tool_spec["plan_step_id"],
-                next_step_id=self._next_step_id(tool_sequence, index),
+                next_step_id=self._next_minimal_loop_step_id(
+                    task["plan"],
+                    tool_sequence,
+                    current_index=index,
+                    completed_step_id=tool_spec["plan_step_id"],
+                ),
             )
             updated_task = self._store.update_task(
                 task_id=task["id"],
@@ -1319,11 +1360,15 @@ class ReactRunnerMixin:
                 )
             )
 
-        task["plan"] = self._planner.advance(
-            task["plan"],
-            "search-relevant-files",
-            next_step_id="summarize-findings",
-        )
+        final_completed_step_id = self._last_completed_minimal_step_id(tool_sequence, tool_results)
+        if final_completed_step_id is not None:
+            next_step_id = self._next_plan_step_id(task["plan"], final_completed_step_id)
+            if next_step_id is not None:
+                task["plan"] = self._planner.advance(
+                    task["plan"],
+                    final_completed_step_id,
+                    next_step_id=next_step_id,
+                )
         updated_task = self._store.update_task(
             task_id=task["id"],
             status=task["status"],
@@ -1374,3 +1419,48 @@ class ReactRunnerMixin:
         if current_index + 1 >= len(tool_sequence):
             return "summarize-findings"
         return tool_sequence[current_index + 1]["plan_step_id"]
+
+    def _next_minimal_loop_step_id(
+        self,
+        plan: list[dict[str, Any]],
+        tool_sequence: list[dict[str, Any]],
+        *,
+        current_index: int,
+        completed_step_id: str,
+    ) -> str | None:
+        next_plan_step = self._next_plan_step_id(plan, completed_step_id)
+        if next_plan_step is not None:
+            return next_plan_step
+        return self._next_step_id(tool_sequence, current_index)
+
+    def _last_completed_minimal_step_id(
+        self,
+        tool_sequence: list[dict[str, Any]],
+        tool_results: list[dict[str, Any]],
+    ) -> str | None:
+        completed_step_ids = [
+            spec.get("plan_step_id")
+            for spec in tool_sequence
+            if isinstance(spec.get("plan_step_id"), str)
+        ]
+        if tool_results:
+            maybe_follow_up = self._plan_step_for_tool(tool_results[-1]["name"])
+            if isinstance(maybe_follow_up, str):
+                completed_step_ids.append(maybe_follow_up)
+        for step_id in reversed(completed_step_ids):
+            if isinstance(step_id, str) and step_id:
+                return step_id
+        return None
+
+    def _next_plan_step_id(self, plan: list[dict[str, Any]], completed_step_id: str) -> str | None:
+        seen_completed = False
+        for step in plan:
+            step_id = step.get("id")
+            if step_id == completed_step_id:
+                seen_completed = True
+                continue
+            if not seen_completed:
+                continue
+            if step.get("status") != "completed":
+                return step_id if isinstance(step_id, str) else None
+        return None

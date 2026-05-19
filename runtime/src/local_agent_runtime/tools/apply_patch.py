@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from ._shared import (
+    approval_by_id_or_none,
     apply_unified_diff_to_file,
     build_patch_request,
     build_patch_request_payload,
@@ -80,8 +81,8 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
         approval: dict[str, Any] | None = None
         patch: dict[str, Any] | None = None
 
-        if approval_id is not None:
-            approval = store.get_approval({"approvalId": approval_id})["approval"]
+        approval = approval_by_id_or_none(store, approval_id)
+        if approval is not None:
             if approval["taskId"] != task_id:
                 raise ValueError("Approval does not belong to the active task")
             if approval["kind"] != "apply_patch":

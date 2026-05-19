@@ -72,6 +72,10 @@ class SubagentService:
             cancellation=self._optional_object(params, "cancellation"),
             budget=self._budget_with_child_tool_allowlist(params),
             profile=profile,
+            model=(
+                self._optional_string(params, "model")
+                or self._optional_string(params, "childModel")
+            ),
         )
         result = self._worker_runner.run_child_task(request)
         # P0.6: Annotate result with planning mode (may have been overridden by fallback)

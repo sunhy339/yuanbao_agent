@@ -33,6 +33,24 @@ class TestHashPrompt:
         h = LLMCache.hash_prompt([{"role": "user", "content": "test"}])
         assert isinstance(h, str) and len(h) == 64
 
+    def test_metadata_ignored_in_hash(self) -> None:
+        msg_clean = {"role": "user", "content": "hello", "name": "user1"}
+        msg_with_metadata = {
+            "role": "user",
+            "content": "hello",
+            "name": "user1",
+            "id": "msg_abc123",
+            "sessionId": "sess_xyz",
+            "createdAt": 1715000000000,
+            "updatedAt": 1715000000100,
+            "createdSeq": 42,
+            "taskId": "task_999",
+            "clientMessageId": "client_abc",
+        }
+        h1 = LLMCache.hash_prompt([msg_clean], model="gpt-4")
+        h2 = LLMCache.hash_prompt([msg_with_metadata], model="gpt-4")
+        assert h1 == h2
+
 
 class TestCacheHitMiss:
     def test_put_then_get(self, tmp_path: Path) -> None:

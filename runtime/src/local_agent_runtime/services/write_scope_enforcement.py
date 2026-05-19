@@ -24,6 +24,14 @@ class WriteScopeEnforcer:
         re.IGNORECASE,
     )
     _TOKEN_RE = re.compile(r'''"[^"]+"|'[^']+'|[^\s,]+''')
+    _READ_ONLY_COMMAND_FAMILIES = frozenset({
+        "pytest",
+        "py_compile",
+        "compileall",
+        "node_check",
+        "file_listing",
+        "code_search",
+    })
 
     def __init__(self, store: Any) -> None:
         self._store = store
@@ -111,7 +119,8 @@ class WriteScopeEnforcer:
         """
         scope = self.get_task_write_scope(task_id)
         if not scope and command_scope is None:
-            # No scope restriction, no target — allow
+            return []
+        if self._is_read_only_command(command):
             return []
         command_targets = self._command_scope_targets(command)
         if scope and command_targets:
@@ -134,6 +143,42 @@ class WriteScopeEnforcer:
         if scope and command_scope is None:
             return ["command scope is required for tasks with declared write scopes"]
         return []
+
+    def _is_read_only_command(self, command: str | None) -> bool:
+        family = self._command_family(command)
+        return family in self._READ_ONLY_COMMAND_FAMILIES
+
+    def _command_family(self, command: str | None) -> str | None:
+        text = str(command or "").strip()
+        if not text:
+            return None
+        normalized = text.replace("\\", "/")
+        tokens = self._command_tokens(normalized)
+        if not tokens:
+            return None
+        command_tokens = self._meaningful_command_tokens(tokens)
+        if not command_tokens:
+            return None
+        lowered = [token.casefold() for token in command_tokens]
+        executable = self._command_executable_name(command_tokens[0])
+        if executable == "pytest":
+            return "pytest"
+        if executable == "node" and "--check" in lowered[1:]:
+            return "node_check"
+        if executable in {"get-childitem", "ls", "dir"}:
+            return "file_listing"
+        if executable in {"get-content", "cat", "type"}:
+            return "file_read"
+        if executable in {"rg", "ripgrep", "findstr"}:
+            return "code_search"
+        if executable in {"python", "py"} and len(lowered) >= 3 and lowered[1] == "-m":
+            if lowered[2] == "pytest":
+                return "pytest"
+            if lowered[2] == "py_compile":
+                return "py_compile"
+            if lowered[2] == "compileall":
+                return "compileall"
+        return None
 
     def _command_scope_targets(self, command: str | None) -> list[str]:
         text = str(command or "").strip()

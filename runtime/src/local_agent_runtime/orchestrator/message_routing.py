@@ -222,11 +222,21 @@ class MessageRoutingMixin:
         provider = config.get("provider") if isinstance(config.get("provider"), dict) else {}
         max_steps = self._safe_int(routing.get("max_steps"), autonomy_profile.get("maxSteps"), policy.get("maxTaskSteps"), 20)
         max_context_tokens = self._safe_int(provider.get("maxContextTokens"), 256000)
+        child_task_timeout_ms = self._safe_int(
+            autonomy_profile.get("childTaskTimeoutMs"),
+            autonomy_profile.get("childTimeoutMs"),
+            policy.get("childTaskTimeoutMs"),
+            policy.get("childTimeoutMs"),
+            autonomy_profile.get("timeoutMs"),
+            policy.get("commandTimeoutMs"),
+            600000,
+        )
         return {
             "maxSteps": max_steps,
             "maxParallelSubtasks": self._safe_int(autonomy_profile.get("maxParallelSubtasks"), 4),
             "retryLimit": self._safe_int(autonomy_profile.get("retryLimit"), 0),
             "taskTimeoutMs": self._safe_int(autonomy_profile.get("timeoutMs"), policy.get("commandTimeoutMs"), 600000),
+            "childTaskTimeoutMs": child_task_timeout_ms,
             "commandTimeoutMs": self._safe_int(policy.get("commandTimeoutMs"), 600000),
             "providerTimeoutSeconds": self._safe_int(provider.get("timeout"), 30),
             "maxContextTokens": max_context_tokens,

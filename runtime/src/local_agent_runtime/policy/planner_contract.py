@@ -9,6 +9,7 @@ scopes, and risk levels before any child task is created.
 
 from __future__ import annotations
 
+import fnmatch
 import posixpath
 import re
 from typing import Any
@@ -392,6 +393,8 @@ def _is_invalid_relative_path(path: str) -> bool:
 
 
 def _path_contains(scope: str, target: str) -> bool:
+    if any(ch in scope for ch in "*?[]"):
+        return fnmatch.fnmatch(target, scope)
     if scope == ".":
         return not _is_invalid_relative_path(target)
     return target == scope or target.startswith(scope.rstrip("/") + "/")

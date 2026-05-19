@@ -12,6 +12,7 @@ from local_agent_runtime.services.worker_environment import (
     normalize_child_tool_allowlist,
     resolve_tool_alias,
 )
+from local_agent_runtime.services.runtime_dependencies import resolve_node_executable
 
 
 def test_build_child_worker_env_keeps_only_runtime_provider_and_platform_vars(tmp_path: Path) -> None:
@@ -116,6 +117,17 @@ def test_build_child_worker_env_exposes_configured_node_executable(tmp_path: Pat
 
     assert env["LOCAL_AGENT_NODE_EXECUTABLE"] == str(node_executable)
     assert env["PATH"].split(os.pathsep)[0] == str(node_dir)
+
+
+def test_resolve_node_executable_prefers_path_entry(tmp_path: Path) -> None:
+    node_dir = tmp_path / "node" / "bin"
+    node_dir.mkdir(parents=True)
+    node_executable = node_dir / ("node.exe" if os.name == "nt" else "node")
+    node_executable.write_text("", encoding="utf-8")
+
+    resolved = resolve_node_executable({"PATH": str(node_dir)})
+
+    assert Path(resolved) == node_executable
 
 
 def test_build_child_worker_env_rejects_missing_db_path(tmp_path: Path) -> None:

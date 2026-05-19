@@ -127,6 +127,25 @@ class TestLLMMode:
         # Falls back to concat
         assert "A" in summary
 
+    def test_llm_synthesis_forwards_provider_context(self) -> None:
+        provider = MockProvider(response="Merged result")
+        synth = ResultSynthesizer(provider=provider)
+        results = [
+            {"title": "A", "result": "Did A"},
+            {"title": "B", "result": "Did B"},
+        ]
+
+        summary = synth.synthesize(
+            "goal",
+            results,
+            mode="llm",
+            provider_context={"config": {"provider": {"streamingEnabled": True, "model": "gpt-5.4"}}},
+        )
+
+        assert summary == "Merged result"
+        assert provider.calls[0]["context"]["config"]["provider"]["streamingEnabled"] is True
+        assert provider.calls[0]["context"]["config"]["provider"]["model"] == "gpt-5.4"
+
 
 # ---------------------------------------------------------------------------
 # Dedup

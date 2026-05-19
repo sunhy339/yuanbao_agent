@@ -93,6 +93,8 @@ class TestSupervisorApproved:
         assert len(mock_sub.calls) == 2  # one per subtask, no retries
         assert mock_sub.calls[0]["planningPrompt"] == "Do A"
         assert mock_sub.calls[1]["planningPrompt"] == "Do B"
+        assert "[Parent task]" not in mock_sub.calls[0]["prompt"]
+        assert "Subtask: Step A" in mock_sub.calls[0]["prompt"]
 
 
 class TestSupervisorRetry:

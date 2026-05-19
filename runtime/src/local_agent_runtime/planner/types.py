@@ -70,7 +70,7 @@ def normalize_subtask_verification_requirements(value: object) -> list[dict[str,
         lowered = command.casefold()
         if not command or not lowered.startswith(_COMMAND_PREFIXES):
             continue
-        if not _looks_like_shell_command(command):
+        if not looks_like_shell_command(command):
             continue
         cleaned = dict(item)
         cleaned["kind"] = "command"
@@ -103,8 +103,21 @@ def normalize_subtask_profile_contract(value: object) -> dict[str, object] | Non
     return normalized
 
 
-def _looks_like_shell_command(command: str) -> bool:
-    lowered = command.casefold()
+def _looks_like_path_token(token: str) -> bool:
+    normalized = token.strip().strip("`\"'(),")
+    if not normalized:
+        return False
+    return (
+        normalized.endswith((".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".json", ".html", ".css", ".md"))
+        or "/" in normalized
+        or "\\" in normalized
+        or "*" in normalized
+        or normalized.startswith("test_")
+        or normalized.startswith("tests")
+    )
+
+
+def looks_like_shell_command(command: str) -> bool:
     if any(token in command for token in _COMMAND_STOP_TOKENS):
         return False
     tokens = [token for token in command.split() if token]
@@ -113,14 +126,30 @@ def _looks_like_shell_command(command: str) -> bool:
     head = tokens[0].casefold()
     tail = tokens[1:]
     has_option = any(token.startswith("-") for token in tail)
-    has_path = any(
-        token.endswith((".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".json", ".html", ".css", ".md"))
-        or "/" in token
-        or "\\" in token
-        for token in tail
-    )
+    has_path = any(_looks_like_path_token(token) for token in tail)
     if head in {"python", "py"}:
-        return has_option or has_path or any(token in {"-m", "-c"} for token in tail)
+        if "-c" in tail:
+            return True
+        if "-m" in tail:
+            module_index = tail.index("-m") + 1
+            if module_index >= len(tail):
+                return False
+            module = tail[module_index].casefold()
+            remainder = tail[module_index + 1 :]
+            if not module:
+                return False
+            if module == "pytest":
+                return any(token.startswith("-") for token in remainder) or any(
+                    _looks_like_path_token(token) or token in {"tests", "test", "::"}
+                    for token in remainder
+                )
+            if module in {"py_compile", "compileall"}:
+                return any(_looks_like_path_token(token) for token in remainder)
+            return bool(remainder) and (
+                any(token.startswith("-") for token in remainder)
+                or any(_looks_like_path_token(token) for token in remainder)
+            )
+        return has_option or has_path
     if head == "pytest":
         return has_option or has_path or any(token in {"tests", "test", "::"} for token in tail)
     if head == "node":
@@ -134,11 +163,38 @@ def build_subtask_prompt(
     subtask: "Subtask",
     prompt_override: str | None = None,
     completed_context: dict[str, str] | None = None,
+    compact: bool = False,
 ) -> str:
     prompt = (prompt_override or subtask.description).strip()
     parent = str(parent_goal or "").strip()
     if not parent:
         return prompt
+    if compact:
+        lines = [
+            f"Subtask: {subtask.title}",
+            f"Role: {normalize_subtask_agent_type(subtask.agent_type)}",
+            f"Instructions: {prompt}",
+        ]
+        if subtask.owned_scope:
+            lines.append(f"Owned scope: {', '.join(str(item) for item in subtask.owned_scope)}")
+        if subtask.expected_artifacts:
+            lines.append(f"Expected artifacts: {subtask.expected_artifacts}")
+        if subtask.verification_requirements:
+            lines.append(f"Verification requirements: {subtask.verification_requirements}")
+        if completed_context:
+            lines.append("Completed sibling context:")
+            for key, value in completed_context.items():
+                if str(value).strip():
+                    lines.append(f"- {key}: {str(value).strip()[:600]}")
+        lines.extend(
+            [
+                "Execution contract:",
+                "- Stay inside your owned scope and produce only the artifacts this subtask calls for.",
+                "- Run the verification commands this subtask requires when they are relevant.",
+                "- If blocked, report the exact blocked artifact or verification instead of claiming success.",
+            ]
+        )
+        return "\n".join(lines)
 
     lines = [
         "[Parent task]",

@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from ._shared import (
+    approval_by_id_or_none,
     current_command_policy,
     require_workspace_root,
     resolve_workspace_path,
@@ -45,8 +46,8 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
             "overwrite": bool(overwrite),
         }
 
-        if approval_id is not None:
-            approval = store.get_approval({"approvalId": approval_id})["approval"]
+        approval = approval_by_id_or_none(store, approval_id)
+        if approval is not None:
             if approval["taskId"] != task_id:
                 raise ValueError("Approval does not belong to the active task")
             if approval["kind"] != "write_file":

@@ -28,7 +28,7 @@ LLM 建议的命令、工具、provider 切换、外部 webhook 或后续自动�
 
 | 主题 | 代码位置 | 当前事实 |
 | --- | --- | --- |
-| RPC handler | `runtime/src/local_agent_runtime/rpc/server.py` | `JsonRpcServer` 当前注册 90 个 handler。 |
+| RPC handler | `runtime/src/local_agent_runtime/rpc/server.py` | `JsonRpcServer` 当前注册 111 个 handler。 |
 | 默认配置 | `runtime/src/local_agent_runtime/store/sqlite_store.py` | 默认 provider mode 是 `mock`，默认 `maxContextTokens` 是 256000，默认 autonomy profile 是 `balanced`。 |
 | 前端配置模型 | `shared/src/config.ts`, `app/src/lib/runtimeClient.ts` | 前后端都已有 `autonomy` 与 `agentSoul` 配置结构。 |
 | 上下文构建 | `runtime/src/local_agent_runtime/context/builder.py` | 会记录 `autonomy_profile`、`agent_soul_profile`、`prompt_layers`、预算统计。 |
@@ -43,11 +43,11 @@ LLM 建议的命令、工具、provider 切换、外部 webhook 或后续自动�
 
 | 原文档 | 当前判断 | 需要校正的点 |
 | --- | --- | --- |
-| `ARCHITECTURE_OVERVIEW.md` | 主体正确 | RPC 方法数不是 120+，当前 `JsonRpcServer` 注册 90 个 handler；工具数应按 17 个内置工具口径描述。 |
+| `ARCHITECTURE_OVERVIEW.md` | 主体正确 | RPC 方法数不是 120+，当前 `JsonRpcServer` 注册 111 个 handler；工具数应按 17 个内置工具口径描述。 |
 | `HOW_TO_RUN.md` | 主体正确 | 启动链路正确：React/Vite + Tauri 2 + Python runtime；测试命令可保留，但建议注明按前端/运行时分别执行。 |
 | `TOOLS_MCP.md` | 主体正确 | 文档标题写 16 个内置工具，但当前代码实际是 17 个：13 个基础工具 + 2 个 memory 工具 + 2 个 scratchpad 工具。 |
 | `DAG_PLANNING.md` | 主体正确 | DAG 独立节点可并行；Supervisor/Swarm 更偏受控编排，不应误解为所有拆分任务都会天然并行。 |
-| `API_EVENTS.md` | 主体正确 | RPC handler 数需要从 120+ 改为 90；事件通道和 `events.after` 口径正确。 |
+| `API_EVENTS.md` | 主体正确 | RPC handler 数需要从 120+ 改为 111；事件通道和 `events.after` 口径正确。 |
 | `CONTEXT_MEMORY.md` | 需要明显更新 | 记忆系统不是 `MEMORY.md` frontmatter，而是 SQLite 结构化 memory；ReAct 压缩阈值是 256000（与上下文窗口一致），采用三档渐进压缩策略。 |
 | `AGENT_EXECUTION_FLOW.md` | 主体正确 | `maxSteps` 是上限，不是必跑次数；无 final/无工具时不一定 fallback，只有存在 deterministic fallback provider 时才 fallback，否则任务失败。 |
 
@@ -135,7 +135,7 @@ Tauri 启动 Python runtime 时，会读取 `LOCAL_AGENT_PYTHON`，默认使用 
 
 ## 4. RPC 与事件系统
 
-当前 `runtime/src/local_agent_runtime/rpc/server.py` 中，`JsonRpcServer` 注册了 90 个 JSON-RPC handler。主要分组如下：
+当前 `runtime/src/local_agent_runtime/rpc/server.py` 中，`JsonRpcServer` 注册了 111 个 JSON-RPC handler。主要分组如下：
 
 | 分组 | 代表方法 |
 | --- | --- |
@@ -797,7 +797,7 @@ Supervisor/Swarm 更适合多 agent 协作，但应满足：
 
 | 问题 | 影响 | 建议 |
 | --- | --- | --- |
-| 原文档 RPC 数量写 120+ | 会误导 API 覆盖判断 | 改为“当前 90 个 handler，以代码为准”。 |
+| 原文档 RPC 数量写 120+ | 会误导 API 覆盖判断 | 改为“当前 111 个 handler，以代码为准”。 |
 | 原文档工具数量写 16 | 与当前 registry 不一致 | 改为 17，并列出 memory/scratchpad 工具。 |
 | 原文档 memory 描述为 `MEMORY.md` | 与 SQLite 结构化 memory 不一致 | 改为 MemoryStore/MemoryManager/MemoryEntry 口径。 |
 | 原文档压缩阈值有 6000 的旧口径 | 与当前配置不一致 | 改为默认上下文 256000，三档渐进压缩（<50K/50K-220K/≥220K）。 |
@@ -1611,8 +1611,9 @@ Live run result:
 | `YUANBAO_SMOKE_PROVIDER_*` override, model `gpt-5.5`, `apiFormat=openai-responses`; `python runtime\smoke_runs\single_model_incident_rules_smoke.py` | failed after long-flow execution | Provider probe succeeded through `/v1/responses` with sample `ok`. Runtime exercised `message.send`, 14 provider turns, 6 collaboration tasks, 77 compactions, 20 memory recalls, and proposal records for routing, provider preflight, tool recovery, product surface, and completion. Coverage failed because expected incident modules/tests were missing, direct `pytest` found no tests, and completion evidence stayed `summary_only`. This exposed an original runtime bug: no-approval write tasks could still be marked `completed` with insufficient evidence. Fixed in the follow-up by failing write-oriented no-approval completions without verification, preserving completion evidence on the failed task, and making malformed provider JSON responses retryable before falling back. |
 | `YUANBAO_SMOKE_PROVIDER_*` override, model `gpt-5.5`, `apiFormat=openai-responses`; rerun after strict completion evidence fix | failed during planning | Provider probe succeeded through `/v1/responses`, then the root `plan_swarm` task timed out in LLM decomposition after 180s. Runtime reached `workspace.open`, `session.created`, `memory.seeded`, and `message.send`, but recorded 0 provider turns / 0 child tasks / 0 context snapshots because decomposition failed before the ReAct loop. Fixed by adding deterministic decomposition fallback: provider decomposition timeout now yields an inspect -> implement -> verify plan for write/verification goals instead of failing the whole task. |
 | Same explicit `gpt-5.5` override; rerun after decomposition fallback | manually stopped after evidence collection | The fallback moved the workflow past planning: runtime created provider turns, context snapshots, child collaboration tasks, and wrote `incident_models.py`. The run exposed the next issue: the system prompt still told workers to write only through `apply_patch`, so the model attempted a huge `apply_patch` for a new file; validation failed, recovery continued, and the first worker eventually hit the 900s child timeout. Fixed prompt/tool guidance to allow `apply_patch` or `write_file`, prefer `write_file` for new/full files, and classify `apply_patch` validation failures with a `write_file` fallback hint. |
+| Same explicit `gpt-5.5` override with `YUANBAO_SMOKE_PROVIDER_TIMEOUT=45`, `YUANBAO_SMOKE_CHILD_TIMEOUT_MS=120000`, `YUANBAO_SMOKE_MAX_TASK_STEPS=18` | manually stopped after timeout evidence | Main workflow now records `childTaskTimeoutMs` separately from command/root task timeout and planning provider context respects configured short provider timeouts instead of forcing 180s. The complex Incident Rules Engine run moved through routing, planning, provider turns, child collaboration tasks, file writes, and timeout handling. Evidence: inspect child completed; implementation/review/test children failed at 120s with `CHILD_TASK_TIMEOUT` instead of hanging for 900s; parent continued dispatching later children; workspace produced `incident_models.py` and `tests/test_incident_lifecycle.py`. Next gap: real worker turns are still too slow to reach command verification under a 120s child budget, so follow-up should improve worker prompt/tool batching and timeout-aware partial synthesis. |
 
-Coverage status: the first GLM attempt did not exercise main workflow nodes because provider probe failed before `workspace.open` / `message.send`. The explicit `gpt-5.5` runs now exercise progressively more of the main workflow. The current runtime outcome is stricter and more resilient: a write-oriented task with only summary evidence and no approval path must fail or request review; provider decomposition timeout falls back to deterministic task splitting; and large/new-file writes are guided toward `write_file` instead of oversized patch payloads. The smoke remains open until a real model run produces the required incident modules, tests, command logs, memory/context evidence, and verified completion evidence.
+Coverage status: the first GLM attempt did not exercise main workflow nodes because provider probe failed before `workspace.open` / `message.send`. The explicit `gpt-5.5` runs now exercise progressively more of the main workflow. The current runtime outcome is stricter and more resilient: a write-oriented task with only summary evidence and no approval path must fail or request review; provider decomposition timeout falls back to deterministic task splitting; large/new-file writes are guided toward `write_file` instead of oversized patch payloads; and child task timeout is now a first-class main-workflow budget dimension. The smoke remains open until a real model run produces the required incident modules, tests, command logs, memory/context evidence, and verified completion evidence.
 
 Still open / next implementation queue:
 

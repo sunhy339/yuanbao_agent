@@ -57,7 +57,13 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
             permission_engine=permission_engine,
         )
     )
-    hook_service = HookService(store, event_bus, permission_engine=permission_engine, memory_store=memory_store)
+    hook_service = HookService(
+        store,
+        event_bus,
+        permission_engine=permission_engine,
+        memory_store=memory_store,
+        refresh_permission_engine=True,
+    )
     # WorktreeService requires a git repo root; only create when env var is set.
     worktree_service = None
     repo_root = os.environ.get("LOCAL_AGENT_REPO_ROOT")

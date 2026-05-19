@@ -124,6 +124,7 @@ class SwarmOrchestrator:
                         subtask=subtask,
                         prompt_override=prompt_override,
                         completed_context=results,
+                        compact=True,
                     ),
                     "planningPrompt": prompt_override or subtask.description,
                     "title": subtask.title,

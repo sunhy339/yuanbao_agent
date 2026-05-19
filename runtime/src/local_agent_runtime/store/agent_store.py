@@ -206,6 +206,7 @@ class AgentStoreMixin:
         turn_decision: str | None = None,
         thought_summary: str | None = None,
         failure_recovery: dict[str, Any] | None = None,
+        response_transport: str | None = None,
     ) -> dict[str, Any]:
         now = self.now()
         usage_json = json.dumps(usage, ensure_ascii=False) if usage else None
@@ -220,6 +221,7 @@ class AgentStoreMixin:
                 turn_decision = ?,
                 thought_summary = ?,
                 failure_recovery_json = ?,
+                response_transport = ?,
                 completed_at = ?
             WHERE id = ?
             """,
@@ -231,6 +233,7 @@ class AgentStoreMixin:
                 turn_decision,
                 thought_summary,
                 json.dumps(failure_recovery, ensure_ascii=False, sort_keys=True) if failure_recovery else None,
+                response_transport,
                 now,
                 turn_id,
             ),

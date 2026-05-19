@@ -755,6 +755,7 @@ class ProviderTurnMixin:
             "prompt": goal,
             "context": provider_context,
             "_streamed_content": streamed_content,
+            "_response_transport": "stream",
         }
         if not response["tool_calls"]:
             final_text = response["message"]
@@ -908,6 +909,7 @@ class ProviderTurnMixin:
                 "recoveryRetry": recovery_retry,
             },
         )
+        response["_response_transport"] = "fallback_non_stream" if fallback_from_stream else "non_stream"
         return response
 
     def _provider_failure_recovery_decision(
@@ -1568,4 +1570,19 @@ class ProviderTurnMixin:
         return None
 
     def _has_deterministic_fallback(self) -> bool:
-        return hasattr(self._provider, "choose_tool_sequence") and hasattr(self._provider, "summarize_findings")
+        if not hasattr(self._provider, "choose_tool_sequence") or not hasattr(self._provider, "summarize_findings"):
+            return False
+        config = {}
+        store = getattr(self, "_store", None)
+        if store is not None:
+            try:
+                config = store.get_config({}).get("config", {}) or {}
+            except Exception:
+                config = {}
+        provider_config = config.get("provider") if isinstance(config, dict) else {}
+        if not isinstance(provider_config, dict):
+            provider_config = {}
+        deterministic_fallback = provider_config.get("deterministicFallback")
+        if deterministic_fallback is not None:
+            return bool(deterministic_fallback)
+        return str(provider_config.get("mode") or "").strip().lower() == "mock"

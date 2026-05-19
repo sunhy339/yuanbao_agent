@@ -220,6 +220,7 @@ class SupervisorOrchestrator:
                         parent_goal=parent_goal,
                         subtask=subtask,
                         prompt_override=description,
+                        compact=True,
                     ),
                     "planningPrompt": description,
                     "title": subtask.title,

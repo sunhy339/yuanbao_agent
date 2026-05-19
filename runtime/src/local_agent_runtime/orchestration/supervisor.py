@@ -95,8 +95,13 @@ class SupervisorOrchestrator:
         prior_results: dict[str, str] | None = None,
     ) -> OrchestrationResult:
         """Decompose goal, execute sub-tasks with review, synthesize results."""
+        provider_context = context.get("_provider_context") if isinstance(context.get("_provider_context"), dict) else None
         # Decompose
-        plan = self._decomposer.decompose(goal, context.get("description", ""))
+        plan = self._decomposer.decompose(
+            goal,
+            context.get("description", ""),
+            provider_context=provider_context,
+        )
 
         completed: set[str] = set(completed_ids or ())
         failed: set[str] = set(failed_ids or ())
@@ -145,6 +150,7 @@ class SupervisorOrchestrator:
                 parent_task_id=parent_task_id,
                 parent_goal=goal,
                 child_timeout_ms=child_timeout_ms,
+                provider_context=provider_context,
             )
             review_count += self._last_review_count
 
@@ -172,7 +178,11 @@ class SupervisorOrchestrator:
 
         # Synthesize
         success = len(failed) == 0
-        summary = self._synthesizer.synthesize(goal, subtask_results)
+        summary = self._synthesizer.synthesize(
+            goal,
+            subtask_results,
+            provider_context=provider_context,
+        )
 
         return OrchestrationResult(
             success=success,
@@ -196,6 +206,7 @@ class SupervisorOrchestrator:
         parent_task_id: str,
         parent_goal: str | None = None,
         child_timeout_ms: int | None = None,
+        provider_context: dict[str, Any] | None = None,
     ) -> bool:
         """Execute a sub-task with supervisor review and retry loop."""
         self._last_review_count = 0
@@ -210,14 +221,30 @@ class SupervisorOrchestrator:
                         subtask=subtask,
                         prompt_override=description,
                     ),
+                    "planningPrompt": description,
                     "title": subtask.title,
                     "sessionId": session_id,
                     "taskId": parent_task_id,
                     "agentType": normalize_subtask_agent_type(subtask.agent_type),
                     "childToolAllowlist": child_tool_allowlist_for_agent(subtask.agent_type),
+                    "profile": {
+                        "ownedScope": list(subtask.owned_scope),
+                        "expectedArtifacts": [dict(item) for item in subtask.expected_artifacts],
+                        "verificationRequirements": [dict(item) for item in subtask.verification_requirements],
+                    },
                     **({"timeoutMs": child_timeout_ms} if child_timeout_ms is not None else {}),
                 })
                 result_text = dispatch_result.get("summary") or "Completed"
+                if str(dispatch_result.get("status") or "").strip().lower() == "failed":
+                    error = dispatch_result.get("error") if isinstance(dispatch_result.get("error"), dict) else {}
+                    message = str(
+                        error.get("message")
+                        or dispatch_result.get("summary")
+                        or "Child subtask failed."
+                    ).strip()
+                    subtask.status = "failed"
+                    subtask.result = message
+                    return False
             except Exception as exc:  # noqa: BLE001
                 subtask.status = "failed"
                 subtask.result = str(exc)
@@ -227,6 +254,7 @@ class SupervisorOrchestrator:
             approved, feedback = self._review_result(
                 subtask.title, description, result_text,
                 dispatch_result=dispatch_result,
+                provider_context=provider_context,
             )
             self._last_review_count += 1
 
@@ -258,6 +286,7 @@ class SupervisorOrchestrator:
         self, title: str, description: str, result: str,
         *,
         dispatch_result: dict[str, Any] | None = None,
+        provider_context: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
         """Ask LLM to review a sub-task result. Returns (approved, feedback)."""
         structured_context = self._build_structured_context(dispatch_result or {})
@@ -270,7 +299,10 @@ class SupervisorOrchestrator:
         try:
             response = self._provider.generate(
                 prompt,
-                {"messages": [{"role": "user", "content": prompt}]},
+                {
+                    **(provider_context or {}),
+                    "messages": [{"role": "user", "content": prompt}],
+                },
             )
             message = response.get("message") or ""
             return self._parse_review(message)
@@ -399,6 +431,10 @@ class SupervisorOrchestrator:
         return {
             "id": subtask.id,
             "title": subtask.title,
+            "agentType": subtask.agent_type,
+            "ownedScope": list(subtask.owned_scope),
+            "expectedArtifacts": [dict(item) for item in subtask.expected_artifacts],
+            "verificationRequirements": [dict(item) for item in subtask.verification_requirements],
             "status": subtask.status,
             "result": subtask.result,
         }

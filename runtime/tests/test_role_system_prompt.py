@@ -181,6 +181,45 @@ class TestRoleSystemPrompt:
         task = result["task"]
         assert task["role"] == "worker"
 
+    def test_run_child_task_propagates_failed_completion_status(self, tmp_path: Any, monkeypatch: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        workspace = store.upsert_workspace(str(tmp_path))
+        session = store.create_session(workspace_id=workspace["id"], title="test")
+        event_bus = EventBus()
+        tool_registry = ToolRegistry()
+
+        class DummyProvider:
+            def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+                return {"final_answer": "done"}
+
+        orchestrator = Orchestrator(
+            store=store, event_bus=event_bus,
+            tool_registry=tool_registry, provider=DummyProvider(),
+        )
+
+        monkeypatch.setattr(orchestrator, "_run_react_loop", lambda **_kwargs: {"status": "completed", "summary": "done", "tool_results": []})
+        monkeypatch.setattr(
+            orchestrator,
+            "_complete_task",
+            lambda **_kwargs: {
+                "id": "task_child",
+                "status": "failed",
+                "errorCode": "COMPLETION_EVIDENCE_INSUFFICIENT",
+                "resultSummary": "Completion blocked",
+                "role": "worker",
+            },
+        )
+
+        result = orchestrator.run_child_task({
+            "sessionId": session["id"],
+            "prompt": "Implement frontend assets",
+            "agentType": "worker",
+        })
+
+        assert result["status"] == "failed"
+        assert result["task"]["status"] == "failed"
+        assert result["summary"] == "Completion blocked"
+
     def test_context_policy_advisor_skips_when_context_is_well_under_budget(self, tmp_path: Any) -> None:
         """Context policy advice is only needed near compaction pressure."""
         store = SQLiteStore(str(tmp_path / "test.sqlite3"))
@@ -274,6 +313,7 @@ class TestRoleSystemPrompt:
         assert len(result["messages"]) == 2
         assert "Preferred pytest command" in result["messages"][-1]["content"]
         assert "do not probe python, python3, or py" in result["messages"][-1]["content"]
+        assert "narrowest relevant directory" in result["messages"][-1]["content"]
 
     def test_child_worker_without_run_command_skips_runtime_hints(self, tmp_path: Any) -> None:
         store = SQLiteStore(str(tmp_path / "test.sqlite3"))
@@ -292,3 +332,48 @@ class TestRoleSystemPrompt:
         )
 
         assert result is context
+
+    def test_child_worker_uses_clean_context_without_session_history_by_default(self, tmp_path: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        workspace = store.upsert_workspace(str(tmp_path))
+        session = store.create_session(workspace_id=workspace["id"], title="test")
+        store.create_message(session_id=session["id"], role="user", content="Legacy parent message.")
+        store.create_message(session_id=session["id"], role="assistant", content="Legacy parent reply.")
+        event_bus = EventBus()
+        orchestrator = Orchestrator(
+            store=store,
+            event_bus=event_bus,
+            tool_registry=ToolRegistry(),
+            provider=SimpleNamespace(generate=lambda _prompt, _context: {"final_answer": "done"}),
+        )
+
+        captured_goals: list[str] = []
+
+        def fake_plan(goal: str, context: dict[str, Any]) -> list[dict[str, Any]]:
+            captured_goals.append(goal)
+            user_messages = [msg for msg in context["messages"] if msg.get("role") == "user"]
+            assert len(user_messages) == 1
+            assert "Legacy parent message." not in user_messages[0]["content"]
+            assert "Build backend API only." in user_messages[0]["content"]
+            assert context["_child_clean_context"] is True
+            return []
+
+        orchestrator._planner.plan = fake_plan  # type: ignore[method-assign]
+        orchestrator._run_react_loop = lambda **_kwargs: {"status": "completed", "summary": "done", "tool_results": []}  # type: ignore[method-assign]
+        orchestrator._complete_task = lambda **kwargs: {  # type: ignore[method-assign]
+            "id": "task_child",
+            "status": "completed",
+            "resultSummary": kwargs["summary"],
+            "role": "worker",
+        }
+
+        result = orchestrator.run_child_task({
+            "sessionId": session["id"],
+            "prompt": "[Parent task]\nBuild everything.\n\n[Assigned subtask]\nBuild backend API only.",
+            "planningPrompt": "Build backend API only.",
+            "agentType": "worker",
+            "profile": {"ownedScope": ["blog_api.py"]},
+        })
+
+        assert result["status"] == "completed"
+        assert captured_goals == ["Build backend API only."]

@@ -130,6 +130,25 @@ class TestWriteScopeMetadata:
         meta = task.get("metadata", {})
         assert meta["writeScope"] == ["src/engine/", "src/audio/"]
 
+    def test_descriptive_owned_scope_is_not_treated_as_filesystem_scope(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="verification worker",
+            profile={
+                "name": "Verification Agent",
+                "baseType": "worker",
+                "mission": "run verification commands",
+                "ownedScope": ["verification commands", "file existence checks"],
+            },
+        )
+        assert enforcer.get_task_write_scope(child["id"]) == []
+
     def test_worker_runner_persists_write_scope(self, tmp_path: Path) -> None:
         """WorkerRunner extracts ownedScope from profile and persists writeScope in task metadata."""
         store, ctx = _store_context(tmp_path)
@@ -310,6 +329,128 @@ class TestCommandScopeEnforcement:
         reasons = enforcer.check_command_allowed(child["id"], command_scope="src/engine/build.sh")
         assert len(reasons) == 1
 
+    def test_command_target_out_of_scope_but_command_scope_in_scope_rejected(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="scoped worker",
+            write_scope=["src/ui/"],
+        )
+        # command target is out of scope (src/engine/), but command_scope is in scope (src/ui/)
+        reasons = enforcer.check_command_allowed(
+            child["id"],
+            command_scope="src/ui/",
+            command="cat src/engine/secret.py",
+        )
+        assert len(reasons) == 1
+        assert "outside allowed write scopes" in reasons[0]
+
+    def test_pytest_command_target_in_scope_allows_workspace_cwd(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="scoped worker",
+            write_scope=["tests/"],
+        )
+        reasons = enforcer.check_command_allowed(
+            child["id"],
+            command_scope=".",
+            command='python -m pytest -q tests/test_blog_api.py tests/test_blog_service.py',
+        )
+        assert reasons == []
+
+    def test_absolute_python_executable_pytest_target_in_scope_allows_workspace_cwd(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="scoped worker",
+            write_scope=["tests/"],
+        )
+        reasons = enforcer.check_command_allowed(
+            child["id"],
+            command_scope=".",
+            command='& "C:\\Python314\\python.exe" -m pytest -q tests/test_blog_api.py tests/test_blog_service.py',
+        )
+        assert reasons == []
+
+    def test_absolute_python_executable_py_compile_targets_in_scope(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="backend worker",
+            write_scope=["blog_models.py", "blog_service.py"],
+        )
+        reasons = enforcer.check_command_allowed(
+            child["id"],
+            command_scope=".",
+            command='& "C:\\Python314\\python.exe" -m py_compile blog_models.py blog_service.py',
+        )
+        assert reasons == []
+
+    def test_file_listing_targets_in_scope_allow_workspace_cwd(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="scoped worker",
+            write_scope=["blog_models.py", "blog_storage.py"],
+        )
+        reasons = enforcer.check_command_allowed(
+            child["id"],
+            command_scope=".",
+            command="Get-ChildItem -Name blog_models.py, blog_storage.py",
+        )
+        assert reasons == []
+
+    def test_literal_path_file_listing_targets_in_scope_allow_workspace_cwd(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="scoped worker",
+            write_scope=["blog_models.py", "blog_storage.py"],
+        )
+        reasons = enforcer.check_command_allowed(
+            child["id"],
+            command_scope=".",
+            command="Get-ChildItem -LiteralPath 'blog_models.py','blog_storage.py'",
+        )
+        assert reasons == []
+
     def test_command_no_scope_unrestricted(self, tmp_path: Path) -> None:
         store, ctx = _store_context(tmp_path)
         event_bus = EventBus()
@@ -323,6 +464,31 @@ class TestCommandScopeEnforcement:
             title="unscoped worker",
         )
         reasons = enforcer.check_command_allowed(child["id"])
+        assert reasons == []
+
+    def test_descriptive_worker_scope_does_not_block_workspace_verification_commands(self, tmp_path: Path) -> None:
+        store, ctx = _store_context(tmp_path)
+        event_bus = EventBus()
+        collab = CollaborationService(store, event_bus)
+        enforcer = WriteScopeEnforcer(store)
+
+        child = _create_child_with_scope(
+            store, collab,
+            parent_task_id=ctx["parent_task"]["id"],
+            session_id=ctx["session"]["id"],
+            title="verification worker",
+            profile={
+                "name": "Verification Agent",
+                "baseType": "worker",
+                "mission": "run verification commands",
+                "ownedScope": ["verification commands", "file existence checks"],
+            },
+        )
+        reasons = enforcer.check_command_allowed(
+            child["id"],
+            command_scope=".",
+            command='python -m pytest -q tests/test_blog_api.py tests/test_blog_service.py',
+        )
         assert reasons == []
 
     def test_scoped_command_without_target_rejected(self, tmp_path: Path) -> None:
@@ -597,6 +763,22 @@ class TestWriteScopeToolIntegration:
 
         assert approved["status"] == "written"
         assert target.read_text(encoding="utf-8") == params["content"]
+
+    def test_write_file_ignores_placeholder_approval_id_and_still_requires_real_approval(self, tmp_path: Path) -> None:
+        store, ctx = self._scoped_runtime_task(tmp_path)
+        tools = build_builtin_tools(policy_guard=PolicyGuard(), store=store)
+        params = {
+            "workspaceRoot": str(ctx["workspace_root"]),
+            "taskId": ctx["runtime_task"]["id"],
+            "path": "src/ui/Button.tsx",
+            "content": "export const Button = () => null;\n",
+        }
+
+        result = tools["write_file"]({**params, "approvalId": "auto"})
+
+        assert result["status"] == "approval_required"
+        assert result["approval"]["kind"] == "write_file"
+        assert result["approval"]["taskId"] == ctx["runtime_task"]["id"]
 
     def test_write_file_overwrite_false_rejects_existing_file(self, tmp_path: Path) -> None:
         store, ctx = self._scoped_runtime_task(tmp_path)

@@ -253,13 +253,27 @@ class DAGExecutor:
                     subtask=subtask,
                     completed_context=results,
                 ),
+                "planningPrompt": subtask.description,
                 "title": subtask.title,
                 "sessionId": session_id,
                 "taskId": parent_task_id,
                 "agentType": normalize_subtask_agent_type(subtask.agent_type),
                 "childToolAllowlist": child_tool_allowlist_for_agent(subtask.agent_type),
+                "profile": {
+                    "ownedScope": list(subtask.owned_scope),
+                    "expectedArtifacts": [dict(item) for item in subtask.expected_artifacts],
+                    "verificationRequirements": [dict(item) for item in subtask.verification_requirements],
+                },
                 **({"timeoutMs": child_timeout_ms} if child_timeout_ms is not None else {}),
             })
+            if str(dispatch_result.get("status") or "").strip().lower() == "failed":
+                error = dispatch_result.get("error") if isinstance(dispatch_result.get("error"), dict) else {}
+                message = str(
+                    error.get("message")
+                    or dispatch_result.get("summary")
+                    or "Child subtask failed."
+                ).strip()
+                raise RuntimeError(message)
             with lock:
                 subtask.status = "completed"
                 subtask.result = dispatch_result.get("summary") or "Completed"

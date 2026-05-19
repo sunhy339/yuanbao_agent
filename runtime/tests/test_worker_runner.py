@@ -83,6 +83,69 @@ def test_subagent_service_dispatch_forwards_normalized_request_to_runner() -> No
     assert response["subagent"]["executionMode"] == "inline-skeleton"
 
 
+def test_subagent_service_dispatch_forwards_profile_contract_to_runner() -> None:
+    runner = RecordingRunner()
+    service = SubagentService(object(), object(), runner=runner)
+
+    service.dispatch(
+        {
+            "prompt": "Build the UI slice",
+            "title": "Build UI slice",
+            "profile": {
+                "ownedScope": ["web/index.html", "web/app.js"],
+                "expectedArtifacts": [{"kind": "file", "path": "web/index.html"}],
+                "verificationRequirements": [{"kind": "command", "command": "node --check web/app.js"}],
+            },
+        }
+    )
+
+    assert runner.requests == [
+        ChildTaskRequest(
+            prompt="Build the UI slice",
+            title="Build UI slice",
+            profile={
+                "ownedScope": ["web/index.html", "web/app.js"],
+                "expectedArtifacts": [{"kind": "file", "path": "web/index.html"}],
+                "verificationRequirements": [{"kind": "command", "command": "node --check web/app.js"}],
+            },
+        )
+    ]
+
+
+def test_subagent_service_dispatch_normalizes_profile_aliases_and_planning_prompt() -> None:
+    runner = RecordingRunner()
+    service = SubagentService(object(), object(), runner=runner)
+
+    service.dispatch(
+        {
+            "prompt": "Implement backend tests",
+            "planningPrompt": "Author backend pytest coverage only.",
+            "profile": {
+                "owned_scope": ["tests/"],
+                "expected_artifacts": [{"kind": "file", "path": "tests/test_blog_api.py"}],
+                "verification_requirements": [
+                    {"kind": "command", "command": "python -m pytest -q tests/test_blog_api.py"}
+                ],
+            },
+        }
+    )
+
+    assert runner.requests == [
+        ChildTaskRequest(
+            prompt="Implement backend tests",
+            title="Implement backend tests",
+            planning_prompt="Author backend pytest coverage only.",
+            profile={
+                "ownedScope": ["tests/"],
+                "expectedArtifacts": [{"kind": "file", "path": "tests/test_blog_api.py"}],
+                "verificationRequirements": [
+                    {"kind": "command", "command": "python -m pytest -q tests/test_blog_api.py"}
+                ],
+            },
+        )
+    ]
+
+
 def test_subagent_service_dispatch_accepts_prompt_only() -> None:
     runner = RecordingRunner()
     service = SubagentService(object(), object(), runner=runner)
@@ -170,6 +233,39 @@ def test_worker_runner_uses_injected_executor_and_completes_child_task(tmp_path:
         assert worker["status"] == "idle"
         assert worker["currentTaskId"] is None
         assert response["message"]["body"] == "handled executor boundary"
+    finally:
+        store.close()
+
+
+def test_worker_runner_marks_collaboration_failed_when_executor_returns_failed_status(tmp_path: Path) -> None:
+    def executor(_context: Any) -> dict[str, Any]:
+        return {
+            "status": "failed",
+            "summary": "Completion blocked by child runtime.",
+            "executionMode": "test-executor",
+            "result": {"runtimeTaskStatus": "failed"},
+            "payload": {},
+        }
+
+    store, runner, records = _runner_context(tmp_path, executor=executor)
+    try:
+        response = runner.run_child_task(
+            ChildTaskRequest(
+                prompt="frontend scope",
+                title="Frontend scope",
+                agent_type="worker",
+                session_id=records["session"]["id"],
+                parent_runtime_task_id=records["parent_task"]["id"],
+            )
+        )
+
+        task = store.get_collaboration_task({"taskId": response["childTaskId"]})["task"]
+        worker = store.get_agent_worker({"workerId": response["workerId"]})["worker"]
+
+        assert response["status"] == "failed"
+        assert task["status"] == "failed"
+        assert worker["status"] == "failed"
+        assert response["summary"] == "Completion blocked by child runtime."
     finally:
         store.close()
 
@@ -419,6 +515,68 @@ def test_worker_runner_file_backed_session_uses_process_rpc(
         assert response["result"]["budget"] == {"maxTokens": 40, "remainingTokens": 32}
         assert task["metadata"]["executionMode"] == "process-rpc"
         assert worker["metadata"]["mode"] == "process-rpc"
+    finally:
+        store.close()
+
+
+def test_worker_runner_process_rpc_forwards_profile_contract(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    store, runner, records = _runner_context(tmp_path)
+    captured_params: dict[str, Any] = {}
+
+    class _CapturingTransport(_FakeTransport):
+        def request(
+            self,
+            method: str,
+            params: dict[str, Any],
+            *,
+            timeout: float,
+            event_callback: Any | None = None,
+        ) -> dict[str, Any]:
+            captured_params.update(params)
+            return super().request(method, params, timeout=timeout, event_callback=event_callback)
+
+    fake_transport = _CapturingTransport(
+        events=[],
+        response={
+            "jsonrpc": "2.0",
+            "id": "rpc_1",
+            "result": {
+                "status": "completed",
+                "summary": "child finished through process rpc",
+                "task": {"id": "task_child_runtime", "status": "completed"},
+                "budget": {},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        worker_runner_module.WorkerProcessTransport,
+        "for_python_module",
+        classmethod(lambda cls, *args, **kwargs: fake_transport),
+    )
+
+    try:
+        runner.run_child_task(
+            ChildTaskRequest(
+                prompt="run in a child process",
+                title="Run in a child process",
+                agent_type="coder",
+                session_id=records["session"]["id"],
+                parent_runtime_task_id=records["parent_task"]["id"],
+                profile={
+                    "ownedScope": ["web/index.html"],
+                    "expectedArtifacts": [{"kind": "file", "path": "web/index.html"}],
+                    "verificationRequirements": [{"kind": "command", "command": "node --check web/app.js"}],
+                },
+            )
+        )
+        assert captured_params["profile"] == {
+            "ownedScope": ["web/index.html"],
+            "expectedArtifacts": [{"kind": "file", "path": "web/index.html"}],
+            "verificationRequirements": [{"kind": "command", "command": "node --check web/app.js"}],
+        }
     finally:
         store.close()
 

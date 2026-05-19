@@ -42,6 +42,23 @@ class FailingSubagentService:
         return {"summary": f"Result for {title}", "status": "completed"}
 
 
+class FailedStatusSubagentService:
+    def __init__(self, fail_titles: set[str]) -> None:
+        self._fail_titles = fail_titles
+        self.calls: list[dict[str, Any]] = []
+
+    def dispatch(self, params: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(params)
+        title = params.get("title", "")
+        if title in self._fail_titles:
+            return {
+                "status": "failed",
+                "summary": f"Failed status: {title}",
+                "error": {"message": f"Failed status: {title}"},
+            }
+        return {"summary": f"Result for {title}", "status": "completed"}
+
+
 def _make_plan(subtasks: list[Subtask]) -> PlanResult:
     """Build a PlanResult with auto-computed DAG and execution order."""
     decomposer = __import__(
@@ -135,6 +152,21 @@ class TestDAGExecutorExecute:
         assert subtask.status == "failed"
         assert "Failed: Boom" in subtask.result
 
+    def test_failed_dispatch_status_is_treated_as_failure(self) -> None:
+        subtasks = [
+            Subtask(id="a", title="Boom", description="fail", dependencies=[]),
+        ]
+        plan = _make_plan(subtasks)
+        mock = FailedStatusSubagentService(fail_titles={"Boom"})
+        executor = DAGExecutor(mock)
+
+        result = executor.execute(plan, session_id="sess-1", parent_task_id="task-1")
+
+        assert result["success"] is False
+        subtask = result["subtasks"][0]
+        assert subtask.status == "failed"
+        assert "Failed status: Boom" in subtask.result
+
     def test_passes_session_and_parent_to_dispatch(self) -> None:
         subtasks = [
             Subtask(id="a", title="A", description="a", dependencies=[]),
@@ -189,6 +221,7 @@ class TestDAGExecutorExecute:
         assert "[Parent task]" in prompt
         assert "feedback_models.py" in prompt
         assert "at least 2 pytest files" in prompt
+        assert mock.calls[0]["planningPrompt"] == "Build the implementation."
 
     def test_passes_parent_timeout_budget_to_child_dispatch(self) -> None:
         subtasks = [

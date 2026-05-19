@@ -26,6 +26,7 @@ from .worker_policy import WorkerRunPolicy, normalize_worker_policy
 class ChildTaskRequest:
     prompt: str
     title: str
+    planning_prompt: str | None = None
     agent_type: str = "explorer"
     priority: int = 3
     session_id: str | None = None
@@ -142,6 +143,22 @@ class WorkerRunner:
                 worker=claimed["worker"],
                 execution=execution,
             )
+        if execution.get("status") == "failed":
+            return self._fail_child_task(
+                request=request,
+                task=running,
+                worker=claimed["worker"],
+                error={
+                    "code": "CHILD_TASK_EXECUTION_FAILED",
+                    "message": str(execution.get("summary") or "Child worker failed."),
+                    "type": "ChildTaskExecutionFailed",
+                    "runtimeTaskStatus": (
+                        execution.get("result", {}).get("runtimeTaskStatus")
+                        if isinstance(execution.get("result"), dict)
+                        else None
+                    ),
+                },
+            )
 
         completion = self._collaboration.complete_collaboration_task(
             {
@@ -253,6 +270,11 @@ class WorkerRunner:
         return ChildTaskRequest(
             prompt=str(child_task.get("description") or child_task.get("title") or "Resume child approval"),
             title=str(child_task.get("title") or "Resume child approval"),
+            planning_prompt=(
+                str(metadata.get("planningPrompt")).strip()
+                if isinstance(metadata.get("planningPrompt"), str) and str(metadata.get("planningPrompt")).strip()
+                else None
+            ),
             agent_type=str(metadata.get("agentType") or "explorer"),
             priority=self._priority_or_default(child_task.get("priority")),
             session_id=child_task.get("sessionId") if isinstance(child_task.get("sessionId"), str) else None,
@@ -263,6 +285,7 @@ class WorkerRunner:
             retry=deepcopy(metadata.get("retry")) if isinstance(metadata.get("retry"), dict) else None,
             cancellation=deepcopy(metadata.get("cancellation")) if isinstance(metadata.get("cancellation"), dict) else None,
             budget=deepcopy(metadata.get("budget")) if isinstance(metadata.get("budget"), dict) else None,
+            profile=deepcopy(metadata.get("profile")) if isinstance(metadata.get("profile"), dict) else None,
         )
 
     def _worker_for_blocked_child_task(self, child_task: dict[str, Any]) -> dict[str, Any]:
@@ -412,10 +435,12 @@ class WorkerRunner:
                         "sessionId": context.request.session_id,
                         "prompt": context.request.prompt,
                         "title": context.request.title,
+                        "planningPrompt": context.request.planning_prompt,
                         "budget": deepcopy(context.request.budget) if isinstance(context.request.budget, dict) else {},
                         "parentRuntimeTaskId": context.request.parent_runtime_task_id,
                         "collaborationTaskId": context.task["id"],
                         "agentType": context.request.agent_type,
+                        "profile": deepcopy(context.request.profile) if isinstance(context.request.profile, dict) else None,
                     },
                     timeout=request_timeout,
                     event_callback=lambda event: self._forward_process_event(context, event),
@@ -1002,6 +1027,8 @@ class WorkerRunner:
             "parentRuntimeTaskId": request.parent_runtime_task_id,
             "executionMode": self._default_execution_mode(request),
         }
+        if request.planning_prompt is not None:
+            metadata["planningPrompt"] = request.planning_prompt
         if request.profile is not None:
             metadata["profile"] = deepcopy(request.profile)
             # P9: Extract writeScope from profile.ownedScope for enforcement

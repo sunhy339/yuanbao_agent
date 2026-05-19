@@ -5,6 +5,7 @@ Enforces that child tasks only write within their declared write scopes.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..policy.proposal_validator import (
@@ -17,6 +18,12 @@ from ..policy.proposal_validator import (
 
 class WriteScopeEnforcer:
     """Check write operations against declared write scopes."""
+
+    _PATH_TOKEN_RE = re.compile(
+        r"""\.(?:py|js|ts|tsx|jsx|css|html|json|md|txt|toml|yaml|yml|ini|cfg)$""",
+        re.IGNORECASE,
+    )
+    _TOKEN_RE = re.compile(r'''"[^"]+"|'[^']+'|[^\s,]+''')
 
     def __init__(self, store: Any) -> None:
         self._store = store
@@ -60,17 +67,17 @@ class WriteScopeEnforcer:
         # Check top-level writeScope (set by worker_runner from profile.ownedScope)
         write_scope = metadata.get("writeScope")
         if isinstance(write_scope, list):
-            return [str(s) for s in write_scope]
+            return [str(s) for s in write_scope if self._looks_like_filesystem_scope(s)]
         if isinstance(write_scope, str):
-            return [write_scope]
+            return [write_scope] if self._looks_like_filesystem_scope(write_scope) else []
         # Fallback: check profile.ownedScope
         profile = metadata.get("profile")
         if isinstance(profile, dict):
             owned = profile.get("ownedScope")
             if isinstance(owned, list):
-                return [str(s) for s in owned]
+                return [str(s) for s in owned if self._looks_like_filesystem_scope(s)]
             if isinstance(owned, str):
-                return [owned]
+                return [owned] if self._looks_like_filesystem_scope(owned) else []
         return []
 
     def check_patch_in_scope(
@@ -95,6 +102,7 @@ class WriteScopeEnforcer:
         self,
         task_id: str,
         command_scope: str | None = None,
+        command: str | None = None,
     ) -> list[str]:
         """Validate that a run_command is allowed for the task.
 
@@ -105,6 +113,19 @@ class WriteScopeEnforcer:
         if not scope and command_scope is None:
             # No scope restriction, no target — allow
             return []
+        command_targets = self._command_scope_targets(command)
+        if scope and command_targets:
+            command_reasons = [
+                reason
+                for target in command_targets
+                for reason in validate_patch_in_scope(
+                    {"targetPath": target, "path": target},
+                    allowed_scopes=scope,
+                )
+            ]
+            if command_reasons:
+                return command_reasons
+            return []
         if command_scope and scope:
             return validate_patch_in_scope(
                 {"targetPath": command_scope, "path": command_scope},
@@ -113,6 +134,108 @@ class WriteScopeEnforcer:
         if scope and command_scope is None:
             return ["command scope is required for tasks with declared write scopes"]
         return []
+
+    def _command_scope_targets(self, command: str | None) -> list[str]:
+        text = str(command or "").strip()
+        if not text:
+            return []
+        normalized = text.replace("\\", "/")
+        literal_path_targets = self._literal_path_targets(normalized)
+        if literal_path_targets:
+            return literal_path_targets
+        if not self._command_looks_target_scoped(normalized):
+            return []
+        explicit_targets = self._explicit_path_targets(normalized)
+        if explicit_targets:
+            return explicit_targets
+        return []
+
+    def _command_looks_target_scoped(self, normalized_command: str) -> bool:
+        tokens = self._command_tokens(normalized_command)
+        if not tokens:
+            return False
+        command_tokens = self._meaningful_command_tokens(tokens)
+        if not command_tokens:
+            return False
+        lowered = [token.casefold() for token in command_tokens]
+        executable = self._command_executable_name(command_tokens[0])
+        if executable in {"get-childitem", "ls", "dir", "get-content", "cat", "type", "rg", "ripgrep", "findstr", "pytest"}:
+            return True
+        if executable == "node":
+            return "--check" in lowered[1:]
+        if executable in {"python", "py"} and len(lowered) >= 3 and lowered[1] == "-m":
+            return lowered[2] in {"pytest", "py_compile", "compileall"}
+        return False
+
+    def _explicit_path_targets(self, normalized_command: str) -> list[str]:
+        targets: list[str] = []
+        for token in self._command_tokens(normalized_command):
+            candidate = token.strip().strip("\"'").rstrip(",")
+            if not self._looks_like_path_target(candidate):
+                continue
+            if candidate not in targets:
+                targets.append(candidate)
+        return targets
+
+    def _literal_path_targets(self, normalized_command: str) -> list[str]:
+        match = re.search(
+            r"""(?:^|\s)-literalpath\s+(?P<targets>.+?)(?:\s*(?:\||;|&&|\|\|)\s*.*)?$""",
+            normalized_command,
+            re.IGNORECASE,
+        )
+        if not match:
+            return []
+        targets: list[str] = []
+        for token in self._command_tokens(match.group("targets")):
+            candidate = token.strip().strip("\"'").rstrip(",")
+            if not self._looks_like_path_target(candidate):
+                continue
+            if candidate not in targets:
+                targets.append(candidate)
+        return targets
+
+    def _command_tokens(self, text: str) -> list[str]:
+        return [token for token in self._TOKEN_RE.findall(text) if token]
+
+    def _meaningful_command_tokens(self, tokens: list[str]) -> list[str]:
+        meaningful = [token for token in tokens if token not in {"&", ";"}]
+        return meaningful
+
+    def _command_executable_name(self, token: str) -> str:
+        candidate = token.strip().strip("\"'").replace("\\", "/").rstrip("/")
+        if not candidate:
+            return ""
+        leaf = candidate.rsplit("/", 1)[-1]
+        stem = leaf[:-4] if leaf.lower().endswith(".exe") else leaf
+        return stem.casefold()
+
+    def _looks_like_path_target(self, candidate: str) -> bool:
+        normalized = candidate.strip().replace("\\", "/")
+        if not normalized or normalized in {".", ".."}:
+            return False
+        if normalized.startswith("-") or "://" in normalized:
+            return False
+        if normalized == "tests" or normalized.startswith("tests/"):
+            return True
+        if normalized.endswith("/"):
+            return True
+        return bool(self._PATH_TOKEN_RE.search(normalized))
+
+    def _looks_like_filesystem_scope(self, candidate: object) -> bool:
+        normalized = str(candidate or "").strip().replace("\\", "/")
+        if not normalized:
+            return False
+        if normalized == ".":
+            return True
+        if normalized.startswith("-") or "://" in normalized:
+            return False
+        if normalized == "tests" or normalized.startswith("tests/"):
+            return True
+        if normalized.endswith("/"):
+            return True
+        if "/" in normalized:
+            return True
+        return bool(self._PATH_TOKEN_RE.search(normalized))
 
     def check_overlap_before_dispatch(
         self,

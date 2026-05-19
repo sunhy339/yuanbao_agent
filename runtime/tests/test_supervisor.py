@@ -91,6 +91,8 @@ class TestSupervisorApproved:
         assert result.success is True
         assert result.review_count == 2
         assert len(mock_sub.calls) == 2  # one per subtask, no retries
+        assert mock_sub.calls[0]["planningPrompt"] == "Do A"
+        assert mock_sub.calls[1]["planningPrompt"] == "Do B"
 
 
 class TestSupervisorRetry:
@@ -139,6 +141,35 @@ class TestSupervisorRetryExhausted:
         )
 
         # sub-0 fails (exhausted retries), sub-1 skipped (dependency failed)
+        assert result.success is False
+        assert "sub-0" in result.failed
+
+
+class TestSupervisorDispatchFailureStatus:
+    def test_failed_dispatch_status_marks_subtask_failed(self) -> None:
+        class FailedStatusSubagent:
+            def dispatch(self, params: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "status": "failed",
+                    "summary": "Frontend artifacts were not produced.",
+                    "error": {"message": "Frontend artifacts were not produced."},
+                }
+
+        mock_prov = MockProvider(
+            decompose_subtasks=[
+                {"id": "sub-0", "title": "Frontend", "description": "Build frontend", "dependencies": []},
+            ],
+            reviews=[],
+        )
+        supervisor = SupervisorOrchestrator(
+            provider=mock_prov, subagent_service=FailedStatusSubagent(), max_retries=1,
+        )
+
+        result = supervisor.execute(
+            "Build frontend", {},
+            session_id="sess-1", task=_make_task(),
+        )
+
         assert result.success is False
         assert "sub-0" in result.failed
 
@@ -426,3 +457,43 @@ class TestSupervisorInstanceIsolation:
         result2 = s2.execute("Task B", {}, session_id="s2", task=_make_task())
         # s2 should have its own independent count, not inherited from s1
         assert result2.review_count == 2
+
+
+class TestSupervisorProviderContext:
+    def test_decompose_and_review_receive_provider_context(self) -> None:
+        seen_contexts: list[dict[str, Any]] = []
+
+        class CapturingProvider:
+            def __init__(self) -> None:
+                self._decompose_called = False
+                self._review_called = False
+
+            def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+                seen_contexts.append(context)
+                if "task decomposition specialist" in prompt and not self._decompose_called:
+                    self._decompose_called = True
+                    return {"message": json.dumps([
+                        {"id": "sub-0", "title": "Implement", "description": "Do work", "dependencies": []},
+                    ])}
+                if "supervisor reviewing" in prompt and not self._review_called:
+                    self._review_called = True
+                    return {"message": json.dumps({"approved": True, "feedback": ""})}
+                return {"message": "Synthesized result"}
+
+        supervisor = SupervisorOrchestrator(
+            provider=CapturingProvider(),
+            subagent_service=MockSubagentService(),
+            max_retries=1,
+        )
+
+        supervisor.execute(
+            "Implement feature",
+            {"_provider_context": {"config": {"provider": {"streamingEnabled": True, "model": "gpt-5.4"}}}},
+            session_id="sess-1",
+            task=_make_task(),
+        )
+
+        assert len(seen_contexts) >= 2
+        for context in seen_contexts[:2]:
+            assert context["config"]["provider"]["streamingEnabled"] is True
+            assert context["config"]["provider"]["model"] == "gpt-5.4"

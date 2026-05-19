@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from ..planner.types import normalize_subtask_profile_contract
 from .worker_environment import normalize_child_tool_allowlist
 from .worker_runner import ChildTaskRequest, WorkerRunner
 
@@ -54,11 +55,12 @@ class SubagentService:
             planning_mode = "rule_fallback"
 
         # P7: Dynamic profile from planner output
-        profile = self._optional_object(params, "profile")
+        profile = normalize_subtask_profile_contract(self._optional_object(params, "profile"))
 
         request = ChildTaskRequest(
             prompt=prompt,
             title=self._optional_string(params, "title") or self._title_from_prompt(prompt),
+            planning_prompt=self._optional_string(params, "planningPrompt"),
             agent_type=self._optional_string(params, "agentType")
             or self._optional_string(params, "agent_type")
             or "explorer",

@@ -94,7 +94,17 @@ class ContextBuilder(HistoryMixin):
         self._cached_tool_schema_tokens: int | None = None
         self._cached_tool_schemas_id: int | None = None
 
-    def build(self, session_id: str, goal: str, *, lightweight: bool = True, skill_id: str | None = None, role: str | None = None) -> dict[str, object]:
+    def build(
+        self,
+        session_id: str,
+        goal: str,
+        *,
+        lightweight: bool = True,
+        skill_id: str | None = None,
+        role: str | None = None,
+        include_history: bool = True,
+        include_scratchpad: bool = True,
+    ) -> dict[str, object]:
         session = self._store.require_session(session_id)
         workspace = self._load_workspace(session["workspaceId"])
         config = self._load_config()
@@ -173,6 +183,8 @@ class ContextBuilder(HistoryMixin):
             lightweight=lightweight,
             skill_preset=skill_preset,
             role=role,
+            include_history=include_history,
+            include_scratchpad=include_scratchpad,
         )
         return {
             "session_id": session_id,
@@ -244,6 +256,8 @@ class ContextBuilder(HistoryMixin):
         lightweight: bool = True,
         skill_preset: Any | None = None,
         role: str | None = None,
+        include_history: bool = True,
+        include_scratchpad: bool = True,
     ) -> tuple[list[dict[str, str]], dict[str, Any]]:
         max_context_tokens = self._max_context_tokens(config)
         system_text, prompt_layers = self._compose_system_prompt(
@@ -292,8 +306,9 @@ class ContextBuilder(HistoryMixin):
                     minimum_tokens=24,
                 )
             )
-            sections.extend(self._history_sections(session))
-        else:
+            if include_history:
+                sections.extend(self._history_sections(session))
+        elif include_history:
             sections.extend(self._conversation_history_sections(session))
 
         sections.append(
@@ -306,9 +321,10 @@ class ContextBuilder(HistoryMixin):
         )
 
         # Scratchpad: inject intermediate reasoning state if available
-        scratchpad_section = self._scratchpad_section(session["id"])
-        if scratchpad_section is not None:
-            sections.append(scratchpad_section)
+        if include_scratchpad:
+            scratchpad_section = self._scratchpad_section(session["id"])
+            if scratchpad_section is not None:
+                sections.append(scratchpad_section)
 
         budget = TokenBudget(max_context_tokens)
         budget_result = budget.fit(sections, fixed_tokens=tool_schema_tokens)
@@ -525,7 +541,7 @@ class ContextBuilder(HistoryMixin):
             "Safety boundaries:",
             "- stay within the workspace root for file and git operations.",
             "- write files only through apply_patch or write_file; use write_file for new/full files and apply_patch for small edits.",
-            "- run commands only through run_command and wait for explicit approval before execution.",
+            "- run commands only through run_command; if the runtime requests approval, wait for approval before execution.",
             "- do not bypass the provided tools or approval workflow.",
             "- do not read secrets or operate outside the workspace unless the user explicitly provides content.",
         ])
@@ -645,7 +661,7 @@ class ContextBuilder(HistoryMixin):
                 "Safety boundaries:",
                 "- stay within the workspace root for file and git operations.",
                 "- write files only through apply_patch or write_file; use write_file for new/full files and apply_patch for small edits.",
-                "- run commands only through run_command and wait for explicit approval before execution.",
+                "- run commands only through run_command; if the runtime requests approval, wait for approval before execution.",
                 "- do not bypass the provided tools or approval workflow.",
                 "- do not read secrets or operate outside the workspace unless the user explicitly provides content.",
             ]

@@ -42,19 +42,46 @@ class ChildTaskMixin:
         budget = WorkerBudget.from_metadata(params.get("budget"), params)
         agent_type = self._child_agent_type(params.get("agentType"))
         child_role = self._child_runtime_role(agent_type)
-        context = self._context_builder.build(session_id=session["id"], goal=prompt.strip(), lightweight=False, role=child_role)
+        profile = params.get("profile") if isinstance(params.get("profile"), dict) else {}
+        planning_prompt = params.get("planningPrompt") if isinstance(params.get("planningPrompt"), str) else None
+        owned_scope = profile.get("ownedScope")
+        if isinstance(owned_scope, str):
+            normalized_owned_scope = [owned_scope]
+        elif isinstance(owned_scope, list):
+            normalized_owned_scope = [str(item).strip() for item in owned_scope if str(item).strip()]
+        else:
+            normalized_owned_scope = []
+        child_goal = prompt.strip()
+        clean_child_context = self._child_uses_clean_context(profile=profile)
+        context = self._context_builder.build(
+            session_id=session["id"],
+            goal=child_goal,
+            lightweight=False,
+            role=child_role,
+            include_history=not clean_child_context,
+            include_scratchpad=not clean_child_context,
+        )
         context["agentType"] = agent_type
         context["runtimeRole"] = child_role
         context["_child_worker"] = True
+        context["_child_clean_context"] = clean_child_context
         context["_skip_context_policy_advisor"] = True
         context["_skip_completion_advisor"] = True
         context["_worker_budget"] = params.get("budget") if isinstance(params.get("budget"), dict) else {}
+        if profile:
+            context["_child_profile"] = profile
         child_allowlist = self._child_tool_allowlist_from_params(params)
         if child_allowlist is not None:
             context["_child_tool_allowlist"] = list(child_allowlist)
         context = self._context_with_child_runtime_hints(context, child_allowlist=child_allowlist)
         context = self._context_with_worker_budget(context, budget)
-        plan = self._planner.plan(prompt.strip(), context=context)
+        plan_goal = self._child_plan_goal(
+            prompt=child_goal,
+            planning_prompt=planning_prompt,
+            profile=profile,
+        )
+        context["_childPlanGoal"] = plan_goal
+        plan = self._planner.plan(plan_goal, context=context)
         child_can_write = bool(child_allowlist is not None and set(child_allowlist) & {"write_file", "apply_patch", "run_command"})
         role_snapshot = {
             "runtimeRole": child_role,
@@ -66,13 +93,15 @@ class ChildTaskMixin:
                 "baseRuntimeRole": child_role,
                 "toolPolicy": "child_allowlist" if child_allowlist is not None else "read_only",
                 "capabilities": ["workspace_write"] if child_can_write else [],
-                "scopes": [],
+                "scopes": list(normalized_owned_scope),
                 "riskLevel": "medium" if child_can_write else "low",
-                "source": "runtime_default",
+                "source": "planner_profile" if profile else "runtime_default",
                 "version": 1,
+                "expectedArtifacts": profile.get("expectedArtifacts") if isinstance(profile.get("expectedArtifacts"), list) else [],
+                "verificationRequirements": profile.get("verificationRequirements") if isinstance(profile.get("verificationRequirements"), list) else [],
             },
             "toolPolicy": "child_allowlist" if child_allowlist is not None else "read_only",
-            "scopes": [],
+            "scopes": list(normalized_owned_scope),
             "riskLevel": "medium" if child_can_write else "low",
             "budget": params.get("budget") if isinstance(params.get("budget"), dict) else {},
         }
@@ -82,14 +111,16 @@ class ChildTaskMixin:
             "runtimeRole": child_role,
             "roleSnapshot": role_snapshot,
         }
+        if profile:
+            child_routing["profile"] = profile
         if collaboration_task_id:
             child_routing["childCollaborationTaskId"] = collaboration_task_id
         task = self._store.create_task(
             session_id=session["id"],
             task_type="subagent",
-            goal=prompt.strip(),
+            goal=child_goal,
             plan=plan,
-            acceptance_criteria=self._default_acceptance_criteria(prompt.strip()),
+            acceptance_criteria=self._default_acceptance_criteria(child_goal),
             out_of_scope=self._default_out_of_scope(),
             role=child_role,
             routing=child_routing,
@@ -114,7 +145,7 @@ class ChildTaskMixin:
             react_result = self._run_react_loop(
                 session_id=session["id"],
                 task=runtime_task,
-                goal=prompt.strip(),
+                goal=child_goal,
                 context=context,
                 budget=budget,
             )
@@ -134,9 +165,14 @@ class ChildTaskMixin:
                     tool_results=react_result.get("tool_results", []),
                     skip_drain=True,
                 )
-                self._tracer.end_span(span.span_id, status="ok")
+                final_status = str(completed_task.get("status") or "completed")
+                self._tracer.end_span(
+                    span.span_id,
+                    status="ok" if final_status == "completed" else "error",
+                    attributes={"status": final_status},
+                )
                 return {
-                    "status": "completed",
+                    "status": final_status,
                     "task": completed_task,
                     "summary": completed_task.get("resultSummary") or react_result["summary"],
                     "budget": budget.to_metadata(),
@@ -145,7 +181,7 @@ class ChildTaskMixin:
             tool_results = self._run_minimal_loop(
                 session_id=session["id"],
                 task=runtime_task,
-                goal=prompt.strip(),
+                goal=child_goal,
                 context=context,
                 budget=budget,
             )
@@ -157,7 +193,7 @@ class ChildTaskMixin:
                     budget=budget,
                 )
             summary = self._provider.summarize_findings(
-                goal=prompt.strip(),
+                goal=child_goal,
                 context=context,
                 tool_results=tool_results,
             )
@@ -169,9 +205,14 @@ class ChildTaskMixin:
                 tool_results=tool_results,
                 skip_drain=True,
             )
-            self._tracer.end_span(span.span_id, status="ok")
+            final_status = str(completed_task.get("status") or "completed")
+            self._tracer.end_span(
+                span.span_id,
+                status="ok" if final_status == "completed" else "error",
+                attributes={"status": final_status},
+            )
             return {
-                "status": "completed",
+                "status": final_status,
                 "task": completed_task,
                 "summary": completed_task.get("resultSummary") or summary,
                 "budget": budget.to_metadata(),
@@ -276,7 +317,7 @@ class ChildTaskMixin:
             "pythonExecutable": python_executable,
             "recommendedPytestCommand": pytest_command,
             "workspaceRoot": workspace_root,
-            "runCommandCwd": ".",
+            "runCommandCwd": "narrowest relevant directory for the command",
             "avoidCommands": ["python", "python3", "py", "cd ... && ..."],
         }
         updated = dict(context)
@@ -301,8 +342,39 @@ class ChildTaskMixin:
             f"- Python executable: {hints['pythonExecutable']}",
             f"- Preferred pytest command: {hints['recommendedPytestCommand']}",
             "- When running tests, call run_command with this command first; do not probe python, python3, or py.",
-            "- Set run_command cwd to '.' and pass workspaceRoot instead of using shell cd.",
+            "- Set run_command cwd to the narrowest relevant directory for the command and pass workspaceRoot instead of using shell cd.",
         ]
         if workspace_root:
             lines.append(f"- run_command workspaceRoot: {workspace_root}")
         return "\n".join(lines)
+
+    def _child_uses_clean_context(self, *, profile: dict[str, Any]) -> bool:
+        if profile.get("inheritParentContext") is False:
+            return True
+        if profile.get("inheritParentContext") is True:
+            return False
+        return True
+
+    def _child_plan_goal(
+        self,
+        *,
+        prompt: str,
+        planning_prompt: str | None,
+        profile: dict[str, Any],
+    ) -> str:
+        candidate = str(planning_prompt or "").strip()
+        if candidate:
+            return candidate
+        lines = [prompt.strip()]
+        owned_scope = profile.get("ownedScope")
+        if isinstance(owned_scope, list) and owned_scope:
+            normalized_scope = [str(item).strip() for item in owned_scope if str(item).strip()]
+            if normalized_scope:
+                lines.append(f"Owned scope: {', '.join(normalized_scope)}")
+        expected_artifacts = profile.get("expectedArtifacts")
+        if isinstance(expected_artifacts, list) and expected_artifacts:
+            lines.append(f"Expected artifacts: {expected_artifacts}")
+        verification_requirements = profile.get("verificationRequirements")
+        if isinstance(verification_requirements, list) and verification_requirements:
+            lines.append(f"Verification requirements: {verification_requirements}")
+        return "\n".join(line for line in lines if line.strip())

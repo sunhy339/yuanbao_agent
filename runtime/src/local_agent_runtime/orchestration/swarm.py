@@ -69,7 +69,12 @@ class SwarmOrchestrator:
         prior_results: dict[str, str] | None = None,
     ) -> OrchestrationResult:
         """Decompose goal, execute sub-tasks with handoff, synthesize results."""
-        plan = self._decomposer.decompose(goal, context.get("description", ""))
+        provider_context = context.get("_provider_context") if isinstance(context.get("_provider_context"), dict) else None
+        plan = self._decomposer.decompose(
+            goal,
+            context.get("description", ""),
+            provider_context=provider_context,
+        )
 
         completed: set[str] = set(completed_ids or ())
         failed: set[str] = set(failed_ids or ())
@@ -120,17 +125,35 @@ class SwarmOrchestrator:
                         prompt_override=prompt_override,
                         completed_context=results,
                     ),
+                    "planningPrompt": prompt_override or subtask.description,
                     "title": subtask.title,
                     "sessionId": session_id,
                     "taskId": parent_task_id,
                     "agentType": normalize_subtask_agent_type(subtask.agent_type),
                     "childToolAllowlist": child_tool_allowlist_for_agent(subtask.agent_type),
+                    "profile": {
+                        "ownedScope": list(subtask.owned_scope),
+                        "expectedArtifacts": [dict(item) for item in subtask.expected_artifacts],
+                        "verificationRequirements": [dict(item) for item in subtask.verification_requirements],
+                    },
                     **({"timeoutMs": child_timeout_ms} if child_timeout_ms is not None else {}),
                 })
-                subtask.status = "completed"
-                subtask.result = dispatch_result.get("summary") or "Completed"
-                completed.add(subtask.id)
-                results[subtask.id] = subtask.result
+                if str(dispatch_result.get("status") or "").strip().lower() == "failed":
+                    error = dispatch_result.get("error") if isinstance(dispatch_result.get("error"), dict) else {}
+                    message = str(
+                        error.get("message")
+                        or dispatch_result.get("summary")
+                        or "Child subtask failed."
+                    ).strip()
+                    subtask.status = "failed"
+                    subtask.result = message
+                    failed.add(subtask.id)
+                    results[subtask.id] = f"Failed: {message}"
+                else:
+                    subtask.status = "completed"
+                    subtask.result = dispatch_result.get("summary") or "Completed"
+                    completed.add(subtask.id)
+                    results[subtask.id] = subtask.result
             except Exception as exc:  # noqa: BLE001
                 subtask.status = "failed"
                 subtask.result = str(exc)
@@ -157,7 +180,7 @@ class SwarmOrchestrator:
             if subtask.status == "completed" and pending:
                 handoff_count += 1
                 done, next_id, handoff_prompt = self._handoff_decision(
-                    goal, subtask, completed, pending, subtask_map,
+                    goal, subtask, completed, pending, subtask_map, provider_context=provider_context,
                 )
                 self._last_handoff_prompt = handoff_prompt
                 if done:
@@ -168,7 +191,11 @@ class SwarmOrchestrator:
 
         # Synthesize
         success = len(failed) == 0
-        summary = self._synthesizer.synthesize(goal, subtask_results)
+        summary = self._synthesizer.synthesize(
+            goal,
+            subtask_results,
+            provider_context=provider_context,
+        )
 
         return OrchestrationResult(
             success=success,
@@ -191,6 +218,8 @@ class SwarmOrchestrator:
         completed: set[str],
         pending: set[str],
         subtask_map: dict[str, Subtask],
+        *,
+        provider_context: dict[str, Any] | None = None,
     ) -> tuple[bool, str | None, str | None]:
         """Ask LLM which sub-task to execute next.
 
@@ -214,7 +243,10 @@ class SwarmOrchestrator:
         try:
             response = self._provider.generate(
                 prompt,
-                {"messages": [{"role": "user", "content": prompt}]},
+                {
+                    **(provider_context or {}),
+                    "messages": [{"role": "user", "content": prompt}],
+                },
             )
             message = response.get("message") or ""
             return self._parse_handoff(message, pending)
@@ -268,12 +300,12 @@ class SwarmOrchestrator:
         failed: set[str],
         subtask_map: dict[str, Subtask],
     ) -> str | None:
-        """Pick the first pending sub-task whose dependencies are met."""
+        """Pick the first pending sub-task whose dependencies are met or failed."""
         for sid in sorted(pending):
             subtask = subtask_map.get(sid)
             if subtask is None:
                 continue
-            if all(dep in completed for dep in subtask.dependencies):
+            if all(dep in completed or dep in failed for dep in subtask.dependencies):
                 return sid
         return None
 
@@ -291,6 +323,9 @@ class SwarmOrchestrator:
             "id": subtask.id,
             "title": subtask.title,
             "agentType": subtask.agent_type,
+            "ownedScope": list(subtask.owned_scope),
+            "expectedArtifacts": [dict(item) for item in subtask.expected_artifacts],
+            "verificationRequirements": [dict(item) for item in subtask.verification_requirements],
             "status": subtask.status,
             "result": subtask.result,
         }

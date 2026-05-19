@@ -3626,6 +3626,76 @@ class TestCompletionHardGate:
         assert evidence["counts"]["failedToolResults"] == 0
         assert evidence["counts"]["resolvedFailedToolResults"] == 1
 
+    def test_failed_child_task_can_be_resolved_by_root_verification_after_continuation(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "incident_models.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (project / "incident_rules.py").write_text("VALUE = 2\n", encoding="utf-8")
+        (project / "README.md").write_text("# Incident Engine\n", encoding="utf-8")
+        tests_dir = project / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_incident_engine_core.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Build incident engine and verify it",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "incident_models.py", "summary": "implemented incident models"},
+                {"path": "incident_rules.py", "summary": "implemented rules"},
+                {"path": "tests/test_incident_engine_core.py", "summary": "added pytest coverage"},
+            ],
+            commands=[
+                {
+                    "id": "cmd_pytest_passed",
+                    "command": r"C:\Python314\python.exe -m pytest -q",
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "3 passed",
+                    "startedAt": 300,
+                }
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Incident engine is complete after continuation and root verification.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            tool_results=[
+                {
+                    "name": "child_task",
+                    "failed": True,
+                    "status": "failed",
+                    "summary": "Completion blocked because verification failed. Fix the failed checks before marking the task completed.",
+                    "childTaskId": "task_failed_child",
+                    "verificationRequirements": [{"kind": "command", "command": "python -m pytest -q", "family": "python"}],
+                    "ownedScope": ["incident_models.py", "incident_rules.py", "tests/", "README.md"],
+                    "changedFiles": [
+                        {"path": "incident_models.py"},
+                        {"path": "incident_rules.py"},
+                        {"path": "tests/test_incident_engine_core.py"},
+                    ],
+                }
+            ],
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["evidenceLevel"] == "verified"
+        assert evidence["counts"]["failedVerification"] == 0
+        assert evidence["counts"]["failedToolResults"] == 0
+        assert evidence["counts"]["resolvedFailedToolResults"] == 1
+
     def test_child_task_with_owned_scope_is_still_write_or_verification_work(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

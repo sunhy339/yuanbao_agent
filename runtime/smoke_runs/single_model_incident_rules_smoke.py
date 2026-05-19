@@ -347,7 +347,10 @@ def main() -> int:
             name for name in files
             if name.startswith("incident_") and name.endswith(".py") and not name.startswith("test_")
         }
-        test_files = {name for name in files if name.startswith("test_") and name.endswith(".py")}
+        test_files = {
+            name for name in files
+            if name.endswith(".py") and (name.startswith("test_") or "/test_" in name or "\\test_" in name)
+        }
         command_text = "\n".join(str(command.get("command") or "") for command in commands).casefold()
         evidence = _completion_evidence(task)
         counts = evidence.get("counts") if isinstance(evidence.get("counts"), dict) else {}

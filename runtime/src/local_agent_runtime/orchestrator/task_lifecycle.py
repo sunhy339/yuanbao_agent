@@ -3114,7 +3114,12 @@ class TaskLifecycleMixin:
         )
         command_verification = self._completion_tests_run_from_commands(commands, context=context or {})
         tests_run = self._merge_completion_tests_run(tests_run, command_verification)
-        failed_tool_results = self._unresolved_failed_tool_results(tool_evidence)
+        failed_tool_results = self._unresolved_failed_tool_results(
+            tool_evidence,
+            changed_files=changed_files,
+            verification=verification,
+            tests_run=tests_run,
+        )
         resolved_failed_tool_results = [
             item for item in tool_evidence
             if item.get("failed") is True and item not in failed_tool_results
@@ -3129,6 +3134,11 @@ class TaskLifecycleMixin:
             if item.get("status") in {"failed", "timeout", "killed", "validation_failed"}
         ]
         passed_verification = [item for item in verification if item.get("status") == "passed"]
+        unresolved_failed_verification = self._unresolved_failed_verification_items(
+            verification,
+            passed_statuses={"passed", "success", "completed"},
+            failed_statuses={"failed", "timeout", "killed", "validation_failed"},
+        )
         passed_tests_run = [
             item for item in tests_run
             if item.get("status") in {"passed", "success", "completed"}
@@ -3165,7 +3175,7 @@ class TaskLifecycleMixin:
         has_workspace_evidence = bool(changed_files or patches)
         has_command_evidence = bool(commands)
         has_verification_evidence = bool(passed_verification or passed_tests_run)
-        has_failed_evidence = bool(failed_verification or failed_validation_checks)
+        has_failed_evidence = bool(unresolved_failed_verification or failed_validation_checks)
         if has_failed_evidence:
             status = "needs_attention"
             evidence_level = "failed_verification"
@@ -3231,7 +3241,7 @@ class TaskLifecycleMixin:
                 "commands": len(commands),
                 "verification": len(verification),
                 "passedVerification": len(passed_verification),
-                "failedVerification": len(failed_verification) + len(failed_validation_checks) + len(unresolved_failed_tests_run),
+                "failedVerification": len(unresolved_failed_verification) + len(failed_validation_checks) + len(unresolved_failed_tests_run),
                 "requiredVerificationFamilies": len(verification_requirements.get("required") or []),
                 "missingVerificationFamilies": len(verification_requirements.get("missing") or []),
                 "testsRun": len(tests_run),
@@ -3488,15 +3498,31 @@ class TaskLifecycleMixin:
                     for item in self._completion_commands_from_store(child_id)
                 ],
             )
-            if child_status in {"failed", "cancelled"}:
-                empty["toolResults"].append({
-                    "name": "child_task",
-                    "status": child_status,
-                    "failed": True,
-                    "summary": child_summary or f"Child task {child_status}",
-                    "childTaskId": child_id,
-                    "source": "child_runtime_task",
-                })
+            child_tool_result = {
+                "name": "child_task",
+                "status": child_status,
+                "failed": child_status in {"failed", "cancelled"},
+                "summary": child_summary or f"Child task {child_status}",
+                "childTaskId": child_id,
+                "source": "child_runtime_task",
+                "role": child.get("role") or "root",
+            }
+            routing = child.get("routing") if isinstance(child.get("routing"), dict) else {}
+            profile = routing.get("profile") if isinstance(routing.get("profile"), dict) else {}
+            if profile:
+                if isinstance(profile.get("ownedScope"), list):
+                    child_tool_result["ownedScope"] = [
+                        str(item).strip() for item in profile.get("ownedScope") if str(item).strip()
+                    ]
+                if isinstance(profile.get("expectedArtifacts"), list):
+                    child_tool_result["expectedArtifacts"] = profile.get("expectedArtifacts")
+                if isinstance(profile.get("verificationRequirements"), list):
+                    child_tool_result["verificationRequirements"] = profile.get("verificationRequirements")
+            if child_status in {"completed", "success"}:
+                child_tool_result["failed"] = False
+            empty["toolResults"].append({
+                key: value for key, value in child_tool_result.items() if value not in (None, "", [])
+            })
 
         for collab in self._completion_collaboration_tasks(parent_task_id=task_id, session_id=session_id):
             collab_id = str(collab.get("id") or "").strip()
@@ -3517,15 +3543,27 @@ class TaskLifecycleMixin:
             empty["commands"].extend(self._completion_child_items(result, "commands", collab_id))
             empty["verification"].extend(self._completion_child_items(result, "verification", collab_id))
             empty["testsRun"].extend(self._completion_child_items(result, "testsRun", collab_id))
-            if status in {"failed", "cancelled"}:
-                empty["toolResults"].append({
-                    "name": "child_task",
-                    "status": status,
-                    "failed": True,
-                    "summary": summary or f"Collaboration task {status}",
-                    "childTaskId": collab_id,
-                    "source": "collaboration_task",
-                })
+            collab_tool_result = {
+                "name": "child_task",
+                "status": status,
+                "failed": status in {"failed", "cancelled"},
+                "summary": summary or f"Collaboration task {status}",
+                "childTaskId": collab_id,
+                "source": "collaboration_task",
+                "title": collab.get("title"),
+                "agentType": (collab.get("metadata") or {}).get("agentType") if isinstance(collab.get("metadata"), dict) else None,
+            }
+            if isinstance(result.get("changedFiles"), list):
+                collab_tool_result["changedFiles"] = result.get("changedFiles")
+            if isinstance(result.get("verification"), list):
+                collab_tool_result["verification"] = result.get("verification")
+            if isinstance(result.get("testsRun"), list):
+                collab_tool_result["testsRun"] = result.get("testsRun")
+            if status in {"completed", "success"}:
+                collab_tool_result["failed"] = False
+            empty["toolResults"].append({
+                key: value for key, value in collab_tool_result.items() if value not in (None, "", [])
+            })
         empty["childTasks"] = self._dedupe_completion_child_tasks(empty["childTasks"])
         return empty
 
@@ -5274,15 +5312,40 @@ class TaskLifecycleMixin:
                 item["childStatus"] = result.get("status")
                 subagent = result.get("subagent") if isinstance(result.get("subagent"), dict) else {}
                 item["agentType"] = result.get("agentType") or subagent.get("agentType")
+                if isinstance(result.get("ownedScope"), list):
+                    item["ownedScope"] = result.get("ownedScope")
+                if isinstance(result.get("expectedArtifacts"), list):
+                    item["expectedArtifacts"] = result.get("expectedArtifacts")
+                if isinstance(result.get("verificationRequirements"), list):
+                    item["verificationRequirements"] = result.get("verificationRequirements")
+                if isinstance(result.get("changedFiles"), list):
+                    item["changedFiles"] = result.get("changedFiles")
+                if isinstance(result.get("verification"), list):
+                    item["verification"] = result.get("verification")
+                if isinstance(result.get("testsRun"), list):
+                    item["testsRun"] = result.get("testsRun")
             evidence.append({key: value for key, value in item.items() if value not in (None, [], "")})
         return evidence
 
-    def _unresolved_failed_tool_results(self, tool_evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _unresolved_failed_tool_results(
+        self,
+        tool_evidence: list[dict[str, Any]],
+        *,
+        changed_files: list[dict[str, Any]] | None = None,
+        verification: list[dict[str, Any]] | None = None,
+        tests_run: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         unresolved: list[dict[str, Any]] = []
         for index, item in enumerate(tool_evidence):
             if item.get("failed") is not True:
                 continue
-            if self._failed_tool_result_has_equivalent_success(item, tool_evidence):
+            if self._failed_tool_result_has_equivalent_success(
+                item,
+                tool_evidence,
+                changed_files=changed_files,
+                verification=verification,
+                tests_run=tests_run,
+            ):
                 continue
             tool_name = item.get("name")
             has_later_success = any(
@@ -5297,9 +5360,19 @@ class TaskLifecycleMixin:
         self,
         failed_item: dict[str, Any],
         tool_evidence: list[dict[str, Any]],
+        *,
+        changed_files: list[dict[str, Any]] | None = None,
+        verification: list[dict[str, Any]] | None = None,
+        tests_run: list[dict[str, Any]] | None = None,
     ) -> bool:
         if failed_item.get("name") == "child_task":
-            return self._failed_child_task_has_equivalent_success(failed_item, tool_evidence)
+            return self._failed_child_task_has_equivalent_success(
+                failed_item,
+                tool_evidence,
+                changed_files=changed_files,
+                verification=verification,
+                tests_run=tests_run,
+            )
         if failed_item.get("name") != "run_command":
             return False
         failed_key = self._structural_command_resolution_key(failed_item.get("command"))
@@ -5316,9 +5389,21 @@ class TaskLifecycleMixin:
         self,
         failed_item: dict[str, Any],
         tool_evidence: list[dict[str, Any]],
+        *,
+        changed_files: list[dict[str, Any]] | None = None,
+        verification: list[dict[str, Any]] | None = None,
+        tests_run: list[dict[str, Any]] | None = None,
     ) -> bool:
         failed_title = str(failed_item.get("summary") or "").strip().casefold()
         failed_kind = self._completion_child_task_kind(failed_item)
+        failed_tokens = self._completion_child_task_identity_tokens(failed_item)
+        if self._failed_child_task_contract_is_satisfied(
+            failed_item,
+            changed_files=changed_files or [],
+            verification=verification or [],
+            tests_run=tests_run or [],
+        ):
+            return True
         if not failed_title and not failed_kind:
             return False
         for item in tool_evidence:
@@ -5336,7 +5421,61 @@ class TaskLifecycleMixin:
                 overlap = failed_words & success_words
                 if len(overlap) >= 2 and not overlap.isdisjoint({"frontend", "backend", "pytest", "tests"}):
                     return True
+            success_tokens = self._completion_child_task_identity_tokens(item)
+            if failed_tokens and success_tokens:
+                core_overlap = failed_tokens & success_tokens
+                if len(core_overlap) >= 3:
+                    return True
         return False
+
+    def _failed_child_task_contract_is_satisfied(
+        self,
+        failed_item: dict[str, Any],
+        *,
+        changed_files: list[dict[str, Any]],
+        verification: list[dict[str, Any]],
+        tests_run: list[dict[str, Any]],
+    ) -> bool:
+        expected_paths = self._completion_contract_expected_artifact_paths({
+            "expectedArtifacts": failed_item.get("expectedArtifacts"),
+        })
+        if not expected_paths:
+            changed_expectations = failed_item.get("changedFiles")
+            if isinstance(changed_expectations, list):
+                expected_paths = [
+                    self._completion_contract_normalize_path(item.get("path"))
+                    for item in changed_expectations
+                    if isinstance(item, dict) and self._completion_contract_normalize_path(item.get("path"))
+                ]
+        if not expected_paths:
+            expected_paths = self._completion_contract_expected_artifact_paths({
+                "ownedScope": failed_item.get("ownedScope"),
+            })
+        changed_paths = {
+            self._completion_changed_file_path(item)
+            for item in changed_files
+            if self._completion_changed_file_path(item)
+        }
+        if expected_paths:
+            for expected_path in expected_paths:
+                if expected_path.endswith("/"):
+                    if not any(path.startswith(expected_path) for path in changed_paths):
+                        return False
+                elif expected_path not in changed_paths:
+                    return False
+        verification_families = self._completion_contract_verification_families({
+            "verificationRequirements": failed_item.get("verificationRequirements"),
+        })
+        if verification_families:
+            observed_families: set[str] = set()
+            for item in [*verification, *tests_run]:
+                status = str(item.get("status") or "").strip().lower()
+                if status not in {"passed", "success", "completed"}:
+                    continue
+                observed_families.update(self._completion_verification_item_families(item))
+            if verification_families.isdisjoint(observed_families):
+                return False
+        return bool(expected_paths or verification_families)
 
     def _completion_child_task_kind(self, item: dict[str, Any]) -> str:
         text = " ".join(
@@ -5350,6 +5489,23 @@ class TaskLifecycleMixin:
         if any(token in text for token in ("backend", "blog_models.py", "blog_service.py", "blog_api.py", "blog_storage.py")):
             return "backend"
         return ""
+
+    def _completion_child_task_identity_tokens(self, item: dict[str, Any]) -> set[str]:
+        text = " ".join(
+            str(item.get(key) or "")
+            for key in ("summary", "title")
+        ).casefold()
+        stop_words = {
+            "the", "and", "for", "with", "from", "into", "after", "before", "task", "child",
+            "status", "runtime", "continue", "previous", "partial", "handoff", "instead",
+            "restarting", "repair", "fix", "failed", "failure", "blocked", "completion",
+            "because", "verification", "review", "worker", "planner",
+        }
+        tokens = {
+            token for token in re.findall(r"[a-z0-9_]+", text)
+            if len(token) > 2 and token not in stop_words
+        }
+        return tokens
 
     def _structural_command_resolution_key(self, command: Any) -> tuple[str, tuple[str, ...]] | None:
         text = str(command or "").strip().casefold()

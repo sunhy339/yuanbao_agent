@@ -199,6 +199,44 @@ class TestDAGExecutorExecute:
         assert result["partialHandoffs"][0]["subtaskId"] == "a"
         assert "pendingVerification=python -m py_compile incident_models.py" in result["subtasks"][0].result
 
+    def test_failed_dispatch_status_retries_once_with_continuation_prompt(self) -> None:
+        class PartialRetrySubagent:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+                self._count = 0
+
+            def dispatch(self, params: dict[str, Any]) -> dict[str, Any]:
+                self.calls.append(params)
+                self._count += 1
+                if self._count == 1:
+                    return {
+                        "status": "failed",
+                        "summary": "Timed out.",
+                        "error": {
+                            "message": "Timed out.",
+                            "partialHandoff": {
+                                "status": "CHILD_TASK_TIMEOUT",
+                                "changedFiles": [{"path": "tests/test_incident.py"}],
+                                "pendingVerification": ["python -m pytest -q"],
+                            },
+                        },
+                    }
+                return {"status": "completed", "summary": "continued and tests pass"}
+
+        subtasks = [
+            Subtask(id="a", title="Tests", description="Write incident tests", dependencies=[]),
+        ]
+        plan = _make_plan(subtasks)
+        subagent = PartialRetrySubagent()
+        executor = DAGExecutor(subagent)
+
+        result = executor.execute(plan, session_id="sess-1", parent_task_id="task-1")
+
+        assert result["success"] is True
+        assert len(subagent.calls) == 2
+        assert "Continue from the previous partial handoff" in subagent.calls[1]["prompt"]
+        assert subagent.calls[1]["planningPrompt"] != "Write incident tests"
+
     def test_passes_session_and_parent_to_dispatch(self) -> None:
         subtasks = [
             Subtask(id="a", title="A", description="a", dependencies=[]),

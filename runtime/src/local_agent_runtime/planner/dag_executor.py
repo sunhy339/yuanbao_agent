@@ -7,7 +7,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from ..observability.tracer import Tracer
-from ..orchestration.partial_handoff import partial_handoff_from_dispatch_result, summarize_partial_handoff
+from ..orchestration.partial_handoff import (
+    build_continuation_prompt,
+    partial_handoff_from_dispatch_result,
+    summarize_partial_handoff,
+)
 from ..services.subagent_service import SubagentService
 from .types import (
     PlanResult,
@@ -253,28 +257,39 @@ class DAGExecutor:
         if on_subtask_callback is not None:
             _subtask_t0 = __import__("time").monotonic()
             on_subtask_callback(subtask_id, "started", {"subtaskId": subtask_id, "subtaskTitle": subtask.title})
+        description = subtask.description
+        continuation_used = False
         try:
-            dispatch_result = self._subagent.dispatch({
-                "prompt": build_subtask_prompt(
-                    parent_goal=parent_goal,
-                    subtask=subtask,
-                    completed_context=results,
-                    compact=True,
-                ),
-                "planningPrompt": subtask.description,
-                "title": subtask.title,
-                "sessionId": session_id,
-                "taskId": parent_task_id,
-                "agentType": normalize_subtask_agent_type(subtask.agent_type),
-                "childToolAllowlist": child_tool_allowlist_for_agent(subtask.agent_type),
-                "profile": {
-                    "ownedScope": list(subtask.owned_scope),
-                    "expectedArtifacts": [dict(item) for item in subtask.expected_artifacts],
-                    "verificationRequirements": [dict(item) for item in subtask.verification_requirements],
-                },
-                **({"timeoutMs": child_timeout_ms} if child_timeout_ms is not None else {}),
-            })
-            if str(dispatch_result.get("status") or "").strip().lower() == "failed":
+            for _attempt in range(2):
+                dispatch_result = self._subagent.dispatch({
+                    "prompt": build_subtask_prompt(
+                        parent_goal=parent_goal,
+                        subtask=subtask,
+                        prompt_override=description,
+                        completed_context=results,
+                        compact=True,
+                    ),
+                    "planningPrompt": description,
+                    "title": subtask.title,
+                    "sessionId": session_id,
+                    "taskId": parent_task_id,
+                    "agentType": normalize_subtask_agent_type(subtask.agent_type),
+                    "childToolAllowlist": child_tool_allowlist_for_agent(subtask.agent_type),
+                    "profile": {
+                        "ownedScope": list(subtask.owned_scope),
+                        "expectedArtifacts": [dict(item) for item in subtask.expected_artifacts],
+                        "verificationRequirements": [dict(item) for item in subtask.verification_requirements],
+                    },
+                    **({"timeoutMs": child_timeout_ms} if child_timeout_ms is not None else {}),
+                })
+                if str(dispatch_result.get("status") or "").strip().lower() != "failed":
+                    with lock:
+                        subtask.status = "completed"
+                        subtask.result = dispatch_result.get("summary") or "Completed"
+                        completed.add(subtask.id)
+                        results[subtask.id] = subtask.result
+                    break
+
                 error = dispatch_result.get("error") if isinstance(dispatch_result.get("error"), dict) else {}
                 partial_handoff = partial_handoff_from_dispatch_result(dispatch_result)
                 message = str(
@@ -290,12 +305,14 @@ class DAGExecutor:
                     handoff_summary = summarize_partial_handoff(partial_handoff)
                     if handoff_summary:
                         message = f"{message}\n{handoff_summary}"
+                    if not continuation_used:
+                        description = build_continuation_prompt(
+                            original_description=subtask.description,
+                            handoff=partial_handoff,
+                        )
+                        continuation_used = True
+                        continue
                 raise RuntimeError(message)
-            with lock:
-                subtask.status = "completed"
-                subtask.result = dispatch_result.get("summary") or "Completed"
-                completed.add(subtask.id)
-                results[subtask.id] = subtask.result
             if on_subtask_callback is not None and _subtask_t0 is not None:
                 duration_ms = int((__import__("time").monotonic() - _subtask_t0) * 1000)
                 on_subtask_callback(subtask_id, "completed", {

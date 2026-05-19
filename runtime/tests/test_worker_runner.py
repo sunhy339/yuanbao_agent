@@ -8,7 +8,7 @@ import local_agent_runtime.services.worker_runner as worker_runner_module
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.services.collaboration_service import CollaborationService
 from local_agent_runtime.services.subagent_service import SubagentService
-from local_agent_runtime.services.worker_runner import ChildTaskRequest, WorkerRunner
+from local_agent_runtime.services.worker_runner import ChildTaskRequest, ChildTaskTimeoutError, WorkerRunner
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 
 
@@ -266,6 +266,52 @@ def test_worker_runner_marks_collaboration_failed_when_executor_returns_failed_s
         assert task["status"] == "failed"
         assert worker["status"] == "failed"
         assert response["summary"] == "Completion blocked by child runtime."
+    finally:
+        store.close()
+
+
+def test_worker_runner_failure_includes_partial_handoff_from_runtime_task(tmp_path: Path) -> None:
+    def executor(context: Any) -> dict[str, Any]:
+        runtime_task = store.create_task(
+            session_id=records["session"]["id"],
+            task_type="subagent",
+            goal=context.request.prompt,
+            plan=[],
+            routing={"parentRuntimeTaskId": records["parent_task"]["id"]},
+        )
+        store.update_task(
+            runtime_task["id"],
+            status="running",
+            changed_files=[{"path": "incident_models.py", "reason": "write_file wrote model code"}],
+            commands=[],
+        )
+        raise ChildTaskTimeoutError(1.2)
+
+    store, runner, records = _runner_context(tmp_path, executor=executor)
+    try:
+        response = runner.run_child_task(
+            ChildTaskRequest(
+                prompt="build incident models",
+                title="Build incident models",
+                agent_type="worker",
+                session_id=records["session"]["id"],
+                parent_runtime_task_id=records["parent_task"]["id"],
+                profile={
+                    "expectedArtifacts": [{"kind": "file", "path": "incident_models.py"}],
+                    "verificationRequirements": [
+                        {"kind": "command", "command": "python -m py_compile incident_models.py"}
+                    ],
+                },
+            )
+        )
+
+        handoff = response["error"]["partialHandoff"]
+        assert response["status"] == "failed"
+        assert handoff["status"] == "CHILD_TASK_TIMEOUT"
+        assert handoff["runtimeTaskStatus"] == "running"
+        assert handoff["changedFiles"][0]["path"] == "incident_models.py"
+        assert handoff["pendingVerification"] == ["python -m py_compile incident_models.py"]
+        assert "Run pending verification" in handoff["nextAction"]
     finally:
         store.close()
 

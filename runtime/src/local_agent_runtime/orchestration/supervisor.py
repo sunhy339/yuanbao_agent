@@ -15,6 +15,11 @@ from ..planner.types import (
 )
 from ..provider.adapter import ProviderAdapter
 from ..services.subagent_service import SubagentService
+from .partial_handoff import (
+    build_continuation_prompt,
+    partial_handoff_from_dispatch_result,
+    summarize_partial_handoff,
+)
 from .result_synthesizer import ResultSynthesizer
 from .types import OrchestrationResult
 
@@ -107,6 +112,7 @@ class SupervisorOrchestrator:
         failed: set[str] = set(failed_ids or ())
         results: dict[str, str] = dict(prior_results or ())
         subtask_results: list[dict[str, Any]] = []
+        partial_handoffs: list[dict[str, Any]] = []
         review_count = 0
         parent_task_id = task.get("id", "")
 
@@ -151,6 +157,7 @@ class SupervisorOrchestrator:
                 parent_goal=goal,
                 child_timeout_ms=child_timeout_ms,
                 provider_context=provider_context,
+                partial_handoffs=partial_handoffs,
             )
             review_count += self._last_review_count
 
@@ -174,6 +181,7 @@ class SupervisorOrchestrator:
                     completed=list(completed),
                     failed=list(failed),
                     results=dict(results),
+                    partial_handoffs=list(partial_handoffs),
                 )
 
         # Synthesize
@@ -192,6 +200,7 @@ class SupervisorOrchestrator:
             completed=list(completed),
             failed=list(failed),
             results=dict(results),
+            partial_handoffs=list(partial_handoffs),
         )
 
     # ------------------------------------------------------------------
@@ -207,10 +216,12 @@ class SupervisorOrchestrator:
         parent_goal: str | None = None,
         child_timeout_ms: int | None = None,
         provider_context: dict[str, Any] | None = None,
+        partial_handoffs: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Execute a sub-task with supervisor review and retry loop."""
         self._last_review_count = 0
         description = subtask.description
+        continuation_used = False
 
         for attempt in range(self._max_retries + 1):
             # Dispatch
@@ -238,6 +249,22 @@ class SupervisorOrchestrator:
                 result_text = dispatch_result.get("summary") or "Completed"
                 if str(dispatch_result.get("status") or "").strip().lower() == "failed":
                     error = dispatch_result.get("error") if isinstance(dispatch_result.get("error"), dict) else {}
+                    partial_handoff = partial_handoff_from_dispatch_result(dispatch_result)
+                    if partial_handoff:
+                        partial_handoff["subtaskId"] = subtask.id
+                        partial_handoff["subtaskTitle"] = subtask.title
+                        if partial_handoffs is not None:
+                            partial_handoffs.append(partial_handoff)
+                        handoff_summary = summarize_partial_handoff(partial_handoff)
+                        if handoff_summary:
+                            result_text = f"{result_text}\n{handoff_summary}"
+                        if not continuation_used and attempt < self._max_retries:
+                            description = build_continuation_prompt(
+                                original_description=subtask.description,
+                                handoff=partial_handoff,
+                            )
+                            continuation_used = True
+                            continue
                     message = str(
                         error.get("message")
                         or dispatch_result.get("summary")

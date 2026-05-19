@@ -191,7 +191,8 @@ def build_subtask_prompt(
                 "Execution contract:",
                 "- Stay inside your owned scope and produce only the artifacts this subtask calls for.",
                 "- Run the verification commands this subtask requires when they are relevant.",
-                "- If blocked, report the exact blocked artifact or verification instead of claiming success.",
+                "- Prioritize durable progress: write the smallest useful artifact set first, then verify.",
+                "- If blocked, timed out, or unable to finish, report changed files, pending verification, blockers, and the next action instead of claiming success.",
             ]
         )
         return "\n".join(lines)
@@ -221,7 +222,8 @@ def build_subtask_prompt(
         "[Execution contract]",
         "- Do not shrink or reinterpret the parent task. Preserve explicit file, test, documentation, and verification requirements from the parent task.",
         "- If this subtask owns implementation or verification, produce the concrete files and commands needed for the parent acceptance criteria.",
-        "- If a required artifact cannot be produced, say exactly which parent requirement is blocked instead of reporting success.",
+        "- Prioritize durable progress: write the smallest useful artifact set first, then run verification.",
+        "- If a required artifact cannot be produced or time runs out, say exactly which parent requirement is blocked, which files changed, which verification is pending, and what should happen next.",
     ])
     return "\n".join(lines)
 

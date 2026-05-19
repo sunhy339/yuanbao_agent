@@ -167,6 +167,38 @@ class TestDAGExecutorExecute:
         assert subtask.status == "failed"
         assert "Failed status: Boom" in subtask.result
 
+    def test_failed_dispatch_status_preserves_partial_handoff(self) -> None:
+        class PartialFailSubagent:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+
+            def dispatch(self, params: dict[str, Any]) -> dict[str, Any]:
+                self.calls.append(params)
+                return {
+                    "status": "failed",
+                    "summary": "Timed out.",
+                    "error": {
+                        "message": "Timed out.",
+                        "partialHandoff": {
+                            "status": "CHILD_TASK_TIMEOUT",
+                            "changedFiles": [{"path": "incident_models.py"}],
+                            "pendingVerification": ["python -m py_compile incident_models.py"],
+                        },
+                    },
+                }
+
+        subtasks = [
+            Subtask(id="a", title="Models", description="Build models", dependencies=[]),
+        ]
+        plan = _make_plan(subtasks)
+        executor = DAGExecutor(PartialFailSubagent())
+
+        result = executor.execute(plan, session_id="sess-1", parent_task_id="task-1")
+
+        assert result["success"] is False
+        assert result["partialHandoffs"][0]["subtaskId"] == "a"
+        assert "pendingVerification=python -m py_compile incident_models.py" in result["subtasks"][0].result
+
     def test_passes_session_and_parent_to_dispatch(self) -> None:
         subtasks = [
             Subtask(id="a", title="A", description="a", dependencies=[]),

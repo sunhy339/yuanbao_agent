@@ -30,6 +30,18 @@ class MockSubagentService:
         return {"summary": summary, "status": "completed"}
 
 
+class SequenceSubagentService:
+    def __init__(self, responses: list[dict[str, Any]]) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._responses = list(responses)
+
+    def dispatch(self, params: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(params)
+        if not self._responses:
+            raise AssertionError("No scripted subagent response left")
+        return self._responses.pop(0)
+
+
 class MockProvider:
     """Returns configurable review responses."""
 
@@ -174,6 +186,42 @@ class TestSupervisorDispatchFailureStatus:
 
         assert result.success is False
         assert "sub-0" in result.failed
+
+    def test_partial_handoff_failure_retries_as_continuation(self) -> None:
+        mock_sub = SequenceSubagentService([
+            {
+                "status": "failed",
+                "summary": "Child task timed out.",
+                "error": {
+                    "message": "Child task timed out.",
+                    "partialHandoff": {
+                        "status": "CHILD_TASK_TIMEOUT",
+                        "changedFiles": [{"path": "tests/test_incident.py"}],
+                        "pendingVerification": ["python -m pytest -q"],
+                    },
+                },
+            },
+            {"status": "completed", "summary": "continued and tests pass"},
+        ])
+        mock_prov = MockProvider(
+            decompose_subtasks=[
+                {"id": "sub-0", "title": "Tests", "description": "Write incident tests", "dependencies": []},
+            ],
+            reviews=[json.dumps({"approved": True, "feedback": ""})],
+        )
+        supervisor = SupervisorOrchestrator(
+            provider=mock_prov, subagent_service=mock_sub, max_retries=1,
+        )
+
+        result = supervisor.execute(
+            "Build tests", {},
+            session_id="sess-1", task=_make_task(),
+        )
+
+        assert result.success is True
+        assert len(mock_sub.calls) == 2
+        assert "Continue from the previous partial handoff" in mock_sub.calls[1]["prompt"]
+        assert result.partial_handoffs[0]["subtaskId"] == "sub-0"
 
 
 class TestSupervisorPause:

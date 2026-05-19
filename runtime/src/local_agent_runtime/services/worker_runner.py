@@ -130,11 +130,19 @@ class WorkerRunner:
             execution = self._execute_with_policy(context)
         except Exception as exc:
             context.cancellation_event.set()
+            error = self._error_payload(exc, attempts=context.attempt_number)
+            partial_handoff = self._partial_handoff_from_failure(
+                request=request,
+                task=running,
+                error=error,
+            )
+            if partial_handoff:
+                error["partialHandoff"] = partial_handoff
             return self._fail_child_task(
                 request=request,
                 task=running,
                 worker=claimed["worker"],
-                error=self._error_payload(exc, attempts=context.attempt_number),
+                error=error,
             )
 
         if execution.get("status") == "waiting_approval":
@@ -145,20 +153,29 @@ class WorkerRunner:
                 execution=execution,
             )
         if execution.get("status") == "failed":
+            error = {
+                "code": "CHILD_TASK_EXECUTION_FAILED",
+                "message": str(execution.get("summary") or "Child worker failed."),
+                "type": "ChildTaskExecutionFailed",
+                "runtimeTaskStatus": (
+                    execution.get("result", {}).get("runtimeTaskStatus")
+                    if isinstance(execution.get("result"), dict)
+                    else None
+                ),
+            }
+            partial_handoff = self._partial_handoff_from_execution(
+                request=request,
+                task=running,
+                execution=execution,
+                error=error,
+            )
+            if partial_handoff:
+                error["partialHandoff"] = partial_handoff
             return self._fail_child_task(
                 request=request,
                 task=running,
                 worker=claimed["worker"],
-                error={
-                    "code": "CHILD_TASK_EXECUTION_FAILED",
-                    "message": str(execution.get("summary") or "Child worker failed."),
-                    "type": "ChildTaskExecutionFailed",
-                    "runtimeTaskStatus": (
-                        execution.get("result", {}).get("runtimeTaskStatus")
-                        if isinstance(execution.get("result"), dict)
-                        else None
-                    ),
-                },
+                error=error,
             )
 
         completion = self._collaboration.complete_collaboration_task(
@@ -801,6 +818,170 @@ class WorkerRunner:
             "message": message,
             "summary": summary,
         }
+
+    def _partial_handoff_from_execution(
+        self,
+        *,
+        request: ChildTaskRequest,
+        task: dict[str, Any],
+        execution: dict[str, Any],
+        error: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        payload = execution.get("payload") if isinstance(execution.get("payload"), dict) else {}
+        runtime_task = payload.get("runtimeTask") if isinstance(payload.get("runtimeTask"), dict) else None
+        if runtime_task is None:
+            result = execution.get("result") if isinstance(execution.get("result"), dict) else {}
+            runtime_task_id = result.get("runtimeTaskId")
+            runtime_task = self._runtime_task_by_id(runtime_task_id)
+        return self._build_partial_handoff(
+            request=request,
+            collaboration_task=task,
+            runtime_task=runtime_task,
+            error=error,
+        )
+
+    def _partial_handoff_from_failure(
+        self,
+        *,
+        request: ChildTaskRequest,
+        task: dict[str, Any],
+        error: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return self._build_partial_handoff(
+            request=request,
+            collaboration_task=task,
+            runtime_task=self._latest_runtime_task_for_request(request),
+            error=error,
+        )
+
+    def _build_partial_handoff(
+        self,
+        *,
+        request: ChildTaskRequest,
+        collaboration_task: dict[str, Any],
+        runtime_task: dict[str, Any] | None,
+        error: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        profile = request.profile if isinstance(request.profile, dict) else {}
+        runtime = runtime_task if isinstance(runtime_task, dict) else {}
+        changed_files = runtime.get("changedFiles") if isinstance(runtime.get("changedFiles"), list) else []
+        commands = runtime.get("commands") if isinstance(runtime.get("commands"), list) else []
+        verification = runtime.get("verification") if isinstance(runtime.get("verification"), list) else []
+        expected_artifacts = profile.get("expectedArtifacts") if isinstance(profile.get("expectedArtifacts"), list) else []
+        verification_requirements = (
+            profile.get("verificationRequirements")
+            if isinstance(profile.get("verificationRequirements"), list)
+            else []
+        )
+        pending_verification = self._pending_verification_commands(
+            verification_requirements=verification_requirements,
+            commands=commands,
+            verification=verification,
+        )
+        has_progress = bool(
+            runtime
+            or changed_files
+            or commands
+            or verification
+            or expected_artifacts
+            or verification_requirements
+        )
+        if not has_progress:
+            return None
+        status = str(error.get("code") or error.get("type") or "child_failed")
+        handoff = {
+            "status": status,
+            "reason": str(error.get("message") or "Child task did not finish."),
+            "collaborationTaskId": collaboration_task.get("id"),
+            "runtimeTaskId": runtime.get("id"),
+            "runtimeTaskStatus": runtime.get("status"),
+            "title": request.title,
+            "agentType": request.agent_type,
+            "changedFiles": deepcopy(changed_files),
+            "commands": deepcopy(commands),
+            "verification": deepcopy(verification),
+            "expectedArtifacts": deepcopy(expected_artifacts),
+            "verificationRequirements": deepcopy(verification_requirements),
+            "pendingVerification": pending_verification,
+            "nextAction": self._partial_handoff_next_action(
+                changed_files=changed_files,
+                pending_verification=pending_verification,
+                expected_artifacts=expected_artifacts,
+            ),
+        }
+        return {key: value for key, value in handoff.items() if value not in (None, "", [])}
+
+    def _pending_verification_commands(
+        self,
+        *,
+        verification_requirements: list[Any],
+        commands: list[Any],
+        verification: list[Any],
+    ) -> list[str]:
+        passed_text = " ".join(
+            str(item.get("command") or item.get("name") or "")
+            for item in [*commands, *verification]
+            if isinstance(item, dict)
+            and str(item.get("status") or "").strip().lower() in {"passed", "completed", "success"}
+            and item.get("exitCode") in (0, "0", None)
+        ).casefold()
+        pending: list[str] = []
+        for item in verification_requirements:
+            if not isinstance(item, dict):
+                continue
+            command = str(item.get("command") or item.get("name") or "").strip()
+            if command and command.casefold() not in passed_text:
+                pending.append(command)
+        return list(dict.fromkeys(pending))
+
+    @staticmethod
+    def _partial_handoff_next_action(
+        *,
+        changed_files: list[Any],
+        pending_verification: list[str],
+        expected_artifacts: list[Any],
+    ) -> str:
+        if pending_verification:
+            return "Run pending verification and repair any failures."
+        if changed_files:
+            return "Inspect changed files, finish missing acceptance criteria, then verify."
+        if expected_artifacts:
+            return "Create the expected artifacts, then verify."
+        return "Inspect current state and continue from the last child attempt."
+
+    def _runtime_task_by_id(self, task_id: Any) -> dict[str, Any] | None:
+        if not isinstance(task_id, str) or not task_id:
+            return None
+        store = getattr(self._collaboration, "store", None) or getattr(self._collaboration, "_store", None)
+        if store is None or not hasattr(store, "get_task"):
+            return None
+        try:
+            return store.get_task({"taskId": task_id})["task"]
+        except Exception:
+            return None
+
+    def _latest_runtime_task_for_request(self, request: ChildTaskRequest) -> dict[str, Any] | None:
+        if not request.session_id:
+            return None
+        store = getattr(self._collaboration, "store", None) or getattr(self._collaboration, "_store", None)
+        if store is None or not hasattr(store, "list_tasks"):
+            return None
+        try:
+            tasks = store.list_tasks({"sessionId": request.session_id}).get("tasks", [])
+        except Exception:
+            return None
+        parent_id = request.parent_runtime_task_id
+        prompt = request.prompt.strip()
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            routing = task.get("routing") if isinstance(task.get("routing"), dict) else {}
+            if parent_id and routing.get("parentRuntimeTaskId") != parent_id:
+                continue
+            if prompt and str(task.get("goal") or "").strip() != prompt:
+                continue
+            return task
+        return None
 
     def _message_payload(
         self,

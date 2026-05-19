@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from ..observability.tracer import Tracer
+from ..orchestration.partial_handoff import partial_handoff_from_dispatch_result, summarize_partial_handoff
 from ..services.subagent_service import SubagentService
 from .types import (
     PlanResult,
@@ -70,6 +71,7 @@ class DAGExecutor:
         completed: set[str] = set(completed_ids or ())
         failed: set[str] = set(failed_ids or ())
         results: dict[str, str] = dict(prior_results or ())
+        partial_handoffs: list[dict[str, Any]] = []
         lock = threading.Lock()
 
         # Build index once to avoid O(N) linear scans
@@ -143,6 +145,7 @@ class DAGExecutor:
                         session_id, parent_task_id, lock,
                         parent_goal=parent_goal,
                         child_timeout_ms=child_timeout_ms,
+                        partial_handoffs=partial_handoffs,
                         tracer=tracer,
                         on_subtask_callback=on_subtask_callback,
                     )
@@ -156,6 +159,7 @@ class DAGExecutor:
                             session_id, parent_task_id, lock,
                             parent_goal=parent_goal,
                             child_timeout_ms=child_timeout_ms,
+                            partial_handoffs=partial_handoffs,
                             tracer=tracer,
                             on_subtask_callback=on_subtask_callback,
                         ): sid
@@ -178,6 +182,7 @@ class DAGExecutor:
                     "failed": list(failed),
                     "paused": True,
                     "results": dict(results),
+                    "partialHandoffs": list(partial_handoffs),
                 }
 
         success = len(failed) == 0
@@ -191,6 +196,7 @@ class DAGExecutor:
             "success": success,
             "completed": list(completed),
             "failed": list(failed),
+            "partialHandoffs": list(partial_handoffs),
         }
 
     def synthesize_results(self, subtasks: list[Subtask]) -> str:
@@ -225,6 +231,7 @@ class DAGExecutor:
         lock: threading.Lock,
         parent_goal: str | None = None,
         child_timeout_ms: int | None = None,
+        partial_handoffs: list[dict[str, Any]] | None = None,
         tracer: Tracer | None = None,
         on_subtask_callback: Callable[[str, str, dict[str, Any]], None] | None = None,
     ) -> None:
@@ -269,11 +276,20 @@ class DAGExecutor:
             })
             if str(dispatch_result.get("status") or "").strip().lower() == "failed":
                 error = dispatch_result.get("error") if isinstance(dispatch_result.get("error"), dict) else {}
+                partial_handoff = partial_handoff_from_dispatch_result(dispatch_result)
                 message = str(
                     error.get("message")
                     or dispatch_result.get("summary")
                     or "Child subtask failed."
                 ).strip()
+                if partial_handoff:
+                    partial_handoff["subtaskId"] = subtask.id
+                    partial_handoff["subtaskTitle"] = subtask.title
+                    if partial_handoffs is not None:
+                        partial_handoffs.append(partial_handoff)
+                    handoff_summary = summarize_partial_handoff(partial_handoff)
+                    if handoff_summary:
+                        message = f"{message}\n{handoff_summary}"
                 raise RuntimeError(message)
             with lock:
                 subtask.status = "completed"

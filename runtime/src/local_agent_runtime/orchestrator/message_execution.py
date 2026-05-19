@@ -516,6 +516,7 @@ class MessageExecutionMixin:
                 payload={
                     "coverage": coverage,
                     "success": execution["success"],
+                    "partialHandoffs": execution.get("partialHandoffs", []),
                 },
             )
 

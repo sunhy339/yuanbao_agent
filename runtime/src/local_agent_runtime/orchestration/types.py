@@ -26,3 +26,4 @@ class OrchestrationResult:
     completed: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     results: dict[str, str] = field(default_factory=dict)
+    partial_handoffs: list[dict[str, Any]] = field(default_factory=list)

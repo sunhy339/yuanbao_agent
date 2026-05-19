@@ -15,6 +15,11 @@ from ..planner.types import (
 )
 from ..provider.adapter import ProviderAdapter
 from ..services.subagent_service import SubagentService
+from .partial_handoff import (
+    build_continuation_prompt,
+    partial_handoff_from_dispatch_result,
+    summarize_partial_handoff,
+)
 from .result_synthesizer import ResultSynthesizer
 from .types import OrchestrationResult
 
@@ -80,8 +85,10 @@ class SwarmOrchestrator:
         failed: set[str] = set(failed_ids or ())
         results: dict[str, str] = dict(prior_results or ())
         subtask_results: list[dict[str, Any]] = []
+        partial_handoffs: list[dict[str, Any]] = []
         handoff_count = 0
         parent_task_id = task.get("id", "")
+        continuation_attempted: set[str] = set()
 
         # Build quick lookup
         subtask_map = {s.id: s for s in plan.subtasks}
@@ -141,20 +148,35 @@ class SwarmOrchestrator:
                 })
                 if str(dispatch_result.get("status") or "").strip().lower() == "failed":
                     error = dispatch_result.get("error") if isinstance(dispatch_result.get("error"), dict) else {}
+                    partial_handoff = partial_handoff_from_dispatch_result(dispatch_result)
+                    if partial_handoff:
+                        partial_handoff["subtaskId"] = subtask.id
+                        partial_handoff["subtaskTitle"] = subtask.title
+                        partial_handoffs.append(partial_handoff)
+                        if subtask.id not in continuation_attempted:
+                            continuation_attempted.add(subtask.id)
+                            self._last_handoff_prompt = build_continuation_prompt(
+                                original_description=subtask.description,
+                                handoff=partial_handoff,
+                            )
+                            current_id = subtask.id
+                            continue
                     message = str(
                         error.get("message")
                         or dispatch_result.get("summary")
                         or "Child subtask failed."
                     ).strip()
+                    handoff_summary = summarize_partial_handoff(partial_handoff)
                     subtask.status = "failed"
-                    subtask.result = message
+                    subtask.result = f"{message}\n{handoff_summary}" if handoff_summary else message
                     failed.add(subtask.id)
-                    results[subtask.id] = f"Failed: {message}"
+                    results[subtask.id] = f"Failed: {subtask.result}"
                 else:
                     subtask.status = "completed"
                     subtask.result = dispatch_result.get("summary") or "Completed"
                     completed.add(subtask.id)
                     results[subtask.id] = subtask.result
+                    self._last_handoff_prompt = None
             except Exception as exc:  # noqa: BLE001
                 subtask.status = "failed"
                 subtask.result = str(exc)
@@ -175,6 +197,7 @@ class SwarmOrchestrator:
                     completed=list(completed),
                     failed=list(failed),
                     results=dict(results),
+                    partial_handoffs=list(partial_handoffs),
                 )
 
             # Handoff decision
@@ -206,6 +229,7 @@ class SwarmOrchestrator:
             completed=list(completed),
             failed=list(failed),
             results=dict(results),
+            partial_handoffs=list(partial_handoffs),
         )
 
     # ------------------------------------------------------------------

@@ -483,6 +483,7 @@ class ContextCompactor:
             "failedTools": failed_tools[:8],
             "verificationStatus": self._handoff_verification_status(verification, commands, failed_tools),
             "verification": verification[:8],
+            "pendingEvidence": self._handoff_pending_evidence(task)[:8],
             "decisions": self._handoff_decisions(task, summary)[:8],
             "risks": self._handoff_risks(task)[:8],
             "nextCommand": self._handoff_next_action(task, commands, failed_tools),
@@ -538,7 +539,7 @@ class ContextCompactor:
                     })
             elif isinstance(item, str):
                 files.append({"path": item})
-        return files
+        return ContextCompactor._dedupe_records(files, keys=("path", "status", "summary"))
 
     @staticmethod
     def _handoff_commands(task: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -554,7 +555,7 @@ class ContextCompactor:
                 "exitCode": item.get("exitCode"),
                 "summary": item.get("summary"),
             })
-        return commands
+        return ContextCompactor._dedupe_records(commands, keys=("command", "status", "exitCode", "summary"))
 
     @staticmethod
     def _handoff_verification(task: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -570,7 +571,54 @@ class ContextCompactor:
                     "status": item.get("status"),
                     "summary": item.get("summary"),
                 })
-        return verification
+        return ContextCompactor._dedupe_records(verification, keys=("name", "status", "summary"))
+
+    @staticmethod
+    def _handoff_pending_evidence(task: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if not task:
+            return []
+        structured = task.get("structuredResult")
+        evidence = structured.get("completionEvidence") if isinstance(structured, dict) else None
+        if not isinstance(evidence, dict):
+            return []
+        pending: list[dict[str, Any]] = []
+        requests = evidence.get("advisorRequestedEvidence")
+        if isinstance(requests, list):
+            for item in requests:
+                if not isinstance(item, dict):
+                    continue
+                status = str(item.get("status") or "").strip()
+                if status == "satisfied":
+                    continue
+                pending.append({
+                    "kind": item.get("kind"),
+                    "status": status or "requested",
+                    "blocking": item.get("blocking") is True,
+                    "summary": item.get("summary"),
+                    "target": item.get("target"),
+                    "source": item.get("source"),
+                })
+        executors = evidence.get("advisorEvidenceExecutor")
+        if isinstance(executors, list):
+            for item in executors:
+                if not isinstance(item, dict):
+                    continue
+                status = str(item.get("status") or "").strip()
+                if status == "satisfied":
+                    continue
+                pending.append({
+                    "kind": item.get("requestKind"),
+                    "status": status or "requested",
+                    "blocking": item.get("blocking") is True,
+                    "summary": item.get("summary"),
+                    "target": item.get("target"),
+                    "executorId": item.get("id"),
+                    "adapterKind": item.get("adapterKind") or item.get("executionType"),
+                })
+        return ContextCompactor._dedupe_records(
+            pending,
+            keys=("kind", "status", "blocking", "summary", "target", "executorId", "adapterKind"),
+        )
 
     @staticmethod
     def _handoff_failed_tools(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -731,6 +779,13 @@ class ContextCompactor:
         if handoff.get("risks"):
             lines.append("Risks:")
             lines.extend(f"- {item}" for item in handoff["risks"][:5])
+        if handoff.get("pendingEvidence"):
+            lines.append("Pending advisor evidence:")
+            for item in handoff["pendingEvidence"][:5]:
+                label = item.get("summary") or item.get("kind") or "advisor evidence"
+                status = item.get("status") or "requested"
+                blocking = " blocking" if item.get("blocking") else ""
+                lines.append(f"- {label} ({status}{blocking})")
         if handoff.get("nextCommand"):
             lines.append(f"Next action: {handoff['nextCommand']}")
         return "\n".join(lines)
@@ -749,6 +804,20 @@ class ContextCompactor:
             if text and text not in seen:
                 seen.add(text)
                 result.append(text)
+        return result
+
+    @staticmethod
+    def _dedupe_records(items: list[dict[str, Any]], *, keys: tuple[str, ...]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        seen: set[tuple[str, ...]] = set()
+        for item in items:
+            cleaned = {key: value for key, value in item.items() if value not in (None, "", [], {})}
+            identity = tuple(str(cleaned.get(key) or "").strip().casefold() for key in keys)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if cleaned:
+                result.append(cleaned)
         return result
 
     def _llm_compaction_decision(

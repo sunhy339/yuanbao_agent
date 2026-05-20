@@ -2597,8 +2597,13 @@ class TestCompletionHardGate:
         assert suggestion["permissionDecision"] == "approval_required"
         assert suggestion["approvalKind"] == "run_command"
         assert suggestion["requiresApproval"] is True
+        assert suggestion["adapterKind"] == "run_command"
+        assert evidence["advisorEvidenceAdapters"]["status"] == "approval_required"
+        assert evidence["advisorEvidenceAdapters"]["counts"]["approvalRequired"] == 1
+        assert evidence["advisorEvidenceAdapters"]["adapters"][0]["adapterKind"] == "run_command"
         evidence_event = next(event for event in captured_events if event.type == "agent.evidence.requested")
         assert evidence_event.payload["executionSuggestions"][0]["command"] == "cmake --build build --target probe"
+        assert evidence_event.payload["adapterSummary"]["status"] == "approval_required"
         assert not [
             event for event in captured_events
             if event.type == "approval.requested" and event.payload.get("kind") == "run_command"
@@ -3312,12 +3317,112 @@ class TestCompletionHardGate:
         assert suggestion["executionState"] == "denied_by_policy"
         assert suggestion["requiresApproval"] is False
         assert "not registered" in suggestion["permissionReason"]
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert evidence["advisorEvidenceAdapters"]["status"] == "blocked"
+        assert evidence["advisorEvidenceAdapters"]["counts"]["blocked"] == 1
+        assert evidence["advisorEvidenceAdapters"]["adapters"][0]["adapterKind"] == "tool"
         evidence_event = next(event for event in captured_events if event.type == "agent.evidence.requested")
         assert evidence_event.payload["executionSuggestions"][0]["executionState"] == "denied_by_policy"
+        assert evidence_event.payload["adapterSummary"]["status"] == "blocked"
         assert not [
             event for event in captured_events
             if event.type == "approval.requested" and event.payload.get("kind") == "advisor_tool"
         ]
+
+    def test_advisor_browser_inspection_maps_to_registered_adapter_without_hard_gate(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, Any]]] = []
+
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                self.calls.append((kind, input_context))
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor selected browser inspection as useful page evidence.",
+                        fallback_reason=None,
+                        proposal_id="surface_browser_1",
+                        confidence=0.86,
+                        payload={
+                            "surface_type": "static_page",
+                            "evidence_requests": [
+                                {
+                                    "kind": "browser_inspection",
+                                    "summary": "Inspect the rendered documentation page.",
+                                    "target": "http://localhost:4173/docs",
+                                    "suggestedTool": {
+                                        "name": "browser",
+                                        "arguments": {"url": "http://localhost:4173/docs", "action": "read"},
+                                    },
+                                    "blocking": False,
+                                },
+                            ],
+                        },
+                    )
+                assert input_context["advisor_evidence_adapters"]["adapters"][0]["adapterKind"] == "browser_inspection_adapter"
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="Browser inspection is tracked as optional evidence; current docs proof is enough.",
+                    fallback_reason=None,
+                    proposal_id="completion_browser_1",
+                    confidence=0.82,
+                    payload={"is_complete": True, "surface_type": "static_page"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True)
+        rt.orchestrator._tool_registry.register(  # noqa: SLF001
+            "browser",
+            lambda params: {"status": "ok", "url": params.get("url"), "content": "Docs page"},
+            {"name": "browser", "description": "Inspect browser content."},
+        )
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        store = rt.store
+        store.update_config({
+            "permissions": {
+                "capabilities": {
+                    "browserAutomation": {"mode": "ask", "scope": "*"},
+                },
+            },
+        })
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "docs.html").write_text("<main>Docs page</main>\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="browser adapter")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Create a static docs page",
+            plan=[],
+            routing={"scenario": "doc_write"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "docs.html", "summary": "created docs page"}],
+            verification=[{"command": "git diff -- docs.html", "status": "passed", "summary": "docs reviewed"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Created the static docs page.",
+            context={"workspace_root": str(project), "routing": {"scenario": "doc_write"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]
+        suggestion = evidence["advisorEvidenceExecutionSuggestions"][0]
+        assert suggestion["toolName"] == "browser"
+        assert suggestion["adapterKind"] == "browser_inspection_adapter"
+        assert evidence["advisorEvidenceAdapters"]["status"] in {"ready", "approval_required"}
+        assert evidence["advisorEvidenceAdapters"]["adapters"][0]["adapterKind"] == "browser_inspection_adapter"
+        evidence_event = next(event for event in captured_events if event.type == "agent.evidence.requested")
+        assert evidence_event.payload["adapterSummary"]["adapters"][0]["adapterKind"] == "browser_inspection_adapter"
 
     def test_advisor_suggested_command_records_permission_denial_without_execution(self, tmp_path: Any) -> None:
         class RecordingAdvisor:

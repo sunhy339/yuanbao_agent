@@ -343,10 +343,42 @@ class TestCompact:
         )
         self.store.update_task(
             task_id=task["id"],
-            changed_files=[{"path": "runtime/src/local_agent_runtime/context/compactor.py", "summary": "Adds handoff"}],
-            commands=[{"command": "python -m pytest runtime/tests/test_context_compactor.py", "status": "failed"}],
-            verification=[{"name": "context compactor tests", "status": "failed", "summary": "one assertion failed"}],
+            changed_files=[
+                {"path": "runtime/src/local_agent_runtime/context/compactor.py", "summary": "Adds handoff"},
+                {"path": "runtime/src/local_agent_runtime/context/compactor.py", "summary": "Adds handoff"},
+            ],
+            commands=[
+                {"command": "python -m pytest runtime/tests/test_context_compactor.py", "status": "failed"},
+                {"command": "python -m pytest runtime/tests/test_context_compactor.py", "status": "failed"},
+            ],
+            verification=[
+                {"name": "context compactor tests", "status": "failed", "summary": "one assertion failed"},
+                {"name": "context compactor tests", "status": "failed", "summary": "one assertion failed"},
+            ],
             risks=[{"summary": "Need rerun after fixing verification"}],
+            structured_result={
+                "completionEvidence": {
+                    "advisorRequestedEvidence": [
+                        {
+                            "kind": "browser_inspection",
+                            "summary": "Inspect the rendered page.",
+                            "status": "missing",
+                            "blocking": True,
+                            "target": "local page",
+                        }
+                    ],
+                    "advisorEvidenceExecutor": [
+                        {
+                            "id": "evexec_browser",
+                            "requestKind": "browser_inspection",
+                            "summary": "Inspect the rendered page.",
+                            "status": "requested",
+                            "blocking": True,
+                            "adapterKind": "browser_inspection_adapter",
+                        }
+                    ],
+                }
+            },
         )
         msgs = [_msg("system", "sys")] + [
             _msg("user", f"turn {index} {_long_content(200)}") for index in range(20)
@@ -362,11 +394,19 @@ class TestCompact:
         assert result.handoff_summary is not None
         assert result.handoff_summary["objective"] == "Implement resumable compaction handoff"
         assert result.handoff_summary["verificationStatus"] == "failed"
+        assert len(result.handoff_summary["modifiedFiles"]) == 1
+        assert len(result.handoff_summary["failedCommands"]) == 1
+        assert len(result.handoff_summary["verification"]) == 1
         assert result.handoff_summary["failedCommands"][0]["command"].startswith("python -m pytest")
+        assert any(
+            item.get("adapterKind") == "browser_inspection_adapter"
+            for item in result.handoff_summary["pendingEvidence"]
+        )
         assert result.handoff_summary["nextCommand"].startswith("Fix or rerun failed command")
         handoff_message = next(message for message in result.kept_messages if "Structured handoff" in message["content"])
         assert "Objective: Implement resumable compaction handoff" in handoff_message["content"]
         assert "Modified files:" in handoff_message["content"]
+        assert "Pending advisor evidence:" in handoff_message["content"]
 
         row = self.store._conn.execute(
             "SELECT handoff_summary_json FROM compaction_records WHERE id = ?",

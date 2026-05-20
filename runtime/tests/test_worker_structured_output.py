@@ -1327,6 +1327,40 @@ class TestCompletionHardGate:
         assert gate["status"] == "needs_user_review"
         assert "summary" in gate["reason"].lower()
 
+    def test_summarizer_child_summary_only_can_complete_without_write_or_verification_evidence(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="summarizer completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="agent",
+            goal="Summarize outcomes and evidence",
+            plan=[],
+            role="summarizer",
+            routing={"scenario": "multi_step_task", "strategy": "plan_execute", "runtimeRole": "summarizer"},
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Summary of completed work and verification evidence.",
+            context={
+                "routing": {"scenario": "multi_step_task", "strategy": "plan_execute", "runtimeRole": "summarizer"},
+                "config": {"policy": {"approvalMode": "none"}},
+                "_child_profile": {
+                    "agentType": "summarizer",
+                    "ownedScope": [],
+                    "expectedArtifacts": [],
+                    "verificationRequirements": [],
+                },
+            },
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        assert result["structuredResult"]["completionEvidence"]["evidenceLevel"] == "summary_only"
+
     def test_explicit_artifact_requirements_block_incomplete_completion(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

@@ -1189,6 +1189,24 @@ class TaskLifecycleMixin:
     def _is_write_or_verification_task(self, *, task: dict[str, Any], context: dict[str, Any]) -> bool:
         routing = task.get("routing") if isinstance(task.get("routing"), dict) else {}
         context_routing = context.get("routing") if isinstance(context.get("routing"), dict) else {}
+        runtime_role = str(
+            routing.get("runtimeRole")
+            or context_routing.get("runtimeRole")
+            or task.get("role")
+            or ""
+        ).strip().lower()
+        contract = self._completion_contract_profile(task=task, context=context)
+        if runtime_role in {"planner", "reviewer", "explorer", "summarizer"}:
+            if isinstance(contract, dict):
+                if self._completion_contract_expected_artifact_paths(contract):
+                    return True
+                expected_artifacts = contract.get("expectedArtifacts")
+                if isinstance(expected_artifacts, list) and expected_artifacts:
+                    return True
+                verification_requirements = contract.get("verificationRequirements")
+                if isinstance(verification_requirements, list) and verification_requirements:
+                    return True
+            return bool(task.get("changedFiles") or task.get("commands") or task.get("verification"))
         scenario = str(routing.get("scenario") or context_routing.get("scenario") or "").strip().lower()
         if scenario in {"code_edit", "debug", "test_write", "doc_write", "multi_step_task", "supervised_task", "swarm_task"}:
             return True
@@ -1196,14 +1214,7 @@ class TaskLifecycleMixin:
             return True
         if routing.get("activeWorktree") or context_routing.get("activeWorktree"):
             return True
-        contract = self._completion_contract_profile(task=task, context=context)
         if isinstance(contract, dict):
-            runtime_role = str(
-                routing.get("runtimeRole")
-                or context_routing.get("runtimeRole")
-                or task.get("role")
-                or ""
-            ).strip().lower()
             owned_scope = contract.get("ownedScope")
             if isinstance(owned_scope, str):
                 owned_scope = [owned_scope]

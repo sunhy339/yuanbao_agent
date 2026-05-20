@@ -5370,12 +5370,35 @@ class TaskLifecycleMixin:
             r"(?<![\w./\\-])((?:[\w.-]+[/\\])*[\w.-]+\.(?:py|js|css|html|md|json|toml|yaml|yml|csv|ts|tsx|jsx))(?![\w.-])",
             re.IGNORECASE,
         )
+        negative_window_tokens = (
+            "delete",
+            "remove",
+            "removed",
+            "not required",
+            "out-of-scope",
+            "out of scope",
+            "do not keep",
+            "should not exist",
+            "if not required",
+            "不需要",
+            "删除",
+            "移除",
+            "多余",
+            "越界",
+            "非前端",
+            "不是交付物",
+        )
         paths: list[str] = []
         seen: set[str] = set()
         for match in path_pattern.finditer(text or ""):
             raw = match.group(1).strip("`'\".,;:()[]{}")
             normalized = raw.replace("\\", "/").lstrip("./")
             if not normalized or normalized.startswith(("%", "$")):
+                continue
+            window_start = max(0, match.start() - 120)
+            window_end = min(len(text or ""), match.end() + 120)
+            context_window = (text or "")[window_start:window_end].casefold()
+            if any(token in context_window for token in negative_window_tokens):
                 continue
             if normalized.casefold() in seen:
                 continue

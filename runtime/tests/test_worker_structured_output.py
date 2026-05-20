@@ -4253,6 +4253,78 @@ class TestCompletionHardGate:
         assert not any(item["criterion"] == "Expected artifact exists: app.js" for item in acceptance)
         assert not any(item["criterion"] == "Expected artifact exists: styles.css" for item in acceptance)
 
+    def test_completion_does_not_require_deleted_out_of_scope_artifact_from_followup_text(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "incident_models.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (project / "incident_storage.py").write_text("VALUE = 2\n", encoding="utf-8")
+        (project / "incident_rules.py").write_text("VALUE = 3\n", encoding="utf-8")
+        (project / "incident_reporting.py").write_text("VALUE = 4\n", encoding="utf-8")
+        (project / "incident_import_export.py").write_text("VALUE = 5\n", encoding="utf-8")
+        (project / "incident_cli.py").write_text("VALUE = 6\n", encoding="utf-8")
+        (project / "README.md").write_text(
+            "# Incident Rules Engine\n\nSINGLE_MODEL_INCIDENT_RULES_ENGINE\n\nINCIDENT_RULES_MEMORY_SQLITE_PYTEST\n",
+            encoding="utf-8",
+        )
+        tests_dir = project / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_incident_engine_rules.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="follow-up deletion")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal=(
+                "Follow-up fix for the previous incident rules engine task. "
+                "The backend implementation and tests passed, but you added an out-of-scope frontend artifact: incident_dashboard.html. "
+                "This task is backend-only and non-frontend. If incident_dashboard.html is not required for the requested backend deliverable, delete it. "
+                "Do not remove the backend Python modules, tests, or README anchors. "
+                "Then rerun python -m pytest -q and python -m py_compile incident_models.py incident_storage.py incident_rules.py incident_reporting.py incident_import_export.py incident_cli.py."
+            ),
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            commands=[
+                {
+                    "id": "cmd_remove",
+                    "command": 'Remove-Item -LiteralPath "incident_dashboard.html"',
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "Removed out-of-scope frontend artifact",
+                },
+                {
+                    "id": "cmd_pytest",
+                    "command": '& "C:\\Python314\\python.exe" -m pytest -q',
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "1 passed",
+                },
+                {
+                    "id": "cmd_py_compile",
+                    "command": '& "C:\\Python314\\python.exe" -m py_compile incident_models.py incident_storage.py incident_rules.py incident_reporting.py incident_import_export.py incident_cli.py',
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "Command passed",
+                },
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Removed the out-of-scope frontend artifact and reverified the backend deliverable.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        acceptance = result["structuredResult"]["completionEvidence"]["acceptance"]
+        assert not any(item["criterion"] == "Expected artifact exists: incident_dashboard.html" for item in acceptance)
+
     def test_completion_review_rejection_fails_task(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

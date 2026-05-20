@@ -34,11 +34,20 @@ Current status:
   MCP live, and desktop session recovery.
 - The latest MCP live issue was fixed by `de722aea Fix MCP partial update
   validation`: partial MCP updates now merge stored config before validation.
+- Strict MCP + Skills live smoke is now passing with the real `gpt-5.5`
+  provider override. The release/manual smoke reports `ok=true` only after it
+  proves connected MCP tools, explicit skill usage, active worktree binding,
+  root workspace isolation, worktree output, task command-log pytest success,
+  and direct pytest success.
 
 Current priority order:
 
 1. Complex real LLM regression over the main workflow.
 2. Real MCP + Skills combined flow with a local MCP server and skill preset.
+   The release/manual smoke should be strict: it must prove connected MCP tools,
+   explicit skill usage, worktree isolation, generated worktree output, command
+   execution evidence, and passing verification instead of merely writing a
+   best-effort report.
 3. Add concrete advisor evidence adapters only when the real flow requests
    missing executable proof.
 4. Improve cockpit visibility for advisor evidence executor records.

@@ -1655,6 +1655,7 @@ Latest verification gate:
 | Desktop UI smoke | Passed | Tauri shell renders workbench, new session, settings, scheduled empty state, and navigation. |
 | Desktop MCP live | Passed after fix | Create/list/update/enable/refresh/disable/delete MCP server flow passed. The fix was `de722aea Fix MCP partial update validation`. |
 | Desktop session recovery | Passed | Seeded session/message/task, restarted desktop flow, recovered message and task state. |
+| Strict MCP + Skills live smoke | Passed | `runtime/smoke_runs/worktree_mcp_skill_smoke.py` ran with the real `gpt-5.5` provider override and produced `ok=true` at `runtime/smoke_runs/worktree_mcp_skill_20260520_103947/report.json`. It proved connected local MCP tools, explicit skill usage, active worktree binding, root workspace unchanged, MCP-guided README update in the worktree, task command-log pytest success, and direct pytest success. |
 
 Issue found and fixed during the gate:
 
@@ -1678,12 +1679,25 @@ Current mainline remediation priorities:
 | Priority | Owner lane | Task | Why it matters |
 | --- | --- | --- | --- |
 | P0 | Mainline runtime | Run another complex real LLM regression with a task that requires task splitting, file writes, tests, context pressure, child partial handoff/continuation, and verified completion evidence. | This is the best proof that the closed backend path works outside unit tests. |
-| P0 | Mainline runtime | Run a real MCP + Skills combined flow with a local test MCP server and an explicit skill preset. | It validates tool visibility, skill policy, MCP policy, failure recovery, and evidence integration together. |
+| P0 | Mainline runtime | Run and keep a strict real MCP + Skills combined flow with a local test MCP server and an explicit skill preset. | It validates tool visibility, skill policy, MCP policy, worktree isolation, command execution evidence, failure recovery, and evidence integration together. The smoke must fail when the runtime only records a report but does not actually prove the chain. |
 | P1 | Runtime adapter expansion | Add only the evidence adapters that the next real flows actually request. | Prevents returning to fixed product-shape gates while still making advisor-requested proof executable. |
 | P1 | Frontend/runtime UX | Expose advisor evidence executor records more clearly in the runtime cockpit. | Users need to see what proof was requested, approved, executed, satisfied, or blocked. |
 | P1 | Frontend cleanup | Fix MCP workspace visible mojibake and any remaining user-facing encoding issues. | Current functionality passes, but unreadable UI text hurts real local-app usability. |
 | P1/P2 | Docs hygiene | Mark old planning docs as historical and keep this consolidated document as the source of truth. | Avoids reopening already-completed P0 work because older plans still describe it as missing. |
 | P2 | Repo hygiene | Clean accumulated `.pytest-*` directories and keep basetemp usage consistent. | Reduces workspace noise without changing runtime behavior. |
+
+Testing strategy refinement:
+
+| Gate | Purpose | Required proof |
+| --- | --- | --- |
+| Focused runtime tests | Protect deterministic runtime contracts before running expensive live flows. | MCP config validation, MCP/Skills acceptance, skill tool policy, and evidence executor tests pass. |
+| Strict MCP + Skills smoke | Prove a real local MCP server, explicit skill preset, ToolPolicyResolver, worktree isolation, and command execution work together. | The smoke report must contain `ok=true`; connected MCP server with tools; recorded skill usage; active worktree; root workspace unchanged; worktree artifact updated from MCP guidance; task command log with successful pytest; direct pytest pass. |
+| Complex real LLM regression | Prove the main workflow can split, write, recover, compact, continue, and complete with verified evidence under a real model. | Generated modules/tests, command logs, provider turns, context snapshots, child task handoffs, completion evidence, and final status must line up. |
+| Advisor evidence adapter tests | Add only when a real advisor request exposes a missing executable proof path. | Adapter maps a generic evidence request to a capability, goes through policy/approval/execution, records executor transitions, and feeds completion audit without becoming a fixed product gate. |
+
+MCP + Skills strict smoke implementation note:
+
+`runtime/smoke_runs/worktree_mcp_skill_smoke.py` is now a release/manual gate rather than a best-effort report writer. It records `ok`, `checks`, and `failures`, supports provider API format, provider timeout, routing-advisor timeout, task-step, and child-timeout overrides, and exits non-zero when the chain lacks required proof. The required proof is intentionally workflow-shaped, not product-shaped: local MCP tools must be connected, the explicit skill must be used, work must stay in the active worktree, generated output must land in that worktree, and verification must be present in both runtime command logs and a direct pytest check.
 
 Work to delegate away from the mainline:
 

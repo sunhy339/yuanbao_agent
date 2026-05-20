@@ -39,7 +39,7 @@ def _make_runtime(tmp_path: Any) -> SimpleNamespace:
         tool_registry=tool_registry, provider=DummyProvider(),
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
-    return SimpleNamespace(server=server, store=store)
+    return SimpleNamespace(server=server, store=store, orchestrator=orchestrator)
 
 
 def _rpc(runtime: SimpleNamespace, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -186,6 +186,29 @@ class TestMcpConfigValidationRpc:
         })
         assert "error" in resp
         assert "url" in resp["error"]["message"]
+
+    def test_rpc_update_enabled_patch_reuses_existing_stdio_command(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        runtime = _make_runtime(tmp_path)
+        monkeypatch.setattr(runtime.orchestrator._mcp_manager, "sync_connect_server", lambda config: [])
+        result = runtime.store.create_mcp_server({
+            "name": "test-server",
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["--version"],
+            "enabled": False,
+        })
+        server_id = result["server"]["id"]
+
+        resp = _rpc(runtime, "mcp.server.update", {
+            "serverId": server_id,
+            "enabled": True,
+        })
+
+        assert "result" in resp, f"Expected success, got error: {resp.get('error')}"
+        server = resp["result"]["server"]
+        assert bool(server["enabled"]) is True
+        assert server["command"] == "npx"
+        assert server["args"] == ["--version"]
 
     def test_rpc_create_rejects_non_array_args(self, tmp_path: Any) -> None:
         runtime = _make_runtime(tmp_path)

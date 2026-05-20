@@ -133,11 +133,27 @@ class McpFlowMixin:
         return result
 
     def mcp_server_update(self, params: dict[str, Any]) -> dict[str, Any]:
-        self._validate_mcp_config(params)
         server_id = params.get("serverId") or params.get("server_id")
+        if not isinstance(server_id, str) or not server_id.strip():
+            raise ValueError("serverId is required")
+        server_id = server_id.strip()
+        existing = self._store.get_mcp_server({"serverId": server_id})["server"]
+        merged_config = {
+            "serverId": server_id,
+            "name": existing.get("name"),
+            "transport": existing.get("transport", "stdio"),
+            "command": existing.get("command"),
+            "args": existing.get("args", []),
+            "url": existing.get("url"),
+            "headers": existing.get("headers", {}),
+            "env": existing.get("env", {}),
+            "enabled": existing.get("enabled", True),
+        }
+        merged_config.update(params)
+        self._validate_mcp_config(merged_config)
         span = self._tracer.start_span(
             "mcp_update",
-            attributes={"server_id": server_id or ""},
+            attributes={"server_id": server_id},
         )
         # Disconnect old tools if server was connected
         if server_id and self._mcp_manager.is_connected(server_id):

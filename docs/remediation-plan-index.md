@@ -7,6 +7,43 @@ the repository. Most planning documents live under `docs/`, but `docs/` is
 ignored by `.gitignore`, so newly created documents under this directory must be
 staged with `git add -f` when they need to be committed.
 
+## Current Source Of Truth - 2026-05-20
+
+Use `docs/YUANBAO_AGENT_DOCS_CONSOLIDATED.md#2026-05-20-current-test-gate-and-remediation-queue`
+as the current project snapshot. Older remediation documents remain useful as
+design history, but many of their P0/P1 gaps have since been closed.
+
+Current status:
+
+- Main workflow backend baseline is closed for the current architecture:
+  routing/advisor, tool policy, provider turns, tool/MCP recovery, worktree
+  isolation, completion gates, generic advisor evidence executor, user
+  takeover, budget convergence, and child partial handoff/continuation are
+  runtime-backed and auditable.
+- Advisor-led Evidence execution is **baseline done**, not an open P0. Runtime
+  stores generic evidence requests, creates executor records, gates suggested
+  commands/tools/MCP tools through PermissionEngine and ToolPolicyResolver,
+  resumes approved evidence execution, records executor state transitions, and
+  feeds the result into completion evidence/audit.
+- Remaining evidence work is concrete adapter expansion and UX visibility:
+  browser inspection, document/render proof, migration dry-run, benchmark,
+  external service proof, or hardware-in-loop adapters should be added only
+  when real advisor-selected flows need them.
+- Latest broad gate passed: runtime full suite `2271 passed, 12 skipped`,
+  frontend typecheck/unit/build, Tauri `cargo check`, desktop UI smoke, desktop
+  MCP live, and desktop session recovery.
+- The latest MCP live issue was fixed by `de722aea Fix MCP partial update
+  validation`: partial MCP updates now merge stored config before validation.
+
+Current priority order:
+
+1. Complex real LLM regression over the main workflow.
+2. Real MCP + Skills combined flow with a local MCP server and skill preset.
+3. Add concrete advisor evidence adapters only when the real flow requests
+   missing executable proof.
+4. Improve cockpit visibility for advisor evidence executor records.
+5. Clean up user-facing mojibake and stale/historical docs.
+
 ## Current Plan Inventory
 
 | Area | Document | Status |
@@ -37,7 +74,7 @@ staged with `git add -f` when they need to be committed.
 | Agent autonomy governance | `docs/remediation-plan-index.md` | New cross-cutting batch for configurable, auditable, replayable, and permission-bounded autonomy |
 | Agent soul and prompt profiles | `docs/remediation-plan-index.md` | New cross-cutting batch for configurable agent identity, system prompts, and prompt layering |
 | Agent gap implementation | `docs/agent-gap-implementation-plan.md` | Older implementation reference, no checklist |
-| Agent gap follow-up optimization | `docs/agent-gap-followup-optimization-plan.md` | Older optimization reference, no checklist |
+| Agent gap follow-up optimization | `docs/agent-gap-followup-optimization-plan.md` | Historical optimization reference; original MCP/shared/full-suite blockers are closed by later work |
 | Phase 0-5 rectification | `docs/phase0-5-rectification-plan.md` | Older remediation reference, no checklist |
 | Runtime performance | `runtime/PERFORMANCE_PLAN.md` | Runtime-side performance reference outside `docs/` |
 

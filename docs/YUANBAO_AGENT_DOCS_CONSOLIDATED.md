@@ -1638,3 +1638,65 @@ Current priority order:
 3. Provider recovery phase 2 baseline: provider preflight facts/advisor audit, safe compaction, executable bounded task splitting, guarded turn-scoped provider profile switching, and baseline provider health/ranking are done. Runtime still enforces retry budgets, partial-output gates, profile availability, permissions, approvals, DAG validation, and safety; candidate-provider ranking / health-history scoring is intentionally deferred while the flow is kept to one primary LLM/model.
 4. MCP + Skills fallback polish: advisor-requested MCP evidence tools now pass through ToolPolicyResolver and explicit approval; missing skill fallback is explicit in context/events/routing; failed MCP/tool handoff includes structured `failureKind`, `recoveryHint`, and advisor-selected `recoveryDecision`. Safe recovery follow-ups for MCP refresh and fallback tools now create explicit approval-resume actions through the normal pipeline. Remaining work is broader real MCP fallback coverage and UX affordances for choosing/confirming alternate skills/tools.
 5. Release-grade smoke coverage, broader real MCP/Skills fallback coverage, and optional UI polish.
+
+### 2026-05-20 Current Test Gate And Remediation Queue
+
+This section supersedes older "not complete" language in the historical follow-up plans. The core backend main workflow and advisor-led evidence executor baseline are complete for the current architecture; remaining work should be treated as real-flow validation, concrete adapter expansion, UX polish, or documentation cleanup.
+
+Latest verification gate:
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| Runtime full suite | Passed: `2271 passed, 12 skipped` | Re-run after the MCP partial-update fix. |
+| Frontend typecheck | Passed | `npm run typecheck`. |
+| Frontend unit tests | Passed: `16 files / 144 tests` | `npm test`. |
+| Frontend production build | Passed | `npm run build`; only a non-blocking Vite chunking warning for mixed static/dynamic dialog import. |
+| Tauri shell | Passed | `cargo check` from `app/src-tauri`. |
+| Desktop UI smoke | Passed | Tauri shell renders workbench, new session, settings, scheduled empty state, and navigation. |
+| Desktop MCP live | Passed after fix | Create/list/update/enable/refresh/disable/delete MCP server flow passed. The fix was `de722aea Fix MCP partial update validation`. |
+| Desktop session recovery | Passed | Seeded session/message/task, restarted desktop flow, recovered message and task state. |
+
+Issue found and fixed during the gate:
+
+| Area | Finding | Status |
+| --- | --- | --- |
+| MCP server update | `mcp.server.update` validated a partial patch such as `{serverId, enabled: true}` as if it were a fresh stdio config, so it rejected the update for missing `command`. | Fixed: update now merges the stored server config with the patch before validation; regression added in `test_mcp_config_validation.py`; desktop MCP live passes. |
+
+Advisor-led evidence status:
+
+| Capability | Current status | Remaining optimization |
+| --- | --- | --- |
+| Generic evidence request shape | Done | Advisor/product-surface/completion requests are stored as generic evidence requests rather than fixed app/browser/server/persistence assumptions. |
+| Executor state machine | Done | Runtime records requested, approval_requested, running, satisfied, failed, rejected, and policy-blocked states through `advisorEvidenceExecutor` and `agent.evidence.executor.updated`. |
+| Permission and approval boundary | Done | Suggested commands/tools, including dynamic `mcp__...` tools, pass through PermissionEngine, ToolPolicyResolver, MCP/skill policy, and explicit approval-resume flow. |
+| Completion integration | Done | Evidence status feeds completion evidence, audit, review requests, and final done/fail/review decisions. |
+| Concrete adapters | Partial by design | Existing command/tool/MCP execution is wired. Broader adapters such as browser inspection, document/render proof, migration dry-run, benchmark, external service probe, or hardware-in-loop should be added as capability adapters only when real task flows need them. They should remain advisor-selected and permission-gated, not hard-coded gates. |
+| UI visibility | Baseline done | Cockpit shows baseline acceptance/provider/MCP/context signals; deeper executor timeline and adapter-specific outputs are follow-up UX work. |
+
+Current mainline remediation priorities:
+
+| Priority | Owner lane | Task | Why it matters |
+| --- | --- | --- | --- |
+| P0 | Mainline runtime | Run another complex real LLM regression with a task that requires task splitting, file writes, tests, context pressure, child partial handoff/continuation, and verified completion evidence. | This is the best proof that the closed backend path works outside unit tests. |
+| P0 | Mainline runtime | Run a real MCP + Skills combined flow with a local test MCP server and an explicit skill preset. | It validates tool visibility, skill policy, MCP policy, failure recovery, and evidence integration together. |
+| P1 | Runtime adapter expansion | Add only the evidence adapters that the next real flows actually request. | Prevents returning to fixed product-shape gates while still making advisor-requested proof executable. |
+| P1 | Frontend/runtime UX | Expose advisor evidence executor records more clearly in the runtime cockpit. | Users need to see what proof was requested, approved, executed, satisfied, or blocked. |
+| P1 | Frontend cleanup | Fix MCP workspace visible mojibake and any remaining user-facing encoding issues. | Current functionality passes, but unreadable UI text hurts real local-app usability. |
+| P1/P2 | Docs hygiene | Mark old planning docs as historical and keep this consolidated document as the source of truth. | Avoids reopening already-completed P0 work because older plans still describe it as missing. |
+| P2 | Repo hygiene | Clean accumulated `.pytest-*` directories and keep basetemp usage consistent. | Reduces workspace noise without changing runtime behavior. |
+
+Work to delegate away from the mainline:
+
+| Delegable task | Notes |
+| --- | --- |
+| MCP/TOOLS docs encoding cleanup | Important but not a runtime blocker. |
+| Frontend copy and visual polish | Especially MCP workspace Chinese text and cockpit readability. |
+| Provider settings UX polish | Real provider profile authoring/test feedback can improve without changing the core runtime. |
+| Smoke script ergonomics | Keep fast safety gates and manual long-run gates, but avoid making smoke structure the main work. |
+
+Next recommended action:
+
+1. Use the existing real `gpt-5.5` provider path for a complex main-flow regression.
+2. Record failures as runtime bugs, not as new abstract architecture work.
+3. Add concrete evidence adapters only when a real advisor request exposes a missing executable capability.
+4. Keep all semantic evidence selection advisor-led and all side effects runtime-gated.

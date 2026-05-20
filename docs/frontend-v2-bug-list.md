@@ -4,6 +4,19 @@ This list tracks visual and interaction bugs found during the desktop frontend u
 
 ## Open
 
+### FEV2-BUG-005: MCP workspace contains mojibake in user-facing copy
+
+- Status: Open
+- Priority: P1
+- Area: MCP Workspace / Chinese localization
+- Observed: The MCP workspace passes runtime and desktop E2E flows, but several visible labels and descriptions render as mojibake instead of readable Chinese.
+- Expected: All user-facing MCP workspace copy should render as valid readable Simplified Chinese while technical identifiers such as MCP, stdio, SSE, HTTP, command, args, env, and tool names remain unchanged.
+- Acceptance check:
+  - MCP workspace title, metrics, form labels, buttons, empty states, inspector labels, and error banner are readable.
+  - `npm run e2e:desktop:mcp` still passes.
+  - `npm test` covers the corrected accessible labels where practical.
+  - No runtime protocol field names are translated.
+
 ### FEV2-BUG-001: Native scrollbar looks visually unfinished
 
 - Status: Fixed

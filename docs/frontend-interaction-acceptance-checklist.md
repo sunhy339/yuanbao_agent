@@ -16,6 +16,13 @@ Important boundary: this checklist does not claim every possible click was manua
 
 | Check | Result | Notes |
 | --- | --- | --- |
+| 2026-05-20 `npm run typecheck` | Passed | Shared/app TypeScript contracts still compile after the latest MCP/runtime changes. |
+| 2026-05-20 `npm test` | Passed | 16 test files, 144 tests. |
+| 2026-05-20 `npm run build` | Passed | TypeScript and Vite production build passed; only a non-blocking mixed static/dynamic Tauri dialog import chunk warning. |
+| 2026-05-20 `cargo check` | Passed | Tauri shell check passed from `app/src-tauri`. |
+| 2026-05-20 `npm run e2e:desktop:ui` | Passed | Workbench shell, New Session, Settings, Scheduled empty state, and navigation return flow passed. |
+| 2026-05-20 `npm run e2e:desktop:mcp` | Passed after backend fix | Found and fixed partial MCP update validation; create/list/update/enable/refresh/disable/delete now passes. |
+| 2026-05-20 `npm run e2e:desktop:recovery` | Passed | Seed and restart/verify phases passed; recovered session, persisted message, and task state visible. |
 | `npm.cmd test` | Passed | 13 test files, 90 tests. |
 | `npm.cmd run build` | Passed | TypeScript and Vite production build passed. |
 | `npm.cmd run visual:regression` | Passed | 40 screenshots, 0 automated findings. |
@@ -27,6 +34,7 @@ Important boundary: this checklist does not claim every possible click was manua
 
 | Finding | Status | Files |
 | --- | --- | --- |
+| Desktop MCP live failed because partial `mcp.server.update` payloads such as `{serverId, enabled}` were validated as fresh stdio configs and rejected for missing `command`. | Fixed | `runtime/src/local_agent_runtime/orchestrator/mcp_flow.py`, `runtime/tests/test_mcp_config_validation.py` |
 | Visual regression still targeted old English aria labels after UI localization, so it could not open the New Session page. | Fixed | `app/scripts/visual_regression.py` |
 
 ## Interaction Matrix

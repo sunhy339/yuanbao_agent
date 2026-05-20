@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,7 @@ from ..policy.guard import PolicyGuard
 from ..provider.failure_recovery import classify_provider_failure
 from ..provider.adapter import ProviderAdapter
 from ..planner.preflight_split import build_provider_preflight_plan_from_payload
+from ..services.command_execution import run_shell_command
 from ..services.collaboration_service import CollaborationService
 from ..services.subagent_service import SubagentService
 from ..context.scratchpad import Scratchpad
@@ -522,6 +525,92 @@ class MessageExecutionMixin:
             summary = execution["summary"]
 
             if execution["success"] is False:
+                completion_recovery: dict[str, Any] | None = None
+                recovery = self._recover_planning_failures_with_verification(
+                    session_id=session_id,
+                    task=task,
+                    execution=execution,
+                    workspace_root=context.get("workspace_root") if context else None,
+                )
+                if recovery.get("recovered"):
+                    execution["success"] = True
+                    execution["verificationRecovery"] = recovery
+                    summary = self._append_planning_recovery_summary(summary, recovery)
+                    execution["summary"] = summary
+
+                    self._publish(
+                        session_id=session_id, task=task,
+                        event_type="task.planning.recovered",
+                        payload={
+                            "recovered": True,
+                            "commands": recovery.get("commands", []),
+                            "failedSubtaskIds": recovery.get("failedSubtaskIds", []),
+                        },
+                    )
+                else:
+                    completion_recovery = self._recover_planning_failures_with_completion_evidence(
+                        session_id=session_id,
+                        task=task,
+                        execution=execution,
+                        context=context,
+                    )
+                    if completion_recovery.get("recovered"):
+                        execution["success"] = True
+                        execution["completionRecovery"] = completion_recovery
+                        summary = self._append_planning_completion_recovery_summary(summary, completion_recovery)
+                        execution["summary"] = summary
+
+                        self._publish(
+                            session_id=session_id, task=task,
+                            event_type="task.planning.recovered",
+                            payload={
+                                "recovered": True,
+                                "mode": "completion_evidence",
+                                "failedSubtaskIds": completion_recovery.get("failedSubtaskIds", []),
+                            },
+                        )
+                if execution["success"] is False:
+                    self._publish(
+                        session_id=session_id, task=task,
+                        event_type="task.planning.completed",
+                        payload={
+                            "coverage": coverage,
+                            "success": execution["success"],
+                            "partialHandoffs": execution.get("partialHandoffs", []),
+                            "verificationRecovery": recovery,
+                            "completionRecovery": completion_recovery,
+                        },
+                    )
+                    self._tracer.end_span(
+                        plan_span.span_id, status="error",
+                        attributes={"subtaskCount": len(execution["subtasks"]), "coverage": coverage},
+                    )
+                    return {
+                        "task": self._fail_task(
+                            session_id=session_id,
+                            task=task,
+                            summary=summary,
+                            error_code="PLANNING_SUBTASKS_FAILED",
+                            structured_result={
+                                "status": "failed",
+                                "coverage": coverage,
+                                "partialHandoffs": execution.get("partialHandoffs", []),
+                                "verificationRecovery": recovery,
+                                "completionRecovery": completion_recovery,
+                                "subtasks": [
+                                    {
+                                        "id": subtask.id,
+                                        "title": subtask.title,
+                                        "status": subtask.status,
+                                        "result": subtask.result,
+                                    }
+                                    for subtask in execution["subtasks"]
+                                ],
+                            },
+                        ),
+                    }
+
+            if execution["success"] is False:
                 self._publish(
                     session_id=session_id, task=task,
                     event_type="task.planning.completed",
@@ -579,6 +668,7 @@ class MessageExecutionMixin:
                     task=task,
                     summary=summary,
                     context=context,
+                    tool_results=self._planning_completion_tool_results(execution),
                 ),
             }
         except Exception as exc:  # noqa: BLE001
@@ -592,6 +682,173 @@ class MessageExecutionMixin:
                     error_code="PLANNING_EXECUTION_FAILED",
                 ),
             }
+
+    def _recover_planning_failures_with_completion_evidence(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        execution: dict[str, Any],
+        context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        failed_subtasks = [
+            subtask for subtask in execution.get("subtasks", [])
+            if getattr(subtask, "status", None) == "failed"
+        ]
+        if not failed_subtasks:
+            return {"recovered": False, "reason": "no_failed_subtasks"}
+        failed_ids = sorted({
+            str(getattr(subtask, "id", "")).strip()
+            for subtask in failed_subtasks
+            if str(getattr(subtask, "id", "")).strip()
+        })
+        structured_subtasks = [
+            {
+                "id": subtask.id,
+                "title": subtask.title,
+                "status": subtask.status,
+                "result": subtask.result,
+            }
+            for subtask in execution.get("subtasks", [])
+        ]
+        probe = self._complete_task(
+            session_id=session_id,
+            task=task,
+            summary=execution.get("summary") or "",
+            context=context or {},
+            tool_results=self._planning_completion_tool_results(execution),
+            skip_reflection=True,
+            skip_drain=True,
+        )
+        if probe.get("status") != "completed":
+            return {
+                "recovered": False,
+                "reason": "completion_gate_blocked",
+                "failedSubtaskIds": failed_ids,
+                "probeStatus": probe.get("status"),
+                "probeErrorCode": probe.get("errorCode"),
+            }
+        structured = probe.get("structuredResult") if isinstance(probe.get("structuredResult"), dict) else {}
+        evidence = structured.get("completionEvidence") if isinstance(structured.get("completionEvidence"), dict) else {}
+        counts = evidence.get("counts") if isinstance(evidence.get("counts"), dict) else {}
+        failed_tool_results = int(counts.get("failedToolResults") or 0)
+        if failed_tool_results > 0:
+            return {
+                "recovered": False,
+                "reason": "unresolved_failed_tool_results",
+                "failedSubtaskIds": failed_ids,
+                "failedToolResults": failed_tool_results,
+            }
+        self._planning_record_recovered_failed_subtasks(execution, failed_subtasks)
+        for subtask in failed_subtasks:
+            subtask.status = "completed"
+            subtask.result = self._append_recovered_subtask_result(
+                str(subtask.result or "Failed subtask."),
+                [],
+            )
+        execution["failed"] = [item for item in execution.get("failed", []) if str(item) not in set(failed_ids)]
+        completed = {str(item) for item in execution.get("completed", [])}
+        completed.update(failed_ids)
+        execution["completed"] = sorted(completed)
+        execution["subtasks"] = execution.get("subtasks", [])
+        execution["recoveredStructuredResult"] = structured
+        execution["recoveredCompletionEvidence"] = evidence
+        execution["summary"] = probe.get("resultSummary") or execution.get("summary") or ""
+        return {
+            "recovered": True,
+            "reason": "completion_evidence_satisfied",
+            "failedSubtaskIds": failed_ids,
+            "subtasks": structured_subtasks,
+            "completionEvidence": evidence,
+        }
+
+    @staticmethod
+    def _append_planning_completion_recovery_summary(summary: str, recovery: dict[str, Any]) -> str:
+        failed_ids = recovery.get("failedSubtaskIds") or []
+        if not failed_ids:
+            return summary
+        suffix = (
+            "\nPlanning recovery: downstream completion evidence and root-level verification "
+            f"resolved earlier failed subtask(s): {', '.join(str(item) for item in failed_ids)}."
+        )
+        if suffix.strip() in summary:
+            return summary
+        return f"{summary}{suffix}"
+
+    @staticmethod
+    def _planning_failed_subtask_snapshot(subtask: Any) -> dict[str, Any]:
+        return {
+            "id": str(getattr(subtask, "id", "")).strip(),
+            "title": str(getattr(subtask, "title", "")).strip(),
+            "status": str(getattr(subtask, "status", "")).strip().lower(),
+            "result": str(getattr(subtask, "result", "") or "").strip(),
+            "agentType": str(getattr(subtask, "agent_type", "") or "").strip(),
+            "ownedScope": list(getattr(subtask, "owned_scope", []) or []),
+            "expectedArtifacts": [dict(item) for item in (getattr(subtask, "expected_artifacts", []) or []) if isinstance(item, dict)],
+            "verificationRequirements": [dict(item) for item in (getattr(subtask, "verification_requirements", []) or []) if isinstance(item, dict)],
+        }
+
+    def _planning_record_recovered_failed_subtasks(self, execution: dict[str, Any], failed_subtasks: list[Any]) -> None:
+        snapshots = execution.setdefault("recoveredFailedSubtasks", [])
+        if not isinstance(snapshots, list):
+            snapshots = []
+            execution["recoveredFailedSubtasks"] = snapshots
+        existing_ids = {
+            str(item.get("id") or "").strip()
+            for item in snapshots
+            if isinstance(item, dict)
+        }
+        for subtask in failed_subtasks:
+            snapshot = self._planning_failed_subtask_snapshot(subtask)
+            snapshot_id = snapshot.get("id")
+            if snapshot_id and snapshot_id in existing_ids:
+                continue
+            snapshots.append(snapshot)
+            if snapshot_id:
+                existing_ids.add(snapshot_id)
+
+    def _planning_completion_tool_results(self, execution: dict[str, Any]) -> list[dict[str, Any]]:
+        tool_results: list[dict[str, Any]] = []
+        recovered_failed = execution.get("recoveredFailedSubtasks")
+        if isinstance(recovered_failed, list):
+            for item in recovered_failed:
+                if not isinstance(item, dict):
+                    continue
+                tool_results.append({
+                    "name": "child_task",
+                    "status": item.get("status") or "failed",
+                    "failed": True,
+                    "summary": item.get("result") or item.get("title") or "Failed subtask",
+                    "title": item.get("title"),
+                    "agentType": item.get("agentType"),
+                    "childTaskId": item.get("id"),
+                    "ownedScope": item.get("ownedScope") or [],
+                    "expectedArtifacts": item.get("expectedArtifacts") or [],
+                    "verificationRequirements": item.get("verificationRequirements") or [],
+                })
+        recovered_ids = {
+            str(item.get("id") or "").strip()
+            for item in (recovered_failed or [])
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        }
+        for subtask in execution.get("subtasks", []) or []:
+            subtask_id = str(getattr(subtask, "id", "")).strip()
+            if not subtask_id or subtask_id not in recovered_ids:
+                continue
+            status = str(getattr(subtask, "status", "")).strip().lower()
+            tool_results.append({
+                "name": "child_task",
+                "status": status or "completed",
+                "failed": status in {"failed", "cancelled"},
+                "summary": str(getattr(subtask, "result", "") or getattr(subtask, "title", "") or "Completed subtask").strip(),
+                "title": str(getattr(subtask, "title", "")).strip(),
+                "agentType": str(getattr(subtask, "agent_type", "") or "").strip(),
+                "childTaskId": subtask_id,
+                "ownedScope": list(getattr(subtask, "owned_scope", []) or []),
+                "expectedArtifacts": [dict(item) for item in (getattr(subtask, "expected_artifacts", []) or []) if isinstance(item, dict)],
+                "verificationRequirements": [dict(item) for item in (getattr(subtask, "verification_requirements", []) or []) if isinstance(item, dict)],
+            })
+        return tool_results
 
     def _resolve_orchestration_mode(self, strategy: str) -> OrchestrationMode:
         """Map an ExecutionStrategy string to an OrchestrationMode."""
@@ -776,6 +1033,277 @@ class MessageExecutionMixin:
         )
         self._tracer.end_span(span.span_id, status="ok", attributes={"status": "waiting_plan_approval"})
         return {"status": "waiting_approval"}
+
+    def _recover_planning_failures_with_verification(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        execution: dict[str, Any],
+        workspace_root: Any,
+    ) -> dict[str, Any]:
+        failed_subtasks = [
+            subtask for subtask in execution.get("subtasks", [])
+            if getattr(subtask, "status", None) == "failed"
+        ]
+        if not failed_subtasks:
+            return {"recovered": False, "reason": "no_failed_subtasks"}
+        failed_ids = {
+            str(getattr(subtask, "id", "")).strip()
+            for subtask in failed_subtasks
+            if str(getattr(subtask, "id", "")).strip()
+        }
+        partial_handoffs = [
+            handoff for handoff in execution.get("partialHandoffs", [])
+            if isinstance(handoff, dict) and str(handoff.get("subtaskId") or "").strip() in failed_ids
+        ]
+        pending_commands = self._planning_recovery_pending_verification_commands(partial_handoffs)
+        if not pending_commands:
+            return {
+                "recovered": False,
+                "reason": "no_pending_verification",
+                "failedSubtaskIds": sorted(failed_ids),
+            }
+        if not self._planning_failures_are_verification_only(failed_subtasks, partial_handoffs):
+            return {
+                "recovered": False,
+                "reason": "non_verification_failures",
+                "failedSubtaskIds": sorted(failed_ids),
+                "commands": pending_commands,
+            }
+        workspace = self._planning_recovery_workspace(workspace_root)
+        if workspace is None:
+            return {
+                "recovered": False,
+                "reason": "workspace_unavailable",
+                "failedSubtaskIds": sorted(failed_ids),
+                "commands": pending_commands,
+            }
+
+        results: list[dict[str, Any]] = []
+        all_passed = True
+        for command in pending_commands:
+            result = self._run_planning_recovery_command(
+                session_id=session_id,
+                task=task,
+                workspace=workspace,
+                command=command,
+            )
+            results.append(result)
+            if result.get("status") != "completed" or result.get("exitCode") not in (0, None):
+                all_passed = False
+
+        if not all_passed:
+            return {
+                "recovered": False,
+                "reason": "verification_failed",
+                "failedSubtaskIds": sorted(failed_ids),
+                "commands": results,
+            }
+
+        self._planning_record_recovered_failed_subtasks(execution, failed_subtasks)
+        for subtask in failed_subtasks:
+            subtask.status = "completed"
+            subtask.result = self._append_recovered_subtask_result(str(subtask.result or "Failed subtask."), results)
+        execution["failed"] = [
+            item for item in execution.get("failed", [])
+            if str(item) not in failed_ids
+        ]
+        completed = {str(item) for item in execution.get("completed", [])}
+        completed.update(failed_ids)
+        execution["completed"] = sorted(completed)
+        return {
+            "recovered": True,
+            "reason": "pending_verification_passed",
+            "failedSubtaskIds": sorted(failed_ids),
+            "commands": results,
+        }
+
+    def _planning_recovery_pending_verification_commands(self, handoffs: list[dict[str, Any]]) -> list[str]:
+        commands: list[str] = []
+        seen: set[str] = set()
+        for handoff in handoffs:
+            pending = handoff.get("pendingVerification")
+            if not isinstance(pending, list):
+                continue
+            for item in pending:
+                command = str(item or "").strip()
+                if not command or not self._planning_recovery_command_allowed(command):
+                    continue
+                key = self._planning_recovery_command_key(command)
+                if key in seen:
+                    continue
+                seen.add(key)
+                commands.append(command)
+        return commands
+
+    def _planning_failures_are_verification_only(
+        self,
+        failed_subtasks: list[Any],
+        handoffs: list[dict[str, Any]],
+    ) -> bool:
+        handoff_ids = {
+            str(handoff.get("subtaskId") or "").strip()
+            for handoff in handoffs
+            if isinstance(handoff.get("pendingVerification"), list) and handoff.get("pendingVerification")
+        }
+        if not handoff_ids:
+            return False
+        for subtask in failed_subtasks:
+            subtask_id = str(getattr(subtask, "id", "")).strip()
+            result = str(getattr(subtask, "result", "") or "").casefold()
+            if subtask_id not in handoff_ids:
+                return False
+            if not any(token in result for token in ("verification", "pytest", "test", "check", "compile", "lint")):
+                return False
+        return True
+
+    def _planning_recovery_workspace(self, workspace_root: Any) -> Path | None:
+        if not isinstance(workspace_root, str) or not workspace_root.strip():
+            return None
+        workspace = Path(workspace_root).resolve()
+        if not workspace.exists() or not workspace.is_dir():
+            return None
+        return workspace
+
+    def _run_planning_recovery_command(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        workspace: Path,
+        command: str,
+    ) -> dict[str, Any]:
+        shell_name = "powershell" if __import__("os").name == "nt" else "bash"
+        command_log = self._store.create_command_log(
+            task_id=task["id"],
+            command=command,
+            cwd=str(workspace),
+            shell=shell_name,
+        )
+        stdout = ""
+        stderr = ""
+        exit_code: int | None = None
+        status = "completed"
+        duration_ms = 0
+        try:
+            stdout, stderr, exit_code, status, duration_ms = run_shell_command(
+                shell_name,
+                command,
+                workspace,
+                self._planning_recovery_command_timeout_ms(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            stderr = str(exc)
+            status = "failed"
+        finally:
+            finished_at = self._store.now()
+            stdout_path = self._store.write_command_artifact(command_log["id"], "stdout", stdout)
+            stderr_path = self._store.write_command_artifact(command_log["id"], "stderr", stderr)
+            command_log = self._store.update_command_log(
+                command_log["id"],
+                status=status,
+                exit_code=exit_code,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                finished_at=finished_at,
+            )
+
+        check = {
+            "name": "planning_recovery_verification",
+            "status": status,
+            "command": command,
+            "result": {
+                "status": status,
+                "command": command,
+                "commandLog": command_log,
+                "stdout": stdout[-4000:],
+                "stderr": stderr[-4000:],
+                "exitCode": exit_code,
+                "durationMs": duration_ms,
+                "cwd": str(workspace),
+            },
+        }
+        self._record_task_verification(
+            session_id=session_id,
+            task=task,
+            validation={"checks": [check]},
+        )
+        return {
+            "command": command,
+            "status": status,
+            "exitCode": exit_code,
+            "durationMs": duration_ms,
+            "commandLogId": command_log.get("id"),
+        }
+
+    def _planning_recovery_command_timeout_ms(self) -> int:
+        try:
+            config = self._store.get_config({}).get("config", {})
+            command_policy = config.get("commandPolicy") if isinstance(config, dict) else {}
+            timeout = command_policy.get("commandTimeoutMs") if isinstance(command_policy, dict) else None
+            if isinstance(timeout, int) and timeout > 0:
+                return max(1000, min(timeout, 1_800_000))
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to read planning recovery command timeout", exc_info=True)
+        return 300_000
+
+    @staticmethod
+    def _planning_recovery_command_allowed(command: str) -> bool:
+        normalized = command.strip().casefold()
+        if not normalized:
+            return False
+        if re.search(r"(?:^|[;&|`])\s*(?:rm|del|erase|remove-item|mv|move|copy|cp|curl|wget)\b", normalized):
+            return False
+        return any(
+            token in normalized
+            for token in (
+                "pytest",
+                "py_compile",
+                "compileall",
+                "node --check",
+                "npm test",
+                "npm run test",
+                "npm run typecheck",
+                "tsc",
+                "vitest",
+                "ruff",
+                "mypy",
+            )
+        )
+
+    @staticmethod
+    def _planning_recovery_command_key(command: str) -> str:
+        return " ".join(command.strip().split()).casefold()
+
+    @staticmethod
+    def _append_recovered_subtask_result(result: str, commands: list[dict[str, Any]]) -> str:
+        command_summary = "; ".join(
+            f"{item.get('command')} ({item.get('status')})"
+            for item in commands[:5]
+            if item.get("command")
+        )
+        suffix = f"Recovered by parent verification: {command_summary}" if command_summary else "Recovered by parent verification."
+        if suffix in result:
+            return result
+        return f"{result}\n{suffix}"
+
+    @staticmethod
+    def _append_planning_recovery_summary(summary: str, recovery: dict[str, Any]) -> str:
+        commands = recovery.get("commands") if isinstance(recovery.get("commands"), list) else []
+        command_summary = "; ".join(
+            f"{item.get('command')} ({item.get('status')})"
+            for item in commands[:5]
+            if isinstance(item, dict) and item.get("command")
+        )
+        line = (
+            "Planning recovery: failed verification subtasks were recovered by parent verification"
+            + (f" - {command_summary}" if command_summary else "")
+            + "."
+        )
+        if line in summary:
+            return summary
+        return f"{summary}\n{line}"
 
     def _execute_with_supervisor(
         self,

@@ -1273,10 +1273,8 @@ class TaskLifecycleMixin:
             or ""
         ).strip().lower()
         contract = self._completion_contract_profile(task=task, context=context)
-        if runtime_role in {"planner", "reviewer", "explorer", "summarizer"}:
+        if self._completion_contract_role_is_read_only(runtime_role=runtime_role):
             if isinstance(contract, dict):
-                if self._completion_contract_expected_artifact_paths(contract):
-                    return True
                 expected_artifacts = contract.get("expectedArtifacts")
                 if isinstance(expected_artifacts, list) and expected_artifacts:
                     return True
@@ -4229,7 +4227,10 @@ class TaskLifecycleMixin:
         if not root.exists() or not root.is_dir():
             return []
         contract = self._completion_contract_profile(task=task, context=context)
-        expected_paths = self._completion_contract_expected_artifact_paths(contract)
+        expected_paths = self._completion_contract_expected_artifact_paths(
+            contract,
+            include_owned_scope_fallback=not self._completion_contract_role_is_read_only(task=task, context=context),
+        )
         if expected_paths:
             test_expectation = None
         else:
@@ -5415,7 +5416,32 @@ class TaskLifecycleMixin:
         profile = routing.get("profile")
         return profile if isinstance(profile, dict) else None
 
-    def _completion_contract_expected_artifact_paths(self, contract: dict[str, Any] | None) -> list[str]:
+    def _completion_contract_role_is_read_only(
+        self,
+        *,
+        task: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+        runtime_role: str | None = None,
+    ) -> bool:
+        role = str(runtime_role or "").strip().lower()
+        if not role and isinstance(task, dict):
+            routing = task.get("routing")
+            if isinstance(routing, dict):
+                role = str(routing.get("runtimeRole") or "").strip().lower()
+            if not role and isinstance(context, dict):
+                context_routing = context.get("routing")
+                if isinstance(context_routing, dict):
+                    role = str(context_routing.get("runtimeRole") or "").strip().lower()
+            if not role:
+                role = str(task.get("role") or "").strip().lower()
+        return role in {"planner", "reviewer", "explorer", "summarizer"}
+
+    def _completion_contract_expected_artifact_paths(
+        self,
+        contract: dict[str, Any] | None,
+        *,
+        include_owned_scope_fallback: bool = True,
+    ) -> list[str]:
         if not isinstance(contract, dict):
             return []
         paths: list[str] = []
@@ -5439,6 +5465,8 @@ class TaskLifecycleMixin:
                 paths.append(path_text)
         if paths:
             return paths
+        if not include_owned_scope_fallback:
+            return []
         owned_scope = contract.get("ownedScope")
         if isinstance(owned_scope, str):
             owned_scope = [owned_scope]

@@ -4111,6 +4111,49 @@ class TestCompletionHardGate:
 
         assert result["status"] == "completed"
 
+    def test_reviewer_child_with_file_owned_scope_only_is_not_forced_to_produce_artifacts(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "incident_models.py").write_text("class Incident: ...\n", encoding="utf-8")
+        (project / "incident_rules.py").write_text("def build_rules():\n    return []\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="reviewer child")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="subagent",
+            goal="Review backend rule engine risks",
+            plan=[],
+            role="reviewer",
+            routing={
+                "runtimeRole": "reviewer",
+                "profile": {
+                    "ownedScope": ["incident_models.py", "incident_rules.py"],
+                    "expectedArtifacts": [],
+                    "verificationRequirements": [],
+                },
+            },
+        )
+
+        assert rt.orchestrator._is_write_or_verification_task(
+            task=task,
+            context={"workspace_root": str(project), "routing": dict(task.get("routing") or {})},
+        ) is False
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Reviewed backend risks and documented findings.",
+            context={"workspace_root": str(project), "routing": dict(task.get("routing") or {})},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        acceptance = result["structuredResult"]["completionEvidence"]["acceptance"]
+        assert not any(item["criterion"] == "Expected artifact exists: incident_models.py" for item in acceptance)
+        assert not any(item["criterion"] == "Expected artifact exists: incident_rules.py" for item in acceptance)
+
     def test_completion_ignores_glob_owned_scope_as_literal_expected_artifact(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

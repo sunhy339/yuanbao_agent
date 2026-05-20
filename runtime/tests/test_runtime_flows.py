@@ -9,6 +9,7 @@ import time
 import pytest
 
 from local_agent_runtime.policy.guard import PolicyGuard
+from local_agent_runtime.router import ExecutionStrategy, RoutingDecision, Scenario
 from local_agent_runtime.tools import build_builtin_tools
 
 
@@ -1112,6 +1113,272 @@ def test_plan_approval_approved_resumes_dag(runtime_harness: Any, tmp_path: Path
         "task",
     )
     assert final_task["status"] == "completed"
+
+
+def test_plan_execute_recovers_failed_verification_subtask_with_parent_check(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from local_agent_runtime.planner.types import PlanResult, Subtask
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\npythonpath = [\".\"]\n",
+        encoding="utf-8",
+    )
+    tests_dir = workspace_root / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_recovered.py").write_text(
+        "def test_recovered():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    fake_plan = PlanResult(
+        subtasks=[
+            Subtask(id="sub-0", title="Implement backend", description="Implement backend"),
+            Subtask(id="sub-1", title="Run tests", description="Run tests", dependencies=["sub-0"]),
+        ],
+        dag={"sub-0": [], "sub-1": ["sub-0"]},
+        execution_order=["sub-0", "sub-1"],
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._decomposer,
+        "decompose",
+        lambda **_kwargs: fake_plan,
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator,
+        "_route_goal",
+        lambda _goal: RoutingDecision(
+            scenario=Scenario.MULTI_STEP_TASK,
+            strategy=ExecutionStrategy.PLAN_THEN_EXECUTE,
+            confidence=0.99,
+            enable_planning=True,
+            enable_reflection=True,
+            reasoning="forced plan_execute for test",
+        ),
+    )
+
+    def fake_execute(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        failed = Subtask(
+            id="sub-1",
+            title="Run tests",
+            description="Run tests",
+            status="failed",
+            result=(
+                "Completion blocked because verification failed. "
+                "Partial handoff: pendingVerification=python -m pytest -q"
+            ),
+        )
+        completed = Subtask(
+            id="sub-0",
+            title="Implement backend",
+            description="Implement backend",
+            status="completed",
+            result="Implemented backend files.",
+        )
+        return {
+            "success": False,
+            "completed": ["sub-0"],
+            "failed": ["sub-1"],
+            "results": {"sub-0": "Implemented backend files.", "sub-1": "Failed verification"},
+            "subtasks": [completed, failed],
+            "summary": "Plan execution completed (1/2 succeeded)",
+            "partialHandoffs": [
+                {
+                    "subtaskId": "sub-1",
+                    "subtaskTitle": "Run tests",
+                    "status": "CHILD_TASK_EXECUTION_FAILED",
+                    "pendingVerification": ["python -m pytest -q"],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._dag_executor,
+        "execute",
+        fake_execute,
+    )
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Planning recovery"},
+        ),
+        "session",
+    )
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "build and test a full project"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert "Planning recovery" in task["resultSummary"]
+    evidence = task["structuredResult"]["completionEvidence"]
+    assert evidence["evidenceLevel"] == "verified"
+    assert evidence["counts"]["passedVerification"] >= 1
+
+    recovered_events = [
+        event for event in runtime_harness.events
+        if event["type"] == "task.planning.recovered"
+    ]
+    assert recovered_events
+    command_logs = runtime_harness.call(
+        "command_log.list",
+        {"sessionId": session["id"], "limit": 20},
+    )["result"]["commandLogs"]
+    assert any(command["command"] == "python -m pytest -q" and command["status"] == "completed" for command in command_logs)
+
+
+def test_plan_execute_recovers_failed_subtask_from_root_completion_evidence(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from local_agent_runtime.planner.types import PlanResult, Subtask
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "incident_models.py").write_text("VALUE = 1\n", encoding="utf-8")
+    tests_dir = workspace_root / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_incident_core.py").write_text(
+        "def test_incident_core():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    fake_plan = PlanResult(
+        subtasks=[
+            Subtask(id="sub-0", title="Implement backend", description="Implement backend"),
+            Subtask(id="sub-1", title="Write pytest coverage", description="Write pytest coverage", dependencies=["sub-0"]),
+        ],
+        dag={"sub-0": [], "sub-1": ["sub-0"]},
+        execution_order=["sub-0", "sub-1"],
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._decomposer,
+        "decompose",
+        lambda **_kwargs: fake_plan,
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator,
+        "_route_goal",
+        lambda _goal: RoutingDecision(
+            scenario=Scenario.MULTI_STEP_TASK,
+            strategy=ExecutionStrategy.PLAN_THEN_EXECUTE,
+            confidence=0.99,
+            enable_planning=True,
+            enable_reflection=True,
+            reasoning="forced plan_execute for test",
+        ),
+    )
+
+    def fake_execute(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        completed = Subtask(
+            id="sub-0",
+            title="Implement backend",
+            description="Implement backend",
+            status="completed",
+            result="Implemented backend files.",
+        )
+        failed = Subtask(
+            id="sub-1",
+            title="Write pytest coverage",
+            description="Write pytest coverage",
+            status="failed",
+            result="Completion blocked because verification failed. Fix the failed checks before marking the task completed.",
+        )
+        return {
+            "success": False,
+            "completed": ["sub-0"],
+            "failed": ["sub-1"],
+            "results": {"sub-0": "Implemented backend files.", "sub-1": "Failed verification"},
+            "subtasks": [completed, failed],
+            "summary": "Plan execution completed (1/2 succeeded)",
+            "partialHandoffs": [],
+        }
+
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._dag_executor,
+        "execute",
+        fake_execute,
+    )
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Planning completion recovery"},
+        ),
+        "session",
+    )
+
+    original_complete_task = runtime_harness.server._orchestrator._complete_task
+
+    def instrumented_complete_task(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        task_arg = kwargs.get("task")
+        if task_arg is None and len(args) >= 2:
+            task_arg = args[1]
+        if isinstance(task_arg, dict) and task_arg.get("goal") == "build and test a full project":
+            runtime_harness.store.update_task(
+                task_id=task_arg["id"],
+                changed_files=[
+                    {"path": "incident_models.py", "summary": "implemented incident models"},
+                    {"path": "tests/test_incident_core.py", "summary": "added pytest coverage"},
+                ],
+            )
+            command_log = runtime_harness.store.create_command_log(
+                task_id=task_arg["id"],
+                command=r"C:\Python314\python.exe -m pytest -q",
+                cwd=str(workspace_root),
+                shell="powershell",
+            )
+            runtime_harness.store.update_command_log(
+                command_log["id"],
+                status="completed",
+                exit_code=0,
+                stdout_path="",
+                stderr_path="",
+            )
+        return original_complete_task(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator,
+        "_complete_task",
+        instrumented_complete_task,
+    )
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "build and test a full project"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    evidence = task["structuredResult"]["completionEvidence"]
+    assert evidence["evidenceLevel"] == "verified"
+    assert evidence["counts"]["failedToolResults"] == 0
+    assert evidence["counts"]["resolvedFailedToolResults"] >= 1
+    recovered_events = [
+        event for event in runtime_harness.events
+        if event["type"] == "task.planning.recovered"
+    ]
+    assert any(event["payload"].get("mode") == "completion_evidence" for event in recovered_events)
 
 
 def test_supervisor_plan_approval_reject(runtime_harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

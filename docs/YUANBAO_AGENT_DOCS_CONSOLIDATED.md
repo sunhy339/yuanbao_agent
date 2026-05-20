@@ -1656,6 +1656,7 @@ Latest verification gate:
 | Desktop MCP live | Passed after fix | Create/list/update/enable/refresh/disable/delete MCP server flow passed. The fix was `de722aea Fix MCP partial update validation`. |
 | Desktop session recovery | Passed | Seeded session/message/task, restarted desktop flow, recovered message and task state. |
 | Strict MCP + Skills live smoke | Passed | `runtime/smoke_runs/worktree_mcp_skill_smoke.py` ran with the real `gpt-5.5` provider override and produced `ok=true` at `runtime/smoke_runs/worktree_mcp_skill_20260520_103947/report.json`. It proved connected local MCP tools, explicit skill usage, active worktree binding, root workspace unchanged, MCP-guided README update in the worktree, task command-log pytest success, and direct pytest success. |
+| Completion verification tuning | Passed | `test_worker_structured_output.py` now covers test-file changes separately from ordinary source changes: lint/typecheck/syntax checks are recorded as matched objective signals, but changed test artifacts still surface a missing `*:test` family unless an accepted completion advisor marks the evidence domain-sufficient. Full file passed: `76 passed`. |
 
 Issue found and fixed during the gate:
 
@@ -1698,6 +1699,10 @@ Testing strategy refinement:
 MCP + Skills strict smoke implementation note:
 
 `runtime/smoke_runs/worktree_mcp_skill_smoke.py` is now a release/manual gate rather than a best-effort report writer. It records `ok`, `checks`, and `failures`, supports provider API format, provider timeout, routing-advisor timeout, task-step, and child-timeout overrides, and exits non-zero when the chain lacks required proof. The required proof is intentionally workflow-shaped, not product-shaped: local MCP tools must be connected, the explicit skill must be used, work must stay in the active worktree, generated output must land in that worktree, and verification must be present in both runtime command logs and a direct pytest check.
+
+Completion verification tuning note:
+
+Completion remains LLM-first for semantic sufficiency. Runtime only records objective verification-family signals and conservative review triggers. A changed test artifact now asks for a matching test-family signal such as `python:test`, `javascript:test`, or `rust:test`; weaker objective signals such as lint, typecheck, syntax check, or build remain recorded in `matched` but do not silently satisfy test-artifact validation. When the completion advisor returns high-confidence `verification_sufficient` / `verification_assessment`, runtime can still mark the gap `advisor_accepted` and persist `verificationRequirements.advisorResolution` for audit. This keeps deterministic logic as guardrails, not as product-shape truth.
 
 Work to delegate away from the mainline:
 

@@ -39,6 +39,11 @@ Current status:
   proves connected MCP tools, explicit skill usage, active worktree binding,
   root workspace isolation, worktree output, task command-log pytest success,
   and direct pytest success.
+- Completion verification tuning was tightened without making runtime the
+  semantic judge: changed test artifacts now surface missing test-family
+  evidence when only lint/typecheck/syntax checks ran, while high-confidence
+  completion advisor `verification_sufficient` / `verification_assessment`
+  can still accept a domain-specific gap with an auditable advisor resolution.
 
 Current priority order:
 

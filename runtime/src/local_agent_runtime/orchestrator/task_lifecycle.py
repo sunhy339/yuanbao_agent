@@ -763,6 +763,9 @@ class TaskLifecycleMixin:
             return {"dotnet"}
         if not self._completion_path_requires_targeted_verification(path):
             return set()
+        test_family = self._completion_test_artifact_verification_family(normalized)
+        if test_family:
+            return {test_family}
         if normalized.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte")):
             return {"javascript"}
         if normalized.endswith((".py", ".pyw")):
@@ -785,12 +788,61 @@ class TaskLifecycleMixin:
             return {"native"}
         return {"generic"}
 
+    @staticmethod
+    def _completion_test_artifact_verification_family(normalized_path: str) -> str:
+        filename = normalized_path.rsplit("/", 1)[-1]
+        is_test_path = (
+            normalized_path.startswith(("test/", "tests/"))
+            or "/test/" in normalized_path
+            or "/tests/" in normalized_path
+            or filename.startswith("test_")
+            or filename.endswith((
+                "_test.go",
+                ".test.js",
+                ".test.jsx",
+                ".test.ts",
+                ".test.tsx",
+                ".spec.js",
+                ".spec.jsx",
+                ".spec.ts",
+                ".spec.tsx",
+            ))
+        )
+        if not is_test_path:
+            return ""
+        if normalized_path.endswith((".py", ".pyw")):
+            return "python:test"
+        if normalized_path.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".vue", ".svelte")):
+            return "javascript:test"
+        if normalized_path.endswith(".rs"):
+            return "rust:test"
+        if normalized_path.endswith(".go"):
+            return "go:test"
+        if normalized_path.endswith((".java", ".kt", ".kts")):
+            return "jvm:test"
+        if normalized_path.endswith(".cs"):
+            return "dotnet:test"
+        if normalized_path.endswith(".rb"):
+            return "ruby:test"
+        if normalized_path.endswith(".php"):
+            return "php:test"
+        if normalized_path.endswith(".swift"):
+            return "swift:test"
+        if normalized_path.endswith((".c", ".cc", ".cpp", ".h", ".hpp")):
+            return "native:test"
+        return "generic:test"
+
     def _completion_verification_item_families(self, item: dict[str, Any]) -> set[str]:
         text = " ".join(
             str(item.get(key) or "")
             for key in ("command", "name", "summary", "suite")
         ).casefold()
         families: set[str] = set()
+        for key in self._completion_verification_resolution_keys(item):
+            families.add(key)
+            broad_family = key.split(":", 1)[0]
+            if broad_family:
+                families.add(broad_family)
         token_map = {
             "python": ("pytest", "unittest", "tox", "mypy", "pyright", "ruff", "py_compile", "compileall", "python -m"),
             "javascript": (
@@ -1018,9 +1070,13 @@ class TaskLifecycleMixin:
             "pnpm test",
             "yarn test",
             "bun test",
+            "bun run test",
             "npm run test",
+            "npm run test:",
             "pnpm run test",
+            "pnpm run test:",
             "yarn run test",
+            "yarn run test:",
             "cargo test",
             "go test",
             "mvn test",
@@ -1036,11 +1092,17 @@ class TaskLifecycleMixin:
             "compileall",
             "ruff",
             "eslint",
+            "npm run lint",
+            "pnpm run lint",
+            "yarn run lint",
             "node --check",
             "cargo check",
             "npm run build",
             "pnpm build",
+            "pnpm run build",
             "yarn build",
+            "yarn run build",
+            "bun run build",
             "cargo build",
             "go build",
             "dotnet build",
@@ -3811,6 +3873,7 @@ class TaskLifecycleMixin:
         token_map = {
             "python:test": ("pytest", "unittest", "tox"),
             "python:typecheck": ("mypy", "pyright"),
+            "python:syntax": ("py_compile", "compileall"),
             "python:lint": ("ruff",),
             "javascript:test": (
                 "jest",
@@ -3819,15 +3882,36 @@ class TaskLifecycleMixin:
                 "cypress",
                 "npm test",
                 "npm run test",
+                "npm run test:",
                 "pnpm test",
                 "pnpm run test",
+                "pnpm run test:",
                 "yarn test",
                 "yarn run test",
+                "yarn run test:",
                 "bun test",
+                "bun run test",
             ),
-            "javascript:typecheck": ("tsc", "typecheck", "type check", "node --check"),
-            "javascript:lint": ("eslint",),
-            "javascript:build": ("npm run build", "pnpm build", "yarn build", "vite", "next build"),
+            "javascript:typecheck": (
+                "tsc",
+                "typecheck",
+                "type check",
+                "node --check",
+                "npm run tsc",
+                "pnpm run tsc",
+                "yarn run tsc",
+            ),
+            "javascript:lint": ("eslint", "npm run lint", "pnpm run lint", "yarn run lint"),
+            "javascript:build": (
+                "npm run build",
+                "pnpm build",
+                "pnpm run build",
+                "yarn build",
+                "yarn run build",
+                "bun run build",
+                "vite",
+                "next build",
+            ),
             "rust:test": ("cargo test",),
             "rust:check": ("cargo check", "cargo clippy"),
             "rust:build": ("cargo build",),

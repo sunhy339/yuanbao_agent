@@ -846,6 +846,143 @@ class TestCompletionHardGate:
         assert evidence["verificationRequirements"]["missing"] == []
         assert evidence["testsRun"][0]["command"] == "python -m pytest -q"
 
+    def test_python_test_file_change_requires_test_verification_not_lint_only(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="update Python tests",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "tests/test_cart.py", "action": "modified"}],
+            verification=[{"command": "ruff check tests/test_cart.py", "status": "passed", "summary": "lint passed"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated tests and lint passed.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "waiting_approval"
+        assert result["structuredResult"]["completionGate"]["status"] == "needs_verification"
+        assert evidence["verificationRequirements"]["required"] == ["python:test"]
+        assert evidence["verificationRequirements"]["missing"] == ["python:test"]
+        assert "python:lint" in evidence["verificationRequirements"]["matched"]
+
+    def test_python_test_file_change_with_pytest_completes(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="update Python tests",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "tests/test_cart.py", "action": "modified"}],
+            commands=[{
+                "id": "cmd_pytest",
+                "command": "python -m pytest tests/test_cart.py -q",
+                "status": "completed",
+                "exitCode": 0,
+                "summary": "2 passed",
+            }],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated tests and pytest passed.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["verificationRequirements"]["required"] == ["python:test"]
+        assert evidence["verificationRequirements"]["missing"] == []
+        assert "python:test" in evidence["verificationRequirements"]["matched"]
+
+    def test_completion_advisor_can_accept_test_file_verification_gap(self, tmp_path: Any) -> None:
+        class TestGapAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="A focused external integration smoke covers this changed test harness.",
+                        fallback_reason=None,
+                        proposal_id="surface_test_gap",
+                        confidence=0.84,
+                        payload={
+                            "surface_type": "test_harness",
+                            "recommended_verification": [],
+                            "evidence_requests": [],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="The typecheck plus external harness run is sufficient for this test-only harness update.",
+                    fallback_reason=None,
+                    proposal_id="completion_test_gap",
+                    confidence=0.87,
+                    payload={
+                        "is_complete": True,
+                        "verification_sufficient": True,
+                        "verification_assessment": {
+                            "status": "domain_sufficient",
+                            "reason": "The changed test harness is validated by the external integration smoke referenced in the task.",
+                        },
+                    },
+                )
+
+        rt = _make_runtime(tmp_path, decision_advisor=TestGapAdvisor())
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="update generated test harness metadata",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "tests/test_harness.py", "action": "modified"}],
+            verification=[{"command": "mypy tests/test_harness.py", "status": "passed", "summary": "typecheck passed"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Updated the generated test harness metadata and validated the harness externally.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["verificationRequirements"]["required"] == ["python:test"]
+        assert evidence["verificationRequirements"]["missing"] == ["python:test"]
+        assert evidence["verificationRequirements"]["status"] == "advisor_accepted"
+        assert evidence["verificationRequirements"]["advisorResolution"]["gapKind"] == "framework_mismatch"
+
     def test_completion_summary_strips_model_tool_call_markup(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
@@ -1135,6 +1272,39 @@ class TestCompletionHardGate:
         assert evidence["verificationRequirements"]["required"] == ["javascript"]
         assert evidence["verificationRequirements"]["missing"] == []
         assert evidence["verificationRequirements"]["status"] == "satisfied"
+
+    def test_javascript_test_file_change_requires_test_verification_not_typecheck_only(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="update frontend tests",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "app/src/App.test.tsx", "action": "modified"}],
+            verification=[{"command": "npm run typecheck", "status": "passed", "summary": "typecheck passed"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Frontend tests updated and typecheck passed.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "waiting_approval"
+        assert result["structuredResult"]["completionGate"]["status"] == "needs_verification"
+        assert evidence["verificationRequirements"]["required"] == ["javascript:test"]
+        assert evidence["verificationRequirements"]["missing"] == ["javascript:test"]
+        assert "javascript:typecheck" in evidence["verificationRequirements"]["matched"]
 
     def test_javascript_change_with_node_check_verification_completes(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)

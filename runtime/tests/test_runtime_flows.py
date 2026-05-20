@@ -1443,6 +1443,56 @@ def test_skill_usage_empty_for_no_skill(runtime_harness: Any, tmp_path: Path) ->
     assert usage_resp["result"]["total"] == 0
 
 
+def test_explicit_skill_id_is_recorded_even_when_router_does_not_supply_one(
+    runtime_harness: Any,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Explicit skill test"},
+        ),
+        "session",
+    )
+
+    runtime_harness.call(
+        "skill.create",
+        {
+            "id": "explicit_reader",
+            "name": "Explicit Reader",
+            "description": "Read with explicit skill selection.",
+            "system_prompt": "Use the explicit skill.",
+            "tool_whitelist": ["read_file"],
+            "parameter_constraints": {},
+            "category": "test",
+        },
+    )
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {
+                "sessionId": session["id"],
+                "content": "hello",
+                "skillId": "explicit_reader",
+            },
+        ),
+        "task",
+    )
+
+    assert task["routing"]["skill_id"] == "explicit_reader"
+    usage_resp = runtime_harness.call("skill.usage", {"skillId": "explicit_reader"})
+    usage_list = usage_resp["result"]["usage"]
+    assert len(usage_list) >= 1
+    assert usage_list[0]["task_id"] == task["id"]
+
+
 def test_session_summary_generated_after_task_completion(runtime_harness: Any, tmp_path: Path) -> None:
     """Session summary should be populated via _remember_task_result after completion."""
     workspace_root = tmp_path / "workspace"

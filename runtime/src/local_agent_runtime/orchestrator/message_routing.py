@@ -527,6 +527,7 @@ class MessageRoutingMixin:
         session = self._store.require_session(params["sessionId"])
         goal = params["content"]
         client_message_id = params.get("clientMessageId")
+        requested_skill_id = self._requested_skill_id(params)
 
         explicit_supplement = params.get("mode") == "supplement"
         explicit_task_id = params.get("taskId") or params.get("task_id")
@@ -550,6 +551,7 @@ class MessageRoutingMixin:
             active_task = self._find_open_session_task(session["id"])
             if active_task is not None:
                 routing = self._route_goal(goal)
+                routing = self._routing_with_requested_skill(routing, requested_skill_id)
                 routing_dict = self._routing_dict_from_decision(routing)
                 routing_dict = self._attach_main_workflow_state(
                     routing=routing_dict,
@@ -599,6 +601,7 @@ class MessageRoutingMixin:
         routing_span = self._tracer.start_span("routing_decision", attributes={"goal": goal[:200]})
         try:
             routing = self._route_goal(goal)
+            routing = self._routing_with_requested_skill(routing, requested_skill_id)
         except Exception:
             self._tracer.end_span(routing_span.span_id, status="error")
             raise
@@ -875,3 +878,30 @@ class MessageRoutingMixin:
             daemon=True,
         )
         worker.start()
+
+    @staticmethod
+    def _requested_skill_id(params: dict[str, Any]) -> str | None:
+        for key in ("skillId", "skill_id"):
+            value = params.get(key)
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped:
+                    return stripped
+        return None
+
+    def _routing_with_requested_skill(self, routing: Any, requested_skill_id: str | None) -> Any:
+        if requested_skill_id is None:
+            return routing
+        try:
+            routing.skill_id = requested_skill_id
+        except Exception:
+            return routing
+        metadata = getattr(routing, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            try:
+                routing.metadata = metadata
+            except Exception:
+                return routing
+        metadata["requestedSkillId"] = requested_skill_id
+        return routing

@@ -58,6 +58,11 @@ class TestLegacyApprovalMode:
         result = normalize_permissions({"policy": {"approvalMode": "custom_mode"}})
         assert result["preset"] == "balanced"
 
+    def test_none_approval_mode_maps_to_autonomous(self):
+        result = normalize_permissions({"policy": {"approvalMode": "none"}})
+        assert result["preset"] == "autonomous"
+        assert result["capabilities"]["writeFile"]["mode"] == "allow"
+
 
 # ---------------------------------------------------------------------------
 # Autonomy profile overrides

@@ -27,6 +27,7 @@ class ChildTaskRequest:
     prompt: str
     title: str
     planning_prompt: str | None = None
+    skill_id: str | None = None
     agent_type: str = "explorer"
     priority: int = 3
     session_id: str | None = None
@@ -37,6 +38,8 @@ class ChildTaskRequest:
     budget: dict[str, Any] | None = None
     profile: dict[str, Any] | None = None
     model: str | None = None
+    mcp_policy: dict[str, Any] | None = None
+    active_worktree: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -293,6 +296,11 @@ class WorkerRunner:
                 if isinstance(metadata.get("planningPrompt"), str) and str(metadata.get("planningPrompt")).strip()
                 else None
             ),
+            skill_id=(
+                str(metadata.get("skillId")).strip()
+                if isinstance(metadata.get("skillId"), str) and str(metadata.get("skillId")).strip()
+                else None
+            ),
             agent_type=str(metadata.get("agentType") or "explorer"),
             priority=self._priority_or_default(child_task.get("priority")),
             session_id=child_task.get("sessionId") if isinstance(child_task.get("sessionId"), str) else None,
@@ -309,6 +317,8 @@ class WorkerRunner:
                 if isinstance(metadata.get("model"), str) and str(metadata.get("model")).strip()
                 else None
             ),
+            mcp_policy=deepcopy(metadata.get("mcpPolicy")) if isinstance(metadata.get("mcpPolicy"), dict) else None,
+            active_worktree=deepcopy(metadata.get("activeWorktree")) if isinstance(metadata.get("activeWorktree"), dict) else None,
         )
 
     def _worker_for_blocked_child_task(self, child_task: dict[str, Any]) -> dict[str, Any]:
@@ -459,11 +469,14 @@ class WorkerRunner:
                         "prompt": context.request.prompt,
                         "title": context.request.title,
                         "planningPrompt": context.request.planning_prompt,
+                        "skillId": context.request.skill_id,
                         "budget": deepcopy(context.request.budget) if isinstance(context.request.budget, dict) else {},
                         "parentRuntimeTaskId": context.request.parent_runtime_task_id,
                         "collaborationTaskId": context.task["id"],
                         "agentType": context.request.agent_type,
                         "profile": deepcopy(context.request.profile) if isinstance(context.request.profile, dict) else None,
+                        "mcpPolicy": deepcopy(context.request.mcp_policy) if isinstance(context.request.mcp_policy, dict) else None,
+                        "activeWorktree": deepcopy(context.request.active_worktree) if isinstance(context.request.active_worktree, dict) else None,
                     },
                     timeout=request_timeout,
                     event_callback=lambda event: self._forward_process_event(context, event),
@@ -1207,6 +1220,12 @@ class WorkerRunner:
             metadata["timeoutMs"] = request.timeout_ms
         if request.retry is not None:
             metadata["retry"] = deepcopy(request.retry)
+        if isinstance(request.skill_id, str) and request.skill_id.strip():
+            metadata["skillId"] = request.skill_id.strip()
+        if isinstance(request.mcp_policy, dict):
+            metadata["mcpPolicy"] = deepcopy(request.mcp_policy)
+        if isinstance(request.active_worktree, dict):
+            metadata["activeWorktree"] = deepcopy(request.active_worktree)
         return metadata
 
     def _task_metadata(self, request: ChildTaskRequest) -> dict[str, Any]:
@@ -1215,6 +1234,8 @@ class WorkerRunner:
             "parentRuntimeTaskId": request.parent_runtime_task_id,
             "executionMode": self._default_execution_mode(request),
         }
+        if isinstance(request.skill_id, str) and request.skill_id.strip():
+            metadata["skillId"] = request.skill_id.strip()
         if isinstance(request.model, str) and request.model.strip():
             metadata["model"] = request.model.strip()
         if request.planning_prompt is not None:
@@ -1236,6 +1257,10 @@ class WorkerRunner:
             metadata["timeoutMs"] = request.timeout_ms
         if request.retry is not None:
             metadata["retry"] = deepcopy(request.retry)
+        if isinstance(request.mcp_policy, dict):
+            metadata["mcpPolicy"] = deepcopy(request.mcp_policy)
+        if isinstance(request.active_worktree, dict):
+            metadata["activeWorktree"] = deepcopy(request.active_worktree)
         return metadata
 
     def _inline_summary(self) -> str:

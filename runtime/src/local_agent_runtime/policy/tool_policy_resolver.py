@@ -140,12 +140,13 @@ class ToolPolicyResolver:
             name = self._tool_name(tool)
             if not name:
                 continue
+            phase_allowed = allow_all or name in allowed_names or (name.startswith("mcp__") and "mcp__*" in allowed_names)
             detail: dict[str, Any] = {
                 "toolName": name,
                 "source": self._tool_source(tool, name),
-                "phaseDecision": "allowed" if allow_all or name in allowed_names else "denied",
+                "phaseDecision": "allowed" if phase_allowed else "denied",
             }
-            if allow_all or name in allowed_names:
+            if phase_allowed:
                 if name == "task":
                     detail["toolContinuationPolicy"] = self.tool_continuation_policy(context)
                 continuation_reason = self._task_tool_continuation_block_reason(name, context, tool_results)
@@ -360,7 +361,11 @@ class ToolPolicyResolver:
             names &= READ_ONLY_TOOLS
 
         if child_allowlist is not None or context.get("_child_worker") is True:
-            names &= set(child_allowlist or READ_ONLY_TOOLS)
+            child_names = set(child_allowlist or READ_ONLY_TOOLS)
+            allow_mcp = "mcp__*" in child_names
+            names &= {name for name in child_names if name != "mcp__*"}
+            if allow_mcp:
+                names.add("mcp__*")
             reasons["*"] = "child worker tools are limited by child allowlist"
 
         return names, reasons
@@ -526,15 +531,19 @@ class ToolPolicyResolver:
         return None
 
     def _expand_child_allowlist(self, names: list[str]) -> list[str]:
-        if not (set(names) & WRITE_TOOLS):
+        mcp_wildcard = "mcp__*" in names
+        base_names = [name for name in names if name != "mcp__*"]
+        if not (set(base_names) & WRITE_TOOLS):
             return names
         expanded: list[str] = []
         seen: set[str] = set()
-        for name in [*LOCAL_READ_ONLY_TOOL_NAMES, *names]:
+        for name in [*LOCAL_READ_ONLY_TOOL_NAMES, *base_names]:
             if name in seen:
                 continue
             seen.add(name)
             expanded.append(name)
+        if mcp_wildcard and "mcp__*" not in seen:
+            expanded.append("mcp__*")
         return expanded
 
     def _normalize_runtime_role(self, value: Any) -> str:

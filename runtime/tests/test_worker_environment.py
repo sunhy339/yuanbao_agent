@@ -169,6 +169,17 @@ def test_normalize_child_tool_allowlist_dedupes_and_requires_known_explicit_tool
         normalize_child_tool_allowlist(["read_file", "task"])
 
 
+def test_normalize_child_tool_allowlist_allows_mcp_wildcard_and_explicit_tool() -> None:
+    assert normalize_child_tool_allowlist(["read_file", "mcp__*"]) == (
+        "read_file",
+        "mcp__*",
+    )
+    assert normalize_child_tool_allowlist(["read_file", "mcp__kb__lookup"]) == (
+        "read_file",
+        "mcp__kb__lookup",
+    )
+
+
 # --- Tool Alias Normalization tests (P1 subagent-generation-todolist) ---
 
 

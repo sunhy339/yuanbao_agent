@@ -29,6 +29,9 @@ def normalize_permissions(raw_config: dict[str, Any]) -> dict[str, Any]:
         approval_mode = policy.get("approvalMode", "")
 
     legacy_preset_map = {
+        "none": "autonomous",
+        "never": "autonomous",
+        "off": "autonomous",
         "strict": "safe",
         "on_write_or_command": "balanced",
         "relaxed": "autonomous",

@@ -380,6 +380,29 @@ def test_skill_inherit_mcp_allows_mcp_but_filters_builtin_tools() -> None:
     assert decision.denied_tool_names == ["write_file"]
 
 
+def test_child_allowlist_mcp_wildcard_allows_mcp_tools() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_child_mcp", "role": "worker", "status": "running"},
+        context={
+            "_child_worker": True,
+            "_child_tool_allowlist": ["read_file", "mcp__*"],
+            "skillPolicy": {
+                "skillId": "mcp_reader",
+                "toolPolicy": "inherit_mcp",
+                "toolWhitelist": ["read_file"],
+            },
+            "mcpPolicy": {"mode": "allow", "allowedServers": ["docs"]},
+            "config": {"permissions": {"preset": "autonomous"}},
+        },
+        tool_results=[],
+        registered_tools=[*_tools("read_file", "web_fetch"), _mcp_tool("docs", "lookup")],
+    )
+
+    assert set(decision.allowed_tool_names) == {"read_file", "mcp__docs__lookup"}
+    assert "web_fetch" in decision.denied_tool_names
+
+
 def test_mcp_server_policy_filters_mcp_tools() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(

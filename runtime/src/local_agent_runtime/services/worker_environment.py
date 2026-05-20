@@ -186,6 +186,12 @@ def normalize_child_tool_allowlist(value: Sequence[str] | str | None = None) -> 
         name = str(item).strip()
         if not name:
             continue
+        if name == "mcp__*" or name.startswith("mcp__"):
+            if name in seen:
+                continue
+            seen.add(name)
+            normalized.append(name)
+            continue
         # Resolve alias before validation
         name = resolve_tool_alias(name)
         if name in seen:

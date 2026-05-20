@@ -361,6 +361,40 @@ def test_provider_env_overrides_stored_mock_defaults() -> None:
     assert payload["model"] == "env-model"
 
 
+def test_explicit_provider_config_takes_precedence_over_global_env() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"choices":[{"message":{"role":"assistant","content":"configured"}}]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-config",
+                "baseUrl": "https://configured.example.test/v1",
+                "model": "configured-model",
+            }
+        },
+        http_post=fake_post,
+        environ={
+            "LOCAL_AGENT_PROVIDER_MODE": "openai-compatible",
+            "LOCAL_AGENT_PROVIDER_API_KEY": "sk-env",
+            "LOCAL_AGENT_PROVIDER_BASE_URL": "https://env.example.test/v1",
+            "LOCAL_AGENT_PROVIDER_MODEL": "env-model",
+        },
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "configured"
+    assert calls[0]["url"] == "https://configured.example.test/v1/chat/completions"
+    assert calls[0]["headers"]["Authorization"] == "Bearer sk-config"
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["model"] == "configured-model"
+
+
 def test_openai_compatible_bare_base_url_uses_v1_chat_completions() -> None:
     calls: list[dict[str, Any]] = []
 

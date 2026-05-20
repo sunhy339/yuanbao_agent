@@ -586,23 +586,36 @@ class ProviderAdapter:
 
     def _compute_settings(self, context: dict[str, Any] | None) -> OpenAICompatibleSettings | None:
         provider_config = self._merged_provider_config(context)
-        mode = self._env(
+        env_mode = self._env(
             "LOCAL_AGENT_PROVIDER_MODE",
             "YUANBAO_PROVIDER_MODE",
-        ) or self._string_value(provider_config, "mode", "providerMode")
+        )
+        config_mode = self._string_value(provider_config, "mode", "providerMode")
+        env_takes_over_mock_config = bool(env_mode and self._normalize_mode(config_mode) == "mock")
+        mode = env_mode if env_takes_over_mock_config else config_mode or env_mode
+
+        config_env_var_name = self._string_value(
+            provider_config,
+            "apiKeyEnvVarName",
+            "api_key_env_var_name",
+            "envKey",
+            "env_key",
+        )
+        env_env_var_name = self._env("LOCAL_AGENT_PROVIDER_API_KEY_ENV_VAR")
         configured_env_var_name = (
-            self._env("LOCAL_AGENT_PROVIDER_API_KEY_ENV_VAR")
-            or self._string_value(
-                provider_config,
-                "apiKeyEnvVarName",
-                "api_key_env_var_name",
-                "envKey",
-                "env_key",
-            )
+            env_env_var_name if env_takes_over_mock_config else config_env_var_name or env_env_var_name
         )
         api_format = self._normalize_api_format(
-            self._env("LOCAL_AGENT_PROVIDER_API_FORMAT", "API_FORMAT")
-            or self._string_value(provider_config, "apiFormat", "api_format", "providerApiFormat")
+            (
+                self._env("LOCAL_AGENT_PROVIDER_API_FORMAT", "API_FORMAT")
+                if env_takes_over_mock_config
+                else self._string_value(provider_config, "apiFormat", "api_format", "providerApiFormat")
+            )
+            or (
+                self._string_value(provider_config, "apiFormat", "api_format", "providerApiFormat")
+                if env_takes_over_mock_config
+                else self._env("LOCAL_AGENT_PROVIDER_API_FORMAT", "API_FORMAT")
+            )
             or DEFAULT_PROVIDER_API_FORMAT
         )
         uses_anthropic_env = self._uses_anthropic_env(configured_env_var_name)
@@ -621,15 +634,23 @@ class ProviderAdapter:
                 f"{api_format} is not supported. Use OpenAI Chat Completions, OpenAI Responses, or Anthropic Messages."
             )
 
-        api_key = self._env(
-            "LOCAL_AGENT_PROVIDER_API_KEY",
-            "LOCAL_AGENT_OPENAI_API_KEY",
-            "OPENAI_API_KEY",
-        )
+        api_key = None
+        if env_takes_over_mock_config:
+            api_key = self._env(
+                "LOCAL_AGENT_PROVIDER_API_KEY",
+                "LOCAL_AGENT_OPENAI_API_KEY",
+                "OPENAI_API_KEY",
+            )
         if not api_key:
             api_key = self._string_value(provider_config, "apiKey", "api_key")
         if not api_key and configured_env_var_name:
             api_key = self._env(configured_env_var_name)
+        if not api_key and not (config_env_var_name or self._string_value(provider_config, "apiKey", "api_key")):
+            api_key = self._env(
+                "LOCAL_AGENT_PROVIDER_API_KEY",
+                "LOCAL_AGENT_OPENAI_API_KEY",
+                "OPENAI_API_KEY",
+            )
         if not api_key and api_format == "anthropic-messages":
             api_key = self._env("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
         if not api_key and not configured_env_var_name:
@@ -645,11 +666,19 @@ class ProviderAdapter:
                 raise ProviderAdapterError(f"Environment variable {env_hint} is not set.")
             return None
 
-        raw_base_url = self._env("LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL")
-        base_url_source = "openai_env" if raw_base_url else None
+        raw_base_url = (
+            self._env("LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL")
+            if env_takes_over_mock_config
+            else self._string_value(provider_config, "baseUrl", "base_url")
+        )
+        base_url_source = "openai_env" if raw_base_url and env_takes_over_mock_config else "config" if raw_base_url else None
         if not raw_base_url:
-            raw_base_url = self._string_value(provider_config, "baseUrl", "base_url")
-            base_url_source = "config" if raw_base_url else None
+            raw_base_url = (
+                self._string_value(provider_config, "baseUrl", "base_url")
+                if env_takes_over_mock_config
+                else self._env("LOCAL_AGENT_PROVIDER_BASE_URL", "OPENAI_BASE_URL")
+            )
+            base_url_source = "config" if raw_base_url and env_takes_over_mock_config else "openai_env" if raw_base_url else None
         if not raw_base_url:
             raw_base_url = self._env("ANTHROPIC_BASE_URL")
             base_url_source = "anthropic_env" if raw_base_url else base_url_source
@@ -661,24 +690,56 @@ class ProviderAdapter:
             raw_base_url or default_base_url,
             append_v1=uses_anthropic_env or base_url_source == "anthropic_env",
         )
+        env_model = self._env(
+            "LOCAL_AGENT_PROVIDER_MODEL",
+            "OPENAI_MODEL",
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        )
+        config_model = self._string_value(provider_config, "model", "defaultModel")
         model = (
-            self._env(
-                "LOCAL_AGENT_PROVIDER_MODEL",
-                "OPENAI_MODEL",
-                "ANTHROPIC_MODEL",
-                "ANTHROPIC_DEFAULT_SONNET_MODEL",
-                "ANTHROPIC_DEFAULT_OPUS_MODEL",
-                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            (
+                env_model
+                if env_takes_over_mock_config
+                else config_model
             )
-            or self._string_value(provider_config, "model", "defaultModel")
+            or (
+                config_model
+                if env_takes_over_mock_config
+                else env_model
+            )
             or "gpt-5-codex"
         )
-        temperature = self._float_env("LOCAL_AGENT_PROVIDER_TEMPERATURE", "OPENAI_TEMPERATURE")
+        temperature = (
+            self._float_env(
+                "LOCAL_AGENT_PROVIDER_TEMPERATURE",
+                "OPENAI_TEMPERATURE",
+            )
+            if env_takes_over_mock_config
+            else self._float_value(provider_config, "temperature")
+        )
         if temperature is None:
-            temperature = self._float_value(provider_config, "temperature")
-        max_tokens = self._int_env("LOCAL_AGENT_PROVIDER_MAX_TOKENS", "OPENAI_MAX_TOKENS")
+            temperature = (
+                self._float_value(provider_config, "temperature")
+                if env_takes_over_mock_config
+                else self._float_env("LOCAL_AGENT_PROVIDER_TEMPERATURE", "OPENAI_TEMPERATURE")
+            )
+        max_tokens = (
+            self._int_env(
+                "LOCAL_AGENT_PROVIDER_MAX_TOKENS",
+                "OPENAI_MAX_TOKENS",
+            )
+            if env_takes_over_mock_config
+            else self._int_value(provider_config, "maxTokens", "max_tokens", "maxOutputTokens")
+        )
         if max_tokens is None:
-            max_tokens = self._int_value(provider_config, "maxTokens", "max_tokens", "maxOutputTokens")
+            max_tokens = (
+                self._int_value(provider_config, "maxTokens", "max_tokens", "maxOutputTokens")
+                if env_takes_over_mock_config
+                else self._int_env("LOCAL_AGENT_PROVIDER_MAX_TOKENS", "OPENAI_MAX_TOKENS")
+            )
         stream_timeout = self._float_env("LOCAL_AGENT_PROVIDER_STREAM_TIMEOUT", "OPENAI_STREAM_TIMEOUT")
         if stream_timeout is None:
             stream_timeout = self._float_value(provider_config, "streamTimeout", "stream_timeout")

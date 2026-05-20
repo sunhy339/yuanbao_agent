@@ -37,6 +37,23 @@ export interface ApprovalCompletionEvidenceView {
   summary: string;
   metrics: Array<{ label: string; value: string }>;
   issues: string[];
+  advisorEvidenceAdapters?: {
+    status?: string;
+    counts?: {
+      ready?: number;
+      approvalRequired?: number;
+      blocked?: number;
+      missingAdapter?: number;
+      satisfied?: number;
+      total?: number;
+    };
+    adapters: Array<{
+      adapterKind?: string;
+      status?: string;
+      executorState?: string;
+      summary?: string;
+    }>;
+  };
   audit?: {
     approvalCounts?: {
       total?: number;

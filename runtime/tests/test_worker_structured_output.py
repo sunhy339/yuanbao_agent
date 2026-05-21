@@ -912,6 +912,69 @@ class TestCompletionHardGate:
         assert evidence["verificationRequirements"]["missing"] == []
         assert evidence["testsRun"][0]["command"] == "python -m pytest -q"
 
+    def test_later_same_language_verification_resolves_prior_subfamily_failure(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Implement TodoStore and CLI command behavior",
+            plan=[],
+            role="worker",
+            routing={
+                "runtimeRole": "worker",
+                "profile": {
+                    "ownedScope": ["todo.py"],
+                    "expectedArtifacts": [{"kind": "file", "path": "todo.py"}],
+                    "verificationRequirements": [],
+                },
+            },
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "todo.py", "action": "added"}],
+            commands=[
+                {
+                    "id": "cmd_pytest",
+                    "command": "python -m pytest -q",
+                    "status": "failed",
+                    "exitCode": 5,
+                    "summary": "Command failed",
+                },
+                {
+                    "id": "cmd_compile",
+                    "command": "python -m py_compile todo.py",
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "Command completed with exit 0",
+                },
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Implemented TodoStore and CLI behavior. py_compile passed after an earlier Python verification failure.",
+            context={
+                "routing": {
+                    "runtimeRole": "worker",
+                    "profile": {
+                        "ownedScope": ["todo.py"],
+                        "expectedArtifacts": [{"kind": "file", "path": "todo.py"}],
+                        "verificationRequirements": [],
+                    },
+                }
+            },
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["counts"]["failedVerification"] == 0
+        assert evidence["counts"]["resolvedFailedTestsRun"] == 1
+
     def test_python_test_file_change_requires_test_verification_not_lint_only(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

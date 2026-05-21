@@ -4114,7 +4114,11 @@ class TaskLifecycleMixin:
         failed_keys = self._completion_verification_resolution_keys(failed_item)
         passed_keys = self._completion_verification_resolution_keys(passed_item)
         if failed_keys and passed_keys:
-            return not failed_keys.isdisjoint(passed_keys)
+            if not failed_keys.isdisjoint(passed_keys):
+                return True
+            if self._completion_verification_families_overlap(failed_keys, passed_keys):
+                return True
+            return False
         failed_families = self._completion_verification_item_families(failed_item)
         passed_families = self._completion_verification_item_families(passed_item)
         if failed_families and passed_families:
@@ -4124,6 +4128,15 @@ class TaskLifecycleMixin:
         if failed_identity and passed_identity:
             return failed_identity == passed_identity
         return bool(failed_keys or passed_keys or failed_families or passed_families)
+
+    @staticmethod
+    def _completion_verification_families_overlap(
+        failed_keys: set[str],
+        passed_keys: set[str],
+    ) -> bool:
+        failed_families = {key.split(":", 1)[0] for key in failed_keys if ":" in key}
+        passed_families = {key.split(":", 1)[0] for key in passed_keys if ":" in key}
+        return bool(failed_families and passed_families and not failed_families.isdisjoint(passed_families))
 
     def _completion_chronological_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         indexed = list(enumerate(items))

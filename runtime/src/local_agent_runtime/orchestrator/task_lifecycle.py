@@ -74,6 +74,11 @@ class TaskLifecycleMixin:
             tool_results=tool_results or [],
         )
         final_summary = self._merge_completion_summary(summary=summary, validation=validation)
+        final_summary = self._completion_summary_with_required_anchors(
+            summary=final_summary,
+            task=task,
+            context=context or {},
+        )
         completion_evidence = self._build_completion_evidence(
             task=task,
             summary=final_summary,
@@ -103,7 +108,11 @@ class TaskLifecycleMixin:
         if reflection_result is not None:
             reflection_data = self._reflector.to_dict(reflection_result)
             if reflection_result.improved_summary:
-                final_summary = reflection_result.improved_summary
+                final_summary = self._completion_summary_with_required_anchors(
+                    summary=reflection_result.improved_summary,
+                    task=task,
+                    context=context or {},
+                )
                 completion_evidence["summaryPreview"] = final_summary[:500]
         # --- End reflection ---
 
@@ -703,6 +712,11 @@ class TaskLifecycleMixin:
         value = item.get("path") or item.get("file") or item.get("name")
         return str(value or "").replace("\\", "/").strip()
 
+    @staticmethod
+    def _completion_changed_file_basename(item: dict[str, Any]) -> str:
+        path = str(item.get("path") or item.get("file") or item.get("name") or "").replace("\\", "/").strip()
+        return path.rsplit("/", 1)[-1].casefold() if path else ""
+
     def _completion_verification_requirements(
         self,
         *,
@@ -811,6 +825,8 @@ class TaskLifecycleMixin:
             or "/test/" in normalized_path
             or "/tests/" in normalized_path
             or filename.startswith("test_")
+            or normalized_path.endswith("_test.py")
+            or normalized_path.endswith("_tests.py")
             or filename.endswith((
                 "_test.go",
                 ".test.js",
@@ -1030,6 +1046,56 @@ class TaskLifecycleMixin:
         if any(path.rsplit("/", 1)[-1] in manifest_names for path in paths):
             return False
         return self._completion_has_passing_structural_file_check(completion_evidence)
+
+    def _completion_has_python_layout_coverage(
+        self,
+        completion_evidence: dict[str, Any],
+        *,
+        expected_paths: list[str] | None = None,
+        test_expectation: int | None = None,
+    ) -> bool:
+        changed_files = completion_evidence.get("changedFiles")
+        if not isinstance(changed_files, list) or not changed_files:
+            return False
+        changed_paths = [
+            self._completion_changed_file_path(item)
+            for item in changed_files
+            if isinstance(item, dict) and self._completion_changed_file_path(item)
+        ]
+        if not changed_paths:
+            return False
+        changed_basenames = {path.rsplit("/", 1)[-1].casefold() for path in changed_paths}
+        package_python = any("/" in path and path.casefold().endswith(".py") for path in changed_paths)
+        if not package_python:
+            return False
+        if expected_paths:
+            unresolved = []
+            for expected in expected_paths:
+                expected_base = expected.rsplit("/", 1)[-1].casefold()
+                if expected_base not in changed_basenames:
+                    unresolved.append(expected)
+            if unresolved:
+                return False
+        if test_expectation is not None:
+            found = len([
+                path for path in changed_paths
+                if path.casefold().endswith(".py")
+                and self._completion_test_artifact_verification_family(path.casefold()) == "python:test"
+            ])
+            if found < test_expectation:
+                return False
+        verification_items = []
+        for source_name in ("verification", "testsRun"):
+            items = completion_evidence.get(source_name)
+            if isinstance(items, list):
+                verification_items.extend(item for item in items if isinstance(item, dict))
+        observed_families: set[str] = set()
+        for item in verification_items:
+            status = str(item.get("status") or "").strip().lower()
+            if status not in {"passed", "success", "completed"}:
+                continue
+            observed_families.update(self._completion_verification_item_families(item))
+        return "python" in observed_families or "python:test" in observed_families or "python:syntax" in observed_families
 
     def _completion_has_targeted_verification(self, completion_evidence: dict[str, Any]) -> bool:
         verification_items = completion_evidence.get("verification")
@@ -4015,36 +4081,49 @@ class TaskLifecycleMixin:
             item for item in items
             if isinstance(item, dict)
         ])
+        passed_items = [
+            item for item in normalized_items
+            if str(item.get("status") or "").strip().lower() in passed_statuses
+        ]
         for index, item in enumerate(normalized_items):
             status = str(item.get("status") or "").strip().lower()
             if status not in failed_statuses:
                 continue
-            keys = self._completion_verification_resolution_keys(item)
-            families = self._completion_verification_item_families(item)
-            identity = self._completion_verification_identity(item)
             has_later_success = False
             for later in normalized_items[index + 1 :]:
-                later_status = str(later.get("status") or "").strip().lower()
-                if later_status not in passed_statuses:
-                    continue
-                later_keys = self._completion_verification_resolution_keys(later)
-                if keys and later_keys:
-                    if keys.isdisjoint(later_keys):
-                        continue
+                if self._completion_verification_items_match(item, later):
                     has_later_success = True
                     break
-                later_families = self._completion_verification_item_families(later)
-                if families and later_families and families.isdisjoint(later_families):
-                    continue
-                if not families and not later_families:
-                    later_identity = self._completion_verification_identity(later)
-                    if identity and later_identity and identity != later_identity:
-                        continue
-                has_later_success = True
-                break
+            if not has_later_success and self._completion_item_timestamp(item) is None:
+                has_later_success = any(
+                    self._completion_verification_items_match(item, passed_item)
+                    for passed_item in passed_items
+                )
             if not has_later_success:
                 unresolved.append(item)
         return unresolved
+
+    def _completion_verification_items_match(
+        self,
+        failed_item: dict[str, Any],
+        passed_item: dict[str, Any],
+    ) -> bool:
+        passed_status = str(passed_item.get("status") or "").strip().lower()
+        if passed_status not in {"passed", "success", "completed"}:
+            return False
+        failed_keys = self._completion_verification_resolution_keys(failed_item)
+        passed_keys = self._completion_verification_resolution_keys(passed_item)
+        if failed_keys and passed_keys:
+            return not failed_keys.isdisjoint(passed_keys)
+        failed_families = self._completion_verification_item_families(failed_item)
+        passed_families = self._completion_verification_item_families(passed_item)
+        if failed_families and passed_families:
+            return not failed_families.isdisjoint(passed_families)
+        failed_identity = self._completion_verification_identity(failed_item)
+        passed_identity = self._completion_verification_identity(passed_item)
+        if failed_identity and passed_identity:
+            return failed_identity == passed_identity
+        return bool(failed_keys or passed_keys or failed_families or passed_families)
 
     def _completion_chronological_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         indexed = list(enumerate(items))
@@ -4151,6 +4230,10 @@ class TaskLifecycleMixin:
         ).casefold()
         text = re.sub(r'cd\s+["\']?[^;&|]+["\']?\s*(?:&&|;)?', " ", text)
         text = re.sub(r'["\'][a-z]:[^"\']+["\']', " ", text)
+        text = re.sub(r'(?<![a-z0-9_])[a-z]:[/\\][^ ]*python(?:\.exe)?', " python", text)
+        text = re.sub(r'(?<![a-z0-9_])[a-z]:[/\\][^ ]*node(?:\.exe)?', " node", text)
+        text = re.sub(r'&\s*"[^"]*python(?:\.exe)?"', " python", text)
+        text = re.sub(r'&\s*"[^"]*node(?:\.exe)?"', " node", text)
         text = re.sub(r"\s+", " ", text)
         return text.strip()
 
@@ -4248,8 +4331,18 @@ class TaskLifecycleMixin:
             expected_paths = self._completion_expected_artifact_paths(text)
             test_expectation = self._completion_expected_pytest_file_count(text)
         records: list[dict[str, Any]] = []
+        completion_evidence_stub = {
+            "changedFiles": task.get("changedFiles") or [],
+            "verification": task.get("verification") or [],
+            "testsRun": task.get("testsRun") or [],
+        }
         for path in expected_paths:
             exists = (root / path).exists()
+            if not exists and self._completion_has_python_layout_coverage(
+                completion_evidence_stub,
+                expected_paths=[path],
+            ):
+                exists = True
             records.append({
                 "criterion": f"Expected artifact exists: {path}",
                 "status": "supported" if exists else "failed",
@@ -4259,10 +4352,12 @@ class TaskLifecycleMixin:
         records.extend(self._completion_product_readability_records(root=root, task=task))
         records.extend(self._completion_static_frontend_asset_records(root=root, task=task))
         if test_expectation is not None:
-            found = len([
-                path for path in root.rglob("test_*.py")
-                if path.is_file() and ".git" not in path.parts
-            ])
+            found = self._completion_python_test_file_count(root)
+            if found < test_expectation and self._completion_has_python_layout_coverage(
+                completion_evidence_stub,
+                test_expectation=test_expectation,
+            ):
+                found = test_expectation
             records.append({
                 "criterion": f"Expected pytest file count >= {test_expectation}",
                 "status": "supported" if found >= test_expectation else "failed",
@@ -5213,9 +5308,10 @@ class TaskLifecycleMixin:
                 command_candidates.append(dict(item))
         for item in command_candidates:
             command_text = str(item.get("command") or "").strip()
-            if "node --check" not in command_text.casefold():
+            command_key = self._completion_node_check_command_key(command_text)
+            if command_key is None:
                 continue
-            if normalized_display and normalized_display not in command_text.casefold():
+            if normalized_display and command_key != normalized_display:
                 continue
             status = str(item.get("status") or "").strip().casefold()
             exit_code = item.get("exitCode")
@@ -5234,6 +5330,27 @@ class TaskLifecycleMixin:
                 "summary": summary or ("node --check passed" if supported else "node --check did not pass"),
             }
         return None
+
+    @staticmethod
+    def _completion_node_check_command_key(command: str) -> str | None:
+        text = str(command or "").strip()
+        if not text:
+            return None
+        match = re.search(
+            r"""(?i)(?:^|[;&]\s*|&&\s*|\|\|\s*|^\s*&\s*['"]?[^'"]*node(?:\.exe)?['"]?\s*)node(?:\.exe)?\s+--check\s+(?P<target>.+?)\s*$""",
+            text,
+        )
+        if not match:
+            match = re.search(
+                r"""(?i)(?:(?:['"]?[^'"]*node(?:\.exe)?['"]?)|node(?:\.exe)?)\s+--check\s+(?P<target>.+?)\s*$""",
+                text,
+            )
+        if not match:
+            return None
+        target = str(match.group("target") or "").strip().strip("\"'")
+        if not target:
+            return None
+        return target.replace("\\", "/").casefold()
 
     @staticmethod
     def _completion_node_check_record_needs_retry(record: dict[str, Any]) -> bool:
@@ -5380,6 +5497,14 @@ class TaskLifecycleMixin:
             "do not keep",
             "should not exist",
             "if not required",
+            "suggested filename",
+            "suggested filenames",
+            "filenames include",
+            "for example",
+            "close equivalent",
+            "close equivalents",
+            "equivalent acceptable",
+            "equivalents are acceptable",
             "不需要",
             "删除",
             "移除",
@@ -5406,6 +5531,13 @@ class TaskLifecycleMixin:
             paths.append(normalized)
         return paths
 
+    @staticmethod
+    def _completion_expected_artifact_basenames(text: str) -> set[str]:
+        return {
+            path.rsplit("/", 1)[-1].casefold()
+            for path in TaskLifecycleMixin._completion_expected_artifact_paths(TaskLifecycleMixin, text)  # type: ignore[misc]
+        }
+
     def _completion_expected_pytest_file_count(self, text: str) -> int | None:
         lowered = (text or "").casefold()
         patterns = [
@@ -5423,6 +5555,24 @@ class TaskLifecycleMixin:
             if value in chinese_digits:
                 return chinese_digits[value]
         return None
+
+    @staticmethod
+    def _completion_python_test_file_count(root: Path) -> int:
+        count = 0
+        for path in root.rglob("*.py"):
+            if not path.is_file() or ".git" in path.parts:
+                continue
+            normalized = path.as_posix().casefold()
+            filename = path.name.casefold()
+            if (
+                normalized.startswith(("tests/", "test/"))
+                or "/tests/" in normalized
+                or "/test/" in normalized
+                or filename.startswith("test_")
+                or filename.endswith("_test.py")
+            ):
+                count += 1
+        return count
 
     def _completion_contract_profile(
         self,

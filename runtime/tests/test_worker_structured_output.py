@@ -4325,6 +4325,306 @@ class TestCompletionHardGate:
         acceptance = result["structuredResult"]["completionEvidence"]["acceptance"]
         assert not any(item["criterion"] == "Expected artifact exists: incident_dashboard.html" for item in acceptance)
 
+    def test_completion_reinserts_required_focus_and_memory_anchors(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="anchor completion")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal=(
+                "Keep SINGLE_MODEL_INCIDENT_RULES_ENGINE and INCIDENT_RULES_MEMORY_SQLITE_PYTEST "
+                "visible in the final summary while finishing the backend task."
+            ),
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "incident_rules.py", "action": "modified"}],
+            commands=[
+                {
+                    "id": "cmd_pytest",
+                    "command": 'python -m pytest -q',
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "3 passed",
+                }
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Finished the backend implementation and validation.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        assert "SINGLE_MODEL_INCIDENT_RULES_ENGINE" in result["resultSummary"]
+        assert "INCIDENT_RULES_MEMORY_SQLITE_PYTEST" in result["resultSummary"]
+
+    def test_package_style_python_layout_counts_as_equivalent_artifact_and_test_shape(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        package_dir = project / "blog"
+        tests_dir = project / "tests"
+        package_dir.mkdir(parents=True)
+        tests_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        (package_dir / "app.py").write_text("def build_app():\n    return 'ok'\n", encoding="utf-8")
+        (package_dir / "store.py").write_text("class Store:\n    pass\n", encoding="utf-8")
+        (tests_dir / "blog_system_test.py").write_text("def test_blog_system():\n    assert True\n", encoding="utf-8")
+        (tests_dir / "test_blog_api.py").write_text("def test_blog_api():\n    assert True\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="package layout")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal=(
+                "Suggested filenames include blog_models.py, blog_storage.py, blog_service.py, blog_api.py, and blog_server.py, "
+                "but close equivalents are acceptable. Create at least 2 pytest files."
+            ),
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "blog/app.py", "summary": "package app entry"},
+                {"path": "blog/store.py", "summary": "package storage"},
+                {"path": "tests/blog_system_test.py", "summary": "package layout test"},
+                {"path": "tests/test_blog_api.py", "summary": "api test"},
+            ],
+            commands=[
+                {
+                    "id": "cmd_pytest",
+                    "command": 'python -m pytest -q',
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "2 passed",
+                },
+                {
+                    "id": "cmd_py_compile",
+                    "command": 'python -m py_compile blog/app.py blog/store.py',
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "syntax passed",
+                },
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Implemented the package-style backend and its pytest coverage.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        acceptance = result["structuredResult"]["completionEvidence"]["acceptance"]
+        failed = [item["criterion"] for item in acceptance if item["status"] == "failed"]
+        assert "Expected pytest file count >= 2" not in failed
+
+    def test_node_exe_check_command_counts_as_existing_node_check(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "index.html").write_text('<script src="app.js"></script><main>Blog</main>\n', encoding="utf-8")
+        (project / "app.js").write_text("console.log('ok');\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="node check")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Implement a static frontend with index.html and app.js",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "index.html", "summary": "frontend entry"},
+                {"path": "app.js", "summary": "frontend script"},
+            ],
+            commands=[
+                {
+                    "id": "cmd_node_check",
+                    "command": '& "C:\\Program Files\\nodejs\\node.exe" --check app.js',
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "syntax ok",
+                }
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Implemented the static frontend and verified script syntax.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        acceptance = result["structuredResult"]["completionEvidence"]["acceptance"]
+        node_record = next(
+            item for item in acceptance
+            if item["criterion"] == "Static frontend script syntax: app.js"
+        )
+        assert node_record["status"] == "supported"
+
+    def test_later_root_level_equivalent_pytest_success_resolves_failed_child_verification(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "blog_models.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (project / "tests").mkdir()
+        (project / "tests" / "test_blog_service.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="child failure recovery")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Finish the blog backend and verify it end to end.",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "blog_models.py", "summary": "backend model"},
+                {"path": "tests/test_blog_service.py", "summary": "service coverage"},
+            ],
+            commands=[
+                {
+                    "id": "cmd_root_pytest",
+                    "command": '"C:\\Python314\\python.exe" -m pytest -q',
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "1 passed",
+                },
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Completed the backend and reran pytest successfully.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            tool_results=[
+                {
+                    "name": "child_task",
+                    "result": {
+                        "status": "failed",
+                        "summary": "Add pytest coverage for backend and API paths",
+                        "changedFiles": [{"path": "tests/test_blog_service.py"}],
+                        "verification": [
+                            {
+                                "command": '"C:\\Python314\\python.exe" -m pytest -q',
+                                "status": "failed",
+                                "summary": "test failure before fix",
+                            }
+                        ],
+                        "testsRun": [
+                            {
+                                "command": '"C:\\Python314\\python.exe" -m pytest -q',
+                                "status": "failed",
+                                "summary": "test failure before fix",
+                            }
+                        ],
+                    },
+                }
+            ],
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["counts"]["failedVerification"] == 0
+        assert evidence["counts"]["failedTestsRun"] == 0
+        assert evidence["counts"]["passedTestsRun"] >= 1
+
+    def test_timestamped_root_pytest_success_resolves_untimestamped_child_failures(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "blog_service.py").write_text("def ok():\n    return True\n", encoding="utf-8")
+        (project / "tests").mkdir()
+        (project / "tests" / "test_blog_service.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="timestamp ordering recovery")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Repair blog workflow tests and rerun the root verification successfully.",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "blog_service.py", "summary": "service fix"},
+                {"path": "tests/test_blog_service.py", "summary": "test coverage"},
+            ],
+            commands=[
+                {
+                    "id": "cmd_root_pytest",
+                    "command": "python -m pytest -q",
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "1 passed",
+                    "startedAt": 200.0,
+                    "finishedAt": 210.0,
+                },
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Fixed the workflow and reran pytest successfully.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            tool_results=[
+                {
+                    "name": "child_task",
+                    "result": {
+                        "status": "failed",
+                        "summary": "Initial child pytest run failed before the root retry.",
+                        "changedFiles": [{"path": "tests/test_blog_service.py"}],
+                        "testsRun": [
+                            {
+                                "command": '"C:\\Python314\\python.exe" -m pytest -q',
+                                "status": "failed",
+                                "summary": "child root-level pytest failed before fix",
+                            },
+                            {
+                                "command": '"C:\\Python314\\python.exe" -m pytest tests/test_blog_service.py -q',
+                                "status": "failed",
+                                "summary": "child targeted pytest failed before fix",
+                            },
+                        ],
+                    },
+                }
+            ],
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["counts"]["failedVerification"] == 0
+        assert evidence["counts"]["failedTestsRun"] == 0
+        assert evidence["counts"]["passedTestsRun"] >= 1
+
     def test_completion_review_rejection_fails_task(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

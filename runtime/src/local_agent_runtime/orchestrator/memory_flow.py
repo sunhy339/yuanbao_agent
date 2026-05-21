@@ -508,6 +508,64 @@ class MemoryFlowMixin:
             return validation_summary
         return f"{base} {validation_summary}"
 
+    def _completion_summary_with_required_anchors(
+        self,
+        *,
+        summary: str,
+        task: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> str:
+        text = self._sanitize_completion_summary(summary)
+        anchors = self._completion_required_anchor_tokens(task=task or {}, context=context or {})
+        missing = [
+            anchor for anchor in anchors
+            if anchor and anchor.casefold() not in text.casefold()
+        ]
+        if not missing:
+            return text
+        if not text:
+            return " ".join(missing)
+        suffix = " ".join(missing)
+        if text.endswith((".", "!", "?", "。", "！", "？")):
+            return f"{text} {suffix}"
+        return f"{text}. {suffix}"
+
+    def _completion_required_anchor_tokens(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+    ) -> list[str]:
+        candidates: list[str] = []
+        for value in [
+            task.get("goal"),
+            task.get("resultSummary"),
+            context.get("latestUserMessage"),
+            context.get("latestUserMessagePreview"),
+        ]:
+            if value not in (None, ""):
+                candidates.append(str(value))
+        for item in task.get("acceptanceCriteria") or []:
+            if item not in (None, ""):
+                candidates.append(str(item))
+        routing = context.get("routing")
+        if isinstance(routing, dict):
+            for key in ("focusAnchor", "memoryAnchor"):
+                value = routing.get(key)
+                if value not in (None, ""):
+                    candidates.append(str(value))
+        anchor_pattern = re.compile(r"\b[A-Z][A-Z0-9_]{7,}\b")
+        anchors: list[str] = []
+        seen: set[str] = set()
+        for text in candidates:
+            for match in anchor_pattern.findall(text or ""):
+                key = match.casefold()
+                if key in seen:
+                    continue
+                seen.add(key)
+                anchors.append(match)
+        return anchors[:8]
+
     def _sanitize_completion_summary(self, summary: Any) -> str:
         text = str(summary or "")
         text = re.sub(r"<tool_call\b[^>]*>.*?</tool_call>", " ", text, flags=re.IGNORECASE | re.DOTALL)

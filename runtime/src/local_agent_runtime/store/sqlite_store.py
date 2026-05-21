@@ -472,14 +472,19 @@ class SQLiteStore(
         }
 
     def storage_cleanup(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        vacuum = bool((params or {}).get("vacuum", False))
+        params = params or {}
+        vacuum = bool(params.get("vacuum", False))
         removed_expired_cache = 0
+        retention_removed: dict[str, int] = {}
         try:
             from ..provider.cache import LLMCache
 
             removed_expired_cache = int(LLMCache(self).cleanup_expired())
         except Exception:
             removed_expired_cache = 0
+
+        if bool(params.get("applyRetention", True)):
+            retention_removed = self._apply_storage_retention()
 
         if vacuum and self.database_path != ":memory:":
             self._conn.execute("VACUUM")
@@ -488,9 +493,144 @@ class SQLiteStore(
         result = self.storage_stats({})
         result["cleanup"] = {
             "expiredCacheEntriesRemoved": removed_expired_cache,
+            "retentionRemoved": retention_removed,
             "vacuumRan": vacuum and self.database_path != ":memory:",
         }
         return result
+
+    def _apply_storage_retention(self) -> dict[str, int]:
+        config = self.get_config({})["config"]
+        storage_cfg = config.get("storage") if isinstance(config, dict) else {}
+        retention = storage_cfg.get("retention") if isinstance(storage_cfg, dict) else {}
+        if not isinstance(retention, dict) or not retention.get("enabled", True):
+            return {}
+
+        removed: dict[str, int] = {}
+        removed["traceEvents"] = self._trim_partitioned_table(
+            table="trace_events",
+            partition_column="session_id",
+            order_column="sequence",
+            keep_limit=int(retention.get("traceEventsMaxPerSession", 5000)),
+        )
+        removed["providerTurns"] = self._trim_partitioned_table(
+            table="provider_turns",
+            partition_column="task_id",
+            order_column="turn_index",
+            keep_limit=int(retention.get("providerTurnsMaxPerTask", 200)),
+        )
+        removed["contextSnapshots"] = self._trim_partitioned_table(
+            table="context_snapshots",
+            partition_column="task_id",
+            order_column="created_at",
+            keep_limit=int(retention.get("contextSnapshotsMaxPerTask", 100)),
+        )
+        removed["commandLogs"] = self._trim_command_logs_per_task(
+            keep_limit=int(retention.get("commandLogsMaxPerTask", 100)),
+        )
+        removed["memoryRecallRecords"] = self._trim_partitioned_table(
+            table="memory_recall_records",
+            partition_column="session_id",
+            order_column="created_at",
+            keep_limit=int(retention.get("memoryRecallRecordsMaxPerSession", 200)),
+        )
+        removed["artifactFiles"] = self._cleanup_old_artifact_files(
+            max_age_days=int(retention.get("artifactFilesMaxAgeDays", 30)),
+        )
+        self._conn.commit()
+        return removed
+
+    def _trim_partitioned_table(
+        self,
+        *,
+        table: str,
+        partition_column: str,
+        order_column: str,
+        keep_limit: int,
+    ) -> int:
+        if keep_limit <= 0:
+            return 0
+
+        partitions = self._conn.execute(
+            f"SELECT DISTINCT {partition_column} AS partition_id FROM {table} WHERE {partition_column} IS NOT NULL"
+        ).fetchall()
+        deleted = 0
+        for row in partitions:
+            partition_id = row["partition_id"]
+            rows = self._conn.execute(
+                f"SELECT id FROM {table} WHERE {partition_column} = ? ORDER BY {order_column} DESC, id DESC",
+                (partition_id,),
+            ).fetchall()
+            if len(rows) <= keep_limit:
+                continue
+            delete_ids = [str(item["id"]) for item in rows[keep_limit:]]
+            placeholders = ", ".join("?" for _ in delete_ids)
+            cursor = self._conn.execute(
+                f"DELETE FROM {table} WHERE id IN ({placeholders})",
+                delete_ids,
+            )
+            deleted += int(cursor.rowcount)
+        return deleted
+
+    def _trim_command_logs_per_task(self, *, keep_limit: int) -> int:
+        if keep_limit <= 0:
+            return 0
+
+        task_rows = self._conn.execute(
+            "SELECT DISTINCT task_id FROM command_logs WHERE task_id IS NOT NULL"
+        ).fetchall()
+        deleted = 0
+        for row in task_rows:
+            task_id = row["task_id"]
+            rows = self._conn.execute(
+                "SELECT id, stdout_path, stderr_path FROM command_logs WHERE task_id = ? ORDER BY started_at DESC, id DESC",
+                (task_id,),
+            ).fetchall()
+            if len(rows) <= keep_limit:
+                continue
+            to_delete = rows[keep_limit:]
+            delete_ids = [str(item["id"]) for item in to_delete]
+            for item in to_delete:
+                self._delete_artifact_path(item["stdout_path"])
+                self._delete_artifact_path(item["stderr_path"])
+            placeholders = ", ".join("?" for _ in delete_ids)
+            cursor = self._conn.execute(
+                f"DELETE FROM command_logs WHERE id IN ({placeholders})",
+                delete_ids,
+            )
+            deleted += int(cursor.rowcount)
+        return deleted
+
+    def _cleanup_old_artifact_files(self, *, max_age_days: int) -> int:
+        if max_age_days <= 0 or not self._artifact_dir.exists():
+            return 0
+        cutoff_ms = self.now() - (max_age_days * 24 * 60 * 60 * 1000)
+        deleted = 0
+        for path in self._artifact_dir.glob("*"):
+            if not path.is_file():
+                continue
+            try:
+                modified_ms = int(path.stat().st_mtime * 1000)
+            except OSError:
+                continue
+            if modified_ms >= cutoff_ms:
+                continue
+            try:
+                path.unlink()
+                deleted += 1
+            except OSError:
+                continue
+        return deleted
+
+    @staticmethod
+    def _delete_artifact_path(path_value: Any) -> None:
+        if not isinstance(path_value, str) or not path_value.strip():
+            return
+        try:
+            artifact_path = Path(path_value)
+            if artifact_path.exists():
+                artifact_path.unlink()
+        except OSError:
+            return
 
     def _dict_value(self, value: Any, key: str) -> dict[str, Any]:
         if value is None:

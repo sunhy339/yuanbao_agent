@@ -186,6 +186,17 @@ DEFAULT_CONFIG = {
         "reasoningEffort": "max",
         "webFetchPreflight": True,
     },
+    "storage": {
+        "retention": {
+            "enabled": True,
+            "traceEventsMaxPerSession": 5000,
+            "providerTurnsMaxPerTask": 200,
+            "contextSnapshotsMaxPerTask": 100,
+            "commandLogsMaxPerTask": 100,
+            "memoryRecallRecordsMaxPerSession": 200,
+            "artifactFilesMaxAgeDays": 30,
+        },
+    },
     "features": {
         "multiAgent": True,
         "streamingDeltaPersist": True,

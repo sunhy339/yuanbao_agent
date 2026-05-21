@@ -130,3 +130,85 @@ def test_storage_stats_and_cleanup_report_sizes_and_cache_cleanup(tmp_path: Path
     assert cleanup["cleanup"]["vacuumRan"] is False
     assert cache.get("expired") is None
     assert cache.get("fresh") == "data"
+
+
+def test_storage_cleanup_applies_retention_caps(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path)
+    store = runtime.store
+
+    store.update_config(
+        {
+            "config": {
+                "storage": {
+                    "retention": {
+                        "enabled": True,
+                        "traceEventsMaxPerSession": 2,
+                        "providerTurnsMaxPerTask": 2,
+                        "contextSnapshotsMaxPerTask": 2,
+                        "commandLogsMaxPerTask": 2,
+                        "memoryRecallRecordsMaxPerSession": 2,
+                        "artifactFilesMaxAgeDays": 365,
+                    }
+                }
+            }
+        }
+    )
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace["id"], "Retention")
+    task = store.create_task(session_id=session["id"], task_type="edit", goal="Trim old records", plan=[], status="running")
+
+    for index in range(5):
+        store.append_trace_event(
+            task_id=task["id"],
+            session_id=session["id"],
+            event_type=f"task.note.{index}",
+            source="test",
+            payload={"index": index},
+        )
+        turn = store.create_provider_turn(
+            task_id=task["id"],
+            session_id=session["id"],
+            turn_index=index,
+            model="gpt-5.4",
+        )
+        store.complete_provider_turn(turn_id=turn["id"], finish_reason="stop", usage={"input_tokens": index + 1}, tool_call_count=0)
+        store.create_context_snapshot(
+            session_id=session["id"],
+            task_id=task["id"],
+            token_estimate=100 + index,
+            memory_ids=[f"mem_{index}"],
+        )
+        command = store.create_command_log(
+            task_id=task["id"],
+            command=f"python -m pytest -q #{index}",
+            cwd=str(workspace_root),
+            shell="powershell",
+        )
+        stdout_path = store.write_command_artifact(command["id"], "stdout", f"out-{index}")
+        stderr_path = store.write_command_artifact(command["id"], "stderr", f"err-{index}")
+        store.update_command_log(command["id"], status="completed", exit_code=0, stdout_path=stdout_path, stderr_path=stderr_path)
+        runtime.memory_store.record_recall(
+            session_id=session["id"],
+            task_id=task["id"],
+            query=f"query-{index}",
+            memory_ids=[f"mem_{index}"],
+            scores={f"mem_{index}": 0.5},
+        )
+
+    cleanup = _rpc(runtime, "storage.cleanup", {"vacuum": False, "applyRetention": True})
+    retention_removed = cleanup["cleanup"]["retentionRemoved"]
+
+    assert retention_removed["traceEvents"] >= 3
+    assert retention_removed["providerTurns"] >= 3
+    assert retention_removed["contextSnapshots"] >= 3
+    assert retention_removed["commandLogs"] >= 3
+    assert retention_removed["memoryRecallRecords"] >= 3
+
+    assert store._conn.execute("SELECT COUNT(*) FROM trace_events WHERE session_id = ?", (session["id"],)).fetchone()[0] == 2  # noqa: SLF001
+    assert store._conn.execute("SELECT COUNT(*) FROM provider_turns WHERE task_id = ?", (task["id"],)).fetchone()[0] == 2  # noqa: SLF001
+    assert store._conn.execute("SELECT COUNT(*) FROM context_snapshots WHERE task_id = ?", (task["id"],)).fetchone()[0] == 2  # noqa: SLF001
+    assert store._conn.execute("SELECT COUNT(*) FROM command_logs WHERE task_id = ?", (task["id"],)).fetchone()[0] == 2  # noqa: SLF001
+    assert store._conn.execute("SELECT COUNT(*) FROM memory_recall_records WHERE session_id = ?", (session["id"],)).fetchone()[0] == 2  # noqa: SLF001

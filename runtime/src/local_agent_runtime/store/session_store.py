@@ -4,43 +4,266 @@ import json
 import re
 import sqlite3
 import time
+import textwrap
 import uuid
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover
+    tomllib = None  # type: ignore[assignment]
 
-_WORKSPACE_MEMORY_INIT_TEMPLATES: dict[str, str] = {
-    "YUANBAO.md": """# Yuanbao Workspace Guide
+_README_CANDIDATES = ("README.md", "README.txt", "README", "readme.md")
+_INSTRUCTION_CANDIDATES = ("AGENTS.md", ".cursorrules", ".windsurfrules", ".claude/CLAUDE.md")
+_DEFAULT_TEST_COMMANDS = (
+    "python -m pytest -q",
+    "npm test",
+    "cargo test",
+)
 
-## Project Goals
-- Describe the main goals for this workspace.
 
-## Guardrails
-- Note important constraints, out-of-scope items, and safety expectations.
+def _normalize_bullets(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in values:
+        item = str(raw).strip()
+        if not item:
+            continue
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
-## Ways of Working
-- Capture preferred tools, testing commands, and review expectations.
-""",
-    "MEMORY.md": """# Workspace Memory
 
-## Conventions
-- Record stable repository conventions that should be recalled in future sessions.
+def _read_small_text_file(path: Path, *, max_chars: int = 4000) -> str:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+    normalized = text.strip()
+    if len(normalized) > max_chars:
+        return normalized[:max_chars].rstrip()
+    return normalized
 
-## Verified Patterns
-- Note workflows or recovery patterns that have already been validated.
 
-## Open Questions
-- Capture unresolved decisions worth revisiting later.
-""",
-    "MEMORY.local.md": """# Local Memory Overrides
+def _extract_readme_summary(workspace_root: Path) -> tuple[str | None, str | None]:
+    for name in _README_CANDIDATES:
+        path = workspace_root / name
+        if not path.exists() or not path.is_file():
+            continue
+        text = _read_small_text_file(path, max_chars=3000)
+        if not text:
+            continue
+        title: str | None = None
+        summary: str | None = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if title is None and stripped.startswith("#"):
+                title = stripped.lstrip("#").strip() or None
+                continue
+            if stripped.startswith(("-", "*", "#")):
+                continue
+            summary = stripped
+            break
+        return title, summary
+    return None, None
 
-## Personal Notes
-- Keep machine-local or user-specific reminders here.
 
-## Environment Details
-- Record local-only setup notes that should not be treated as shared project conventions.
-""",
-}
+def _detect_package_json_commands(path: Path) -> tuple[list[str], list[str]]:
+    if not path.exists():
+        return [], []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return [], []
+    scripts = payload.get("scripts")
+    if not isinstance(scripts, dict):
+        return [], []
+    conventions: list[str] = []
+    commands: list[str] = []
+    for key in ("dev", "build", "test", "lint"):
+        value = scripts.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        commands.append(f"npm run {key}")
+        conventions.append(f"`npm run {key}` -> {value.strip()}")
+    return conventions, commands
+
+
+def _detect_pyproject_commands(path: Path) -> tuple[list[str], list[str]]:
+    if not path.exists() or tomllib is None:
+        return [], []
+    try:
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return [], []
+    conventions: list[str] = []
+    commands: list[str] = []
+    project = payload.get("project")
+    if isinstance(project, dict):
+        name = project.get("name")
+        if isinstance(name, str) and name.strip():
+            conventions.append(f"Python project name: `{name.strip()}`")
+    tool = payload.get("tool")
+    if isinstance(tool, dict):
+        if "pytest" in tool:
+            conventions.append("Repository appears to use pytest for verification.")
+            commands.append("python -m pytest -q")
+        if "ruff" in tool:
+            conventions.append("Ruff configuration detected.")
+        if "black" in tool:
+            conventions.append("Black formatting configuration detected.")
+    return conventions, commands
+
+
+def _detect_cargo_commands(path: Path) -> tuple[list[str], list[str]]:
+    if not path.exists():
+        return [], []
+    text = _read_small_text_file(path, max_chars=2500)
+    if not text:
+        return [], []
+    conventions = ["Rust workspace detected from `Cargo.toml`."]
+    commands = ["cargo test", "cargo build"]
+    match = re.search(r'(?m)^\s*name\s*=\s*"([^"]+)"', text)
+    if match:
+        conventions.append(f"Rust package name: `{match.group(1).strip()}`")
+    return conventions, commands
+
+
+def _detect_instruction_sources(workspace_root: Path) -> list[str]:
+    sources: list[str] = []
+    for relative in _INSTRUCTION_CANDIDATES:
+        path = workspace_root / relative
+        if path.exists() and path.is_file():
+            sources.append(relative.replace("\\", "/"))
+    return sources
+
+
+def _build_workspace_memory_templates(workspace_root: Path, workspace_name: str) -> dict[str, str]:
+    title, readme_summary = _extract_readme_summary(workspace_root)
+    project_name = title or workspace_name or workspace_root.name
+    conventions: list[str] = []
+    suggested_commands: list[str] = []
+
+    package_conventions, package_commands = _detect_package_json_commands(workspace_root / "package.json")
+    conventions.extend(package_conventions)
+    suggested_commands.extend(package_commands)
+
+    pyproject_conventions, pyproject_commands = _detect_pyproject_commands(workspace_root / "pyproject.toml")
+    conventions.extend(pyproject_conventions)
+    suggested_commands.extend(pyproject_commands)
+
+    cargo_conventions, cargo_commands = _detect_cargo_commands(workspace_root / "Cargo.toml")
+    conventions.extend(cargo_conventions)
+    suggested_commands.extend(cargo_commands)
+
+    if (workspace_root / "pytest.ini").exists() or (workspace_root / "tests").exists():
+        conventions.append("Test-oriented layout detected (`pytest.ini` or `tests/`).")
+        suggested_commands.append("python -m pytest -q")
+
+    instruction_sources = _detect_instruction_sources(workspace_root)
+    suggestions = _normalize_bullets(suggested_commands)
+    conventions = _normalize_bullets(conventions)
+
+    summary = readme_summary or "Fill in the main product purpose and key workflows for this workspace."
+    if len(summary) > 240:
+        summary = summary[:237].rstrip() + "..."
+
+    goals_lines = [
+        f"- Project: `{project_name}`",
+        f"- Summary: {summary}",
+    ]
+    if suggestions:
+        goals_lines.append(f"- Suggested verification commands: {', '.join(f'`{cmd}`' for cmd in suggestions[:4])}")
+
+    guardrail_lines = [
+        "- Keep edits scoped to the active workspace and avoid changing files outside the requested task.",
+        "- Prefer verifying changes with the repository's own test/build commands before declaring work complete.",
+    ]
+    if instruction_sources:
+        guardrail_lines.append(
+            "- Existing instruction sources detected: "
+            + ", ".join(f"`{source}`" for source in instruction_sources)
+        )
+
+    ways_of_working = conventions or [
+        "Record preferred build, test, and review conventions here after the first successful task run.",
+    ]
+
+    convention_lines = conventions or [
+        "Add stable repository conventions here after confirming them from the workspace.",
+    ]
+    verified_lines = []
+    if suggestions:
+        verified_lines.append(
+            "Candidate verification commands to confirm and keep updated:\n"
+            + "\n".join(f"- `{cmd}`" for cmd in suggestions[:5])
+        )
+    else:
+        verified_lines.append("- Add the main verification command(s) once they are confirmed.")
+    open_questions = [
+        "- Is there a canonical build/test command the team wants every agent session to reuse?",
+        "- Are there workspace-specific guardrails or review rules that should be promoted into YUANBAO.md?",
+    ]
+
+    yuanbao = "\n".join(
+        [
+            f"# {project_name} Workspace Guide",
+            "",
+            "## Project Goals",
+            *goals_lines,
+            "",
+            "## Guardrails",
+            *guardrail_lines,
+            "",
+            "## Ways of Working",
+            *[f"- {line}" for line in ways_of_working],
+            "",
+        ]
+    )
+    memory = "\n".join(
+        [
+            f"# {project_name} Memory",
+            "",
+            "## Conventions",
+            *[f"- {line}" for line in convention_lines],
+            "",
+            "## Verified Patterns",
+            *verified_lines,
+            "",
+            "## Open Questions",
+            *open_questions,
+            "",
+        ]
+    )
+    memory_local = textwrap.dedent(
+        f"""\
+        # Local Memory Overrides
+
+        ## Personal Notes
+        - Keep machine-local or user-specific reminders for `{project_name}` here.
+
+        ## Environment Details
+        - Record local-only setup notes that should not be treated as shared project conventions.
+
+        ## Private Verification Notes
+        - Capture personal shortcuts, temporary local paths, or experimental commands that should stay local.
+        """
+    ).strip() + "\n"
+
+    return {
+        "YUANBAO.md": yuanbao,
+        "MEMORY.md": memory,
+        "MEMORY.local.md": memory_local,
+    }
 
 
 class SessionStoreMixin:
@@ -122,10 +345,14 @@ class SessionStoreMixin:
 
         workspace_root = Path(root_path)
         workspace_root.mkdir(parents=True, exist_ok=True)
+        templates = _build_workspace_memory_templates(
+            workspace_root,
+            str(workspace.get("name") or workspace_root.name),
+        )
 
         created_files: list[str] = []
         existing_files: list[str] = []
-        for filename, content in _WORKSPACE_MEMORY_INIT_TEMPLATES.items():
+        for filename, content in templates.items():
             target = workspace_root / filename
             if target.exists():
                 existing_files.append(filename)

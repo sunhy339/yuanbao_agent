@@ -421,6 +421,77 @@ class SQLiteStore(
         stripped = value.strip()
         return stripped or None
 
+    def storage_stats(self, _params: dict[str, Any] | None = None) -> dict[str, Any]:
+        database_path = self.database_path
+        db_file = Path(database_path).expanduser().resolve() if database_path != ":memory:" else None
+        artifact_dir = self._artifact_dir
+
+        page_count = int(self._conn.execute("PRAGMA page_count").fetchone()[0])
+        page_size = int(self._conn.execute("PRAGMA page_size").fetchone()[0])
+        freelist_count = int(self._conn.execute("PRAGMA freelist_count").fetchone()[0])
+
+        def _count(table: str) -> int:
+            return int(self._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+
+        table_counts = {
+            "sessions": _count("sessions"),
+            "messages": _count("messages"),
+            "tasks": _count("tasks"),
+            "trace_events": _count("trace_events"),
+            "provider_turns": _count("provider_turns"),
+            "context_snapshots": _count("context_snapshots"),
+            "command_logs": _count("command_logs"),
+            "memory_entries": _count("memory_entries"),
+            "memory_recall_records": _count("memory_recall_records"),
+            "artifacts": _count("artifacts"),
+            "hook_executions": _count("hook_executions"),
+            "proposal_records": _count("proposal_records"),
+            "task_worktrees": _count("task_worktrees"),
+        }
+
+        artifact_files = list(artifact_dir.glob("*")) if artifact_dir.exists() else []
+        artifact_bytes = sum(path.stat().st_size for path in artifact_files if path.is_file())
+
+        return {
+            "database": {
+                "path": str(db_file) if db_file else ":memory:",
+                "exists": bool(db_file.exists()) if db_file else True,
+                "fileBytes": int(db_file.stat().st_size) if db_file and db_file.exists() else 0,
+                "logicalBytes": page_count * page_size,
+                "pageCount": page_count,
+                "pageSize": page_size,
+                "freelistCount": freelist_count,
+                "freeBytesEstimate": freelist_count * page_size,
+            },
+            "artifacts": {
+                "path": str(artifact_dir),
+                "fileCount": len([path for path in artifact_files if path.is_file()]),
+                "totalBytes": artifact_bytes,
+            },
+            "tables": table_counts,
+        }
+
+    def storage_cleanup(self, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        vacuum = bool((params or {}).get("vacuum", False))
+        removed_expired_cache = 0
+        try:
+            from ..provider.cache import LLMCache
+
+            removed_expired_cache = int(LLMCache(self).cleanup_expired())
+        except Exception:
+            removed_expired_cache = 0
+
+        if vacuum and self.database_path != ":memory:":
+            self._conn.execute("VACUUM")
+            self._conn.commit()
+
+        result = self.storage_stats({})
+        result["cleanup"] = {
+            "expiredCacheEntriesRemoved": removed_expired_cache,
+            "vacuumRan": vacuum and self.database_path != ":memory:",
+        }
+        return result
+
     def _dict_value(self, value: Any, key: str) -> dict[str, Any]:
         if value is None:
             return {}

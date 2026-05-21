@@ -82,6 +82,8 @@ class JsonRpcServer:
             "command.status": self._command_status,
             "command.list": self._command_list,
             "stats.summary": self._store.get_stats_summary,
+            "storage.stats": self._store.storage_stats,
+            "storage.cleanup": self._store.storage_cleanup,
             "stats.trace": self._store.get_trace_spans,
             "trace.list": self._store.list_trace_events,
             "decision.list": self._store.list_decision_events,

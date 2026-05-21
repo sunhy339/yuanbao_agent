@@ -310,10 +310,79 @@ class SessionStoreMixin:
     def delete_session(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = self._require_non_empty(params, "sessionId")
         session = self.require_session(session_id)
+        self._delete_session_related_rows(session_id)
         self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         self._conn.commit()
         return {"session": session}
+
+    def _delete_session_related_rows(self, session_id: str) -> None:
+        task_rows = self._conn.execute(
+            "SELECT id FROM tasks WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+        task_ids = [str(row["id"]) for row in task_rows]
+
+        if task_ids:
+            self._delete_task_related_rows(task_ids)
+
+        self._conn.execute("DELETE FROM memory_recall_records WHERE session_id = ?", (session_id,))
+        self._conn.execute("DELETE FROM session_rolling_summaries WHERE session_id = ?", (session_id,))
+        self._conn.execute("DELETE FROM memory_entries WHERE session_id = ?", (session_id,))
+        self._conn.execute("DELETE FROM task_inbox WHERE session_id = ?", (session_id,))
+        self._conn.execute("DELETE FROM agent_messages WHERE task_id IN (SELECT id FROM collaboration_tasks WHERE session_id = ?)", (session_id,))
+        self._conn.execute("DELETE FROM collaboration_tasks WHERE session_id = ?", (session_id,))
+        self._conn.execute("DELETE FROM agent_workers WHERE current_task_id IS NULL")
+
+    def _delete_task_related_rows(self, task_ids: list[str]) -> None:
+        if not task_ids:
+            return
+
+        for task_id in task_ids:
+            self._delete_command_artifacts_for_task(task_id)
+
+        placeholders = ", ".join("?" for _ in task_ids)
+        values: list[Any] = list(task_ids)
+
+        self._conn.execute(f"DELETE FROM patches WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM approvals WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM pending_react_tasks WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM pending_dag_tasks WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM trace_events WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM provider_turns WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM context_snapshots WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM command_logs WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM task_metrics WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM compaction_records WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM proposal_records WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM artifacts WHERE parent_task_id IN ({placeholders}) OR producer_task_id IN ({placeholders})", values + values)
+        self._conn.execute(f"DELETE FROM hook_executions WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM scope_conflict_checks WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM replay_sessions WHERE source_task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM task_worktrees WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM messages WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM task_inbox WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM memory_recall_records WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM collaboration_tasks WHERE parent_task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM agent_messages WHERE task_id IN ({placeholders})", values)
+        self._conn.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", values)
+
+    def _delete_command_artifacts_for_task(self, task_id: str) -> None:
+        rows = self._conn.execute(
+            "SELECT stdout_path, stderr_path FROM command_logs WHERE task_id = ?",
+            (task_id,),
+        ).fetchall()
+        for row in rows:
+            for key in ("stdout_path", "stderr_path"):
+                path = row[key]
+                if not isinstance(path, str) or not path.strip():
+                    continue
+                try:
+                    artifact_path = Path(path)
+                    if artifact_path.exists():
+                        artifact_path.unlink()
+                except OSError:
+                    continue
 
     def update_session_summary(self, session_id: str, summary: str | None) -> dict[str, Any]:
         now = self.now()

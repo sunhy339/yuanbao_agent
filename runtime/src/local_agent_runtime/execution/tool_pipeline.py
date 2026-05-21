@@ -128,6 +128,7 @@ class ToolExecutionMixin:
         task: dict[str, Any],
         tool_spec: dict[str, Any],
         budget: WorkerBudget | None = None,
+        context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._ensure_tool_allowed_for_child_worker(tool_spec["name"])
         # Child workers cannot run git commit/push via run_command
@@ -141,6 +142,10 @@ class ToolExecutionMixin:
             "taskId": task["id"],
             "sessionId": session_id,
         }
+        if isinstance(context, dict):
+            untrusted_signals = context.get("untrustedContentSignals")
+            if isinstance(untrusted_signals, list) and untrusted_signals:
+                tool_arguments["untrustedContentSignals"] = [dict(item) for item in untrusted_signals if isinstance(item, dict)]
         tool_arguments = self._apply_task_worktree_to_tool_arguments(
             task_id=task["id"],
             tool_name=tool_spec["name"],

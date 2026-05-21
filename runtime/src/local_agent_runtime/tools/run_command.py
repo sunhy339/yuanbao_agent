@@ -90,14 +90,23 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         timeout_ms = max(1000, min(timeout_ms, 1_800_000))
 
         policy_guard.validate_command(command, active_run_command_config)
+        permission_decision = None
 
         # PermissionEngine gate (new path)
         if permission_engine is not None:
-            decision = permission_engine.evaluate(PermRequest(capability="runCommand", tool_name="run_command"))
-            if decision.decision == "deny":
+            permission_decision = permission_engine.evaluate(PermRequest(
+                capability="runCommand",
+                tool_name="run_command",
+                context={
+                    "command": command,
+                    "cwd": cwd_rel,
+                    "untrustedContentSignals": params.get("untrustedContentSignals"),
+                },
+            ))
+            if permission_decision.decision == "deny":
                 return {
                     "status": "blocked",
-                    "error": decision.reason,
+                    "error": permission_decision.reason,
                     "command": command,
                     "cwd": cwd_rel,
                 }
@@ -144,7 +153,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         elif (
             not internal_validation
             and (
-                (permission_engine is not None and permission_engine.evaluate(PermRequest(capability="runCommand", tool_name="run_command")).decision == "approval_required")
+                (permission_decision is not None and permission_decision.decision == "approval_required")
                 or (permission_engine is None and policy_guard.requires_approval("run_command", approval_mode=active_command_policy["approvalMode"]))
             )
         ):

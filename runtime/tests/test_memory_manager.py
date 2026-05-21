@@ -353,6 +353,50 @@ class TestPinnedMemoryScoreBoost:
             f"Pinned score ({pinned_score}) should be higher than unpinned ({unpinned_score})"
 
 
+class TestMemoryCategoryBoosts:
+    def setup_method(self) -> None:
+        self.store = SQLiteStore(":memory:")
+        self.ms = MemoryStore(self.store)
+        self.retriever = MemoryRetriever(self.ms)
+        self.mgr = MemoryManager(self.ms, self.retriever)
+
+    def test_project_convention_outranks_generic_task_learning(self) -> None:
+        generic = self.mgr.remember(
+            content="Use python -m pytest in this repo",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "task_learning", "confidence": 0.8},
+        )
+        convention = self.mgr.remember(
+            content="Use python -m pytest in this repo",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "project_convention", "confidence": 0.8},
+        )
+
+        results = self.mgr.recall_with_scores(workspace_id="w1", query="pytest repo convention")
+        score_by_id = {entry.id: score for entry, score in results}
+        assert score_by_id[convention.id] > score_by_id[generic.id]
+
+    def test_runtime_invariant_outranks_generic_task_learning(self) -> None:
+        generic = self.mgr.remember(
+            content="Reviewer child is read-only and should not write files",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "task_learning", "confidence": 0.8},
+        )
+        invariant = self.mgr.remember(
+            content="Reviewer child is read-only and should not write files",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "runtime_invariant", "confidence": 0.8},
+        )
+
+        results = self.mgr.recall_with_scores(workspace_id="w1", query="reviewer write files")
+        score_by_id = {entry.id: score for entry, score in results}
+        assert score_by_id[invariant.id] > score_by_id[generic.id]
+
+
 class TestMemoryConflictDetection:
     """Conflict detection marks entries with conflictingIds."""
 

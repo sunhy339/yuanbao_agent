@@ -65,7 +65,14 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
                     "encoding": encoding,
                 }
         elif permission_engine is not None:
-            decision = permission_engine.evaluate(PermRequest(capability="writeFile", tool_name="write_file"))
+            decision = permission_engine.evaluate(PermRequest(
+                capability="writeFile",
+                tool_name="write_file",
+                context={
+                    "path": relative_path,
+                    "untrustedContentSignals": params.get("untrustedContentSignals"),
+                },
+            ))
             if decision.decision == "deny":
                 return {
                     "status": "blocked",

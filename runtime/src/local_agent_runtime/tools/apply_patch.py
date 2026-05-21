@@ -123,7 +123,14 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
             # PermissionEngine path (new) or legacy PolicyGuard path
             _skip_approval = False
             if permission_engine is not None:
-                decision = permission_engine.evaluate(PermRequest(capability="writeFile", tool_name="apply_patch"))
+                decision = permission_engine.evaluate(PermRequest(
+                    capability="writeFile",
+                    tool_name="apply_patch",
+                    context={
+                        "changedPaths": validated_paths,
+                        "untrustedContentSignals": params.get("untrustedContentSignals"),
+                    },
+                ))
                 if decision.decision == "deny":
                     return {
                         "status": "blocked",

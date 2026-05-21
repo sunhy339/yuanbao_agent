@@ -76,7 +76,13 @@ def parse_mcp_result(result: CallToolResult) -> dict[str, Any]:
     else:
         content = ""
 
-    return {"status": "ok", "output": content}
+    return {
+        "status": "ok",
+        "output": content,
+        "contentSource": "mcp",
+        "contentTrust": "untrusted",
+        "contentTrustReason": "MCP tool output originates from an external server and should not directly trigger high-risk tools without review.",
+    }
 
 
 def summarize_mcp_exception(exc: BaseException, *, max_parts: int = 5) -> str:

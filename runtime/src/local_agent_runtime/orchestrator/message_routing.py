@@ -44,6 +44,7 @@ class MessageRoutingMixin:
             "skill_id": routing.skill_id,
             "toolContinuation": tool_continuation,
             "profile_snapshot": self._runtime_profile_snapshot(context),
+            "worktreeBindingRequired": False,
             "roleSnapshot": {
                 "runtimeRole": "root",
                 "agentType": "root",
@@ -454,6 +455,13 @@ class MessageRoutingMixin:
         scenario = str(routing.get("scenario") or "")
         return scenario in _WRITE_WORKTREE_SCENARIOS
 
+    def _mark_worktree_binding_required(self, routing: dict[str, Any]) -> dict[str, Any]:
+        if getattr(self, "_worktree_service", None) is None:
+            return routing
+        if not self._should_auto_bind_worktree(routing):
+            return routing
+        return {**routing, "worktreeBindingRequired": True}
+
     def _worktree_config(self) -> dict[str, Any]:
         config = self._store.get_config({})["config"]
         worktree_config = config.get("worktree") if isinstance(config, dict) else {}
@@ -553,6 +561,7 @@ class MessageRoutingMixin:
                 routing = self._route_goal(goal)
                 routing = self._routing_with_requested_skill(routing, requested_skill_id)
                 routing_dict = self._routing_dict_from_decision(routing)
+                routing_dict = self._mark_worktree_binding_required(routing_dict)
                 routing_dict = self._attach_main_workflow_state(
                     routing=routing_dict,
                     session=session,
@@ -584,6 +593,8 @@ class MessageRoutingMixin:
                 if worktree is not None:
                     routing_dict["activeWorktree"] = worktree
                     queued_task = self._persist_task_routing(queued_task, routing_dict)
+                elif routing_dict.get("worktreeBindingRequired") is True:
+                    raise ValueError("Write-oriented task requires an active worktree, but worktree binding failed.")
                 self._publish(session["id"], queued_task, "message.created", {"message": user_msg})
                 self._publish(session["id"], queued_task, "task.created", {"status": "queued", "goal": goal})
                 self._publish(session["id"], queued_task, "task.queued", {"status": "queued", "goal": goal})
@@ -607,6 +618,7 @@ class MessageRoutingMixin:
             raise
         _route_latency_ms = int((_time.monotonic() - _route_t0) * 1000)
         routing_dict = self._routing_dict_from_decision(routing)
+        routing_dict = self._mark_worktree_binding_required(routing_dict)
         routing_dict = self._attach_main_workflow_state(
             routing=routing_dict,
             session=session,
@@ -669,6 +681,8 @@ class MessageRoutingMixin:
             if worktree is not None:
                 routing_dict["activeWorktree"] = worktree
                 runtime_task = self._persist_task_routing(runtime_task, routing_dict)
+            elif routing_dict.get("worktreeBindingRequired") is True:
+                raise ValueError("Write-oriented background task requires an active worktree, but worktree binding failed.")
             self._record_routing_proposal(
                 session_id=session["id"],
                 task_id=runtime_task["id"],
@@ -773,6 +787,8 @@ class MessageRoutingMixin:
             runtime_task = self._persist_task_routing(runtime_task, routing_dict)
             context["routing"] = routing_dict
             context = self._context_with_worktree_binding(context, worktree)
+        elif routing_dict.get("worktreeBindingRequired") is True:
+            raise ValueError("Write-oriented task requires an active worktree, but worktree binding failed.")
 
         self._record_routing_proposal(
             session_id=session["id"],

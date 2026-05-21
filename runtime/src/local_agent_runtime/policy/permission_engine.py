@@ -34,6 +34,78 @@ _CAPABILITY_APPROVAL_KIND: dict[str, str] = {
     "hooksExecute": "run_command",
 }
 
+_HIGH_RISK_CAPABILITIES = {"writeFile", "runCommand", "subagents"}
+_LOW_RISK_COMMAND_MARKERS = (
+    "pytest",
+    "py_compile",
+    "unittest",
+    "node --check",
+    "tsc",
+    "npm test",
+    "pnpm test",
+    "yarn test",
+)
+
+
+def collect_untrusted_content_signals(context: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(context, dict):
+        return []
+    raw = context.get("untrustedContentSignals")
+    if isinstance(raw, list):
+        return [dict(item) for item in raw if isinstance(item, dict)]
+    tool_results = context.get("tool_results")
+    if not isinstance(tool_results, list):
+        return []
+    signals: list[dict[str, Any]] = []
+    for item in tool_results:
+        if not isinstance(item, dict):
+            continue
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        trust = str(result.get("contentTrust") or "").strip().lower()
+        if trust != "untrusted":
+            continue
+        signal = {
+            "toolName": str(item.get("name") or ""),
+            "source": str(result.get("contentSource") or "external"),
+            "reason": str(result.get("contentTrustReason") or "Untrusted external content was introduced earlier in this task."),
+        }
+        path = result.get("path")
+        url = result.get("url")
+        if isinstance(path, str) and path.strip():
+            signal["path"] = path
+        if isinstance(url, str) and url.strip():
+            signal["url"] = url
+        signals.append(signal)
+    return signals
+
+
+def _is_low_risk_command(command: str) -> bool:
+    lowered = f" {command.lower()} "
+    return any(marker in lowered for marker in _LOW_RISK_COMMAND_MARKERS)
+
+
+def _untrusted_content_guard(request: PermissionRequest) -> PermissionDecision | None:
+    if request.capability not in _HIGH_RISK_CAPABILITIES:
+        return None
+    signals = collect_untrusted_content_signals(request.context)
+    if not signals:
+        return None
+    if request.capability == "runCommand":
+        command = str(request.context.get("command") or "").strip()
+        if command and _is_low_risk_command(command):
+            return None
+    sources = ", ".join(sorted({str(item.get("source") or "external") for item in signals}))
+    tool_label = request.tool_name or request.capability
+    return PermissionDecision(
+        decision="approval_required",
+        capability=request.capability,
+        reason=(
+            f"Tool {tool_label!r} requires approval because this turn includes untrusted content "
+            f"from {sources}. Review the requested action before allowing it."
+        ),
+        approval_kind=_CAPABILITY_APPROVAL_KIND.get(request.capability, request.capability),
+    )
+
 
 class PermissionEngine:
     """Evaluates tool capability requests against the active permission config."""
@@ -46,10 +118,11 @@ class PermissionEngine:
 
     def evaluate(self, request: PermissionRequest) -> PermissionDecision:
         cap = request.capability
+        untrusted_guard = _untrusted_content_guard(request)
         rule = self._capabilities.get(cap)
         if rule is None:
             # Unknown capability defaults to ask for safety
-            return PermissionDecision(
+            return untrusted_guard or PermissionDecision(
                 decision="approval_required",
                 capability=cap,
                 reason=f"Capability {cap!r} has no rule; defaulting to approval_required.",
@@ -66,7 +139,7 @@ class PermissionEngine:
             )
 
         if mode == "allow":
-            return PermissionDecision(
+            return untrusted_guard or PermissionDecision(
                 decision="allow",
                 capability=cap,
             )
@@ -79,7 +152,7 @@ class PermissionEngine:
         elif cap == "writeFile":
             approval_kind = "apply_patch"
 
-        return PermissionDecision(
+        return untrusted_guard or PermissionDecision(
             decision="approval_required",
             capability=cap,
             reason=f"Capability {cap!r} requires approval (preset: {self._preset!r}).",

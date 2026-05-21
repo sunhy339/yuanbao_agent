@@ -41,6 +41,11 @@ class FakeWorktreeService:
         })
 
 
+class FailingWorktreeService(FakeWorktreeService):
+    def create_for_task(self, params: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("simulated worktree failure")
+
+
 def _rpc(runtime: SimpleNamespace, method: str, params: dict[str, Any]) -> dict[str, Any]:
     envelope = {
         "jsonrpc": "2.0",
@@ -175,3 +180,42 @@ def test_worktree_segment_sanitizer_does_not_escape_path_root(tmp_path: Any) -> 
     assert path == worktree_root.resolve() / "task" / "escape"
     assert Path(path).is_relative_to(worktree_root.resolve())
     assert safe_segment == "agent/unsafe-branch"
+
+
+def test_write_oriented_task_fails_when_required_worktree_binding_cannot_be_created(tmp_path: Any) -> None:
+    event_bus = EventBus()
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    worktree_service = FailingWorktreeService(store)
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=ToolRegistry({}),
+        provider=ScriptedProvider([]),
+        meta_router=MetaRouter(provider=None),
+        worktree_service=worktree_service,
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = server.handle_line(json.dumps({
+        "jsonrpc": "2.0",
+        "id": "open",
+        "method": "workspace.open",
+        "params": {"path": str(workspace_root)},
+    }, ensure_ascii=False))["result"]["workspace"]
+    session = server.handle_line(json.dumps({
+        "jsonrpc": "2.0",
+        "id": "session",
+        "method": "session.create",
+        "params": {"workspaceId": workspace["id"], "title": "Needs worktree"},
+    }, ensure_ascii=False))["result"]["session"]
+
+    response = server.handle_line(json.dumps({
+        "jsonrpc": "2.0",
+        "id": "send",
+        "method": "message.send",
+        "params": {"sessionId": session["id"], "content": "fix code by editing files"},
+    }, ensure_ascii=False))
+
+    assert response["error"]["message"] == "Write-oriented task requires an active worktree, but worktree binding failed."

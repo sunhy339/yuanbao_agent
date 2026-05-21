@@ -73,6 +73,36 @@ def test_run_command_denylist_rejects_before_approval(tmp_path: Path) -> None:
         store.close()
 
 
+def test_run_command_default_allowlist_rejects_non_developer_command(tmp_path: Path) -> None:
+    store, run_command, ctx = _make_run_command(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="allowlist"):
+            run_command(
+                {
+                    "workspaceRoot": str(ctx["workspace_root"]),
+                    "taskId": ctx["task_id"],
+                    "command": "curl https://example.com",
+                }
+            )
+    finally:
+        store.close()
+
+
+def test_run_command_default_allowlist_keeps_verification_command_available(tmp_path: Path) -> None:
+    store, run_command, ctx = _make_run_command(tmp_path)
+    try:
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": "python -m pytest -q",
+            }
+        )
+        assert result["status"] == "approval_required"
+    finally:
+        store.close()
+
+
 def test_run_command_rejects_cwd_outside_allowed_roots(tmp_path: Path) -> None:
     allowed = tmp_path / "workspace" / "safe"
     store, run_command, ctx = _make_run_command(

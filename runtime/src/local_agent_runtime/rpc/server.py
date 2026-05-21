@@ -132,6 +132,7 @@ class JsonRpcServer:
             "context_snapshot.get": self._context_snapshot_get,
             "context.budget": self._store.get_context_budget,
             "autonomy.report": self._store.get_autonomy_report,
+            "runtime.status": self._runtime_status,
             "hook.create": self._store.create_hook,
             "hook.update": self._store.update_hook,
             "hook.delete": self._store.delete_hook,
@@ -353,6 +354,194 @@ class JsonRpcServer:
         snapshot_id = params.get("snapshotId") or params.get("snapshot_id", "")
         snapshot = self._store.get_context_snapshot(snapshot_id)
         return {"snapshot": snapshot}
+
+    def _runtime_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Return a UI-friendly snapshot of the current runtime state."""
+        task_id = params.get("taskId") or params.get("task_id")
+        session_id = params.get("sessionId") or params.get("session_id")
+        if not isinstance(task_id, str) and not isinstance(session_id, str):
+            raise ValueError("taskId or sessionId is required")
+
+        task: dict[str, Any] | None = None
+        if isinstance(task_id, str) and task_id.strip():
+            task = self._store.get_task({"taskId": task_id.strip()})["task"]
+            session_id = task["sessionId"]
+        elif isinstance(session_id, str) and session_id.strip():
+            tasks = self._store.list_tasks({"sessionId": session_id.strip()}).get("tasks", [])
+            task = self._select_runtime_status_task(tasks)
+            if task is None:
+                session = self._store.get_session({"sessionId": session_id.strip()})["session"]
+                return {
+                    "session": session,
+                    "currentTask": None,
+                    "permissions": self._runtime_permissions(),
+                    "provider": {
+                        "latestTurn": None,
+                        "streaming": {
+                            "isStreaming": False,
+                            "fellBackToNonStream": False,
+                        },
+                    },
+                    "commands": [],
+                    "worktree": {
+                        "autoBindWriteTasks": bool((self._store.get_config({})["config"].get("worktree") or {}).get("autoBindWriteTasks")),
+                        "active": None,
+                    },
+                    "memory": {
+                        "recalled": [],
+                        "candidates": [],
+                        "candidateCount": 0,
+                    },
+                    "signals": {
+                        "untrustedContent": [],
+                    },
+                    "context": {
+                        "latestSnapshot": None,
+                    },
+                    "controls": {
+                        "canPause": False,
+                        "canResume": False,
+                        "canCancel": False,
+                    },
+                }
+            session_id = task["sessionId"]
+        else:
+            raise ValueError("taskId or sessionId is required")
+
+        assert task is not None
+        session = self._store.get_session({"sessionId": session_id})["session"]
+        commands = self._store.list_command_logs({"taskId": task["id"], "limit": 5}).get("commandLogs", [])
+        turns = self._store.list_provider_turns(task["id"])
+        latest_turn = turns[-1] if turns else None
+        snapshots = self._store.list_context_snapshots(task["id"])
+        latest_snapshot = self._store._serialize_context_snapshot(snapshots[-1]) if snapshots else None  # noqa: SLF001
+        worktree = self._store.get_worktree_by_task({"taskId": task["id"]}).get("worktree")
+        memory_entries = self._runtime_recalled_memory_entries(latest_snapshot)
+        memory_candidates = self._memory_candidates({"sessionId": session_id, "workspaceId": session.get("workspaceId"), "limit": 10}).get("entries", [])
+        config = self._store.get_config({})["config"]
+        worktree_config = config.get("worktree") or {}
+
+        transport = str((latest_turn or {}).get("response_transport") or "")
+        return {
+            "session": session,
+            "currentTask": task,
+            "permissions": self._runtime_permissions(),
+            "provider": {
+                "latestTurn": self._runtime_turn_summary(latest_turn),
+                "streaming": {
+                    "isStreaming": transport == "stream",
+                    "fellBackToNonStream": transport == "fallback_non_stream",
+                },
+            },
+            "commands": commands,
+            "worktree": {
+                "autoBindWriteTasks": bool(worktree_config.get("autoBindWriteTasks")),
+                "active": worktree,
+            },
+            "memory": {
+                "recalled": memory_entries,
+                "candidates": memory_candidates,
+                "candidateCount": len(memory_candidates),
+            },
+            "signals": {
+                "untrustedContent": self._extract_untrusted_signals(latest_snapshot),
+            },
+            "context": {
+                "latestSnapshot": latest_snapshot,
+            },
+            "controls": {
+                "canPause": task.get("status") == "running",
+                "canResume": task.get("status") == "paused",
+                "canCancel": task.get("status") in {"running", "paused", "queued", "waiting_approval"},
+            },
+        }
+
+    def _select_runtime_status_task(self, tasks: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not tasks:
+            return None
+        for status in ("running", "paused", "waiting_approval", "queued"):
+            for task in tasks:
+                if task.get("status") == status:
+                    return task
+        return tasks[0]
+
+    def _runtime_permissions(self) -> dict[str, Any]:
+        config = self._store.get_config({})["config"]
+        policy = config.get("policy") or {}
+        autonomy = self._store._active_profile_from_config(config, "autonomy") or {}  # noqa: SLF001
+        return {
+            "approvalMode": str(policy.get("approvalMode") or "on_write_or_command"),
+            "allowFileWrite": autonomy.get("allowFileWrite"),
+            "allowShell": autonomy.get("allowShell"),
+            "allowNetwork": bool(autonomy.get("allowNetwork")),
+            "autonomyProfileId": autonomy.get("id"),
+            "autonomyLevel": autonomy.get("level"),
+        }
+
+    def _runtime_turn_summary(self, turn: dict[str, Any] | None) -> dict[str, Any] | None:
+        if turn is None:
+            return None
+        return {
+            "id": turn.get("id"),
+            "turnIndex": turn.get("turn_index"),
+            "status": turn.get("status"),
+            "model": turn.get("model"),
+            "responseTransport": turn.get("response_transport"),
+            "responseFinishReason": turn.get("response_finish_reason"),
+            "toolCallCount": turn.get("response_tool_call_count"),
+            "toolPolicyExplanation": turn.get("toolPolicyExplanation"),
+            "completedAt": turn.get("completed_at"),
+        }
+
+    def _runtime_recalled_memory_entries(self, snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if not isinstance(snapshot, dict):
+            return []
+        memory_ids = snapshot.get("memoryIds")
+        if not isinstance(memory_ids, list):
+            return []
+        entries: list[dict[str, Any]] = []
+        for memory_id in memory_ids[:10]:
+            if not isinstance(memory_id, str) or not memory_id.strip():
+                continue
+            entry = self._memory_store().retrieve(memory_id, touch=False)
+            if entry is None:
+                continue
+            entries.append(_entry_to_dict(entry))
+        return entries
+
+    def _extract_untrusted_signals(self, snapshot: dict[str, Any] | None) -> list[dict[str, Any]]:
+        if not isinstance(snapshot, dict):
+            return []
+        tool_policy = snapshot.get("toolPolicyDecision")
+        if not isinstance(tool_policy, dict):
+            return []
+        details = tool_policy.get("decisionDetails")
+        if not isinstance(details, list):
+            return []
+        seen: set[tuple[str, str]] = set()
+        signals: list[dict[str, Any]] = []
+        for item in details:
+            if not isinstance(item, dict):
+                continue
+            raw_signals = item.get("untrustedContentSignals")
+            if not isinstance(raw_signals, list):
+                continue
+            for signal in raw_signals:
+                if not isinstance(signal, dict):
+                    continue
+                source = signal.get("contentSource")
+                trust = signal.get("contentTrust")
+                if not isinstance(source, str) or not isinstance(trust, str):
+                    continue
+                key = (source, trust)
+                if key in seen:
+                    continue
+                seen.add(key)
+                signals.append({
+                    "contentSource": source,
+                    "contentTrust": trust,
+                })
+        return signals
 
     # -- Memory management RPCs --
 

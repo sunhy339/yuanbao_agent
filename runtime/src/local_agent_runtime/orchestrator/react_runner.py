@@ -228,6 +228,10 @@ class ReactRunnerMixin:
                 tool_results=tool_results,
                 cached_provider_tools=cached_provider_tools,
             )
+            untrusted_content_signals = self._tool_policy_resolver.untrusted_content_signals(
+                context=context,
+                tool_results=tool_results,
+            )
             provider_tools = tool_policy_decision.allowed_tools
             provider_context = {
                 **context,
@@ -236,6 +240,7 @@ class ReactRunnerMixin:
                 "openai_tools": provider_tools,
                 "tool_results": tool_results,
                 "tool_policy_decision": tool_policy_decision.to_dict(),
+                "untrustedContentSignals": untrusted_content_signals,
                 "role_snapshot": tool_policy_decision.role_snapshot,
                 "step": steps + 1,
                 "max_steps": max_steps,
@@ -316,7 +321,10 @@ class ReactRunnerMixin:
                 token_estimate=_msg_token_total,
                 max_context_tokens=context.get("budgetStats", {}).get("maxContextTokens"),
                 prompt_layers=snapshot_meta.get("prompt_layers"),
-                tool_policy_decision=tool_policy_decision.to_dict(),
+                tool_policy_decision={
+                    **tool_policy_decision.to_dict(),
+                    **({"untrustedContentSignals": untrusted_content_signals} if untrusted_content_signals else {}),
+                },
                 role_snapshot=tool_policy_decision.role_snapshot,
                 active_worktree=active_worktree if isinstance(active_worktree, dict) else None,
             )
@@ -453,6 +461,7 @@ class ReactRunnerMixin:
                         task=task,
                         tool_spec=tool_spec,
                         budget=budget,
+                        context=context,
                     )
                     if cache_key and not self._tool_failed(tool_spec["name"], tool_result["result"]):
                         read_file_cache[cache_key] = deepcopy(tool_result)

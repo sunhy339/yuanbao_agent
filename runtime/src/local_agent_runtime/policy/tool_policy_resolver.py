@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from .permission_engine import PermissionEngine, PermissionRequest
+from .permission_engine import PermissionEngine, PermissionRequest, collect_untrusted_content_signals
 
 
 RuntimeRole = Literal["root", "worker", "planner", "reviewer", "summarizer"]
@@ -136,6 +136,7 @@ class ToolPolicyResolver:
         permission_engine = self._permission_engine(context)
         skill_policy = self._skill_policy(context)
         mcp_policy = self._mcp_policy(context)
+        untrusted_content_signals = self.untrusted_content_signals(context=context, tool_results=tool_results)
         for tool in registered_tools:
             name = self._tool_name(tool)
             if not name:
@@ -179,12 +180,19 @@ class ToolPolicyResolver:
                     decision_details.append(detail)
                     continue
 
-                permission = self._permission_decision(permission_engine, name, context)
+                permission = self._permission_decision(
+                    permission_engine,
+                    name,
+                    context,
+                    untrusted_content_signals=untrusted_content_signals,
+                )
                 if permission is not None:
                     detail["permissionDecision"] = permission.decision
                     detail["capability"] = permission.capability
                     if permission.approval_kind:
                         detail["approvalKind"] = permission.approval_kind
+                if untrusted_content_signals:
+                    detail["untrustedContentSignals"] = untrusted_content_signals
                 if permission is not None and permission.decision == "deny":
                     denied_names.append(name)
                     reason = permission.reason or f"tool {name} denied by PermissionEngine"
@@ -217,6 +225,11 @@ class ToolPolicyResolver:
             decision_details=decision_details,
             role_snapshot=role_snapshot,
         )
+
+    def untrusted_content_signals(self, *, context: dict[str, Any], tool_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged_context = dict(context)
+        merged_context["tool_results"] = tool_results
+        return collect_untrusted_content_signals(merged_context)
 
     def role_snapshot(self, *, task: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
         routing = context.get("routing")
@@ -579,16 +592,21 @@ class ToolPolicyResolver:
         permission_engine: PermissionEngine | None,
         tool_name: str,
         context: dict[str, Any],
+        *,
+        untrusted_content_signals: list[dict[str, Any]] | None = None,
     ) -> Any | None:
         if permission_engine is None:
             return None
         capability = self._tool_capability(tool_name)
         if capability is None:
             return None
+        permission_context = dict(context)
+        if untrusted_content_signals:
+            permission_context["untrustedContentSignals"] = [dict(item) for item in untrusted_content_signals]
         return permission_engine.evaluate(PermissionRequest(
             capability=capability,
             tool_name=tool_name,
-            context=context,
+            context=permission_context,
         ))
 
     def _tool_capability(self, tool_name: str) -> str | None:

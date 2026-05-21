@@ -340,6 +340,70 @@ def test_permission_engine_denies_blocked_tool_exposure() -> None:
     assert run_detail["finalDecision"] == "denied"
 
 
+def test_permission_engine_requires_approval_for_high_risk_tools_after_untrusted_content() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_root", "role": "root"},
+        context={
+            "config": {
+                "permissions": {
+                    "preset": "autonomous",
+                    "capabilities": {
+                        "runCommand": {"mode": "allow", "scope": "*"},
+                        "writeFile": {"mode": "allow", "scope": "*"},
+                        "subagents": {"mode": "allow", "scope": "*"},
+                    },
+                },
+            },
+        },
+        tool_results=[
+            {
+                "name": "web_fetch",
+                "result": {
+                    "status": "ok",
+                    "contentTrust": "untrusted",
+                    "contentSource": "web",
+                    "contentTrustReason": "web page",
+                    "url": "https://example.com",
+                },
+            }
+        ],
+        registered_tools=_tools("read_file", "run_command", "write_file", "task"),
+    )
+
+    assert set(decision.allowed_tool_names) == {"read_file", "run_command", "write_file", "task"}
+    run_detail = next(item for item in decision.decision_details if item["toolName"] == "run_command")
+    write_detail = next(item for item in decision.decision_details if item["toolName"] == "write_file")
+    task_detail = next(item for item in decision.decision_details if item["toolName"] == "task")
+    assert run_detail["permissionDecision"] == "approval_required"
+    assert write_detail["permissionDecision"] == "approval_required"
+    assert task_detail["permissionDecision"] == "approval_required"
+    assert run_detail["requiresApproval"] is True
+
+
+def test_permission_engine_keeps_low_risk_verification_command_allowed_after_untrusted_content() -> None:
+    from local_agent_runtime.policy.permission_engine import PermissionEngine, PermissionRequest
+
+    engine = PermissionEngine({
+        "permissions": {
+            "preset": "autonomous",
+            "capabilities": {
+                "runCommand": {"mode": "allow", "scope": "*"},
+            },
+        },
+    })
+    decision = engine.evaluate(PermissionRequest(
+        capability="runCommand",
+        tool_name="run_command",
+        context={
+            "command": "python -m pytest -q",
+            "untrustedContentSignals": [{"source": "web", "toolName": "web_fetch"}],
+        },
+    ))
+
+    assert decision.decision == "allow"
+
+
 def test_skill_strict_whitelist_filters_provider_tools() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(

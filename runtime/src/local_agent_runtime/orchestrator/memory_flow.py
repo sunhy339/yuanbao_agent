@@ -8,6 +8,34 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryFlowMixin:
+    _CONVENTION_PATTERNS: tuple[str, ...] = (
+        "by default",
+        "prefer",
+        "we use",
+        "convention",
+        "llm-first",
+        "default to",
+    )
+    _RUNTIME_INVARIANT_PATTERNS: tuple[str, ...] = (
+        "must ",
+        "should not",
+        "cannot ",
+        "only ",
+        "read-only",
+        "worktree",
+        "approval_required",
+        "runtime",
+    )
+    _FAILURE_RECOVERY_PATTERNS: tuple[str, ...] = (
+        "if ",
+        "when ",
+        "retry",
+        "fallback",
+        "recover",
+        "re-run",
+        "revalidate",
+    )
+
     def _promote_scratchpad_to_memory(self, session_id: str) -> None:
         """Promote scratchpad entries to session memory after task completion."""
         if self._memory_manager is None or self._scratchpad is None:
@@ -123,6 +151,22 @@ class MemoryFlowMixin:
                 },
                 dedup=(task_status == "completed"),
             )
+            for extracted in self._structured_task_memories(task):
+                self._memory_manager.remember(
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    content=str(extracted["content"]),
+                    kind=MemoryKind.WORKING,
+                    metadata={
+                        "category": str(extracted["category"]),
+                        "scope": MemoryScope.WORKSPACE.value if workspace_id else MemoryScope.SESSION.value,
+                        "confidence": float(extracted["confidence"]),
+                        "source": MemorySource.TASK_RESULT.value,
+                        "sourceTaskIds": [task.get("id", "")],
+                        "sourceMessageIds": source_message_ids,
+                    },
+                    dedup=True,
+                )
 
             # Detect explicit user preferences from user messages
             if task_status == "completed" and source_message_ids:
@@ -204,6 +248,68 @@ class MemoryFlowMixin:
                 },
                 dedup=True,
             )
+
+    def _structured_task_memories(self, task: dict[str, Any]) -> list[dict[str, Any]]:
+        from ..memory.types import MemoryCategory
+
+        results: list[dict[str, Any]] = []
+        goal = str(task.get("goal") or "").strip()
+        summary = str(task.get("summary") or task.get("resultSummary") or "").strip()
+        verification = task.get("verification") if isinstance(task.get("verification"), list) else []
+        changed_files = [
+            item.get("path")
+            for item in (task.get("changedFiles") or [])
+            if isinstance(item, dict) and isinstance(item.get("path"), str) and item.get("path").strip()
+        ]
+        changed_preview = ", ".join(str(path) for path in changed_files[:4])
+        lowered = f"{goal}\n{summary}".lower()
+
+        if task.get("status") == "completed" and verification:
+            verification_summary = "; ".join(
+                str(item.get("summary") or item.get("status") or "").strip()
+                for item in verification[:3]
+                if isinstance(item, dict)
+            ).strip("; ")
+            results.append({
+                "category": MemoryCategory.VERIFIED_CAPABILITY.value,
+                "content": (
+                    f"Verified outcome: {goal}"
+                    + (f" | files: {changed_preview}" if changed_preview else "")
+                    + (f" | verification: {verification_summary}" if verification_summary else "")
+                ),
+                "confidence": 0.9,
+            })
+
+        if any(token in lowered for token in self._CONVENTION_PATTERNS):
+            results.append({
+                "category": MemoryCategory.PROJECT_CONVENTION.value,
+                "content": f"Project convention: {summary or goal}",
+                "confidence": 0.8,
+            })
+
+        if any(token in lowered for token in self._RUNTIME_INVARIANT_PATTERNS):
+            results.append({
+                "category": MemoryCategory.RUNTIME_INVARIANT.value,
+                "content": f"Runtime invariant: {summary or goal}",
+                "confidence": 0.75,
+            })
+
+        if task.get("status") == "failed" and any(token in lowered for token in self._FAILURE_RECOVERY_PATTERNS):
+            results.append({
+                "category": MemoryCategory.FAILURE_RECOVERY_PATTERN.value,
+                "content": f"Failure recovery pattern: {summary or goal}",
+                "confidence": 0.7,
+            })
+
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in results:
+            key = (str(item["category"]), str(item["content"]))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped
 
     def _task_memory_entry(self, task: dict[str, Any]) -> str:
         status = task.get("status") or "completed"

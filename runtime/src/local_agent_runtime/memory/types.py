@@ -27,6 +27,9 @@ class MemoryCategory(str, Enum):
     OPEN_ISSUE = "open_issue"
     TOOLING = "tooling"
     IMPLEMENTATION_NOTE = "implementation_note"
+    RUNTIME_INVARIANT = "runtime_invariant"
+    FAILURE_RECOVERY_PATTERN = "failure_recovery_pattern"
+    VERIFIED_CAPABILITY = "verified_capability"
 
 
 class MemoryScope(str, Enum):

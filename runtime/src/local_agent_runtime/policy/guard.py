@@ -34,10 +34,6 @@ class PolicyGuard:
         if deny_match is not None:
             raise ValueError(f"Command matches denied command policy: {deny_match}")
 
-        allow_patterns = self._command_patterns(run_command_config, "allowedCommands", "allowlist")
-        if allow_patterns and self._first_match(command, allow_patterns) is None:
-            raise ValueError("Command is not allowed by command allowlist")
-
         blocked_match = self._first_blocked_pattern(command, run_command_config)
         if blocked_match is not None:
             raise ValueError(f"Blocked dangerous command pattern: {blocked_match}")
@@ -45,6 +41,10 @@ class PolicyGuard:
         dangerous_match = self._dangerous_command_match(command)
         if dangerous_match is not None:
             raise ValueError(f"Blocked dangerous command: {dangerous_match}")
+
+        allow_patterns = self._effective_allow_patterns(run_command_config)
+        if allow_patterns and self._first_match(command, allow_patterns) is None:
+            raise ValueError("Command is not allowed by command allowlist")
 
     def requires_approval(self, tool_name: str, *, approval_mode: str | None = None) -> bool:
         mode = str(approval_mode or self._approval_mode or "").strip().lower()
@@ -80,6 +80,14 @@ class PolicyGuard:
                     candidates = [str(value)]
             patterns.extend(str(candidate).strip() for candidate in candidates if str(candidate).strip())
         return patterns
+
+    def _effective_allow_patterns(self, config: dict[str, Any]) -> list[str]:
+        configured = self._command_patterns(config, "allowedCommands", "allowlist")
+        if configured:
+            return configured
+        if config.get("useDefaultCommandAllowlist", True) is False:
+            return []
+        return list(_DEFAULT_SAFE_COMMAND_ALLOWLIST)
 
     def _first_command_match(self, command: str, config: dict[str, Any], *keys: str) -> str | None:
         return self._first_match(command, self._command_patterns(config, *keys))
@@ -123,3 +131,26 @@ class PolicyGuard:
             if re.search(pattern, normalized):
                 return label
         return None
+
+
+_DEFAULT_SAFE_COMMAND_ALLOWLIST = (
+    "python -m pytest*",
+    "pytest*",
+    "python -m py_compile*",
+    "*python* -m py_compile*",
+    "python -c*",
+    "*python* -c*",
+    "node --check*",
+    "*node* --check*",
+    "git status*",
+    "git diff*",
+    "git rev-parse*",
+    "Get-ChildItem*",
+    "Get-Content*",
+    "Write-Output*",
+    "rg*",
+    "ls*",
+    "dir*",
+    "cat*",
+    "type*",
+)

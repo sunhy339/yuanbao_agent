@@ -14,6 +14,14 @@ from .types import MemoryEntry, MemoryKind
 class MemoryManager:
     """High-level memory API: remember / recall / consolidate."""
 
+    _CATEGORY_BASE_BOOSTS: dict[str, float] = {
+        "user_preference": 0.35,
+        "project_convention": 0.28,
+        "runtime_invariant": 0.22,
+        "verified_capability": 0.18,
+        "failure_recovery_pattern": 0.14,
+    }
+
     # Negation patterns that flip meaning when present in one text but not the other
     _NEGATION_PATTERNS: list[str] = [
         "don't ", "do not ", "never ", "not ", "avoid ", "no ",
@@ -196,6 +204,8 @@ class MemoryManager:
         category = meta.get("category", "")
         if category == "open_issue" and confidence < 0.5:
             score -= 0.1
+
+        score += MemoryManager._CATEGORY_BASE_BOOSTS.get(str(category), 0.0)
 
         return max(score, 0.0)
 

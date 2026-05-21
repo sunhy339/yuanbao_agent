@@ -14,7 +14,14 @@ def build_task_tool(policy_guard: Any, store: Any, subagent_service: Any | None 
 
         # PermissionEngine gate for subagent dispatch
         if permission_engine is not None:
-            decision = permission_engine.evaluate(PermRequest(capability="subagents", tool_name="task"))
+            decision = permission_engine.evaluate(PermRequest(
+                capability="subagents",
+                tool_name="task",
+                context={
+                    "prompt": str(params.get("prompt", ""))[:500],
+                    "untrustedContentSignals": params.get("untrustedContentSignals"),
+                },
+            ))
             if decision.decision == "deny":
                 return {
                     "status": "blocked",

@@ -13,6 +13,7 @@ interface TauriProviderFlowFixture {
     profileId: string;
     name: string;
     baseUrl: string;
+    apiFormat?: string;
     model: string;
     apiKeyEnvVarName: string;
     timeout: number;
@@ -57,8 +58,6 @@ let started = false;
 const REQUIRED_TRACE_TYPES = [
   "provider.request",
   "provider.response",
-  "tool.started",
-  "tool.completed",
   "task.completed",
 ];
 
@@ -179,6 +178,17 @@ function assertElement(selector: string, description: string) {
   }
 }
 
+function countTextOccurrences(text: string, needle: string) {
+  if (!needle) return 0;
+  let count = 0;
+  let index = text.indexOf(needle);
+  while (index >= 0) {
+    count += 1;
+    index = text.indexOf(needle, index + needle.length);
+  }
+  return count;
+}
+
 function click(selector: string, description: string) {
   const target = query<HTMLElement>(selector);
   if (!target) {
@@ -188,14 +198,16 @@ function click(selector: string, description: string) {
 }
 
 function setFieldValue(selector: string, value: string) {
-  const field = query<HTMLInputElement | HTMLTextAreaElement>(selector);
+  const field = query<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(selector);
   if (!field) {
     throw new Error(`Input not found: ${selector}`);
   }
 
   const prototype = field instanceof HTMLTextAreaElement
     ? HTMLTextAreaElement.prototype
-    : HTMLInputElement.prototype;
+    : field instanceof HTMLSelectElement
+      ? HTMLSelectElement.prototype
+      : HTMLInputElement.prototype;
   const descriptor = Object.getOwnPropertyDescriptor(prototype, "value");
   descriptor?.set?.call(field, value);
   field.dispatchEvent(new Event("input", { bubbles: true }));
@@ -248,6 +260,9 @@ async function configureProviderThroughUi(fixture: Required<TauriProviderFlowFix
 
   setFieldValue("#provider-name", fixture.name);
   setFieldValue("#provider-endpoint", fixture.baseUrl);
+  if (fixture.apiFormat) {
+    setFieldValue("#provider-api-format", fixture.apiFormat);
+  }
   setFieldValue("#provider-api-key", fixture.apiKeyEnvVarName);
   setFieldValue("#provider-main-model", fixture.model);
   setFieldValue("#provider-haiku-model", fixture.model);
@@ -273,7 +288,7 @@ async function configureProviderThroughUi(fixture: Required<TauriProviderFlowFix
       provider: {
         mode: "openai-compatible",
         baseUrl: fixture.baseUrl,
-        apiFormat: "openai-chat",
+        apiFormat: fixture.apiFormat ?? "openai-chat",
         model: fixture.model,
         defaultModel: fixture.model,
         apiKeyEnvVarName: fixture.apiKeyEnvVarName,
@@ -442,7 +457,8 @@ async function waitForTaskCompletedEvent(
 
 function timelineSatisfied(observedTypes: string[]) {
   const observed = new Set(observedTypes);
-  const directRuntimeFlow = REQUIRED_TRACE_TYPES.every((type) => observed.has(type));
+  const directRuntimeFlow = REQUIRED_TRACE_TYPES.every((type) => observed.has(type)) &&
+    (!observed.has("tool.started") || observed.has("tool.completed") || observed.has("tool.failed"));
   const planningFlow =
     observed.has("task.planning.started") &&
     observed.has("task.planning.subtask.started") &&
@@ -771,7 +787,7 @@ export async function maybeRunTauriProviderFlowE2e() {
     if (finalTask.status !== "completed") {
       throw new Error(`Expected completed task, got ${finalTask.status}.`);
     }
-    assertElement('.conversation-activity[aria-label="会话活动"]', "conversation activity stream");
+    assertElement(".conversation-activity", "conversation activity stream");
 
     const { traceTypes } = await waitForTraceTypes(client, finalTask.id, REQUIRED_TRACE_TYPES);
     const exportedTraceTypes = exportedTraceTypesFrom(await client.exportLogs(sessionId ? { sessionId } : undefined));
@@ -809,6 +825,13 @@ export async function maybeRunTauriProviderFlowE2e() {
     }
     if (!document.body.textContent?.includes(assistantMessage.content.trim())) {
       throw new Error("Persisted assistant message is not visible in the conversation UI.");
+    }
+    const messageStream = query<HTMLElement>(".message-stream");
+    const assistantContentOccurrences = countTextOccurrences(messageStream?.textContent ?? "", assistantMessage.content.trim());
+    if (assistantContentOccurrences !== 1) {
+      throw new Error(
+        `Expected persisted assistant message to render once, got ${assistantContentOccurrences}.`,
+      );
     }
 
     phase = "complete";

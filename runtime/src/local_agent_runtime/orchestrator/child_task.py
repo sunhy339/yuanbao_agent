@@ -215,6 +215,13 @@ class ChildTaskMixin:
                 context=context,
                 tool_results=tool_results,
             )
+            if summary:
+                self._publish(
+                    session_id=session["id"],
+                    task=runtime_task,
+                    event_type="assistant.token",
+                    payload={"delta": summary},
+                )
             completed_task = self._complete_task(
                 session_id=session["id"],
                 task=runtime_task,

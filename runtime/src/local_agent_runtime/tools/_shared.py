@@ -801,18 +801,41 @@ def approval_for_request(
 
 
 def run_git_command(cwd: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(
-        ["git", "-C", str(cwd), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"git command timed out: git {' '.join(args)}") from exc
     if completed.returncode != 0:
         stderr = (completed.stderr or completed.stdout or "").strip()
         raise ValueError(stderr or "git command failed")
     return completed
+
+
+def is_git_repository(cwd: Path) -> bool:
+    resolved = cwd.resolve()
+    if not any((candidate / ".git").exists() for candidate in (resolved, *resolved.parents)):
+        return False
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(resolved), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return completed.returncode == 0 and (completed.stdout or "").strip().lower() == "true"
 
 
 def parse_git_status_header(line: str) -> tuple[str | None, str | None, int, int]:

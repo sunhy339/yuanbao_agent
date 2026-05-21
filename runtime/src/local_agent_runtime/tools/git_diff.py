@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ._shared import (
+    is_git_repository,
     parse_name_status_line,
     require_workspace_root,
     resolve_git_cwd,
@@ -20,6 +21,17 @@ def build_git_diff_tool(policy_guard: Any, store: Any, subagent_service: Any | N
         cwd = resolve_git_cwd(policy_guard, workspace_root, params)
         staged = bool(params.get("staged", False))
         pathspec = resolve_git_pathspec(policy_guard, workspace_root, cwd, params.get("path"))
+        if not is_git_repository(cwd):
+            return {
+                "workspaceRoot": str(workspace_root),
+                "cwd": to_relative_path(workspace_root, cwd),
+                "isGitRepository": False,
+                "staged": staged,
+                "path": pathspec,
+                "files": [],
+                "diff": "",
+                "summary": "Not a git repository.",
+            }
 
         git_args = ["diff"]
         if staged:
@@ -46,6 +58,7 @@ def build_git_diff_tool(policy_guard: Any, store: Any, subagent_service: Any | N
         return {
             "workspaceRoot": str(workspace_root),
             "cwd": to_relative_path(workspace_root, cwd),
+            "isGitRepository": True,
             "staged": staged,
             "path": pathspec,
             "files": files,

@@ -129,6 +129,7 @@ export interface SessionUpdatedPayload {
 
 export interface AssistantTokenPayload {
   delta: string;
+  messageId?: Identifier;
 }
 
 export interface ProviderTracePayload {

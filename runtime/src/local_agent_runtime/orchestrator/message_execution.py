@@ -239,12 +239,13 @@ class MessageExecutionMixin:
                 context=context,
                 tool_results=react_result.get("tool_results", []),
             )
-            self._publish(
-                session_id=session_id,
-                task=task,
-                event_type="assistant.token",
-                payload={"delta": summary},
-            )
+            if not react_result.get("assistant_output_published"):
+                self._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="assistant.token",
+                    payload={"delta": summary},
+                )
             return {
                 "task": self._complete_task(
                     session_id=session_id,

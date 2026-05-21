@@ -117,6 +117,13 @@ class ResumeFlowMixin:
                 context=state["context"],
                 tool_results=react_result.get("tool_results", []),
             )
+            if not react_result.get("assistant_output_published"):
+                self._publish(
+                    session_id=state["session_id"],
+                    task=task,
+                    event_type="assistant.token",
+                    payload={"delta": summary},
+                )
             return self._complete_task(
                 session_id=state["session_id"],
                 task=task,

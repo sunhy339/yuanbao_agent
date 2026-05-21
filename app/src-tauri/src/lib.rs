@@ -215,6 +215,28 @@ struct TraceListPayload {
     limit: Option<u64>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct LogExportPayload {
+    session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ErrorsListPayload {
+    session_id: Option<String>,
+    task_id: Option<String>,
+    source: Option<String>,
+    limit: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct MetricsListPayload {
+    session_id: Option<String>,
+    limit: Option<u64>,
+}
+
 #[derive(Clone, Default)]
 struct RuntimeManager {
     bridge: Arc<Mutex<RuntimeBridge>>,
@@ -1053,6 +1075,56 @@ async fn trace_list(
 }
 
 #[tauri::command]
+async fn log_export(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Option<LogExportPayload>,
+) -> Result<Value, String> {
+    let payload = payload.unwrap_or_default();
+    state.call_async(
+        app_handle,
+        "log.export".to_string(),
+        json!({ "sessionId": payload.session_id }),
+    ).await
+}
+
+#[tauri::command]
+async fn errors_list(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Option<ErrorsListPayload>,
+) -> Result<Value, String> {
+    let payload = payload.unwrap_or_default();
+    state.call_async(
+        app_handle,
+        "errors.list".to_string(),
+        json!({
+            "sessionId": payload.session_id,
+            "taskId": payload.task_id,
+            "source": payload.source,
+            "limit": payload.limit,
+        }),
+    ).await
+}
+
+#[tauri::command]
+async fn metrics_list(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Option<MetricsListPayload>,
+) -> Result<Value, String> {
+    let payload = payload.unwrap_or_default();
+    state.call_async(
+        app_handle,
+        "metrics.list".to_string(),
+        json!({
+            "sessionId": payload.session_id,
+            "limit": payload.limit,
+        }),
+    ).await
+}
+
+#[tauri::command]
 fn open_app_path(app_handle: AppHandle, kind: String) -> Result<Value, String> {
     let data_dir = resolve_data_dir(&app_handle)?;
     fs::create_dir_all(&data_dir)
@@ -1324,6 +1396,7 @@ fn e2e_fixture() -> Result<Value, String> {
             "profileId": env::var("YUANBAO_TAURI_E2E_PROVIDER_ID").unwrap_or_else(|_| "e2e-provider".to_string()),
             "name": env::var("YUANBAO_TAURI_E2E_PROVIDER_NAME").unwrap_or_else(|_| "E2E Provider".to_string()),
             "baseUrl": env::var("YUANBAO_TAURI_E2E_BASE_URL").unwrap_or_else(|_| "https://api.ximeixg.cloud/v1".to_string()),
+            "apiFormat": env::var("YUANBAO_TAURI_E2E_API_FORMAT").unwrap_or_else(|_| "openai-chat".to_string()),
             "model": env::var("YUANBAO_TAURI_E2E_MODEL").unwrap_or_else(|_| "MiniMax-M2.7-highspeed".to_string()),
             "apiKeyEnvVarName": api_key_env_var_name,
             "timeout": env::var("YUANBAO_TAURI_E2E_PROVIDER_TIMEOUT")
@@ -1418,6 +1491,9 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             command_cancel,
             diff_get,
             trace_list,
+            log_export,
+            errors_list,
+            metrics_list,
             open_app_path,
             skill_list,
             skill_create,

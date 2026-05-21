@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ._shared import (
+    is_git_repository,
     parse_git_status_header,
     require_workspace_root,
     resolve_git_cwd,
@@ -18,6 +19,18 @@ def build_git_status_tool(policy_guard: Any, store: Any, subagent_service: Any |
         params = _params
         workspace_root = require_workspace_root(params)
         cwd = resolve_git_cwd(policy_guard, workspace_root, params)
+        if not is_git_repository(cwd):
+            return {
+                "workspaceRoot": to_relative_path(workspace_root, workspace_root),
+                "cwd": to_relative_path(workspace_root, cwd),
+                "isGitRepository": False,
+                "branch": None,
+                "upstream": None,
+                "ahead": 0,
+                "behind": 0,
+                "changes": [],
+                "summary": "Not a git repository.",
+            }
         completed = run_git_command(cwd, ["status", "--short", "--branch"])
 
         stdout_lines = [line for line in (completed.stdout or "").splitlines() if line.strip()]
@@ -48,6 +61,7 @@ def build_git_status_tool(policy_guard: Any, store: Any, subagent_service: Any |
         return {
             "workspaceRoot": to_relative_path(workspace_root, workspace_root),
             "cwd": to_relative_path(workspace_root, cwd),
+            "isGitRepository": True,
             "branch": branch,
             "upstream": upstream,
             "ahead": ahead,

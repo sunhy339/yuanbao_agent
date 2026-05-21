@@ -103,6 +103,14 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     }, 33);
   }
 
+  function shouldRenderLegacyAssistantToken(event: AgentEventEnvelope): boolean {
+    const payload = event.payload as { messageId?: unknown };
+    if (typeof payload.messageId === "string" && payload.messageId.trim()) {
+      return false;
+    }
+    return isChatVisibleEvent(event);
+  }
+
   useEffect(() => {
     let active = true;
     let dispose: (() => void) | undefined;
@@ -208,7 +216,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
 
         // --- Legacy assistant.token (kept for backward compat) ---
         if (event.type === "assistant.token") {
-          if (isChatVisibleEvent(event)) {
+          if (shouldRenderLegacyAssistantToken(event)) {
             queueAssistantToken(event);
           }
           return;

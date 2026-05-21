@@ -895,6 +895,38 @@ def test_explicit_git_routes_use_read_only_tools(
     assert task["plan"][1]["status"] == "completed"
 
 
+def test_git_status_returns_quickly_for_non_git_workspace(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "plain-workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Plain workspace"},
+        ),
+        "session",
+    )
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "show git status"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    completed = [
+        event for event in runtime_harness.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "git_status"
+    ]
+    assert completed
+    assert completed[-1]["payload"]["result"]["isGitRepository"] is False
+
+
 def test_failed_tool_surfaces_clear_task_summary(runtime_harness: Any, monkeypatch: Any, tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

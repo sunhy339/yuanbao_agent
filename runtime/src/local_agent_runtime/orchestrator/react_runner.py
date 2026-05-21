@@ -426,6 +426,7 @@ class ReactRunnerMixin:
             assistant_text = parsed.get("message") or ""
             if parsed["status"] == "completed" and not assistant_text:
                 assistant_text = parsed["summary"]
+            streamed_or_published = bool(response.get("_streamed_content"))
             if assistant_text and not response.get("_streamed_content"):
                 self._publish(
                     session_id=session_id,
@@ -433,12 +434,14 @@ class ReactRunnerMixin:
                     event_type="assistant.token",
                     payload={"delta": assistant_text, "step": steps},
                 )
+                streamed_or_published = True
 
             if parsed["status"] == "completed":
                 return {
                     "status": "completed",
                     "summary": parsed["summary"],
                     "tool_results": tool_results,
+                    "assistant_output_published": streamed_or_published,
                 }
 
             tool_calls = parsed["tool_calls"]

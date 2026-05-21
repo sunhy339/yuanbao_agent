@@ -13,6 +13,10 @@ const databasePath = resolve(
   process.env.YUANBAO_TAURI_E2E_DB_PATH ||
     `${process.env.TEMP || process.env.TMP || appRoot}/yuanbao-tauri-provider-flow.sqlite3`,
 );
+const workspacePath = resolve(
+  process.env.YUANBAO_TAURI_E2E_WORKSPACE ||
+    `${process.env.TEMP || process.env.TMP || appRoot}/yuanbao-tauri-provider-flow-workspace`,
+);
 const timeoutMs = Number(process.env.YUANBAO_TAURI_E2E_TIMEOUT_MS || 300_000);
 const apiKeyEnvVarName = process.env.YUANBAO_TAURI_E2E_API_KEY_ENV || "LOCAL_AGENT_PROVIDER_API_KEY";
 
@@ -45,16 +49,33 @@ if (existsSync(resultPath)) {
 if (existsSync(databasePath)) {
   rmSync(databasePath, { force: true });
 }
+if (!process.env.YUANBAO_TAURI_E2E_WORKSPACE) {
+  rmSync(workspacePath, { recursive: true, force: true });
+  mkdirSync(workspacePath, { recursive: true });
+  writeFileSync(
+    resolve(workspacePath, "README.md"),
+    [
+      "# Yuanbao Provider Flow Fixture",
+      "",
+      "This isolated workspace is created by the Tauri provider E2E harness.",
+      "It keeps provider smoke tests away from the Yuanbao source repository.",
+    ].join("\n"),
+    "utf-8",
+  );
+}
 
 const env = {
   ...process.env,
   LOCAL_AGENT_DB_PATH: databasePath,
+  YUANBAO_TAURI_E2E_WORKSPACE: workspacePath,
   YUANBAO_TAURI_E2E: "provider-flow",
   YUANBAO_TAURI_E2E_RESULT_PATH: resultPath,
   YUANBAO_TAURI_E2E_EXIT: process.env.YUANBAO_TAURI_E2E_EXIT || "1",
   YUANBAO_TAURI_E2E_API_KEY_ENV: apiKeyEnvVarName,
   YUANBAO_TAURI_E2E_BASE_URL:
     process.env.YUANBAO_TAURI_E2E_BASE_URL || "https://api.ximeixg.cloud/v1",
+  YUANBAO_TAURI_E2E_API_FORMAT:
+    process.env.YUANBAO_TAURI_E2E_API_FORMAT || "openai-chat",
   YUANBAO_TAURI_E2E_MODEL:
     process.env.YUANBAO_TAURI_E2E_MODEL || "MiniMax-M2.7-highspeed",
 };

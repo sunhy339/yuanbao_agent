@@ -1028,7 +1028,7 @@ class ReactRunnerMixin:
             strategy = routing.get("strategy", "")
             if strategy not in self._TASK_TOOL_STRATEGIES:
                 tools_by_name.pop("task", None)
-        return list(tools_by_name.values())
+        return [tools_by_name[name] for name in sorted(tools_by_name)]
 
     def _provider_tools_for_turn(
         self,

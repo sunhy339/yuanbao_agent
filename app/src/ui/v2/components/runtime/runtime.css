@@ -118,7 +118,7 @@
   height: 12px;
   border: 1px solid var(--yb-line);
   border-radius: 999px;
-  background: rgba(2, 6, 23, 0.34);
+  background: rgba(18, 16, 16, 0.34);
 }
 
 .yb-context-budget-track span,
@@ -181,7 +181,7 @@
   border: 1px solid var(--yb-line);
   border-radius: var(--yb-radius-md);
   padding: 8px;
-  background: rgba(2, 6, 23, 0.26);
+  background: rgba(18, 16, 16, 0.26);
 }
 
 .yb-routing-card dt,
@@ -211,7 +211,7 @@
   border: 1px solid var(--yb-line);
   border-radius: var(--yb-radius-md);
   padding: 10px;
-  background: rgba(2, 6, 23, 0.2);
+  background: rgba(18, 16, 16, 0.2);
 }
 
 .yb-approval-evidence-head,
@@ -296,7 +296,7 @@
 }
 
 .yb-tool-trace-head:hover {
-  background: rgba(34, 211, 238, 0.08);
+  background: rgba(232, 168, 124, 0.08);
 }
 
 .yb-tool-trace-head span {
@@ -346,8 +346,8 @@
   border: 1px solid var(--yb-line);
   border-radius: var(--yb-radius-md);
   padding: 10px;
-  color: #dbeafe;
-  background: rgba(2, 6, 23, 0.72);
+  color: #f0e0d0;
+  background: rgba(18, 16, 16, 0.72);
   font: 12px/1.55 var(--yb-font-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -376,7 +376,7 @@
   border: 1px solid var(--yb-line);
   border-radius: var(--yb-radius-md);
   padding: 8px;
-  background: rgba(2, 6, 23, 0.24);
+  background: rgba(18, 16, 16, 0.24);
 }
 
 .yb-patch-plan li span {
@@ -425,6 +425,6 @@
 
 .yb-v2[data-theme="light"] .yb-tool-trace-detail pre,
 .yb-v2[data-theme="light"] .yb-command-output pre {
-  color: #0f172a;
+  color: #1a1410;
   background: rgba(248, 250, 252, 0.92);
 }

@@ -26,16 +26,16 @@
   flex: 0 0 auto;
   min-width: 0;
   max-width: 220px;
-  border: 1px solid rgba(15, 23, 42, 0.1);
+  border: 1px solid rgba(60, 40, 30, 0.1);
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.78);
   backdrop-filter: blur(10px);
 }
 
 .workspace-tab-wrap[data-active="true"] {
-  border-color: rgba(37, 99, 235, 0.22);
+  border-color: rgba(196, 122, 74, 0.22);
   background: var(--wb-surface);
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8px 24px rgba(60, 40, 30, 0.06);
 }
 
 .workspace-tab-wrap[data-active="true"]::after {
@@ -92,7 +92,7 @@
 
 .workspace-tab-close:hover {
   color: var(--wb-ink);
-  background: #f1f5f9;
+  background: #f8f5f2;
 }
 
 .workspace-tab-menu {
@@ -100,11 +100,11 @@
   z-index: 60;
   display: grid;
   min-width: 148px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+  border: 1px solid rgba(60, 40, 30, 0.12);
   border-radius: 8px;
   padding: 4px;
   background: var(--wb-surface);
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.16);
+  box-shadow: 0 14px 34px rgba(60, 40, 30, 0.16);
 }
 
 .workspace-tab-menu button {
@@ -161,10 +161,10 @@
   position: relative;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid rgba(15, 23, 42, 0.1);
+  border: 1px solid rgba(60, 40, 30, 0.1);
   border-radius: 8px;
   background: var(--wb-surface);
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 12px 28px rgba(60, 40, 30, 0.06);
 }
 
 .workspace-frame::before {

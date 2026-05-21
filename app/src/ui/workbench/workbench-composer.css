@@ -9,11 +9,11 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px 10px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+  border: 1px solid rgba(60, 40, 30, 0.12);
   border-radius: 9px;
   padding: 8px 10px;
   background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.12), var(--wb-border-inset);
+  box-shadow: 0 14px 34px rgba(60, 40, 30, 0.12), var(--wb-border-inset);
   backdrop-filter: blur(14px) saturate(1.08);
   transform: translateY(0);
   opacity: 1;
@@ -43,7 +43,7 @@
 }
 
 .composer-meta span {
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  border: 1px solid rgba(60, 40, 30, 0.08);
   border-radius: 7px;
   padding: 2px 8px;
   background: var(--wb-surface-muted);
@@ -54,7 +54,7 @@
   width: 26px;
   height: 26px;
   border-radius: 8px;
-  background: #dbeafe;
+  background: #f0e0d0;
 }
 
 .composer-task-icon::before {
@@ -64,8 +64,8 @@
   width: 10px;
   height: 2px;
   border-radius: 99px;
-  background: #2563eb;
-  box-shadow: 0 6px 0 #2563eb, 0 12px 0 #2563eb;
+  background: #c47a4a;
+  box-shadow: 0 6px 0 #c47a4a, 0 12px 0 #c47a4a;
   content: "";
 }
 
@@ -75,7 +75,7 @@
   left: 5px;
   width: 6px;
   height: 11px;
-  border: solid #0f766e;
+  border: solid #8b5e3c;
   border-width: 0 2px 2px 0;
   content: "";
   transform: rotate(45deg);
@@ -102,10 +102,10 @@
   display: grid;
   max-height: 220px;
   overflow: auto;
-  border: 1px solid rgba(15, 23, 42, 0.1);
+  border: 1px solid rgba(60, 40, 30, 0.1);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 8px 20px rgba(60, 40, 30, 0.06);
 }
 
 .composer-runtime-child-tasks summary {
@@ -115,7 +115,7 @@
   align-items: center;
   min-height: 42px;
   padding: 8px 14px;
-  color: #111827;
+  color: #1a1410;
   cursor: pointer;
   list-style: none;
 }
@@ -131,7 +131,7 @@
 }
 
 .composer-runtime-child-tasks summary strong {
-  color: #111827;
+  color: #1a1410;
   font-size: 14px;
   font-weight: 780;
 }
@@ -139,11 +139,11 @@
 .composer-runtime-child-tasks .composer-task-count,
 .composer-child-active-count {
   justify-self: end;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  border: 1px solid rgba(60, 40, 30, 0.08);
   border-radius: 999px;
   padding: 2px 8px;
-  color: #667085;
-  background: #f6f7f8;
+  color: #7d7168;
+  background: #f8f5f2;
   font-family: var(--wb-font-mono);
   font-size: 11px;
   font-weight: 760;
@@ -151,8 +151,8 @@
 }
 
 .composer-child-active-count {
-  color: #1d4ed8;
-  background: #eff6ff;
+  color: #c47a4a;
+  background: #fef3e8;
 }
 
 .composer-runtime-child-tasks:not([open]) .composer-task-chevron {
@@ -179,7 +179,7 @@
   width: 18px;
   height: 18px;
   margin-top: 1px;
-  border: 2px solid #98a2b3;
+  border: 2px solid #9e948c;
   border-radius: 999px;
   background: transparent;
   box-shadow: none;
@@ -191,8 +191,8 @@
 }
 
 .composer-runtime-child-tasks li[data-state="active"] .composer-task-check {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+  border-color: #c47a4a;
+  box-shadow: 0 0 0 4px rgba(196, 122, 74, 0.12);
 }
 
 .composer-runtime-child-tasks li[data-state="failed"] .composer-task-check {
@@ -209,7 +209,7 @@
 }
 
 .composer-runtime-child-tasks li div span {
-  color: #7a6b66;
+  color: #7d7168;
   font-family: var(--wb-font-mono);
   font-size: 11px;
   font-weight: 760;
@@ -217,7 +217,7 @@
 
 .composer-runtime-child-tasks li div strong {
   min-width: 0;
-  color: #111827;
+  color: #1a1410;
   font-size: 13px;
   font-weight: 720;
   line-height: 1.35;
@@ -226,7 +226,7 @@
 .composer-runtime-child-tasks li div small {
   flex-basis: 100%;
   overflow: hidden;
-  color: #667085;
+  color: #7d7168;
   font-size: 12px;
   line-height: 1.35;
   text-overflow: ellipsis;
@@ -244,7 +244,7 @@
 .composer-tool-button,
 .composer-model-select select {
   min-height: 34px;
-  border: 1px solid rgba(15, 23, 42, 0.1);
+  border: 1px solid rgba(60, 40, 30, 0.1);
   border-radius: 999px;
   padding: 6px 12px;
   color: var(--wb-ink);
@@ -257,7 +257,7 @@
 }
 
 .composer-tool-button:hover:not(:disabled) {
-  border-color: rgba(37, 99, 235, 0.24);
+  border-color: rgba(196, 122, 74, 0.24);
   color: var(--wb-primary);
 }
 
@@ -300,7 +300,7 @@
   gap: 7px;
   min-height: 34px;
   max-width: 270px;
-  border: 1px solid rgba(15, 23, 42, 0.1);
+  border: 1px solid rgba(60, 40, 30, 0.1);
   border-radius: 999px;
   padding: 6px 11px 6px 14px;
   color: var(--wb-ink);
@@ -347,11 +347,11 @@
   width: min(430px, calc(100vw - 28px));
   max-height: min(420px, calc(100vh - 180px));
   overflow: auto;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+  border: 1px solid rgba(60, 40, 30, 0.12);
   border-radius: 14px;
   padding: 10px;
   background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 22px 48px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 22px 48px rgba(60, 40, 30, 0.18);
   backdrop-filter: blur(18px) saturate(1.1);
 }
 
@@ -372,7 +372,7 @@
 }
 
 .composer-model-option:hover {
-  background: rgba(15, 23, 42, 0.05);
+  background: rgba(60, 40, 30, 0.05);
 }
 
 .composer-model-option > span {
@@ -450,7 +450,7 @@
   align-items: center;
   gap: 6px;
   max-width: 220px;
-  border: 1px solid rgba(37, 99, 235, 0.14);
+  border: 1px solid rgba(196, 122, 74, 0.14);
   border-radius: 999px;
   padding: 5px 9px;
   color: var(--wb-primary);
@@ -476,7 +476,7 @@
 }
 
 .composer-input span {
-  color: #475569;
+  color: #7d7168;
   font-size: 12px;
   font-weight: 760;
 }
@@ -486,7 +486,7 @@
   min-height: 48px;
   max-height: 28vh;
   resize: vertical;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+  border: 1px solid rgba(60, 40, 30, 0.12);
   border-radius: 8px;
   padding: 9px 11px;
   background: var(--wb-surface-muted);
@@ -560,13 +560,13 @@
 .composer-queue {
   align-self: end;
   min-width: 78px;
-  border: 1px solid rgba(37, 99, 235, 0.18);
+  border: 1px solid rgba(196, 122, 74, 0.18);
   border-radius: 8px;
   padding: 10px 16px;
   background: var(--wb-primary);
   color: #ffffff;
   font-weight: 760;
-  box-shadow: 0 12px 28px rgba(37, 99, 235, 0.22);
+  box-shadow: 0 12px 28px rgba(196, 122, 74, 0.22);
   position: relative;
 }
 
@@ -659,7 +659,7 @@
 .composer-run:disabled,
 .composer-stop:disabled,
 .composer-queue:disabled {
-  background: #cbd5e1;
+  background: #c4b8ae;
   border-color: transparent;
   color: #ffffff;
 }

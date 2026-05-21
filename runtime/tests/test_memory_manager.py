@@ -440,6 +440,27 @@ class TestMemoryCategoryBoosts:
 
         assert ordered_ids.index(canonical.id) < ordered_ids.index(convention.id)
 
+    def test_same_category_recall_order_is_deterministic_for_near_ties(self) -> None:
+        first = self.mgr.remember(
+            content="Project convention: Use python -m pytest in this repo.",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "project_convention", "confidence": 0.8},
+        )
+        second = self.mgr.remember(
+            content="Project convention: Prefer focused pytest runs for backend changes.",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "project_convention", "confidence": 0.8},
+        )
+
+        results_a = self.mgr.recall_with_scores(workspace_id="w1", query="pytest project convention", limit=5)
+        results_b = self.mgr.recall_with_scores(workspace_id="w1", query="pytest project convention", limit=5)
+        ordered_a = [entry.id for entry, _score in results_a if entry.id in {first.id, second.id}]
+        ordered_b = [entry.id for entry, _score in results_b if entry.id in {first.id, second.id}]
+
+        assert ordered_a == ordered_b
+
 
 class TestMemoryConflictDetection:
     """Conflict detection marks entries with conflictingIds."""

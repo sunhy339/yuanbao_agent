@@ -676,7 +676,12 @@ class ContextBuilder(HistoryMixin):
         )
 
     def _workspace_summary_basic(self, workspace: dict[str, Any]) -> str:
-        """Lightweight workspace summary without project memory."""
+        """Lightweight workspace summary without project memory.
+
+        Keep this section stable across turns so provider-side prefix caching
+        has a better chance to hit. Volatile top-level listings belong in
+        explicit tools or refresh hints rather than the base prompt prefix.
+        """
         root = Path(workspace["rootPath"])
         lines = [
             "Workspace summary:",
@@ -688,21 +693,17 @@ class ContextBuilder(HistoryMixin):
             return "\n".join(lines)
 
         try:
-            children = sorted(root.iterdir(), key=lambda path: (not path.is_dir(), path.name.lower()))
+            has_entries = any(root.iterdir())
         except OSError as exc:
             lines.append(f"- status: Workspace root is not accessible: {exc}")
             return "\n".join(lines)
 
-        if not children:
+        if not has_entries:
             lines.append("- status: Workspace root is accessible but empty.")
             return "\n".join(lines)
 
-        entries = []
-        for child in children[:12]:
-            suffix = "/" if child.is_dir() else ""
-            entries.append(f"{child.name}{suffix}")
-        extra = "" if len(children) <= 12 else f" (+{len(children) - 12} more)"
-        lines.append(f"- top-level entries: {', '.join(entries)}{extra}")
+        lines.append("- status: Workspace root is accessible and non-empty.")
+        lines.append("- note: inspect concrete files via tools when needed.")
         return "\n".join(lines)
 
     def _workspace_summary(self, workspace: dict[str, Any]) -> str:

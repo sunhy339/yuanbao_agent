@@ -67,6 +67,8 @@ def test_context_builder_injects_messages_tools_and_safety_prompt(store: SQLiteS
     assert "README.md" in text
     assert context["budgetStats"]["maxContextTokens"] > 0
     assert context["budgetStats"]["estimatedTokens"] <= context["budgetStats"]["maxContextTokens"]
+    assert "top-level entries:" not in text
+    assert "Workspace root is accessible and non-empty." in text
 
 
 def test_context_builder_summarizes_recent_history(store: SQLiteStore, tmp_path: Path) -> None:

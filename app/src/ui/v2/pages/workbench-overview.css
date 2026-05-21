@@ -17,9 +17,9 @@
   min-height: 112px;
   padding: 18px 20px;
   background:
-    linear-gradient(120deg, rgba(34, 211, 238, 0.18), transparent 42%),
-    linear-gradient(300deg, rgba(167, 243, 208, 0.12), transparent 38%),
-    rgba(7, 13, 27, 0.86);
+    linear-gradient(120deg, rgba(232, 168, 124, 0.18), transparent 42%),
+    linear-gradient(300deg, rgba(167, 212, 192, 0.12), transparent 38%),
+    rgba(18, 16, 16, 0.86);
   box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(16px) saturate(1.1);
 }
@@ -30,11 +30,11 @@
   inset: auto -8% -72px 44%;
   height: 132px;
   pointer-events: none;
-  border-top: 1px solid rgba(103, 232, 249, 0.22);
+  border-top: 1px solid rgba(232, 168, 124, 0.22);
   transform: skewY(-8deg);
   background:
-    linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.14), transparent),
-    repeating-linear-gradient(90deg, rgba(125, 211, 252, 0.09) 0 1px, transparent 1px 44px);
+    linear-gradient(90deg, transparent, rgba(232, 168, 124, 0.14), transparent),
+    repeating-linear-gradient(90deg, rgba(232, 168, 124, 0.09) 0 1px, transparent 1px 44px);
 }
 
 .overview-command-strip h1 {
@@ -133,7 +133,7 @@
   border: 1px solid var(--yb-line);
   border-radius: var(--yb-radius-md);
   padding: 10px;
-  background: rgba(2, 6, 23, 0.22);
+  background: rgba(18, 16, 16, 0.22);
 }
 
 .overview-definition-list dt {
@@ -176,8 +176,8 @@ button.overview-row {
 }
 
 button.overview-row:hover {
-  border-color: rgba(34, 211, 238, 0.42);
-  background: rgba(8, 145, 178, 0.16);
+  border-color: rgba(196, 122, 74, 0.42);
+  background: rgba(168, 100, 56, 0.16);
 }
 
 .overview-row span {
@@ -235,7 +235,7 @@ button.overview-row:hover {
   bottom: 8px;
   left: 7px;
   width: 1px;
-  background: rgba(34, 211, 238, 0.22);
+  background: rgba(232, 168, 124, 0.22);
 }
 
 .overview-timeline-item {
@@ -249,7 +249,7 @@ button.overview-row:hover {
   border-radius: var(--yb-radius-md);
   padding: 10px;
   color: var(--yb-ink);
-  background: rgba(5, 10, 22, 0.38);
+  background: rgba(18, 16, 16, 0.38);
 }
 
 .overview-timeline-item > div {
@@ -280,7 +280,7 @@ button.overview-row:hover {
   height: 8px;
   border-radius: 999px;
   background: var(--yb-primary);
-  box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.1);
+  box-shadow: 0 0 0 4px rgba(232, 168, 124, 0.1);
 }
 
 .overview-timeline-item[data-status="completed"] > span,
@@ -332,7 +332,7 @@ button.overview-row:hover {
   border: 1px solid var(--yb-line);
   border-radius: var(--yb-radius-md);
   padding: 10px;
-  background: rgba(2, 6, 23, 0.24);
+  background: rgba(18, 16, 16, 0.24);
 }
 
 .overview-signal-card span {
@@ -369,7 +369,7 @@ button.overview-row:hover {
   border: 1px solid var(--yb-line);
   border-radius: var(--yb-radius-md);
   padding: 10px;
-  background: rgba(2, 6, 23, 0.2);
+  background: rgba(18, 16, 16, 0.2);
 }
 
 .overview-capability-card strong {
@@ -416,8 +416,8 @@ button.overview-row:hover {
 
 .yb-v2[data-theme="light"] .overview-command-strip {
   background:
-    linear-gradient(120deg, rgba(6, 182, 212, 0.12), transparent 42%),
-    linear-gradient(300deg, rgba(34, 197, 94, 0.08), transparent 38%),
+    linear-gradient(120deg, rgba(196, 122, 74, 0.12), transparent 42%),
+    linear-gradient(300deg, rgba(90, 158, 126, 0.08), transparent 38%),
     rgba(255, 255, 255, 0.84);
   box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.78);
 }
@@ -427,9 +427,9 @@ button.overview-row:hover {
 .yb-v2[data-theme="light"] .overview-signal-card,
 .yb-v2[data-theme="light"] .overview-capability-card,
 .yb-v2[data-theme="light"] .overview-task-flow li {
-  background: rgba(241, 245, 249, 0.78);
+  background: rgba(248, 245, 242, 0.78);
 }
 
 .yb-v2[data-theme="light"] .overview-row:hover {
-  background: rgba(207, 250, 254, 0.58);
+  background: rgba(240, 224, 208, 0.58);
 }

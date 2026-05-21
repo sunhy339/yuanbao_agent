@@ -7,6 +7,7 @@ facade for all memory operations.
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime
 from typing import Any
 
 from .retriever import MemoryRetriever, extract_keywords
@@ -199,8 +200,9 @@ class MemoryManager:
                     base_score = 0.3
                     results.append((entry, self._adjust_score(entry, base_score)))
 
-        # Sort by adjusted score descending
-        results.sort(key=lambda x: x[1], reverse=True)
+        # Sort deterministically before grouping so near-tie recall results do
+        # not jitter the prompt prefix across similar turns.
+        results.sort(key=self._result_sort_key)
         return self._prioritize_groups(results, limit=limit)
 
     @staticmethod
@@ -243,7 +245,7 @@ class MemoryManager:
             grouped[category].append((entry, score))
 
         for entries in grouped.values():
-            entries.sort(key=lambda item: item[1], reverse=True)
+            entries.sort(key=cls._result_sort_key)
 
         prioritized: list[tuple[MemoryEntry, float]] = []
         seen_ids: set[str] = set()
@@ -260,7 +262,7 @@ class MemoryManager:
         remaining: list[tuple[MemoryEntry, float]] = []
         for entries in grouped.values():
             remaining.extend(entries)
-        remaining.sort(key=lambda item: item[1], reverse=True)
+        remaining.sort(key=cls._result_sort_key)
         for entry, score in remaining:
             if entry.id in seen_ids:
                 continue
@@ -269,6 +271,32 @@ class MemoryManager:
             if len(prioritized) >= limit:
                 break
         return prioritized
+
+    @staticmethod
+    def _result_sort_key(item: tuple[MemoryEntry, float]) -> tuple[float, float, float, str]:
+        entry, score = item
+        meta = entry.metadata or {}
+        confidence = float(meta.get("confidence", 0.7))
+        created_at = MemoryManager._created_at_seconds(getattr(entry, "created_at", None))
+        return (-score, -confidence, -created_at, entry.id)
+
+    @staticmethod
+    def _created_at_seconds(value: Any) -> float:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return 0.0
+            try:
+                return float(raw)
+            except ValueError:
+                pass
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return 0.0
+        return 0.0
 
     @classmethod
     def _detect_conflict(cls, text_a: str, text_b: str) -> bool:

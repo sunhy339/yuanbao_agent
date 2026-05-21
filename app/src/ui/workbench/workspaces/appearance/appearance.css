@@ -55,7 +55,7 @@
 .appearance-control-block,
 .appearance-toggle,
 .appearance-preview-window {
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid rgba(232, 168, 124, 0.16);
   border-radius: var(--yb-radius-lg);
   background: rgba(3, 7, 18, 0.38);
 }
@@ -171,16 +171,16 @@
   border-radius: var(--yb-radius-md);
   padding: 0 12px;
   color: var(--yb-muted);
-  background: rgba(2, 6, 23, 0.24);
+  background: rgba(18, 16, 16, 0.24);
   cursor: pointer;
   font-weight: 760;
 }
 
 .appearance-segmented button[aria-pressed="true"],
 .appearance-swatch-row button[aria-pressed="true"] {
-  color: #03191f;
-  border-color: rgba(34, 211, 238, 0.52);
-  background: linear-gradient(135deg, #67e8f9, #22d3ee 58%, #a7f3d0);
+  color: #2b1a0f;
+  border-color: rgba(196, 122, 74, 0.52);
+  background: linear-gradient(135deg, #e8a87c, #d4895a 58%, #f0c8a8);
 }
 
 .appearance-swatch-row {
@@ -200,8 +200,8 @@
   height: 12px;
   border: 1px solid rgba(255, 255, 255, 0.34);
   border-radius: 999px;
-  background: #22d3ee;
-  box-shadow: 0 0 14px color-mix(in srgb, #22d3ee 30%, transparent);
+  background: #d4895a;
+  box-shadow: 0 0 14px color-mix(in srgb, #d4895a 30%, transparent);
 }
 
 .appearance-swatch-row button[data-accent="violet"] > span { background: #8b5cf6; }
@@ -219,7 +219,7 @@
 .appearance-slider-grid label {
   display: grid;
   gap: 8px;
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid rgba(232, 168, 124, 0.16);
   border-radius: var(--yb-radius-lg);
   padding: 12px;
   color: var(--yb-ink-soft);
@@ -302,10 +302,10 @@
 .appearance-preview-body div {
   display: grid;
   gap: 5px;
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid rgba(232, 168, 124, 0.16);
   border-radius: var(--yb-radius-md);
   padding: 10px;
-  background: rgba(2, 6, 23, 0.22);
+  background: rgba(18, 16, 16, 0.22);
 }
 
 .appearance-preview-window[data-preview-theme="light"] .appearance-preview-body div {
@@ -343,7 +343,7 @@
 
 .yb-v2[data-theme="light"] .appearance-command-strip {
   background:
-    linear-gradient(110deg, rgba(6, 182, 212, 0.12), transparent 44%),
+    linear-gradient(110deg, rgba(196, 122, 74, 0.12), transparent 44%),
     linear-gradient(300deg, rgba(34, 197, 94, 0.07), transparent 44%),
     rgba(255, 255, 255, 0.82);
 }
@@ -360,7 +360,7 @@
 
 .yb-v2[data-theme="light"] .appearance-choice[data-selected="true"] {
   background:
-    linear-gradient(135deg, rgba(6, 182, 212, 0.18), transparent 72%),
+    linear-gradient(135deg, rgba(196, 122, 74, 0.18), transparent 72%),
     rgba(241, 245, 249, 0.88);
 }
 

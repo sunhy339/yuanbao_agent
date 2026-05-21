@@ -34,7 +34,7 @@
   padding: 12px 14px;
   background:
     linear-gradient(90deg, rgba(190, 18, 60, 0.18), transparent 72%),
-    rgba(15, 23, 42, 0.72);
+    rgba(18, 16, 16, 0.72);
 }
 
 .mcp-error-banner div {
@@ -97,11 +97,11 @@
 .mcp-detail-actions button:not(.yb-button),
 .mcp-primary-action:not(.yb-button) {
   min-height: 40px;
-  border: 1px solid rgba(103, 232, 249, 0.24);
+  border: 1px solid rgba(232, 168, 124, 0.24);
   border-radius: 10px;
   padding: 0 15px;
-  color: #cffafe;
-  background: rgba(8, 145, 178, 0.18);
+  color: #f0e0d0;
+  background: rgba(168, 100, 56, 0.18);
   cursor: pointer;
   font: inherit;
   font-weight: 760;
@@ -110,8 +110,8 @@
 .mcp-hero button:not(.yb-button):hover:not(:disabled),
 .mcp-detail-actions button:not(.yb-button):hover:not(:disabled),
 .mcp-primary-action:not(.yb-button):hover:not(:disabled) {
-  border-color: rgba(103, 232, 249, 0.56);
-  background: rgba(8, 145, 178, 0.28);
+  border-color: rgba(232, 168, 124, 0.56);
+  background: rgba(168, 100, 56, 0.28);
 }
 
 .mcp-hero button:disabled,
@@ -206,14 +206,14 @@
   border-radius: 10px;
   padding: 11px 12px;
   color: var(--yb-ink);
-  background: rgba(2, 6, 23, 0.42);
+  background: rgba(18, 16, 16, 0.42);
   font: inherit;
 }
 
 .mcp-create-panel input:focus,
 .mcp-create-panel select:focus,
 .mcp-create-panel textarea:focus {
-  outline: 2px solid rgba(103, 232, 249, 0.24);
+  outline: 2px solid rgba(232, 168, 124, 0.24);
   border-color: rgba(103, 232, 249, 0.48);
 }
 
@@ -223,7 +223,7 @@
   padding: 12px;
   border: 1px solid rgba(103, 232, 249, 0.2);
   border-radius: var(--yb-radius-md);
-  background: rgba(8, 47, 73, 0.18);
+  background: rgba(73, 47, 18, 0.18);
 }
 
 .mcp-import-actions {
@@ -247,7 +247,7 @@
 
 .mcp-toggle input,
 .mcp-server-card input {
-  accent-color: #22d3ee;
+  accent-color: #d4895a;
 }
 
 .mcp-server-list {
@@ -266,7 +266,7 @@
   border-radius: 12px;
   padding: 12px;
   color: #e2e8f0;
-  background: rgba(15, 23, 42, 0.55);
+  background: rgba(18, 16, 16, 0.55);
   cursor: pointer;
   font: inherit;
   text-align: left;
@@ -275,7 +275,7 @@
 .mcp-server-card:hover,
 .mcp-server-card.is-active {
   border-color: rgba(103, 232, 249, 0.45);
-  background: rgba(14, 116, 144, 0.2);
+  background: rgba(144, 100, 56, 0.2);
 }
 
 .mcp-server-card span:not(.mcp-status-dot) {
@@ -315,11 +315,11 @@
   padding: 12px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   border-radius: 12px;
-  background: rgba(2, 6, 23, 0.24);
+  background: rgba(18, 16, 16, 0.24);
 }
 
 .mcp-definition-list dt {
-  color: #67e8f9;
+  color: #e8a87c;
   font-family: var(--wb-font-mono, ui-monospace, "Cascadia Mono", Consolas, monospace);
   font-size: 0.68rem;
   font-weight: 800;
@@ -329,7 +329,7 @@
 
 .mcp-definition-list dd {
   margin: 0;
-  color: #dbeafe;
+  color: #f0e0d0;
   overflow-wrap: anywhere;
 }
 
@@ -340,9 +340,9 @@
 .mcp-tool-preview {
   margin-top: 16px;
   padding: 14px;
-  border: 1px solid rgba(34, 211, 238, 0.18);
+  border: 1px solid rgba(232, 168, 124, 0.18);
   border-radius: 14px;
-  background: rgba(8, 145, 178, 0.1);
+  background: rgba(168, 100, 56, 0.1);
 }
 
 .mcp-tool-preview ul {
@@ -350,7 +350,7 @@
   gap: 6px;
   margin: 10px 0 0;
   padding-left: 18px;
-  color: #a7f3d0;
+  color: #c8dcc8;
   overflow-wrap: anywhere;
 }
 
@@ -398,7 +398,7 @@
   overflow: hidden;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 42%),
-    rgba(7, 13, 27, 0.84);
+    rgba(18, 16, 16, 0.84);
   box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
@@ -411,8 +411,8 @@
   pointer-events: none;
   border-radius: inherit;
   background:
-    linear-gradient(90deg, rgba(34, 211, 238, 0.72), transparent 34%) top left / 58% 1px no-repeat,
-    linear-gradient(180deg, rgba(167, 243, 208, 0.34), transparent 38%) top left / 1px 54% no-repeat;
+    linear-gradient(90deg, rgba(232, 168, 124, 0.72), transparent 34%) top left / 58% 1px no-repeat,
+    linear-gradient(180deg, rgba(167, 212, 192, 0.34), transparent 38%) top left / 1px 54% no-repeat;
   opacity: 0.56;
 }
 
@@ -420,9 +420,9 @@
   min-height: 196px;
   padding: 30px 36px;
   background:
-    linear-gradient(115deg, rgba(34, 211, 238, 0.17), transparent 44%),
+    linear-gradient(115deg, rgba(232, 168, 124, 0.17), transparent 44%),
     linear-gradient(300deg, rgba(139, 92, 246, 0.12), transparent 42%),
-    rgba(7, 13, 27, 0.88);
+    rgba(18, 16, 16, 0.88);
 }
 
 .mcp-hero::after {
@@ -433,11 +433,11 @@
   width: 58%;
   height: 180px;
   pointer-events: none;
-  border-top: 1px solid rgba(103, 232, 249, 0.24);
+  border-top: 1px solid rgba(232, 168, 124, 0.24);
   transform: skewY(-8deg);
   background:
-    linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.12), transparent),
-    repeating-linear-gradient(90deg, rgba(125, 211, 252, 0.09) 0 1px, transparent 1px 36px);
+    linear-gradient(90deg, transparent, rgba(232, 168, 124, 0.12), transparent),
+    repeating-linear-gradient(90deg, rgba(232, 168, 124, 0.09) 0 1px, transparent 1px 36px);
 }
 
 .mcp-hero > div {
@@ -466,11 +466,11 @@
   display: grid;
   gap: 2px;
   min-width: 126px;
-  border: 1px solid rgba(125, 211, 252, 0.18);
+  border: 1px solid rgba(232, 168, 124, 0.18);
   border-radius: 10px;
   padding: 9px 12px;
   color: var(--yb-muted);
-  background: rgba(3, 7, 18, 0.38);
+  background: rgba(18, 16, 16, 0.38);
   font-size: 12px;
 }
 
@@ -494,8 +494,8 @@
 
 .mcp-metrics > div:nth-child(2)::before {
   background:
-    linear-gradient(90deg, rgba(167, 243, 208, 0.62), transparent 34%) top left / 58% 1px no-repeat,
-    linear-gradient(180deg, rgba(167, 243, 208, 0.34), transparent 38%) top left / 1px 54% no-repeat;
+    linear-gradient(90deg, rgba(167, 212, 192, 0.62), transparent 34%) top left / 58% 1px no-repeat,
+    linear-gradient(180deg, rgba(167, 212, 192, 0.34), transparent 38%) top left / 1px 54% no-repeat;
 }
 
 .mcp-metrics > div:nth-child(4)::before {
@@ -526,11 +526,11 @@
 .mcp-create-panel select,
 .mcp-create-panel textarea {
   min-height: 46px;
-  border-color: rgba(125, 211, 252, 0.2);
+  border-color: rgba(232, 168, 124, 0.2);
   border-radius: 9px;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
-    rgba(3, 7, 18, 0.42);
+    rgba(18, 16, 16, 0.42);
 }
 
 .mcp-server-card,
@@ -538,17 +538,17 @@
 .mcp-tool-preview,
 .mcp-empty-state,
 .mcp-inspector-band {
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: rgba(232, 168, 124, 0.18);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 42%),
-    rgba(3, 7, 18, 0.36);
+    rgba(18, 16, 16, 0.36);
 }
 
 .mcp-server-card.is-active {
-  border-color: rgba(34, 211, 238, 0.72);
+  border-color: rgba(232, 168, 124, 0.72);
   background:
-    linear-gradient(90deg, rgba(8, 145, 178, 0.26), transparent 62%),
-    rgba(3, 7, 18, 0.45);
+    linear-gradient(90deg, rgba(168, 100, 56, 0.26), transparent 62%),
+    rgba(18, 16, 16, 0.45);
   box-shadow: inset 3px 0 0 var(--yb-primary), 0 18px 40px rgba(0, 0, 0, 0.2);
 }
 
@@ -559,16 +559,16 @@
   align-items: center;
   min-height: 58px;
   margin-bottom: 14px;
-  border: 1px solid rgba(125, 211, 252, 0.2);
+  border: 1px solid rgba(232, 168, 124, 0.2);
   border-radius: 12px;
   padding: 12px 14px;
 }
 
 .mcp-inspector-band[data-enabled="true"] {
-  border-color: rgba(167, 243, 208, 0.28);
+  border-color: rgba(167, 212, 192, 0.28);
   background:
-    linear-gradient(90deg, rgba(22, 163, 74, 0.15), transparent 58%),
-    rgba(3, 7, 18, 0.38);
+    linear-gradient(90deg, rgba(74, 163, 74, 0.15), transparent 58%),
+    rgba(18, 16, 16, 0.38);
 }
 
 .mcp-inspector-band small {
@@ -662,7 +662,7 @@
 
 .mcp-panel-header {
   margin-bottom: 12px;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.14);
+  border-bottom: 1px solid rgba(232, 168, 124, 0.14);
   padding-bottom: 10px;
 }
 
@@ -744,7 +744,7 @@
 
 .yb-v2[data-theme="light"] .mcp-hero {
   background:
-    linear-gradient(115deg, rgba(6, 182, 212, 0.12), transparent 44%),
+    linear-gradient(115deg, rgba(196, 122, 74, 0.12), transparent 44%),
     linear-gradient(300deg, rgba(139, 92, 246, 0.07), transparent 42%),
     rgba(255, 255, 255, 0.82);
 }

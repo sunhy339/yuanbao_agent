@@ -154,7 +154,7 @@
   border: 1px solid var(--yb-line);
   border-radius: var(--yb-radius-md);
   padding: 9px 10px;
-  background: rgba(2, 6, 23, 0.24);
+  background: rgba(18, 16, 16, 0.24);
 }
 
 .new-session-check-row span {
@@ -179,7 +179,7 @@
   border-radius: var(--yb-radius-md);
   padding: 10px;
   color: var(--yb-ink);
-  background: rgba(2, 6, 23, 0.24);
+  background: rgba(18, 16, 16, 0.24);
   cursor: pointer;
   font: inherit;
   text-align: left;

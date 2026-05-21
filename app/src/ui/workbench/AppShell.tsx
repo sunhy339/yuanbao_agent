@@ -47,6 +47,10 @@ interface AppShellProps {
   mcpLabel?: string;
   approvalLabel?: string;
   contextLabel?: string;
+  contextPreview?: import("../workbench/workspaces/session/types").SessionWorkspaceContextPreview | null;
+  worktreeStatus?: { dirtyFiles?: number; files?: string[] } | null;
+  activeTaskStatus?: string | null;
+  activeTaskCurrentStep?: string | null;
   loading?: boolean;
   theme?: ThemeMode;
   density?: DensityMode;
@@ -94,6 +98,10 @@ export function AppShell({
   mcpLabel,
   approvalLabel,
   contextLabel,
+  contextPreview,
+  worktreeStatus,
+  activeTaskStatus,
+  activeTaskCurrentStep,
   loading,
   theme = "dark",
   density = "comfortable",
@@ -151,6 +159,10 @@ export function AppShell({
         mcpLabel={mcpLabel}
         approvalLabel={approvalLabel}
         contextLabel={contextLabel}
+        contextPreview={contextPreview}
+        worktreeStatus={worktreeStatus}
+        activeTaskStatus={activeTaskStatus}
+        activeTaskCurrentStep={activeTaskCurrentStep}
       >
         {children}
       </AppShellV2>

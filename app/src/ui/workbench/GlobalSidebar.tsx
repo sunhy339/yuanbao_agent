@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatStatusLabel } from "../copy";
 import type { SystemWorkspaceKind, WorkbenchSession } from "./types";
+import type { SessionWorkspaceContextPreview } from "./workspaces/session/types";
 
 interface GlobalSidebarProps {
   sessions: WorkbenchSession[];
@@ -10,6 +11,10 @@ interface GlobalSidebarProps {
   onOpenSessionTab: (session: WorkbenchSession) => void;
   onRenameSession: (sessionId: string, newTitle: string) => void;
   onDeleteSession: (sessionId: string) => void;
+  contextPreview?: SessionWorkspaceContextPreview | null;
+  worktreeStatus?: { dirtyFiles?: number; files?: string[] } | null;
+  activeTaskStatus?: string | null;
+  activeTaskCurrentStep?: string | null;
 }
 
 interface ContextMenuState {
@@ -26,6 +31,10 @@ export function GlobalSidebar({
   onOpenSessionTab,
   onRenameSession,
   onDeleteSession,
+  contextPreview,
+  worktreeStatus,
+  activeTaskStatus,
+  activeTaskCurrentStep,
 }: GlobalSidebarProps) {
   const [searchText, setSearchText] = useState("");
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -40,6 +49,23 @@ export function GlobalSidebar({
       (session.title || "未命名会话").toLowerCase().includes(query),
     );
   }, [sessions, searchText]);
+
+  const budgetStats = contextPreview?.budgetStats;
+  const contextPressure = useMemo(() => {
+    if (!budgetStats?.maxContextTokens || !budgetStats?.estimatedTokens) return null;
+    const ratio = budgetStats.estimatedTokens / budgetStats.maxContextTokens;
+    return Math.min(1, Math.max(0, ratio));
+  }, [budgetStats]);
+
+  const contextPressureLabel = useMemo(() => {
+    if (!budgetStats) return null;
+    const used = budgetStats.estimatedTokens ?? budgetStats.estimatedInputTokens ?? 0;
+    const max = budgetStats.maxContextTokens;
+    if (!max) return `${used} tokens`;
+    return `${Math.round(used / 1000)}k / ${Math.round(max / 1000)}k`;
+  }, [budgetStats]);
+
+  const worktreeDirtyCount = worktreeStatus?.dirtyFiles ?? 0;
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -213,6 +239,46 @@ export function GlobalSidebar({
           <span>设置</span>
           <small>配置</small>
         </button>
+      </div>
+
+      <div className="sidebar-data-panels" aria-label="状态面板">
+        {activeTaskStatus && activeTaskStatus !== "completed" && activeTaskStatus !== "cancelled" && (
+          <div className="sidebar-task-panel">
+            <div className="sidebar-task-heading">
+              <span className="sidebar-task-dot" data-status={activeTaskStatus} />
+              <span className="sidebar-task-label">{formatStatusLabel(activeTaskStatus)}</span>
+            </div>
+            {activeTaskCurrentStep ? (
+              <p className="sidebar-task-step" title={activeTaskCurrentStep}>
+                {activeTaskCurrentStep}
+              </p>
+            ) : null}
+          </div>
+        )}
+
+        {contextPressure !== null && (
+          <div className="sidebar-context-panel">
+            <div className="sidebar-context-header">
+              <span>上下文</span>
+              <span className="sidebar-context-value">{contextPressureLabel}</span>
+            </div>
+            <div className="sidebar-context-bar-bg" aria-hidden="true">
+              <div
+                className="sidebar-context-bar-fill"
+                data-pressure={contextPressure > 0.85 ? "high" : contextPressure > 0.6 ? "medium" : "low"}
+                style={{ width: `${contextPressure * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {worktreeDirtyCount > 0 && (
+          <div className="sidebar-worktree-panel" data-dirty="true">
+            <span className="sidebar-worktree-icon" aria-hidden="true">✦</span>
+            <span className="sidebar-worktree-label">工作区更改</span>
+            <span className="sidebar-worktree-count">{worktreeDirtyCount}</span>
+          </div>
+        )}
       </div>
     </aside>
   );

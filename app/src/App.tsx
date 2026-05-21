@@ -828,6 +828,10 @@ export function App() {
       mcpLabel={views.mcpStatusLabel}
       approvalLabel={views.approvalStatusLabel}
       contextLabel={views.contextStatusLabel}
+      contextPreview={views.sessionContextPreview}
+      worktreeStatus={worktreeStatus ?? null}
+      activeTaskStatus={task?.status ?? null}
+      activeTaskCurrentStep={task?.currentStep ?? null}
       theme={generalSettings.theme}
       density={generalSettings.density}
       radius={generalSettings.radius}

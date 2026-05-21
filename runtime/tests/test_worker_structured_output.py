@@ -744,6 +744,72 @@ class TestCompletionHardGate:
         assert evidence["counts"]["failedToolResults"] == 0
         assert evidence["counts"]["resolvedFailedToolResults"] == 1
 
+    def test_failed_apply_patch_resolved_by_later_write_and_verification(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="repair a generated API bug",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "blog_api.py", "action": "modified"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Repaired the API bug and reran verification.",
+            context={"routing": {"scenario": "code_edit"}},
+            tool_results=[
+                {
+                    "name": "apply_patch",
+                    "result": {
+                        "status": "validation_failed",
+                        "ok": False,
+                        "summary": "Patch validation failed.",
+                    },
+                },
+                {
+                    "name": "write_file",
+                    "result": {
+                        "status": "written",
+                        "path": "blog_api.py",
+                        "summary": "Wrote the repaired handler directly.",
+                    },
+                },
+                {
+                    "name": "run_command",
+                    "result": {
+                        "status": "completed",
+                        "command": "python -m pytest -q",
+                        "exitCode": 0,
+                        "summary": "tests passed",
+                    },
+                },
+                {
+                    "name": "run_command",
+                    "result": {
+                        "status": "completed",
+                        "command": "python -m py_compile blog_api.py",
+                        "exitCode": 0,
+                        "summary": "py_compile passed",
+                    },
+                },
+            ],
+            skip_reflection=True,
+        )
+
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert result["status"] == "completed"
+        assert evidence["counts"]["failedToolResults"] == 0
+        assert evidence["counts"]["resolvedFailedToolResults"] == 1
+
     def test_code_change_with_only_structural_verification_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

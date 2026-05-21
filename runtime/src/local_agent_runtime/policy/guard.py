@@ -95,11 +95,14 @@ class PolicyGuard:
     def _first_match(self, command: str, patterns: list[str]) -> str | None:
         normalized_command = " ".join(command.casefold().split())
         executable = self._command_executable(normalized_command)
+        module_command = self._normalized_module_command(normalized_command)
         for pattern in patterns:
             normalized_pattern = " ".join(pattern.casefold().split())
             if fnmatch.fnmatch(normalized_command, normalized_pattern):
                 return pattern
             if executable and fnmatch.fnmatch(executable, normalized_pattern):
+                return pattern
+            if module_command and fnmatch.fnmatch(module_command, normalized_pattern):
                 return pattern
         return None
 
@@ -117,6 +120,22 @@ class PolicyGuard:
             return ""
         first = re.split(r"\s+|&&|\|\||;|\|", stripped, maxsplit=1)[0]
         return first.strip("\"'")
+
+    def _normalized_module_command(self, normalized_command: str) -> str:
+        stripped = normalized_command.strip()
+        if not stripped:
+            return ""
+        stripped = re.sub(r"""^\s*&\s*""", "", stripped)
+        command_text = stripped.strip("\"'")
+        match = re.match(
+            r"""^(?P<exe>(?:[a-z]:)?[^ ]*python(?:\.exe)?)\s+-m\s+(?P<module>[a-z0-9_.-]+)(?P<suffix>(?:\s+.*)?)$""",
+            command_text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return ""
+        suffix = match.group("suffix") or ""
+        return f"python -m {match.group('module').casefold()}{suffix}"
 
     def _dangerous_command_match(self, command: str) -> str | None:
         normalized = " ".join(command.casefold().split())

@@ -5879,6 +5879,14 @@ class TaskLifecycleMixin:
                 verification=verification,
                 tests_run=tests_run,
             )
+        if failed_item.get("name") in {"apply_patch", "write_file"}:
+            return self._failed_workspace_write_has_equivalent_success(
+                failed_item,
+                tool_evidence,
+                changed_files=changed_files,
+                verification=verification,
+                tests_run=tests_run,
+            )
         if failed_item.get("name") != "run_command":
             return False
         failed_key = self._structural_command_resolution_key(failed_item.get("command"))
@@ -5888,6 +5896,64 @@ class TaskLifecycleMixin:
             if item is failed_item or item.get("name") != "run_command" or item.get("failed") is True:
                 continue
             if self._structural_command_resolution_key(item.get("command")) == failed_key:
+                return True
+        return False
+
+    def _failed_workspace_write_has_equivalent_success(
+        self,
+        failed_item: dict[str, Any],
+        tool_evidence: list[dict[str, Any]],
+        *,
+        changed_files: list[dict[str, Any]] | None = None,
+        verification: list[dict[str, Any]] | None = None,
+        tests_run: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        failed_paths = {
+            self._completion_contract_normalize_path(path)
+            for path in (failed_item.get("changedPaths") or [])
+            if self._completion_contract_normalize_path(path)
+        }
+        has_passing_signal = any(
+            str(item.get("status") or "").strip().lower() in {"passed", "success", "completed"}
+            for item in [*(verification or []), *(tests_run or [])]
+            if isinstance(item, dict)
+        )
+        changed_paths = {
+            self._completion_changed_file_path(item)
+            for item in (changed_files or [])
+            if self._completion_changed_file_path(item)
+        }
+        if not failed_paths:
+            if failed_item.get("name") != "apply_patch" or not has_passing_signal or not changed_paths:
+                return False
+            for item in tool_evidence:
+                if item is failed_item or item.get("failed") is True:
+                    continue
+                if item.get("name") not in {"apply_patch", "write_file"}:
+                    continue
+                success_paths = {
+                    self._completion_contract_normalize_path(path)
+                    for path in (item.get("changedPaths") or [])
+                    if self._completion_contract_normalize_path(path)
+                }
+                if success_paths and not success_paths.isdisjoint(changed_paths):
+                    return True
+            return False
+        for item in tool_evidence:
+            if item is failed_item or item.get("failed") is True:
+                continue
+            if item.get("name") not in {"apply_patch", "write_file"}:
+                continue
+            success_paths = {
+                self._completion_contract_normalize_path(path)
+                for path in (item.get("changedPaths") or [])
+                if self._completion_contract_normalize_path(path)
+            }
+            if success_paths and not failed_paths.isdisjoint(success_paths):
+                return True
+
+        if changed_paths and not failed_paths.isdisjoint(changed_paths):
+            if has_passing_signal:
                 return True
         return False
 

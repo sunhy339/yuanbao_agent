@@ -14,23 +14,32 @@ class HistoryMixin:
     Expects ``self._store`` to be a ``SQLiteStore``-compatible instance.
     """
 
-    def _history_sections(self, session: dict[str, Any]) -> list[BudgetSection]:
-        sections: list[BudgetSection] = self._conversation_history_sections(session)
+    def _history_sections(
+        self,
+        session: dict[str, Any],
+        *,
+        policy: dict[str, Any] | None = None,
+    ) -> list[BudgetSection]:
+        policy = policy if isinstance(policy, dict) else {}
+        sections: list[BudgetSection] = self._conversation_history_sections(session, policy=policy)
 
-        tasks = self._recent_tasks(session["id"], limit=6)
+        tasks = self._recent_tasks(session["id"], limit=self._policy_int(policy, "recentTasks", 6))
         total_tasks = len(tasks)
         for index, task in enumerate(tasks):
             priority = 700 + (total_tasks - index)
             sections.append(
                 BudgetSection(
                     name=f"task_history:{task['id']}",
-                    text=self._task_summary(task),
+                    text=self._task_summary(
+                        task,
+                        max_chars=self._policy_int(policy, "taskSummaryMaxChars", 220),
+                    ),
                     priority=priority,
                     minimum_tokens=24 if index == 0 else 0,
                 )
             )
 
-        for patch in self._recent_patches(session["id"], limit=3):
+        for patch in self._recent_patches(session["id"], limit=self._policy_int(policy, "recentPatches", 3)):
             sections.append(
                 BudgetSection(
                     name=f"patch_diff:{patch['id']}",
@@ -40,7 +49,7 @@ class HistoryMixin:
                 )
             )
 
-        for command in self._recent_commands(session["id"], limit=3):
+        for command in self._recent_commands(session["id"], limit=self._policy_int(policy, "recentCommands", 3)):
             sections.append(
                 BudgetSection(
                     name=f"command_history:{command['id']}",
@@ -51,7 +60,13 @@ class HistoryMixin:
             )
         return sections
 
-    def _conversation_history_sections(self, session: dict[str, Any]) -> list[BudgetSection]:
+    def _conversation_history_sections(
+        self,
+        session: dict[str, Any],
+        *,
+        policy: dict[str, Any] | None = None,
+    ) -> list[BudgetSection]:
+        policy = policy if isinstance(policy, dict) else {}
         sections: list[BudgetSection] = []
         if session.get("summary"):
             sections.append(
@@ -63,12 +78,18 @@ class HistoryMixin:
                 )
             )
 
-        recent_messages = self._recent_messages(session["id"], limit=8)
+        recent_messages = self._recent_messages(
+            session["id"],
+            limit=self._policy_int(policy, "recentMessages", 8),
+        )
         if recent_messages:
             sections.append(
                 BudgetSection(
                     name="recent_conversation",
-                    text=self._conversation_summary(recent_messages),
+                    text=self._conversation_summary(
+                        recent_messages,
+                        max_chars=self._policy_int(policy, "conversationMessageMaxChars", 900),
+                    ),
                     priority=920,
                     minimum_tokens=48,
                     truncatable=False,
@@ -131,14 +152,14 @@ class HistoryMixin:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def _conversation_summary(self, messages: list[dict[str, Any]]) -> str:
+    def _conversation_summary(self, messages: list[dict[str, Any]], *, max_chars: int = 900) -> str:
         lines = ["Recent conversation:"]
         for message in messages:
             role = "User" if message.get("role") == "user" else "Assistant"
-            lines.append(f"{role}: {self._single_line(message.get('content'), max_chars=900)}")
+            lines.append(f"{role}: {self._single_line(message.get('content'), max_chars=max_chars)}")
         return "\n".join(lines)
 
-    def _task_summary(self, task: dict[str, Any]) -> str:
+    def _task_summary(self, task: dict[str, Any], *, max_chars: int = 220) -> str:
         lines = [
             f"Recent task event: task {task['status']}",
             f"- goal: {task['goal']}",
@@ -151,18 +172,18 @@ class HistoryMixin:
 
         summary = task.get("summary") or task.get("result_json")
         if summary:
-            lines.append(f"- result: {self._single_line(summary)}")
+            lines.append(f"- result: {self._single_line(summary, max_chars=max_chars)}")
         if acceptance_criteria or out_of_scope:
             lines.append("Task focus:")
             if acceptance_criteria:
                 lines.append(
                     "- acceptance: "
-                    + "; ".join(self._single_line(item) for item in acceptance_criteria[:4])
+                    + "; ".join(self._single_line(item, max_chars=max_chars) for item in acceptance_criteria[:8])
                 )
             if out_of_scope:
                 lines.append(
                     "- out of scope: "
-                    + "; ".join(self._single_line(item) for item in out_of_scope[:4])
+                    + "; ".join(self._single_line(item, max_chars=max_chars) for item in out_of_scope[:8])
                 )
         if changed_files or commands or verification:
             lines.append("Task artifacts:")
@@ -171,9 +192,10 @@ class HistoryMixin:
                     "- changed files: "
                     + ", ".join(
                         self._single_line(
-                            f"{item.get('path')} ({item.get('status') or 'changed'})"
+                            f"{item.get('path')} ({item.get('status') or 'changed'})",
+                            max_chars=max_chars,
                         )
-                        for item in changed_files[:8]
+                        for item in changed_files[:20]
                         if isinstance(item, dict) and item.get("path")
                     )
                 )
@@ -187,9 +209,10 @@ class HistoryMixin:
                                 f" exit {item.get('exitCode')}"
                                 if item.get("exitCode") is not None
                                 else ""
-                            )
+                            ),
+                            max_chars=max_chars,
                         )
-                        for item in commands[:5]
+                        for item in commands[:12]
                         if isinstance(item, dict) and item.get("command")
                     )
                 )
@@ -199,9 +222,10 @@ class HistoryMixin:
                     + "; ".join(
                         self._single_line(
                             f"{item.get('status') or 'recorded'}"
-                            + (f" - {item.get('summary')}" if item.get("summary") else "")
+                            + (f" - {item.get('summary')}" if item.get("summary") else ""),
+                            max_chars=max_chars,
                         )
-                        for item in verification[:5]
+                        for item in verification[:12]
                         if isinstance(item, dict)
                     )
                 )
@@ -223,6 +247,13 @@ class HistoryMixin:
         if len(text) <= max_chars:
             return text
         return f"{text[: max_chars - 15].rstrip()} [truncated]"
+
+    def _policy_int(self, policy: dict[str, Any], key: str, default: int) -> int:
+        try:
+            value = int(policy.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        return max(1, value)
 
     def _patch_summary(self, patch: dict[str, Any]) -> str:
         return "\n".join(

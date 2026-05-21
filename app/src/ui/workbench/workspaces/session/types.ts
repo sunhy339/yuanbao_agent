@@ -340,6 +340,14 @@ export interface SessionWorkspaceContextPreview {
     estimatedInputTokens?: number | null;
     messageTokens?: number | null;
     toolSchemaTokens?: number | null;
+    stablePrefixTokens?: number | null;
+    promptCache?: {
+      enabled?: boolean | null;
+      targetFillRatio?: number | null;
+      targetContextTokens?: number | null;
+      maxStableContextTokens?: number | null;
+      stablePrefixTokens?: number | null;
+    } | null;
     maxContextTokens?: number | null;
     droppedSections?: string[];
     trimmedSections?: string[];

@@ -350,6 +350,7 @@ class ConfigStoreMixin:
             "max_tokens",
             "maxOutputTokens",
             "maxContextTokens",
+            "promptCache",
             "timeout",
             "timeoutSeconds",
             "timeoutMs",

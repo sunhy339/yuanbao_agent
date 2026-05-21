@@ -403,12 +403,15 @@ def test_next_turn_context_keeps_recent_conversation_before_current_request(tmp_
         "task",
     )
 
-    second_context_text = provider.calls[1]["context"]["messages"][-1]["content"]
-    assert "Recent conversation:" in second_context_text
-    assert "User: remember the alpha checklist" in second_context_text
-    assert "Assistant: I will remember the alpha checklist." in second_context_text
-    assert second_context_text.rfind("Current user request:") > second_context_text.rfind("Recent conversation:")
-    assert "Current user request:\nwhat did I ask you to remember?" in second_context_text
+    second_messages = provider.calls[1]["context"]["messages"]
+    stable_context_text = "\n".join(message["content"] for message in second_messages[:-1])
+    current_request_text = second_messages[-1]["content"]
+    assert "Recent conversation:" in stable_context_text
+    assert "User: remember the alpha checklist" in stable_context_text
+    assert "Assistant: I will remember the alpha checklist." in stable_context_text
+    assert "Current user request:" not in stable_context_text
+    assert current_request_text.startswith("Current user request:\nwhat did I ask you to remember?")
+    assert "Task focus:" in current_request_text
 
 
 def test_message_send_attaches_supplement_to_open_task_without_replanning(tmp_path: Any) -> None:

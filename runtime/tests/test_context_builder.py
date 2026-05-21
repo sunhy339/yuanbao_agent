@@ -46,7 +46,7 @@ def test_context_builder_injects_messages_tools_and_safety_prompt(store: SQLiteS
     assert context["goal"] == "Update README.md"
     assert context["project_focus"] is None
     assert context["project_memory"] is None
-    assert [message["role"] for message in context["messages"]] == ["system", "user"]
+    assert [message["role"] for message in context["messages"]] == ["system", "user", "user"]
     assert {tool["name"] for tool in context["tools"]} >= {
         "list_dir",
         "search_files",
@@ -119,6 +119,86 @@ def test_context_builder_includes_recent_chat_messages(store: SQLiteStore, tmp_p
     assert "User: Keep the UI compact." in text
     assert "Assistant: I will preserve compact layout." in text
     assert text.index("Recent conversation:") < text.index("Current user request:\nContinue the interface work")
+
+
+def test_context_builder_expands_cache_friendly_history_and_stable_prefix(
+    store: SQLiteStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    for index in range(12):
+        (workspace_root / f"module_{index:02d}.py").write_text(
+            f"# stable module {index}\nVALUE_{index} = '{'x' * 300}'\n",
+            encoding="utf-8",
+        )
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Cache policy")
+    for index in range(20):
+        store.create_message(
+            session_id=session["id"],
+            role="user" if index % 2 == 0 else "assistant",
+            content=f"historical message {index} {'detail ' * 80}",
+        )
+    monkeypatch.setattr(
+        ContextBuilder,
+        "_git_summary",
+        lambda self, workspace_root: "Git status summary:\n- working tree appears clean.",
+    )
+    store.update_config(
+        {
+            "config": {
+                "provider": {
+                    "maxContextTokens": 12000,
+                    "promptCache": {
+                        "enabled": True,
+                        "targetFillRatio": 0.6,
+                        "maxStableContextTokens": 8000,
+                        "recentMessages": 20,
+                    },
+                }
+            }
+        }
+    )
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Continue implementation",
+        lightweight=False,
+    )
+
+    text = _message_text(context)
+    assert "historical message 0" in text
+    assert "historical message 19" in text
+    assert "Stable workspace context pack:" in text
+    assert "module_00.py" in text
+    assert context["messages"][-1]["content"] == "Current user request:\nContinue implementation"
+    assert context["budgetStats"]["promptCache"]["enabled"] is True
+    assert context["budgetStats"]["stablePrefixTokens"] > 0
+    assert context["budgetStats"]["estimatedTokens"] <= 12000
+
+
+def test_context_builder_prompt_cache_policy_can_be_disabled(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "module.py").write_text("print('stable')\n", encoding="utf-8")
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Cache disabled")
+    store.update_config({"config": {"provider": {"promptCache": {"enabled": False}}}})
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Continue implementation",
+        lightweight=False,
+    )
+
+    text = _message_text(context)
+    assert "Stable workspace context pack:" not in text
+    assert context["budgetStats"]["promptCache"]["enabled"] is False
 
 
 def test_context_builder_summarizes_task_run_artifacts(store: SQLiteStore, tmp_path: Path) -> None:
@@ -284,8 +364,8 @@ def test_context_builder_orders_stable_memory_before_dynamic_history_and_repo_no
     assert "--- README.md ---" in text
     assert "Git status summary:" in text
     assert text.index("Canonical memory:") < text.index("Project memory:")
-    assert text.index("Project memory:") < text.index("Recent conversation:")
-    assert text.index("Recent conversation:") < text.index("--- README.md ---")
+    assert text.index("Project memory:") < text.index("--- README.md ---")
+    assert text.index("--- README.md ---") < text.index("Recent conversation:")
     assert text.index("--- README.md ---") < text.index("Git status summary:")
 
 

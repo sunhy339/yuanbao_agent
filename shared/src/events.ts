@@ -101,6 +101,14 @@ export interface TaskContextPreviewPayload {
     estimatedInputTokens?: number;
     messageTokens?: number;
     toolSchemaTokens?: number;
+    stablePrefixTokens?: number;
+    promptCache?: {
+      enabled?: boolean;
+      targetFillRatio?: number;
+      targetContextTokens?: number;
+      maxStableContextTokens?: number;
+      stablePrefixTokens?: number;
+    };
     maxContextTokens?: number;
     droppedSections?: string[];
     trimmedSections?: string[];

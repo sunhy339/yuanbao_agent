@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 import re
 import time
+from collections import deque
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,7 @@ from local_agent_runtime.tools.registry import BUILTIN_TOOL_SCHEMAS, to_openai_f
 from .compactor import ContextCompactor
 from ._history_mixin import HistoryMixin
 from .scratchpad import Scratchpad
-from .token_budget import BudgetSection, TokenBudget, estimate_tokens
+from .token_budget import BudgetSection, TokenBudget, estimate_tokens, trim_text_to_tokens
 
 
 # JIT injection triggers: keyword → section label
@@ -76,7 +77,21 @@ DEFAULT_AGENT_SOUL_BASELINE = {
 
 
 class ContextBuilder(HistoryMixin):
-    """Build a small deterministic context bundle for the first tool loop."""
+    """Build a deterministic context bundle for the first tool loop."""
+
+    _DEFAULT_PROMPT_CACHE_POLICY = {
+        "enabled": True,
+        "targetFillRatio": 0.75,
+        "maxStableContextTokens": 160000,
+        "recentMessages": 64,
+        "recentTasks": 24,
+        "recentPatches": 8,
+        "recentCommands": 12,
+        "conversationMessageMaxChars": 6000,
+        "taskSummaryMaxChars": 1600,
+        "keyFileMaxBytes": 24000,
+        "canonicalMemoryMaxChars": 24000,
+    }
 
     def __init__(
         self,
@@ -185,6 +200,7 @@ class ContextBuilder(HistoryMixin):
             config=config,
             goal=goal,
             tool_schema_tokens=tool_schema_tokens,
+            cache_policy=self._prompt_cache_policy(config, lightweight=lightweight),
             lightweight=lightweight,
             skill_preset=skill_preset,
             role=role,
@@ -258,6 +274,7 @@ class ContextBuilder(HistoryMixin):
         config: dict[str, Any],
         goal: str,
         tool_schema_tokens: int,
+        cache_policy: dict[str, Any],
         lightweight: bool = True,
         skill_preset: Any | None = None,
         role: str | None = None,
@@ -299,15 +316,22 @@ class ContextBuilder(HistoryMixin):
                         truncatable=False,
                     )
                 )
-            canonical_memory = self._canonical_memory_section(workspace["rootPath"])
+            canonical_memory = self._canonical_memory_section(workspace["rootPath"], cache_policy=cache_policy)
             if canonical_memory:
                 sections.append(canonical_memory)
             project_memory = self._workspace_memory_section(workspace)
             if project_memory:
                 sections.append(project_memory)
+            sections.extend(self._key_file_sections(workspace["rootPath"], cache_policy=cache_policy))
+            stable_pack = self._stable_workspace_context_pack(
+                workspace["rootPath"],
+                cache_policy=cache_policy,
+                reserved_tokens=tool_schema_tokens + estimate_tokens(goal) + 2000,
+            )
+            if stable_pack is not None:
+                sections.append(stable_pack)
             if include_history:
-                sections.extend(self._history_sections(session))
-            sections.extend(self._key_file_sections(workspace["rootPath"]))
+                sections.extend(self._history_sections(session, policy=cache_policy))
             sections.append(
                 BudgetSection(
                     name="git_status",
@@ -338,14 +362,18 @@ class ContextBuilder(HistoryMixin):
         budget_result = budget.fit(sections, fixed_tokens=tool_schema_tokens)
         kept_sections = budget_result.sections
         system_section = next((section for section in kept_sections if section.name == "system_prompt"), sections[0])
-        user_context = "\n\n".join(section.text for section in kept_sections if section.name != "system_prompt")
-        if not user_context:
-            user_context = f"User request:\n{goal}"
+        non_system_sections = [section for section in kept_sections if section.name != "system_prompt"]
+        user_context_sections = [section for section in non_system_sections if section.name != "user_message"]
+        user_context = "\n\n".join(section.text for section in user_context_sections)
+        user_message_section = next((section for section in non_system_sections if section.name == "user_message"), None)
+        current_request = user_message_section.text if user_message_section is not None else f"Current user request:\n{goal}"
 
         messages: list[dict[str, str]] = [
             {"role": "system", "content": system_section.text},
-            {"role": "user", "content": user_context},
         ]
+        if user_context:
+            messages.append({"role": "user", "content": user_context})
+        messages.append({"role": "user", "content": current_request})
 
         # Compaction: if messages exceed budget, compress via three-segment strategy
         if self._compactor is not None:
@@ -359,11 +387,20 @@ class ContextBuilder(HistoryMixin):
                 )
                 messages = result.kept_messages  # type: ignore[assignment]
 
+        stable_prefix_tokens = self._stable_prefix_tokens(messages)
         message_tokens = max(0, budget_result.stats["estimatedTokens"] - tool_schema_tokens)
         stats = {
             **budget_result.stats,
             "toolSchemaTokens": tool_schema_tokens,
             "messageTokens": message_tokens,
+            "stablePrefixTokens": stable_prefix_tokens,
+            "promptCache": {
+                "enabled": bool(cache_policy.get("enabled")),
+                "targetFillRatio": cache_policy.get("targetFillRatio"),
+                "targetContextTokens": cache_policy.get("targetContextTokens"),
+                "maxStableContextTokens": cache_policy.get("maxStableContextTokens"),
+                "stablePrefixTokens": stable_prefix_tokens,
+            },
             "promptLayers": prompt_layers,
         }
         return (
@@ -381,6 +418,57 @@ class ContextBuilder(HistoryMixin):
         except (TypeError, ValueError):
             return DEFAULT_MAX_CONTEXT_TOKENS
 
+    def _prompt_cache_policy(self, config: dict[str, Any], *, lightweight: bool) -> dict[str, Any]:
+        provider_config = config.get("provider") if isinstance(config.get("provider"), dict) else {}
+        raw = provider_config.get("promptCache")
+        raw = raw if isinstance(raw, dict) else {}
+        merged = {**self._DEFAULT_PROMPT_CACHE_POLICY, **raw}
+        max_context_tokens = self._max_context_tokens(config)
+        enabled = bool(merged.get("enabled", True)) and not lightweight
+        ratio = self._bounded_float(merged.get("targetFillRatio"), 0.0, 0.95, 0.75)
+        max_stable = self._bounded_int(
+            merged.get("maxStableContextTokens"),
+            0,
+            max_context_tokens,
+            min(160000, max_context_tokens),
+        )
+        target_context_tokens = min(max_context_tokens, int(max_context_tokens * ratio))
+        policy = {
+            **merged,
+            "enabled": enabled,
+            "targetFillRatio": ratio,
+            "targetContextTokens": target_context_tokens,
+            "maxStableContextTokens": max_stable,
+        }
+        for key in (
+            "recentMessages",
+            "recentTasks",
+            "recentPatches",
+            "recentCommands",
+            "conversationMessageMaxChars",
+            "taskSummaryMaxChars",
+            "keyFileMaxBytes",
+            "canonicalMemoryMaxChars",
+        ):
+            policy[key] = self._bounded_int(policy.get(key), 1, 1_000_000, self._DEFAULT_PROMPT_CACHE_POLICY[key])
+        return policy
+
+    @staticmethod
+    def _bounded_int(value: Any, minimum: int, maximum: int, default: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(minimum, min(maximum, parsed))
+
+    @staticmethod
+    def _bounded_float(value: Any, minimum: float, maximum: float, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(minimum, min(maximum, parsed))
+
     _KEY_FILE_NAMES = (
         "README.md",
         "README",
@@ -395,13 +483,25 @@ class ContextBuilder(HistoryMixin):
 
     _KEY_FILE_MAX_BYTES = 4000
 
-    def _key_file_sections(self, workspace_root: str) -> list[BudgetSection]:
+    def _key_file_sections(
+        self,
+        workspace_root: str,
+        *,
+        cache_policy: dict[str, Any] | None = None,
+    ) -> list[BudgetSection]:
         root = Path(workspace_root)
         if not root.exists() or not root.is_dir():
             return []
 
         sections: list[BudgetSection] = []
         max_bytes = self._KEY_FILE_MAX_BYTES
+        if isinstance(cache_policy, dict) and cache_policy.get("enabled"):
+            max_bytes = self._bounded_int(
+                cache_policy.get("keyFileMaxBytes"),
+                self._KEY_FILE_MAX_BYTES,
+                256000,
+                self._KEY_FILE_MAX_BYTES,
+            )
         candidate_names = list(self._KEY_FILE_NAMES) + [".claude/CLAUDE.md"]
 
         for filename in candidate_names:
@@ -438,6 +538,150 @@ class ContextBuilder(HistoryMixin):
             )
 
         return sections
+
+    def _stable_prefix_tokens(self, messages: list[dict[str, str]]) -> int:
+        if not messages:
+            return 0
+        return sum(estimate_tokens(message.get("content", "")) for message in messages[:-1])
+
+    def _stable_workspace_context_pack(
+        self,
+        workspace_root: str,
+        *,
+        cache_policy: dict[str, Any],
+        reserved_tokens: int,
+    ) -> BudgetSection | None:
+        if not cache_policy.get("enabled"):
+            return None
+        root = Path(workspace_root)
+        if not root.exists() or not root.is_dir():
+            return None
+        target = int(cache_policy.get("targetContextTokens") or 0)
+        max_stable = int(cache_policy.get("maxStableContextTokens") or 0)
+        allowance = min(max_stable, max(0, target - max(0, reserved_tokens)))
+        if allowance < 512:
+            return None
+
+        ignore_names = {
+            ".git",
+            ".venv",
+            "__pycache__",
+            "node_modules",
+            "dist",
+            "build",
+            ".pytest_cache",
+        }
+        ignored_file_names = {
+            ".env",
+            ".env.local",
+            ".env.production",
+            ".npmrc",
+            ".pypirc",
+            "id_rsa",
+            "id_dsa",
+            "id_ecdsa",
+            "id_ed25519",
+        }
+        file_limit = min(80, max(8, allowance // 500))
+        bytes_per_file = min(16000, max(1200, (allowance * 4) // max(1, file_limit)))
+        candidates: list[Path] = []
+        try:
+            queue: deque[Path] = deque([root])
+            while queue and len(candidates) < file_limit * 4:
+                current = queue.popleft()
+                try:
+                    children = sorted(current.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+                except OSError:
+                    continue
+                for path in children:
+                    if path.name in ignore_names or path.name.startswith(".pytest"):
+                        continue
+                    if path.is_dir():
+                        queue.append(path)
+                        continue
+                    if len(candidates) >= file_limit * 4:
+                        break
+                    if not path.is_file():
+                        continue
+                    relative = path.relative_to(root)
+                    if any(part in ignore_names or part.startswith(".pytest") for part in relative.parts):
+                        continue
+                    if path.name.lower() in ignored_file_names:
+                        continue
+                    lowered_relative = relative.as_posix().lower()
+                    if any(marker in lowered_relative for marker in ("secret", "credential", "private_key", "apikey", "api_key")):
+                        continue
+                    if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".lock", ".db", ".sqlite", ".pyc"}:
+                        continue
+                    try:
+                        size = path.stat().st_size
+                    except OSError:
+                        continue
+                    if size <= 0 or size > 250000:
+                        continue
+                    candidates.append(path)
+        except OSError:
+            return None
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: self._stable_file_rank(root, item))
+        parts = ["Stable workspace context pack:"]
+        used_tokens = estimate_tokens(parts[0])
+        for path in candidates[:file_limit]:
+            try:
+                raw = path.read_bytes()
+            except OSError:
+                continue
+            content = raw[:bytes_per_file]
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                text = content.decode("utf-8", errors="replace")
+            if not text.strip():
+                continue
+            if len(raw) > len(content):
+                text = text.rstrip() + f"\n[truncated at {len(content)} bytes]"
+            relative = path.relative_to(root).as_posix()
+            item_text = f"--- {relative} ---\n{text.strip()}"
+            item_tokens = estimate_tokens(item_text)
+            if used_tokens + item_tokens > allowance:
+                remaining = allowance - used_tokens
+                if remaining < 128:
+                    break
+                item_text = trim_text_to_tokens(item_text, remaining)
+                item_tokens = estimate_tokens(item_text)
+            parts.append(item_text)
+            used_tokens += item_tokens
+            if used_tokens >= allowance:
+                break
+
+        if len(parts) <= 1:
+            return None
+        return BudgetSection(
+            name="stable_workspace_context",
+            text="\n\n".join(parts),
+            priority=320,
+            minimum_tokens=128,
+        )
+
+    @staticmethod
+    def _stable_file_rank(root: Path, path: Path) -> tuple[int, int, str]:
+        relative = path.relative_to(root).as_posix()
+        name = path.name.lower()
+        suffix = path.suffix.lower()
+        priority = 50
+        if name in {"readme.md", "readme", "pyproject.toml", "package.json", "cargo.toml", "go.mod", "makefile"}:
+            priority = 0
+        elif relative.startswith(("docs/", "runtime/src/", "runtime/tests/", "src/", "app/src/", "shared/src/")):
+            priority = 10
+        elif suffix in {".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".md", ".toml", ".json", ".yaml", ".yml"}:
+            priority = 20
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        return (priority, size, relative.lower())
 
     _ROLE_INSTRUCTIONS: dict[str, list[str]] = {
         "worker": [
@@ -728,7 +972,12 @@ class ContextBuilder(HistoryMixin):
             minimum_tokens=30,
         )
 
-    def _canonical_memory_section(self, workspace_root: str) -> BudgetSection | None:
+    def _canonical_memory_section(
+        self,
+        workspace_root: str,
+        *,
+        cache_policy: dict[str, Any] | None = None,
+    ) -> BudgetSection | None:
         root = Path(workspace_root)
         if not root.exists() or not root.is_dir():
             return None
@@ -740,6 +989,14 @@ class ContextBuilder(HistoryMixin):
         files.append(claude_file)
 
         sections: list[str] = []
+        max_chars = 3000
+        if isinstance(cache_policy, dict) and cache_policy.get("enabled"):
+            max_chars = self._bounded_int(
+                cache_policy.get("canonicalMemoryMaxChars"),
+                3000,
+                256000,
+                3000,
+            )
         for path in files:
             if not path.exists() or not path.is_file():
                 continue
@@ -753,8 +1010,8 @@ class ContextBuilder(HistoryMixin):
             normalized = text.strip()
             if not normalized:
                 continue
-            if len(normalized) > 3000:
-                normalized = normalized[:2950].rstrip() + "\n[truncated]"
+            if len(normalized) > max_chars:
+                normalized = normalized[: max(1, max_chars - 50)].rstrip() + "\n[truncated]"
             sections.append(f"--- {path.relative_to(root).as_posix()} ---\n{normalized}")
 
         if not sections:

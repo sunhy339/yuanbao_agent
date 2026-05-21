@@ -135,6 +135,47 @@ class TestConfigEffective:
         # ProviderAdapter doesn't have stream(), so streaming should be False
         assert result["streamingEnabled"] is False
 
+    def test_legacy_prompt_cache_defaults_are_lifted_to_cache_friendly_policy(self, tmp_path: Any) -> None:
+        _server, store = _make_harness(tmp_path)
+        store.update_config({"config": {
+            "provider": {
+                "promptCache": {
+                    "enabled": True,
+                    "targetFillRatio": 0.75,
+                    "maxStableContextTokens": 160000,
+                    "recentMessages": 64,
+                    "conversationMessageMaxChars": 6000,
+                }
+            }
+        }})
+
+        prompt_cache = store.get_config({})["config"]["provider"]["promptCache"]
+
+        assert prompt_cache["targetFillRatio"] == 0.92
+        assert prompt_cache["maxStableContextTokens"] == 240000
+        assert prompt_cache["recentMessages"] == 256
+        assert prompt_cache["conversationMessageMaxChars"] == 24000
+        assert prompt_cache["nearContextRatio"] == 0.92
+
+    def test_custom_prompt_cache_policy_is_preserved(self, tmp_path: Any) -> None:
+        _server, store = _make_harness(tmp_path)
+        store.update_config({"config": {
+            "provider": {
+                "promptCache": {
+                    "enabled": True,
+                    "targetFillRatio": 0.88,
+                    "recentMessages": 40,
+                    "nearContextRatio": 0.95,
+                }
+            }
+        }})
+
+        prompt_cache = store.get_config({})["config"]["provider"]["promptCache"]
+
+        assert prompt_cache["targetFillRatio"] == 0.88
+        assert prompt_cache["recentMessages"] == 40
+        assert prompt_cache["nearContextRatio"] == 0.95
+
     def test_tool_and_memory_policy(self, tmp_path: Any) -> None:
         server, store = _make_harness(tmp_path)
         result = _call(server, "config.effective")
@@ -174,9 +215,9 @@ class TestPromptPreview:
             "workspaceRoot": "/tmp/test",
             "role": "child",
         })
-        role_layers = [l for l in result["layers"] if l.get("name") == "role"]
-        assert len(role_layers) == 1
-        assert "child" in str(role_layers[0].get("role", "")).lower()
+        runtime_role_layers = [l for l in result["layers"] if l.get("name") == "runtime_role"]
+        assert len(runtime_role_layers) == 1
+        assert "child" in str(runtime_role_layers[0].get("role", "")).lower()
 
     def test_with_session_id(self, tmp_path: Any) -> None:
         server, store = _make_harness(tmp_path)

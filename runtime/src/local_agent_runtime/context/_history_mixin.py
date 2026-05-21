@@ -156,7 +156,8 @@ class HistoryMixin:
         lines = ["Recent conversation:"]
         for message in messages:
             role = "User" if message.get("role") == "user" else "Assistant"
-            lines.append(f"{role}: {self._single_line(message.get('content'), max_chars=max_chars)}")
+            lines.append(f"{role}:")
+            lines.append(self._preserve_message_text(message.get("content"), max_chars=max_chars))
         return "\n".join(lines)
 
     def _task_summary(self, task: dict[str, Any], *, max_chars: int = 220) -> str:
@@ -247,6 +248,26 @@ class HistoryMixin:
         if len(text) <= max_chars:
             return text
         return f"{text[: max_chars - 15].rstrip()} [truncated]"
+
+    def _preserve_message_text(self, value: Any, *, max_chars: int = 900) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        normalized = "\n".join(line.rstrip() for line in text.splitlines()).strip()
+        if len(normalized) <= max_chars:
+            return normalized
+        if max_chars <= 32:
+            return normalized[:max_chars].rstrip()
+        head_chars = max_chars * 3 // 4
+        tail_chars = max_chars - head_chars - 32
+        if tail_chars <= 0:
+            return f"{normalized[: max_chars - 15].rstrip()} [truncated]"
+        omitted = len(normalized) - head_chars - tail_chars
+        return (
+            normalized[:head_chars].rstrip()
+            + f"\n[truncated {omitted} chars]\n"
+            + normalized[-tail_chars:].lstrip()
+        )
 
     def _policy_int(self, policy: dict[str, Any], key: str, default: int) -> int:
         try:

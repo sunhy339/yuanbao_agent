@@ -390,6 +390,12 @@ class ConfigStoreMixin:
             "maxContextTokens": merged.get("maxContextTokens", DEFAULT_CONFIG["provider"]["maxContextTokens"]),
             "timeout": merged.get("timeout", DEFAULT_CONFIG["provider"]["timeout"]),
         }
+        prompt_cache = self._normalize_provider_prompt_cache(
+            merged.get("promptCache"),
+            defaults.get("promptCache") if isinstance(defaults, dict) else None,
+        )
+        if prompt_cache:
+            normalized["promptCache"] = prompt_cache
         last_checked_at = merged.get("lastCheckedAt")
         if isinstance(last_checked_at, (int, float)):
             normalized["lastCheckedAt"] = int(last_checked_at)
@@ -399,6 +405,25 @@ class ConfigStoreMixin:
         last_error_summary = merged.get("lastErrorSummary")
         if isinstance(last_error_summary, str) and last_error_summary.strip():
             normalized["lastErrorSummary"] = last_error_summary.strip()
+        return normalized
+
+    def _normalize_provider_prompt_cache(self, value: Any, defaults: Any = None) -> dict[str, Any]:
+        default_policy = deepcopy(DEFAULT_CONFIG["provider"]["promptCache"])
+        policy = deepcopy(value) if isinstance(value, dict) else {}
+        default_source = defaults if isinstance(defaults, dict) else {}
+
+        normalized = deepcopy(default_policy)
+        normalized.update(policy)
+        for key, old_value in (
+            ("targetFillRatio", 0.75),
+            ("maxStableContextTokens", 160000),
+            ("recentMessages", 64),
+            ("conversationMessageMaxChars", 6000),
+        ):
+            if policy.get(key) == old_value and default_source.get(key) == old_value:
+                normalized[key] = default_policy[key]
+        if "nearContextRatio" not in policy:
+            normalized["nearContextRatio"] = default_policy["nearContextRatio"]
         return normalized
 
     def _apply_provider_patch_to_active_profile(

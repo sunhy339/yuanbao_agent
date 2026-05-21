@@ -116,9 +116,44 @@ def test_context_builder_includes_recent_chat_messages(store: SQLiteStore, tmp_p
 
     text = _message_text(context)
     assert "Recent conversation:" in text
-    assert "User: Keep the UI compact." in text
-    assert "Assistant: I will preserve compact layout." in text
+    assert "User:\nKeep the UI compact." in text
+    assert "Assistant:\nI will preserve compact layout." in text
     assert text.index("Recent conversation:") < text.index("Current user request:\nContinue the interface work")
+
+
+def test_context_builder_preserves_large_recent_conversation_for_cache_prefix(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Large chat memory")
+    for index in range(96):
+        store.create_message(
+            session_id=session["id"],
+            role="user" if index % 2 == 0 else "assistant",
+            content=(
+                f"historical turn {index}\n"
+                f"line one keeps formatting {index}\n"
+                + (f"detail-{index} " * 60)
+            ),
+        )
+    store.update_config({"config": {"provider": {"maxContextTokens": 80000}}})
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Continue using the full session context",
+        lightweight=False,
+    )
+
+    text = _message_text(context)
+    assert "historical turn 0" in text
+    assert "historical turn 95" in text
+    assert "line one keeps formatting 20" in text
+    assert context["budgetStats"]["promptCache"]["targetFillRatio"] == 0.92
+    assert context["budgetStats"]["promptCache"]["maxStableContextTokens"] == 80000
+    assert context["budgetStats"]["stablePrefixTokens"] > 2000
 
 
 def test_context_builder_expands_cache_friendly_history_and_stable_prefix(

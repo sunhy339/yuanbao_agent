@@ -236,7 +236,7 @@ class ContextCompactor:
         messages: list[dict[str, Any]],
         max_tokens: int,
         *,
-        near_budget_ratio: float = 0.80,
+        near_budget_ratio: float = 0.92,
         force_budget_ratio: float = 1.0,
     ) -> CompactionDecision:
         """Decide whether to compact now using progressive thresholds.
@@ -309,7 +309,7 @@ class ContextCompactor:
             return llm_decision
 
         return CompactionDecision(
-            should_compact=tokens_before >= int(max_tokens * 0.90),
+            should_compact=tokens_before >= int(max_tokens * near_budget_ratio),
             reason="near token budget; provider unavailable or undecidable",
             tokens_before=tokens_before,
             max_tokens=max_tokens,

@@ -418,6 +418,28 @@ class TestCompact:
         assert persisted["risks"] == ["Need rerun after fixing verification"]
 
 
+class TestCompactionDecision:
+    def setup_method(self) -> None:
+        self.store = SQLiteStore(":memory:")
+        self.compactor = ContextCompactor(self.store, recent_turns=2)
+
+    def test_default_policy_waits_until_near_context_limit(self) -> None:
+        messages = [_msg("user", _long_content(360000))]
+
+        decision = self.compactor.should_compact(messages, max_tokens=100000)
+
+        assert decision.should_compact is False
+        assert decision.reason == "context is comfortably within token budget"
+
+    def test_default_policy_compacts_at_high_watermark(self) -> None:
+        messages = [_msg("user", _long_content(372000))]
+
+        decision = self.compactor.should_compact(messages, max_tokens=100000)
+
+        assert decision.should_compact is True
+        assert decision.source == "rule_fallback"
+
+
 # ---------------------------------------------------------------------------
 # Test: CompactionResult dataclass
 # ---------------------------------------------------------------------------

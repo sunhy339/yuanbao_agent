@@ -81,13 +81,13 @@ class ContextBuilder(HistoryMixin):
 
     _DEFAULT_PROMPT_CACHE_POLICY = {
         "enabled": True,
-        "targetFillRatio": 0.75,
-        "maxStableContextTokens": 160000,
-        "recentMessages": 64,
+        "targetFillRatio": 0.92,
+        "maxStableContextTokens": 240000,
+        "recentMessages": 256,
         "recentTasks": 24,
         "recentPatches": 8,
         "recentCommands": 12,
-        "conversationMessageMaxChars": 6000,
+        "conversationMessageMaxChars": 24000,
         "taskSummaryMaxChars": 1600,
         "keyFileMaxBytes": 24000,
         "canonicalMemoryMaxChars": 24000,
@@ -436,12 +436,12 @@ class ContextBuilder(HistoryMixin):
         merged = {**self._DEFAULT_PROMPT_CACHE_POLICY, **raw}
         max_context_tokens = self._max_context_tokens(config)
         enabled = bool(merged.get("enabled", True)) and not lightweight
-        ratio = self._bounded_float(merged.get("targetFillRatio"), 0.0, 0.95, 0.75)
+        ratio = self._bounded_float(merged.get("targetFillRatio"), 0.0, 0.98, 0.92)
         max_stable = self._bounded_int(
             merged.get("maxStableContextTokens"),
             0,
             max_context_tokens,
-            min(160000, max_context_tokens),
+            min(240000, max_context_tokens),
         )
         target_context_tokens = min(max_context_tokens, int(max_context_tokens * ratio))
         policy = {

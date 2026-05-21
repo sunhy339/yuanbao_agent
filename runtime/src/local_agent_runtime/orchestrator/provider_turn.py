@@ -146,9 +146,11 @@ class ProviderTurnMixin:
             max_context = None
         threshold = max(1, int(compaction_threshold or max_context or 1))
         risk_ratio_base = max_context if isinstance(max_context, int) and max_context > 0 else threshold
+        cache_policy = self._provider_prompt_cache_policy(provider_context)
+        near_ratio = self._provider_preflight_near_context_ratio(provider_context)
         token_ratio = float(token_estimate) / float(max(1, risk_ratio_base))
         threshold_ratio = float(token_estimate) / float(threshold)
-        near_context_limit = token_ratio >= 0.8 or threshold_ratio >= 0.9
+        near_context_limit = token_ratio >= near_ratio or threshold_ratio >= near_ratio
         over_context_limit = token_estimate >= threshold or (
             isinstance(max_context, int) and max_context > 0 and token_estimate >= max_context
         )
@@ -168,8 +170,10 @@ class ProviderTurnMixin:
             "estimatedInputTokens": int(token_estimate),
             "maxContextTokens": max_context,
             "compactionThreshold": threshold,
+            "nearContextRatio": near_ratio,
             "nearContextLimit": near_context_limit,
             "overContextLimit": over_context_limit,
+            "promptCachePolicy": cache_policy,
             "riskLevel": risk_level,
             "streamingEnabled": self._should_stream_provider(provider_context),
             "step": provider_context.get("step"),
@@ -203,6 +207,27 @@ class ProviderTurnMixin:
                     },
                 }
         return {"hasPriorProviderFailure": False}
+
+    def _provider_prompt_cache_policy(self, provider_context: dict[str, Any]) -> dict[str, Any]:
+        config = provider_context.get("config") if isinstance(provider_context, dict) else None
+        provider_config = config.get("provider") if isinstance(config, dict) else None
+        prompt_cache = provider_config.get("promptCache") if isinstance(provider_config, dict) else None
+        if isinstance(prompt_cache, dict):
+            return prompt_cache
+        budget_stats = provider_context.get("budgetStats") if isinstance(provider_context, dict) else None
+        prompt_cache = budget_stats.get("promptCache") if isinstance(budget_stats, dict) else None
+        return prompt_cache if isinstance(prompt_cache, dict) else {}
+
+    def _provider_preflight_near_context_ratio(self, provider_context: dict[str, Any]) -> float:
+        cache_policy = self._provider_prompt_cache_policy(provider_context)
+        for key in ("nearContextRatio", "compactionNearRatio"):
+            if key not in cache_policy:
+                continue
+            try:
+                return min(0.98, max(0.5, float(cache_policy[key])))
+            except (TypeError, ValueError):
+                continue
+        return 0.92
 
     def _provider_preflight_advice(
         self,

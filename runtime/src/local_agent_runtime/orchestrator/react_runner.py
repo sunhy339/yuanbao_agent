@@ -1228,12 +1228,12 @@ class ReactRunnerMixin:
         return estimated >= int(threshold * near_budget_ratio)
 
     def _advisor_context_policy_near_budget_ratio(self, context: dict[str, Any]) -> float:
-        raw_ratio = self._advisor_config(context).get("contextPolicyNearBudgetRatio", 0.75)
+        raw_ratio = self._advisor_config(context).get("contextPolicyNearBudgetRatio", 0.92)
         try:
             ratio = float(raw_ratio)
         except (TypeError, ValueError):
-            return 0.75
-        return min(0.95, max(0.1, ratio))
+            return 0.92
+        return min(0.98, max(0.1, ratio))
 
     def _advisor_config(self, context: dict[str, Any]) -> dict[str, Any]:
         config = context.get("config") if isinstance(context, dict) else None

@@ -1143,6 +1143,56 @@ class TestAdvisorGuidedProviderRecovery:
 class TestAdvisorGuidedProviderPreflight:
     """Provider preflight can consult advisor before sending the provider request."""
 
+    def test_provider_preflight_does_not_mark_eighty_percent_as_near_limit(self, tmp_path: Any) -> None:
+        provider = ScriptedProvider([{"final": "done"}])
+        runtime = _make_runtime(tmp_path, provider)
+        context = {
+            "messages": [{"role": "user", "content": "x"}],
+            "openai_tools": [],
+            "config": {
+                "provider": {
+                    "model": "fake-chat",
+                    "maxContextTokens": 100000,
+                    "promptCache": {"enabled": True},
+                }
+            },
+        }
+
+        facts = runtime.orchestrator._provider_preflight_facts(
+            provider_context=context,
+            token_estimate=80000,
+            compaction_threshold=100000,
+        )
+
+        assert facts["nearContextRatio"] == 0.92
+        assert facts["nearContextLimit"] is False
+        assert facts["riskLevel"] == "low"
+
+    def test_provider_preflight_uses_configured_cache_high_watermark(self, tmp_path: Any) -> None:
+        provider = ScriptedProvider([{"final": "done"}])
+        runtime = _make_runtime(tmp_path, provider)
+        context = {
+            "messages": [{"role": "user", "content": "x"}],
+            "openai_tools": [],
+            "config": {
+                "provider": {
+                    "model": "fake-chat",
+                    "maxContextTokens": 100000,
+                    "promptCache": {"enabled": True, "nearContextRatio": 0.95},
+                }
+            },
+        }
+
+        facts = runtime.orchestrator._provider_preflight_facts(
+            provider_context=context,
+            token_estimate=93000,
+            compaction_threshold=100000,
+        )
+
+        assert facts["nearContextRatio"] == 0.95
+        assert facts["nearContextLimit"] is False
+        assert facts["riskLevel"] == "low"
+
     def test_provider_preflight_compacts_before_provider_turn(self, tmp_path: Any) -> None:
         provider = PreflightCompactProvider()
         runtime = _make_runtime(

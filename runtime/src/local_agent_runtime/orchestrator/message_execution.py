@@ -25,6 +25,7 @@ from ..context.scratchpad import Scratchpad
 from ..tools import build_builtin_tools
 from ..tools.registry import ToolRegistry
 from ..orchestration import OrchestrationMode
+from ..planner.types import child_tool_allowlist_for_agent
 from ..store.sqlite_store import SQLiteStore
 
 
@@ -591,6 +592,7 @@ class MessageExecutionMixin:
                     task=task,
                     execution=execution,
                     workspace_root=context.get("workspace_root") if context else None,
+                    context=context,
                 )
                 if recovery.get("recovered"):
                     execution["success"] = True
@@ -1101,6 +1103,7 @@ class MessageExecutionMixin:
         task: dict[str, Any],
         execution: dict[str, Any],
         workspace_root: Any,
+        context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         failed_subtasks = [
             subtask for subtask in execution.get("subtasks", [])
@@ -1154,6 +1157,19 @@ class MessageExecutionMixin:
                 all_passed = False
 
         if not all_passed:
+            repair = self._repair_planning_failures_with_child_task(
+                session_id=session_id,
+                task=task,
+                execution=execution,
+                workspace=workspace,
+                failed_subtasks=failed_subtasks,
+                failed_commands=results,
+                partial_handoffs=partial_handoffs,
+                pending_commands=pending_commands,
+                context=context or {},
+            )
+            if repair.get("recovered"):
+                return repair
             return {
                 "recovered": False,
                 "reason": "verification_failed",
@@ -1178,6 +1194,225 @@ class MessageExecutionMixin:
             "failedSubtaskIds": sorted(failed_ids),
             "commands": results,
         }
+
+    def _repair_planning_failures_with_child_task(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        execution: dict[str, Any],
+        workspace: Path,
+        failed_subtasks: list[Any],
+        failed_commands: list[dict[str, Any]],
+        partial_handoffs: list[dict[str, Any]],
+        pending_commands: list[str],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        prompt = self._build_planning_repair_prompt(
+            task=task,
+            execution=execution,
+            failed_subtasks=failed_subtasks,
+            failed_commands=failed_commands,
+            partial_handoffs=partial_handoffs,
+            pending_commands=pending_commands,
+        )
+        dispatch_result = self._subagent_service.dispatch({
+            "prompt": prompt,
+            "planningPrompt": prompt,
+            "title": "Repair failed planning verification",
+            "sessionId": session_id,
+            "taskId": task["id"],
+            "agentType": "worker",
+            "childToolAllowlist": child_tool_allowlist_for_agent("worker"),
+            "timeoutMs": self._child_subtask_timeout_ms(context),
+            "profile": {
+                "ownedScope": self._planning_repair_owned_scope(failed_subtasks, partial_handoffs),
+                "verificationRequirements": [
+                    {"kind": "command", "command": command}
+                    for command in pending_commands
+                ],
+            },
+        })
+        if str(dispatch_result.get("status") or "").strip().lower() == "waiting_approval":
+            return {
+                "recovered": False,
+                "reason": "repair_waiting_approval",
+                "failedSubtaskIds": self._planning_failed_ids(failed_subtasks),
+                "commands": failed_commands,
+            }
+        if str(dispatch_result.get("status") or "").strip().lower() == "failed":
+            return {
+                "recovered": False,
+                "reason": "repair_child_failed",
+                "failedSubtaskIds": self._planning_failed_ids(failed_subtasks),
+                "commands": failed_commands,
+                "repairSummary": dispatch_result.get("summary"),
+                "repairError": dispatch_result.get("error"),
+            }
+
+        post_repair_results: list[dict[str, Any]] = []
+        all_passed = True
+        for command in pending_commands:
+            result = self._run_planning_recovery_command(
+                session_id=session_id,
+                task=task,
+                workspace=workspace,
+                command=command,
+            )
+            post_repair_results.append(result)
+            if result.get("status") != "completed" or result.get("exitCode") not in (0, None):
+                all_passed = False
+
+        all_commands = [*failed_commands, *post_repair_results]
+        failed_ids = self._planning_failed_ids(failed_subtasks)
+        if not all_passed:
+            return {
+                "recovered": False,
+                "reason": "repair_verification_failed",
+                "failedSubtaskIds": failed_ids,
+                "commands": all_commands,
+                "repairSummary": dispatch_result.get("summary"),
+            }
+
+        self._planning_record_recovered_failed_subtasks(execution, failed_subtasks)
+        for subtask in failed_subtasks:
+            subtask.status = "completed"
+            subtask.result = self._append_repaired_subtask_result(
+                str(getattr(subtask, "result", "") or "Failed subtask."),
+                dispatch_result,
+                post_repair_results,
+            )
+        self._planning_mark_skipped_dependents_repaired(execution, dispatch_result, post_repair_results)
+        execution["failed"] = [
+            item for item in execution.get("failed", [])
+            if str(item) not in set(failed_ids)
+        ]
+        completed = {str(item) for item in execution.get("completed", [])}
+        completed.update(failed_ids)
+        completed.update(
+            str(getattr(subtask, "id", "")).strip()
+            for subtask in execution.get("subtasks", [])
+            if str(getattr(subtask, "status", "")).strip().lower() == "completed"
+            and str(getattr(subtask, "id", "")).strip()
+        )
+        execution["completed"] = sorted(completed)
+        return {
+            "recovered": True,
+            "reason": "repair_child_verified",
+            "failedSubtaskIds": failed_ids,
+            "commands": all_commands,
+            "repairSummary": dispatch_result.get("summary"),
+        }
+
+    def _build_planning_repair_prompt(
+        self,
+        *,
+        task: dict[str, Any],
+        execution: dict[str, Any],
+        failed_subtasks: list[Any],
+        failed_commands: list[dict[str, Any]],
+        partial_handoffs: list[dict[str, Any]],
+        pending_commands: list[str],
+    ) -> str:
+        skipped_subtasks = [
+            subtask for subtask in execution.get("subtasks", [])
+            if str(getattr(subtask, "status", "")).strip().lower() == "skipped"
+        ]
+        return "\n".join([
+            "A planning workflow failed after a verification-oriented child task left repairable work.",
+            "Continue from the existing workspace. Inspect the files and command artifacts first, preserve useful work, repair the root cause, finish any downstream plan items that were skipped because of the failure, and rerun the required verification.",
+            "",
+            f"Parent goal: {str(task.get('goal') or '')[:3000]}",
+            "",
+            "Failed subtask facts:",
+            json.dumps([self._planning_failed_subtask_snapshot(item) for item in failed_subtasks], ensure_ascii=False, indent=2)[:6000],
+            "",
+            "Skipped downstream plan items to finish if still relevant:",
+            json.dumps([self._planning_failed_subtask_snapshot(item) for item in skipped_subtasks], ensure_ascii=False, indent=2)[:4000],
+            "",
+            "Partial handoffs:",
+            json.dumps(partial_handoffs, ensure_ascii=False, indent=2)[:6000],
+            "",
+            "Failed verification commands and observed output:",
+            json.dumps(self._planning_repair_command_facts(failed_commands), ensure_ascii=False, indent=2)[:8000],
+            "",
+            "Required verification commands to rerun:",
+            "\n".join(f"- {command}" for command in pending_commands),
+            "",
+            "Repair contract:",
+            "- Do not reinterpret the parent goal or mark success by summary alone.",
+            "- Fix the underlying code, tests, docs, or wiring indicated by the observed facts.",
+            "- Complete skipped downstream artifacts when they are still part of the parent goal.",
+            "- Run the listed verification commands after repairs whenever possible.",
+            "- In the final summary, list changed files, verification commands, and residual risks.",
+        ])
+
+    def _planning_repair_command_facts(self, commands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        facts: list[dict[str, Any]] = []
+        for command in commands:
+            if not isinstance(command, dict):
+                continue
+            command_log_id = str(command.get("commandLogId") or "").strip()
+            fact = {
+                "command": command.get("command"),
+                "status": command.get("status"),
+                "exitCode": command.get("exitCode"),
+                "durationMs": command.get("durationMs"),
+            }
+            if command_log_id:
+                try:
+                    log = self._store.get_command_log({"commandId": command_log_id}).get("commandLog", {})
+                    for key in ("stdoutPath", "stderrPath"):
+                        path = log.get(key)
+                        if isinstance(path, str) and path.strip():
+                            text = Path(path).read_text(encoding="utf-8", errors="replace")
+                            fact[key.removesuffix("Path")] = text[-3000:]
+                except Exception:  # noqa: BLE001
+                    logger.debug("Failed reading planning repair command artifact", exc_info=True)
+            facts.append(fact)
+        return facts
+
+    def _planning_repair_owned_scope(
+        self,
+        failed_subtasks: list[Any],
+        partial_handoffs: list[dict[str, Any]],
+    ) -> list[str]:
+        scope: list[str] = []
+        for subtask in failed_subtasks:
+            scope.extend(str(item) for item in (getattr(subtask, "owned_scope", []) or []))
+        for handoff in partial_handoffs:
+            changed = handoff.get("changedFiles")
+            if not isinstance(changed, list):
+                continue
+            for item in changed:
+                path = item.get("path") if isinstance(item, dict) else item
+                if str(path or "").strip():
+                    scope.append(str(path).strip())
+        return list(dict.fromkeys(item for item in scope if item))
+
+    @staticmethod
+    def _planning_failed_ids(failed_subtasks: list[Any]) -> list[str]:
+        return sorted({
+            str(getattr(subtask, "id", "")).strip()
+            for subtask in failed_subtasks
+            if str(getattr(subtask, "id", "")).strip()
+        })
+
+    def _planning_mark_skipped_dependents_repaired(
+        self,
+        execution: dict[str, Any],
+        dispatch_result: dict[str, Any],
+        commands: list[dict[str, Any]],
+    ) -> None:
+        for subtask in execution.get("subtasks", []) or []:
+            if str(getattr(subtask, "status", "")).strip().lower() != "skipped":
+                continue
+            subtask.status = "completed"
+            subtask.result = self._append_repaired_subtask_result(
+                str(getattr(subtask, "result", "") or "Skipped subtask."),
+                dispatch_result,
+                commands,
+            )
 
     def _planning_recovery_pending_verification_commands(self, handoffs: list[dict[str, Any]]) -> list[str]:
         commands: list[str] = []
@@ -1344,6 +1579,29 @@ class MessageExecutionMixin:
             if item.get("command")
         )
         suffix = f"Recovered by parent verification: {command_summary}" if command_summary else "Recovered by parent verification."
+        if suffix in result:
+            return result
+        return f"{result}\n{suffix}"
+
+    @staticmethod
+    def _append_repaired_subtask_result(
+        result: str,
+        dispatch_result: dict[str, Any],
+        commands: list[dict[str, Any]],
+    ) -> str:
+        command_summary = "; ".join(
+            f"{item.get('command')} ({item.get('status')})"
+            for item in commands[:5]
+            if isinstance(item, dict) and item.get("command")
+        )
+        repair_summary = str(dispatch_result.get("summary") or "").strip()
+        suffix = "Recovered by repair child task"
+        if command_summary:
+            suffix = f"{suffix} and verified by: {command_summary}."
+        else:
+            suffix = f"{suffix}."
+        if repair_summary:
+            suffix = f"{suffix}\nRepair summary: {repair_summary[:1200]}"
         if suffix in result:
             return result
         return f"{result}\n{suffix}"

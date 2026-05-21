@@ -28,6 +28,33 @@ class TestNewStyleConfig:
         # Other capabilities should come from balanced preset
         assert result["capabilities"]["memoryWrite"]["mode"] == "allow"
 
+    def test_capability_aliases_are_normalized(self):
+        result = normalize_permissions({
+            "permissions": {
+                "preset": "autonomous",
+                "capabilities": {
+                    "shell": {"mode": "allow", "scope": "*"},
+                    "fileWrite": {"mode": "allow", "scope": "*"},
+                    "web_fetch": {"mode": "blocked", "scope": "*"},
+                },
+            }
+        })
+        assert result["capabilities"]["runCommand"]["mode"] == "allow"
+        assert result["capabilities"]["writeFile"]["mode"] == "allow"
+        assert result["capabilities"]["webFetch"]["mode"] == "blocked"
+
+    def test_canonical_capability_wins_over_alias(self):
+        result = normalize_permissions({
+            "permissions": {
+                "preset": "balanced",
+                "capabilities": {
+                    "shell": {"mode": "allow", "scope": "*"},
+                    "runCommand": {"mode": "blocked", "scope": "*"},
+                },
+            }
+        })
+        assert result["capabilities"]["runCommand"]["mode"] == "blocked"
+
     def test_autonomous_preset(self):
         result = normalize_permissions({"permissions": {"preset": "autonomous"}})
         assert result["capabilities"]["writeFile"]["mode"] == "allow"

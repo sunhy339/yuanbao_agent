@@ -1240,6 +1240,169 @@ def test_plan_execute_recovers_failed_verification_subtask_with_parent_check(
     assert any(command["command"] == "python -m pytest -q" and command["status"] == "completed" for command in command_logs)
 
 
+def test_plan_execute_repairs_failed_verification_subtask_before_recovery(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from local_agent_runtime.planner.types import PlanResult, Subtask
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\npythonpath = [\".\"]\n",
+        encoding="utf-8",
+    )
+    tests_dir = workspace_root / "tests"
+    tests_dir.mkdir()
+    test_file = tests_dir / "test_repaired.py"
+    test_file.write_text(
+        "def test_repaired():\n    assert False\n",
+        encoding="utf-8",
+    )
+
+    fake_plan = PlanResult(
+        subtasks=[
+            Subtask(id="sub-0", title="Implement backend", description="Implement backend"),
+            Subtask(id="sub-1", title="Write tests", description="Write tests", dependencies=["sub-0"]),
+            Subtask(id="sub-2", title="Document and summarize", description="Document and summarize", dependencies=["sub-1"]),
+        ],
+        dag={"sub-0": [], "sub-1": ["sub-0"], "sub-2": ["sub-1"]},
+        execution_order=["sub-0", "sub-1", "sub-2"],
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._decomposer,
+        "decompose",
+        lambda **_kwargs: fake_plan,
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator,
+        "_route_goal",
+        lambda _goal: RoutingDecision(
+            scenario=Scenario.MULTI_STEP_TASK,
+            strategy=ExecutionStrategy.PLAN_THEN_EXECUTE,
+            confidence=0.99,
+            enable_planning=True,
+            enable_reflection=True,
+            reasoning="forced plan_execute for repair recovery test",
+        ),
+    )
+
+    def fake_execute(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        completed = Subtask(
+            id="sub-0",
+            title="Implement backend",
+            description="Implement backend",
+            status="completed",
+            result="Implemented backend files.",
+        )
+        failed = Subtask(
+            id="sub-1",
+            title="Write tests",
+            description="Write tests",
+            status="failed",
+            result=(
+                "Completion blocked because verification failed. "
+                "Partial handoff: changedFiles=tests/test_repaired.py | "
+                "pendingVerification=python -m pytest -q"
+            ),
+        )
+        skipped = Subtask(
+            id="sub-2",
+            title="Document and summarize",
+            description="Document and summarize",
+            status="skipped",
+            result="Skipped: dependency failed",
+        )
+        return {
+            "success": False,
+            "completed": ["sub-0"],
+            "failed": ["sub-1", "sub-2"],
+            "results": {
+                "sub-0": "Implemented backend files.",
+                "sub-1": "Failed verification",
+                "sub-2": "Skipped: dependency failed",
+            },
+            "subtasks": [completed, failed, skipped],
+            "summary": "Plan execution completed (1/3 succeeded)",
+            "partialHandoffs": [
+                {
+                    "subtaskId": "sub-1",
+                    "subtaskTitle": "Write tests",
+                    "status": "CHILD_TASK_EXECUTION_FAILED",
+                    "changedFiles": ["tests/test_repaired.py"],
+                    "commands": [{"command": "python -m pytest -q", "status": "failed"}],
+                    "pendingVerification": ["python -m pytest -q"],
+                    "nextAction": "Repair failed verification and rerun pytest.",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._dag_executor,
+        "execute",
+        fake_execute,
+    )
+
+    original_dispatch = runtime_harness.server._orchestrator._subagent_service.dispatch
+    repair_calls: list[dict[str, Any]] = []
+
+    def dispatch_with_repair(params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("title") == "Repair failed planning verification":
+            repair_calls.append(params)
+            test_file.write_text(
+                "def test_repaired():\n    assert True\n",
+                encoding="utf-8",
+            )
+            return {"status": "completed", "summary": "Repaired failing verification and finished skipped docs."}
+        return original_dispatch(params)
+
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._subagent_service,
+        "dispatch",
+        dispatch_with_repair,
+    )
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Planning repair recovery"},
+        ),
+        "session",
+    )
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "build and test a full project"},
+        ),
+        "task",
+    )
+
+    assert repair_calls
+    assert "Failed verification commands and observed output" in repair_calls[0]["prompt"]
+    assert task["status"] == "completed"
+    assert "Planning recovery" in task["resultSummary"]
+    evidence = task["structuredResult"]["completionEvidence"]
+    assert evidence["evidenceLevel"] == "verified"
+    assert evidence["counts"]["passedVerification"] >= 1
+    recovered_events = [
+        event for event in runtime_harness.events
+        if event["type"] == "task.planning.recovered"
+    ]
+    assert recovered_events
+    command_logs = runtime_harness.call(
+        "command_log.list",
+        {"sessionId": session["id"], "limit": 20},
+    )["result"]["commandLogs"]
+    assert any(command["command"] == "python -m pytest -q" and command["status"] == "failed" for command in command_logs)
+    assert any(command["command"] == "python -m pytest -q" and command["status"] == "completed" for command in command_logs)
+
+
 def test_plan_execute_recovers_failed_subtask_from_root_completion_evidence(
     runtime_harness: Any,
     tmp_path: Path,

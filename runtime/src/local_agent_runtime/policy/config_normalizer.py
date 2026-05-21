@@ -6,6 +6,23 @@ from typing import Any
 from .presets import preset_to_config
 
 
+_CAPABILITY_ALIASES: dict[str, str] = {
+    "fileWrite": "writeFile",
+    "file_write": "writeFile",
+    "write_file": "writeFile",
+    "shell": "runCommand",
+    "run_command": "runCommand",
+    "command": "runCommand",
+    "web_fetch": "webFetch",
+    "browser": "browserAutomation",
+    "browser_automation": "browserAutomation",
+    "computer_use": "computerUse",
+    "git_write": "gitWrite",
+    "hooks_execute": "hooksExecute",
+    "memory_write": "memoryWrite",
+}
+
+
 def normalize_permissions(raw_config: dict[str, Any]) -> dict[str, Any]:
     """Produce a unified permission config from *raw_config*.
 
@@ -20,7 +37,7 @@ def normalize_permissions(raw_config: dict[str, Any]) -> dict[str, Any]:
         preset = permissions.get("preset", "balanced")
         caps = permissions.get("capabilities", {})
         if caps or preset != "balanced":
-            return preset_to_config(preset, caps if caps else None)
+            return preset_to_config(preset, _normalize_capability_overrides(caps) if caps else None)
 
     # Legacy path: derive preset from approvalMode
     approval_mode = ""
@@ -51,6 +68,20 @@ def normalize_permissions(raw_config: dict[str, Any]) -> dict[str, Any]:
     if overrides:
         return preset_to_config(preset_name, overrides)
     return preset_to_config(preset_name)
+
+
+def _normalize_capability_overrides(caps: Any) -> dict[str, Any]:
+    if not isinstance(caps, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    for key, value in caps.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+        canonical = _CAPABILITY_ALIASES.get(key.strip(), key.strip())
+        if canonical != key.strip() and canonical in caps:
+            continue
+        normalized[canonical] = value
+    return normalized
 
 
 def _find_profile(profiles: list[dict[str, Any]], profile_id: str) -> dict[str, Any] | None:

@@ -355,6 +355,20 @@ def main() -> int:
         evidence = _completion_evidence(task)
         counts = evidence.get("counts") if isinstance(evidence.get("counts"), dict) else {}
         completion_advisor = evidence.get("completionAdvisor") if isinstance(evidence.get("completionAdvisor"), dict) else {}
+        transport_counts = Counter(str(turn.get("response_transport") or "unknown") for turn in turns)
+        cache_hit_turns = 0
+        cached_tokens_total = 0
+        for turn in turns:
+            cache_usage = turn.get("cacheUsage") if isinstance(turn, dict) else None
+            if not isinstance(cache_usage, dict):
+                continue
+            try:
+                cached_tokens = max(0, int(cache_usage.get("cachedTokens") or 0))
+            except (TypeError, ValueError):
+                cached_tokens = 0
+            if cached_tokens > 0:
+                cache_hit_turns += 1
+                cached_tokens_total += cached_tokens
         failures: list[str] = []
         if task.get("status") != "completed":
             failures.append("root task did not complete")
@@ -393,6 +407,8 @@ def main() -> int:
             failures.append("completion evidence did not record passed tests")
         if not completion_advisor.get("proposalRecordId"):
             failures.append("completion advisor proposal id missing from evidence")
+        if transport_counts.get("stream", 0) + transport_counts.get("fallback_non_stream", 0) < 1:
+            failures.append("no provider turn recorded a streaming or fallback transport")
         summary = str(task.get("resultSummary") or "")
         if ANCHOR_FOCUS not in summary:
             failures.append("final summary lost focus anchor")
@@ -428,6 +444,11 @@ def main() -> int:
                     "collaborationTasks": len(collab_tasks),
                     "commands": len(commands),
                     "proposalKinds": proposals_by_kind,
+                    "responseTransport": dict(transport_counts),
+                    "providerCache": {
+                        "cacheHitTurns": cache_hit_turns,
+                        "cachedTokensTotal": cached_tokens_total,
+                    },
                     "changedStatusLines": len([line for line in git_status.stdout.splitlines() if line.strip()]),
                 },
                 "turns": [
@@ -436,6 +457,8 @@ def main() -> int:
                         "status": turn.get("status"),
                         "decision": turn.get("turn_decision"),
                         "toolCalls": turn.get("response_tool_call_count"),
+                        "transport": turn.get("response_transport"),
+                        "cachedTokens": ((turn.get("cacheUsage") or {}).get("cachedTokens") if isinstance(turn.get("cacheUsage"), dict) else 0),
                         "phase": (turn.get("toolPolicyDecision") or {}).get("phase")
                         if isinstance(turn.get("toolPolicyDecision"), dict)
                         else None,

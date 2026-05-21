@@ -447,6 +447,7 @@ class OpenAICompatibleChatClient:
             payload["max_tokens"] = settings.max_tokens
         if stream:
             payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}
         if tools:
             payload["tools"] = tools
         return payload

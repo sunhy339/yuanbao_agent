@@ -492,6 +492,7 @@ class JsonRpcServer:
             "responseTransport": turn.get("response_transport"),
             "responseFinishReason": turn.get("response_finish_reason"),
             "toolCallCount": turn.get("response_tool_call_count"),
+            "cacheUsage": turn.get("cacheUsage") or {"cacheHit": False, "cachedTokens": 0},
             "toolPolicyExplanation": turn.get("toolPolicyExplanation"),
             "completedAt": turn.get("completed_at"),
         }

@@ -277,8 +277,11 @@ class AgentStoreMixin:
         tool_policy_decision = self._json_object(row.get("tool_policy_decision_json"))
         role_snapshot = self._json_object(row.get("role_snapshot_json"))
         failure_recovery = self._json_object(row.get("failure_recovery_json"))
+        usage = self._json_object(row.get("response_usage_json"))
         serialized["toolPolicyDecision"] = tool_policy_decision
         serialized["roleSnapshot"] = role_snapshot
+        serialized["responseUsage"] = usage
+        serialized["cacheUsage"] = self._provider_cache_usage(usage)
         if failure_recovery:
             serialized["failureRecovery"] = failure_recovery
         serialized["toolPolicyExplanation"] = self._tool_policy_explanation(
@@ -297,6 +300,22 @@ class AgentStoreMixin:
         except (json.JSONDecodeError, TypeError):
             return {}
         return parsed if isinstance(parsed, dict) else {}
+
+    def _provider_cache_usage(self, usage: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(usage, dict):
+            return {"cacheHit": False, "cachedTokens": 0}
+        prompt_details = usage.get("prompt_tokens_details")
+        if not isinstance(prompt_details, dict):
+            return {"cacheHit": False, "cachedTokens": 0}
+        raw_cached = prompt_details.get("cached_tokens")
+        try:
+            cached_tokens = max(0, int(raw_cached))
+        except (TypeError, ValueError):
+            cached_tokens = 0
+        return {
+            "cacheHit": cached_tokens > 0,
+            "cachedTokens": cached_tokens,
+        }
 
     def _tool_policy_explanation(
         self,

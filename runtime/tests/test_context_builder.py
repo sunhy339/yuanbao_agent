@@ -250,6 +250,45 @@ def test_context_builder_injects_canonical_memory_files(store: SQLiteStore, tmp_
     assert "reviewer tasks stay read-only" in text
 
 
+def test_context_builder_orders_stable_memory_before_dynamic_history_and_repo_noise(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "README.md").write_text("# Stable workspace\n", encoding="utf-8")
+    (workspace_root / "YUANBAO.md").write_text(
+        "Canonical rule: use python -m pytest for verification.\n",
+        encoding="utf-8",
+    )
+
+    workspace = store.upsert_workspace(str(workspace_root))
+    store.update_workspace_summary(
+        workspace["id"],
+        "Project memory:\n- prefer focused pytest runs for backend changes.",
+    )
+    session = store.create_session(workspace_id=workspace["id"], title="Ordering")
+    store.create_message(session_id=session["id"], role="user", content="Keep the history concise.")
+    store.create_message(session_id=session["id"], role="assistant", content="I will keep the history concise.")
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Continue implementation",
+        lightweight=False,
+    )
+
+    text = _message_text(context)
+    assert "Canonical memory:" in text
+    assert "Project memory:" in text
+    assert "Recent conversation:" in text
+    assert "--- README.md ---" in text
+    assert "Git status summary:" in text
+    assert text.index("Canonical memory:") < text.index("Project memory:")
+    assert text.index("Project memory:") < text.index("Recent conversation:")
+    assert text.index("Recent conversation:") < text.index("--- README.md ---")
+    assert text.index("--- README.md ---") < text.index("Git status summary:")
+
+
 def test_context_builder_keeps_workspace_project_focus_under_tight_budget(
     store: SQLiteStore,
     tmp_path: Path,

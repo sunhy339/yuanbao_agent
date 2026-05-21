@@ -305,17 +305,17 @@ class ContextBuilder(HistoryMixin):
             project_memory = self._workspace_memory_section(workspace)
             if project_memory:
                 sections.append(project_memory)
+            if include_history:
+                sections.extend(self._history_sections(session))
             sections.extend(self._key_file_sections(workspace["rootPath"]))
             sections.append(
                 BudgetSection(
                     name="git_status",
                     text=self._git_summary(workspace["rootPath"]),
-                    priority=700,
-                    minimum_tokens=24,
+                    priority=260,
+                    minimum_tokens=16,
                 )
             )
-            if include_history:
-                sections.extend(self._history_sections(session))
         elif include_history:
             sections.extend(self._conversation_history_sections(session))
 

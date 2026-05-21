@@ -20,7 +20,7 @@ class HistoryMixin:
         tasks = self._recent_tasks(session["id"], limit=6)
         total_tasks = len(tasks)
         for index, task in enumerate(tasks):
-            priority = 450 + (total_tasks - index)
+            priority = 700 + (total_tasks - index)
             sections.append(
                 BudgetSection(
                     name=f"task_history:{task['id']}",
@@ -35,7 +35,7 @@ class HistoryMixin:
                 BudgetSection(
                     name=f"patch_diff:{patch['id']}",
                     text=self._patch_summary(patch),
-                    priority=250,
+                    priority=180,
                     minimum_tokens=16,
                 )
             )
@@ -45,7 +45,7 @@ class HistoryMixin:
                 BudgetSection(
                     name=f"command_history:{command['id']}",
                     text=self._command_summary(command),
-                    priority=350,
+                    priority=220,
                     minimum_tokens=18,
                 )
             )
@@ -69,8 +69,9 @@ class HistoryMixin:
                 BudgetSection(
                     name="recent_conversation",
                     text=self._conversation_summary(recent_messages),
-                    priority=640,
-                    minimum_tokens=32,
+                    priority=920,
+                    minimum_tokens=48,
+                    truncatable=False,
                 )
             )
         return sections

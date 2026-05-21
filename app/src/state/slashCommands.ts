@@ -20,6 +20,7 @@ export interface SlashCommand {
 export type SlashCommandResultKind =
   | "clear"          // clear chat messages
   | "help"           // show help / list commands
+  | "init"           // initialize workspace memory files
   | "status"         // show runtime status
   | "model"          // switch or show current model
   | "compact"        // compact / summarize conversation
@@ -37,6 +38,7 @@ export interface SlashCommandResult {
 
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/help",    description: "Show available slash commands" },
+  { name: "/init",    description: "Initialize YUANBAO.md and memory files for this workspace" },
   { name: "/clear",   description: "Clear current session chat messages" },
   { name: "/compact", description: "Summarize conversation context" },
   { name: "/status",  description: "Show runtime and task status" },

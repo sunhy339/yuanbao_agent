@@ -370,6 +370,29 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
     const hostStatusText = hostStatus?.runtimeRunning ? "本地运行时已连接" : "浏览器预览模式";
 
     switch (cmd.kind) {
+      case "init": {
+        const activeWorkspace = workspace ?? (await ensureWorkspace());
+        try {
+          const result = await runtimeClient.initWorkspaceMemory({ workspaceId: activeWorkspace.id });
+          const created = result.createdFiles ?? [];
+          const existing = result.existingFiles ?? [];
+          const lines: string[] = ["**Workspace memory initialized**"];
+          if (created.length > 0) {
+            lines.push("", `Created: ${created.map((name) => `\`${name}\``).join(", ")}`);
+          }
+          if (existing.length > 0) {
+            lines.push("", `Already existed: ${existing.map((name) => `\`${name}\``).join(", ")}`);
+          }
+          if (created.length === 0 && existing.length === 0) {
+            lines.push("", "No memory files were created.");
+          }
+          addSystemMessage(lines.join("\n"));
+          addToast("success", "Initialized workspace memory files.");
+        } catch (err: unknown) {
+          addSystemMessage(`Initialization failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
       case "help": {
         const lines = SLASH_COMMANDS.map(
           (c) => `**${c.name}**${c.argsHint ? ` ${c.argsHint}` : ""} - ${c.description}`,

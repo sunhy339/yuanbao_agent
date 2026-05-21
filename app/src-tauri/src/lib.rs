@@ -45,6 +45,12 @@ struct WorkspaceMemoryClearPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct WorkspaceMemoryInitPayload {
+    workspace_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WorkspaceFocusUpdatePayload {
     workspace_id: String,
     focus: Option<String>,
@@ -572,6 +578,19 @@ async fn workspace_memory_clear(
     state.call_async(
         app_handle,
         "workspace.memory.clear".to_string(),
+        json!({ "workspaceId": payload.workspace_id }),
+    ).await
+}
+
+#[tauri::command]
+async fn workspace_memory_init(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: WorkspaceMemoryInitPayload,
+) -> Result<Value, String> {
+    state.call_async(
+        app_handle,
+        "workspace.memory.init".to_string(),
         json!({ "workspaceId": payload.workspace_id }),
     ).await
 }
@@ -1364,6 +1383,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             workspace_open,
             workspace_focus_update,
             workspace_memory_clear,
+            workspace_memory_init,
             session_create,
             session_list,
             message_send,

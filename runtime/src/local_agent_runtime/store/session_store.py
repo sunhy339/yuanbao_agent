@@ -9,6 +9,40 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+_WORKSPACE_MEMORY_INIT_TEMPLATES: dict[str, str] = {
+    "YUANBAO.md": """# Yuanbao Workspace Guide
+
+## Project Goals
+- Describe the main goals for this workspace.
+
+## Guardrails
+- Note important constraints, out-of-scope items, and safety expectations.
+
+## Ways of Working
+- Capture preferred tools, testing commands, and review expectations.
+""",
+    "MEMORY.md": """# Workspace Memory
+
+## Conventions
+- Record stable repository conventions that should be recalled in future sessions.
+
+## Verified Patterns
+- Note workflows or recovery patterns that have already been validated.
+
+## Open Questions
+- Capture unresolved decisions worth revisiting later.
+""",
+    "MEMORY.local.md": """# Local Memory Overrides
+
+## Personal Notes
+- Keep machine-local or user-specific reminders here.
+
+## Environment Details
+- Record local-only setup notes that should not be treated as shared project conventions.
+""",
+}
+
+
 class SessionStoreMixin:
     def upsert_workspace(self, path: str) -> dict[str, Any]:
         root = str(Path(path))
@@ -76,6 +110,34 @@ class SessionStoreMixin:
             raise ValueError("workspaceId is required")
         workspace = self.update_workspace_summary(workspace_id.strip(), None)
         return {"workspace": workspace}
+
+    def init_workspace_memory(self, params: dict[str, Any]) -> dict[str, Any]:
+        workspace_id = params.get("workspaceId") or params.get("workspace_id")
+        if not isinstance(workspace_id, str) or not workspace_id.strip():
+            raise ValueError("workspaceId is required")
+        workspace = self.require_workspace(workspace_id.strip())
+        root_path = workspace.get("rootPath")
+        if not isinstance(root_path, str) or not root_path.strip():
+            raise ValueError("Workspace rootPath is required")
+
+        workspace_root = Path(root_path)
+        workspace_root.mkdir(parents=True, exist_ok=True)
+
+        created_files: list[str] = []
+        existing_files: list[str] = []
+        for filename, content in _WORKSPACE_MEMORY_INIT_TEMPLATES.items():
+            target = workspace_root / filename
+            if target.exists():
+                existing_files.append(filename)
+                continue
+            target.write_text(content, encoding="utf-8")
+            created_files.append(filename)
+
+        return {
+            "workspace": workspace,
+            "createdFiles": created_files,
+            "existingFiles": existing_files,
+        }
 
     def create_session(self, workspace_id: str, title: str) -> dict[str, Any]:
         session_id = self.new_id("sess")

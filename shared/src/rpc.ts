@@ -68,6 +68,7 @@ export type RpcMethod =
   | "workspace.open"
   | "workspace.focus.update"
   | "workspace.memory.clear"
+  | "workspace.memory.init"
   | "session.create"
   | "session.get"
   | "session.list"
@@ -142,6 +143,10 @@ export interface WorkspaceOpenParams {
 }
 
 export interface WorkspaceMemoryClearParams {
+  workspaceId: Identifier;
+}
+
+export interface WorkspaceMemoryInitParams {
   workspaceId: Identifier;
 }
 
@@ -264,6 +269,10 @@ export interface WorkspaceOpenResult {
 }
 
 export type WorkspaceMemoryClearResult = WorkspaceOpenResult;
+export interface WorkspaceMemoryInitResult extends WorkspaceOpenResult {
+  createdFiles: string[];
+  existingFiles: string[];
+}
 export type WorkspaceFocusUpdateResult = WorkspaceOpenResult;
 
 export interface SessionCreateResult {

@@ -55,6 +55,7 @@ class JsonRpcServer:
             "workspace.open": self._orchestrator.open_workspace,
             "workspace.focus.update": self._store.update_workspace_focus,
             "workspace.memory.clear": self._store.clear_workspace_memory,
+            "workspace.memory.init": self._store.init_workspace_memory,
             "session.create": self._orchestrator.create_session,
             "session.get": self._store.get_session,
             "session.list": self._store.list_sessions,

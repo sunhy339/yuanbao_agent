@@ -108,6 +108,33 @@ describe("RuntimeClient desktop transport", () => {
     });
   });
 
+  it("wraps workspace memory init payload for Tauri command arguments", async () => {
+    const client = new RuntimeClient();
+    const workspace = {
+      id: "ws_real",
+      name: "Real",
+      rootPath: "D:/project",
+      summary: null,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+
+    invokeMock.mockResolvedValueOnce({
+      workspace,
+      createdFiles: ["YUANBAO.md", "MEMORY.md", "MEMORY.local.md"],
+      existingFiles: [],
+    });
+
+    await expect(client.initWorkspaceMemory({ workspaceId: "ws_real" })).resolves.toEqual({
+      workspace,
+      createdFiles: ["YUANBAO.md", "MEMORY.md", "MEMORY.local.md"],
+      existingFiles: [],
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("workspace_memory_init", {
+      payload: { workspaceId: "ws_real" },
+    });
+  });
+
   it("wraps workspace focus update payload for Tauri command arguments", async () => {
     const client = new RuntimeClient();
     const workspace = {

@@ -110,6 +110,8 @@ import type {
   WorktreeStatusResult,
   WorkspaceFocusUpdateParams,
   WorkspaceFocusUpdateResult,
+  WorkspaceMemoryInitParams,
+  WorkspaceMemoryInitResult,
   WorkspaceMemoryClearParams,
   WorkspaceMemoryClearResult,
   WorkspaceOpenResult,
@@ -388,6 +390,12 @@ export class RuntimeClient {
 
   async clearWorkspaceMemory(payload: WorkspaceMemoryClearParams): Promise<WorkspaceMemoryClearResult> {
     const result = await invokePayloadOrReject<WorkspaceMemoryClearResult>("workspace_memory_clear", payload);
+    clientCache.workspace = result.workspace;
+    return result;
+  }
+
+  async initWorkspaceMemory(payload: WorkspaceMemoryInitParams): Promise<WorkspaceMemoryInitResult> {
+    const result = await invokePayloadOrReject<WorkspaceMemoryInitResult>("workspace_memory_init", payload);
     clientCache.workspace = result.workspace;
     return result;
   }

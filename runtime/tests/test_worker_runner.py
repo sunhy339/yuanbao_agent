@@ -368,6 +368,60 @@ def test_worker_runner_failure_includes_partial_handoff_from_runtime_task(tmp_pa
         store.close()
 
 
+def test_worker_runner_partial_handoff_preserves_failed_tests_run_details(tmp_path: Path) -> None:
+    def executor(context: Any) -> dict[str, Any]:
+        runtime_task = store.create_task(
+            session_id=records["session"]["id"],
+            task_type="subagent",
+            goal=context.request.prompt,
+            plan=[],
+            routing={"parentRuntimeTaskId": records["parent_task"]["id"]},
+        )
+        store.update_task(
+            runtime_task["id"],
+            status="running",
+            changed_files=[{"path": "tests/test_incident.py", "reason": "write pytest coverage"}],
+            commands=[
+                {
+                    "command": "python -m pytest -q",
+                    "status": "failed",
+                    "summary": "1 failed in 0.20s",
+                }
+            ],
+            tests_run=[
+                {
+                    "command": "python -m pytest -q",
+                    "status": "failed",
+                    "summary": "assert expected transition rejection",
+                }
+            ],
+        )
+        raise ChildTaskTimeoutError(1.2)
+
+    store, runner, records = _runner_context(tmp_path, executor=executor)
+    try:
+        response = runner.run_child_task(
+            ChildTaskRequest(
+                prompt="write failing pytest coverage",
+                title="Write failing pytest coverage",
+                agent_type="worker",
+                session_id=records["session"]["id"],
+                parent_runtime_task_id=records["parent_task"]["id"],
+                profile={
+                    "verificationRequirements": [
+                        {"kind": "command", "command": "python -m pytest -q"}
+                    ],
+                },
+            )
+        )
+
+        handoff = response["error"]["partialHandoff"]
+        assert response["status"] == "failed"
+        assert handoff["testsRun"][0]["summary"] == "assert expected transition rejection"
+    finally:
+        store.close()
+
+
 def test_worker_runner_replaces_markup_only_child_summary_from_runtime_task(tmp_path: Path) -> None:
     def executor(_context: Any) -> dict[str, Any]:
         return {

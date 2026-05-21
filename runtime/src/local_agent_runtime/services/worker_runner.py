@@ -880,6 +880,7 @@ class WorkerRunner:
         changed_files = runtime.get("changedFiles") if isinstance(runtime.get("changedFiles"), list) else []
         commands = runtime.get("commands") if isinstance(runtime.get("commands"), list) else []
         verification = runtime.get("verification") if isinstance(runtime.get("verification"), list) else []
+        tests_run = runtime.get("testsRun") if isinstance(runtime.get("testsRun"), list) else []
         expected_artifacts = profile.get("expectedArtifacts") if isinstance(profile.get("expectedArtifacts"), list) else []
         verification_requirements = (
             profile.get("verificationRequirements")
@@ -913,6 +914,7 @@ class WorkerRunner:
             "changedFiles": deepcopy(changed_files),
             "commands": deepcopy(commands),
             "verification": deepcopy(verification),
+            "testsRun": deepcopy(tests_run),
             "expectedArtifacts": deepcopy(expected_artifacts),
             "verificationRequirements": deepcopy(verification_requirements),
             "pendingVerification": pending_verification,

@@ -58,6 +58,10 @@ def build_continuation_prompt(
     ]
     if summary:
         lines.append(summary)
+    failure_details = _failure_detail_lines(handoff)
+    if failure_details:
+        lines.append("Observed failure details:")
+        lines.extend(f"- {item}" for item in failure_details[:6])
     lines.extend(
         [
             "Continuation contract:",
@@ -124,3 +128,44 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+
+
+def _failure_detail_lines(handoff: dict[str, Any]) -> list[str]:
+    details: list[str] = []
+    verification = handoff.get("verification")
+    if isinstance(verification, list):
+        for item in verification:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            if status not in {"failed", "timeout", "killed", "validation_failed"}:
+                continue
+            command = str(item.get("command") or item.get("name") or "").strip()
+            summary = str(item.get("summary") or "").strip()
+            if command and summary:
+                details.append(f"{command}: {summary[:240]}")
+            elif command:
+                details.append(command)
+    commands = handoff.get("commands")
+    if isinstance(commands, list):
+        for item in commands:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            if status not in {"failed", "timeout", "killed", "validation_failed"}:
+                continue
+            command = str(item.get("command") or item.get("name") or "").strip()
+            summary = str(item.get("summary") or "").strip()
+            if command and summary:
+                details.append(f"{command}: {summary[:240]}")
+            elif command:
+                details.append(command)
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for item in details:
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped

@@ -772,6 +772,36 @@ class TestDecisionAdvisorToolRecovery:
         assert result.payload["action"] == "retry_narrower"
         assert result.payload["retryWithNarrowerArgs"] is True
 
+    def test_tool_recovery_accepts_fallback_tool_name_alias(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "action": "fallback_tool",
+                "fallbackTool": "read_file",
+                "reason": "Inspect the file before retrying the failed command.",
+            },
+            "confidence": 0.78,
+            "rationale": "The advisor expressed fallback tool as a tool name.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "tool_recovery",
+            {
+                "goal": "Recover failed command",
+                "tool_failure": {
+                    "name": "run_command",
+                    "failureKind": "command_failed",
+                    "summary": "pytest path failed",
+                },
+            },
+        )
+
+        assert result.accepted is True
+        assert result.payload["fallbackTool"] == {
+            "name": "read_file",
+            "arguments": {},
+        }
+
     def test_tool_recovery_rejects_invalid_action(self) -> None:
         provider = _GoodProvider(response=json.dumps({
             "proposal": {"action": "auto_delete_workspace"},

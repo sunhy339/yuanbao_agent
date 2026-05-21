@@ -241,12 +241,17 @@ class Orchestrator(
         if advice is None:
             return
         try:
-            proposal_payload = {
+            advice_payload = getattr(advice, "payload", None)
+            proposal_payload = dict(advice_payload) if isinstance(advice_payload, dict) and advice_payload else {
                 "scenario": routing.scenario.value,
                 "strategy": routing.strategy.value,
                 "skill_id": routing.skill_id,
             }
-            if isinstance(routing_dict.get("toolContinuation"), dict):
+            if (
+                "tool_continuation" not in proposal_payload
+                and "toolContinuation" not in proposal_payload
+                and isinstance(routing_dict.get("toolContinuation"), dict)
+            ):
                 proposal_payload["toolContinuation"] = routing_dict["toolContinuation"]
             source = {
                 "type": advice.source,

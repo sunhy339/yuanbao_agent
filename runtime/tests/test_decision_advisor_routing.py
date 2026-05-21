@@ -429,3 +429,47 @@ class TestOrchestratorProposalRecords:
             assert decision_events[0]["payload"]["scenario"] == "code_edit"
         finally:
             store.close()
+
+    def test_rejected_routing_proposal_records_advisor_payload(self, tmp_path: Any) -> None:
+        advisor = DecisionAdvisor(
+            provider=FakeAdvisorProvider(
+                '{"proposal": {"scenario": "code_edit", "strategy": "teleport"}, '
+                '"confidence": 0.72, "rationale": "bad strategy"}'
+            )
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+        routing = router.route("adjust the main configuration")
+        orchestrator, store, _events = _make_orchestrator(
+            tmp_path, provider=MagicMock(), meta_router=router,
+        )
+        try:
+            workspace = store.upsert_workspace(str(tmp_path))
+            session = store.create_session(workspace_id=workspace["id"], title="routing rejected")
+            task = store.create_task(
+                session_id=session["id"],
+                task_type="chat",
+                goal="adjust the main configuration",
+                plan=[],
+            )
+            routing_dict = orchestrator._routing_dict_from_decision(routing)
+
+            orchestrator._record_routing_proposal(
+                session_id=session["id"],
+                task_id=task["id"],
+                goal="adjust the main configuration",
+                routing=routing,
+                routing_dict=routing_dict,
+            )
+
+            proposals = store.list_proposals({
+                "taskId": task["id"],
+                "kind": "routing_strategy",
+            })["proposals"]
+            assert len(proposals) == 1
+            proposal = proposals[0]
+            assert proposal["status"] == "rejected"
+            assert proposal["proposal"]["strategy"] == "teleport"
+            assert proposal["proposal"]["scenario"] == "code_edit"
+            assert proposal["validationReasons"] == ["Invalid routing strategy: 'teleport'"]
+        finally:
+            store.close()

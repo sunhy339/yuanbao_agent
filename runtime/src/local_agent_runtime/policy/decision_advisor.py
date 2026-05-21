@@ -688,6 +688,12 @@ class DecisionAdvisor:
             action = normalized.get("action")
             if isinstance(action, str):
                 normalized["action"] = DecisionAdvisor._normalize_tool_recovery_action(action)
+            fallback_tool = normalized.get("fallbackTool")
+            if isinstance(fallback_tool, str):
+                normalized["fallbackTool"] = {
+                    "name": fallback_tool,
+                    "arguments": {},
+                }
         if kind == "product_surface_decision":
             evidence_requests = normalized.get("evidence_requests")
             if isinstance(evidence_requests, list):

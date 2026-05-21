@@ -396,6 +396,7 @@ class DecisionAdvisor:
         if self._provider is not None:
             result, failure_reason = self._call_llm(entry, input_context, proposal_id, model_id, kind_policy)
             if result is not None:
+                result["payload"] = self._normalize_payload(kind, result["payload"])
                 # Validate the proposal
                 validation_reasons = validate_proposal(kind, result["payload"])
                 if not validation_reasons:
@@ -668,6 +669,17 @@ class DecisionAdvisor:
             "confidence": confidence,
             "rationale": rationale,
         }
+
+    @staticmethod
+    def _normalize_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(payload)
+        if kind == "completion_decision":
+            assessment = normalized.get("verification_assessment")
+            if isinstance(assessment, str):
+                normalized["verification_assessment"] = {
+                    "summary": assessment,
+                }
+        return normalized
 
     @staticmethod
     def _extract_json_objects(text: str) -> list[str]:

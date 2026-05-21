@@ -836,6 +836,37 @@ class TestDecisionAdvisorCompletionDecision:
         assert result.payload["verification_sufficient"] is True
         assert result.payload["verification_assessment"]["status"] == "sufficient"
 
+    def test_completion_decision_accepts_string_verification_assessment(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "is_complete": True,
+                "why_complete": "The implementation matches the requested behavior.",
+                "verification_sufficient": True,
+                "verification_assessment": "Sufficient for completion based on the passing smoke check.",
+            },
+            "confidence": 0.8,
+            "rationale": "The advisor may summarize verification in prose.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "completion_decision",
+            {
+                "goal": "finish task",
+                "summary": "implemented and verified",
+                "changed_files": ["app.py"],
+                "completion_evidence": {
+                    "evidenceLevel": "verified",
+                    "verification": [{"command": "python -m pytest -q", "status": "passed"}],
+                },
+            },
+        )
+
+        assert result.accepted is True
+        assert result.payload["verification_assessment"] == {
+            "summary": "Sufficient for completion based on the passing smoke check.",
+        }
+
     def test_completion_decision_rejects_non_boolean_verdict(self) -> None:
         provider = _GoodProvider(response=json.dumps({
             "proposal": {"is_complete": "maybe"},

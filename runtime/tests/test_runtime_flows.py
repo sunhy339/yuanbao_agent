@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import os
 import subprocess
 import time
 import pytest
@@ -1238,6 +1239,62 @@ def test_plan_execute_recovers_failed_verification_subtask_with_parent_check(
         {"sessionId": session["id"], "limit": 20},
     )["result"]["commandLogs"]
     assert any(command["command"] == "python -m pytest -q" and command["status"] == "completed" for command in command_logs)
+
+
+def test_planning_recovery_normalizes_node_command(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Node command rewriting is only needed for PowerShell recovery on Windows")
+
+    from local_agent_runtime.orchestrator import message_execution
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    node = tmp_path / "node" / "bin" / "node.exe"
+    node.parent.mkdir(parents=True)
+    node.write_text("", encoding="utf-8")
+    monkeypatch.setenv("LOCAL_AGENT_NODE_EXECUTABLE", str(node))
+
+    workspace = runtime_harness.store.upsert_workspace(str(workspace_root))
+    session = runtime_harness.store.create_session(workspace_id=workspace["id"], title="node recovery")
+    task = runtime_harness.store.create_task(session_id=session["id"], task_type="chat", goal="recover node check", plan=[])
+
+    captured: dict[str, Any] = {}
+
+    def fake_run_shell_command(
+        shell_name: str,
+        command: str,
+        cwd: Path,
+        timeout_ms: int,
+    ) -> tuple[str, str, int, str, int]:
+        captured.update({
+            "shell": shell_name,
+            "command": command,
+            "cwd": cwd,
+            "timeoutMs": timeout_ms,
+        })
+        return "", "", 0, "completed", 1
+
+    monkeypatch.setattr(message_execution, "run_shell_command", fake_run_shell_command)
+
+    result = runtime_harness.server._orchestrator._run_planning_recovery_command(
+        session_id=session["id"],
+        task=task,
+        workspace=workspace_root,
+        command="node --check app.js",
+    )
+
+    expected = f'& "{node}" --check app.js'
+    assert result["command"] == expected
+    assert captured["command"] == expected
+    command_logs = runtime_harness.call(
+        "command_log.list",
+        {"sessionId": session["id"], "limit": 20},
+    )["result"]["commandLogs"]
+    assert any(command["command"] == expected and command["status"] == "completed" for command in command_logs)
 
 
 def test_plan_execute_repairs_failed_verification_subtask_before_recovery(

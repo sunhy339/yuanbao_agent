@@ -23,6 +23,7 @@ from ..services.collaboration_service import CollaborationService
 from ..services.subagent_service import SubagentService
 from ..context.scratchpad import Scratchpad
 from ..tools import build_builtin_tools
+from ..tools.run_command import _powershell_execution_command
 from ..tools.registry import ToolRegistry
 from ..orchestration import OrchestrationMode
 from ..planner.types import child_tool_allowlist_for_agent
@@ -1470,9 +1471,10 @@ class MessageExecutionMixin:
         command: str,
     ) -> dict[str, Any]:
         shell_name = "powershell" if __import__("os").name == "nt" else "bash"
+        execution_command = _powershell_execution_command(command, shell_name)
         command_log = self._store.create_command_log(
             task_id=task["id"],
-            command=command,
+            command=execution_command,
             cwd=str(workspace),
             shell=shell_name,
         )
@@ -1484,7 +1486,7 @@ class MessageExecutionMixin:
         try:
             stdout, stderr, exit_code, status, duration_ms = run_shell_command(
                 shell_name,
-                command,
+                execution_command,
                 workspace,
                 self._planning_recovery_command_timeout_ms(),
             )
@@ -1507,10 +1509,10 @@ class MessageExecutionMixin:
         check = {
             "name": "planning_recovery_verification",
             "status": status,
-            "command": command,
+            "command": execution_command,
             "result": {
                 "status": status,
-                "command": command,
+                "command": execution_command,
                 "commandLog": command_log,
                 "stdout": stdout[-4000:],
                 "stderr": stderr[-4000:],
@@ -1525,7 +1527,7 @@ class MessageExecutionMixin:
             validation={"checks": [check]},
         )
         return {
-            "command": command,
+            "command": execution_command,
             "status": status,
             "exitCode": exit_code,
             "durationMs": duration_ms,

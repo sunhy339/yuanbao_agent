@@ -52,7 +52,7 @@ _CODE_GENERATION_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 _CODE_DEVELOPMENT_TARGET_RE = re.compile(
-    r"\b(?:python|html|css|javascript|typescript|tkinter|pygame|script|cli|app|game|website|site|blog|webpage|frontend)\b|"
+    r"\b(?:python|html|css|javascript|typescript|tkinter|pygame|script|cli|app|game|website|site|webpage|frontend)\b|"
     r"\u7f51\u7ad9|\u535a\u5ba2|\u9759\u6001\u9875|\u9875\u9762|\u524d\u7aef|\u6e38\u620f|\u5c0f\u6e38\u620f|\u811a\u672c|\u5e94\u7528",
     re.IGNORECASE,
 )

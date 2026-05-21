@@ -684,7 +684,7 @@ class TaskDecomposer:
             description = (
                 "Implement the remaining frontend/client deliverables named in the parent task. "
                 f"Produce these files if requested: {', '.join(paths) if paths else 'the remaining frontend assets'}. "
-                "Keep the UI static and dependency-light, aligned with the intended backend contract."
+                "Follow the parent task and existing project stack for framework, dependencies, and backend contract."
             )
             if command_text:
                 description += f" Preserve the explicit frontend verification commands: {command_text}."
@@ -694,7 +694,7 @@ class TaskDecomposer:
             description = (
                 "Add the remaining automated Python test coverage required by the parent task. "
                 "Create the requested pytest files or equivalent focused tests, cover the named acceptance scenarios, "
-                "and keep tmp_path or injected storage/database usage isolated."
+                "and keep external state isolated through fixtures, temporary paths, dependency injection, or the project's existing test pattern."
             )
             if command_text:
                 description += f" Preserve the explicit test verification commands: {command_text}."

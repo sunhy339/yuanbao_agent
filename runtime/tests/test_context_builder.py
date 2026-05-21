@@ -116,8 +116,8 @@ def test_context_builder_includes_recent_chat_messages(store: SQLiteStore, tmp_p
 
     text = _message_text(context)
     assert "Recent conversation:" in text
-    assert "User:\nKeep the UI compact." in text
-    assert "Assistant:\nI will preserve compact layout." in text
+    assert "User: Keep the UI compact." in text
+    assert "Assistant: I will preserve compact layout." in text
     assert text.index("Recent conversation:") < text.index("Current user request:\nContinue the interface work")
 
 

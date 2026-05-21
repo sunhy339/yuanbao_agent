@@ -156,8 +156,12 @@ class HistoryMixin:
         lines = ["Recent conversation:"]
         for message in messages:
             role = "User" if message.get("role") == "user" else "Assistant"
-            lines.append(f"{role}:")
-            lines.append(self._preserve_message_text(message.get("content"), max_chars=max_chars))
+            text = self._preserve_message_text(message.get("content"), max_chars=max_chars)
+            if "\n" in text:
+                lines.append(f"{role}:")
+                lines.append(text)
+            else:
+                lines.append(f"{role}: {text}")
         return "\n".join(lines)
 
     def _task_summary(self, task: dict[str, Any], *, max_chars: int = 220) -> str:

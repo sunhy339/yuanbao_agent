@@ -17,6 +17,14 @@ from ..tools.run_command import _powershell_execution_command
 
 logger = logging.getLogger(__name__)
 
+_ADVISOR_EVIDENCE_ADAPTER_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("browser_inspection_adapter", ("browser", "page")),
+    ("document_render_adapter", ("document", "render", "docx", "pdf")),
+    ("migration_dry_run_adapter", ("migration", "dry-run", "dry run")),
+    ("benchmark_adapter", ("benchmark", "performance")),
+    ("external_service_probe_adapter", ("service", "api", "probe")),
+)
+
 
 class _StaticAssetReferenceParser(HTMLParser):
     def __init__(self) -> None:
@@ -1847,16 +1855,9 @@ class TaskLifecycleMixin:
         target = str(request.get("target") or "").strip().casefold()
         summary = str(request.get("summary") or "").strip().casefold()
         text = f"{kind} {target} {summary}"
-        if "browser" in text or "page" in text:
-            return "browser_inspection_adapter"
-        if "document" in text or "render" in text or "docx" in text or "pdf" in text:
-            return "document_render_adapter"
-        if "migration" in text or "dry-run" in text or "dry run" in text:
-            return "migration_dry_run_adapter"
-        if "benchmark" in text or "performance" in text:
-            return "benchmark_adapter"
-        if "service" in text or "api" in text or "probe" in text:
-            return "external_service_probe_adapter"
+        for adapter_kind, hints in _ADVISOR_EVIDENCE_ADAPTER_HINTS:
+            if any(hint in text for hint in hints):
+                return adapter_kind
         return "semantic_evidence_adapter"
 
     def _advisor_evidence_executor_records(
@@ -6067,12 +6068,29 @@ class TaskLifecycleMixin:
             str(item.get(key) or "")
             for key in ("summary", "title", "agentType", "childTaskId")
         ).casefold()
-        if any(token in text for token in ("frontend", "index.html", "app.js", "styles.css")):
+        path_text = " ".join(
+            str(path or "")
+            for path in [
+                *self._completion_contract_expected_artifact_paths(item),
+                *[
+                    self._completion_contract_normalize_path(changed.get("path"))
+                    for changed in (item.get("changedFiles") or [])
+                    if isinstance(changed, dict)
+                ],
+            ]
+        ).casefold()
+        combined = f"{text} {path_text}"
+        if any(token in combined for token in ("frontend", "ui", "client")) or any(
+            path.endswith((".html", ".css", ".tsx", ".jsx", ".vue", ".svelte"))
+            for path in path_text.split()
+        ):
             return "frontend"
-        if any(token in text for token in ("pytest", "tests/", "test_", "test coverage")):
+        if any(token in combined for token in ("pytest", "tests/", "test_", "test coverage", "automated test")):
             return "tests"
-        if any(token in text for token in ("backend", "blog_models.py", "blog_service.py", "blog_api.py", "blog_storage.py")):
+        if any(token in combined for token in ("backend", "server", "api", "service", "storage", "repository", "model")):
             return "backend"
+        if any(path.endswith((".py", ".go", ".rs", ".java", ".cs", ".php", ".rb")) for path in path_text.split()):
+            return "source"
         return ""
 
     def _completion_child_task_identity_tokens(self, item: dict[str, Any]) -> set[str]:

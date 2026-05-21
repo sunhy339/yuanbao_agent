@@ -242,26 +242,18 @@ class Planner:
 
     def _inspect_title(self, goal: str, localized: bool) -> str:
         if localized:
-            if self._mentions_snake(goal):
-                return self._text(True, r"\u68b3\u7406\u8d2a\u5403\u86c7\u9879\u76ee\u7ed3\u6784", "")
             if "ui" in goal.lower() or "\u754c\u9762" in goal:
                 return self._text(True, r"\u68b3\u7406\u5f53\u524d UI \u5b9e\u73b0", "")
             return self._text(True, r"\u7406\u89e3\u4efb\u52a1\u76ee\u6807", "")
-        if self._mentions_snake(goal):
-            return "Inspect snake game structure"
         if "ui" in goal.lower():
             return "Inspect current UI"
         return "Understand task context"
 
     def _search_title(self, goal: str, localized: bool) -> str:
         if localized:
-            if self._mentions_snake(goal):
-                return self._text(True, r"\u5b9a\u4f4d\u86c7\u3001\u98df\u7269\u548c\u6e38\u620f\u5faa\u73af", "")
             if "ui" in goal.lower() or "\u754c\u9762" in goal:
                 return self._text(True, r"\u5b9a\u4f4d\u76f8\u5173\u754c\u9762\u7ec4\u4ef6", "")
             return self._text(True, r"\u5b9a\u4f4d\u76f8\u5173\u6587\u4ef6", "")
-        if self._mentions_snake(goal):
-            return "Find snake gameplay files"
         if "ui" in goal.lower():
             return "Find related UI components"
         return "Find relevant files"
@@ -269,17 +261,9 @@ class Planner:
     def _implementation_title(self, goal: str, localized: bool) -> str:
         lowered = goal.lower()
         if localized:
-            if self._mentions_snake(goal) and ("ai" in lowered or "\u5bf9\u6218" in goal):
-                return self._text(True, r"\u5b9e\u73b0 AI \u8d2a\u5403\u86c7\u5bf9\u6218", "")
-            if self._mentions_snake(goal) and "\u80cc\u666f" in goal:
-                return self._text(True, r"\u6dfb\u52a0\u591a\u80cc\u666f\u73a9\u6cd5", "")
             if "ui" in lowered or "\u754c\u9762" in goal:
                 return self._text(True, r"\u8c03\u6574\u754c\u9762\u4ea4\u4e92\u548c\u6837\u5f0f", "")
             return self._text(True, r"\u5b8c\u6210\u76ee\u6807\u6539\u52a8", "")
-        if self._mentions_snake(goal) and ("ai" in lowered or "versus" in lowered):
-            return "Implement AI snake opponent"
-        if self._mentions_snake(goal) and "background" in lowered:
-            return "Add background options"
         if "ui" in lowered:
             return "Update UI behavior and styling"
         return "Implement requested change"
@@ -310,10 +294,6 @@ class Planner:
                 "",
             )
         return f"Edit local files to satisfy the requested goal while keeping the change focused: {short_goal}"
-
-    def _mentions_snake(self, goal: str) -> bool:
-        lowered = goal.lower()
-        return "snake" in lowered or "\u8d2a\u5403\u86c7" in goal or "\u86c7" in goal
 
     def _route_goal(self, goal: str) -> dict[str, str]:
         lowered = goal.lower().strip()

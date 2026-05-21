@@ -9,6 +9,7 @@ from typing import Any
 from local_agent_runtime.event_bus import EventBus
 from local_agent_runtime.orchestration.types import OrchestrationResult
 from local_agent_runtime.orchestrator.service import Orchestrator
+from local_agent_runtime.planner.service import Planner
 from local_agent_runtime.provider.adapter import ProviderAdapter
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.router.meta_router import MetaRouter
@@ -455,6 +456,17 @@ def test_message_send_attaches_supplement_to_open_task_without_replanning(tmp_pa
     completed_events = [event for event in runtime.events if event["type"] == "assistant.message.completed"]
     assert completed_events[-1]["payload"]["supplemental"] is True
     assert not provider.calls
+
+
+def test_planner_uses_generic_step_titles_for_specific_game_requests() -> None:
+    plan = Planner().plan("Add backgrounds and AI snake battle")
+    titles = [step["title"] for step in plan]
+    assert titles[:3] == [
+        "Understand task context",
+        "Find relevant files",
+        "Implement requested change",
+    ]
+    assert not any("snake" in title.casefold() for title in titles)
 
 
 def test_message_send_explicit_supplement_overrides_background_new_task(tmp_path: Any) -> None:

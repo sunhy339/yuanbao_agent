@@ -17,12 +17,37 @@ from ..tools.run_command import _powershell_execution_command
 
 logger = logging.getLogger(__name__)
 
-_ADVISOR_EVIDENCE_ADAPTER_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("browser_inspection_adapter", ("browser", "page")),
-    ("document_render_adapter", ("document", "render", "docx", "pdf")),
-    ("migration_dry_run_adapter", ("migration", "dry-run", "dry run")),
-    ("benchmark_adapter", ("benchmark", "performance")),
-    ("external_service_probe_adapter", ("service", "api", "probe")),
+_ADVISOR_EVIDENCE_ADAPTER_REGISTRY: tuple[dict[str, Any], ...] = (
+    {
+        "adapterKind": "browser_inspection_adapter",
+        "hints": ("browser", "page", "rendered", "dom", "screenshot"),
+        "toolCandidates": ("browser", "web_fetch"),
+        "confidence": 0.9,
+    },
+    {
+        "adapterKind": "document_render_adapter",
+        "hints": ("document", "render", "docx", "pdf", "markdown", "readme"),
+        "toolCandidates": ("read_file",),
+        "confidence": 0.6,
+    },
+    {
+        "adapterKind": "migration_dry_run_adapter",
+        "hints": ("migration", "dry-run", "dry run", "schema"),
+        "toolCandidates": (),
+        "confidence": 0.6,
+    },
+    {
+        "adapterKind": "benchmark_adapter",
+        "hints": ("benchmark", "performance", "latency", "throughput"),
+        "toolCandidates": (),
+        "confidence": 0.6,
+    },
+    {
+        "adapterKind": "external_service_probe_adapter",
+        "hints": ("service", "api", "probe", "endpoint", "webhook"),
+        "toolCandidates": ("web_fetch", "browser"),
+        "confidence": 0.85,
+    },
 )
 
 
@@ -468,7 +493,7 @@ class TaskLifecycleMixin:
             item for item in executor_records
             if isinstance(item, dict)
             and item.get("blocking") is True
-            and str(item.get("status") or "").strip() in {"failed", "rejected", "blocked"}
+            and str(item.get("status") or "").strip() in {"failed", "rejected", "blocked", "missing_tool"}
         ] if isinstance(executor_records, list) else []
         if not missing and not blocked_executors:
             return None
@@ -1775,7 +1800,7 @@ class TaskLifecycleMixin:
 
             if status == "satisfied":
                 counts["satisfied"] += 1
-            elif status == "blocked":
+            elif status in {"blocked", "missing_tool"}:
                 counts["blocked"] += 1
             elif status == "approval_required":
                 counts["approvalRequired"] += 1
@@ -1855,7 +1880,9 @@ class TaskLifecycleMixin:
         target = str(request.get("target") or "").strip().casefold()
         summary = str(request.get("summary") or "").strip().casefold()
         text = f"{kind} {target} {summary}"
-        for adapter_kind, hints in _ADVISOR_EVIDENCE_ADAPTER_HINTS:
+        for adapter in _ADVISOR_EVIDENCE_ADAPTER_REGISTRY:
+            adapter_kind = str(adapter.get("adapterKind") or "")
+            hints = tuple(str(hint) for hint in adapter.get("hints", ()))
             if any(hint in text for hint in hints):
                 return adapter_kind
         return "semantic_evidence_adapter"
@@ -1914,7 +1941,7 @@ class TaskLifecycleMixin:
         record: dict[str, Any] = {
             "id": self._advisor_evidence_executor_id(request=request, request_index=request_index, suggestion=suggestion),
             "status": status,
-            "source": request.get("source") or suggestion.get("source") or "llm_product_surface_advisor",
+            "source": suggestion.get("source") or request.get("source") or "llm_product_surface_advisor",
             "requestIndex": request_index,
             "requestKind": request.get("kind") or suggestion.get("requestKind"),
             "summary": request.get("summary") or suggestion.get("summary"),
@@ -1971,6 +1998,8 @@ class TaskLifecycleMixin:
             return "failed"
         if state == "denied_by_policy":
             return "blocked"
+        if state == "missing_tool":
+            return "missing_tool"
         if state in {"approval_required", "ready_for_executor"}:
             return state
         if not suggestion:
@@ -1991,6 +2020,8 @@ class TaskLifecycleMixin:
             return str(suggestion.get("permissionReason") or "Evidence execution is blocked by policy.")
         if status == "failed":
             return str(suggestion.get("executionError") or "Evidence executor setup failed.")
+        if status == "missing_tool":
+            return str(suggestion.get("permissionReason") or "No registered executable tool is available for this evidence adapter.")
         if status == "approval_required":
             return "Advisor suggested executable evidence; runtime requires approval before running it."
         if status == "ready_for_executor":
@@ -2329,7 +2360,7 @@ class TaskLifecycleMixin:
         )
         payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
         advisor_metadata = {
-            "source": "llm_product_surface_advisor",
+            "source": suggestion.get("source") or request.get("source") or "llm_product_surface_advisor",
             "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
             "executorId": self._advisor_evidence_executor_id(
                 request=request,
@@ -2385,7 +2416,7 @@ class TaskLifecycleMixin:
         }
         payload = advice.get("payload") if isinstance(advice.get("payload"), dict) else {}
         advisor_metadata = {
-            "source": "llm_product_surface_advisor",
+            "source": suggestion.get("source") or request.get("source") or "llm_product_surface_advisor",
             "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
             "executorId": self._advisor_evidence_executor_id(
                 request=request,
@@ -2520,8 +2551,10 @@ class TaskLifecycleMixin:
                 continue
             if request.get("status") == "satisfied":
                 continue
+            had_explicit_suggestion = False
             command = request.get("suggestedCommand")
             if isinstance(command, str) and command.strip():
+                had_explicit_suggestion = True
                 permission = self._advisor_evidence_permission_summary(
                     task=task,
                     request=request,
@@ -2561,10 +2594,27 @@ class TaskLifecycleMixin:
 
             suggested_tool = request.get("suggestedTool")
             if not isinstance(suggested_tool, dict):
+                if not had_explicit_suggestion:
+                    suggestions.extend(self._advisor_evidence_registry_suggestions(
+                        task=task,
+                        context=context,
+                        advice=advice,
+                        request=request,
+                        request_index=index,
+                    ))
                 continue
             tool_name = str(suggested_tool.get("name") or suggested_tool.get("toolName") or "").strip()
             if not tool_name or tool_name == "run_command":
+                if not had_explicit_suggestion:
+                    suggestions.extend(self._advisor_evidence_registry_suggestions(
+                        task=task,
+                        context=context,
+                        advice=advice,
+                        request=request,
+                        request_index=index,
+                    ))
                 continue
+            had_explicit_suggestion = True
             raw_arguments = suggested_tool.get("arguments")
             arguments = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
             permission = self._advisor_evidence_tool_permission_summary(
@@ -2610,6 +2660,132 @@ class TaskLifecycleMixin:
                 suggestion["approvalKind"] = permission["approvalKind"]
             suggestions.append({key: value for key, value in suggestion.items() if value not in (None, "")})
         return suggestions[:20]
+
+    def _advisor_evidence_registry_suggestions(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        advice: dict[str, Any],
+        request: dict[str, Any],
+        request_index: int,
+    ) -> list[dict[str, Any]]:
+        adapter = self._advisor_evidence_registry_match(request)
+        if adapter is None:
+            return []
+        adapter_kind = str(adapter.get("adapterKind") or "").strip()
+        if not adapter_kind:
+            return []
+        suggestions: list[dict[str, Any]] = []
+        for tool_name in adapter.get("toolCandidates", ()) or ():
+            tool_name = str(tool_name or "").strip()
+            if not tool_name:
+                continue
+            arguments = self._advisor_evidence_adapter_arguments(
+                adapter_kind=adapter_kind,
+                tool_name=tool_name,
+                request=request,
+            )
+            if arguments is None:
+                continue
+            permission = self._advisor_evidence_tool_permission_summary(
+                task=task,
+                context=context,
+                request=request,
+                tool_name=tool_name,
+                arguments=arguments,
+            )
+            decision = str(permission.get("decision") or "approval_required")
+            execution_state = "ready_for_executor"
+            if decision == "approval_required":
+                execution_state = "approval_required"
+            elif decision == "deny":
+                execution_state = "denied_by_policy"
+            suggestion: dict[str, Any] = {
+                "type": "tool",
+                "toolName": tool_name,
+                "arguments": arguments,
+                "requestIndex": request_index,
+                "requestKind": request.get("kind"),
+                "summary": request.get("summary"),
+                "target": request.get("target"),
+                "blocking": request.get("blocking") is True,
+                "source": "runtime_evidence_adapter_registry",
+                "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
+                "executionState": execution_state,
+                "executionMode": "adapter_suggestion",
+                "permissionDecision": decision,
+                "requiresApproval": decision == "approval_required",
+                "adapterKind": permission.get("adapterKind") or adapter_kind,
+                "adapterConfidence": permission.get("adapterConfidence", adapter.get("confidence")),
+            }
+            if permission.get("capability"):
+                suggestion["capability"] = permission["capability"]
+            if request.get("domain") not in (None, ""):
+                suggestion["domain"] = request.get("domain")
+            if permission.get("reason"):
+                suggestion["permissionReason"] = permission["reason"]
+            if permission.get("approvalKind"):
+                suggestion["approvalKind"] = permission["approvalKind"]
+            suggestions.append({key: value for key, value in suggestion.items() if value not in (None, "")})
+            if decision != "deny":
+                break
+        if suggestions:
+            return suggestions
+        return [{
+            "type": "adapter",
+            "requestIndex": request_index,
+            "requestKind": request.get("kind"),
+            "summary": request.get("summary"),
+            "target": request.get("target"),
+            "blocking": request.get("blocking") is True,
+            "source": "runtime_evidence_adapter_registry",
+            "proposalRecordId": request.get("proposalRecordId") or advice.get("proposalRecordId"),
+            "executionState": "missing_tool",
+            "executionMode": "adapter_registry",
+            "permissionDecision": "deny",
+            "requiresApproval": False,
+            "adapterKind": adapter_kind,
+            "adapterConfidence": adapter.get("confidence"),
+            "permissionReason": "Runtime has a matching evidence adapter kind but no registered executable tool for this workspace.",
+        }]
+
+    def _advisor_evidence_registry_match(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        adapter_kind = self._advisor_evidence_inferred_adapter_kind(request)
+        if adapter_kind in {"run_command", "tool", "mcp_tool", "semantic_evidence_adapter"}:
+            return None
+        for adapter in _ADVISOR_EVIDENCE_ADAPTER_REGISTRY:
+            if str(adapter.get("adapterKind") or "") == adapter_kind:
+                return dict(adapter)
+        return None
+
+    @staticmethod
+    def _advisor_evidence_adapter_arguments(
+        *,
+        adapter_kind: str,
+        tool_name: str,
+        request: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        target = str(request.get("target") or "").strip()
+        summary = str(request.get("summary") or "").strip()
+        if tool_name in {"browser", "web_fetch"}:
+            url = target if target.startswith(("http://", "https://")) else ""
+            if not url:
+                return None
+            if tool_name == "browser":
+                return {"url": url, "action": "read"}
+            return {"url": url, "method": "GET"}
+        if tool_name == "read_file":
+            candidate = target or summary
+            if not candidate:
+                return None
+            if candidate.startswith(("http://", "https://")):
+                return None
+            normalized = candidate.replace("\\", "/").strip().strip("`'\" ")
+            if not normalized or normalized in {".", "/"}:
+                return None
+            return {"path": normalized}
+        return None
 
     def _advisor_evidence_permission_summary(
         self,
@@ -3159,6 +3335,11 @@ class TaskLifecycleMixin:
         ):
             return "satisfied"
         if self._advisor_evidence_suggested_tool_satisfied(
+            request=request,
+            tool_results=tool_results or [],
+        ):
+            return "satisfied"
+        if self._advisor_evidence_adapter_tool_satisfied(
             request=request,
             tool_results=tool_results or [],
         ):
@@ -5819,6 +6000,9 @@ class TaskLifecycleMixin:
                 "summary": result.get("summary") or result.get("error"),
                 "failed": self._completion_tool_result_failed(result),
             }
+            for key in ("id", "approvalId", "advisorEvidence"):
+                if tool_result.get(key) not in (None, "", [], {}):
+                    item[key] = tool_result[key]
             if name == "run_command":
                 item["exitCode"] = result.get("exitCode")
                 item["command"] = result.get("command")
@@ -5910,6 +6094,60 @@ class TaskLifecycleMixin:
             if item is failed_item or item.get("name") != "run_command" or item.get("failed") is True:
                 continue
             if self._structural_command_resolution_key(item.get("command")) == failed_key:
+                return True
+        return False
+
+    def _advisor_evidence_adapter_tool_satisfied(
+        self,
+        *,
+        request: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+    ) -> bool:
+        adapter = self._advisor_evidence_registry_match(request)
+        if adapter is None:
+            return False
+        adapter_kind = str(adapter.get("adapterKind") or "").strip()
+        if not adapter_kind:
+            return False
+        candidate_tools = {
+            str(tool_name or "").strip()
+            for tool_name in adapter.get("toolCandidates", ()) or ()
+            if str(tool_name or "").strip()
+        }
+        if not candidate_tools:
+            return False
+        request_kind = str(request.get("kind") or "").strip()
+        request_target = str(request.get("target") or "").strip()
+        for tool_result in tool_results:
+            if not isinstance(tool_result, dict):
+                continue
+            tool_name = str(tool_result.get("name") or "").strip()
+            if tool_name not in candidate_tools:
+                continue
+            result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+            if self._completion_tool_result_failed(result):
+                continue
+            advisor_evidence = tool_result.get("advisorEvidence")
+            if isinstance(advisor_evidence, dict):
+                metadata_adapter_kind = str(advisor_evidence.get("adapterKind") or "").strip()
+                if metadata_adapter_kind and metadata_adapter_kind != adapter_kind:
+                    continue
+                metadata_kind = str(advisor_evidence.get("requestKind") or "").strip()
+                if metadata_kind and request_kind and metadata_kind != request_kind:
+                    continue
+                metadata_target = str(advisor_evidence.get("target") or "").strip()
+                if metadata_target and request_target and metadata_target != request_target:
+                    continue
+                return True
+            expected_arguments = self._advisor_evidence_adapter_arguments(
+                adapter_kind=adapter_kind,
+                tool_name=tool_name,
+                request=request,
+            )
+            if expected_arguments is None:
+                continue
+            arguments = tool_result.get("arguments") if isinstance(tool_result.get("arguments"), dict) else {}
+            if self._advisor_evidence_arguments_match_subset(arguments, expected_arguments):
                 return True
         return False
 

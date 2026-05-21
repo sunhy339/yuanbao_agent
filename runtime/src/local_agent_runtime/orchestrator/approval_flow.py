@@ -722,6 +722,12 @@ class ApprovalFlowMixin:
                 task=runtime_task,
                 tool_spec=tool_spec,
             )
+            advisor_evidence = request.get("advisorEvidence") if isinstance(request.get("advisorEvidence"), dict) else {}
+            if advisor_evidence:
+                tool_result["advisorEvidence"] = {
+                    key: value for key, value in advisor_evidence.items() if value not in (None, "", [], {})
+                }
+                tool_result["approvalId"] = approval["id"]
             result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
             status = str(result.get("status") or "").strip()
             if status in {"blocked", "approval_required"} or self._tool_failed(tool_name, result):

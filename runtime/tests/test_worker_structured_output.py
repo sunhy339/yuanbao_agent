@@ -3553,6 +3553,202 @@ class TestCompletionHardGate:
         evidence_event = next(event for event in captured_events if event.type == "agent.evidence.requested")
         assert evidence_event.payload["adapterSummary"]["adapters"][0]["adapterKind"] == "browser_inspection_adapter"
 
+    def test_advisor_browser_inspection_without_suggested_tool_uses_adapter_registry(self, tmp_path: Any) -> None:
+        class RecordingAdvisor:
+            def __init__(self) -> None:
+                self.completion_inputs: list[dict[str, Any]] = []
+
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor asks for browser evidence without naming a tool.",
+                        fallback_reason=None,
+                        proposal_id="surface_browser_registry_1",
+                        confidence=0.86,
+                        payload={
+                            "surface_type": "rendered_page",
+                            "evidence_requests": [
+                                {
+                                    "kind": "browser_inspection",
+                                    "summary": "Inspect the rendered page.",
+                                    "target": "http://localhost:4173/docs",
+                                    "blocking": False,
+                                },
+                            ],
+                        },
+                    )
+                self.completion_inputs.append(input_context)
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="Browser evidence is optional and adapter availability is tracked.",
+                    fallback_reason=None,
+                    proposal_id="completion_browser_registry_1",
+                    confidence=0.82,
+                    payload={"is_complete": True, "surface_type": "rendered_page"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True)
+        store = rt.store
+        store.update_config({
+            "permissions": {
+                "capabilities": {
+                    "browserAutomation": {"mode": "ask", "scope": "*"},
+                },
+            },
+        })
+        rt.orchestrator._tool_registry.register(  # noqa: SLF001
+            "browser",
+            lambda params: {"status": "ok", "url": params.get("url"), "content": "Docs page"},
+            {"name": "browser", "description": "Inspect browser content."},
+        )
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "docs.html").write_text("<main>Docs page</main>\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="browser registry adapter")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Create a rendered docs page",
+            plan=[],
+            routing={"scenario": "doc_write"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "docs.html", "summary": "created docs page"}],
+            verification=[{"command": "git diff -- docs.html", "status": "passed", "summary": "docs reviewed"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Created the rendered docs page.",
+            context={"workspace_root": str(project), "routing": {"scenario": "doc_write"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]
+        suggestion = evidence["advisorEvidenceExecutionSuggestions"][0]
+        assert suggestion["source"] == "runtime_evidence_adapter_registry"
+        assert suggestion["toolName"] == "browser"
+        assert suggestion["arguments"] == {"url": "http://localhost:4173/docs", "action": "read"}
+        assert suggestion["adapterKind"] == "browser_inspection_adapter"
+        assert suggestion["executionMode"] == "adapter_suggestion"
+        executor = evidence["advisorEvidenceExecutor"][0]
+        assert executor["source"] == "runtime_evidence_adapter_registry"
+        assert executor["adapterKind"] == "browser_inspection_adapter"
+        assert advisor.completion_inputs[0]["advisor_evidence_adapters"]["adapters"][0]["adapterKind"] == "browser_inspection_adapter"
+        evidence_event = next(event for event in captured_events if event.type == "agent.evidence.requested")
+        assert evidence_event.payload["executionSuggestions"][0]["source"] == "runtime_evidence_adapter_registry"
+
+    def test_blocking_registry_adapter_waits_for_approval_then_executes(self, tmp_path: Any) -> None:
+        url = "http://localhost:4173/docs"
+
+        class RecordingAdvisor:
+            def advise(self, kind: str, input_context: dict[str, Any]) -> Any:
+                if kind == "product_surface_decision":
+                    return SimpleNamespace(
+                        accepted=True,
+                        source="llm",
+                        rationale="The advisor requires browser inspection before completion.",
+                        fallback_reason=None,
+                        proposal_id="surface_browser_registry_blocking_1",
+                        confidence=0.88,
+                        payload={
+                            "surface_type": "rendered_page",
+                            "evidence_requests": [
+                                {
+                                    "kind": "browser_inspection",
+                                    "summary": "Inspect the rendered page before completing.",
+                                    "target": url,
+                                    "blocking": True,
+                                },
+                            ],
+                        },
+                    )
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="Completion is acceptable once browser inspection runs.",
+                    fallback_reason=None,
+                    proposal_id="completion_browser_registry_blocking_1",
+                    confidence=0.82,
+                    payload={"is_complete": True, "surface_type": "rendered_page"},
+                )
+
+        advisor = RecordingAdvisor()
+        rt = _make_runtime(tmp_path, decision_advisor=advisor, enable_hooks=True)
+        store = rt.store
+        store.update_config({
+            "permissions": {
+                "capabilities": {
+                    "browserAutomation": {"mode": "ask", "scope": "*"},
+                },
+            },
+        })
+        rt.orchestrator._tool_registry.register(  # noqa: SLF001
+            "browser",
+            lambda params: {"status": "ok", "url": params.get("url"), "content": "Docs page"},
+            {"name": "browser", "description": "Inspect browser content."},
+        )
+        captured_events: list[Any] = []
+        rt.event_bus.subscribe(captured_events.append)
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "docs.html").write_text("<main>Docs page</main>\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="blocking browser registry adapter")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="Create a rendered docs page",
+            plan=[],
+            routing={"scenario": "doc_write"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "docs.html", "summary": "created docs page"}],
+            verification=[{"command": "git diff -- docs.html", "status": "passed", "summary": "docs reviewed"}],
+        )
+
+        waiting = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Created the rendered docs page.",
+            context={"workspace_root": str(project), "routing": {"scenario": "doc_write"}},
+            skip_reflection=True,
+        )
+
+        assert waiting["status"] == "waiting_approval"
+        suggestion = waiting["structuredResult"]["completionEvidence"]["advisorEvidenceExecutionSuggestions"][0]
+        approval_id = suggestion["approvalId"]
+        assert suggestion["source"] == "runtime_evidence_adapter_registry"
+        assert suggestion["executionMode"] == "approval_then_tool"
+        assert suggestion["approvalRequest"]["toolName"] == "browser"
+        assert suggestion["approvalRequest"]["arguments"] == {"url": url, "action": "read"}
+        approval_events = [
+            event for event in captured_events
+            if event.type == "approval.requested" and event.payload.get("kind") == "advisor_tool"
+        ]
+        assert len(approval_events) == 1
+
+        approved = rt.orchestrator.submit_approval({"approvalId": approval_id, "decision": "approved"})
+        completed_task = approved["task"]
+        assert completed_task["status"] == "completed"
+        completed_evidence = completed_task["structuredResult"]["completionEvidence"]
+        assert completed_evidence["advisorRequestedEvidence"][0]["status"] == "satisfied"
+        assert completed_evidence["toolResults"][0]["name"] == "browser"
+        assert completed_evidence["toolResults"][0]["approvalId"] == approval_id
+        assert completed_evidence["toolResults"][0]["advisorEvidence"]["source"] == "runtime_evidence_adapter_registry"
+        assert completed_evidence["toolResults"][0]["advisorEvidence"]["target"] == url
+
     def test_advisor_suggested_command_records_permission_denial_without_execution(self, tmp_path: Any) -> None:
         class RecordingAdvisor:
             def advise(self, kind: str, input_context: dict[str, Any]) -> Any:

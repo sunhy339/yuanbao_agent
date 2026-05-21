@@ -31,6 +31,57 @@ from ..store.sqlite_store import SQLiteStore
 class MessageExecutionMixin:
     """Mixin providing execution strategies and background worker management."""
 
+    def _recover_loop_failure_with_completion_evidence(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+        error: Exception,
+    ) -> dict[str, Any] | None:
+        message = str(error or "").strip()
+        if "Provider returned no final answer or tool calls." not in message:
+            return None
+        task_snapshot = self._store.get_task({"taskId": task["id"]})["task"]
+        has_changed_files = bool(task_snapshot.get("changedFiles") or [])
+        command_logs = self._store.list_command_logs({"taskId": task["id"], "limit": 50})["commandLogs"]
+        has_passing_verification = any(
+            isinstance(command, dict)
+            and str(command.get("status") or "").strip().lower() in {"completed", "passed", "success"}
+            and command.get("exitCode") in (0, "0", None)
+            and self._completion_text_mentions_targeted_verification(
+                str(command.get("command") or command.get("summary") or "")
+            )
+            for command in command_logs
+        )
+        if not has_changed_files or not has_passing_verification:
+            return None
+        recovered = self._complete_task(
+            session_id=session_id,
+            task=task_snapshot,
+            summary=(
+                "Recovered after provider returned no final answer or tool calls. "
+                "Using successful verification evidence already recorded in the task."
+            ),
+            context=context,
+            tool_results=[],
+            skip_reflection=True,
+        )
+        if recovered.get("status") != "completed":
+            return None
+        self._publish(
+            session_id=session_id,
+            task=recovered,
+            event_type="task.loop_failure.recovered",
+            payload={
+                "taskId": recovered["id"],
+                "reason": "provider_empty_final",
+                "source": "completion_evidence",
+            },
+        )
+        return {"task": recovered}
+
     def _execute_message_task(
         self,
         *,
@@ -132,6 +183,15 @@ class MessageExecutionMixin:
             }
         except Exception as exc:  # noqa: BLE001
             logger.error("React loop failed for task=%s: %s", task["id"], exc, exc_info=True)
+            recovered = self._recover_loop_failure_with_completion_evidence(
+                session_id=session_id,
+                task=task,
+                goal=goal,
+                context=context,
+                error=exc,
+            )
+            if recovered is not None:
+                return recovered
             failure_recovery = classify_provider_failure(exc).to_dict()
             return {
                 "task": self._fail_task(

@@ -1381,6 +1381,117 @@ def test_plan_execute_recovers_failed_subtask_from_root_completion_evidence(
     assert any(event["payload"].get("mode") == "completion_evidence" for event in recovered_events)
 
 
+def test_react_loop_provider_empty_final_recovers_from_completion_evidence(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "blog_models.py").write_text("VALUE = 1\n", encoding="utf-8")
+    tests_dir = workspace_root / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_blog_api.py").write_text(
+        "def test_blog_api():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator,
+        "_route_goal",
+        lambda _goal: RoutingDecision(
+            scenario=Scenario.CODE_EDIT,
+            strategy=ExecutionStrategy.REACT_STANDARD,
+            confidence=0.99,
+            enable_planning=False,
+            enable_reflection=False,
+            reasoning="forced react_standard for completion recovery test",
+        ),
+    )
+    active_task_id = {"value": None}
+
+    original_create_task = runtime_harness.store.create_task
+
+    def instrumented_create_task(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        created = original_create_task(*args, **kwargs)
+        if created.get("goal") == "repair blog follow-up":
+            active_task_id["value"] = created["id"]
+        return created
+
+    monkeypatch.setattr(runtime_harness.store, "create_task", instrumented_create_task)
+
+    def fake_run_react_loop(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        task_id = active_task_id["value"]
+        assert task_id
+        runtime_harness.store.update_task(
+            task_id=task_id,
+            changed_files=[
+                {"path": "blog_models.py", "summary": "fixed status transition handling"},
+                {"path": "tests/test_blog_api.py", "summary": "verified API behavior"},
+            ],
+        )
+        command_log = runtime_harness.store.create_command_log(
+            task_id=task_id,
+            command=r"C:\Python314\python.exe -m pytest -q",
+            cwd=str(workspace_root),
+            shell="powershell",
+        )
+        runtime_harness.store.update_command_log(
+            command_log["id"],
+            status="completed",
+            exit_code=0,
+            stdout_path="",
+            stderr_path="",
+        )
+        node_log = runtime_harness.store.create_command_log(
+            task_id=task_id,
+            command=r"C:\Program Files\nodejs\node.exe --check app.js",
+            cwd=str(workspace_root),
+            shell="powershell",
+        )
+        runtime_harness.store.update_command_log(
+            node_log["id"],
+            status="completed",
+            exit_code=0,
+            stdout_path="",
+            stderr_path="",
+        )
+        raise RuntimeError("Provider returned no final answer or tool calls.")
+
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator,
+        "_run_react_loop",
+        fake_run_react_loop,
+    )
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "react completion recovery"},
+        ),
+        "session",
+    )
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "repair blog follow-up"},
+        ),
+        "task",
+    )
+    assert task["status"] == "completed"
+    evidence = task["structuredResult"]["completionEvidence"]
+    assert evidence["evidenceLevel"] == "verified"
+    assert evidence["counts"]["failedToolResults"] == 0
+    assert evidence["counts"]["passedTestsRun"] >= 1
+    assert "Recovered after provider returned no final answer or tool calls." in task["resultSummary"]
+    assert any(event["type"] == "task.loop_failure.recovered" for event in runtime_harness.events)
+
+
 def test_supervisor_plan_approval_reject(runtime_harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """In strict mode, supervisor plan requires approval; rejection fails the task."""
     from local_agent_runtime.orchestration.types import OrchestrationResult

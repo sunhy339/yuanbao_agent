@@ -75,12 +75,13 @@ class ConfigFlowMixin:
         skill_id = params.get("skillId")
         skill_preset = self._context_builder._resolve_skill(skill_id) if skill_id else None
 
-        system_text, prompt_layers = self._context_builder._compose_system_prompt(
+        system_text, prompt_layers, role_text = self._context_builder._compose_system_prompt(
             workspace_root=workspace_root,
             config=config,
             role=role,
             skill_preset=skill_preset,
         )
+        preview_text = "\n\n".join(part for part in (system_text, role_text) if part)
 
         # Mark runtime-owned layers as locked
         for layer in prompt_layers:
@@ -89,7 +90,7 @@ class ConfigFlowMixin:
                 layer["editable"] = False
 
         return {
-            "systemPrompt": system_text,
+            "systemPrompt": preview_text,
             "layers": prompt_layers,
             "totalTokenEstimate": sum(l.get("tokenEstimate", 0) for l in prompt_layers),
         }

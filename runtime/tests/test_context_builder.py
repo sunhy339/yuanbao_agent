@@ -369,6 +369,38 @@ def test_context_builder_orders_stable_memory_before_dynamic_history_and_repo_no
     assert text.index("--- README.md ---") < text.index("Git status summary:")
 
 
+def test_context_builder_moves_child_role_after_stable_workspace_prefix(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "README.md").write_text("# Stable workspace\n", encoding="utf-8")
+    (workspace_root / "YUANBAO.md").write_text(
+        "Canonical rule: runtime guards stay authoritative.\n",
+        encoding="utf-8",
+    )
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Child cache")
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Implement the worker slice",
+        lightweight=False,
+        role="worker",
+    )
+
+    messages = context["messages"]
+    system_text = str(messages[0]["content"])
+    all_text = _message_text(context)
+    assert "worker agent" not in system_text
+    assert "worker agent" in all_text
+    assert "--- README.md ---" in all_text
+    assert all_text.index("--- README.md ---") < all_text.index("You are a worker agent")
+    assert all_text.index("You are a worker agent") < all_text.index("Current user request:")
+    assert context["budgetStats"]["stablePrefixTokens"] > 0
+
+
 def test_context_builder_keeps_workspace_project_focus_under_tight_budget(
     store: SQLiteStore,
     tmp_path: Path,

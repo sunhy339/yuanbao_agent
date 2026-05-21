@@ -356,10 +356,14 @@ class ChildTaskMixin:
         updated = dict(context)
         updated["childRuntimeHints"] = hints
         messages = list(updated.get("messages") or [])
-        messages.append({
+        hint_message = {
             "role": "system",
             "content": self._child_runtime_hint_text(hints),
-        })
+        }
+        if messages and messages[-1].get("role") == "user":
+            messages.insert(-1, hint_message)
+        else:
+            messages.append(hint_message)
         updated["messages"] = messages
         return updated
 

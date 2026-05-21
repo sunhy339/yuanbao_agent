@@ -21,6 +21,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
 
+from ..context.token_budget import estimate_tokens
 from ..models import ProposalKind
 from .proposal_validator import validate_proposal
 
@@ -282,15 +283,13 @@ class AdvisorProvider(Protocol):
 # DecisionAdvisor
 # ---------------------------------------------------------------------------
 
-_ADVISOR_PROMPT_TEMPLATE = """\
+_ADVISOR_SYSTEM_PROMPT_TEMPLATE = """\
 You are a runtime decision advisor. Given the decision kind and input context,
 propose the best decision as a JSON object.
 
 **Decision kind**: {kind}
 **Description**: {description}
 **Allowed proposal fields**: {allowed_fields}
-**Input context**:
-{input_context}
 
 Respond ONLY with valid JSON:
 {{
@@ -302,6 +301,11 @@ Respond ONLY with valid JSON:
 The proposal object must only contain fields from the allowed list.
 Do not include markdown fences, analysis, comments, or extra text.
 If you are uncertain, still return the JSON shape above with lower confidence.
+"""
+
+_ADVISOR_INPUT_CONTEXT_TEMPLATE = """\
+Decision input context:
+{input_context}
 """
 
 
@@ -447,26 +451,32 @@ class DecisionAdvisor:
         kind_policy: dict[str, float | None],
     ) -> tuple[dict[str, Any] | None, str | None]:
         """Build prompt, call LLM, parse response."""
-        prompt = _ADVISOR_PROMPT_TEMPLATE.format(
-            kind=entry.kind,
-            description=entry.description,
-            allowed_fields=", ".join(entry.allowed_proposal_schema),
-            input_context=json.dumps(
-                self._prompt_input_context(input_context),
-                indent=2,
-                default=str,
-            ),
-        )
+        messages = self._prompt_messages(entry, input_context)
+        prompt = "\n\n".join(str(message.get("content") or "") for message in messages)
+        stable_prefix_tokens = self._prompt_stable_prefix_tokens(messages)
+        prompt_cache = {
+            "shape": "stable_advisor_prefix_v1",
+            "stablePrefixTokens": stable_prefix_tokens,
+            "messageCount": len(messages),
+            "stableMessageCount": max(0, len(messages) - 1),
+            "kind": entry.kind,
+        }
+        provider_context: dict[str, Any] = {
+            "messages": messages,
+            "budgetStats": {
+                "stablePrefixTokens": stable_prefix_tokens,
+                "promptCache": prompt_cache,
+            },
+            "promptCache": prompt_cache,
+            "_advisor_prompt_cache": prompt_cache,
+        }
+        config = input_context.get("config")
+        if isinstance(config, dict):
+            provider_context["config"] = self._provider_context_config(
+                config=config,
+                kind_policy=kind_policy,
+            )
         try:
-            provider_context: dict[str, Any] = {
-                "messages": [{"role": "user", "content": prompt}],
-            }
-            config = input_context.get("config")
-            if isinstance(config, dict):
-                provider_context["config"] = self._provider_context_config(
-                    config=config,
-                    kind_policy=kind_policy,
-                )
             response = self._provider.generate(prompt, provider_context)  # type: ignore[union-attr]
             message = response.get("message") or response.get("final_answer") or ""
             assistant_message = response.get("assistant_message")
@@ -478,6 +488,35 @@ class DecisionAdvisor:
         except Exception as exc:  # noqa: BLE001
             logger.warning("DecisionAdvisor LLM call failed for %s: %s", entry.kind, exc)
             return None, str(exc)
+
+    def _prompt_messages(
+        self,
+        entry: DecisionKindEntry,
+        input_context: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        system_prompt = _ADVISOR_SYSTEM_PROMPT_TEMPLATE.format(
+            kind=entry.kind,
+            description=entry.description,
+            allowed_fields=", ".join(entry.allowed_proposal_schema),
+        )
+        input_prompt = _ADVISOR_INPUT_CONTEXT_TEMPLATE.format(
+            input_context=json.dumps(
+                self._prompt_input_context(input_context),
+                indent=2,
+                sort_keys=True,
+                default=str,
+            )
+        )
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": input_prompt},
+        ]
+
+    @staticmethod
+    def _prompt_stable_prefix_tokens(messages: list[dict[str, str]]) -> int:
+        if not messages:
+            return 0
+        return sum(estimate_tokens(message.get("content", "")) for message in messages[:-1])
 
     def _kind_policy(self, kind: str, input_context: dict[str, Any]) -> dict[str, float | None]:
         advisor_config = self._advisor_config(input_context)

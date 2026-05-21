@@ -205,6 +205,26 @@ class TestDecisionAdvisorAdvise:
         assert "sk-secret" not in provider.prompts[0]
         assert "[redacted]" in provider.prompts[0]
 
+    def test_advisor_prompt_uses_stable_prefix_and_dynamic_context_tail(self) -> None:
+        provider = _GoodProvider()
+        advisor = DecisionAdvisor(provider=provider)
+
+        first = advisor.advise("intent_mode", {"goal": "fix alpha"})
+        second = advisor.advise("intent_mode", {"goal": "fix beta"})
+
+        assert first.accepted is True
+        assert second.accepted is True
+        first_messages = provider.contexts[0]["messages"]
+        second_messages = provider.contexts[1]["messages"]
+        assert [message["role"] for message in first_messages] == ["system", "user"]
+        assert first_messages[0]["content"] == second_messages[0]["content"]
+        assert "fix alpha" in first_messages[-1]["content"]
+        assert "fix beta" in second_messages[-1]["content"]
+        assert "fix alpha" not in first_messages[0]["content"]
+        cache_meta = provider.contexts[0]["promptCache"]
+        assert cache_meta["shape"] == "stable_advisor_prefix_v1"
+        assert cache_meta["stablePrefixTokens"] > 0
+
     def test_routing_strategy_uses_short_advisor_timeout(self) -> None:
         provider = _RecordingFailureProvider()
         advisor = DecisionAdvisor(provider=provider)

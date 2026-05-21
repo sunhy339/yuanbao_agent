@@ -282,7 +282,7 @@ class ContextBuilder(HistoryMixin):
         include_scratchpad: bool = True,
     ) -> tuple[list[dict[str, str]], dict[str, Any]]:
         max_context_tokens = self._max_context_tokens(config)
-        system_text, prompt_layers = self._compose_system_prompt(
+        system_text, prompt_layers, role_text = self._compose_system_prompt(
             workspace_root=workspace["rootPath"],
             config=config,
             role=role,
@@ -340,8 +340,19 @@ class ContextBuilder(HistoryMixin):
                     minimum_tokens=16,
                 )
             )
-        elif include_history:
-            sections.extend(self._conversation_history_sections(session))
+        else:
+            if include_history:
+                sections.extend(self._conversation_history_sections(session))
+
+        if role_text:
+            sections.append(
+                BudgetSection(
+                    name="runtime_role",
+                    text=role_text,
+                    priority=900,
+                    truncatable=False,
+                )
+            )
 
         sections.append(
             BudgetSection(
@@ -719,7 +730,7 @@ class ContextBuilder(HistoryMixin):
 
     def _system_prompt(self, *, workspace_root: str, role: str | None = None) -> str:
         return "\n".join([
-            self._role_prompt(role),
+            self._base_role_prompt(),
             "",
             self._safety_prompt(workspace_root=workspace_root),
         ])
@@ -731,10 +742,12 @@ class ContextBuilder(HistoryMixin):
         config: dict[str, Any],
         role: str | None = None,
         skill_preset: Any | None = None,
-    ) -> tuple[str, list[dict[str, Any]]]:
+    ) -> tuple[str, list[dict[str, Any]], str]:
         """Compose runtime-owned safety with user-configurable soul layers."""
         sections: list[tuple[str, str, dict[str, Any]]] = []
-        sections.append(("role", self._role_prompt(role), {"role": (role or "root").lower()}))
+        effective_role = (role or "root").lower()
+        role_prompt = self._role_prompt(effective_role)
+        sections.append(("role", self._base_role_prompt(), {"role": "base"}))
 
         soul_profile = self._active_agent_soul_profile(config)
         soul_prompt = self._agent_soul_prompt(soul_profile)
@@ -772,13 +785,23 @@ class ContextBuilder(HistoryMixin):
             for name, text, metadata in sections
             if text
         ]
-        return "\n\n".join(text for _name, text, _metadata in sections if text), prompt_layers
+        if effective_role != "root" and role_prompt:
+            prompt_layers.append({
+                "name": "runtime_role",
+                "tokenEstimate": estimate_tokens(role_prompt),
+                "role": effective_role,
+                "dynamic": True,
+            })
+        return "\n\n".join(text for _name, text, _metadata in sections if text), prompt_layers, role_prompt if effective_role != "root" else ""
+
+    def _base_role_prompt(self) -> str:
+        return "You are a local coding agent operating in a user-controlled desktop runtime."
 
     def _role_prompt(self, role: str | None = None) -> str:
         effective_role = (role or "root").lower()
         lines: list[str] = []
         if effective_role == "root":
-            lines.append("You are a local coding agent operating in a user-controlled desktop runtime.")
+            lines.append(self._base_role_prompt())
         else:
             role_instructions = self._ROLE_INSTRUCTIONS.get(effective_role)
             if role_instructions:

@@ -245,7 +245,7 @@ class TestAdvisorRoutingFallback:
         assert router.last_advice is not None
         assert router.last_advice.accepted is True
         assert provider.contexts
-        prompt_context = provider.contexts[0]["messages"][0]["content"]
+        prompt_context = "\n\n".join(message["content"] for message in provider.contexts[0]["messages"])
         assert "rule_candidate" in prompt_context
         assert "Do not choose multi_step_task just because" in prompt_context
         assert "explicitly requires multi-agent work" in prompt_context

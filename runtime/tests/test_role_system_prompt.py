@@ -31,6 +31,10 @@ def _first_system_message(context: dict[str, Any]) -> str:
     return ""
 
 
+def _message_text(context: dict[str, Any]) -> str:
+    return "\n\n".join(str(msg.get("content") or "") for msg in context["messages"])
+
+
 class TestRoleSystemPrompt:
     """Test that different roles produce different system prompts."""
 
@@ -58,9 +62,11 @@ class TestRoleSystemPrompt:
         builder = ContextBuilder(store=store)
         context = builder.build(session_id=session_id, goal="test", role="worker")
         system_msg = _first_system_message(context)
-        assert "worker agent" in system_msg
-        assert "assigned scope" in system_msg
-        assert "NOT commit" in system_msg
+        text = _message_text(context)
+        assert "worker agent" not in system_msg
+        assert "worker agent" in text
+        assert "assigned scope" in text
+        assert "NOT commit" in text
 
     def test_reviewer_role_prompt(self, tmp_path: Any) -> None:
         """Reviewer role gets read-only review instructions."""
@@ -68,8 +74,10 @@ class TestRoleSystemPrompt:
         builder = ContextBuilder(store=store)
         context = builder.build(session_id=session_id, goal="test", role="reviewer")
         system_msg = _first_system_message(context)
-        assert "reviewer agent" in system_msg
-        assert "Read-only" in system_msg or "read-only" in system_msg
+        text = _message_text(context)
+        assert "reviewer agent" not in system_msg
+        assert "reviewer agent" in text
+        assert "Read-only" in text or "read-only" in text
 
     def test_planner_role_prompt(self, tmp_path: Any) -> None:
         """Planner role gets planning instructions."""
@@ -77,8 +85,10 @@ class TestRoleSystemPrompt:
         builder = ContextBuilder(store=store)
         context = builder.build(session_id=session_id, goal="test", role="planner")
         system_msg = _first_system_message(context)
-        assert "planner agent" in system_msg
-        assert "subtask" in system_msg.lower()
+        text = _message_text(context)
+        assert "planner agent" not in system_msg
+        assert "planner agent" in text
+        assert "subtask" in text.lower()
 
     def test_summarizer_role_prompt(self, tmp_path: Any) -> None:
         """Summarizer role gets synthesis instructions."""
@@ -86,8 +96,10 @@ class TestRoleSystemPrompt:
         builder = ContextBuilder(store=store)
         context = builder.build(session_id=session_id, goal="test", role="summarizer")
         system_msg = _first_system_message(context)
-        assert "summarizer agent" in system_msg
-        assert "synthesize" in system_msg.lower() or "summary" in system_msg.lower()
+        text = _message_text(context)
+        assert "summarizer agent" not in system_msg
+        assert "summarizer agent" in text
+        assert "synthesize" in text.lower() or "summary" in text.lower()
 
     def test_all_roles_include_safety_boundaries(self, tmp_path: Any) -> None:
         """All roles include the safety boundaries section."""
@@ -315,6 +327,33 @@ class TestRoleSystemPrompt:
         assert "do not probe python, python3, or py" in result["messages"][-1]["content"]
         assert "narrowest relevant directory" in result["messages"][-1]["content"]
 
+    def test_child_worker_runtime_hints_stay_before_current_request(self, tmp_path: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        event_bus = EventBus()
+        orchestrator = Orchestrator(
+            store=store,
+            event_bus=event_bus,
+            tool_registry=ToolRegistry(),
+            provider=SimpleNamespace(generate=lambda _prompt, _context: {"final_answer": "done"}),
+        )
+        context = {
+            "workspace_root": str(tmp_path / "workspace"),
+            "messages": [
+                {"role": "system", "content": "base"},
+                {"role": "user", "content": "Stable workspace context pack:\nREADME"},
+                {"role": "user", "content": "Current user request:\nImplement worker slice"},
+            ],
+        }
+
+        result = orchestrator._context_with_child_runtime_hints(  # noqa: SLF001
+            context,
+            child_allowlist=("read_file", "run_command"),
+        )
+
+        assert [message["role"] for message in result["messages"]] == ["system", "user", "system", "user"]
+        assert "Preferred pytest command" in result["messages"][-2]["content"]
+        assert result["messages"][-1]["content"] == "Current user request:\nImplement worker slice"
+
     def test_child_worker_without_run_command_skips_runtime_hints(self, tmp_path: Any) -> None:
         store = SQLiteStore(str(tmp_path / "test.sqlite3"))
         event_bus = EventBus()
@@ -352,9 +391,10 @@ class TestRoleSystemPrompt:
         def fake_plan(goal: str, context: dict[str, Any]) -> list[dict[str, Any]]:
             captured_goals.append(goal)
             user_messages = [msg for msg in context["messages"] if msg.get("role") == "user"]
-            assert len(user_messages) == 1
-            assert "Legacy parent message." not in user_messages[0]["content"]
-            assert "Build backend API only." in user_messages[0]["content"]
+            user_text = "\n\n".join(str(msg.get("content") or "") for msg in user_messages)
+            assert len(user_messages) == 2
+            assert "Legacy parent message." not in user_text
+            assert "Build backend API only." in user_text
             assert context["_child_clean_context"] is True
             return []
 

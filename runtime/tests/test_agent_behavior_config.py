@@ -22,6 +22,10 @@ def _first_system_message(context: dict[str, Any]) -> str:
     return ""
 
 
+def _all_message_text(context: dict[str, Any]) -> str:
+    return "\n\n".join(str(message.get("content") or "") for message in context["messages"])
+
+
 def test_default_config_includes_agent_behavior_profiles(tmp_path: Any) -> None:
     store = SQLiteStore(str(tmp_path / "test.sqlite3"))
 
@@ -68,7 +72,9 @@ def test_agent_soul_prompt_layers_are_injected_and_audited(tmp_path: Any) -> Non
     context = ContextBuilder(store=store).build(session_id=session_id, goal="inspect routing", role="planner")
 
     system_message = _first_system_message(context)
-    assert "planner agent" in system_message
+    all_text = _all_message_text(context)
+    assert "planner agent" not in system_message
+    assert "planner agent" in all_text
     assert "Agent soul:" in system_message
     assert "You are a careful systems architect." in system_message
     assert "Never skip task snapshots." in system_message
@@ -84,6 +90,7 @@ def test_agent_soul_prompt_layers_are_injected_and_audited(tmp_path: Any) -> Non
         "agent_soul",
         "workspace_instructions",
         "runtime_safety",
+        "runtime_role",
     ]
 
 

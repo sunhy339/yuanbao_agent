@@ -673,12 +673,75 @@ class DecisionAdvisor:
     @staticmethod
     def _normalize_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)
+        if kind == "routing_strategy":
+            continuation = normalized.get("tool_continuation")
+            camel_continuation = normalized.get("toolContinuation")
+            if isinstance(continuation, dict) and isinstance(camel_continuation, dict):
+                merged = dict(camel_continuation)
+                merged.update(continuation)
+                normalized["tool_continuation"] = merged
+                normalized.pop("toolContinuation", None)
+            elif continuation is None and isinstance(camel_continuation, dict):
+                normalized["tool_continuation"] = camel_continuation
+                normalized.pop("toolContinuation", None)
+        if kind == "tool_recovery":
+            action = normalized.get("action")
+            if isinstance(action, str):
+                normalized["action"] = DecisionAdvisor._normalize_tool_recovery_action(action)
+        if kind == "product_surface_decision":
+            evidence_requests = normalized.get("evidence_requests")
+            if isinstance(evidence_requests, list):
+                normalized["evidence_requests"] = [
+                    DecisionAdvisor._normalize_evidence_request(item)
+                    for item in evidence_requests
+                ]
+            elif isinstance(evidence_requests, str):
+                normalized["evidence_requests"] = [
+                    DecisionAdvisor._normalize_evidence_request(evidence_requests)
+                ]
         if kind == "completion_decision":
             assessment = normalized.get("verification_assessment")
             if isinstance(assessment, str):
                 normalized["verification_assessment"] = {
                     "summary": assessment,
                 }
+        return normalized
+
+    @staticmethod
+    def _normalize_tool_recovery_action(action: str) -> str:
+        compact = re.sub(r"[^a-z0-9]+", "", action.casefold())
+        aliases = {
+            "retry": "retry_same",
+            "retrysame": "retry_same",
+            "retrynarrower": "retry_narrower",
+            "retrywithnarrowerargs": "retry_narrower",
+            "retrywithnarrowarguments": "retry_narrower",
+            "refreshmcptools": "refresh_mcp_tools",
+            "requestpermission": "request_permission",
+            "usepartialevidence": "use_partial_evidence",
+            "fallbacktool": "fallback_tool",
+            "askuser": "ask_user",
+            "skipwithrisk": "skip_with_risk",
+        }
+        return aliases.get(compact, action)
+
+    @staticmethod
+    def _normalize_evidence_request(item: Any) -> Any:
+        if isinstance(item, str):
+            text = item.strip()
+            return {
+                "kind": "semantic_review",
+                "summary": text,
+            }
+        if not isinstance(item, dict):
+            return item
+        normalized = dict(item)
+        suggested_commands = normalized.get("suggestedCommands")
+        if isinstance(suggested_commands, str):
+            normalized["suggestedCommands"] = [suggested_commands]
+        suggested_tools = normalized.get("suggestedTools")
+        if isinstance(suggested_tools, dict):
+            normalized["suggestedTools"] = [suggested_tools]
         return normalized
 
     @staticmethod

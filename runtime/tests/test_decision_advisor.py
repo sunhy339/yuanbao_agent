@@ -382,6 +382,34 @@ class TestDecisionAdvisorRoutingStrategy:
         assert continuation["allow_tools_after_task_results"] is True
         assert continuation["max_task_tool_calls"] == 1
 
+    def test_routing_strategy_merges_duplicate_tool_continuation_aliases(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "strategy": "plan_execute",
+                "scenario": "multi_step_task",
+                "tool_continuation": {
+                    "allow_tools_after_task_results": True,
+                    "max_task_tool_calls": 2,
+                },
+                "toolContinuation": {
+                    "allowMoreSubtasksAfterTaskResults": False,
+                    "rationale": "Continue only for bounded integration checks.",
+                },
+            },
+            "confidence": 0.84,
+            "rationale": "LLMs may emit both naming styles in the same proposal.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise("routing_strategy", {"goal": "plan, delegate, then integrate"})
+
+        assert result.accepted is True
+        assert "toolContinuation" not in result.payload
+        continuation = result.payload["tool_continuation"]
+        assert continuation["allow_tools_after_task_results"] is True
+        assert continuation["allowMoreSubtasksAfterTaskResults"] is False
+        assert continuation["max_task_tool_calls"] == 2
+
     def test_routing_strategy_rejects_bad_tool_continuation_policy(self) -> None:
         provider = _GoodProvider(response=json.dumps({
             "proposal": {
@@ -716,6 +744,34 @@ class TestDecisionAdvisorToolRecovery:
         assert result.payload["action"] == "refresh_mcp_tools"
         assert result.payload["refreshMcpTools"] is True
 
+    def test_tool_recovery_accepts_common_action_aliases(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "action": "retryWithNarrowerArgs",
+                "retryWithNarrowerArgs": True,
+                "reason": "The failed command should be retried with narrower arguments.",
+            },
+            "confidence": 0.78,
+            "rationale": "The advisor expressed the action using the boolean field name.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "tool_recovery",
+            {
+                "goal": "Recover failed command",
+                "tool_failure": {
+                    "name": "run_command",
+                    "failureKind": "command_failed",
+                    "summary": "pytest path was too broad",
+                },
+            },
+        )
+
+        assert result.accepted is True
+        assert result.payload["action"] == "retry_narrower"
+        assert result.payload["retryWithNarrowerArgs"] is True
+
     def test_tool_recovery_rejects_invalid_action(self) -> None:
         provider = _GoodProvider(response=json.dumps({
             "proposal": {"action": "auto_delete_workspace"},
@@ -930,6 +986,34 @@ class TestDecisionAdvisorProductSurfaceDecision:
         assert result.payload["evidence_requests"][0]["kind"] == "design_review"
         assert result.payload["evidence_requests"][0]["blocking"] is True
 
+    def test_product_surface_decision_accepts_string_evidence_requests(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "surface_type": "backend_module",
+                "evidence_requests": [
+                    "Review the rule engine coverage and direct pytest output before release.",
+                ],
+            },
+            "confidence": 0.8,
+            "rationale": "The advisor expressed requested evidence in prose.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise(
+            "product_surface_decision",
+            {
+                "goal": "Verify incident rules engine",
+                "summary": "Implemented and tested incident modules.",
+                "changed_files": ["incident_rules.py", "tests/test_incident_rules.py"],
+                "objective_signals": {"acceptance": []},
+            },
+        )
+
+        assert result.accepted is True
+        request = result.payload["evidence_requests"][0]
+        assert request["kind"] == "semantic_review"
+        assert request["summary"] == "Review the rule engine coverage and direct pytest output before release."
+
     def test_product_surface_decision_accepts_multi_step_evidence_requests(self) -> None:
         provider = _GoodProvider(response=json.dumps({
             "proposal": {
@@ -1002,7 +1086,6 @@ class TestDecisionAdvisorProductSurfaceDecision:
         assert result.source == "validation_rejected"
         assert "evidence_requests[0].kind must be a string when provided" in result.validation_reasons
         assert "evidence_requests[0].blocking must be a boolean when provided" in result.validation_reasons
-        assert "evidence_requests[0].suggestedCommands must be a list when provided" in result.validation_reasons
         assert "evidence_requests[0].suggestedTools[0].name must be a non-empty string" in result.validation_reasons
         assert "evidence_requests[0].suggestedTools[0].arguments must be an object when provided" in result.validation_reasons
         assert "recommended_verification must be a list when provided" in result.validation_reasons

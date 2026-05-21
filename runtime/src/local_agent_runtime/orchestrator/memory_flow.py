@@ -35,6 +35,23 @@ class MemoryFlowMixin:
         "re-run",
         "revalidate",
     )
+    _NON_PREFERENCE_PATTERNS: tuple[str, ...] = (
+        "remind yourself",
+        "remember this",
+        "before we continue",
+        "for this task",
+        "in this response",
+        "right now",
+        "this turn",
+    )
+    _USER_PREFERENCE_HINTS: tuple[str, ...] = (
+        "i prefer",
+        "prefer ",
+        "always ",
+        "never ",
+        "don't use",
+        "avoid ",
+    )
 
     def _promote_scratchpad_to_memory(self, session_id: str) -> None:
         """Promote scratchpad entries to session memory after task completion."""
@@ -180,7 +197,9 @@ class MemoryFlowMixin:
                     pass
                 for uc in user_contents:
                     lower_uc = uc.lower()
-                    if any(p in lower_uc for p in self._SUPPLEMENT_MEMORY_PATTERNS):
+                    if any(p in lower_uc for p in self._USER_PREFERENCE_HINTS):
+                        if any(marker in lower_uc for marker in self._NON_PREFERENCE_PATTERNS):
+                            continue
                         self._memory_manager.remember(
                             session_id=session_id,
                             workspace_id=workspace_id,
@@ -232,6 +251,8 @@ class MemoryFlowMixin:
             is_candidate = any(pattern in lower_content for pattern in self._SUPPLEMENT_MEMORY_PATTERNS)
             if not is_candidate:
                 continue
+            if any(marker in lower_content for marker in self._NON_PREFERENCE_PATTERNS):
+                continue
 
             self._memory_manager.remember(
                 session_id=session_id,
@@ -281,23 +302,43 @@ class MemoryFlowMixin:
             })
 
         if any(token in lowered for token in self._CONVENTION_PATTERNS):
-            results.append({
-                "category": MemoryCategory.PROJECT_CONVENTION.value,
-                "content": f"Project convention: {summary or goal}",
-                "confidence": 0.8,
-            })
+            summary_lowered = summary.lower()
+            if not any(
+                phrase in summary_lowered
+                for phrase in (
+                    "i will follow",
+                    "i'll follow",
+                    "remembered repo conventions",
+                    "remembered guidance",
+                    "follow the remembered",
+                )
+            ):
+                convention_text = summary or goal
+                if not convention_text.lower().startswith("project convention:"):
+                    convention_text = f"Project convention: {convention_text}"
+                results.append({
+                    "category": MemoryCategory.PROJECT_CONVENTION.value,
+                    "content": convention_text,
+                    "confidence": 0.8,
+                })
 
         if any(token in lowered for token in self._RUNTIME_INVARIANT_PATTERNS):
+            invariant_text = summary or goal
+            if not invariant_text.lower().startswith("runtime invariant:"):
+                invariant_text = f"Runtime invariant: {invariant_text}"
             results.append({
                 "category": MemoryCategory.RUNTIME_INVARIANT.value,
-                "content": f"Runtime invariant: {summary or goal}",
+                "content": invariant_text,
                 "confidence": 0.75,
             })
 
         if task.get("status") == "failed" and any(token in lowered for token in self._FAILURE_RECOVERY_PATTERNS):
+            recovery_text = summary or goal
+            if not recovery_text.lower().startswith("failure recovery pattern:"):
+                recovery_text = f"Failure recovery pattern: {recovery_text}"
             results.append({
                 "category": MemoryCategory.FAILURE_RECOVERY_PATTERN.value,
-                "content": f"Failure recovery pattern: {summary or goal}",
+                "content": recovery_text,
                 "confidence": 0.7,
             })
 

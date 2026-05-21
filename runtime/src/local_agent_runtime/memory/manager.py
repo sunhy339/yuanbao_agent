@@ -6,6 +6,9 @@ facade for all memory operations.
 
 from __future__ import annotations
 
+from collections import defaultdict
+from typing import Any
+
 from .retriever import MemoryRetriever, extract_keywords
 from .store import MemoryStore
 from .types import MemoryEntry, MemoryKind
@@ -14,7 +17,22 @@ from .types import MemoryEntry, MemoryKind
 class MemoryManager:
     """High-level memory API: remember / recall / consolidate."""
 
+    _RECALL_GROUP_ORDER: tuple[str, ...] = (
+        "canonical_memory",
+        "user_preference",
+        "project_convention",
+        "runtime_invariant",
+        "verified_capability",
+        "failure_recovery_pattern",
+        "decision",
+        "implementation_note",
+        "workspace_fact",
+        "tooling",
+        "task_learning",
+        "open_issue",
+    )
     _CATEGORY_BASE_BOOSTS: dict[str, float] = {
+        "canonical_memory": 0.42,
         "user_preference": 0.35,
         "project_convention": 0.28,
         "runtime_invariant": 0.22,
@@ -183,7 +201,7 @@ class MemoryManager:
 
         # Sort by adjusted score descending
         results.sort(key=lambda x: x[1], reverse=True)
-        return results[:limit]
+        return self._prioritize_groups(results, limit=limit)
 
     @staticmethod
     def _adjust_score(entry: MemoryEntry, raw_score: float) -> float:
@@ -208,6 +226,49 @@ class MemoryManager:
         score += MemoryManager._CATEGORY_BASE_BOOSTS.get(str(category), 0.0)
 
         return max(score, 0.0)
+
+    @classmethod
+    def _prioritize_groups(
+        cls,
+        results: list[tuple[MemoryEntry, float]],
+        *,
+        limit: int,
+    ) -> list[tuple[MemoryEntry, float]]:
+        if len(results) <= 1:
+            return results[:limit]
+
+        grouped: dict[str, list[tuple[MemoryEntry, float]]] = defaultdict(list)
+        for entry, score in results:
+            category = str((entry.metadata or {}).get("category") or "other")
+            grouped[category].append((entry, score))
+
+        for entries in grouped.values():
+            entries.sort(key=lambda item: item[1], reverse=True)
+
+        prioritized: list[tuple[MemoryEntry, float]] = []
+        seen_ids: set[str] = set()
+
+        for category in cls._RECALL_GROUP_ORDER:
+            for entry, score in grouped.pop(category, []):
+                if entry.id in seen_ids:
+                    continue
+                prioritized.append((entry, score))
+                seen_ids.add(entry.id)
+                if len(prioritized) >= limit:
+                    return prioritized
+
+        remaining: list[tuple[MemoryEntry, float]] = []
+        for entries in grouped.values():
+            remaining.extend(entries)
+        remaining.sort(key=lambda item: item[1], reverse=True)
+        for entry, score in remaining:
+            if entry.id in seen_ids:
+                continue
+            prioritized.append((entry, score))
+            seen_ids.add(entry.id)
+            if len(prioritized) >= limit:
+                break
+        return prioritized
 
     @classmethod
     def _detect_conflict(cls, text_a: str, text_b: str) -> bool:

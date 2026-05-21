@@ -108,3 +108,29 @@ def test_task_result_extracts_runtime_invariant_and_recovery_pattern_memories(tm
     assert "read-only" in invariant.content.lower()
     assert "retry" in recovery.content.lower()
     assert "revalidate" in recovery.content.lower()
+
+
+def test_task_result_does_not_double_prefix_structured_memory_labels(tmp_path: Any) -> None:
+    orchestrator, store = _make_orchestrator(tmp_path)
+    workspace = store.upsert_workspace(str(tmp_path / "workspace"))
+    session = store.create_session(workspace["id"], "Prefix normalization")
+    task = store.create_task(
+        session_id=session["id"],
+        task_type="edit",
+        goal="Capture canonical labels",
+        plan=[],
+        status="running",
+    )
+    task = store.update_task(
+        task["id"],
+        status="completed",
+        summary="Project convention: By default we use python -m pytest in this repo.",
+        verification=[{"status": "passed", "summary": "pytest passed"}],
+    )
+
+    orchestrator._remember_task_result(session_id=session["id"], task=task)  # noqa: SLF001
+
+    entries = MemoryStore(store).query_all(session_id=session["id"], workspace_id=workspace["id"])
+    convention = next(entry for entry in entries if entry.metadata.get("category") == "project_convention")
+
+    assert convention.content == "Project convention: By default we use python -m pytest in this repo."

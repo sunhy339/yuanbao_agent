@@ -219,6 +219,35 @@ def test_context_builder_injects_workspace_project_focus_across_sessions(
     assert context["project_focus"] == "Build a coding agent that can sustain large product iterations."
 
 
+def test_context_builder_injects_canonical_memory_files(store: SQLiteStore, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "YUANBAO.md").write_text(
+        "Project rule: use python -m pytest for verification.\n",
+        encoding="utf-8",
+    )
+    (workspace_root / "MEMORY.local.md").write_text(
+        "Local note: reviewer tasks stay read-only.\n",
+        encoding="utf-8",
+    )
+
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Canonical memory")
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Continue implementation",
+        lightweight=False,
+    )
+
+    text = _message_text(context)
+    assert "Canonical memory:" in text
+    assert "--- YUANBAO.md ---" in text
+    assert "use python -m pytest for verification" in text
+    assert "--- MEMORY.local.md ---" in text
+    assert "reviewer tasks stay read-only" in text
+
+
 def test_context_builder_keeps_workspace_project_focus_under_tight_budget(
     store: SQLiteStore,
     tmp_path: Path,

@@ -241,6 +241,40 @@ class TestSupplementMemoryCandidate:
         assert len(supplement_memories) >= 1
         assert "snake_case" in supplement_memories[0].content
 
+    def test_reminder_style_supplement_does_not_create_memory(self, tmp_path: Any) -> None:
+        """Reminder-style supplements should not be promoted to long-lived preference memory."""
+        provider = ScriptedProvider([
+            {"message": "Working...", "tool_calls": [{"id": "call_slow", "name": "slow_tool", "arguments": {}}]},
+            {"final": "Done."},
+        ])
+
+        store_ref_holder: list[Any] = []
+
+        def slow_tool(params: dict[str, Any]) -> dict[str, Any]:
+            store = store_ref_holder[0]
+            store.create_inbox_entry(
+                task_id=params["taskId"],
+                session_id=params["sessionId"],
+                content="Before we continue, remind yourself to use python -m pytest.",
+            )
+            return {"result": "ok"}
+
+        runtime = _make_runtime(tmp_path, provider, {"slow_tool": slow_tool})
+        store_ref_holder.append(runtime.store)
+        session = _open_session(runtime, tmp_path)
+
+        task = _call_result(
+            _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "do work"}),
+            "task",
+        )
+
+        assert task["status"] == "completed"
+
+        mem_store = MemoryStore(runtime.store)
+        all_memories = mem_store.query_all(session_id=session["id"])
+        supplement_memories = [m for m in all_memories if m.metadata.get("source") == "supplement"]
+        assert supplement_memories == []
+
 
 class TestRememberSupplementCandidates:
     """Unit tests for _remember_supplement_candidates method."""

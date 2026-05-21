@@ -52,6 +52,11 @@ COMMON_GOAL_TERMS = {
 DEFAULT_MAX_CONTEXT_TOKENS = 256000
 
 DEFAULT_TOOL_SCHEMAS = BUILTIN_TOOL_SCHEMAS
+DEFAULT_CANONICAL_MEMORY_FILES = (
+    "YUANBAO.md",
+    "MEMORY.md",
+    "MEMORY.local.md",
+)
 
 DEFAULT_AGENT_SOUL_BASELINE = {
     "id": "default",
@@ -294,6 +299,9 @@ class ContextBuilder(HistoryMixin):
                         truncatable=False,
                     )
                 )
+            canonical_memory = self._canonical_memory_section(workspace["rootPath"])
+            if canonical_memory:
+                sections.append(canonical_memory)
             project_memory = self._workspace_memory_section(workspace)
             if project_memory:
                 sections.append(project_memory)
@@ -716,6 +724,46 @@ class ContextBuilder(HistoryMixin):
             name="project_memory",
             text=memory_text,
             priority=750,
+            minimum_tokens=30,
+        )
+
+    def _canonical_memory_section(self, workspace_root: str) -> BudgetSection | None:
+        root = Path(workspace_root)
+        if not root.exists() or not root.is_dir():
+            return None
+
+        file_names = list(DEFAULT_CANONICAL_MEMORY_FILES)
+        claude_file = root / ".claude" / "CLAUDE.md"
+        files: list[Path] = []
+        files.extend(root / name for name in file_names)
+        files.append(claude_file)
+
+        sections: list[str] = []
+        for path in files:
+            if not path.exists() or not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                try:
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+            normalized = text.strip()
+            if not normalized:
+                continue
+            if len(normalized) > 3000:
+                normalized = normalized[:2950].rstrip() + "\n[truncated]"
+            sections.append(f"--- {path.relative_to(root).as_posix()} ---\n{normalized}")
+
+        if not sections:
+            return None
+
+        return BudgetSection(
+            name="canonical_memory",
+            text="Canonical memory:\n" + "\n\n".join(sections),
+            priority=975,
+            truncatable=False,
             minimum_tokens=30,
         )
 

@@ -396,6 +396,50 @@ class TestMemoryCategoryBoosts:
         score_by_id = {entry.id: score for entry, score in results}
         assert score_by_id[invariant.id] > score_by_id[generic.id]
 
+    def test_project_convention_is_prioritized_ahead_of_runtime_logs(self) -> None:
+        self.mgr.remember(
+            content="- completed: use python -m pytest in this repo",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "task_learning", "confidence": 0.9},
+        )
+        convention = self.mgr.remember(
+            content="Project convention: By default we use python -m pytest in this repo.",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "project_convention", "confidence": 0.8},
+        )
+        runtime_invariant = self.mgr.remember(
+            content="Runtime invariant: Reviewer child should not write files.",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "runtime_invariant", "confidence": 0.8},
+        )
+
+        results = self.mgr.recall_with_scores(workspace_id="w1", query="pytest convention reviewer write files", limit=5)
+        ordered_ids = [entry.id for entry, _score in results]
+
+        assert ordered_ids.index(convention.id) < ordered_ids.index(runtime_invariant.id)
+
+    def test_canonical_memory_is_prioritized_ahead_of_learned_conventions(self) -> None:
+        convention = self.mgr.remember(
+            content="Project convention: Use python -m pytest in this repo.",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "project_convention", "confidence": 0.9},
+        )
+        canonical = self.mgr.remember(
+            content="Canonical memory: Use python -m pytest in this repo.",
+            workspace_id="w1",
+            kind=MemoryKind.LONG_TERM,
+            metadata={"category": "canonical_memory", "confidence": 0.8},
+        )
+
+        results = self.mgr.recall_with_scores(workspace_id="w1", query="pytest repo convention", limit=5)
+        ordered_ids = [entry.id for entry, _score in results]
+
+        assert ordered_ids.index(canonical.id) < ordered_ids.index(convention.id)
+
 
 class TestMemoryConflictDetection:
     """Conflict detection marks entries with conflictingIds."""

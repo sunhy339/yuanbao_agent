@@ -593,3 +593,27 @@ def test_context_builder_handles_empty_and_missing_workspace_root(store: SQLiteS
     assert context["workspace_root"] == str(workspace_root)
     assert context["messages"]
     assert context["budgetStats"]["estimatedTokens"] <= context["budgetStats"]["maxContextTokens"]
+
+
+def test_context_builder_skips_git_process_for_non_repo_workspace(
+    store: SQLiteStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "not-a-repo"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="No git")
+
+    def fail_git(_self: ContextBuilder, _root: Path, _args: list[str]) -> str | None:
+        raise AssertionError("non-repository context build should not launch git")
+
+    monkeypatch.setattr(ContextBuilder, "_run_git", fail_git)
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Inspect this non-git workspace",
+        lightweight=False,
+    )
+
+    assert "not a git repository" in _message_text(context)

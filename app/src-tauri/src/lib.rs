@@ -1317,6 +1317,9 @@ fn e2e_fixture() -> Result<Value, String> {
         "flow": flow,
         "workspacePath": workspace_path,
         "prompt": prompt,
+        "autoApprove": env::var("YUANBAO_TAURI_E2E_AUTO_APPROVE")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false),
         "provider": {
             "profileId": env::var("YUANBAO_TAURI_E2E_PROVIDER_ID").unwrap_or_else(|_| "e2e-provider".to_string()),
             "name": env::var("YUANBAO_TAURI_E2E_PROVIDER_NAME").unwrap_or_else(|_| "E2E Provider".to_string()),

@@ -365,25 +365,21 @@ export function useProviderConfig(deps: UseProviderConfigDeps) {
 
     setError(null);
 
-    try {
-      const profile = buildProviderProfileFromPayload(
-        payload,
-        activeProviderProfileId,
-        config,
-        activeProviderProfile,
-      );
-      return await runProviderTest(
-        {
-          ...profile,
-          defaultModel: profile.defaultModel ?? profile.model ?? DEFAULT_PROVIDER_MODEL,
-          temperature: profile.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
-          maxOutputTokens: profile.maxOutputTokens ?? profile.maxTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
-        },
-        profile.id,
-      );
-    } catch (reason) {
-      toastError(reason);
-    }
+    const profile = buildProviderProfileFromPayload(
+      payload,
+      activeProviderProfileId,
+      config,
+      activeProviderProfile,
+    );
+    return await runProviderTest(
+      {
+        ...profile,
+        defaultModel: profile.defaultModel ?? profile.model ?? DEFAULT_PROVIDER_MODEL,
+        temperature: profile.temperature ?? DEFAULT_PROVIDER_TEMPERATURE,
+        maxOutputTokens: profile.maxOutputTokens ?? profile.maxTokens ?? DEFAULT_PROVIDER_MAX_TOKENS,
+      },
+      profile.id,
+    );
   }
 
   async function handleAddProviderFromSettings(payload: SettingsProviderPayload) {

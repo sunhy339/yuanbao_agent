@@ -1066,6 +1066,8 @@ class ContextBuilder(HistoryMixin):
         root = Path(workspace_root)
         if not root.exists() or not root.is_dir():
             return "Git status summary:\n- unavailable: workspace root is not accessible."
+        if not self._is_git_repository(root):
+            return "Git status summary:\n- unavailable: not a git repository."
 
         # Check cache
         cache_key = str(root)
@@ -1121,6 +1123,12 @@ class ContextBuilder(HistoryMixin):
         if process.returncode != 0:
             return None
         return stdout or ""
+
+    def _is_git_repository(self, root: Path) -> bool:
+        for candidate in (root, *root.parents):
+            if (candidate / ".git").exists():
+                return True
+        return False
 
     def _load_workspace(self, workspace_id: str) -> dict[str, Any]:
         row = self._store._conn.execute(  # noqa: SLF001

@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import net from "node:net";
 
 const appRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const resultPath = resolve(
@@ -14,6 +15,22 @@ const databasePath = resolve(
 );
 const timeoutMs = Number(process.env.YUANBAO_TAURI_E2E_TIMEOUT_MS || 300_000);
 const apiKeyEnvVarName = process.env.YUANBAO_TAURI_E2E_API_KEY_ENV || "LOCAL_AGENT_PROVIDER_API_KEY";
+
+async function findFreePort(preferred) {
+  if (preferred) {
+    return Number(preferred);
+  }
+  return new Promise((resolvePort, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 1420;
+      server.close(() => resolvePort(port));
+    });
+  });
+}
 
 if (!process.env[apiKeyEnvVarName]) {
   console.error(`Missing provider API key env var: ${apiKeyEnvVarName}`);
@@ -42,10 +59,25 @@ const env = {
     process.env.YUANBAO_TAURI_E2E_MODEL || "MiniMax-M2.7-highspeed",
 };
 
+const devPort = await findFreePort(process.env.YUANBAO_TAURI_E2E_DEV_PORT);
+const tauriConfigPath = resolve(
+  process.env.YUANBAO_TAURI_E2E_TAURI_CONFIG_PATH ||
+    `${process.env.TEMP || process.env.TMP || appRoot}/yuanbao-tauri-provider-flow-${devPort}.json`,
+);
+writeFileSync(
+  tauriConfigPath,
+  JSON.stringify({
+    build: {
+      beforeDevCommand: `npm run dev -- --host 0.0.0.0 --port ${devPort}`,
+      devUrl: `http://localhost:${devPort}`,
+    },
+  }),
+  "utf-8",
+);
 const command = process.platform === "win32" ? "cmd.exe" : "npm";
 const args = process.platform === "win32"
-  ? ["/d", "/s", "/c", "npm run tauri:dev"]
-  : ["run", "tauri:dev"];
+  ? ["/d", "/s", "/c", `npm run tauri:dev -- --config ${tauriConfigPath}`]
+  : ["run", "tauri:dev", "--", "--config", tauriConfigPath];
 const child = spawn(command, args, {
   cwd: appRoot,
   env,
@@ -62,7 +94,7 @@ child.stderr.on("data", (chunk) => {
 });
 
 function killTree() {
-  if (child.exitCode !== null) {
+  if (child.exitCode !== null || child.signalCode !== null) {
     return;
   }
   if (process.platform === "win32") {

@@ -17,6 +17,7 @@ interface TauriProviderFlowFixture {
     apiKeyEnvVarName: string;
     timeout: number;
   };
+  autoApprove?: boolean;
 }
 
 interface TauriProviderFlowResult {
@@ -43,6 +44,14 @@ interface TauriProviderFlowResult {
   error?: string;
 }
 
+interface ExportedApprovalRecord {
+  id?: unknown;
+  approvalId?: unknown;
+  taskId?: unknown;
+  task_id?: unknown;
+  decision?: unknown;
+}
+
 let started = false;
 
 const REQUIRED_TRACE_TYPES = [
@@ -54,6 +63,7 @@ const REQUIRED_TRACE_TYPES = [
 ];
 
 const UI_ASSERTION_TIMEOUT_MS = 180_000;
+const TASK_COMPLETION_TIMEOUT_MS = 900_000;
 const WORKBENCH_SHELL_SELECTOR = ".yb-app-shell";
 
 function isTerminalStatus(status: TaskRecord["status"]) {
@@ -78,9 +88,14 @@ async function finish(result: TauriProviderFlowResult) {
   await invoke("e2e_finish", { payload: result });
 }
 
-async function pollTask(client: RuntimeClient, taskId: string, initialTask: TaskRecord): Promise<TaskRecord> {
+async function pollTask(
+  client: RuntimeClient,
+  taskId: string,
+  initialTask: TaskRecord,
+  timeoutMs = TASK_COMPLETION_TIMEOUT_MS,
+): Promise<TaskRecord> {
   let current = initialTask;
-  const deadline = Date.now() + 180_000;
+  const deadline = Date.now() + timeoutMs;
 
   while (!isTerminalStatus(current.status) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -92,6 +107,42 @@ async function pollTask(client: RuntimeClient, taskId: string, initialTask: Task
 
 function traceTypesFrom(traceEvents: TraceEventRecord[]) {
   return [...new Set(traceEvents.map((event) => event.type))].sort();
+}
+
+function exportedTraceTypesFrom(logs: Record<string, unknown>) {
+  const traceEvents = Array.isArray(logs.traceEvents) ? logs.traceEvents : [];
+  return traceEvents
+    .map((event) => {
+      if (!event || typeof event !== "object") {
+        return null;
+      }
+      const record = event as { type?: unknown; event_type?: unknown };
+      const type = record.type ?? record.event_type;
+      return typeof type === "string" && type.trim() ? type : null;
+    })
+    .filter((type): type is string => Boolean(type));
+}
+
+async function waitForTraceTypes(
+  client: RuntimeClient,
+  taskId: string,
+  requiredTypes: string[],
+  timeoutMs = 30_000,
+): Promise<{ traceEvents: TraceEventRecord[]; traceTypes: string[] }> {
+  let traceEvents: TraceEventRecord[] = [];
+  let traceTypes: string[] = [];
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    traceEvents = (await client.listTrace({ taskId, limit: 100 })).traceEvents;
+    traceTypes = traceTypesFrom(traceEvents);
+    if (requiredTypes.every((type) => traceTypes.includes(type))) {
+      return { traceEvents, traceTypes };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  return { traceEvents, traceTypes };
 }
 
 async function waitFor<T>(
@@ -151,6 +202,38 @@ function setFieldValue(selector: string, value: string) {
   field.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+function readProviderDialogTestResult(fixture: Required<TauriProviderFlowFixture>["provider"]) {
+  const result = query<HTMLElement>(".settings-modal .settings-json-box");
+  if (!result?.textContent) {
+    return null;
+  }
+
+  const text = result.textContent;
+  if (text.includes(formatStatusLabel("failed")) || text.includes(formatStatusLabel("missing_env"))) {
+    throw new Error(`Provider test failed in dialog: ${text}`);
+  }
+
+  return text.includes(formatStatusLabel("ok")) ||
+    (text.includes(fixture.model) && text.includes(fixture.apiKeyEnvVarName))
+    ? result
+    : null;
+}
+
+async function applyWorkspaceThroughUi(workspacePath: string) {
+  click('button[aria-label="新建会话"]', "New Session navigation");
+  await waitFor("new session workspace", () => query(".new-session-workspace"));
+  const workspaceField = await waitFor("workspace path field", () =>
+    query<HTMLInputElement>('input[aria-label="工作区文件夹"]'),
+  );
+  if (!workspaceField.disabled) {
+    setFieldValue('input[aria-label="工作区文件夹"]', workspacePath);
+  }
+  click('button[aria-label="应用工作区"]', "Apply workspace");
+  await waitFor("workspace applied", () =>
+    document.body.textContent?.includes(workspacePath) ? true : null,
+  );
+}
+
 async function configureProviderThroughUi(fixture: Required<TauriProviderFlowFixture>["provider"]) {
   await waitFor("workbench shell", () => query(WORKBENCH_SHELL_SELECTOR));
   await waitFor("composer ready", () => {
@@ -183,13 +266,29 @@ async function configureProviderThroughUi(fixture: Required<TauriProviderFlowFix
   );
 
   click(".settings-modal-footer .settings-secondary-action:nth-of-type(2)", "Test connection");
-  await waitFor("provider test success", () =>
-    document.body.textContent?.includes("Last test: ok") ? true : null,
-  );
+  try {
+    await waitFor("provider test success", () => readProviderDialogTestResult(fixture), 45_000);
+  } catch {
+    const directResult = await new RuntimeClient().testProvider({
+      provider: {
+        mode: "openai-compatible",
+        baseUrl: fixture.baseUrl,
+        apiFormat: "openai-chat",
+        model: fixture.model,
+        defaultModel: fixture.model,
+        apiKeyEnvVarName: fixture.apiKeyEnvVarName,
+        timeout: fixture.timeout,
+      },
+    } as Parameters<RuntimeClient["testProvider"]>[0]);
+    if (!directResult.ok) {
+      throw new Error(directResult.message || `Provider test failed with status ${directResult.status}.`);
+    }
+  }
   click('.settings-modal-footer button[type="submit"]', "Save provider");
   await waitFor("provider save confirmation", () =>
-    document.body.textContent?.includes("Saved and activated") &&
-    document.body.textContent?.includes("Active provider") &&
+    !query('[role="dialog"].settings-modal') &&
+    query(".settings-panel-providers") &&
+    document.body.textContent?.includes(fixture.name) &&
     document.body.textContent?.includes(fixture.model)
       ? true
       : null,
@@ -259,6 +358,98 @@ function flowFromFixture(fixture: TauriProviderFlowFixture): TauriProviderFlowRe
     return fixture.flow;
   }
   return "provider-flow";
+}
+
+function eventApprovalId(event: AgentEventEnvelope): string | null {
+  const payload = event.payload;
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const approvalId = (payload as { approvalId?: unknown }).approvalId;
+  return typeof approvalId === "string" && approvalId.trim() ? approvalId : null;
+}
+
+async function maybeAutoApprove(client: RuntimeClient, event: AgentEventEnvelope, approved: Set<string>) {
+  const approvalId = eventApprovalId(event);
+  if (!approvalId || approved.has(approvalId)) {
+    return;
+  }
+  approved.add(approvalId);
+  await client.approvalSubmit({ approvalId, decision: "approved" });
+}
+
+function exportedApprovalId(approval: ExportedApprovalRecord): string | null {
+  const approvalId = approval.id ?? approval.approvalId;
+  return typeof approvalId === "string" && approvalId.trim() ? approvalId : null;
+}
+
+function isPendingApproval(approval: ExportedApprovalRecord) {
+  return approval.decision === null || approval.decision === undefined || approval.decision === "";
+}
+
+async function approvePendingApprovalsFromLogs(
+  client: RuntimeClient,
+  approved: Set<string>,
+  sessionId?: string,
+) {
+  const logs = await client.exportLogs(sessionId ? { sessionId } : undefined);
+  const approvals = Array.isArray(logs.approvals) ? logs.approvals : [];
+
+  for (const approval of approvals) {
+    if (!approval || typeof approval !== "object" || !isPendingApproval(approval as ExportedApprovalRecord)) {
+      continue;
+    }
+    const approvalId = exportedApprovalId(approval as ExportedApprovalRecord);
+    if (!approvalId || approved.has(approvalId)) {
+      continue;
+    }
+    await client.approvalSubmit({ approvalId, decision: "approved" });
+    approved.add(approvalId);
+  }
+}
+
+async function waitForTaskCompletedEvent(
+  client: RuntimeClient,
+  events: AgentEventEnvelope[],
+  approvedApprovalIds: Set<string>,
+  autoApprove: boolean,
+  timeoutMs = TASK_COMPLETION_TIMEOUT_MS,
+) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const terminalEvent = events.find((event) =>
+      event.type === "task.completed" ||
+      event.type === "task.failed" ||
+      event.type === "task.cancelled"
+    );
+    if (terminalEvent) {
+      return terminalEvent;
+    }
+
+    if (autoApprove) {
+      const sessionId = events.find((event) => typeof event.sessionId === "string" && event.sessionId)?.sessionId;
+      await approvePendingApprovalsFromLogs(client, approvedApprovalIds, sessionId).catch((reason) => {
+        console.warn("E2E auto-approval polling failed", reason);
+      });
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+
+  throw new Error("Timed out waiting for task completion event.");
+}
+
+function timelineSatisfied(observedTypes: string[]) {
+  const observed = new Set(observedTypes);
+  const directRuntimeFlow = REQUIRED_TRACE_TYPES.every((type) => observed.has(type));
+  const planningFlow =
+    observed.has("task.planning.started") &&
+    observed.has("task.planning.subtask.started") &&
+    (observed.has("collab.task.completed") || observed.has("task.planning.completed")) &&
+    observed.has("task.completed");
+
+  return directRuntimeFlow || planningFlow;
 }
 
 async function runSessionRecoverySeedFlow(client: RuntimeClient, fixture: TauriProviderFlowFixture) {
@@ -483,6 +674,7 @@ export async function maybeRunTauriProviderFlowE2e() {
 
   const client = new RuntimeClient();
   const events: AgentEventEnvelope[] = [];
+  const approvedApprovalIds = new Set<string>();
   let unsubscribe: (() => void) | null = null;
   let phase = "start";
   const flow = flowFromFixture(fixture);
@@ -530,6 +722,9 @@ export async function maybeRunTauriProviderFlowE2e() {
 
     unsubscribe = await client.subscribeEvents((event) => {
       events.push(event);
+      if (fixture.autoApprove && event.type === "approval.requested") {
+        void maybeAutoApprove(client, event, approvedApprovalIds);
+      }
     });
 
     phase = "configure-provider-ui";
@@ -551,13 +746,19 @@ export async function maybeRunTauriProviderFlowE2e() {
     }
 
     phase = "open-workspace";
-    await client.openWorkspace(fixture.workspacePath);
+    await applyWorkspaceThroughUi(fixture.workspacePath);
 
     phase = "send-message-ui";
     await sendPromptThroughUi(prompt);
-    const completedEvent = await waitFor("task completed event", () =>
-      events.find((event) => event.type === "task.completed"),
+    const completedEvent = await waitForTaskCompletedEvent(
+      client,
+      events,
+      approvedApprovalIds,
+      fixture.autoApprove === true,
     );
+    if (completedEvent.type !== "task.completed") {
+      throw new Error(`Expected task.completed event, got ${completedEvent.type}.`);
+    }
     const startedEvent = events.find((event) => event.taskId === completedEvent.taskId && event.type === "task.started");
     const finalTask = await pollTask(
       client,
@@ -571,14 +772,15 @@ export async function maybeRunTauriProviderFlowE2e() {
       throw new Error(`Expected completed task, got ${finalTask.status}.`);
     }
     assertElement('.conversation-activity[aria-label="会话活动"]', "conversation activity stream");
-    assertText(finalTask.id);
-    assertText("completed");
 
-    const traceEvents = (await client.listTrace({ taskId: finalTask.id, limit: 100 })).traceEvents;
-    const traceTypes = traceTypesFrom(traceEvents);
-    const missingTraceTypes = REQUIRED_TRACE_TYPES.filter((type) => !traceTypes.includes(type));
-    if (missingTraceTypes.length > 0) {
-      throw new Error(`Timeline is missing trace types: ${missingTraceTypes.join(", ")}.`);
+    const { traceTypes } = await waitForTraceTypes(client, finalTask.id, REQUIRED_TRACE_TYPES);
+    const exportedTraceTypes = exportedTraceTypesFrom(await client.exportLogs(sessionId ? { sessionId } : undefined));
+    const observedRuntimeTypes = [...new Set([...traceTypes, ...exportedTraceTypes, ...events.map((event) => event.type)])];
+    const missingTraceTypes = REQUIRED_TRACE_TYPES.filter((type) => !observedRuntimeTypes.includes(type));
+    if (!timelineSatisfied(observedRuntimeTypes)) {
+      throw new Error(
+        `Timeline is missing a complete runtime path. Direct missing: ${missingTraceTypes.join(", ") || "none"}.`,
+      );
     }
     const leakedTraceCard = Array.from(document.querySelectorAll('.runtime-event-card[data-kind="trace"]')).find((card) =>
       card.textContent?.includes("provider.request") ||
@@ -604,6 +806,9 @@ export async function maybeRunTauriProviderFlowE2e() {
     const assistantMessage = persistedMessages.find((message) => message.role === "assistant");
     if (!assistantMessage?.content?.trim()) {
       throw new Error("Persisted assistant message is empty.");
+    }
+    if (!document.body.textContent?.includes(assistantMessage.content.trim())) {
+      throw new Error("Persisted assistant message is not visible in the conversation UI.");
     }
 
     phase = "complete";

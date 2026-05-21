@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -1828,15 +1829,51 @@ class MessageExecutionMixin:
         background_store: SQLiteStore | None = None
         worker = self
         try:
+            started_at = time.monotonic()
             logger.info(
                 "Background message execution started for task=%s session=%s routing=%s",
                 task["id"], session_id, routing,
             )
             worker, background_store = self._background_worker_orchestrator()
+            worker._publish(
+                session_id=session_id,
+                task=task,
+                event_type="task.started",
+                payload={
+                    "status": task.get("status"),
+                    "plan": task.get("plan") or [],
+                    "currentStep": task.get("currentStep"),
+                    "background": True,
+                },
+            )
             if context is None:
+                worker._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="context.build.started",
+                    payload={
+                        "status": "running",
+                        "lightweight": False,
+                        "background": True,
+                    },
+                    visibility="trace",
+                )
                 context = worker._context_builder.build(
                     session_id=session_id, goal=goal, skill_id=skill_id, lightweight=False,
                     role=task.get("role"),
+                )
+                worker._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="context.build.completed",
+                    payload={
+                        "status": "completed",
+                        "lightweight": False,
+                        "background": True,
+                        "latency_ms": int((time.monotonic() - started_at) * 1000),
+                        "tokenEstimate": ((context.get("budgetStats") or {}).get("estimatedTokens")),
+                    },
+                    visibility="trace",
                 )
                 # Emit tool filter event if skill filtering was applied
                 worker._maybe_publish_tool_filter(context, skill_id)
@@ -1853,10 +1890,9 @@ class MessageExecutionMixin:
                 worker._publish(
                     session_id=session_id,
                     task=task,
-                    event_type="task.started",
+                    event_type="task.updated",
                     payload={
-                        "status": task["status"],
-                        "plan": task["plan"],
+                        "status": task.get("status"),
                         "currentStep": task.get("currentStep"),
                         "context": worker._event_context_summary(context),
                     },
@@ -1876,10 +1912,9 @@ class MessageExecutionMixin:
                 worker._publish(
                     session_id=session_id,
                     task=task,
-                    event_type="task.started",
+                    event_type="task.updated",
                     payload={
-                        "status": task["status"],
-                        "plan": task["plan"],
+                        "status": task.get("status"),
                         "currentStep": task.get("currentStep"),
                         "context": worker._event_context_summary(context),
                     },

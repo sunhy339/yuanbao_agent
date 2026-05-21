@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import threading
 import time
 from typing import Any, Callable, TextIO
@@ -51,6 +52,8 @@ class JsonRpcServer:
         self._replay = ReplayService(store)
         self._writer: TextIO | None = None
         self._writer_lock = threading.Lock()
+        self._event_write_queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=1000)
+        self._event_writer_thread: threading.Thread | None = None
         self._handlers: dict[str, RpcHandler] = {
             "workspace.open": self._orchestrator.open_workspace,
             "workspace.focus.update": self._store.update_workspace_focus,
@@ -182,6 +185,7 @@ class JsonRpcServer:
     def serve(self, stdin: TextIO, stdout: TextIO) -> None:
         self._writer = stdout
         self._event_bus.subscribe(self._emit_event)
+        self._start_event_writer()
         for raw_line in stdin:
             line = raw_line.strip()
             if not line:
@@ -238,10 +242,36 @@ class JsonRpcServer:
         }
 
     def _emit_event(self, event: Any) -> None:
-        self._write_event_payload(self._event_bus.as_payload(event))
+        self._queue_event_payload(self._event_bus.as_payload(event))
 
     def _emit_bridge_event(self, event: dict[str, Any]) -> None:
-        self._write_event_payload(event)
+        self._queue_event_payload(event)
+
+    def _queue_event_payload(self, event: dict[str, Any]) -> None:
+        try:
+            self._event_write_queue.put_nowait(event)
+        except queue.Full:
+            # UI event delivery must never block the agent runtime. The durable
+            # trace mirror still records events for replay/inspection.
+            return
+
+    def _start_event_writer(self) -> None:
+        if self._event_writer_thread is not None:
+            return
+
+        def _worker() -> None:
+            while True:
+                event = self._event_write_queue.get()
+                if event is None:
+                    return
+                self._write_event_payload(event)
+
+        self._event_writer_thread = threading.Thread(
+            target=_worker,
+            name="runtime-event-writer",
+            daemon=True,
+        )
+        self._event_writer_thread.start()
 
     def _append_runtime_event(self, event: Any) -> dict[str, Any] | None:
         trace_store = self._runtime_event_trace_store

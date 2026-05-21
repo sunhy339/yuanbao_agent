@@ -37,7 +37,7 @@ export function parseProviderConfigText(value: string) {
     const parsed = JSON.parse(raw) as unknown;
     const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
     const envRecord = record.env && typeof record.env === "object"
-      ? (record.env as Record<string, unknown>)
+      ? { ...record, ...(record.env as Record<string, unknown>) }
       : record;
     const env = Object.fromEntries(
       Object.entries(envRecord)
@@ -46,7 +46,9 @@ export function parseProviderConfigText(value: string) {
     );
     return {
       env,
-      apiKeyEnvVarName: providerApiKeyEnvKeys.find((key) => key in env),
+      apiKeyEnvVarName: typeof record.apiKeyEnvVarName === "string" && record.apiKeyEnvVarName.trim()
+        ? record.apiKeyEnvVarName.trim()
+        : providerApiKeyEnvKeys.find((key) => key in env),
     };
   } catch {
     const env = Object.fromEntries(

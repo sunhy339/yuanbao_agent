@@ -562,9 +562,18 @@ export class RuntimeClient {
   }
 
   async testProvider(payload: ProviderTestParams = {}): Promise<ProviderTestResult> {
+    const providerTimeoutSecondsRaw =
+      payload.provider && typeof payload.provider === "object" && "timeout" in payload.provider
+        ? Number((payload.provider as { timeout?: unknown }).timeout)
+        : undefined;
+    const timeoutMs = typeof providerTimeoutSecondsRaw === "number" &&
+      Number.isFinite(providerTimeoutSecondsRaw) &&
+      providerTimeoutSecondsRaw > 0
+      ? Math.max(12_000, providerTimeoutSecondsRaw * 1_000 + 5_000)
+      : 65_000;
     const result = await withTimeout(
       invokePayloadOrReject<ProviderTestResult>("provider_test", payload),
-      12_000,
+      timeoutMs,
       "供应商测试超时。请检查 API 密钥、基础 URL 和网络连接。",
     );
     rememberProviderTestResult(result);

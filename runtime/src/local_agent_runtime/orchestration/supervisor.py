@@ -17,6 +17,7 @@ from ..provider.adapter import ProviderAdapter
 from ..services.subagent_service import SubagentService
 from .partial_handoff import (
     build_continuation_prompt,
+    handoff_allows_continuation,
     partial_handoff_from_dispatch_result,
     summarize_partial_handoff,
 )
@@ -221,7 +222,8 @@ class SupervisorOrchestrator:
         """Execute a sub-task with supervisor review and retry loop."""
         self._last_review_count = 0
         description = subtask.description
-        continuation_used = False
+        max_continuations = self._max_retries
+        continuation_attempts = 0
 
         for attempt in range(self._max_retries + 1):
             # Dispatch
@@ -258,12 +260,16 @@ class SupervisorOrchestrator:
                         handoff_summary = summarize_partial_handoff(partial_handoff)
                         if handoff_summary:
                             result_text = f"{result_text}\n{handoff_summary}"
-                        if not continuation_used and attempt < self._max_retries:
+                        if (
+                            continuation_attempts < max_continuations
+                            and attempt < self._max_retries
+                            and handoff_allows_continuation(partial_handoff)
+                        ):
                             description = build_continuation_prompt(
                                 original_description=subtask.description,
                                 handoff=partial_handoff,
                             )
-                            continuation_used = True
+                            continuation_attempts += 1
                             continue
                     message = str(
                         error.get("message")

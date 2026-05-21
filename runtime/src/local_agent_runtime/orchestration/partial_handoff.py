@@ -64,11 +64,29 @@ def build_continuation_prompt(
             "- Inspect the existing files and command results first.",
             "- Preserve useful partial work already written.",
             "- Finish only the missing owned-scope artifacts or repairs.",
-            "- Run the pending verification commands when possible.",
+            "- Run the pending verification commands when possible, and if they fail, repair the code and rerun them within this continuation attempt.",
             "- If time runs out again, report updated changed files, pending verification, and next action.",
         ]
     )
     return "\n".join(line for line in lines if line is not None)
+
+
+def handoff_allows_continuation(handoff: dict[str, Any] | None) -> bool:
+    if not isinstance(handoff, dict) or not handoff:
+        return False
+    if _path_list(handoff.get("changedFiles")):
+        return True
+    if _command_list(handoff.get("commands")):
+        return True
+    if _string_list(handoff.get("pendingVerification")):
+        return True
+    expected = handoff.get("expectedArtifacts")
+    if isinstance(expected, list) and expected:
+        return True
+    requirements = handoff.get("verificationRequirements")
+    if isinstance(requirements, list) and requirements:
+        return True
+    return bool(str(handoff.get("runtimeTaskId") or "").strip() or str(handoff.get("nextAction") or "").strip())
 
 
 def _path_list(value: Any) -> list[str]:

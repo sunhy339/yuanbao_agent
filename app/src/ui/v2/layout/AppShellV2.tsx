@@ -5,7 +5,7 @@ import { GlobalSidebar } from "../../workbench/GlobalSidebar";
 import { WorkspaceFrame } from "../../workbench/WorkspaceFrame";
 import { WorkspaceTabs } from "../../workbench/WorkspaceTabs";
 import type { SystemWorkspaceKind, WorkbenchSession, WorkbenchTab } from "../../workbench/types";
-import { formatSystemWorkspaceLabel } from "../../copy";
+import type { SessionWorkspaceContextPreview } from "../../workbench/workspaces/session/types";
 import { Button, StatusBadge } from "../components/ui";
 import "./app-shell-v2.css";
 
@@ -56,6 +56,10 @@ export interface AppShellV2Props {
   mcpLabel?: string;
   approvalLabel?: string;
   contextLabel?: string;
+  contextPreview?: SessionWorkspaceContextPreview | null;
+  worktreeStatus?: { dirtyFiles?: number; files?: string[] } | null;
+  activeTaskStatus?: string | null;
+  activeTaskCurrentStep?: string | null;
   loading?: boolean;
   children: ReactNode;
 }
@@ -96,6 +100,10 @@ export function AppShellV2({
   mcpLabel,
   approvalLabel,
   contextLabel,
+  contextPreview,
+  worktreeStatus,
+  activeTaskStatus,
+  activeTaskCurrentStep,
   loading,
   children,
 }: AppShellV2Props) {
@@ -114,6 +122,10 @@ export function AppShellV2({
           onOpenSessionTab={onOpenSessionTab}
           onRenameSession={onRenameSession}
           onDeleteSession={onDeleteSession}
+          contextPreview={contextPreview}
+          worktreeStatus={worktreeStatus}
+          activeTaskStatus={activeTaskStatus}
+          activeTaskCurrentStep={activeTaskCurrentStep}
         />
         <section className="yb-app-main" aria-label="工作台">
           <header className="yb-topbar" aria-label="运行时状态">
@@ -122,12 +134,12 @@ export function AppShellV2({
               <h1>{workspaceName}</h1>
             </div>
             <div className="yb-topbar-status">
-              <StatusBadge label={providerLabel} tone={disabled ? "info" : "success"} pulse={!disabled} />
-              <StatusBadge label={runtimeLabel ?? `${activeTaskSessions} 个活跃任务`} tone={disabled ? "danger" : "success"} pulse={!disabled} />
-              <StatusBadge label={mcpLabel ?? "MCP"} tone="info" />
-              <StatusBadge label={approvalLabel ?? "审批"} tone="warning" />
-              <StatusBadge label={contextLabel ?? "上下文"} tone="primary" />
-              <StatusBadge label={formatSystemWorkspaceLabel(activeSystemTab)} tone="primary" />
+              <StatusBadge compact label={providerLabel} tone={disabled ? "info" : "success"} pulse={!disabled} />
+              <StatusBadge compact label={runtimeLabel ?? `${activeTaskSessions} 个活跃任务`} tone={disabled ? "danger" : "success"} pulse={!disabled} />
+              <span className="yb-topbar-divider" aria-hidden="true" />
+              <span className="yb-topbar-pill" title={mcpLabel ?? "MCP"}>MCP</span>
+              <span className="yb-topbar-pill" title={approvalLabel ?? "审批"}>{approvalLabel ?? "审批"}</span>
+              <span className="yb-topbar-pill" title={contextLabel ?? "上下文"}>{contextLabel ?? "上下文"}</span>
             </div>
             <div className="yb-topbar-actions">
               <Button variant="ghost" size="sm" aria-label="打开 MCP 中心" onClick={() => onOpenSystemTab("mcp")}>MCP</Button>

@@ -9,6 +9,7 @@ from typing import Any
 from ..observability.tracer import Tracer
 from ..orchestration.partial_handoff import (
     build_continuation_prompt,
+    handoff_allows_continuation,
     partial_handoff_from_dispatch_result,
     summarize_partial_handoff,
 )
@@ -270,9 +271,10 @@ class DAGExecutor:
             _subtask_t0 = __import__("time").monotonic()
             on_subtask_callback(subtask_id, "started", {"subtaskId": subtask_id, "subtaskTitle": subtask.title})
         description = subtask.description
-        continuation_used = False
+        max_continuations = 2
+        continuation_attempts = 0
         try:
-            for _attempt in range(2):
+            for _attempt in range(max_continuations + 1):
                 dispatch_result = self._subagent.dispatch({
                     "prompt": build_subtask_prompt(
                         parent_goal=parent_goal,
@@ -330,12 +332,12 @@ class DAGExecutor:
                     handoff_summary = summarize_partial_handoff(partial_handoff)
                     if handoff_summary:
                         message = f"{message}\n{handoff_summary}"
-                    if not continuation_used:
+                    if continuation_attempts < max_continuations and handoff_allows_continuation(partial_handoff):
                         description = build_continuation_prompt(
                             original_description=subtask.description,
                             handoff=partial_handoff,
                         )
-                        continuation_used = True
+                        continuation_attempts += 1
                         continue
                 raise RuntimeError(message)
             if on_subtask_callback is not None and _subtask_t0 is not None:

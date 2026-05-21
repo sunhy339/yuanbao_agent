@@ -161,6 +161,52 @@ class TestSwarmSequential:
         assert result.partial_handoffs[0]["subtaskId"] == "sub-0"
         assert "sub-0" in result.completed
 
+    def test_failed_child_with_progress_can_get_second_continuation_attempt(self) -> None:
+        mock_sub = SequenceSubagentService([
+            {
+                "status": "failed",
+                "summary": "First pytest failure.",
+                "error": {
+                    "message": "First pytest failure.",
+                    "partialHandoff": {
+                        "status": "CHILD_TASK_EXECUTION_FAILED",
+                        "changedFiles": [{"path": "tests/test_incident.py"}],
+                        "commands": [{"command": "python -m pytest -q", "status": "failed"}],
+                        "pendingVerification": ["python -m pytest -q"],
+                    },
+                },
+            },
+            {
+                "status": "failed",
+                "summary": "Second pytest failure.",
+                "error": {
+                    "message": "Second pytest failure.",
+                    "partialHandoff": {
+                        "status": "CHILD_TASK_EXECUTION_FAILED",
+                        "changedFiles": [{"path": "tests/test_incident.py"}],
+                        "commands": [{"command": "python -m pytest -q", "status": "failed"}],
+                        "pendingVerification": ["python -m pytest -q"],
+                    },
+                },
+            },
+            {"status": "completed", "summary": "continued twice and tests pass"},
+        ])
+        mock_prov = MockProvider(
+            subtasks=[
+                {"id": "sub-0", "title": "Implement tests", "description": "Write incident tests", "dependencies": []},
+            ],
+            handoffs=[json.dumps({"done": True})],
+        )
+        swarm = SwarmOrchestrator(provider=mock_prov, subagent_service=mock_sub)
+
+        result = swarm.execute(
+            "Build incident tests", {},
+            session_id="sess-1", task=_make_task(),
+        )
+
+        assert result.success is True
+        assert len(mock_sub.calls) == 3
+
     def test_respects_agent_type_from_decomposition(self) -> None:
         mock_sub = MockSubagentService()
         mock_prov = MockProvider(

@@ -107,6 +107,14 @@
   writing-mode: horizontal-tb;
 }
 
+.yb-status-badge[data-compact="true"] {
+  gap: 5px;
+  min-height: 18px;
+  padding: 0 7px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .yb-status-badge::before {
   content: "";
   flex: 0 0 auto;
@@ -114,6 +122,11 @@
   height: 7px;
   border-radius: 999px;
   background: currentColor;
+}
+
+.yb-status-badge[data-compact="true"]::before {
+  width: 5px;
+  height: 5px;
 }
 
 .yb-status-badge[data-tone="primary"],

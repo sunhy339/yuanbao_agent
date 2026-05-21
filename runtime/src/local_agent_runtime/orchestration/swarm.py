@@ -17,6 +17,7 @@ from ..provider.adapter import ProviderAdapter
 from ..services.subagent_service import SubagentService
 from .partial_handoff import (
     build_continuation_prompt,
+    handoff_allows_continuation,
     partial_handoff_from_dispatch_result,
     summarize_partial_handoff,
 )
@@ -88,7 +89,7 @@ class SwarmOrchestrator:
         partial_handoffs: list[dict[str, Any]] = []
         handoff_count = 0
         parent_task_id = task.get("id", "")
-        continuation_attempted: set[str] = set()
+        continuation_attempted: dict[str, int] = {}
 
         # Build quick lookup
         subtask_map = {s.id: s for s in plan.subtasks}
@@ -153,8 +154,9 @@ class SwarmOrchestrator:
                         partial_handoff["subtaskId"] = subtask.id
                         partial_handoff["subtaskTitle"] = subtask.title
                         partial_handoffs.append(partial_handoff)
-                        if subtask.id not in continuation_attempted:
-                            continuation_attempted.add(subtask.id)
+                        attempts = continuation_attempted.get(subtask.id, 0)
+                        if handoff_allows_continuation(partial_handoff) and attempts < 2:
+                            continuation_attempted[subtask.id] = attempts + 1
                             self._last_handoff_prompt = build_continuation_prompt(
                                 original_description=subtask.description,
                                 handoff=partial_handoff,

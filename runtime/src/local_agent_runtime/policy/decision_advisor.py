@@ -674,14 +674,21 @@ class DecisionAdvisor:
     def _normalize_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload)
         if kind == "routing_strategy":
-            continuation = normalized.get("tool_continuation")
-            camel_continuation = normalized.get("toolContinuation")
+            continuation = DecisionAdvisor._normalize_tool_continuation(
+                normalized.get("tool_continuation")
+            )
+            camel_continuation = DecisionAdvisor._normalize_tool_continuation(
+                normalized.get("toolContinuation")
+            )
             if isinstance(continuation, dict) and isinstance(camel_continuation, dict):
                 merged = dict(camel_continuation)
                 merged.update(continuation)
                 normalized["tool_continuation"] = merged
                 normalized.pop("toolContinuation", None)
-            elif continuation is None and isinstance(camel_continuation, dict):
+            elif isinstance(continuation, dict):
+                normalized["tool_continuation"] = continuation
+                normalized.pop("toolContinuation", None)
+            elif isinstance(camel_continuation, dict):
                 normalized["tool_continuation"] = camel_continuation
                 normalized.pop("toolContinuation", None)
         if kind == "tool_recovery":
@@ -712,6 +719,27 @@ class DecisionAdvisor:
                     "summary": assessment,
                 }
         return normalized
+
+    @staticmethod
+    def _normalize_tool_continuation(value: Any) -> dict[str, Any] | Any:
+        if not isinstance(value, str):
+            return value
+        compact = re.sub(r"[^a-z0-9]+", "", value.casefold())
+        aliases = {
+            "continueafterchildresults": {
+                "allow_tools_after_task_results": True,
+                "allow_more_subtasks_after_task_results": False,
+                "max_task_tool_calls": 1,
+                "rationale": value,
+            },
+            "continueaftertaskresults": {
+                "allow_tools_after_task_results": True,
+                "allow_more_subtasks_after_task_results": False,
+                "max_task_tool_calls": 1,
+                "rationale": value,
+            },
+        }
+        return aliases.get(compact, value)
 
     @staticmethod
     def _normalize_tool_recovery_action(action: str) -> str:

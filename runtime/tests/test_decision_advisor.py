@@ -410,6 +410,28 @@ class TestDecisionAdvisorRoutingStrategy:
         assert continuation["allowMoreSubtasksAfterTaskResults"] is False
         assert continuation["max_task_tool_calls"] == 2
 
+    def test_routing_strategy_accepts_string_tool_continuation_alias(self) -> None:
+        provider = _GoodProvider(response=json.dumps({
+            "proposal": {
+                "strategy": "plan_execute",
+                "scenario": "multi_step_task",
+                "tool_continuation": "continue_after_child_results",
+                "toolContinuation": "continue_after_child_results",
+            },
+            "confidence": 0.84,
+            "rationale": "The parent should do one integration pass after child results.",
+        }))
+        advisor = DecisionAdvisor(provider=provider)
+
+        result = advisor.advise("routing_strategy", {"goal": "delegate implementation then integrate"})
+
+        assert result.accepted is True
+        assert "toolContinuation" not in result.payload
+        continuation = result.payload["tool_continuation"]
+        assert continuation["allow_tools_after_task_results"] is True
+        assert continuation["allow_more_subtasks_after_task_results"] is False
+        assert continuation["max_task_tool_calls"] == 1
+
     def test_routing_strategy_rejects_bad_tool_continuation_policy(self) -> None:
         provider = _GoodProvider(response=json.dumps({
             "proposal": {

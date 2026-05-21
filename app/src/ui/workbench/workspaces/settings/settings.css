@@ -163,10 +163,10 @@
 }
 
 .settings-primary-action {
-  border: 1px solid rgba(34, 211, 238, 0.42);
-  color: #042f35;
+  border: 1px solid rgba(232, 168, 124, 0.42);
+  color: #2b1a0f;
   background: var(--settings-primary);
-  box-shadow: 0 12px 30px rgba(34, 211, 238, 0.18);
+  box-shadow: 0 12px 30px rgba(232, 168, 124, 0.18);
 }
 
 .settings-primary-action:hover:not(:disabled) {
@@ -182,7 +182,7 @@
 .settings-secondary-action:hover:not(:disabled) {
   border-color: rgba(37, 99, 235, 0.2);
   color: var(--settings-primary);
-  background: rgba(34, 211, 238, 0.08);
+  background: rgba(232, 168, 124, 0.08);
 }
 
 .settings-primary-action:disabled,
@@ -239,7 +239,7 @@
 .settings-provider-item.is-active,
 .settings-choice-card.is-selected {
   border-color: rgba(37, 99, 235, 0.26);
-  background: rgba(34, 211, 238, 0.08);
+  background: rgba(232, 168, 124, 0.08);
   box-shadow: inset 3px 0 0 var(--settings-primary), 0 8px 22px rgba(37, 99, 235, 0.08);
 }
 
@@ -462,7 +462,7 @@
 }
 
 .settings-segmented input:checked + span {
-  color: #042f35;
+  color: #2b1a0f;
   border-color: var(--settings-primary);
   background: var(--settings-primary);
 }
@@ -570,16 +570,16 @@
 }
 
 .settings-agent-row.is-selected {
-  border-color: rgba(34, 211, 238, 0.68);
+  border-color: rgba(232, 168, 124, 0.68);
   background:
-    linear-gradient(90deg, rgba(8, 145, 178, 0.22), transparent 72%),
+    linear-gradient(90deg, rgba(196, 122, 74, 0.22), transparent 72%),
     rgba(3, 7, 18, 0.48);
 }
 
 .settings-hook-row.is-selected {
-  border-color: rgba(34, 211, 238, 0.68);
+  border-color: rgba(232, 168, 124, 0.68);
   background:
-    linear-gradient(90deg, rgba(8, 145, 178, 0.2), transparent 72%),
+    linear-gradient(90deg, rgba(196, 122, 74, 0.2), transparent 72%),
     rgba(3, 7, 18, 0.48);
 }
 
@@ -707,8 +707,8 @@
 }
 
 .settings-agent-feedback.is-success {
-  border-color: rgba(167, 243, 208, 0.28);
-  color: #a7f3d0;
+  border-color: rgba(167, 212, 192, 0.28);
+  color: #a7d4c0;
 }
 
 .settings-agent-feedback.is-danger,
@@ -792,7 +792,7 @@
 
 .settings-preset-row button.is-active {
   border-color: var(--settings-primary);
-  color: #042f35;
+  color: #2b1a0f;
   background: var(--settings-primary);
 }
 
@@ -890,8 +890,8 @@
 .settings-workspace {
   --settings-bg: rgba(7, 13, 27, 0.82);
   --settings-muted-bg: rgba(3, 7, 18, 0.34);
-  --settings-border: rgba(125, 211, 252, 0.18);
-  --settings-border-strong: rgba(103, 232, 249, 0.34);
+  --settings-border: rgba(232, 168, 124, 0.18);
+  --settings-border-strong: rgba(232, 168, 124, 0.34);
   grid-template-columns: 238px minmax(0, 1fr);
 }
 
@@ -916,18 +916,18 @@
 
 .settings-nav button:hover,
 .settings-about-link:hover {
-  border-color: rgba(125, 211, 252, 0.16);
+  border-color: rgba(232, 168, 124, 0.16);
   background:
-    linear-gradient(90deg, rgba(8, 145, 178, 0.16), transparent 68%),
+    linear-gradient(90deg, rgba(196, 122, 74, 0.16), transparent 68%),
     rgba(3, 7, 18, 0.22);
 }
 
 .settings-nav button.is-active,
 .settings-about-link.is-active,
 .settings-about-link[aria-current="page"] {
-  border-color: rgba(34, 211, 238, 0.44);
+  border-color: rgba(232, 168, 124, 0.44);
   background:
-    linear-gradient(90deg, rgba(8, 145, 178, 0.32), transparent 72%),
+    linear-gradient(90deg, rgba(196, 122, 74, 0.32), transparent 72%),
     rgba(6, 12, 25, 0.78);
   box-shadow: inset 3px 0 0 var(--settings-primary), 0 18px 42px rgba(0, 0, 0, 0.24);
 }
@@ -956,8 +956,8 @@
   border-radius: var(--yb-radius-xl);
   padding: 18px 20px;
   background:
-    linear-gradient(110deg, rgba(34, 211, 238, 0.16), transparent 42%),
-    linear-gradient(300deg, rgba(167, 243, 208, 0.08), transparent 38%),
+    linear-gradient(110deg, rgba(232, 168, 124, 0.16), transparent 42%),
+    linear-gradient(300deg, rgba(167, 212, 192, 0.08), transparent 38%),
     rgba(3, 7, 18, 0.38);
   box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
@@ -986,7 +986,7 @@
   display: grid;
   gap: 4px;
   min-width: 0;
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid rgba(232, 168, 124, 0.16);
   border-radius: 10px;
   padding: 10px 12px;
   background: rgba(3, 7, 18, 0.34);
@@ -1058,23 +1058,23 @@
   pointer-events: none;
   border-radius: inherit;
   background:
-    linear-gradient(90deg, rgba(34, 211, 238, 0.56), transparent 32%) top left / 48% 1px no-repeat,
-    linear-gradient(180deg, rgba(167, 243, 208, 0.28), transparent 34%) top left / 1px 44% no-repeat;
+    linear-gradient(90deg, rgba(232, 168, 124, 0.56), transparent 32%) top left / 48% 1px no-repeat,
+    linear-gradient(180deg, rgba(167, 212, 192, 0.28), transparent 34%) top left / 1px 44% no-repeat;
   opacity: 0.48;
 }
 
 .settings-provider-item:hover {
-  border-color: rgba(34, 211, 238, 0.42);
+  border-color: rgba(232, 168, 124, 0.42);
   background:
-    linear-gradient(90deg, rgba(8, 145, 178, 0.16), transparent 68%),
+    linear-gradient(90deg, rgba(196, 122, 74, 0.16), transparent 68%),
     rgba(3, 7, 18, 0.44);
 }
 
 .settings-provider-item.is-active,
 .settings-choice-card.is-selected {
-  border-color: rgba(34, 211, 238, 0.68);
+  border-color: rgba(232, 168, 124, 0.68);
   background:
-    linear-gradient(90deg, rgba(8, 145, 178, 0.3), transparent 72%),
+    linear-gradient(90deg, rgba(196, 122, 74, 0.3), transparent 72%),
     rgba(3, 7, 18, 0.48);
   box-shadow: inset 3px 0 0 var(--settings-primary), 0 18px 44px rgba(0, 0, 0, 0.25);
 }
@@ -1097,40 +1097,40 @@
 }
 
 .settings-provider-actions {
-  border-top-color: rgba(125, 211, 252, 0.14);
+  border-top-color: rgba(232, 168, 124, 0.14);
 }
 
 .settings-primary-action {
-  color: #03191f;
-  border-color: rgba(34, 211, 238, 0.52);
-  background: linear-gradient(135deg, #67e8f9, #22d3ee 58%, #a7f3d0);
-  box-shadow: 0 14px 34px rgba(34, 211, 238, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  color: #2b1a0f;
+  border-color: rgba(232, 168, 124, 0.52);
+  background: linear-gradient(135deg, #e8a87c, var(--yb-primary) 58%, #a7d4c0);
+  box-shadow: 0 14px 34px rgba(232, 168, 124, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.45);
 }
 
 .settings-secondary-action {
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: rgba(232, 168, 124, 0.18);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
     rgba(3, 7, 18, 0.36);
 }
 
 .settings-secondary-action:hover:not(:disabled) {
-  border-color: rgba(34, 211, 238, 0.44);
+  border-color: rgba(232, 168, 124, 0.44);
   color: var(--settings-ink);
-  background: rgba(8, 145, 178, 0.16);
+  background: rgba(196, 122, 74, 0.16);
 }
 
 .settings-field input,
 .settings-field textarea,
 .settings-field select,
 .settings-segmented span {
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: rgba(232, 168, 124, 0.18);
   background: rgba(3, 7, 18, 0.38);
 }
 
 .settings-status-pill,
 .settings-provider-badge {
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: rgba(232, 168, 124, 0.18);
   color: var(--settings-muted);
   background: rgba(3, 7, 18, 0.42);
 }
@@ -1138,8 +1138,8 @@
 .settings-provider-badge,
 .settings-status-pill.is-active,
 .settings-status-pill.is-pass {
-  border-color: rgba(167, 243, 208, 0.28);
-  color: #a7f3d0;
+  border-color: rgba(167, 212, 192, 0.28);
+  color: #a7d4c0;
   background: rgba(22, 163, 74, 0.12);
 }
 
@@ -1155,7 +1155,7 @@
 }
 
 .settings-rail {
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid rgba(232, 168, 124, 0.16);
   border-radius: var(--yb-radius-lg);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 42%),
@@ -1343,7 +1343,7 @@
 
 .settings-modal {
   padding: 18px;
-  border-color: rgba(125, 211, 252, 0.24);
+  border-color: rgba(232, 168, 124, 0.24);
   border-radius: var(--yb-radius-xl);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 38%),
@@ -1355,7 +1355,7 @@
   justify-content: flex-end;
   gap: 8px;
   margin-top: 14px;
-  border-top: 1px solid rgba(125, 211, 252, 0.14);
+  border-top: 1px solid rgba(232, 168, 124, 0.14);
   padding-top: 14px;
 }
 
@@ -1417,7 +1417,7 @@
 
 .yb-v2[data-theme="light"] .settings-command-strip {
   background:
-    linear-gradient(110deg, rgba(6, 182, 212, 0.12), transparent 42%),
+    linear-gradient(110deg, rgba(196, 122, 74, 0.12), transparent 42%),
     linear-gradient(300deg, rgba(34, 197, 94, 0.07), transparent 38%),
     rgba(255, 255, 255, 0.82);
 }

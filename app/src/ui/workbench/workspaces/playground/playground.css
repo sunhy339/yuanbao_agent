@@ -14,7 +14,7 @@
   border-radius: var(--yb-radius-lg);
   padding: 18px 20px;
   background:
-    linear-gradient(110deg, rgba(34, 211, 238, 0.16), transparent 44%),
+    linear-gradient(110deg, rgba(232, 168, 124, 0.16), transparent 44%),
     linear-gradient(300deg, rgba(139, 92, 246, 0.1), transparent 44%),
     rgba(7, 13, 27, 0.72);
   box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.04);
@@ -56,7 +56,7 @@
 
 .playground-metrics div,
 .playground-empty {
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid rgba(232, 168, 124, 0.16);
   border-radius: var(--yb-radius-lg);
   background: rgba(3, 7, 18, 0.38);
 }
@@ -107,7 +107,7 @@
 
 .yb-v2[data-theme="light"] .playground-hero {
   background:
-    linear-gradient(110deg, rgba(6, 182, 212, 0.12), transparent 44%),
+    linear-gradient(110deg, rgba(196, 122, 74, 0.12), transparent 44%),
     linear-gradient(300deg, rgba(139, 92, 246, 0.07), transparent 44%),
     rgba(255, 255, 255, 0.82);
   box-shadow: var(--yb-shadow-tight), inset 0 1px 0 rgba(255, 255, 255, 0.74);

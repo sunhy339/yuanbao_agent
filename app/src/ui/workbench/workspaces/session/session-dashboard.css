@@ -1,8 +1,8 @@
 .session-workspace {
   --session-surface: rgba(7, 13, 27, 0.82);
   --session-surface-muted: rgba(3, 7, 18, 0.38);
-  --session-border: rgba(125, 211, 252, 0.18);
-  --session-border-strong: rgba(103, 232, 249, 0.36);
+  --session-border: rgba(232, 168, 124, 0.18);
+  --session-border-strong: rgba(196, 122, 74, 0.36);
   display: grid;
   gap: 12px;
 }
@@ -31,8 +31,8 @@
   pointer-events: none;
   border-radius: inherit;
   background:
-    linear-gradient(90deg, rgba(34, 211, 238, 0.62), transparent 34%) top left / 54% 1px no-repeat,
-    linear-gradient(180deg, rgba(167, 243, 208, 0.28), transparent 38%) top left / 1px 52% no-repeat;
+    linear-gradient(90deg, rgba(232, 168, 124, 0.62), transparent 34%) top left / 54% 1px no-repeat,
+    linear-gradient(180deg, rgba(167, 212, 192, 0.28), transparent 38%) top left / 1px 52% no-repeat;
   opacity: 0.52;
 }
 
@@ -41,7 +41,7 @@
   margin-bottom: 0;
   padding: 20px 22px;
   background:
-    linear-gradient(115deg, rgba(34, 211, 238, 0.16), transparent 42%),
+    linear-gradient(115deg, rgba(232, 168, 124, 0.16), transparent 42%),
     linear-gradient(300deg, rgba(139, 92, 246, 0.1), transparent 44%),
     rgba(7, 13, 27, 0.86);
 }
@@ -62,7 +62,7 @@
 }
 
 .session-chip-row > span:not(.yb-status-badge) {
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: rgba(232, 168, 124, 0.18);
   background: rgba(3, 7, 18, 0.42);
 }
 
@@ -105,7 +105,7 @@
 .session-runtime-dashboard dl div {
   display: grid;
   gap: 4px;
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid rgba(232, 168, 124, 0.16);
   border-radius: 10px;
   padding: 10px 12px;
   background: rgba(3, 7, 18, 0.34);
@@ -138,7 +138,7 @@
 }
 
 .session-task-panel-grid code {
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: rgba(232, 168, 124, 0.18);
   background: rgba(3, 7, 18, 0.38);
 }
 
@@ -247,7 +247,7 @@
 }
 
 .runtime-cockpit-metrics div[data-tone="primary"] {
-  border-color: rgba(8, 145, 178, 0.22);
+  border-color: rgba(196, 122, 74, 0.22);
 }
 
 .runtime-cockpit-metrics dt,
@@ -396,7 +396,7 @@
 
 .runtime-cockpit-detail dl div[data-tone="primary"],
 .runtime-cockpit-detail dl div[data-tone="info"] {
-  border-color: rgba(8, 145, 178, 0.2);
+  border-color: rgba(196, 122, 74, 0.2);
 }
 
 .runtime-cockpit-detail dt {
@@ -427,8 +427,8 @@
   pointer-events: none;
   border-radius: inherit;
   background:
-    linear-gradient(90deg, rgba(34, 211, 238, 0.52), transparent 44%) top left / 60% 1px no-repeat,
-    linear-gradient(180deg, rgba(167, 243, 208, 0.22), transparent 42%) top left / 1px 58% no-repeat;
+    linear-gradient(90deg, rgba(232, 168, 124, 0.52), transparent 44%) top left / 60% 1px no-repeat,
+    linear-gradient(180deg, rgba(167, 212, 192, 0.22), transparent 42%) top left / 1px 58% no-repeat;
   opacity: 0.58;
 }
 
@@ -471,7 +471,7 @@
   display: grid;
   gap: 6px;
   min-width: 0;
-  border: 1px solid rgba(125, 211, 252, 0.14);
+  border: 1px solid rgba(232, 168, 124, 0.14);
   border-radius: var(--yb-radius-md);
   padding: 8px;
   background: rgba(3, 7, 18, 0.28);
@@ -491,8 +491,8 @@
 }
 
 .task-progress-steps li[data-state="current"] {
-  border-color: rgba(34, 211, 238, 0.34);
-  background: rgba(8, 145, 178, 0.14);
+  border-color: rgba(232, 168, 124, 0.34);
+  background: rgba(196, 122, 74, 0.14);
 }
 
 .task-progress-steps li[data-state="failed"] > span {
@@ -512,7 +512,7 @@
 .task-plan-step-panel {
   display: grid;
   gap: 8px;
-  border: 1px solid rgba(125, 211, 252, 0.14);
+  border: 1px solid rgba(232, 168, 124, 0.14);
   border-radius: var(--yb-radius-md);
   padding: 10px;
   background: rgba(3, 7, 18, 0.26);
@@ -553,7 +553,7 @@
   gap: 9px;
   align-items: center;
   min-width: 0;
-  border: 1px solid rgba(125, 211, 252, 0.12);
+  border: 1px solid rgba(232, 168, 124, 0.12);
   border-radius: 8px;
   padding: 8px;
   background: rgba(2, 6, 23, 0.22);
@@ -578,8 +578,8 @@
 }
 
 .task-plan-step-panel li[data-state="active"] {
-  border-color: rgba(34, 211, 238, 0.3);
-  background: rgba(8, 145, 178, 0.14);
+  border-color: rgba(232, 168, 124, 0.3);
+  background: rgba(196, 122, 74, 0.14);
 }
 
 .task-plan-step-panel li[data-state="completed"] > span:not(.yb-status-badge) {
@@ -589,7 +589,7 @@
 
 .task-plan-step-panel li[data-state="active"] > span:not(.yb-status-badge) {
   color: #cffafe;
-  background: rgba(34, 211, 238, 0.24);
+  background: rgba(232, 168, 124, 0.24);
 }
 
 .task-plan-step-panel li[data-state="failed"] > span:not(.yb-status-badge) {
@@ -624,7 +624,7 @@
   overflow: hidden;
   display: grid;
   gap: 10px;
-  border: 1px solid rgba(125, 211, 252, 0.18);
+  border: 1px solid rgba(232, 168, 124, 0.18);
   border-radius: var(--yb-radius-xl);
   padding: 14px;
   background:
@@ -641,7 +641,7 @@
   border-radius: inherit;
   background:
     linear-gradient(90deg, rgba(96, 165, 250, 0.5), transparent 42%) top left / 60% 1px no-repeat,
-    linear-gradient(180deg, rgba(34, 211, 238, 0.22), transparent 44%) top left / 1px 58% no-repeat;
+    linear-gradient(180deg, rgba(232, 168, 124, 0.22), transparent 44%) top left / 1px 58% no-repeat;
 }
 
 .agent-collaboration-panel > * {
@@ -675,7 +675,7 @@
 .agent-result-list li,
 .agent-collaboration-empty,
 .agent-worker-strip article {
-  border: 1px solid rgba(125, 211, 252, 0.14);
+  border: 1px solid rgba(232, 168, 124, 0.14);
   border-radius: var(--yb-radius-md);
   padding: 9px;
   background: rgba(3, 7, 18, 0.3);
@@ -689,8 +689,8 @@
 }
 
 .agent-task-list li[data-state="active"] {
-  border-color: rgba(34, 211, 238, 0.3);
-  background: rgba(8, 145, 178, 0.14);
+  border-color: rgba(232, 168, 124, 0.3);
+  background: rgba(196, 122, 74, 0.14);
 }
 
 .agent-task-list li[data-state="completed"] {
@@ -743,7 +743,7 @@
   overflow: hidden;
   display: grid;
   gap: 10px;
-  border: 1px solid rgba(125, 211, 252, 0.18);
+  border: 1px solid rgba(232, 168, 124, 0.18);
   border-radius: var(--yb-radius-xl);
   padding: 14px;
   background:
@@ -799,7 +799,7 @@
 .worktree-meta div,
 .worktree-state-grid article {
   min-width: 0;
-  border: 1px solid rgba(125, 211, 252, 0.14);
+  border: 1px solid rgba(232, 168, 124, 0.14);
   border-radius: var(--yb-radius-md);
   padding: 9px;
   background: rgba(3, 7, 18, 0.3);
@@ -878,7 +878,7 @@
   display: grid;
   gap: 5px;
   min-width: 0;
-  border: 1px solid rgba(125, 211, 252, 0.14);
+  border: 1px solid rgba(232, 168, 124, 0.14);
   border-radius: var(--yb-radius-md);
   padding: 9px;
   background: rgba(3, 7, 18, 0.3);
@@ -936,7 +936,7 @@
   position: relative;
   overflow: hidden;
   min-height: 156px;
-  border: 1px solid rgba(125, 211, 252, 0.18);
+  border: 1px solid rgba(232, 168, 124, 0.18);
   border-radius: var(--yb-radius-xl);
   padding: 15px;
   background:
@@ -952,21 +952,21 @@
   pointer-events: none;
   border-radius: inherit;
   background:
-    linear-gradient(90deg, rgba(34, 211, 238, 0.5), transparent 40%) top left / 62% 1px no-repeat,
-    linear-gradient(180deg, rgba(167, 243, 208, 0.25), transparent 42%) top left / 1px 58% no-repeat;
+    linear-gradient(90deg, rgba(232, 168, 124, 0.5), transparent 40%) top left / 62% 1px no-repeat,
+    linear-gradient(180deg, rgba(167, 212, 192, 0.25), transparent 42%) top left / 1px 58% no-repeat;
   opacity: 0.62;
 }
 
 .session-runtime-lane[data-lane="patches"]::before {
   background:
-    linear-gradient(90deg, rgba(167, 243, 208, 0.48), transparent 40%) top left / 62% 1px no-repeat,
+    linear-gradient(90deg, rgba(167, 212, 192, 0.48), transparent 40%) top left / 62% 1px no-repeat,
     linear-gradient(180deg, rgba(34, 197, 94, 0.2), transparent 42%) top left / 1px 58% no-repeat;
 }
 
 .session-runtime-lane[data-lane="trace"]::before {
   background:
     linear-gradient(90deg, rgba(139, 92, 246, 0.48), transparent 40%) top left / 62% 1px no-repeat,
-    linear-gradient(180deg, rgba(34, 211, 238, 0.2), transparent 42%) top left / 1px 58% no-repeat;
+    linear-gradient(180deg, rgba(232, 168, 124, 0.2), transparent 42%) top left / 1px 58% no-repeat;
 }
 
 .session-runtime-lane header {
@@ -990,7 +990,7 @@
   min-width: 34px;
   height: 34px;
   place-items: center;
-  border: 1px solid rgba(125, 211, 252, 0.18);
+  border: 1px solid rgba(232, 168, 124, 0.18);
   border-radius: 999px;
   color: var(--session-ink);
   font-family: var(--session-mono);
@@ -1010,7 +1010,7 @@
 
 .session-runtime-lane li,
 .session-runtime-lane-empty {
-  border: 1px solid rgba(125, 211, 252, 0.14);
+  border: 1px solid rgba(232, 168, 124, 0.14);
   border-radius: var(--yb-radius-lg);
   padding: 10px;
   background: rgba(3, 7, 18, 0.38);

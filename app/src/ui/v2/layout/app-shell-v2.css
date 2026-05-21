@@ -118,7 +118,7 @@
   border: 1px solid var(--yb-line);
   border-radius: 999px;
   padding: 0 8px;
-  background: rgba(9, 16, 31, 0.48);
+  background: rgba(22, 18, 16, 0.48);
   color: var(--yb-muted);
   font-family: var(--yb-font-mono);
   font-size: 10px;
@@ -194,7 +194,7 @@
 .yb-app-shell .session-rail-item[data-active="true"],
 .yb-app-shell .session-rail-item:hover {
   border-color: var(--yb-line);
-  background: rgba(9, 16, 31, 0.64);
+  background: rgba(22, 18, 16, 0.64);
   color: var(--yb-ink);
   box-shadow: none;
 }
@@ -221,7 +221,7 @@
 .yb-app-shell .workspace-tab-wrap {
   border-color: var(--yb-line);
   border-radius: 8px;
-  background: rgba(8, 14, 28, 0.72);
+  background: rgba(20, 16, 14, 0.72);
   backdrop-filter: blur(14px);
 }
 
@@ -245,7 +245,7 @@
   border-color: var(--yb-line);
   border-radius: var(--yb-radius-lg);
   background:
-    linear-gradient(180deg, rgba(14, 23, 42, 0.94), rgba(7, 11, 22, 0.98)),
+    linear-gradient(180deg, rgba(18, 16, 14, 0.94), rgba(12, 10, 10, 0.98)),
     var(--yb-surface-strong);
   box-shadow: var(--yb-shadow-tight), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
@@ -535,7 +535,7 @@
   padding: 8px 10px;
   border: 1px solid var(--yb-line);
   border-radius: var(--yb-radius-md);
-  background: rgba(9, 16, 31, 0.48);
+  background: rgba(22, 18, 16, 0.48);
 }
 
 .sidebar-task-heading {
@@ -596,7 +596,7 @@
   padding: 8px 10px;
   border: 1px solid var(--yb-line);
   border-radius: var(--yb-radius-md);
-  background: rgba(9, 16, 31, 0.48);
+  background: rgba(22, 18, 16, 0.48);
 }
 
 .sidebar-context-header {
@@ -648,7 +648,7 @@
   padding: 8px 10px;
   border: 1px solid var(--yb-line);
   border-radius: var(--yb-radius-md);
-  background: rgba(9, 16, 31, 0.48);
+  background: rgba(22, 18, 16, 0.48);
 }
 
 .sidebar-worktree-panel[data-dirty="true"] {

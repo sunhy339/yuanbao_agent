@@ -93,7 +93,7 @@
 .session-workspace-chat-only .message-bubble[data-role="user"] {
   justify-self: end;
   max-width: min(760px, 72%);
-  border-color: rgba(34, 211, 238, 0.32);
+  border-color: rgba(232, 168, 124, 0.32);
   background:
     linear-gradient(135deg, rgba(207, 250, 254, 0.72), rgba(255, 255, 255, 0.96));
 }

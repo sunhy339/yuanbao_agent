@@ -25,8 +25,8 @@
   align-items: stretch;
   padding: 18px 20px;
   background:
-    linear-gradient(110deg, rgba(34, 211, 238, 0.16), transparent 44%),
-    linear-gradient(300deg, rgba(167, 243, 208, 0.1), transparent 44%),
+    linear-gradient(110deg, rgba(232, 168, 124, 0.16), transparent 44%),
+    linear-gradient(300deg, rgba(167, 212, 192, 0.1), transparent 44%),
     rgba(7, 13, 27, 0.72);
 }
 
@@ -130,9 +130,9 @@
 }
 
 .appearance-choice[data-selected="true"] {
-  border-color: rgba(34, 211, 238, 0.58);
+  border-color: rgba(196, 122, 74, 0.58);
   background:
-    linear-gradient(135deg, rgba(34, 211, 238, 0.22), transparent 72%),
+    linear-gradient(135deg, rgba(196, 122, 74, 0.22), transparent 72%),
     rgba(3, 7, 18, 0.46);
   box-shadow: inset 3px 0 0 var(--yb-primary);
 }
@@ -279,7 +279,7 @@
 }
 
 .appearance-preview-window[data-preview-theme="light"] {
-  color: #0f172a;
+  color: var(--yb-ink-soft);
   background:
     linear-gradient(135deg, rgba(14, 165, 233, 0.12), transparent 60%),
     rgba(248, 250, 252, 0.92);

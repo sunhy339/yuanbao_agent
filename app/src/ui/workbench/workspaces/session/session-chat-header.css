@@ -8,7 +8,7 @@
   border-radius: var(--yb-radius-xl);
   padding: 16px;
   background:
-    linear-gradient(135deg, rgba(34, 211, 238, 0.08), transparent 44%),
+    linear-gradient(135deg, rgba(232, 168, 124, 0.08), transparent 44%),
     var(--session-surface);
   box-shadow: var(--yb-shadow-tight);
 }
@@ -174,7 +174,7 @@
   border-radius: 8px;
   padding: clamp(12px, 1.6vw, 18px);
   background:
-    linear-gradient(180deg, rgba(34, 211, 238, 0.06), transparent 34%),
+    linear-gradient(180deg, rgba(232, 168, 124, 0.06), transparent 34%),
     var(--session-surface);
   box-shadow: var(--yb-shadow-tight);
 }

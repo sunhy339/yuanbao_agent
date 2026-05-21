@@ -9,7 +9,7 @@
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 14px;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.14);
+  border-bottom: 1px solid rgba(232, 168, 124, 0.14);
   padding-bottom: 14px;
 }
 
@@ -37,7 +37,7 @@
 
 .message-bubble,
 .runtime-event-card {
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: rgba(232, 168, 124, 0.18);
   border-radius: var(--yb-radius-lg);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 42%),
@@ -46,9 +46,9 @@
 }
 
 .message-bubble[data-role="user"] {
-  border-color: rgba(34, 211, 238, 0.46);
+  border-color: rgba(232, 168, 124, 0.46);
   background:
-    linear-gradient(135deg, rgba(34, 211, 238, 0.24), transparent 70%),
+    linear-gradient(135deg, rgba(232, 168, 124, 0.24), transparent 70%),
     rgba(3, 7, 18, 0.54);
 }
 
@@ -82,7 +82,7 @@
 
 .runtime-event-meta span,
 .message-bubble-head em {
-  border-color: rgba(125, 211, 252, 0.16);
+  border-color: rgba(232, 168, 124, 0.16);
   background: rgba(3, 7, 18, 0.42);
 }
 
@@ -94,13 +94,13 @@
 .runtime-event-code-summary,
 .runtime-event-detail pre,
 .diff-view {
-  border-color: rgba(125, 211, 252, 0.16);
+  border-color: rgba(232, 168, 124, 0.16);
   background: rgba(2, 6, 23, 0.74);
   color: #dbeafe;
 }
 
 .diff-line-header {
-  background: rgba(34, 211, 238, 0.12);
+  background: rgba(232, 168, 124, 0.12);
 }
 
 .diff-line-add {
@@ -112,7 +112,7 @@
 }
 
 .runtime-patch-files button {
-  border-color: rgba(125, 211, 252, 0.18);
+  border-color: rgba(232, 168, 124, 0.18);
   background: rgba(3, 7, 18, 0.42);
 }
 
@@ -378,7 +378,7 @@
   align-items: center;
   gap: 8px;
   padding: 6px 0;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.1);
+  border-bottom: 1px solid rgba(232, 168, 124, 0.1);
   margin-bottom: 6px;
 }
 
@@ -394,7 +394,7 @@
   font-size: 11px;
   padding: 2px 4px;
   border-radius: 4px;
-  border: 1px solid rgba(125, 211, 252, 0.2);
+  border: 1px solid rgba(232, 168, 124, 0.2);
   background: transparent;
   color: inherit;
   max-width: 120px;
@@ -406,7 +406,7 @@
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 4px;
-  border: 1px solid rgba(125, 211, 252, 0.2);
+  border: 1px solid rgba(232, 168, 124, 0.2);
   background: transparent;
   color: var(--session-muted);
   cursor: pointer;
@@ -414,5 +414,5 @@
 
 .trace-filter-clear:hover {
   color: inherit;
-  border-color: rgba(125, 211, 252, 0.4);
+  border-color: rgba(232, 168, 124, 0.4);
 }

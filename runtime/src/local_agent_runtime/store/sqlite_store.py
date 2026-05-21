@@ -124,6 +124,8 @@ class SQLiteStore(
         self._bootstrap()
         self._config = self._load_or_initialize_config()
         self._config_snapshot: dict[str, Any] | None = None
+        self._last_storage_cleanup_at = 0
+        self.maybe_auto_storage_cleanup(reason="startup")
 
     def close(self) -> None:
         self._conn.close()
@@ -496,7 +498,16 @@ class SQLiteStore(
             "retentionRemoved": retention_removed,
             "vacuumRan": vacuum and self.database_path != ":memory:",
         }
+        self._last_storage_cleanup_at = self.now()
         return result
+
+    def maybe_auto_storage_cleanup(self, *, reason: str, min_interval_ms: int = 300_000) -> dict[str, Any] | None:
+        if self.database_path == ":memory:":
+            return None
+        now = self.now()
+        if now - self._last_storage_cleanup_at < min_interval_ms:
+            return None
+        return self.storage_cleanup({"vacuum": False, "applyRetention": True, "reason": reason})
 
     def _apply_storage_retention(self) -> dict[str, int]:
         config = self.get_config({})["config"]

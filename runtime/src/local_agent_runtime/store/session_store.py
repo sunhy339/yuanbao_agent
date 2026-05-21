@@ -314,6 +314,7 @@ class SessionStoreMixin:
         self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         self._conn.commit()
+        self.maybe_auto_storage_cleanup(reason="session_delete")
         return {"session": session}
 
     def _delete_session_related_rows(self, session_id: str) -> None:

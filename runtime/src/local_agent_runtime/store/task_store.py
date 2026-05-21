@@ -307,6 +307,8 @@ class TaskStoreMixin:
             values,
         )
         self._conn.commit()
+        if status in {"completed", "failed", "cancelled"}:
+            self.maybe_auto_storage_cleanup(reason=f"task_{status}")
         return self.get_task({"taskId": task_id})["task"]
 
     def get_task(self, params: dict[str, Any]) -> dict[str, Any]:

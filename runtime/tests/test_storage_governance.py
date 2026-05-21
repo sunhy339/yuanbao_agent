@@ -212,3 +212,45 @@ def test_storage_cleanup_applies_retention_caps(tmp_path: Path) -> None:
     assert store._conn.execute("SELECT COUNT(*) FROM context_snapshots WHERE task_id = ?", (task["id"],)).fetchone()[0] == 2  # noqa: SLF001
     assert store._conn.execute("SELECT COUNT(*) FROM command_logs WHERE task_id = ?", (task["id"],)).fetchone()[0] == 2  # noqa: SLF001
     assert store._conn.execute("SELECT COUNT(*) FROM memory_recall_records WHERE session_id = ?", (session["id"],)).fetchone()[0] == 2  # noqa: SLF001
+
+
+def test_auto_storage_cleanup_runs_on_terminal_task_update(tmp_path: Path) -> None:
+    runtime = _make_runtime(tmp_path)
+    store = runtime.store
+
+    store.update_config(
+        {
+            "config": {
+                "storage": {
+                    "retention": {
+                        "enabled": True,
+                        "traceEventsMaxPerSession": 2,
+                        "providerTurnsMaxPerTask": 2,
+                        "contextSnapshotsMaxPerTask": 2,
+                        "commandLogsMaxPerTask": 2,
+                        "memoryRecallRecordsMaxPerSession": 2,
+                        "artifactFilesMaxAgeDays": 365,
+                    }
+                }
+            }
+        }
+    )
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace["id"], "Auto cleanup")
+    task = store.create_task(session_id=session["id"], task_type="edit", goal="Trigger auto cleanup", plan=[], status="running")
+
+    for index in range(5):
+        store.create_context_snapshot(
+            session_id=session["id"],
+            task_id=task["id"],
+            token_estimate=200 + index,
+            memory_ids=[f"mem_{index}"],
+        )
+
+    store._last_storage_cleanup_at = 0  # noqa: SLF001
+    store.update_task(task["id"], status="completed", summary="done")
+
+    assert store._conn.execute("SELECT COUNT(*) FROM context_snapshots WHERE task_id = ?", (task["id"],)).fetchone()[0] == 2  # noqa: SLF001

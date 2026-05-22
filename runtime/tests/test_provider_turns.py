@@ -974,6 +974,12 @@ class TestE2EProviderFailure:
         assert turns[0]["failureRecovery"]["retryable"] is True
         assert task["structuredResult"]["failureRecovery"]["category"] == "rate_limit"
         assert any(event["type"] == "agent.decision.failure_recovery" for event in runtime.events)
+        trace_types = [
+            event["type"]
+            for event in runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        ]
+        assert "provider.request" in trace_types
+        assert "provider.response" in trace_types
 
         # The ContextSnapshot should still exist (created before provider call)
         snapshots = runtime.store.list_context_snapshots(task["id"])

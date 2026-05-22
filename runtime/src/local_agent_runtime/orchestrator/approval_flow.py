@@ -8,6 +8,24 @@ logger = logging.getLogger(__name__)
 
 
 class ApprovalFlowMixin:
+    def _ensure_task_running_after_approval(
+        self,
+        *,
+        task: dict[str, Any],
+        detail: str,
+    ) -> dict[str, Any]:
+        if task.get("status") == "running":
+            return task
+        self._validate_task_transition(task["status"], "running", task["id"])
+        task = self._store.update_task_status(task_id=task["id"], status="running")
+        self._publish(
+            session_id=task["sessionId"],
+            task=task,
+            event_type="task.updated",
+            payload={"status": "running", "detail": detail},
+        )
+        return task
+
     def request_worktree_merge_approval(self, params: dict[str, Any]) -> dict[str, Any]:
         worktree_service = getattr(self, "_worktree_service", None)
         if worktree_service is None:
@@ -88,13 +106,9 @@ class ApprovalFlowMixin:
                 task = self._resume_approved_advisor_tool(task=task, approval=approval)
             return {"approval": approval, "task": task}
         if approval["decision"] == "approved":
-            self._validate_task_transition(task["status"], "running", task["id"])
-            task = self._store.update_task_status(task_id=approval["taskId"], status="running")
-            self._publish(
-                session_id=task["sessionId"],
+            task = self._ensure_task_running_after_approval(
                 task=task,
-                event_type="task.updated",
-                payload={"status": "running", "detail": "Approval accepted"},
+                detail="Approval accepted",
             )
         self._publish(
             session_id=task["sessionId"],
@@ -330,13 +344,9 @@ class ApprovalFlowMixin:
         if task.get("status") != "waiting_approval":
             return {"approval": approval, "task": task}
 
-        self._validate_task_transition(task["status"], "running", task["id"])
-        task = self._store.update_task_status(task_id=task["id"], status="running")
-        self._publish(
-            session_id=task["sessionId"],
+        task = self._ensure_task_running_after_approval(
             task=task,
-            event_type="task.updated",
-            payload={"status": "running", "detail": "Completion review approved"},
+            detail="Completion review approved",
         )
         completed_task = self._complete_task(
             session_id=task["sessionId"],
@@ -698,6 +708,23 @@ class ApprovalFlowMixin:
         )
         raw_arguments = request.get("arguments")
         arguments = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
+        if not self._advisor_tool_arguments_are_executable(tool_name, arguments):
+            summary = f"Advisor evidence tool {tool_name} approval request is missing required arguments."
+            self._publish_advisor_evidence_executor_event_from_approval(
+                session_id=task["sessionId"],
+                task=task,
+                approval=approval,
+                request=request,
+                status="blocked",
+                transition="execution_blocked",
+                result={"status": "blocked", "error": summary},
+            )
+            return self._fail_task(
+                session_id=task["sessionId"],
+                task=task,
+                summary=summary,
+                error_code="ADVISOR_TOOL_APPROVAL_INVALID",
+            )
         workspace_root = str(request.get("workspaceRoot") or arguments.get("workspaceRoot") or "").strip()
         context = self._context_builder.build(
             session_id=task["sessionId"],
@@ -787,6 +814,14 @@ class ApprovalFlowMixin:
                 summary=str(exc),
                 error_code="ADVISOR_TOOL_EXECUTION_FAILED",
             )
+
+    @staticmethod
+    def _advisor_tool_arguments_are_executable(tool_name: str, arguments: dict[str, Any]) -> bool:
+        if tool_name == "write_file":
+            return bool(str(arguments.get("path") or "").strip()) and "content" in arguments
+        if tool_name == "apply_patch":
+            return bool(str(arguments.get("patchText") or arguments.get("patch_text") or "").strip())
+        return True
 
     def _resume_approved_mcp_refresh_recovery(
         self,

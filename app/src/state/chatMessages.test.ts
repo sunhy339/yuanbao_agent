@@ -259,6 +259,49 @@ describe("chatMessages", () => {
     ]);
   });
 
+  it("hides empty non-placeholder streaming assistant shells", () => {
+    const liveMessages: ChatMessageView[] = [
+      {
+        id: "stored_user",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "user",
+        content: "build the project",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: "empty_streaming",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "assistant",
+        content: "",
+        createdAt: 2,
+        updatedAt: 2,
+        streaming: true,
+        placeholder: false,
+        status: "streaming",
+      },
+      {
+        id: "thinking",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "assistant",
+        content: "thinking...",
+        createdAt: 3,
+        updatedAt: 3,
+        streaming: true,
+        placeholder: true,
+        status: "streaming",
+      },
+    ];
+
+    expect(getVisibleChatMessages(liveMessages, "sess_1").map((message) => message.id)).toEqual([
+      "stored_user",
+      "thinking",
+    ]);
+  });
+
   it("drops a local pending message once the same persisted message arrives", () => {
     const persisted: MessageRecord[] = [
       {

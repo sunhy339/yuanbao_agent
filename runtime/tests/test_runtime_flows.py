@@ -669,6 +669,50 @@ def test_run_command_approval_closure(runtime_harness: Any, monkeypatch: Any, tm
     assert final_task["resultSummary"].startswith("Approved command finished")
 
 
+def test_approval_submit_is_idempotent_when_task_already_running(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Approval idempotency"},
+        ),
+        "session",
+    )
+    task = runtime_harness.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="approval idempotency",
+        plan=[],
+        status="waiting_approval",
+    )
+    approval = runtime_harness.store.create_approval(
+        task_id=task["id"],
+        kind="manual",
+        request={"reason": "already resumed by an auto-approval path"},
+    )
+    runtime_harness.store.update_task_status(task_id=task["id"], status="running")
+
+    response = runtime_harness.call(
+        "approval.submit",
+        {"approvalId": approval["id"], "decision": "approved"},
+    )
+
+    assert "result" in response, response
+    approved = response["result"]["approval"]
+    assert approved["decision"] == "approved"
+    final_task = _call_result(
+        runtime_harness.call("task.get", {"taskId": task["id"]}),
+        "task",
+    )
+    assert final_task["status"] == "running"
+    assert not any(event["type"] == "task.failed" for event in runtime_harness.events)
+
+
 def test_search_config_is_applied(runtime_harness: Any, monkeypatch: Any, tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()

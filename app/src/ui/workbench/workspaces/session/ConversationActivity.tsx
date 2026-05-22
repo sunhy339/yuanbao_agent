@@ -73,8 +73,9 @@ export const ConversationActivity = memo(function ConversationActivity({
     </div>
   );
   const activeTaskIsRunning = isTaskControllable(activeTask?.status);
+  const hasStreamingMessage = messages.some((message) => message.streaming);
   const showLivePill = Boolean(
-    messages.length || activeTask || messagesLoading || messages.some((message) => message.streaming) || activeTaskIsRunning,
+    !hasStreamingMessage && (messages.length || activeTask || messagesLoading || activeTaskIsRunning),
   );
 
   return (

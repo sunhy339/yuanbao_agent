@@ -183,6 +183,26 @@ class TestDAGExecutorExecute:
         assert subtask.status == "failed"
         assert "Failed status: Boom" in subtask.result
 
+    def test_waiting_approval_dispatch_pauses_without_failing(self) -> None:
+        subtasks = [
+            Subtask(id="a", title="Needs Approval", description="write", dependencies=[]),
+            Subtask(id="b", title="After Approval", description="continue", dependencies=["a"]),
+        ]
+        plan = _make_plan(subtasks)
+        mock = WaitingApprovalSubagentService(waiting_titles={"Needs Approval"})
+        executor = DAGExecutor(mock)
+
+        result = executor.execute(plan, session_id="sess-1", parent_task_id="task-1")
+
+        assert result["success"] is None
+        assert result["paused"] is True
+        assert result["status"] == "waiting_approval"
+        assert result["waitingApproval"] is True
+        assert result["waitingSubtaskId"] == "a"
+        assert result["failed"] == []
+        assert result["subtasks"][0].status == "waiting_approval"
+        assert result["subtasks"][1].status == "queued"
+
     def test_failed_dispatch_status_preserves_partial_handoff(self) -> None:
         class PartialFailSubagent:
             def __init__(self) -> None:
@@ -290,7 +310,7 @@ class TestDAGExecutorExecute:
         assert result["success"] is True
         assert len(subagent.calls) == 3
 
-    def test_waiting_approval_child_is_not_treated_as_completed(self) -> None:
+    def test_waiting_approval_child_pauses_without_completion(self) -> None:
         subtasks = [
             Subtask(id="a", title="Needs approval", description="Update README", dependencies=[]),
         ]
@@ -300,9 +320,12 @@ class TestDAGExecutorExecute:
 
         result = executor.execute(plan, session_id="sess-1", parent_task_id="task-1")
 
-        assert result["success"] is False
+        assert result["success"] is None
+        assert result["paused"] is True
+        assert result["status"] == "waiting_approval"
+        assert result["failed"] == []
         subtask = result["subtasks"][0]
-        assert subtask.status == "failed"
+        assert subtask.status == "waiting_approval"
         assert "Awaiting approval: Needs approval" in subtask.result
 
     def test_passes_session_and_parent_to_dispatch(self) -> None:

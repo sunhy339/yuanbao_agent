@@ -892,6 +892,19 @@ class ProviderTurnMixin:
                     "willRetry": will_retry,
                 },
             )
+            if not will_retry:
+                self._append_provider_trace(
+                    task=task,
+                    event_type="provider.response",
+                    payload={
+                        **self._provider_trace_payload(provider_context),
+                        "status": "failed",
+                        "fallbackFromStream": fallback_from_stream,
+                        "recoveryRetry": recovery_retry,
+                        "error": str(exc)[:500],
+                        "failureRecovery": recovery_payload,
+                    },
+                )
             if will_retry:
                 retry_context = self._provider_recovery_retry_context(
                     provider_context=provider_context,

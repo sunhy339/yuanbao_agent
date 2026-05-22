@@ -1528,6 +1528,109 @@ class TestCompletionHardGate:
         assert review["decision"] == "approved"
         assert completed["structuredResult"]["completionEvidence"]["reviewConclusion"]["decision"] == "approved"
 
+    def test_completion_review_approval_waits_for_pending_child_approval(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="agent",
+            goal="build a small application",
+            plan=[],
+            routing={"scenario": "swarm_task"},
+        )
+        child = store.create_task(
+            session_id=session["id"],
+            task_type="agent",
+            goal="write frontend files",
+            plan=[],
+            root_task_id=task["id"],
+            role="worker",
+            routing={
+                "runtimeRole": "worker",
+                "parentRuntimeTaskId": task["id"],
+            },
+            status="waiting_approval",
+        )
+        child_approval = store.create_approval(
+            child["id"],
+            "write_file",
+            {"path": "frontend/index.html", "reason": "child worker wants to write a file"},
+        )
+
+        waiting = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Root summary says the application is complete.",
+            context={"routing": {"scenario": "swarm_task"}},
+            skip_reflection=True,
+        )
+
+        assert waiting["status"] == "waiting_approval"
+        gate = waiting["structuredResult"]["completionGate"]
+        assert gate["status"] == "waiting_runtime_work"
+        assert child_approval["id"] in {
+            item["approvalId"]
+            for item in waiting["structuredResult"]["completionEvidence"]["audit"]["approvals"]
+        }
+
+        completion_review = store.create_approval(
+            task["id"],
+            "completion_review",
+            {
+                "summary": "Approve root completion.",
+                "structuredResult": waiting["structuredResult"],
+                "completionEvidence": waiting["structuredResult"]["completionEvidence"],
+            },
+        )
+        result = rt.orchestrator.submit_approval({
+            "approvalId": completion_review["id"],
+            "decision": "approved",
+        })
+
+        assert result["task"]["status"] == "waiting_approval"
+        refreshed = store.get_task({"taskId": task["id"]})["task"]
+        assert refreshed["status"] == "waiting_approval"
+        refreshed_gate = refreshed["structuredResult"]["completionGate"]
+        assert refreshed_gate["status"] == "waiting_runtime_work"
+
+    def test_invalid_advisor_tool_approval_does_not_execute_empty_write_file(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="advisor tool approval")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="recover a failed write",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        approval = store.create_approval(
+            task["id"],
+            "advisor_tool",
+            {
+                "toolName": "write_file",
+                "arguments": {},
+                "workspaceRoot": str(tmp_path / "project"),
+                "advisorEvidence": {
+                    "blocking": True,
+                    "requestKind": "tool_recovery",
+                    "summary": "Missing fallback arguments should not execute.",
+                },
+            },
+        )
+
+        result = rt.orchestrator.submit_approval({
+            "approvalId": approval["id"],
+            "decision": "approved",
+        })
+
+        assert result["task"]["status"] == "failed"
+        assert result["task"]["errorCode"] == "ADVISOR_TOOL_APPROVAL_INVALID"
+        assert "missing required arguments" in result["task"]["resultSummary"]
+
     def test_completion_audit_includes_approval_conclusions_for_advisor_and_trace(self, tmp_path: Any) -> None:
         class RecordingAdvisor:
             def __init__(self) -> None:

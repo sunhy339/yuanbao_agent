@@ -22,7 +22,8 @@ class _ToolRecoveryHarness(ToolRecoveryMixin):
     def _record_tool_recovery_proposals(self, **_kwargs):  # type: ignore[no-untyped-def]
         return []
 
-    def _create_tool_recovery_followup_approval(self, **_kwargs):  # type: ignore[no-untyped-def]
+    def _create_tool_recovery_followup_approval(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.last_followup = kwargs
         return None
 
     def _publish(self, *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -62,6 +63,22 @@ def test_patch_validation_failed_defaults_to_write_file_fallback_tool() -> None:
     assert decision["source"] == "runtime_fallback"
     assert decision["fallbackTool"]["name"] == "write_file"
     assert decision["fallbackTool"]["available"] is True
+
+
+def test_fallback_write_file_request_requires_path_and_content() -> None:
+    harness = _ToolRecoveryHarness()
+
+    request = harness._tool_recovery_fallback_tool_approval_request(
+        task={"id": "task_1", "sessionId": "sess_1", "goal": "write files"},
+        tool_call_id="call_1",
+        failed_tool_name="apply_patch",
+        failed_arguments={"patchText": "*** Begin Patch\n*** End Patch"},
+        failure={"failureKind": "patch_validation_failed", "summary": "bad patch"},
+        selected_payload={"fallbackTool": {"name": "write_file", "arguments": {}}},
+        decision={"proposalIds": []},
+    )
+
+    assert request is None
 
 
 def test_patch_validation_failed_keeps_ask_user_for_regular_small_patch() -> None:

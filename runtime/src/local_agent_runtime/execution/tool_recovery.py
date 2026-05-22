@@ -213,7 +213,7 @@ class ToolRecoveryMixin:
             if request is None:
                 return {
                     "executionState": "unavailable",
-                    "reason": "Fallback tool is not available or is denied by policy.",
+                    "reason": "Fallback tool is unavailable, denied by policy, or missing executable arguments.",
                 }
             fields = {
                 "toolRecoveryAction": "fallback_tool",
@@ -292,6 +292,8 @@ class ToolRecoveryMixin:
             return None
         fallback_arguments = fallback_tool.get("arguments")
         arguments = dict(fallback_arguments) if isinstance(fallback_arguments, dict) else {}
+        if not self._tool_recovery_fallback_arguments_are_executable(fallback_name, arguments):
+            return None
         policy_context = {}
         try:
             policy_context = self._context_builder.build(
@@ -328,6 +330,14 @@ class ToolRecoveryMixin:
             "permissionReason": permission.get("reason"),
             "advisorEvidence": advisor_metadata,
         }
+
+    @staticmethod
+    def _tool_recovery_fallback_arguments_are_executable(tool_name: str, arguments: dict[str, Any]) -> bool:
+        if tool_name == "write_file":
+            return bool(str(arguments.get("path") or "").strip()) and "content" in arguments
+        if tool_name == "apply_patch":
+            return bool(str(arguments.get("patchText") or arguments.get("patch_text") or "").strip())
+        return True
 
     def _create_tool_recovery_approval(
         self,

@@ -130,7 +130,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText(/发送第一条消息/)).toBeInTheDocument();
   });
 
-  it("shows the current conversation elapsed time while the assistant is streaming", () => {
+  it("shows streaming progress on the assistant bubble without a duplicate live pill", () => {
     const { container } = render(
       <SessionWorkspace
         session={session}
@@ -142,16 +142,16 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByLabelText(/本轮对话正在输出\.\.\.1m/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/本轮对话正在输出/)).not.toBeInTheDocument();
     const flow = Array.from(container.querySelectorAll(".message-bubble, .conversation-live-row")).map(
       (item) => item.textContent ?? "",
     );
     expect(flow[0]).toContain("Keep working");
     expect(flow[1]).toContain("Still checking the flow.");
-    expect(flow[2]).toContain("正在输出");
+    expect(flow).toHaveLength(2);
   });
 
-  it("keeps the live pill at the bottom of the activity stream", () => {
+  it("does not show the live pill while a thinking bubble is already visible", () => {
     const { container } = render(
       <SessionWorkspace
         session={session}
@@ -179,7 +179,7 @@ describe("SessionWorkspace", () => {
     expect(flow[0]).toContain("Patch the game");
     expect(flow[1]).toContain("write_file");
     expect(flow[2]).toContain("思考");
-    expect(flow[3]).toContain("正在输出");
+    expect(flow).toHaveLength(3);
   });
 
   it("does not move a streaming assistant message below a later user message when updatedAt changes", () => {

@@ -209,6 +209,22 @@ class ResumeFlowMixin:
                         failed_ids=execution["failed"],
                         results=execution.get("results", {}),
                     )
+                if execution.get("waitingApproval") or execution.get("status") == "waiting_approval":
+                    latest = self._store.get_task({"taskId": task["id"]})["task"]
+                    if latest.get("status") != "waiting_approval":
+                        self._validate_task_transition(latest["status"], "waiting_approval", task["id"])
+                        latest = self._store.update_task_status(task_id=task["id"], status="waiting_approval")
+                    self._publish(
+                        session_id=state["session_id"],
+                        task=latest,
+                        event_type="task.waiting_approval",
+                        payload={
+                            "status": "waiting_approval",
+                            "detail": "Child worker is waiting for approval.",
+                            "waitingSubtaskId": execution.get("waitingSubtaskId"),
+                        },
+                    )
+                    return latest
                 return task
 
             # Completed — clean up and finalize

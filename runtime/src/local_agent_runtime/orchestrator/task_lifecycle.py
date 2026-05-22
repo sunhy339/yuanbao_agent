@@ -206,6 +206,19 @@ class TaskLifecycleMixin:
             completion_evidence=completion_evidence,
             force_complete_after_review=force_complete_after_review,
         )
+        if completion_gate["action"] == "wait":
+            return self._mark_completion_waiting_on_runtime_work(
+                session_id=session_id,
+                task=task,
+                summary=final_summary,
+                structured_result=structured_result,
+                completion_evidence=completion_evidence,
+                reason=completion_gate["reason"],
+                risk=completion_gate.get("risk"),
+                gate_status=completion_gate.get("gateStatus"),
+                decision=completion_gate.get("decision"),
+                skip_drain=skip_drain,
+            )
         if completion_gate["action"] == "review":
             pending_evidence_approvals = self._pending_advisor_evidence_approval_ids(completion_evidence)
             if completion_gate.get("decision") == "advisor_evidence_requested" and pending_evidence_approvals:
@@ -352,6 +365,9 @@ class TaskLifecycleMixin:
         completion_evidence: dict[str, Any],
         force_complete_after_review: bool,
     ) -> dict[str, str]:
+        unresolved_work_gate = self._completion_unresolved_runtime_work_gate(completion_evidence)
+        if unresolved_work_gate is not None:
+            return unresolved_work_gate
         if force_complete_after_review:
             return {"action": "complete", "reason": "Completion review was approved."}
         if context.get("_allow_summary_only_completion") is True:
@@ -448,6 +464,156 @@ class TaskLifecycleMixin:
                 "cannot be auto-completed without passing verification or user approval."
             ),
         }
+
+    def _mark_completion_waiting_on_runtime_work(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        summary: str,
+        structured_result: dict[str, Any],
+        completion_evidence: dict[str, Any],
+        reason: str,
+        risk: str | None,
+        gate_status: str | None,
+        decision: str | None,
+        skip_drain: bool,
+    ) -> dict[str, Any]:
+        wait_structured_result = {
+            **structured_result,
+            "status": "waiting_approval",
+            "completionGate": {
+                "status": gate_status or "waiting_runtime_work",
+                "reason": reason,
+                "risk": risk or "runtime has unresolved child work or pending approvals",
+                "decision": decision or "unresolved_runtime_work",
+            },
+        }
+        if task.get("status") != "waiting_approval":
+            self._validate_task_transition(task["status"], "waiting_approval", task["id"], silent=True)
+            runtime_task = self._store.update_task(
+                task_id=task["id"],
+                status="waiting_approval",
+                plan=task.get("plan") or [],
+                summary=summary,
+                result_summary=summary,
+                structured_result=wait_structured_result,
+            )
+        else:
+            runtime_task = self._store.update_task(
+                task_id=task["id"],
+                plan=task.get("plan") or [],
+                summary=summary,
+                result_summary=summary,
+                structured_result=wait_structured_result,
+            )
+        runtime_task = {
+            **runtime_task,
+            "plan": task.get("plan") or [],
+            "resultSummary": summary,
+        }
+        active_msg_id = runtime_task.get("activeAssistantMessageId")
+        if active_msg_id:
+            self._store.update_message(
+                active_msg_id,
+                content=summary,
+                status="streaming",
+            )
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
+            event_type="agent.decision.completion",
+            payload={
+                "decision": decision or "unresolved_runtime_work",
+                "completionEvidence": completion_evidence,
+                "audit": completion_evidence.get("audit") if isinstance(completion_evidence.get("audit"), dict) else {},
+                "risk": risk,
+                "reason": reason,
+            },
+        )
+        self._publish(
+            session_id=session_id,
+            task=runtime_task,
+            event_type="task.waiting_approval",
+            payload={
+                "status": "waiting_approval",
+                "detail": reason,
+                "completionGate": wait_structured_result["completionGate"],
+            },
+        )
+        self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="waiting_approval")
+        if not skip_drain:
+            self._drain_session_queue(session_id)
+        return runtime_task
+
+    def _completion_unresolved_runtime_work_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
+        pending_approvals = self._completion_pending_approval_items(completion_evidence)
+        unresolved_children = self._completion_unresolved_child_tasks(completion_evidence)
+        if not pending_approvals and not unresolved_children:
+            return None
+        reason_parts: list[str] = []
+        if pending_approvals:
+            kinds = [
+                str(item.get("kind") or "approval").strip()
+                for item in pending_approvals
+                if str(item.get("kind") or "").strip()
+            ]
+            reason_parts.append(
+                "pending approval(s): "
+                + ", ".join(kinds[:3])
+                + ("..." if len(kinds) > 3 else "")
+            )
+        if unresolved_children:
+            child_details = [
+                f"{item.get('id')}:{item.get('status')}"
+                for item in unresolved_children
+                if item.get("id") and item.get("status")
+            ]
+            reason_parts.append(
+                "unresolved child task(s): "
+                + ", ".join(child_details[:3])
+                + ("..." if len(child_details) > 3 else "")
+            )
+        reason = "Completion is waiting for runtime work to settle."
+        if reason_parts:
+            reason = f"{reason} {'; '.join(reason_parts)}."
+        return {
+            "action": "wait",
+            "decision": "unresolved_runtime_work",
+            "gateStatus": "waiting_runtime_work",
+            "risk": "runtime has unresolved child work or pending approvals",
+            "reason": reason,
+        }
+
+    def _completion_pending_approval_items(self, completion_evidence: dict[str, Any]) -> list[dict[str, Any]]:
+        audit = completion_evidence.get("audit") if isinstance(completion_evidence.get("audit"), dict) else {}
+        approvals = audit.get("approvals") if isinstance(audit.get("approvals"), list) else []
+        return [
+            item for item in approvals
+            if isinstance(item, dict)
+            and str(item.get("decision") or "pending").strip().casefold() == "pending"
+            and not self._completion_approval_is_advisor_evidence_execution(item)
+        ]
+
+    @staticmethod
+    def _completion_approval_is_advisor_evidence_execution(item: dict[str, Any]) -> bool:
+        kind = str(item.get("kind") or "").strip()
+        return kind in {"run_command", "advisor_tool"} and isinstance(item.get("advisorEvidence"), dict)
+
+    def _completion_unresolved_child_tasks(self, completion_evidence: dict[str, Any]) -> list[dict[str, Any]]:
+        child_tasks = completion_evidence.get("childTasks")
+        if not isinstance(child_tasks, list):
+            return []
+        terminal_statuses = {"completed", "success", "failed", "cancelled"}
+        unresolved: list[dict[str, Any]] = []
+        for item in child_tasks:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip().casefold()
+            if not status or status in terminal_statuses:
+                continue
+            unresolved.append(item)
+        return unresolved
 
     def _completion_advisor_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
         advice = completion_evidence.get("completionAdvisor")
@@ -1253,7 +1419,10 @@ class TaskLifecycleMixin:
         task: dict[str, Any],
         completion_evidence: dict[str, Any],
     ) -> dict[str, Any]:
-        approvals = self._completion_approval_audit(task.get("id"))
+        approvals = self._completion_approval_audit_for_completion(
+            task=task,
+            completion_evidence=completion_evidence,
+        )
         review_conclusion = (
             completion_evidence.get("reviewConclusion")
             if isinstance(completion_evidence.get("reviewConclusion"), dict)
@@ -1280,6 +1449,30 @@ class TaskLifecycleMixin:
                     if advisor.get(key) not in (None, "", [])
                 }
         return {key: value for key, value in audit.items() if value not in (None, "", [], {})}
+
+    def _completion_approval_audit_for_completion(
+        self,
+        *,
+        task: dict[str, Any],
+        completion_evidence: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        task_ids = [str(task.get("id") or "").strip()]
+        child_tasks = completion_evidence.get("childTasks")
+        if isinstance(child_tasks, list):
+            task_ids.extend(
+                str(item.get("id") or "").strip()
+                for item in child_tasks
+                if isinstance(item, dict) and item.get("source") == "child_runtime_task"
+            )
+        seen: set[str] = set()
+        approvals: list[dict[str, Any]] = []
+        for task_id in task_ids:
+            if not task_id or task_id in seen:
+                continue
+            seen.add(task_id)
+            approvals.extend(self._completion_approval_audit(task_id))
+        approvals.sort(key=lambda item: int(item.get("createdAt") or 0))
+        return approvals[-50:]
 
     def _completion_approval_audit(self, task_id: Any) -> list[dict[str, Any]]:
         if not isinstance(task_id, str) or not task_id.strip():
@@ -1310,6 +1503,7 @@ class TaskLifecycleMixin:
         kind = str(approval.get("kind") or request.get("kind") or "").strip()
         item: dict[str, Any] = {
             "approvalId": approval.get("id"),
+            "taskId": approval.get("taskId"),
             "kind": kind,
             "decision": approval.get("decision") or "pending",
             "decidedBy": approval.get("decidedBy"),

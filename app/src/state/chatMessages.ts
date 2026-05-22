@@ -374,5 +374,15 @@ export function getVisibleChatMessages(
 
   return messages
     .filter((message) => message.sessionId === sessionId)
+    .filter((message) => !isEmptyStreamingAssistantShell(message))
     .sort((left, right) => sortBySeqAndTime(left, right));
+}
+
+function isEmptyStreamingAssistantShell(message: ChatMessageView): boolean {
+  return (
+    message.role === "assistant" &&
+    message.streaming === true &&
+    message.placeholder !== true &&
+    !message.content.trim()
+  );
 }

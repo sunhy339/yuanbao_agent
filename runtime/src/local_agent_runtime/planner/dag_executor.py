@@ -80,6 +80,7 @@ class DAGExecutor:
         failed: set[str] = set(failed_ids or ())
         results: dict[str, str] = dict(prior_results or ())
         partial_handoffs: list[dict[str, Any]] = []
+        control_state: dict[str, Any] = {}
         lock = threading.Lock()
 
         # Build index once to avoid O(N) linear scans
@@ -157,9 +158,12 @@ class DAGExecutor:
                         parent_goal=parent_goal,
                         child_timeout_ms=child_timeout_ms,
                         partial_handoffs=partial_handoffs,
+                        control_state=control_state,
                         tracer=tracer,
                         on_subtask_callback=on_subtask_callback,
                     )
+                    if control_state.get("status") == "waiting_approval":
+                        break
             else:
                 logger.info("Level %d: executing %d subtasks in parallel", level_idx, len(runnable))
                 with ThreadPoolExecutor(max_workers=min(max_workers, len(runnable))) as pool:
@@ -174,6 +178,7 @@ class DAGExecutor:
                             parent_goal=parent_goal,
                             child_timeout_ms=child_timeout_ms,
                             partial_handoffs=partial_handoffs,
+                            control_state=control_state,
                             tracer=tracer,
                             on_subtask_callback=on_subtask_callback,
                         ): sid
@@ -183,6 +188,31 @@ class DAGExecutor:
                         # Result already captured inside _execute_subtask
                         # via shared completed/failed/results sets
                         _ = future.result()  # propagate exceptions if any
+
+            if control_state.get("status") == "waiting_approval":
+                if dag_span is not None:
+                    tracer.end_span(
+                        dag_span.span_id,
+                        status="ok",
+                        attributes={
+                            "paused": True,
+                            "status": "waiting_approval",
+                            "subtask_id": control_state.get("subtaskId"),
+                        },
+                    )
+                return {
+                    "subtasks": plan.subtasks,
+                    "summary": "",
+                    "success": None,
+                    "completed": list(completed),
+                    "failed": list(failed),
+                    "paused": True,
+                    "status": "waiting_approval",
+                    "waitingApproval": True,
+                    "waitingSubtaskId": control_state.get("subtaskId"),
+                    "results": dict(results),
+                    "partialHandoffs": list(partial_handoffs),
+                }
 
             # Cooperative pause check after each level
             if is_paused_fn is not None and is_paused_fn():
@@ -249,6 +279,7 @@ class DAGExecutor:
         parent_goal: str | None = None,
         child_timeout_ms: int | None = None,
         partial_handoffs: list[dict[str, Any]] | None = None,
+        control_state: dict[str, Any] | None = None,
         tracer: Tracer | None = None,
         on_subtask_callback: Callable[[str, str, dict[str, Any]], None] | None = None,
     ) -> None:
@@ -308,7 +339,23 @@ class DAGExecutor:
                         dispatch_result.get("summary")
                         or "Child worker is waiting for parent approval."
                     ).strip()
-                    raise RuntimeError(message)
+                    with lock:
+                        subtask.status = "waiting_approval"
+                        subtask.result = message
+                        results[subtask.id] = message
+                        if control_state is not None:
+                            control_state["status"] = "waiting_approval"
+                            control_state["subtaskId"] = subtask.id
+                            control_state["summary"] = message
+                    if on_subtask_callback is not None and _subtask_t0 is not None:
+                        duration_ms = int((__import__("time").monotonic() - _subtask_t0) * 1000)
+                        on_subtask_callback(subtask_id, "completed", {
+                            "subtaskId": subtask_id, "subtaskTitle": subtask.title,
+                            "status": "waiting_approval", "duration_ms": duration_ms,
+                        })
+                    if span is not None:
+                        tracer.end_span(span.span_id, status="ok", attributes={"status": "waiting_approval"})
+                    return
                 if dispatch_status != "failed":
                     with lock:
                         subtask.status = "completed"

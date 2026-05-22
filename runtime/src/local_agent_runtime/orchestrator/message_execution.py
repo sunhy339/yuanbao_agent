@@ -34,6 +34,51 @@ from ..store.sqlite_store import SQLiteStore
 class MessageExecutionMixin:
     """Mixin providing execution strategies and background worker management."""
 
+    def _persist_pending_dag_execution(
+        self,
+        *,
+        task: dict[str, Any],
+        session_id: str,
+        goal: str,
+        context: dict[str, Any],
+        plan: Any,
+        execution: dict[str, Any],
+        extra_subtasks: list[Any] | None = None,
+    ) -> None:
+        if not hasattr(self._store, "upsert_pending_dag_state"):
+            return
+        subtasks = list(getattr(plan, "subtasks", []) or [])
+        seen = {str(getattr(subtask, "id", "")) for subtask in subtasks}
+        for subtask in extra_subtasks or []:
+            subtask_id = str(getattr(subtask, "id", "") or "")
+            if subtask_id and subtask_id not in seen:
+                subtasks.append(subtask)
+                seen.add(subtask_id)
+        execution_order = list(getattr(plan, "execution_order", []) or [])
+        for subtask in extra_subtasks or []:
+            subtask_id = str(getattr(subtask, "id", "") or "")
+            if subtask_id:
+                execution_order.append(subtask_id)
+        plan_data = {
+            "subtasks": [
+                {"id": s.id, "title": s.title, "description": s.description,
+                 "dependencies": s.dependencies, "status": s.status, "result": s.result}
+                for s in subtasks
+            ],
+            "dag": getattr(plan, "dag", {}),
+            "execution_order": execution_order,
+        }
+        self._store.upsert_pending_dag_state(
+            task_id=task["id"],
+            session_id=session_id,
+            goal=goal,
+            context=context,
+            plan_json=json.dumps(plan_data, ensure_ascii=False),
+            completed_ids=list(execution.get("completed") or []),
+            failed_ids=list(execution.get("failed") or []),
+            results=execution.get("results", {}) if isinstance(execution.get("results"), dict) else {},
+        )
+
     def _recover_loop_failure_with_completion_evidence(
         self,
         *,
@@ -504,26 +549,34 @@ class MessageExecutionMixin:
 
             # Handle DAG cooperative pause
             if execution.get("paused"):
-                plan_data = {
-                    "subtasks": [
-                        {"id": s.id, "title": s.title, "description": s.description,
-                         "dependencies": s.dependencies, "status": s.status, "result": s.result}
-                        for s in plan.subtasks
-                    ],
-                    "dag": plan.dag,
-                    "execution_order": plan.execution_order,
-                }
-                if hasattr(self._store, "upsert_pending_dag_state"):
-                    self._store.upsert_pending_dag_state(
-                        task_id=task["id"],
-                        session_id=session_id,
-                        goal=goal,
-                        context=context,
-                        plan_json=json.dumps(plan_data, ensure_ascii=False),
-                        completed_ids=execution["completed"],
-                        failed_ids=execution["failed"],
-                        results=execution.get("results", {}),
+                self._persist_pending_dag_execution(
+                    task=task,
+                    session_id=session_id,
+                    goal=goal,
+                    context=context,
+                    plan=plan,
+                    execution=execution,
+                )
+                if execution.get("waitingApproval") or execution.get("status") == "waiting_approval":
+                    latest = self._store.get_task({"taskId": task["id"]})["task"]
+                    if latest.get("status") != "waiting_approval":
+                        self._validate_task_transition(latest["status"], "waiting_approval", task["id"])
+                        latest = self._store.update_task_status(task_id=task["id"], status="waiting_approval")
+                    self._publish(
+                        session_id=session_id, task=latest,
+                        event_type="task.waiting_approval",
+                        payload={
+                            "status": "waiting_approval",
+                            "detail": "Child worker is waiting for approval.",
+                            "waitingSubtaskId": execution.get("waitingSubtaskId"),
+                        },
                     )
+                    self._tracer.end_span(
+                        plan_span.span_id,
+                        status="ok",
+                        attributes={"status": "waiting_approval", "waitingSubtaskId": execution.get("waitingSubtaskId")},
+                    )
+                    return {"status": "waiting_approval"}
                 return {"status": "paused"}
 
             # 3. Coverage evaluation
@@ -561,6 +614,48 @@ class MessageExecutionMixin:
                             "agentType": supplement.agent_type,
                             "childToolAllowlist": child_tool_allowlist_for_agent(supplement.agent_type),
                         })
+                        dispatch_status = str(dispatch_result.get("status") or "").strip().lower()
+                        if dispatch_status == "waiting_approval":
+                            supplement.status = "waiting_approval"
+                            supplement.result = dispatch_result.get("summary") or "Child worker is waiting for approval."
+                            execution["subtasks"].append(supplement)
+                            execution.setdefault("completed", [])
+                            execution.setdefault("failed", [])
+                            results = execution.get("results") if isinstance(execution.get("results"), dict) else {}
+                            results[supplement.id] = supplement.result
+                            execution["results"] = results
+                            execution["paused"] = True
+                            execution["status"] = "waiting_approval"
+                            execution["waitingApproval"] = True
+                            execution["waitingSubtaskId"] = supplement.id
+                            self._persist_pending_dag_execution(
+                                task=task,
+                                session_id=session_id,
+                                goal=goal,
+                                context=context,
+                                plan=plan,
+                                execution=execution,
+                                extra_subtasks=[supplement],
+                            )
+                            latest = self._store.get_task({"taskId": task["id"]})["task"]
+                            if latest.get("status") != "waiting_approval":
+                                self._validate_task_transition(latest["status"], "waiting_approval", task["id"])
+                                latest = self._store.update_task_status(task_id=task["id"], status="waiting_approval")
+                            self._publish(
+                                session_id=session_id, task=latest,
+                                event_type="task.waiting_approval",
+                                payload={
+                                    "status": "waiting_approval",
+                                    "detail": "Supplement worker is waiting for approval.",
+                                    "waitingSubtaskId": supplement.id,
+                                },
+                            )
+                            self._tracer.end_span(
+                                plan_span.span_id,
+                                status="ok",
+                                attributes={"status": "waiting_approval", "waitingSubtaskId": supplement.id},
+                            )
+                            return {"status": "waiting_approval"}
                         supplement.status = "completed"
                         supplement.result = dispatch_result.get("summary") or "Completed"
                         execution["subtasks"].append(supplement)
@@ -634,6 +729,29 @@ class MessageExecutionMixin:
                                 "failedSubtaskIds": completion_recovery.get("failedSubtaskIds", []),
                             },
                         )
+                    elif completion_recovery.get("probeStatus") == "waiting_approval":
+                        execution["completionRecovery"] = completion_recovery
+                        self._publish(
+                            session_id=session_id, task=task,
+                            event_type="task.planning.completed",
+                            payload={
+                                "coverage": coverage,
+                                "success": execution["success"],
+                                "partialHandoffs": execution.get("partialHandoffs", []),
+                                "verificationRecovery": recovery,
+                                "completionRecovery": completion_recovery,
+                                "status": "waiting_approval",
+                            },
+                        )
+                        self._tracer.end_span(
+                            plan_span.span_id, status="ok",
+                            attributes={
+                                "subtaskCount": len(execution["subtasks"]),
+                                "coverage": coverage,
+                                "status": "waiting_completion_review",
+                            },
+                        )
+                        return {"status": "waiting_approval"}
                 if execution["success"] is False:
                     self._publish(
                         session_id=session_id, task=task,

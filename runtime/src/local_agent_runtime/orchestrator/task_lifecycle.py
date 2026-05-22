@@ -368,10 +368,6 @@ class TaskLifecycleMixin:
         unresolved_work_gate = self._completion_unresolved_runtime_work_gate(completion_evidence)
         if unresolved_work_gate is not None:
             return unresolved_work_gate
-        if force_complete_after_review:
-            return {"action": "complete", "reason": "Completion review was approved."}
-        if context.get("_allow_summary_only_completion") is True:
-            return {"action": "complete", "reason": "Summary-only completion explicitly allowed."}
         counts = completion_evidence.get("counts") if isinstance(completion_evidence.get("counts"), dict) else {}
         failed_verification_count = self._completion_evidence_count(counts, "failedVerification")
         if completion_evidence.get("evidenceLevel") == "failed_verification" or failed_verification_count > 0:
@@ -382,6 +378,18 @@ class TaskLifecycleMixin:
                     "Fix the failed checks before marking the task completed."
                 ),
             }
+        advisor_gate = self._completion_advisor_gate(completion_evidence)
+        if advisor_gate is not None:
+            reviews_disabled = self._completion_reviews_disabled(context)
+            if reviews_disabled and advisor_gate.get("action") == "review":
+                return self._completion_reviews_disabled_failure(
+                    advisor_gate.get("reason") or "Completion evidence requires review."
+                )
+            return advisor_gate
+        if force_complete_after_review:
+            return {"action": "complete", "reason": "Completion review was approved."}
+        if context.get("_allow_summary_only_completion") is True:
+            return {"action": "complete", "reason": "Summary-only completion explicitly allowed."}
         reviews_disabled = self._completion_reviews_disabled(context)
         is_write_or_verification_task = self._is_write_or_verification_task(task=task, context=context)
         if not is_write_or_verification_task:
@@ -407,13 +415,6 @@ class TaskLifecycleMixin:
                     verification_match_gate.get("reason") or "Completion evidence requires review."
                 )
             return verification_match_gate
-        advisor_gate = self._completion_advisor_gate(completion_evidence)
-        if advisor_gate is not None:
-            if reviews_disabled and advisor_gate.get("action") == "review":
-                return self._completion_reviews_disabled_failure(
-                    advisor_gate.get("reason") or "Completion evidence requires review."
-                )
-            return advisor_gate
         advisor_evidence_gate = self._completion_advisor_evidence_gate(completion_evidence)
         if advisor_evidence_gate is not None:
             if reviews_disabled and advisor_evidence_gate.get("action") == "review":

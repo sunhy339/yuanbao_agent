@@ -337,6 +337,83 @@ class TestCompletionHardGate:
         ).fetchall()
         assert approvals == []
 
+    def test_failed_verification_blocks_forced_completion_after_review(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="modify the implementation",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "src/feature.py", "action": "modified"}],
+            verification=[{"name": "pytest", "status": "failed", "summary": "1 failed"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Implementation finished, but tests failed.",
+            context={"routing": {"scenario": "code_edit"}, "_allow_summary_only_completion": True},
+            skip_reflection=True,
+            force_complete_after_review=True,
+        )
+
+        assert result["status"] == "failed"
+        assert result["errorCode"] == "COMPLETION_EVIDENCE_INSUFFICIENT"
+        assert "verification failed" in result["resultSummary"].lower()
+
+    def test_advisor_incomplete_blocks_forced_completion_after_review(self, tmp_path: Any) -> None:
+        class IncompleteAdvisor:
+            def advise(self, kind: str, _input_context: dict[str, Any]) -> Any:
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="The frontend is missing and verification is insufficient.",
+                    fallback_reason=None,
+                    proposal_id=f"{kind}_incomplete",
+                    confidence=0.96,
+                    payload={
+                        "is_complete": False,
+                        "blocking_issues": ["Frontend implementation is missing."],
+                    },
+                )
+
+        rt = _make_runtime(tmp_path, decision_advisor=IncompleteAdvisor())
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="build a full-stack blog",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "backend/server.js", "action": "created"}],
+            verification=[{"name": "source review", "status": "passed", "summary": "backend source exists"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Backend exists, frontend is missing.",
+            context={"routing": {"scenario": "code_edit"}, "_allow_summary_only_completion": True},
+            skip_reflection=True,
+            force_complete_after_review=True,
+        )
+
+        assert result["status"] == "waiting_approval"
+        assert result["structuredResult"]["completionGate"]["status"] == "advisor_needs_review"
+        assert result["structuredResult"]["completionEvidence"]["completionAdvisor"]["payload"]["is_complete"] is False
+
     def test_write_task_with_passed_verification_completes(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store

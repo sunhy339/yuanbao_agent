@@ -1019,8 +1019,8 @@ describe("SessionWorkspace", () => {
     expect(screen.getAllByText("apply_patch").length).toBeGreaterThan(0);
     expect(screen.getAllByText("已批准").length).toBeGreaterThan(0);
     expect(screen.getByText("Updated the session runtime panel.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "批准" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "拒绝" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "批准" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument();
   });
 
   it("renders completion review evidence on approval cards", () => {

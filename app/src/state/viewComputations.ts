@@ -127,7 +127,9 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
               : "command",
       );
       const cwd = readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", readRequestText(request, "worktreePath", ".")));
+      const current = cards.get(payload.approvalId);
       cards.set(payload.approvalId, {
+        ...current,
         approvalId: payload.approvalId,
         taskId: payload.taskId,
         kind: payload.kind,
@@ -155,14 +157,19 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
               }`
             : isWorktreeMerge
               ? compactSummary([command, worktreeDiffSummary, worktreeReviewSummary, worktreeStrategySummary])
-              : isCompletionReview
-                ? completionEvidence?.summary ?? `${readRequestText(request, "reason", "completion evidence requires review")} | ${readRequestText(request, "summary", "").slice(0, 120)}`
+            : isCompletionReview
+              ? completionEvidence?.summary ?? `${readRequestText(request, "reason", "completion evidence requires review")} | ${readRequestText(request, "summary", "").slice(0, 120)}`
               : `${command} | cwd ${cwd}`,
-        completionEvidence,
-        status: "pending",
+        completionEvidence: mergeCompletionReviewConclusion(
+          completionEvidence,
+          current?.completionEvidence?.reviewConclusion,
+        ),
+        status: current?.status ?? "pending",
         requestedAt: event.ts,
         updatedAt: event.ts,
         requestedEventId: event.eventId,
+        resolvedAt: current?.resolvedAt,
+        resolvedEventId: current?.resolvedEventId,
       });
     }
 

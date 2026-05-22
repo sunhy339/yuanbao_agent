@@ -137,7 +137,8 @@
 }
 
 .composer-runtime-child-tasks .composer-task-count,
-.composer-child-active-count {
+.composer-child-active-count,
+.composer-child-attention-count {
   justify-self: end;
   border: 1px solid rgba(60, 40, 30, 0.08);
   border-radius: 999px;
@@ -153,6 +154,11 @@
 .composer-child-active-count {
   color: #c47a4a;
   background: #fef3e8;
+}
+
+.composer-child-attention-count {
+  color: #b45309;
+  background: #fff7ed;
 }
 
 .composer-runtime-child-tasks:not([open]) .composer-task-chevron {
@@ -193,6 +199,12 @@
 .composer-runtime-child-tasks li[data-state="active"] .composer-task-check {
   border-color: #c47a4a;
   box-shadow: 0 0 0 4px rgba(196, 122, 74, 0.12);
+}
+
+.composer-runtime-child-tasks li[data-state="warning"] .composer-task-check {
+  border-color: #d97706;
+  background: #fff7ed;
+  box-shadow: 0 0 0 4px rgba(217, 119, 6, 0.12);
 }
 
 .composer-runtime-child-tasks li[data-state="failed"] .composer-task-check {

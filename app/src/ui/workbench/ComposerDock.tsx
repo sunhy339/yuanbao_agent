@@ -29,6 +29,7 @@ export interface ComposerRuntimeChildTask {
   status?: string;
   workerName?: string;
   summary?: string;
+  attention?: string;
   updatedAt?: number;
 }
 
@@ -46,6 +47,13 @@ function normalizeRuntimeChildStatus(status?: string) {
   if (["active", "running", "started", "planning", "verifying"].includes(normalized)) return "active";
   if (["failed", "error", "cancelled", "rejected"].includes(normalized)) return "failed";
   return "pending";
+}
+
+function runtimeChildState(childTask: ComposerRuntimeChildTask) {
+  if (childTask.attention?.trim()) {
+    return "warning";
+  }
+  return normalizeRuntimeChildStatus(childTask.status);
 }
 
 export function ComposerDock({
@@ -95,11 +103,12 @@ export function ComposerDock({
     selectedModel?.subtitle && selectedModel.subtitle !== selectedModel.label ? selectedModel.subtitle : "";
   const visibleRuntimeChildTasks = runtimeChildTasks.slice(0, 6);
   const completedRuntimeChildCount = visibleRuntimeChildTasks.filter(
-    (childTask) => normalizeRuntimeChildStatus(childTask.status) === "completed",
+    (childTask) => runtimeChildState(childTask) === "completed",
   ).length;
   const activeRuntimeChildCount = visibleRuntimeChildTasks.filter((childTask) =>
-    ["active", "pending"].includes(normalizeRuntimeChildStatus(childTask.status)),
+    ["active", "pending"].includes(runtimeChildState(childTask)),
   ).length;
+  const attentionRuntimeChildCount = visibleRuntimeChildTasks.filter((childTask) => runtimeChildState(childTask) === "warning").length;
 
   // reset selection when matches change
   useEffect(() => {
@@ -181,19 +190,20 @@ export function ComposerDock({
               {completedRuntimeChildCount}/{visibleRuntimeChildTasks.length}
             </span>
             {activeRuntimeChildCount ? <span className="composer-child-active-count">{activeRuntimeChildCount} running</span> : null}
+            {attentionRuntimeChildCount ? <span className="composer-child-attention-count">{attentionRuntimeChildCount} attention</span> : null}
             <span className="composer-task-chevron" aria-hidden="true" />
           </summary>
           <ol>
             {visibleRuntimeChildTasks.map((childTask, index) => {
-              const status = normalizeRuntimeChildStatus(childTask.status);
+              const status = runtimeChildState(childTask);
               return (
                 <li key={childTask.id || `${index}-${childTask.title}`} data-state={status}>
                   <span className="composer-task-check" aria-hidden="true" />
                   <div>
                     <span>#{index + 1}</span>
                     <strong>{childTask.title}</strong>
-                    {childTask.workerName || childTask.summary ? (
-                      <small>{[childTask.workerName ? `worker: ${childTask.workerName}` : null, childTask.summary].filter(Boolean).join(" - ")}</small>
+                    {childTask.workerName || childTask.attention || childTask.summary ? (
+                      <small>{[childTask.workerName ? `worker: ${childTask.workerName}` : null, childTask.attention ?? childTask.summary].filter(Boolean).join(" - ")}</small>
                     ) : null}
                   </div>
                 </li>

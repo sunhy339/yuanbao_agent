@@ -278,6 +278,13 @@ export interface ApprovalCardProps {
 export function ApprovalCard({ approval, busy = false, onApprove, onReject, onViewDetails }: ApprovalCardProps) {
   const pending = approval.status === "pending";
   const riskTone: UiTone = approval.risk === "high" ? "danger" : approval.risk === "medium" ? "warning" : "info";
+  const statusTone: UiTone = pending
+    ? "warning"
+    : approval.status === "approved"
+      ? "success"
+      : approval.status === "rejected"
+        ? "danger"
+        : toneFromStatus(approval.status);
 
   return (
     <article className="yb-approval-card" data-risk={approval.risk ?? "low"}>
@@ -286,7 +293,10 @@ export function ApprovalCard({ approval, busy = false, onApprove, onReject, onVi
           <p className="yb-runtime-kicker">{approval.kind ?? "审批"}</p>
           <h3>{approval.title}</h3>
         </div>
-        <StatusBadge label={formatStatusLabel(approval.risk ? `${approval.risk} risk` : "low risk")} tone={riskTone} compact />
+        <div className="yb-runtime-status-stack">
+          <StatusBadge label={formatStatusLabel(approval.status)} tone={statusTone} compact />
+          <StatusBadge label={formatStatusLabel(approval.risk ? `${approval.risk} risk` : "low risk")} tone={riskTone} compact />
+        </div>
       </header>
       {approval.summary ? <p>{approval.summary}</p> : null}
       {approval.completionEvidence ? <CompletionEvidencePanel evidence={approval.completionEvidence} /> : null}
@@ -309,12 +319,16 @@ export function ApprovalCard({ approval, busy = false, onApprove, onReject, onVi
         </div>
       </dl>
       <footer>
-        <Button size="sm" variant="primary" aria-label="批准" loading={busy} disabled={!pending} disabledReason="只有待处理审批可以批准" onClick={() => onApprove(approval.id)}>
-          批准
-        </Button>
-        <Button size="sm" variant="danger" aria-label="拒绝" loading={busy} disabled={!pending} disabledReason="只有待处理审批可以拒绝" onClick={() => onReject(approval.id)}>
-          拒绝
-        </Button>
+        {pending ? (
+          <>
+            <Button size="sm" variant="primary" aria-label="批准" loading={busy} onClick={() => onApprove(approval.id)}>
+              批准
+            </Button>
+            <Button size="sm" variant="danger" aria-label="拒绝" loading={busy} onClick={() => onReject(approval.id)}>
+              拒绝
+            </Button>
+          </>
+        ) : null}
         {onViewDetails ? <Button size="sm" variant="ghost" onClick={() => onViewDetails(approval.id)}>详情</Button> : null}
       </footer>
     </article>

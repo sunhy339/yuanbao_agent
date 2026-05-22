@@ -167,6 +167,44 @@ function readResultSummary(record: Record<string, unknown>): string | undefined 
   );
 }
 
+function readChildTaskAttention(record: Record<string, unknown>): string | undefined {
+  const result = readChildRecord(record, "result");
+  const errorMessage = readRecordString(record, "errorMessage");
+  const error = readChildRecord(record, "error");
+  const errorSummary = error ? readRecordString(error, "summary") ?? readRecordString(error, "message") : undefined;
+  const explicitTone =
+    readRecordString(record, "tone") ??
+    readRecordString(record, "health") ??
+    (result ? readRecordString(result, "tone") ?? readRecordString(result, "health") : undefined);
+  const validationStatus =
+    readRecordString(record, "validationStatus") ??
+    (result ? readRecordString(result, "validationStatus") ?? readRecordString(result, "verificationStatus") : undefined);
+  const blocking =
+    readRecordBoolean(record, "blocking") ??
+    readRecordBoolean(record, "blocked") ??
+    (result ? readRecordBoolean(result, "blocking") ?? readRecordBoolean(result, "blocked") : undefined);
+  const risk =
+    readRecordString(record, "risk") ??
+    readRecordString(record, "riskLevel") ??
+    (result ? readRecordString(result, "risk") ?? readRecordString(result, "riskLevel") : undefined);
+  const summary = readResultSummary(record);
+  const normalizedSignals = [explicitTone, validationStatus, risk].map((value) => value?.toLowerCase());
+
+  if (errorMessage || errorSummary) {
+    return errorMessage ?? errorSummary;
+  }
+  if (blocking) {
+    return "Child task reported a blocking condition.";
+  }
+  if (normalizedSignals.some((value) => value && ["warning", "partial", "blocked", "missing", "failed", "error", "high"].includes(value))) {
+    return summary ?? validationStatus ?? risk ?? "Child task needs attention.";
+  }
+  if (summary && /\b(blocked|blocking|blocker|partial|missing|not present|unable|failed|failure|error|unresolved|incomplete)\b/i.test(summary)) {
+    return summary;
+  }
+  return undefined;
+}
+
 function appendOutputTail(current: string, chunk: string, maxLength = 4000): string {
   if (current.endsWith(chunk)) {
     return current;
@@ -242,6 +280,7 @@ export function buildSessionCollaboration(
       status: readRecordString(task, "status"),
       workerId: readRecordString(task, "assignedWorkerId"),
       summary: readResultSummary(task),
+      attention: readChildTaskAttention(task),
       updatedAt: readRecordNumber(task, "updatedAt") ?? time,
       createdAt: readRecordNumber(task, "createdAt"),
       completedAt: readRecordNumber(task, "completedAt"),

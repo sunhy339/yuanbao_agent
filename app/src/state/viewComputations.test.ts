@@ -18,6 +18,51 @@ function approvalRequested(request: Record<string, unknown>): AgentEventLike {
 }
 
 describe("computeApprovalCards completion evidence", () => {
+  it("merges resolved-before-requested approvals into one real request card", () => {
+    const cards = computeApprovalCards([
+      {
+        eventId: "evt_resolved",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "approval.resolved",
+        ts: 1778734169000,
+        payload: {
+          approvalId: "approval_1",
+          taskId: "task_1",
+          decision: "approved",
+        },
+      },
+      {
+        eventId: "evt_requested",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "approval.requested",
+        ts: 1778734170000,
+        payload: {
+          approvalId: "approval_1",
+          taskId: "task_1",
+          kind: "run_command",
+          request: {
+            command: "npm run typecheck",
+            cwd: "D:/tmp/blog-task",
+            shell: "powershell",
+            timeoutMs: 120000,
+            risk: "validates generated project",
+          },
+        },
+      },
+    ]);
+
+    expect(cards).toHaveLength(1);
+    expect(cards[0].status).toBe("approved");
+    expect(cards[0].kind).toBe("run_command");
+    expect(cards[0].command).toBe("npm run typecheck");
+    expect(cards[0].cwd).toBe("D:/tmp/blog-task");
+    expect(cards[0].requestSummary).toBe("npm run typecheck | cwd D:/tmp/blog-task");
+    expect(cards[0].resolvedEventId).toBe("evt_resolved");
+    expect(cards[0].requestedEventId).toBe("evt_requested");
+  });
+
   it("summarizes verification review evidence", () => {
     const [card] = computeApprovalCards([
       approvalRequested({

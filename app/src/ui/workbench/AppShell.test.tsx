@@ -31,7 +31,7 @@ function renderShell(
     promptValue?: string;
     modelOptions?: Array<{ id: string; label: string; subtitle?: string }>;
     selectedModelId?: string;
-    runtimeChildTasks?: Array<{ id: string; title: string; status?: string; workerName?: string; summary?: string }>;
+    runtimeChildTasks?: Array<{ id: string; title: string; status?: string; workerName?: string; summary?: string; attention?: string }>;
   } = {},
 ) {
   const tabs = getInitialTabs();
@@ -213,6 +213,27 @@ describe("AppShell", () => {
     const nodes = Array.from(document.querySelectorAll(".composer-runtime-child-tasks, .composer-input"));
     expect(nodes[0]).toBe(checklist);
     expect(nodes[1]).toBe(input.closest(".composer-input"));
+  });
+
+  it("marks completed child tasks with attention separately from clean completions", () => {
+    renderShell({
+      runtimeChildTasks: [
+        { id: "child_one", title: "Build API", status: "completed", workerName: "Worker 1" },
+        {
+          id: "child_two",
+          title: "Validate frontend",
+          status: "completed",
+          workerName: "Worker 2",
+          attention: "Validation status: partial, with one blocker.",
+        },
+      ],
+    });
+
+    const checklist = screen.getByLabelText("Runtime child tasks");
+    expect(within(checklist).getByText("1/2")).toBeInTheDocument();
+    expect(within(checklist).getByText("1 attention")).toBeInTheDocument();
+    expect(within(checklist).getByText(/Validation status: partial/)).toBeInTheDocument();
+    expect(document.querySelector('[data-state="warning"]')).toBeInTheDocument();
   });
 
   it("applies the selected shell theme", () => {

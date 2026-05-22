@@ -131,6 +131,7 @@ export interface SessionWorkspaceChildTask {
   workerId?: string;
   workerName?: string;
   summary?: string;
+  attention?: string;
   updatedAt?: number;
   createdAt?: number;
   completedAt?: number;

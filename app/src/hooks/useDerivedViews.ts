@@ -287,6 +287,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
         status: childTask.status,
         workerName: childTask.workerName,
         summary: childTask.summary,
+        attention: childTask.attention,
         updatedAt: childTask.updatedAt,
       })),
     [sessionCollaboration.childTasks],

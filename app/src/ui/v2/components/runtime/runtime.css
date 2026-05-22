@@ -112,6 +112,13 @@
   line-height: 1;
 }
 
+.yb-runtime-status-stack {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .yb-context-budget-track {
   position: relative;
   overflow: hidden;

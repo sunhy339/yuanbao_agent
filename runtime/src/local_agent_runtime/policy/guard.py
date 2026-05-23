@@ -43,7 +43,7 @@ class PolicyGuard:
             raise ValueError(f"Blocked dangerous command: {dangerous_match}")
 
         allow_patterns = self._effective_allow_patterns(run_command_config)
-        if allow_patterns and self._first_match(command, allow_patterns) is None:
+        if allow_patterns and not self._all_command_segments_match(command, allow_patterns):
             raise ValueError("Command is not allowed by command allowlist")
 
     def requires_approval(self, tool_name: str, *, approval_mode: str | None = None) -> bool:
@@ -106,6 +106,52 @@ class PolicyGuard:
                 return pattern
         return None
 
+    def _all_command_segments_match(self, command: str, patterns: list[str]) -> bool:
+        segments = self._safe_command_segments(command)
+        if len(segments) <= 1:
+            return self._first_match(command, patterns) is not None
+        return all(self._first_match(segment, patterns) is not None for segment in segments)
+
+    def _safe_command_segments(self, command: str) -> list[str]:
+        segments: list[str] = []
+        current: list[str] = []
+        quote: str | None = None
+        escaped = False
+        index = 0
+        while index < len(command):
+            char = command[index]
+            if escaped:
+                current.append(char)
+                escaped = False
+                index += 1
+                continue
+            if quote is not None:
+                current.append(char)
+                if char in {"\\", "`"} and quote == '"':
+                    escaped = True
+                elif char == quote:
+                    quote = None
+                index += 1
+                continue
+            if char in {"'", '"'}:
+                quote = char
+                current.append(char)
+                index += 1
+                continue
+            if char == ";" or command.startswith("&&", index) or command.startswith("||", index):
+                segment = "".join(current).strip()
+                if segment:
+                    segments.append(segment)
+                current = []
+                index += 1 if char == ";" else 2
+                continue
+            current.append(char)
+            index += 1
+        segment = "".join(current).strip()
+        if segment:
+            segments.append(segment)
+        return segments or [command]
+
     def _first_blocked_pattern(self, command: str, config: dict[str, Any]) -> str | None:
         normalized_command = command.casefold()
         for pattern in self._command_patterns(config, "blockedPatterns"):
@@ -166,6 +212,7 @@ _DEFAULT_SAFE_COMMAND_ALLOWLIST = (
     "git rev-parse*",
     "Get-ChildItem*",
     "Get-Content*",
+    "Start-Sleep*",
     "Write-Output*",
     "rg*",
     "ls*",

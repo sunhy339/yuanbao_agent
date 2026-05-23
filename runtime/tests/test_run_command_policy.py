@@ -118,6 +118,21 @@ def test_run_command_default_allowlist_accepts_absolute_python_pytest(tmp_path: 
         store.close()
 
 
+def test_run_command_default_allowlist_keeps_python_c_with_quoted_semicolons_available(tmp_path: Path) -> None:
+    store, run_command, ctx = _make_run_command(tmp_path)
+    try:
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": "python -c \"import sys; print('bad'); sys.exit(3)\"",
+            }
+        )
+        assert result["status"] == "approval_required"
+    finally:
+        store.close()
+
+
 def test_run_command_rejects_cwd_outside_allowed_roots(tmp_path: Path) -> None:
     allowed = tmp_path / "workspace" / "safe"
     store, run_command, ctx = _make_run_command(

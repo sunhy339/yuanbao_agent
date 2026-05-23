@@ -14,7 +14,7 @@
 
 .session-workbench-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 420px);
   gap: 20px;
   align-items: start;
 }
@@ -30,6 +30,8 @@
   gap: 12px;
   position: sticky;
   top: 14px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .session-console {
@@ -702,16 +704,19 @@
 
 .session-runtime-lane-items {
   display: grid;
-  gap: 8px;
+  gap: 7px;
 }
 
 .session-runtime-lane-items .runtime-event-card,
 .session-runtime-lane-items .runtime-event-v2-card {
   width: 100%;
+  min-width: 0;
 }
 
 .session-runtime-lane-items .runtime-process-card,
 .session-runtime-lane-items .runtime-trace-row {
+  width: 100%;
+  min-width: 0;
   background: #ffffff;
 }
 
@@ -719,5 +724,74 @@
 .session-runtime-lane-items .runtime-trace-row-copy small,
 .session-runtime-lane-items .runtime-event-collapsed-summary {
   color: #64707d;
+}
+
+.session-runtime-column .session-runtime-lanes {
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.session-runtime-column .session-runtime-lane {
+  min-height: 0;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.session-runtime-column .session-runtime-lane header {
+  margin-bottom: 8px;
+}
+
+.session-runtime-column .session-runtime-lane h3 {
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-runtime-column .session-runtime-lane header > span {
+  min-width: 26px;
+  height: 26px;
+  font-size: 11px;
+}
+
+.session-runtime-column .runtime-process-head,
+.session-runtime-column .runtime-trace-row-summary,
+.session-runtime-column .runtime-event-summary {
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  min-height: 30px;
+  padding: 6px 8px;
+}
+
+.session-runtime-column .runtime-process-head h3,
+.session-runtime-column .runtime-trace-row-copy strong,
+.session-runtime-column .runtime-event-summary strong {
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-runtime-column .runtime-process-summary,
+.session-runtime-column .runtime-event-collapsed-summary,
+.session-runtime-column .runtime-trace-row-copy small {
+  display: -webkit-box;
+  overflow: hidden;
+  padding-right: 8px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.session-runtime-column .runtime-process-meta,
+.session-runtime-column .runtime-trace-row-meta,
+.session-runtime-column .runtime-event-meta-compact,
+.session-runtime-column .runtime-process-detail,
+.session-runtime-column .runtime-process-subdetail,
+.session-runtime-column .runtime-trace-row-detail,
+.session-runtime-column .runtime-event-detail,
+.session-runtime-column .runtime-event-actions {
+  display: none;
 }
 

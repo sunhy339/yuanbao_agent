@@ -150,8 +150,8 @@ class TestContextBuilderSkillDebug:
         tool_names = {t["name"] for t in context["tools"]}
         assert "run_command" in tool_names
         assert "read_file" in tool_names
-        assert "write_file" not in tool_names  # debugger can't write
-        assert "apply_patch" not in tool_names
+        assert "write_file" in tool_names
+        assert "apply_patch" in tool_names
 
     def test_debugger_system_prompt(
         self, store: SQLiteStore, session: dict, builder_with_skills: ContextBuilder

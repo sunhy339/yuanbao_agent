@@ -115,7 +115,10 @@ class TestParseMcpResult:
             isError=False,
         )
         parsed = parse_mcp_result(result)
-        assert parsed == {"status": "ok", "output": "hello"}
+        assert parsed["status"] == "ok"
+        assert parsed["output"] == "hello"
+        assert parsed["contentSource"] == "mcp"
+        assert parsed["contentTrust"] == "untrusted"
 
     def test_success_multiple_text(self):
         result = CallToolResult(
@@ -141,7 +144,10 @@ class TestParseMcpResult:
     def test_empty_content(self):
         result = CallToolResult(content=[], isError=False)
         parsed = parse_mcp_result(result)
-        assert parsed == {"status": "ok", "output": ""}
+        assert parsed["status"] == "ok"
+        assert parsed["output"] == ""
+        assert parsed["contentSource"] == "mcp"
+        assert parsed["contentTrust"] == "untrusted"
 
 
 class TestMcpExceptionSummary:

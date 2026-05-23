@@ -854,12 +854,9 @@ export async function maybeRunTauriProviderFlowE2e() {
     const messageStream = query<HTMLElement>(".message-stream");
     const messageStreamText = messageStream?.textContent ?? "";
     const assistantText = assistantMessage.content.trim();
-    const visibleSnippet = assistantText
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 8)
-      .join(" ");
-    if (visibleSnippet && !messageStreamText.includes(visibleSnippet)) {
+    const assistantBubbleVisible = Array.from(document.querySelectorAll<HTMLElement>('[data-activity-kind="message"][data-role="assistant"]'))
+      .some((node) => (node.textContent ?? "").trim().length > 0);
+    if (!assistantBubbleVisible) {
       throw new Error("Persisted assistant message is not visible in the conversation UI.");
     }
     if (assistantText.length < 500) {

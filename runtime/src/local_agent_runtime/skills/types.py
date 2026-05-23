@@ -117,7 +117,16 @@ BUILTIN_SKILLS: list[SkillPreset] = [
             "4. 定位根因后提供最小化的修复方案\n"
             "5. 验证修复不会引入新问题"
         ),
-        tool_whitelist=["read_file", "search_files", "code_search", "run_command", "git_diff", "git_status"],
+        tool_whitelist=[
+            "read_file",
+            "search_files",
+            "code_search",
+            "run_command",
+            "apply_patch",
+            "write_file",
+            "git_diff",
+            "git_status",
+        ],
         parameter_constraints={"temperature": 0.1},
         category="coding",
     ),

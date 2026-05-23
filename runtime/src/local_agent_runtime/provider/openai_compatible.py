@@ -1224,6 +1224,13 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
                         content_parts.append(delta)
                         yield {"type": "content_delta", "delta": delta}
 
+            if "function_call_arguments" in event_type and event_type.endswith(".done"):
+                arguments = event.get("arguments")
+                if isinstance(arguments, str):
+                    item_id = self._responses_stream_tool_call_key(event)
+                    current = function_calls.setdefault(item_id, self._responses_stream_tool_call_seed(event))
+                    current["arguments"] = arguments
+
             if event_type in {"response.output_item.added", "response.output_item.done"} or event_type.endswith(".done"):
                 item = event.get("item")
                 if isinstance(item, dict) and item.get("type") == "function_call":
@@ -1252,15 +1259,25 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
             message = response.get("message") if isinstance(response.get("message"), dict) else {}
             if content_parts and not message.get("content"):
                 message["content"] = "".join(content_parts)
-            if function_calls and not message.get("tool_calls"):
+            if function_calls:
                 merged_calls = self._merge_responses_stream_tool_call_parts(function_calls.values())
-                message["tool_calls"] = self._normalize_tool_calls(
-                    [
-                        {"id": item["id"], "type": item["type"], "function": {"name": item["name"], "arguments": item["arguments"]}}
-                        for item in merged_calls
-                    ],
-                    tool_name_map=tool_name_map,
-                )
+                if message.get("tool_calls"):
+                    message["tool_calls"] = self._merge_responses_stream_tool_calls(
+                        message.get("tool_calls"),
+                        merged_calls,
+                    )
+                else:
+                    message["tool_calls"] = self._normalize_tool_calls(
+                        [
+                            {
+                                "id": item["id"],
+                                "type": item["type"],
+                                "function": {"name": item["name"], "arguments": item["arguments"]},
+                            }
+                            for item in merged_calls
+                        ],
+                        tool_name_map=tool_name_map,
+                    )
             yield {"type": "finish_reason", "finish_reason": response.get("finish_reason") or finish_reason}
             yield {"type": "final", "response": response}
             return
@@ -1309,9 +1326,71 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
                 arguments = call.get("arguments")
                 if isinstance(arguments, str) and arguments:
                     existing = target.get("arguments")
-                    target["arguments"] = (existing if isinstance(existing, str) else "") + arguments
+                    existing_text = existing if isinstance(existing, str) else ""
+                    if existing_text.strip() == arguments.strip():
+                        continue
+                    target["arguments"] = existing_text + arguments
             return named
         return [call for call in calls if isinstance(call.get("name"), str) and call.get("name") or not named]
+
+    def _merge_responses_stream_tool_calls(
+        self,
+        normalized_calls: Any,
+        stream_parts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if not isinstance(normalized_calls, list):
+            return normalized_calls
+        stream_by_id = {
+            str(call.get("id")): call
+            for call in stream_parts
+            if isinstance(call.get("id"), str) and call.get("id")
+        }
+        stream_by_name = {
+            str(call.get("name")): call
+            for call in stream_parts
+            if isinstance(call.get("name"), str) and call.get("name")
+        }
+        merged: list[dict[str, Any]] = []
+        used_stream_ids: set[str] = set()
+        for call in normalized_calls:
+            if not isinstance(call, dict):
+                merged.append(call)
+                continue
+            stream_call = stream_by_id.get(str(call.get("id") or ""))
+            if stream_call is None:
+                stream_call = stream_by_name.get(str(call.get("name") or ""))
+            if stream_call is None and len(normalized_calls) == 1 and len(stream_parts) == 1:
+                stream_call = stream_parts[0]
+            if stream_call is None:
+                merged.append(call)
+                continue
+            used_stream_ids.add(str(stream_call.get("id") or ""))
+            arguments = call.get("arguments")
+            stream_arguments = stream_call.get("arguments")
+            if isinstance(stream_arguments, str) and stream_arguments and not arguments:
+                patched = dict(call)
+                name = str(patched.get("name") or stream_call.get("name") or "")
+                patched["arguments"] = self._parse_tool_arguments(name, stream_arguments)
+                merged.append(patched)
+            else:
+                merged.append(call)
+        existing_ids = {str(call.get("id") or "") for call in normalized_calls if isinstance(call, dict)}
+        for stream_call in stream_parts:
+            stream_id = str(stream_call.get("id") or "")
+            if stream_id in used_stream_ids or stream_id in existing_ids:
+                continue
+            name = stream_call.get("name")
+            arguments = stream_call.get("arguments")
+            if isinstance(name, str) and name:
+                merged.append(
+                    {
+                        "id": stream_id or f"call_{len(merged)}",
+                        "type": stream_call.get("type") or "function",
+                        "name": name,
+                        "arguments": self._parse_tool_arguments(name, arguments),
+                    }
+                )
+        return merged
 
     def _responses_text_parts(self, content: Any) -> list[str]:
         if isinstance(content, str):

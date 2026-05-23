@@ -499,7 +499,9 @@ class TestProviderRecoveryRetry:
             "provider.request",
             "provider.failure.recovery_decision",
             "provider.failure.classified",
+            "provider.response",
         ]
+        assert traces[-1]["payload"]["status"] == "failed"
         assert traces[-1]["payload"]["failureRecovery"]["category"] == "auth"
 
 

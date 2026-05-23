@@ -327,15 +327,15 @@ export function SessionWorkspace({
 
     return { runtimeLanes, uniqueTaskIds, uniqueAgentTypes };
   }, [runtimeItems, traceFilter]);
-    const visibleRuntimeLanes = runtimeLanes
+  const visibleRuntimeLanes = runtimeLanes
     .map((lane) => ({
       ...lane,
       items:
         lane.id === "commands"
-          ? lane.items.filter((item) => !item.superseded).slice(0, 4)
+          ? lane.items.filter((item) => !item.superseded).slice(0, 2)
           : lane.id === "patches"
-            ? lane.items.slice(0, 3)
-            : lane.items.slice(0, 3),
+            ? lane.items.slice(0, 2)
+            : lane.items.slice(0, 1),
     }))
     .filter((lane) => lane.items.length > 0);
   return (
@@ -432,7 +432,7 @@ export function SessionWorkspace({
           </section>
         </section>
 
-                <aside className="session-runtime-column" aria-label="运行态侧栏">
+        <aside className="session-runtime-column" aria-label="运行态侧栏">
           <RuntimeCockpitPanel
             activeTask={visibleActiveTask}
             approvals={approvals}
@@ -459,48 +459,48 @@ export function SessionWorkspace({
           <AgentCollaborationPanel collaboration={collaboration} expectAgentWork={expectsAgentWork(activeTask)} />
 
           {visibleRuntimeLanes.length ? (
-            <section className="session-runtime-lanes" aria-label="执行通道">
+            <section className="session-runtime-lanes" aria-label="运行态摘要">
               {visibleRuntimeLanes.map((lane) => (
-              <article className="session-runtime-lane" data-lane={lane.id} key={lane.id}>
-                <header>
-                  <div>
-                    <p className="session-kicker">{lane.eyebrow}</p>
-                    <h3>{lane.title}</h3>
-                  </div>
-                  <span>{lane.items.length}</span>
-                </header>
-                {lane.id === "trace" ? (
-                  <TraceFilterBar
-                    filter={traceFilter}
-                    onChange={setTraceFilter}
-                    taskIds={uniqueTaskIds}
-                    agentTypes={uniqueAgentTypes}
-                  />
-                ) : null}
-                {lane.items.length > 0 ? (
-                  <div className="session-runtime-lane-items">
-                    {lane.items.slice(0, 3).map((item) => (
-                      <RuntimeEventCard
-                        key={item.id}
-                        item={item}
-                        onApprove={onApprove}
-                        onReject={onReject}
-                        onLoadPatch={onLoadPatch}
-                        onCopyPatchPath={onCopyPatchPath}
-                        onCopyRuntimeText={onCopyRuntimeText}
-                        onRefreshCommandJob={onRefreshCommandJob}
-                        onStopCommandJob={onStopCommandJob}
-                        busyId={busyId}
-                      />
-                    ))}
-                  </div>
-                ) : (
-                  <div className="session-runtime-lane-empty">
-                    <strong>{lane.emptyTitle}</strong>
-                    <span>{lane.emptyText}</span>
-                  </div>
-                )}
-              </article>
+                <article className="session-runtime-lane" data-lane={lane.id} key={lane.id}>
+                  <header>
+                    <div>
+                      <p className="session-kicker">{lane.eyebrow}</p>
+                      <h3>{lane.title}</h3>
+                    </div>
+                    <span>{lane.items.length}</span>
+                  </header>
+                  {lane.id === "trace" ? (
+                    <TraceFilterBar
+                      filter={traceFilter}
+                      onChange={setTraceFilter}
+                      taskIds={uniqueTaskIds}
+                      agentTypes={uniqueAgentTypes}
+                    />
+                  ) : null}
+                  {lane.items.length > 0 ? (
+                    <div className="session-runtime-lane-items">
+                      {lane.items.map((item) => (
+                        <RuntimeEventCard
+                          key={item.id}
+                          item={item}
+                          onApprove={onApprove}
+                          onReject={onReject}
+                          onLoadPatch={onLoadPatch}
+                          onCopyPatchPath={onCopyPatchPath}
+                          onCopyRuntimeText={onCopyRuntimeText}
+                          onRefreshCommandJob={onRefreshCommandJob}
+                          onStopCommandJob={onStopCommandJob}
+                          busyId={busyId}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="session-runtime-lane-empty">
+                      <strong>{lane.emptyTitle}</strong>
+                      <span>{lane.emptyText}</span>
+                    </div>
+                  )}
+                </article>
               ))}
             </section>
           ) : null}

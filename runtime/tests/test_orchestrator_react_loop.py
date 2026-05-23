@@ -1428,6 +1428,54 @@ def test_react_loop_converges_when_max_steps_are_exceeded(tmp_path: Any) -> None
     assert "task.budget.exhausted" in event_types
 
 
+def test_react_loop_fails_when_max_steps_exhausted_with_only_failed_tools(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "name": "read_file",
+                        "arguments": {},
+                    }
+                ]
+            },
+            {"final": "This answer should not be reached."},
+        ]
+    )
+
+    def fail_read(_params: dict[str, Any]) -> dict[str, Any]:
+        return {"status": "failed", "error": "Missing required parameters for read_file: path"}
+
+    runtime = _make_runtime(tmp_path, provider, {"read_file": fail_read})
+    runtime.store.update_config({"config": {
+        "policy": {"maxTaskSteps": 1},
+        "autonomy": {"activeProfileId": "test", "profiles": [{"id": "test", "maxSteps": 1}]},
+    }})
+    original_route = runtime.server._orchestrator._meta_router.route  # noqa: SLF001
+
+    def patched_route(goal: str):  # noqa: ANN001
+        decision = original_route(goal)
+        decision.max_steps = 1
+        return decision
+
+    runtime.server._orchestrator._meta_router.route = patched_route  # noqa: SLF001
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "read alpha"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "failed"
+    assert task["errorCode"] == "MAX_STEPS_NO_SUCCESSFUL_TOOLS"
+    assert "maxTaskSteps" in task["resultSummary"]
+
+
 def test_react_loop_records_budget_pressure_before_exhaustion(tmp_path: Any) -> None:
     provider = ScriptedProvider(
         [

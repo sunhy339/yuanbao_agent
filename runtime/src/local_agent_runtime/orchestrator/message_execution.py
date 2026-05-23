@@ -316,6 +316,19 @@ class MessageExecutionMixin:
                         tool_results=react_result.get("tool_results", []),
                     )
                 }
+            if react_result["status"] == "failed":
+                return {
+                    "task": self._fail_task(
+                        session_id=session_id,
+                        task=task,
+                        summary=react_result.get("summary") or "ReAct loop failed.",
+                        error_code=react_result.get("error_code") or "REACT_LOOP_FAILED",
+                        structured_result={
+                            "toolResults": react_result.get("tool_results", []),
+                            "budgetExhausted": react_result.get("budget_exhausted") is True,
+                        },
+                    )
+                }
 
             tool_results = self._run_minimal_loop(
                 session_id=session_id,
@@ -396,6 +409,19 @@ class MessageExecutionMixin:
                     context=context,
                     react_result=react_result,
                 )
+            if react_result["status"] == "failed":
+                return {
+                    "task": self._fail_task(
+                        session_id=session_id,
+                        task=task,
+                        summary=react_result.get("summary") or "ReAct loop failed.",
+                        error_code=react_result.get("error_code") or "REACT_LOOP_FAILED",
+                        structured_result={
+                            "toolResults": react_result.get("tool_results", []),
+                            "budgetExhausted": react_result.get("budget_exhausted") is True,
+                        },
+                    )
+                }
             summary = react_result.get("summary") or self._provider.summarize_findings(
                 goal=goal,
                 context=context,

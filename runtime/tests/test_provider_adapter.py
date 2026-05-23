@@ -1232,6 +1232,226 @@ def test_openai_responses_stream_merges_function_call_parts() -> None:
     ]
 
 
+def test_openai_responses_stream_uses_function_call_arguments_done() -> None:
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**_kwargs: Any) -> tuple[int, Any]:
+        return 200, iter(
+            [
+                b'event: response.created\n',
+                b'data: {"type":"response.created","response":{"id":"resp_tool","model":"test-responses","status":"in_progress","output":[]}}\n\n',
+                b'event: response.output_item.added\n',
+                b'data: {"type":"response.output_item.added","item_id":"fc_1","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":""}}\n\n',
+                b'event: response.function_call_arguments.done\n',
+                b'data: {"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":0,"arguments":"{\\"path\\":\\"blog_service.py\\"}"}\n\n',
+                b'event: response.output_item.done\n',
+                b'data: {"type":"response.output_item.done","item_id":"fc_1","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":""}}\n\n',
+                b'event: response.completed\n',
+                b'data: {"type":"response.completed","response":{"id":"resp_tool","model":"test-responses","status":"completed","output":[]}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-responses",
+            "streamingEnabled": True,
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "model": "test-chat",
+        }
+    }
+
+    events = list(adapter.chat_stream(messages=[{"role": "user", "content": "read"}], context=context))
+
+    assert events[-1]["type"] == "final"
+    assert events[-1]["response"]["message"]["tool_calls"] == [
+        {
+            "id": "call_1",
+            "type": "function",
+            "name": "read_file",
+            "arguments": {"path": "blog_service.py"},
+        }
+    ]
+
+
+def test_openai_responses_stream_patches_empty_completed_tool_arguments() -> None:
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**_kwargs: Any) -> tuple[int, Any]:
+        return 200, iter(
+            [
+                b'event: response.output_item.added\n',
+                b'data: {"type":"response.output_item.added","item_id":"fc_1","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"apply_patch","arguments":""}}\n\n',
+                b'event: response.function_call_arguments.done\n',
+                b'data: {"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":0,"arguments":"{\\"patchText\\":\\"*** Begin Patch\\\\n*** End Patch\\"}"}\n\n',
+                b'event: response.output_item.done\n',
+                b'data: {"type":"response.output_item.done","item_id":"fc_1","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"apply_patch","arguments":""}}\n\n',
+                b'event: response.completed\n',
+                b'data: {"type":"response.completed","response":{"id":"resp_tool","model":"test-responses","status":"completed","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"apply_patch","arguments":""}]}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-responses",
+            "streamingEnabled": True,
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "model": "test-chat",
+        }
+    }
+
+    events = list(adapter.chat_stream(messages=[{"role": "user", "content": "patch"}], context=context))
+
+    assert events[-1]["type"] == "final"
+    assert events[-1]["response"]["message"]["tool_calls"] == [
+        {
+            "id": "call_1",
+            "type": "function",
+            "name": "apply_patch",
+            "arguments": {"patchText": "*** Begin Patch\n*** End Patch"},
+        }
+    ]
+
+
+def test_openai_responses_stream_patches_single_tool_when_argument_key_differs() -> None:
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**_kwargs: Any) -> tuple[int, Any]:
+        return 200, iter(
+            [
+                b'event: response.output_item.added\n',
+                b'data: {"type":"response.output_item.added","item_id":"fc_1","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":""}}\n\n',
+                b'event: response.function_call_arguments.done\n',
+                b'data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\\"path\\":\\"blog_service.py\\"}"}\n\n',
+                b'event: response.completed\n',
+                b'data: {"type":"response.completed","response":{"id":"resp_tool","model":"test-responses","status":"completed","output":[{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":""}]}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-responses",
+            "streamingEnabled": True,
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "model": "test-chat",
+        }
+    }
+
+    events = list(adapter.chat_stream(messages=[{"role": "user", "content": "read"}], context=context))
+
+    assert events[-1]["response"]["message"]["tool_calls"] == [
+        {
+            "id": "call_1",
+            "type": "function",
+            "name": "read_file",
+            "arguments": {"path": "blog_service.py"},
+        }
+    ]
+
+
+def test_openai_responses_stream_dedupes_repeated_argument_payload() -> None:
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**_kwargs: Any) -> tuple[int, Any]:
+        return 200, iter(
+            [
+                b'event: response.output_item.added\n',
+                b'data: {"type":"response.output_item.added","item_id":"fc_1","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\\"path\\":\\"blog_service.py\\"}"}}\n\n',
+                b'event: response.function_call_arguments.done\n',
+                b'data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\\"path\\":\\"blog_service.py\\"}"}\n\n',
+                b'event: response.completed\n',
+                b'data: {"type":"response.completed","response":{"id":"resp_tool","model":"test-responses","status":"completed","output":[]}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-responses",
+            "streamingEnabled": True,
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "model": "test-chat",
+        }
+    }
+
+    events = list(adapter.chat_stream(messages=[{"role": "user", "content": "read"}], context=context))
+
+    assert events[-1]["response"]["message"]["tool_calls"] == [
+        {
+            "id": "call_1",
+            "type": "function",
+            "name": "read_file",
+            "arguments": {"path": "blog_service.py"},
+        }
+    ]
+
+
 def test_plain_text_response_is_normalized() -> None:
     def fake_post(**_kwargs: Any) -> tuple[int, bytes]:
         return 200, b'{"id":"chatcmpl_1","model":"test-chat","choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"total_tokens":7}}'

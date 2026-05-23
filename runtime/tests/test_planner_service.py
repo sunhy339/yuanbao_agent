@@ -20,9 +20,9 @@ def test_planner_creates_goal_specific_chinese_code_change_steps() -> None:
         "run-command",
         "summarize-findings",
     ]
-    assert plan[0]["title"] == "\u68b3\u7406\u8d2a\u5403\u86c7\u9879\u76ee\u7ed3\u6784"
-    assert plan[1]["title"] == "\u5b9a\u4f4d\u86c7\u3001\u98df\u7269\u548c\u6e38\u620f\u5faa\u73af"
-    assert plan[2]["title"] == "\u5b9e\u73b0 AI \u8d2a\u5403\u86c7\u5bf9\u6218"
+    assert plan[0]["title"] == "\u7406\u89e3\u4efb\u52a1\u76ee\u6807"
+    assert plan[1]["title"] == "\u5b9a\u4f4d\u76f8\u5173\u6587\u4ef6"
+    assert plan[2]["title"] == "\u5b8c\u6210\u76ee\u6807\u6539\u52a8"
     assert plan[3]["title"] == "\u9a8c\u8bc1\u6539\u52a8\u6548\u679c"
     assert plan[0]["status"] == "active"
     assert plan[2]["status"] == "pending"

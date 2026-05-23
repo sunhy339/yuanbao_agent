@@ -647,9 +647,12 @@ class ReactRunnerMixin:
             },
         )
         summary = self._budget_exhausted_summary(goal=goal, tool_results=tool_results, steps=steps, max_steps=max_steps)
+        result_counts = self._tool_results_summary_for_budget(tool_results)
+        no_successful_tool_results = result_counts["total"] > 0 and result_counts["completed"] == 0
         return {
-            "status": "completed",
+            "status": "failed" if no_successful_tool_results else "completed",
             "summary": summary,
+            "error_code": "MAX_STEPS_NO_SUCCESSFUL_TOOLS" if no_successful_tool_results else None,
             "tool_results": tool_results,
             "budget_exhausted": True,
         }

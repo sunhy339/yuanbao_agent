@@ -388,7 +388,7 @@ export function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveT
       summary: `${changedFiles.length} 个文件：${compactList(changedFiles.map((file) => file.path))}`,
       meta: compactMeta([`${changedFiles.length} 个文件`]),
       code: changedFiles.map(formatTaskFileChange).join("\n"),
-      visibility: "panel",
+      visibility: "chat",
       taskId: activeTask.id,
       time: taskTime,
     });
@@ -583,7 +583,7 @@ export function buildRuntimeItems({
       code: fileSummaries?.join("\n"),
       diffLines,
       time: patch.updatedAt,
-      visibility: "panel",
+      visibility: "chat",
     });
   });
 

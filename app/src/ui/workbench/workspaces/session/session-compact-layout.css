@@ -312,6 +312,10 @@
     order: 2;
   }
 
+  .session-tool-dock {
+    grid-template-columns: 1fr;
+  }
+
   .session-console .message-stream {
     width: calc(100% - 16px);
     max-width: 760px;
@@ -701,29 +705,140 @@
   background: rgba(248, 250, 252, 0.92);
 }
 
+.session-tool-dock {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid rgba(120, 98, 95, 0.14);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 22px rgba(35, 27, 23, 0.06);
+}
+
+.session-tool-dock-header {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 10px;
+  align-items: start;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.session-tool-dock-header h2 {
+  margin: 0;
+  color: #1f2937;
+  font-size: 14px;
+  font-weight: 740;
+  line-height: 1.2;
+}
+
+.session-tool-dock-header > span {
+  max-width: 44%;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: #64748b;
+  background: rgba(248, 250, 252, 0.9);
+  font-family: var(--session-mono);
+  font-size: 11px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-tool-card {
+  display: grid;
+  gap: 5px;
+  align-content: start;
+  min-width: 0;
+  min-height: 94px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 10px;
+  padding: 10px;
+  background: #fbfaf7;
+}
+
+.session-tool-card-muted {
+  opacity: 0.74;
+}
+
+.session-tool-icon {
+  width: 18px;
+  height: 18px;
+  border: 1.8px solid #64748b;
+  border-radius: 5px;
+}
+
+.session-tool-card[data-tool="review"] .session-tool-icon,
+.session-tool-card[data-tool="git"] .session-tool-icon {
+  border-radius: 999px;
+}
+
+.session-tool-card[data-tool="terminal"] .session-tool-icon {
+  border-radius: 4px;
+  border-top-width: 5px;
+}
+
+.session-tool-card strong {
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-tool-card small,
+.session-tool-card p,
+.session-tool-card li {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+}
+
+.session-tool-card p,
+.session-tool-card li {
+  white-space: nowrap;
+}
+
+.session-tool-card ul {
+  display: grid;
+  gap: 2px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-tool-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 2px;
+}
+
+.session-tool-actions .yb-button,
+.session-tool-card .yb-button {
+  min-width: 0;
+  justify-self: start;
+  font-size: 11px;
+}
+
 
 .session-runtime-lane-items {
   display: grid;
-  gap: 7px;
-}
-
-.session-runtime-lane-items .runtime-event-card,
-.session-runtime-lane-items .runtime-event-v2-card {
-  width: 100%;
-  min-width: 0;
-}
-
-.session-runtime-lane-items .runtime-process-card,
-.session-runtime-lane-items .runtime-trace-row {
-  width: 100%;
-  min-width: 0;
-  background: #ffffff;
-}
-
-.session-runtime-lane-items .runtime-process-summary,
-.session-runtime-lane-items .runtime-trace-row-copy small,
-.session-runtime-lane-items .runtime-event-collapsed-summary {
-  color: #64707d;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .session-runtime-column .session-runtime-lanes {
@@ -755,43 +870,97 @@
   font-size: 11px;
 }
 
-.session-runtime-column .runtime-process-head,
-.session-runtime-column .runtime-trace-row-summary,
-.session-runtime-column .runtime-event-summary {
-  grid-template-columns: 8px minmax(0, 1fr) auto;
-  min-height: 30px;
-  padding: 6px 8px;
+.session-runtime-lane-row {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
 }
 
-.session-runtime-column .runtime-process-head h3,
-.session-runtime-column .runtime-trace-row-copy strong,
-.session-runtime-column .runtime-event-summary strong {
+.session-runtime-lane-row-main {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  padding: 7px 8px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.session-runtime-lane-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--session-blue);
+}
+
+.session-runtime-lane-row[data-status="completed"] .session-runtime-lane-dot,
+.session-runtime-lane-row[data-status="passed"] .session-runtime-lane-dot,
+.session-runtime-lane-row[data-status="succeeded"] .session-runtime-lane-dot,
+.session-runtime-lane-row[data-status="applied"] .session-runtime-lane-dot {
+  background: var(--session-green);
+}
+
+.session-runtime-lane-row[data-status="failed"] .session-runtime-lane-dot,
+.session-runtime-lane-row[data-status="error"] .session-runtime-lane-dot {
+  background: var(--session-red);
+}
+
+.session-runtime-lane-row-main > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.session-runtime-lane-row strong {
   overflow: hidden;
+  color: #1f2937;
   font-size: 12px;
+  font-weight: 740;
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.session-runtime-column .runtime-process-summary,
-.session-runtime-column .runtime-event-collapsed-summary,
-.session-runtime-column .runtime-trace-row-copy small {
+.session-runtime-lane-row small {
   display: -webkit-box;
   overflow: hidden;
-  padding-right: 8px;
-  line-height: 1.4;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.35;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
 
-.session-runtime-column .runtime-process-meta,
-.session-runtime-column .runtime-trace-row-meta,
-.session-runtime-column .runtime-event-meta-compact,
-.session-runtime-column .runtime-process-detail,
-.session-runtime-column .runtime-process-subdetail,
-.session-runtime-column .runtime-trace-row-detail,
-.session-runtime-column .runtime-event-detail,
-.session-runtime-column .runtime-event-actions {
-  display: none;
+.session-runtime-lane-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 8px 8px 23px;
+}
+
+.session-runtime-lane-detail {
+  max-height: 220px;
+  margin: 0 8px 8px 23px;
+  overflow: auto;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  padding: 8px;
+  color: #334155;
+  background: rgba(248, 250, 252, 0.92);
+}
+
+pre.session-runtime-lane-detail,
+.session-runtime-lane-detail pre {
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
 }
 

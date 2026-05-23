@@ -424,6 +424,14 @@ export function isOperationalAssistantDelta(delta: string): boolean {
   return (
     normalized === "Building context and preparing the first tool calls..." ||
     normalized === "Completed the minimal tool loop and preparing a summary..." ||
+    normalized.startsWith("Started subtask: ") ||
+    normalized.startsWith("Finished subtask: ") ||
+    normalized.startsWith("Subtask running tool: ") ||
+    normalized.startsWith("Subtask tool completed: ") ||
+    normalized.startsWith("Subtask tool failed: ") ||
+    normalized.startsWith("Subtask waiting for approval: ") ||
+    normalized.startsWith("Subtask approval ") ||
+    normalized.startsWith("Subtask command ") ||
     normalized.startsWith("Running tool: ") ||
     normalized.startsWith("Running post-task ") ||
     normalized.startsWith("Running post-task validation command: ") ||

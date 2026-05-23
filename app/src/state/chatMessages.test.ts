@@ -136,6 +136,10 @@ describe("chatMessages", () => {
   it("classifies runtime progress tokens as non-chat assistant deltas", () => {
     expect(isOperationalAssistantDelta("Building context and preparing the first tool calls...")).toBe(true);
     expect(isOperationalAssistantDelta("Running tool: list_dir")).toBe(true);
+    expect(isOperationalAssistantDelta("Started subtask: Inspect workspace")).toBe(true);
+    expect(isOperationalAssistantDelta("Subtask running tool: run_command")).toBe(true);
+    expect(isOperationalAssistantDelta("Subtask tool completed: run_command")).toBe(true);
+    expect(isOperationalAssistantDelta("Subtask waiting for approval: run_command")).toBe(true);
     expect(isOperationalAssistantDelta("Running post-task git status validation...")).toBe(true);
     expect(isOperationalAssistantDelta("Approval accepted. Applying the patch now...")).toBe(true);
     expect(isOperationalAssistantDelta("Completed the minimal tool loop and preparing a summary...")).toBe(true);

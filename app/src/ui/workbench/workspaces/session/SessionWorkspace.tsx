@@ -3,6 +3,9 @@ import { Button, StatusBadge } from "../../../v2/components/ui";
 import { formatStatusLabel } from "../../../copy";
 import type { SessionWorkspaceProps, RuntimeTimelineItem } from "./types";
 import {
+  buildCommandOutput,
+  compactText,
+  getRuntimeKindLabel,
   getStatusTone,
   isBackgroundProbeCommand,
   isSuccessfulRuntimeStatus,
@@ -16,7 +19,6 @@ import { RuntimeCockpitPanel } from "./RuntimeCockpitPanel";
 import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
 import { TraceFilterBar } from "./TraceFilterBar";
 import { WorktreePanel } from "./WorktreePanel";
-import { RuntimeEventCard } from "./RuntimeEventCard";
 import { isChatVisibleEvent } from "./visibilityRouting";
 import "./session.css";
 
@@ -29,6 +31,392 @@ export type {
   SessionWorkspaceWorktreeStatus,
   SessionWorkspaceProps,
 } from "./types";
+
+function runtimeLaneRowLabel(item: RuntimeTimelineItem) {
+  if (item.kind === "command") {
+    return item.title.replace(/^python -m /, "");
+  }
+  if (item.kind === "patch") {
+    return item.title.replace(/^Update\s+/i, "");
+  }
+  return item.title;
+}
+
+function runtimeLaneRowSummary(item: RuntimeTimelineItem) {
+  if (item.kind === "command") {
+    const status = item.status ? formatStatusLabel(item.status) : "已记录";
+    return compactText(item.summary ? `${item.summary}` : `命令${status}`, 86);
+  }
+  if (item.kind === "patch") {
+    return compactText(item.summary || item.code || "已记录文件改动", 86);
+  }
+  return compactText(item.summary || item.rawDetail || item.code || "需要关注的运行信号", 86);
+}
+
+function uniqueNonEmptyStrings(values: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  values.forEach((value) => {
+    const normalized = String(value ?? "").trim();
+    if (!normalized || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  });
+  return result;
+}
+
+function RuntimeLanePatchDetail({ item, isBusy }: { item: RuntimeTimelineItem; isBusy: boolean }) {
+  if (item.diffLines?.length) {
+    return (
+      <div className="session-runtime-lane-detail">
+        <div className="diff-view">
+          {item.diffLines.map((line, lineIndex) => (
+            <div key={lineIndex} className={`diff-line diff-line-${line.type}`}>
+              <span className="diff-line-prefix">
+                {line.type === "add" ? "+" : line.type === "remove" ? "-" : line.type === "header" ? "" : " "}
+              </span>
+              <span className="diff-line-content">{line.content}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="session-runtime-lane-detail">
+      <p className="runtime-diff-empty" role="status">
+        {isBusy ? "差异正在加载。" : "差异暂不可用。请在运行时写入改动后再试一次。"}
+      </p>
+    </div>
+  );
+}
+
+function RuntimeLaneSummaryRow({
+  item,
+  onApprove,
+  onReject,
+  onLoadPatch,
+  onCopyRuntimeText,
+  busyId,
+}: {
+  item: RuntimeTimelineItem;
+  onApprove?(approvalId: string): void | Promise<void>;
+  onReject?(approvalId: string): void | Promise<void>;
+  onLoadPatch?(patchId: string): void | Promise<void>;
+  onCopyRuntimeText?(label: string, text: string): void | Promise<void>;
+  busyId?: string | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const kindLabel = getRuntimeKindLabel(item.kind);
+  const statusLabel = item.status ? formatStatusLabel(item.status) : undefined;
+  const isBusy = item.sourceId ? busyId === item.sourceId : false;
+  const commandOutput = item.kind === "command" ? buildCommandOutput(item) : "";
+  const traceDetail = item.kind === "trace" ? item.code || item.rawDetail || "" : "";
+  const canResolveApproval = item.kind === "approval" && item.status === "pending" && item.sourceId;
+  const canLoadPatch = item.kind === "patch" && Boolean(item.sourceId);
+  const canCopyCommandOutput = Boolean(item.kind === "command" && onCopyRuntimeText && commandOutput.trim());
+  const canCopyTraceDetail = Boolean(item.kind === "trace" && onCopyRuntimeText && traceDetail.trim());
+  const hasActions = canResolveApproval || canLoadPatch || canCopyCommandOutput || (expanded && canCopyTraceDetail);
+
+  return (
+    <li className="session-runtime-lane-row" data-kind={item.kind} data-status={item.status ?? "recorded"}>
+      <button
+        aria-expanded={expanded}
+        aria-label={`${kindLabel} ${item.title}${statusLabel ? ` ${statusLabel}` : ""}`}
+        className="session-runtime-lane-row-main"
+        onClick={() => setExpanded((current) => !current)}
+        type="button"
+      >
+        <span className="session-runtime-lane-dot" aria-hidden="true" />
+        <div>
+          <strong>{runtimeLaneRowLabel(item)}</strong>
+          <small>{runtimeLaneRowSummary(item)}</small>
+        </div>
+        {item.status ? <StatusBadge label={formatStatusLabel(item.status)} tone={getStatusTone(item.status)} compact /> : null}
+      </button>
+      {hasActions ? (
+        <div className="session-runtime-lane-row-actions">
+          {canLoadPatch ? (
+            <Button
+              size="xs"
+              variant="secondary"
+              loading={isBusy}
+              onClick={() => {
+                void onLoadPatch?.(item.sourceId ?? "");
+                setExpanded(true);
+              }}
+            >
+              查看差异
+            </Button>
+          ) : null}
+          {canCopyCommandOutput ? (
+            <Button
+              size="xs"
+              variant="secondary"
+              onClick={() => {
+                void onCopyRuntimeText?.("命令输出", commandOutput);
+              }}
+            >
+              复制输出
+            </Button>
+          ) : null}
+          {expanded && canCopyTraceDetail ? (
+            <Button
+              size="xs"
+              variant="secondary"
+              onClick={() => {
+                void onCopyRuntimeText?.("诊断详情", traceDetail);
+              }}
+            >
+              复制详情
+            </Button>
+          ) : null}
+          {canResolveApproval ? (
+            <>
+              <Button
+                size="xs"
+                variant="secondary"
+                loading={isBusy}
+                onClick={() => {
+                  void onApprove?.(item.sourceId ?? "");
+                }}
+              >
+                批准
+              </Button>
+              <Button
+                size="xs"
+                variant="secondary"
+                loading={isBusy}
+                onClick={() => {
+                  void onReject?.(item.sourceId ?? "");
+                }}
+              >
+                拒绝
+              </Button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+      {expanded && item.kind === "patch" ? <RuntimeLanePatchDetail item={item} isBusy={isBusy} /> : null}
+      {expanded && item.kind === "command" && commandOutput ? (
+        <pre className="session-runtime-lane-detail">{commandOutput}</pre>
+      ) : null}
+      {expanded && item.kind === "trace" && traceDetail ? (
+        <pre className="session-runtime-lane-detail">{traceDetail}</pre>
+      ) : null}
+      {expanded && item.kind === "approval" && (item.summary || item.code) ? (
+        <div className="session-runtime-lane-detail">
+          {item.summary ? <p>{item.summary}</p> : null}
+          {item.code ? <pre>{item.code}</pre> : null}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function SessionToolDock({
+  activeTask,
+  patches,
+  backgroundJobs,
+  worktreeStatus,
+  worktreeDiff,
+  worktreeBusyAction,
+  composerContext,
+  onLoadPatch,
+  onRefreshWorktree,
+  onLoadWorktreeDiff,
+  onMergeWorktree,
+  onCleanupWorktree,
+  busyId,
+}: {
+  activeTask: SessionWorkspaceProps["activeTask"];
+  patches?: SessionWorkspaceProps["patches"];
+  backgroundJobs?: SessionWorkspaceProps["backgroundJobs"];
+  worktreeStatus?: SessionWorkspaceProps["worktreeStatus"];
+  worktreeDiff?: SessionWorkspaceProps["worktreeDiff"];
+  worktreeBusyAction?: SessionWorkspaceProps["worktreeBusyAction"];
+  composerContext?: SessionWorkspaceProps["composerContext"];
+  onLoadPatch?: SessionWorkspaceProps["onLoadPatch"];
+  onRefreshWorktree?: SessionWorkspaceProps["onRefreshWorktree"];
+  onLoadWorktreeDiff?: SessionWorkspaceProps["onLoadWorktreeDiff"];
+  onMergeWorktree?: SessionWorkspaceProps["onMergeWorktree"];
+  onCleanupWorktree?: SessionWorkspaceProps["onCleanupWorktree"];
+  busyId?: string | null;
+}) {
+  const relatedFiles = uniqueNonEmptyStrings([
+    ...(activeTask?.changedFiles?.map((file) => file.path) ?? []),
+    ...((patches ?? []).flatMap((patch) => patch.files?.map((file) => file.path) ?? [])),
+    ...(worktreeStatus?.files ?? []),
+  ]);
+  const patchStats = (patches ?? []).reduce(
+    (stats, patch) => ({
+      additions: stats.additions + (patch.additions ?? 0),
+      deletions: stats.deletions + (patch.deletions ?? 0),
+    }),
+    { additions: 0, deletions: 0 },
+  );
+  const taskPatchStats = (activeTask?.changedFiles ?? []).reduce(
+    (stats, file) => ({
+      additions: stats.additions + (file.additions ?? 0),
+      deletions: stats.deletions + (file.deletions ?? 0),
+    }),
+    { additions: 0, deletions: 0 },
+  );
+  const additions = patchStats.additions || taskPatchStats.additions;
+  const deletions = patchStats.deletions || taskPatchStats.deletions;
+  const commandItems = [
+    ...(activeTask?.commands ?? []),
+    ...(activeTask?.verification?.map((verification) => ({
+      command: verification.command ?? "verification",
+      status: verification.status,
+      summary: verification.summary,
+    })) ?? []),
+    ...(backgroundJobs ?? []),
+  ];
+  const latestCommand = commandItems.at(-1);
+  const firstPatchId = patches?.[0]?.id;
+  const activeWorktree = activeTask?.activeWorktree;
+  const dirtyFiles = worktreeStatus?.dirtyFiles ?? relatedFiles.length;
+  const branchName = composerContext?.branch || activeTask?.activeWorktree?.branchName || "未识别分支";
+  const workspacePath =
+    composerContext?.cwd || activeTask?.activeWorktree?.worktreePath || "当前会话未提供工作目录";
+  const patchCount = (patches?.length ?? 0) + (activeTask?.changedFiles?.length ? 1 : 0);
+  const diffLoaded = Boolean(
+    worktreeDiff && !worktreeDiff.error && (worktreeDiff.diffStat || worktreeDiff.diff || worktreeDiff.files?.length),
+  );
+  const canRequestMerge = Boolean(activeWorktree && onMergeWorktree && diffLoaded && dirtyFiles === 0);
+  const canCleanup = Boolean(activeWorktree && onCleanupWorktree && dirtyFiles === 0);
+
+  return (
+    <section className="session-tool-dock" aria-label="工作区工具">
+      <header className="session-tool-dock-header">
+        <div>
+          <p className="session-kicker">工作区</p>
+          <h2>工具与状态</h2>
+        </div>
+        <span>{branchName}</span>
+      </header>
+      <article className="session-tool-card" data-tool="files">
+        <span className="session-tool-icon" aria-hidden="true" />
+        <strong>文件</strong>
+        <small>{relatedFiles.length ? `${relatedFiles.length} 个相关文件` : compactText(workspacePath, 34)}</small>
+        {relatedFiles.length ? (
+          <ul>
+            {relatedFiles.slice(0, 3).map((path) => (
+              <li key={path}>{path}</li>
+            ))}
+          </ul>
+        ) : null}
+      </article>
+      <article className="session-tool-card" data-tool="review">
+        <span className="session-tool-icon" aria-hidden="true" />
+        <strong>审查</strong>
+        <small>
+          {patchCount ? `${patchCount} 个变更记录` : "等待代码变更"}
+          {additions || deletions ? ` · +${additions} -${deletions}` : ""}
+        </small>
+        <div className="session-tool-actions">
+          {firstPatchId && onLoadPatch ? (
+            <Button
+              size="xs"
+              variant="secondary"
+              loading={busyId === firstPatchId}
+              onClick={() => {
+                void onLoadPatch(firstPatchId);
+              }}
+            >
+              打开补丁
+            </Button>
+          ) : null}
+          {activeWorktree && onLoadWorktreeDiff ? (
+            <Button
+              size="xs"
+              variant="secondary"
+              loading={worktreeBusyAction === "diff"}
+              onClick={() => {
+                void onLoadWorktreeDiff(activeWorktree.id);
+              }}
+            >
+              查看差异
+            </Button>
+          ) : null}
+        </div>
+      </article>
+      <article className="session-tool-card" data-tool="terminal">
+        <span className="session-tool-icon" aria-hidden="true" />
+        <strong>终端</strong>
+        <small>{commandItems.length ? `${commandItems.length} 条命令` : "还没有命令"}</small>
+        {latestCommand ? (
+          <p>
+            {compactText(latestCommand.command, 36)}
+            {latestCommand.status ? ` · ${formatStatusLabel(latestCommand.status)}` : ""}
+          </p>
+        ) : null}
+      </article>
+      <article className="session-tool-card" data-tool="git">
+        <span className="session-tool-icon" aria-hidden="true" />
+        <strong>Git</strong>
+        <small>{dirtyFiles ? `${dirtyFiles} 个待审文件` : "工作区干净或未扫描"}</small>
+        <p>{compactText(branchName, 36)}</p>
+        {activeWorktree ? (
+          <div className="session-tool-actions">
+            {onRefreshWorktree ? (
+              <Button
+                size="xs"
+                variant="secondary"
+                loading={worktreeBusyAction === "status"}
+                onClick={() => {
+                  void onRefreshWorktree(activeWorktree.id);
+                }}
+              >
+                状态
+              </Button>
+            ) : null}
+            {onMergeWorktree ? (
+              <Button
+                size="xs"
+                variant="secondary"
+                loading={worktreeBusyAction === "requestMergeApproval" || worktreeBusyAction === "merge"}
+                disabled={!canRequestMerge}
+                onClick={() => {
+                  void onMergeWorktree(activeWorktree.id);
+                }}
+              >
+                合并申请
+              </Button>
+            ) : null}
+            {onCleanupWorktree ? (
+              <Button
+                size="xs"
+                variant="secondary"
+                loading={worktreeBusyAction === "cleanup"}
+                disabled={!canCleanup}
+                onClick={() => {
+                  void onCleanupWorktree(activeWorktree.id, false);
+                }}
+              >
+                清理
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+      </article>
+      <article className="session-tool-card session-tool-card-muted" data-tool="side-chat">
+        <span className="session-tool-icon" aria-hidden="true" />
+        <strong>侧边聊天</strong>
+        <small>入口待接入独立上下文</small>
+      </article>
+      <article className="session-tool-card session-tool-card-muted" data-tool="browser">
+        <span className="session-tool-icon" aria-hidden="true" />
+        <strong>浏览器</strong>
+        <small>入口待接入预览目标</small>
+      </article>
+    </section>
+  );
+}
 
 export function SessionWorkspace({
   session,
@@ -162,6 +550,12 @@ export function SessionWorkspace({
       if (item.kind === "trace") {
         return false;
       }
+      if (item.kind === "patch" || item.id.startsWith("task-files:")) {
+        return true;
+      }
+      if (item.kind === "approval" && item.status !== "pending") {
+        return false;
+      }
       if (item.kind === "command") {
         const status = item.status?.toLowerCase();
         const isSuccessful = Boolean(status && ["completed", "passed", "succeeded"].includes(status));
@@ -271,6 +665,9 @@ export function SessionWorkspace({
 
     for (const item of runtimeItems) {
       if (isQuietSuccessfulBackgroundItem(item)) {
+        continue;
+      }
+      if (item.kind === "tool" && isSuccessfulRuntimeStatus(item.status)) {
         continue;
       }
       if (item.kind === "command" || item.kind === "tool") {
@@ -433,6 +830,21 @@ export function SessionWorkspace({
         </section>
 
         <aside className="session-runtime-column" aria-label="运行态侧栏">
+          <SessionToolDock
+            activeTask={visibleActiveTask}
+            patches={patches}
+            backgroundJobs={backgroundJobs}
+            worktreeStatus={worktreeStatus}
+            worktreeDiff={worktreeDiff}
+            worktreeBusyAction={worktreeBusyAction}
+            composerContext={composerContext}
+            onLoadPatch={onLoadPatch}
+            onRefreshWorktree={onRefreshWorktree}
+            onLoadWorktreeDiff={onLoadWorktreeDiff}
+            onMergeWorktree={onMergeWorktree}
+            onCleanupWorktree={onCleanupWorktree}
+            busyId={busyId}
+          />
           <RuntimeCockpitPanel
             activeTask={visibleActiveTask}
             approvals={approvals}
@@ -478,22 +890,19 @@ export function SessionWorkspace({
                     />
                   ) : null}
                   {lane.items.length > 0 ? (
-                    <div className="session-runtime-lane-items">
+                    <ul className="session-runtime-lane-items">
                       {lane.items.map((item) => (
-                        <RuntimeEventCard
+                        <RuntimeLaneSummaryRow
                           key={item.id}
                           item={item}
                           onApprove={onApprove}
                           onReject={onReject}
                           onLoadPatch={onLoadPatch}
-                          onCopyPatchPath={onCopyPatchPath}
                           onCopyRuntimeText={onCopyRuntimeText}
-                          onRefreshCommandJob={onRefreshCommandJob}
-                          onStopCommandJob={onStopCommandJob}
                           busyId={busyId}
                         />
                       ))}
-                    </div>
+                    </ul>
                   ) : (
                     <div className="session-runtime-lane-empty">
                       <strong>{lane.emptyTitle}</strong>

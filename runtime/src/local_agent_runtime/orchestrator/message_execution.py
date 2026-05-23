@@ -42,37 +42,29 @@ class MessageExecutionMixin:
         event: str,
         details: dict[str, Any],
     ) -> None:
-        active_msg_id = task.get("activeAssistantMessageId")
-        if not isinstance(active_msg_id, str) or not active_msg_id:
-            return
         title = str(details.get("subtaskTitle") or details.get("title") or details.get("subtaskId") or "subtask").strip()
         if not title:
             title = "subtask"
         if event == "started":
             line = f"Started subtask: {title}"
+            status = "running"
         elif event == "completed":
             status = str(details.get("status") or "completed").strip() or "completed"
             line = f"Finished subtask: {title} ({status})"
         else:
             return
-        try:
-            messages = self._store.list_messages({"sessionId": session_id, "limit": 1000})["messages"]
-            current = next((message for message in messages if message.get("id") == active_msg_id), None)
-        except Exception:  # noqa: BLE001
-            current = None
-        content = str((current or {}).get("content") or "")
-        if line in content.splitlines():
-            return
-        next_content = f"{content.rstrip()}\n{line}\n" if content.strip() else f"{line}\n"
-        updated = self._store.update_message(active_msg_id, content=next_content, status="streaming")
-        if updated is None:
-            return
         self._publish(
             session_id=session_id,
             task=task,
-            event_type="message.delta",
-            payload={"messageId": active_msg_id, "delta": f"{line}\n"},
-            visibility="chat",
+            event_type="task.subtask.progress",
+            payload={
+                "event": event,
+                "title": title,
+                "status": status,
+                "summary": line,
+                "subtaskId": details.get("subtaskId"),
+            },
+            visibility="panel",
         )
 
     def _publish_root_child_progress(
@@ -82,9 +74,6 @@ class MessageExecutionMixin:
         task: dict[str, Any],
         details: dict[str, Any],
     ) -> None:
-        active_msg_id = task.get("activeAssistantMessageId")
-        if not isinstance(active_msg_id, str) or not active_msg_id:
-            return
         bridge = details.get("_bridge") if isinstance(details.get("_bridge"), dict) else {}
         child_event = bridge.get("childEvent") if isinstance(bridge.get("childEvent"), dict) else {}
         child_type = str(bridge.get("childEventType") or child_event.get("type") or "").strip()
@@ -104,24 +93,16 @@ class MessageExecutionMixin:
         line = self._root_child_progress_line(event_type=child_type, payload=payload)
         if not line:
             return
-        try:
-            messages = self._store.list_messages({"sessionId": session_id, "limit": 1000})["messages"]
-            current = next((message for message in messages if message.get("id") == active_msg_id), None)
-        except Exception:  # noqa: BLE001
-            current = None
-        content = str((current or {}).get("content") or "")
-        if line in content.splitlines():
-            return
-        next_content = f"{content.rstrip()}\n{line}\n" if content.strip() else f"{line}\n"
-        updated = self._store.update_message(active_msg_id, content=next_content, status="streaming")
-        if updated is None:
-            return
         self._publish(
             session_id=session_id,
             task=task,
-            event_type="message.delta",
-            payload={"messageId": active_msg_id, "delta": f"{line}\n"},
-            visibility="chat",
+            event_type="task.child.progress",
+            payload={
+                "childEventType": child_type,
+                "summary": line,
+                "childPayload": payload,
+            },
+            visibility="panel",
         )
 
     @staticmethod

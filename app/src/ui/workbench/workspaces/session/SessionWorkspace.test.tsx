@@ -32,6 +32,15 @@ describe("SessionWorkspace", () => {
           id: "task_1",
           status: "running",
           goal: "Patch the session workspace",
+          changedFiles: [
+            {
+              path: "app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx",
+              status: "modified",
+              additions: 18,
+              deletions: 4,
+              reason: "Expose the worklog and dock.",
+            },
+          ],
         }}
         composerContext={{
           cwd: "D:/py/yuanbao_agent",
@@ -39,6 +48,13 @@ describe("SessionWorkspace", () => {
           branch: "feat/dev-desktop",
           model: "MiniMax-M2.7-highspeed",
           permissionMode: "bypass",
+        }}
+        worktreeStatus={{
+          dirtyFiles: 1,
+          files: ["app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx"],
+        }}
+        worktreeDiff={{
+          diffStat: "1 file changed, 12 insertions(+), 4 deletions(-)",
         }}
         messages={[
           { id: "m1", role: "user", content: "Check the current failing test.", createdAt: 1 },
@@ -64,6 +80,14 @@ describe("SessionWorkspace", () => {
             filesChanged: 1,
             additions: 12,
             deletions: 4,
+            files: [
+              {
+                path: "app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx",
+                status: "modified",
+                additions: 12,
+                deletions: 4,
+              },
+            ],
           },
         ]}
         traces={[
@@ -104,10 +128,17 @@ describe("SessionWorkspace", () => {
     expect(screen.getAllByText("Patch the session workspace").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Allow npm test").length).toBeGreaterThan(0);
     expect(screen.getByText("Updated session layout")).toBeInTheDocument();
+    expect(screen.getAllByText(/SessionWorkspace\.tsx/).length).toBeGreaterThan(0);
     expect(screen.queryByText("Provider response")).not.toBeInTheDocument();
     expect(screen.getByText("apply_patch")).toBeInTheDocument();
     expect(screen.getAllByText("npm run typecheck").length).toBeGreaterThan(0);
     expect(screen.getByLabelText("会话活动")).toBeInTheDocument();
+    const workspaceTools = screen.getByLabelText("工作区工具");
+    expect(within(workspaceTools).getByText("文件")).toBeInTheDocument();
+    expect(within(workspaceTools).getByText("审查")).toBeInTheDocument();
+    expect(within(workspaceTools).getByText("终端")).toBeInTheDocument();
+    expect(within(workspaceTools).getByText("Git")).toBeInTheDocument();
+    expect(within(workspaceTools).getByText(/1 个待审文件/)).toBeInTheDocument();
     const activityText = Array.from(container.querySelectorAll("[data-activity-kind]")).map((item) =>
       item.textContent ?? "",
     );

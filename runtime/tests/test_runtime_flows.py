@@ -1276,8 +1276,26 @@ def test_root_task_message_receives_planning_subtask_progress(
         {"sessionId": session["id"], "limit": 20},
     )["result"]["messages"]
     assistant = next(message for message in messages if message["id"] == task["activeAssistantMessageId"])
-    assert "Started subtask: Inspect workspace" in assistant["content"]
-    assert "Finished subtask: Inspect workspace (completed)" in assistant["content"]
+    assert "Started subtask: Inspect workspace" not in assistant["content"]
+    assert "Finished subtask: Inspect workspace (completed)" not in assistant["content"]
+
+    progress_events = [
+        event
+        for event in runtime_harness.events
+        if event["type"] == "task.subtask.progress" and event["visibility"] == "panel"
+    ]
+    assert any(
+        event["payload"].get("event") == "started"
+        and event["payload"].get("title") == "Inspect workspace"
+        and event["payload"].get("status") == "running"
+        for event in progress_events
+    )
+    assert any(
+        event["payload"].get("event") == "completed"
+        and event["payload"].get("title") == "Inspect workspace"
+        and event["payload"].get("status") == "completed"
+        for event in progress_events
+    )
 
     chat_deltas = [
         event
@@ -1286,8 +1304,8 @@ def test_root_task_message_receives_planning_subtask_progress(
         and event["visibility"] == "chat"
         and event["payload"].get("messageId") == task["activeAssistantMessageId"]
     ]
-    assert any("Started subtask: Inspect workspace" in event["payload"].get("delta", "") for event in chat_deltas)
-    assert any("Finished subtask: Inspect workspace" in event["payload"].get("delta", "") for event in chat_deltas)
+    assert not any("Started subtask: Inspect workspace" in event["payload"].get("delta", "") for event in chat_deltas)
+    assert not any("Finished subtask: Inspect workspace" in event["payload"].get("delta", "") for event in chat_deltas)
 
 
 def test_plan_execute_recovers_failed_verification_subtask_with_parent_check(

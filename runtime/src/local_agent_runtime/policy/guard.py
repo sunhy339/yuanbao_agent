@@ -172,10 +172,9 @@ class PolicyGuard:
         if not stripped:
             return ""
         stripped = re.sub(r"""^\s*&\s*""", "", stripped)
-        command_text = stripped.strip("\"'")
         match = re.match(
-            r"""^(?P<exe>(?:[a-z]:)?[^ ]*python(?:\.exe)?)\s+-m\s+(?P<module>[a-z0-9_.-]+)(?P<suffix>(?:\s+.*)?)$""",
-            command_text,
+            r"""^(?:"(?P<dq_exe>[^"]*python(?:\.exe)?)"|'(?P<sq_exe>[^']*python(?:\.exe)?)'|(?P<exe>(?:[a-z]:)?\S*python(?:\.exe)?))\s+-m\s+(?P<module>[a-z0-9_.-]+)(?P<suffix>(?:\s+.*)?)$""",
+            stripped,
             flags=re.IGNORECASE,
         )
         if not match:

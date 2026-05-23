@@ -21,7 +21,7 @@ import { TaskProgressPanel } from "./TaskProgressPanel";
 import { RuntimeCockpitPanel } from "./RuntimeCockpitPanel";
 import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
 import { TraceFilterBar } from "./TraceFilterBar";
-import { WorktreePanel } from "./WorktreePanel";
+import { GitWorkspacePanel } from "./GitWorkspacePanel";
 import { isChatVisibleEvent } from "./visibilityRouting";
 import "./session.css";
 
@@ -287,6 +287,7 @@ function SessionWorkspaceToolDock({
   worktreeStatus,
   worktreeDiff,
   worktreeBusyAction,
+  worktreeError,
   composerContext,
   onLoadPatch,
   onRefreshCommandJob,
@@ -303,6 +304,7 @@ function SessionWorkspaceToolDock({
   worktreeStatus?: SessionWorkspaceProps["worktreeStatus"];
   worktreeDiff?: SessionWorkspaceProps["worktreeDiff"];
   worktreeBusyAction?: SessionWorkspaceProps["worktreeBusyAction"];
+  worktreeError?: SessionWorkspaceProps["worktreeError"];
   composerContext?: SessionWorkspaceProps["composerContext"];
   onLoadPatch?: SessionWorkspaceProps["onLoadPatch"];
   onRefreshCommandJob?: SessionWorkspaceProps["onRefreshCommandJob"];
@@ -352,11 +354,6 @@ function SessionWorkspaceToolDock({
   const patchCount = (patches?.length ?? 0) + (activeTask?.changedFiles?.length ? 1 : 0);
   const firstPatchId = patches?.[0]?.id;
   const dirtyFiles = worktreeStatus?.dirtyFiles ?? normalizedRelatedFiles.length;
-  const diffLoaded = Boolean(
-    worktreeDiff && !worktreeDiff.error && (worktreeDiff.diffStat || worktreeDiff.diff || worktreeDiff.files?.length),
-  );
-  const canRequestMerge = Boolean(activeWorktree && onMergeWorktree && diffLoaded && dirtyFiles === 0);
-  const canCleanup = Boolean(activeWorktree && onCleanupWorktree && dirtyFiles === 0);
   const commandItems: SessionToolCommand[] = [
     ...(activeTask?.commands?.map((command) => ({ ...command })) ?? []),
     ...(activeTask?.verification?.map((verification) => ({
@@ -692,83 +689,19 @@ function SessionWorkspaceToolDock({
         ) : null}
 
         {activeTool === "git" ? (
-          <>
-            <div className="session-tool-panel-header">
-              <div>
-                <strong>Git 状态</strong>
-                <small>{compactText(branchName, 58)}</small>
-              </div>
-              <span className="session-tool-diff-stat">{dirtyFiles} 个文件</span>
-            </div>
-            <p className="session-tool-muted" title={workspaceLabel}>
-              {compactText(workspaceLabel, 80)}
-            </p>
-            <div className="session-tool-actions">
-              {activeWorktree && onRefreshWorktree ? (
-                <Button
-                  size="xs"
-                  variant="secondary"
-                  loading={worktreeBusyAction === "status"}
-                  onClick={() => {
-                    void onRefreshWorktree(activeWorktree.id);
-                  }}
-                >
-                  状态
-                </Button>
-              ) : null}
-              {activeWorktree && onLoadWorktreeDiff ? (
-                <Button
-                  size="xs"
-                  variant="secondary"
-                  loading={worktreeBusyAction === "diff"}
-                  onClick={() => {
-                    void onLoadWorktreeDiff(activeWorktree.id, true);
-                  }}
-                >
-                  差异
-                </Button>
-              ) : null}
-              {activeWorktree && onMergeWorktree ? (
-                <Button
-                  size="xs"
-                  variant="secondary"
-                  loading={worktreeBusyAction === "requestMergeApproval" || worktreeBusyAction === "merge"}
-                  disabled={!canRequestMerge}
-                  onClick={() => {
-                    void onMergeWorktree(activeWorktree.id);
-                  }}
-                >
-                  合并申请
-                </Button>
-              ) : null}
-              {activeWorktree && onCleanupWorktree ? (
-                <Button
-                  size="xs"
-                  variant="secondary"
-                  loading={worktreeBusyAction === "cleanup"}
-                  disabled={!canCleanup}
-                  onClick={() => {
-                    void onCleanupWorktree(activeWorktree.id, false);
-                  }}
-                >
-                  清理
-                </Button>
-              ) : null}
-            </div>
-            {worktreeStatus?.error ? <p className="session-tool-error">{worktreeStatus.error}</p> : null}
-            {worktreeStatus?.files?.length ? (
-              <ul className="session-tool-list">
-                {worktreeStatus.files.slice(0, 12).map((file) => (
-                  <li key={file}>
-                    <strong>{fileNameFromPath(file)}</strong>
-                    <small>{normalizeWorkspaceRelativePath(file)}</small>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="session-tool-muted">还没有 Git 扫描结果。</p>
-            )}
-          </>
+          <GitWorkspacePanel
+            activeTask={activeTask}
+            patches={patches}
+            worktreeStatus={worktreeStatus}
+            worktreeDiff={worktreeDiff}
+            worktreeBusyAction={worktreeBusyAction}
+            worktreeError={worktreeError}
+            composerContext={composerContext}
+            onRefreshWorktree={onRefreshWorktree}
+            onLoadWorktreeDiff={onLoadWorktreeDiff}
+            onMergeWorktree={onMergeWorktree}
+            onCleanupWorktree={onCleanupWorktree}
+          />
         ) : null}
 
         {activeTool === "browser" ? (
@@ -1217,6 +1150,7 @@ export function SessionWorkspace({
             worktreeStatus={worktreeStatus}
             worktreeDiff={worktreeDiff}
             worktreeBusyAction={worktreeBusyAction}
+            worktreeError={worktreeError}
             composerContext={composerContext}
             onLoadPatch={onLoadPatch}
             onRefreshCommandJob={onRefreshCommandJob}
@@ -1237,17 +1171,6 @@ export function SessionWorkspace({
             onRefreshTask={onRefreshTask}
             onPauseTask={onPauseTask}
             onResumeTask={onResumeTask}
-          />
-          <WorktreePanel
-            worktree={visibleActiveTask?.activeWorktree}
-            status={worktreeStatus}
-            diff={worktreeDiff}
-            busyAction={worktreeBusyAction}
-            error={worktreeError}
-            onRefresh={onRefreshWorktree}
-            onLoadDiff={onLoadWorktreeDiff}
-            onMerge={onMergeWorktree}
-            onCleanup={onCleanupWorktree}
           />
           {visibleActiveTask ? <TaskProgressPanel activeTask={visibleActiveTask} patches={patches} /> : null}
           <AgentCollaborationPanel collaboration={collaboration} expectAgentWork={expectsAgentWork(activeTask)} />

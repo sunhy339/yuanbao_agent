@@ -198,6 +198,26 @@ describe("SessionWorkspace", () => {
             status: "active",
             mergePolicy: "approval_required",
             cleanupPolicy: "ask_user",
+            lastStatus: {
+              mergeVerification: [
+                {
+                  command: "npm test",
+                  status: "passed",
+                  exitCode: 0,
+                  summary: "43 passed",
+                },
+              ],
+              review: {
+                status: "approved",
+                reviewer: "reviewer-agent",
+                summary: "Looks good.",
+              },
+              mergeApproval: {
+                decision: "approved",
+                targetBranch: "main",
+                verificationStatus: "passed",
+              },
+            },
           },
         }}
         composerContext={{
@@ -254,9 +274,16 @@ describe("SessionWorkspace", () => {
     expect(within(tools).getByText("Typecheck passed.")).toBeInTheDocument();
 
     await user.click(within(tools).getByRole("tab", { name: /Git/ }));
-    expect(within(tools).getByText("Git 状态")).toBeInTheDocument();
-    expect(within(tools).getByText("1 个文件")).toBeInTheDocument();
-    await user.click(within(tools).getByRole("button", { name: "状态" }));
+    const gitPanel = within(tools).getByLabelText("Git 工作区");
+    expect(within(gitPanel).getByRole("heading", { name: "feat/dev-desktop" })).toBeInTheDocument();
+    expect(within(gitPanel).getByText("1 个未提交文件")).toBeInTheDocument();
+    expect(within(gitPanel).getByText("+12 -4")).toBeInTheDocument();
+    expect(within(gitPanel).getByText("1 项通过")).toBeInTheDocument();
+    expect(within(gitPanel).getByText("reviewer-agent - Looks good.")).toBeInTheDocument();
+    expect(within(gitPanel).getByText("main - passed")).toBeInTheDocument();
+    expect(within(gitPanel).getByText("diff --git a/SessionWorkspace.tsx b/SessionWorkspace.tsx")).toBeInTheDocument();
+    expect(within(gitPanel).getAllByText("1 个文件").length).toBeGreaterThan(0);
+    await user.click(within(gitPanel).getByRole("button", { name: "刷新状态" }));
     expect(onRefreshWorktree).toHaveBeenCalledWith("wt_1");
   });
 
@@ -1645,27 +1672,28 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    const panel = screen.getByLabelText("Task worktree");
-    expect(within(panel).getByText("agent/task_1")).toBeInTheDocument();
-    expect(within(panel).getByText("D:/py/yuanbao_agent.worktrees/task_1")).toBeInTheDocument();
-    expect(within(panel).getByText("1 dirty file")).toBeInTheDocument();
+    const tools = screen.getByLabelText("工作区工具");
+    await user.click(within(tools).getByRole("tab", { name: /Git/ }));
+    const panel = within(tools).getByLabelText("Git 工作区");
+    expect(within(panel).getByRole("heading", { name: "agent/task_1" })).toBeInTheDocument();
+    expect(within(panel).getAllByText("D:/py/yuanbao_agent.worktrees/task_1").length).toBeGreaterThan(0);
+    expect(within(panel).getByText("1 个未提交文件")).toBeInTheDocument();
     expect(within(panel).getByText("app/src/App.tsx | 12 ++++++++++++")).toBeInTheDocument();
-    expect(within(panel).getByText("1 passed")).toBeInTheDocument();
-    expect(within(panel).getByText("passed - npm test")).toBeInTheDocument();
+    expect(within(panel).getByText("1 项通过")).toBeInTheDocument();
+    expect(within(panel).getAllByText("npm test").length).toBeGreaterThan(0);
     expect(within(panel).getAllByText("approved")).toHaveLength(2);
     expect(within(panel).getByText("reviewer-agent - Looks good.")).toBeInTheDocument();
     expect(within(panel).getByText("main - passed")).toBeInTheDocument();
-    expect(within(panel).getByText("isolated_child_worktrees")).toBeInTheDocument();
 
-    await user.click(within(panel).getByRole("button", { name: "Refresh" }));
-    await user.click(within(panel).getByRole("button", { name: "Diff" }));
-    await user.click(within(panel).getByRole("button", { name: "Request merge" }));
+    await user.click(within(panel).getByRole("button", { name: "刷新状态" }));
+    await user.click(within(panel).getByRole("button", { name: "查看差异" }));
+    await user.click(within(panel).getByRole("button", { name: "合并申请" }));
 
     expect(onRefreshWorktree).toHaveBeenCalledWith("wt_1");
     expect(onLoadWorktreeDiff).toHaveBeenCalledWith("wt_1");
     expect(onMergeWorktree).not.toHaveBeenCalled();
-    expect(within(panel).getByRole("button", { name: "Request merge" })).toBeDisabled();
-    expect(within(panel).getByRole("button", { name: "Cleanup" })).toBeDisabled();
+    expect(within(panel).getByRole("button", { name: "合并申请" })).toBeDisabled();
+    expect(within(panel).getByRole("button", { name: "清理" })).toBeDisabled();
     expect(onCleanupWorktree).not.toHaveBeenCalled();
   });
 
@@ -1698,8 +1726,10 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    const panel = screen.getByLabelText("Task worktree");
-    const mergeButton = within(panel).getByRole("button", { name: "Request merge" });
+    const tools = screen.getByLabelText("工作区工具");
+    await user.click(within(tools).getByRole("tab", { name: /Git/ }));
+    const panel = within(tools).getByLabelText("Git 工作区");
+    const mergeButton = within(panel).getByRole("button", { name: "合并申请" });
 
     expect(mergeButton).toBeEnabled();
     await user.click(mergeButton);

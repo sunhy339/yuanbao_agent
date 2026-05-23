@@ -141,11 +141,12 @@ describe("SessionWorkspace", () => {
     expect(within(digest).getByText("1 个改动文件")).toBeInTheDocument();
     expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
     const workspaceTools = screen.getByLabelText("工作区工具");
-    expect(within(workspaceTools).getByText("文件")).toBeInTheDocument();
     expect(within(workspaceTools).getByText("审查")).toBeInTheDocument();
     expect(within(workspaceTools).getByText("终端")).toBeInTheDocument();
     expect(within(workspaceTools).getByText("Git")).toBeInTheDocument();
-    expect(within(workspaceTools).getByText("任务相关文件")).toBeInTheDocument();
+    const fileWorkspace = screen.getByLabelText("文件工作区");
+    expect(within(fileWorkspace).getByLabelText("文件浏览器")).toBeInTheDocument();
+    expect(within(fileWorkspace).getByText("任务相关文件")).toBeInTheDocument();
     const activityText = Array.from(container.querySelectorAll("[data-activity-kind]")).map((item) =>
       item.textContent ?? "",
     );
@@ -258,11 +259,11 @@ describe("SessionWorkspace", () => {
     );
 
     const tools = screen.getByLabelText("工作区工具");
-    expect(within(tools).getByRole("tab", { name: /文件/ })).toHaveAttribute("aria-selected", "true");
-    expect(within(tools).getByText("任务相关文件")).toBeInTheDocument();
-    expect(within(tools).getAllByText(/SessionWorkspace\.tsx/).length).toBeGreaterThan(0);
+    const fileWorkspace = screen.getByLabelText("文件工作区");
+    expect(within(fileWorkspace).getByText("任务相关文件")).toBeInTheDocument();
+    expect(within(fileWorkspace).getAllByText(/SessionWorkspace\.tsx/).length).toBeGreaterThan(0);
 
-    await user.click(within(tools).getByRole("tab", { name: /审查/ }));
+    expect(within(tools).getByRole("tab", { name: /审查/ })).toHaveAttribute("aria-selected", "true");
     expect(within(tools).getByText("代码审查")).toBeInTheDocument();
     expect(within(tools).getByText("1 file changed, 12 insertions(+), 4 deletions(-)")).toBeInTheDocument();
     await user.click(within(tools).getByRole("button", { name: "打开补丁" }));
@@ -292,6 +293,29 @@ describe("SessionWorkspace", () => {
 
     expect(screen.getByRole("heading", { name: "还没有消息" })).toBeInTheDocument();
     expect(screen.getByText(/发送第一条消息/)).toBeInTheDocument();
+  });
+
+  it("toggles the file workspace focus mode", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        composerContext={{
+          cwd: "D:/py/yuanbao_agent",
+          branch: "main",
+          model: "gpt-5.4",
+          permissionMode: "bypass",
+        }}
+        messages={[{ id: "m1", role: "user", content: "Open files.", createdAt: 1 }]}
+      />,
+    );
+
+    expect(container.querySelector(".session-workspace-files-focused")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "专注文件" }));
+    expect(container.querySelector(".session-workspace-files-focused")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "退出专注" }));
+    expect(container.querySelector(".session-workspace-files-focused")).not.toBeInTheDocument();
   });
 
   it("shows streaming progress on the assistant bubble without a duplicate live pill", () => {

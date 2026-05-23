@@ -324,6 +324,7 @@ async function sendPromptThroughUi(prompt: string) {
 
 async function runUiSmokeFlow(workspacePath?: string) {
   const assertions: string[] = [];
+  const client = new RuntimeClient();
 
   await waitFor("workbench shell", () => query(WORKBENCH_SHELL_SELECTOR));
   assertText("总览");
@@ -350,6 +351,30 @@ async function runUiSmokeFlow(workspacePath?: string) {
   await waitFor("new session workspace", () => query(".new-session-workspace"));
   await waitFor("command composer after returning", () => query('textarea[aria-label="任务指令"]'));
   assertions.push("top-level navigation returns to new session");
+
+  if (workspacePath) {
+    await applyWorkspaceThroughUi(workspacePath);
+    const fileList = await client.workspaceFileList({ workspaceRoot: workspacePath, path: "", maxEntries: 50 });
+    if (!fileList.entries.length) {
+      throw new Error("Workspace file list returned no entries.");
+    }
+    const readableFile = fileList.entries.find((entry) => entry.kind === "file" && /\.(md|txt|json|py|ts|tsx)$/i.test(entry.name));
+    if (readableFile) {
+      const fileRead = await client.workspaceFileRead({
+        workspaceRoot: workspacePath,
+        path: readableFile.path,
+        maxBytes: 4096,
+      });
+      if (fileRead.binary || fileRead.content === undefined) {
+        throw new Error(`Expected readable text content for ${readableFile.path}.`);
+      }
+    }
+    click('button[aria-label="创建会话"]', "create session from applied workspace");
+    await waitFor("session workspace after file workspace check", () => query(".session-workspace:not(.session-workspace-empty)"));
+    assertElement(".session-file-workspace", "session file workspace panel");
+    assertions.push("workspace file list/read bridge works");
+    assertions.push("session file workspace renders");
+  }
 
   await finish({
     ok: true,

@@ -69,6 +69,8 @@ export type RpcMethod =
   | "workspace.focus.update"
   | "workspace.memory.clear"
   | "workspace.memory.init"
+  | "workspace.fileList"
+  | "workspace.fileRead"
   | "session.create"
   | "session.get"
   | "session.list"
@@ -153,6 +155,45 @@ export interface WorkspaceMemoryInitParams {
 export interface WorkspaceFocusUpdateParams {
   workspaceId: Identifier;
   focus?: string | null;
+}
+
+export type WorkspaceFileEntryKind = "file" | "directory";
+
+export interface WorkspaceFileEntry {
+  name: string;
+  path: string;
+  kind: WorkspaceFileEntryKind;
+  size?: number;
+  modifiedAt?: number | null;
+}
+
+export interface WorkspaceFileListParams {
+  workspaceRoot: string;
+  path?: string;
+  maxEntries?: number;
+}
+
+export interface WorkspaceFileListResult {
+  rootPath: string;
+  path: string;
+  entries: WorkspaceFileEntry[];
+  truncated?: boolean;
+}
+
+export interface WorkspaceFileReadParams {
+  workspaceRoot: string;
+  path: string;
+  maxBytes?: number;
+}
+
+export interface WorkspaceFileReadResult {
+  rootPath: string;
+  path: string;
+  content?: string;
+  bytes: number;
+  truncated: boolean;
+  binary: boolean;
+  encoding?: string;
 }
 
 export interface SessionCreateParams {

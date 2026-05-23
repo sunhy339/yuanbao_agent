@@ -108,6 +108,10 @@ import type {
   WorktreeMergeParams,
   WorktreeMergeResult,
   WorktreeStatusResult,
+  WorkspaceFileListParams,
+  WorkspaceFileListResult,
+  WorkspaceFileReadParams,
+  WorkspaceFileReadResult,
   WorkspaceFocusUpdateParams,
   WorkspaceFocusUpdateResult,
   WorkspaceMemoryInitParams,
@@ -436,6 +440,14 @@ export class RuntimeClient {
 
   async listMessages(payload: MessageListParams): Promise<MessageListResult> {
     return invokePayloadOrReject<MessageListResult>("message_list", payload);
+  }
+
+  async workspaceFileList(payload: WorkspaceFileListParams): Promise<WorkspaceFileListResult> {
+    return invokePayloadOrReject<WorkspaceFileListResult>("workspace_file_list", payload);
+  }
+
+  async workspaceFileRead(payload: WorkspaceFileReadParams): Promise<WorkspaceFileReadResult> {
+    return invokePayloadOrReject<WorkspaceFileReadResult>("workspace_file_read", payload);
   }
 
   async approvalSubmit(payload: ApprovalSubmitParams): Promise<ApprovalSubmitResult> {

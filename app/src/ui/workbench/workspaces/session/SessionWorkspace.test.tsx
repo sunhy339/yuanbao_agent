@@ -138,7 +138,7 @@ describe("SessionWorkspace", () => {
     expect(within(workspaceTools).getByText("审查")).toBeInTheDocument();
     expect(within(workspaceTools).getByText("终端")).toBeInTheDocument();
     expect(within(workspaceTools).getByText("Git")).toBeInTheDocument();
-    expect(within(workspaceTools).getByText(/1 个待审文件/)).toBeInTheDocument();
+    expect(within(workspaceTools).getByText("任务相关文件")).toBeInTheDocument();
     const activityText = Array.from(container.querySelectorAll("[data-activity-kind]")).map((item) =>
       item.textContent ?? "",
     );
@@ -149,6 +149,108 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByRole("heading", { name: "Runtime shelf" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Collaboration" })).not.toBeInTheDocument();
     expect(screen.getByText("MiniMax-M2.7-highspeed")).toBeInTheDocument();
+  });
+
+  it("switches workspace tool panels with useful file, review, command, and git details", async () => {
+    const user = userEvent.setup();
+    const onLoadPatch = vi.fn();
+    const onLoadWorktreeDiff = vi.fn();
+    const onRefreshWorktree = vi.fn();
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_1",
+          status: "running",
+          goal: "Patch the session workspace",
+          changedFiles: [
+            {
+              path: "app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx",
+              status: "modified",
+              additions: 18,
+              deletions: 4,
+            },
+          ],
+          commands: [
+            {
+              id: "cmd_1",
+              command: "npm run typecheck",
+              status: "completed",
+              exitCode: 0,
+              durationMs: 1200,
+              summary: "Typecheck passed.",
+            },
+          ],
+          activeWorktree: {
+            id: "wt_1",
+            taskId: "task_1",
+            branchName: "agent/task_1",
+            baseRef: "HEAD",
+            worktreePath: "D:/py/yuanbao_agent.worktrees/task_1",
+            status: "active",
+            mergePolicy: "approval_required",
+            cleanupPolicy: "ask_user",
+          },
+        }}
+        composerContext={{
+          cwd: "D:/py/yuanbao_agent",
+          branch: "feat/dev-desktop",
+          model: "gpt-5.4",
+          permissionMode: "bypass",
+        }}
+        messages={[{ id: "m1", role: "user", content: "Check the workspace.", createdAt: 1 }]}
+        patches={[
+          {
+            id: "patch_1",
+            summary: "Updated session layout",
+            status: "applied",
+            filesChanged: 1,
+            additions: 12,
+            deletions: 4,
+            files: [
+              {
+                path: "app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx",
+                status: "modified",
+              },
+            ],
+          },
+        ]}
+        worktreeStatus={{
+          dirtyFiles: 1,
+          files: ["M app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx"],
+        }}
+        worktreeDiff={{
+          diffStat: "1 file changed, 12 insertions(+), 4 deletions(-)",
+          preview: "diff --git a/SessionWorkspace.tsx b/SessionWorkspace.tsx",
+        }}
+        onLoadPatch={onLoadPatch}
+        onLoadWorktreeDiff={onLoadWorktreeDiff}
+        onRefreshWorktree={onRefreshWorktree}
+      />,
+    );
+
+    const tools = screen.getByLabelText("工作区工具");
+    expect(within(tools).getByRole("tab", { name: /文件/ })).toHaveAttribute("aria-selected", "true");
+    expect(within(tools).getByText("任务相关文件")).toBeInTheDocument();
+    expect(within(tools).getAllByText(/SessionWorkspace\.tsx/).length).toBeGreaterThan(0);
+
+    await user.click(within(tools).getByRole("tab", { name: /审查/ }));
+    expect(within(tools).getByText("代码审查")).toBeInTheDocument();
+    expect(within(tools).getByText("1 file changed, 12 insertions(+), 4 deletions(-)")).toBeInTheDocument();
+    await user.click(within(tools).getByRole("button", { name: "打开补丁" }));
+    expect(onLoadPatch).toHaveBeenCalledWith("patch_1");
+
+    await user.click(within(tools).getByRole("tab", { name: /终端/ }));
+    expect(within(tools).getAllByText("命令与验证").length).toBeGreaterThan(0);
+    expect(within(tools).getAllByText("npm run typecheck").length).toBeGreaterThan(0);
+    expect(within(tools).getByText("Typecheck passed.")).toBeInTheDocument();
+
+    await user.click(within(tools).getByRole("tab", { name: /Git/ }));
+    expect(within(tools).getByText("Git 状态")).toBeInTheDocument();
+    expect(within(tools).getByText("1 个文件")).toBeInTheDocument();
+    await user.click(within(tools).getByRole("button", { name: "状态" }));
+    expect(onRefreshWorktree).toHaveBeenCalledWith("wt_1");
   });
 
   it("renders a message empty state inside the conversation area", () => {

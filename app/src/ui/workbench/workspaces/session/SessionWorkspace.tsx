@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { WorkspaceFileEntry, WorkspaceFileReadResult } from "@shared";
+import { RuntimeClient } from "../../../../lib/runtimeClient";
 import { Button, StatusBadge } from "../../../v2/components/ui";
 import { formatStatusLabel } from "../../../copy";
 import type { SessionWorkspaceProps, RuntimeTimelineItem } from "./types";
@@ -21,6 +23,9 @@ import { TraceFilterBar } from "./TraceFilterBar";
 import { WorktreePanel } from "./WorktreePanel";
 import { isChatVisibleEvent } from "./visibilityRouting";
 import "./session.css";
+
+const workspaceFileClient = new RuntimeClient();
+const WORKSPACE_PREVIEW_MAX_BYTES = 64 * 1024;
 
 // Re-export types for backward compatibility with external consumers
 export type {
@@ -65,6 +70,49 @@ function uniqueNonEmptyStrings(values: Array<string | null | undefined>) {
     result.push(normalized);
   });
   return result;
+}
+
+function normalizeWorkspaceRelativePath(path: string) {
+  return path
+    .replace(/\\/g, "/")
+    .replace(/^[MADRCU?!]{1,2}\s+/, "")
+    .replace(/^"(.+)"$/, "$1")
+    .trim();
+}
+
+function parentWorkspacePath(path: string) {
+  const normalized = normalizeWorkspaceRelativePath(path);
+  const index = normalized.lastIndexOf("/");
+  return index > 0 ? normalized.slice(0, index) : "";
+}
+
+function fileNameFromPath(path: string) {
+  const normalized = normalizeWorkspaceRelativePath(path);
+  return normalized.split("/").filter(Boolean).at(-1) || normalized || ".";
+}
+
+function formatFileSize(bytes?: number | null) {
+  if (bytes === undefined || bytes === null) {
+    return "";
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function canUseTauriInvoke() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  const bridgeWindow = window as typeof window & {
+    __TAURI__?: unknown;
+    __TAURI_INTERNALS__?: unknown;
+  };
+  return Boolean(bridgeWindow.__TAURI__ || bridgeWindow.__TAURI_INTERNALS__);
 }
 
 function RuntimeLanePatchDetail({ item, isBusy }: { item: RuntimeTimelineItem; isBusy: boolean }) {
@@ -217,7 +265,21 @@ function RuntimeLaneSummaryRow({
   );
 }
 
-function SessionToolDock({
+type SessionToolKey = "files" | "review" | "terminal" | "git" | "browser" | "side-chat";
+
+interface SessionToolCommand {
+  id?: string;
+  command: string;
+  cwd?: string;
+  status?: string;
+  summary?: string;
+  durationMs?: number | null;
+  exitCode?: number | null;
+  stdoutPath?: string | null;
+  stderrPath?: string | null;
+}
+
+function SessionWorkspaceToolDock({
   activeTask,
   patches,
   backgroundJobs,
@@ -226,6 +288,8 @@ function SessionToolDock({
   worktreeBusyAction,
   composerContext,
   onLoadPatch,
+  onRefreshCommandJob,
+  onStopCommandJob,
   onRefreshWorktree,
   onLoadWorktreeDiff,
   onMergeWorktree,
@@ -240,17 +304,34 @@ function SessionToolDock({
   worktreeBusyAction?: SessionWorkspaceProps["worktreeBusyAction"];
   composerContext?: SessionWorkspaceProps["composerContext"];
   onLoadPatch?: SessionWorkspaceProps["onLoadPatch"];
+  onRefreshCommandJob?: SessionWorkspaceProps["onRefreshCommandJob"];
+  onStopCommandJob?: SessionWorkspaceProps["onStopCommandJob"];
   onRefreshWorktree?: SessionWorkspaceProps["onRefreshWorktree"];
   onLoadWorktreeDiff?: SessionWorkspaceProps["onLoadWorktreeDiff"];
   onMergeWorktree?: SessionWorkspaceProps["onMergeWorktree"];
   onCleanupWorktree?: SessionWorkspaceProps["onCleanupWorktree"];
   busyId?: string | null;
 }) {
+  const [activeTool, setActiveTool] = useState<SessionToolKey>("files");
+  const [filePath, setFilePath] = useState("");
+  const [fileEntries, setFileEntries] = useState<WorkspaceFileEntry[]>([]);
+  const [filePreview, setFilePreview] = useState<WorkspaceFileReadResult | null>(null);
+  const [fileBusy, setFileBusy] = useState<"list" | "read" | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [fileBrowserPrimed, setFileBrowserPrimed] = useState(false);
+  const canBrowseFiles = canUseTauriInvoke();
+  const activeWorktree = activeTask?.activeWorktree;
+  const workspacePath = composerContext?.cwd || activeWorktree?.worktreePath || "";
+  const branchName = composerContext?.branch || activeWorktree?.branchName || "未识别分支";
+  const workspaceLabel = workspacePath || "当前会话未提供工作目录";
+
   const relatedFiles = uniqueNonEmptyStrings([
     ...(activeTask?.changedFiles?.map((file) => file.path) ?? []),
     ...((patches ?? []).flatMap((patch) => patch.files?.map((file) => file.path) ?? [])),
     ...(worktreeStatus?.files ?? []),
-  ]);
+  ]).map(normalizeWorkspaceRelativePath);
+  const normalizedRelatedFiles = uniqueNonEmptyStrings(relatedFiles);
+
   const patchStats = (patches ?? []).reduce(
     (stats, patch) => ({
       additions: stats.additions + (patch.additions ?? 0),
@@ -267,153 +348,440 @@ function SessionToolDock({
   );
   const additions = patchStats.additions || taskPatchStats.additions;
   const deletions = patchStats.deletions || taskPatchStats.deletions;
-  const commandItems = [
-    ...(activeTask?.commands ?? []),
-    ...(activeTask?.verification?.map((verification) => ({
-      command: verification.command ?? "verification",
-      status: verification.status,
-      summary: verification.summary,
-    })) ?? []),
-    ...(backgroundJobs ?? []),
-  ];
-  const latestCommand = commandItems.at(-1);
-  const firstPatchId = patches?.[0]?.id;
-  const activeWorktree = activeTask?.activeWorktree;
-  const dirtyFiles = worktreeStatus?.dirtyFiles ?? relatedFiles.length;
-  const branchName = composerContext?.branch || activeTask?.activeWorktree?.branchName || "未识别分支";
-  const workspacePath =
-    composerContext?.cwd || activeTask?.activeWorktree?.worktreePath || "当前会话未提供工作目录";
   const patchCount = (patches?.length ?? 0) + (activeTask?.changedFiles?.length ? 1 : 0);
+  const firstPatchId = patches?.[0]?.id;
+  const dirtyFiles = worktreeStatus?.dirtyFiles ?? normalizedRelatedFiles.length;
   const diffLoaded = Boolean(
     worktreeDiff && !worktreeDiff.error && (worktreeDiff.diffStat || worktreeDiff.diff || worktreeDiff.files?.length),
   );
   const canRequestMerge = Boolean(activeWorktree && onMergeWorktree && diffLoaded && dirtyFiles === 0);
   const canCleanup = Boolean(activeWorktree && onCleanupWorktree && dirtyFiles === 0);
+  const commandItems: SessionToolCommand[] = [
+    ...(activeTask?.commands?.map((command) => ({ ...command })) ?? []),
+    ...(activeTask?.verification?.map((verification) => ({
+      id: verification.id,
+      command: verification.command ?? "verification",
+      status: verification.status,
+      summary: verification.summary,
+      durationMs: verification.durationMs,
+      exitCode: verification.exitCode,
+    })) ?? []),
+    ...(backgroundJobs?.map((job) => ({ ...job })) ?? []),
+  ];
+  const latestCommand = commandItems.at(-1);
+  const latestDiffPreview = worktreeDiff?.preview || worktreeDiff?.diff || "";
+  const toolTabs: Array<{ id: SessionToolKey; label: string; description: string; count?: number }> = [
+    { id: "files", label: "文件", description: "浏览项目文件", count: normalizedRelatedFiles.length || fileEntries.length },
+    { id: "review", label: "审查", description: "查看代码改动", count: patchCount },
+    { id: "terminal", label: "终端", description: "命令与验证", count: commandItems.length },
+    { id: "git", label: "Git", description: "分支与提交", count: dirtyFiles },
+    { id: "browser", label: "浏览器", description: "预览入口" },
+    { id: "side-chat", label: "侧聊", description: "独立上下文" },
+  ];
+
+  const loadDirectory = useCallback(
+    async (path: string) => {
+      if (!workspacePath || !canBrowseFiles) {
+        return;
+      }
+      setFileBusy("list");
+      setFileError(null);
+      try {
+        const result = await workspaceFileClient.workspaceFileList({
+          workspaceRoot: workspacePath,
+          path,
+          maxEntries: 200,
+        });
+        setFilePath(result.path);
+        setFileEntries(result.entries);
+        setFilePreview(null);
+      } catch (error) {
+        setFileError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setFileBusy(null);
+      }
+    },
+    [canBrowseFiles, workspacePath],
+  );
+
+  const loadFile = useCallback(
+    async (path: string) => {
+      if (!workspacePath || !canBrowseFiles) {
+        return;
+      }
+      const normalizedPath = normalizeWorkspaceRelativePath(path);
+      setFileBusy("read");
+      setFileError(null);
+      try {
+        const result = await workspaceFileClient.workspaceFileRead({
+          workspaceRoot: workspacePath,
+          path: normalizedPath,
+          maxBytes: WORKSPACE_PREVIEW_MAX_BYTES,
+        });
+        setFilePreview(result);
+        setFilePath(parentWorkspacePath(normalizedPath));
+      } catch (error) {
+        setFileError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setFileBusy(null);
+      }
+    },
+    [canBrowseFiles, workspacePath],
+  );
+
+  useEffect(() => {
+    setFileBrowserPrimed(false);
+    setFilePath("");
+    setFileEntries([]);
+    setFilePreview(null);
+    setFileError(null);
+  }, [workspacePath]);
+
+  useEffect(() => {
+    if (activeTool !== "files" || fileBrowserPrimed || !workspacePath || !canBrowseFiles) {
+      return;
+    }
+    setFileBrowserPrimed(true);
+    void loadDirectory("");
+  }, [activeTool, canBrowseFiles, fileBrowserPrimed, loadDirectory, workspacePath]);
 
   return (
-    <section className="session-tool-dock" aria-label="工作区工具">
+    <section className="session-tool-dock session-tool-dock-live" aria-label="工作区工具">
       <header className="session-tool-dock-header">
         <div>
           <p className="session-kicker">工作区</p>
-          <h2>工具与状态</h2>
+          <h2>工具</h2>
         </div>
-        <span>{branchName}</span>
+        <span title={branchName}>{branchName}</span>
       </header>
-      <article className="session-tool-card" data-tool="files">
-        <span className="session-tool-icon" aria-hidden="true" />
-        <strong>文件</strong>
-        <small>{relatedFiles.length ? `${relatedFiles.length} 个相关文件` : compactText(workspacePath, 34)}</small>
-        {relatedFiles.length ? (
-          <ul>
-            {relatedFiles.slice(0, 3).map((path) => (
-              <li key={path}>{path}</li>
-            ))}
-          </ul>
+
+      <nav className="session-tool-tabs" role="tablist" aria-label="工作区工具类型">
+        {toolTabs.map((tab) => (
+          <button
+            key={tab.id}
+            aria-selected={activeTool === tab.id}
+            className="session-tool-tab"
+            data-tool={tab.id}
+            onClick={() => setActiveTool(tab.id)}
+            role="tab"
+            type="button"
+          >
+            <span className="session-tool-icon" aria-hidden="true" />
+            <span>
+              <strong>{tab.label}</strong>
+              <small>{tab.description}</small>
+            </span>
+            {tab.count ? <em>{tab.count}</em> : null}
+          </button>
+        ))}
+      </nav>
+
+      <div className="session-tool-panel" role="tabpanel">
+        {activeTool === "files" ? (
+          <>
+            <div className="session-tool-panel-header">
+              <div>
+                <strong>文件浏览</strong>
+                <small title={workspaceLabel}>{compactText(workspaceLabel, 54)}</small>
+              </div>
+              <Button
+                size="xs"
+                variant="secondary"
+                disabled={!workspacePath || !canBrowseFiles}
+                loading={fileBusy === "list"}
+                onClick={() => {
+                  void loadDirectory(filePath);
+                }}
+              >
+                刷新
+              </Button>
+            </div>
+            {!canBrowseFiles ? (
+              <p className="session-tool-muted">桌面运行时中可浏览目录；当前预览先显示任务关联文件。</p>
+            ) : null}
+            {fileError ? <p className="session-tool-error">{fileError}</p> : null}
+            <div className="session-file-browser">
+              <div className="session-file-tree">
+                <div className="session-file-bar">
+                  <Button
+                    size="xs"
+                    variant="secondary"
+                    disabled={!canBrowseFiles || !filePath}
+                    onClick={() => {
+                      void loadDirectory(parentWorkspacePath(filePath));
+                    }}
+                  >
+                    上级
+                  </Button>
+                  <code>{filePath || "."}</code>
+                </div>
+                {fileEntries.length ? (
+                  <ul>
+                    {fileEntries.map((entry) => (
+                      <li key={`${entry.kind}:${entry.path}`}>
+                        <button
+                          onClick={() => {
+                            if (entry.kind === "directory") {
+                              void loadDirectory(entry.path);
+                            } else {
+                              void loadFile(entry.path);
+                            }
+                          }}
+                          type="button"
+                        >
+                          <span data-kind={entry.kind} aria-hidden="true" />
+                          <strong>{entry.name}</strong>
+                          <small>{entry.kind === "directory" ? "目录" : formatFileSize(entry.size)}</small>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="session-tool-muted">还没有目录条目。</p>
+                )}
+              </div>
+              <div className="session-file-preview">
+                <strong>{filePreview ? filePreview.path : "文件预览"}</strong>
+                {filePreview ? (
+                  filePreview.binary ? (
+                    <p className="session-tool-muted">这是二进制文件，已跳过文本预览。</p>
+                  ) : (
+                    <pre>{filePreview.content || ""}</pre>
+                  )
+                ) : (
+                  <p className="session-tool-muted">选择文件后预览前 64KB 文本内容。</p>
+                )}
+                {filePreview?.truncated ? <small>内容已截断</small> : null}
+              </div>
+            </div>
+            <div className="session-related-files">
+              <strong>任务相关文件</strong>
+              {normalizedRelatedFiles.length ? (
+                <ul>
+                  {normalizedRelatedFiles.slice(0, 8).map((path) => (
+                    <li key={path}>
+                      <button
+                        disabled={!canBrowseFiles || !workspacePath}
+                        onClick={() => {
+                          void loadFile(path);
+                        }}
+                        type="button"
+                      >
+                        <span>{fileNameFromPath(path)}</span>
+                        <small>{path}</small>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="session-tool-muted">本轮还没有记录关联文件。</p>
+              )}
+            </div>
+          </>
         ) : null}
-      </article>
-      <article className="session-tool-card" data-tool="review">
-        <span className="session-tool-icon" aria-hidden="true" />
-        <strong>审查</strong>
-        <small>
-          {patchCount ? `${patchCount} 个变更记录` : "等待代码变更"}
-          {additions || deletions ? ` · +${additions} -${deletions}` : ""}
-        </small>
-        <div className="session-tool-actions">
-          {firstPatchId && onLoadPatch ? (
-            <Button
-              size="xs"
-              variant="secondary"
-              loading={busyId === firstPatchId}
-              onClick={() => {
-                void onLoadPatch(firstPatchId);
-              }}
-            >
-              打开补丁
-            </Button>
-          ) : null}
-          {activeWorktree && onLoadWorktreeDiff ? (
-            <Button
-              size="xs"
-              variant="secondary"
-              loading={worktreeBusyAction === "diff"}
-              onClick={() => {
-                void onLoadWorktreeDiff(activeWorktree.id);
-              }}
-            >
-              查看差异
-            </Button>
-          ) : null}
-        </div>
-      </article>
-      <article className="session-tool-card" data-tool="terminal">
-        <span className="session-tool-icon" aria-hidden="true" />
-        <strong>终端</strong>
-        <small>{commandItems.length ? `${commandItems.length} 条命令` : "还没有命令"}</small>
-        {latestCommand ? (
-          <p>
-            {compactText(latestCommand.command, 36)}
-            {latestCommand.status ? ` · ${formatStatusLabel(latestCommand.status)}` : ""}
-          </p>
+
+        {activeTool === "review" ? (
+          <>
+            <div className="session-tool-panel-header">
+              <div>
+                <strong>代码审查</strong>
+                <small>{patchCount ? `${patchCount} 个改动记录` : "等待代码变更"}</small>
+              </div>
+              <span className="session-tool-diff-stat">+{additions} -{deletions}</span>
+            </div>
+            <div className="session-tool-actions">
+              {firstPatchId && onLoadPatch ? (
+                <Button
+                  size="xs"
+                  variant="secondary"
+                  loading={busyId === firstPatchId}
+                  onClick={() => {
+                    void onLoadPatch(firstPatchId);
+                  }}
+                >
+                  打开补丁
+                </Button>
+              ) : null}
+              {activeWorktree && onLoadWorktreeDiff ? (
+                <Button
+                  size="xs"
+                  variant="secondary"
+                  loading={worktreeBusyAction === "diff"}
+                  onClick={() => {
+                    void onLoadWorktreeDiff(activeWorktree.id, Boolean(worktreeDiff?.truncated));
+                  }}
+                >
+                  {worktreeDiff?.truncated ? "加载完整差异" : "查看差异"}
+                </Button>
+              ) : null}
+            </div>
+            {normalizedRelatedFiles.length ? (
+              <ul className="session-tool-list">
+                {normalizedRelatedFiles.slice(0, 10).map((path) => (
+                  <li key={path}>
+                    <strong>{fileNameFromPath(path)}</strong>
+                    <small>{path}</small>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {worktreeDiff?.error ? <p className="session-tool-error">{worktreeDiff.error}</p> : null}
+            {worktreeDiff?.diffStat ? <p className="session-tool-muted">{worktreeDiff.diffStat}</p> : null}
+            {latestDiffPreview ? <pre className="session-tool-code-preview">{latestDiffPreview.slice(0, 5000)}</pre> : null}
+          </>
         ) : null}
-      </article>
-      <article className="session-tool-card" data-tool="git">
-        <span className="session-tool-icon" aria-hidden="true" />
-        <strong>Git</strong>
-        <small>{dirtyFiles ? `${dirtyFiles} 个待审文件` : "工作区干净或未扫描"}</small>
-        <p>{compactText(branchName, 36)}</p>
-        {activeWorktree ? (
-          <div className="session-tool-actions">
-            {onRefreshWorktree ? (
-              <Button
-                size="xs"
-                variant="secondary"
-                loading={worktreeBusyAction === "status"}
-                onClick={() => {
-                  void onRefreshWorktree(activeWorktree.id);
-                }}
-              >
-                状态
-              </Button>
-            ) : null}
-            {onMergeWorktree ? (
-              <Button
-                size="xs"
-                variant="secondary"
-                loading={worktreeBusyAction === "requestMergeApproval" || worktreeBusyAction === "merge"}
-                disabled={!canRequestMerge}
-                onClick={() => {
-                  void onMergeWorktree(activeWorktree.id);
-                }}
-              >
-                合并申请
-              </Button>
-            ) : null}
-            {onCleanupWorktree ? (
-              <Button
-                size="xs"
-                variant="secondary"
-                loading={worktreeBusyAction === "cleanup"}
-                disabled={!canCleanup}
-                onClick={() => {
-                  void onCleanupWorktree(activeWorktree.id, false);
-                }}
-              >
-                清理
-              </Button>
-            ) : null}
+
+        {activeTool === "terminal" ? (
+          <>
+            <div className="session-tool-panel-header">
+              <div>
+                <strong>命令与验证</strong>
+                <small>{latestCommand ? compactText(latestCommand.command, 58) : "还没有运行命令"}</small>
+              </div>
+            </div>
+            {commandItems.length ? (
+              <ul className="session-tool-command-list">
+                {commandItems.slice(-8).map((command, index) => (
+                  <li key={command.id ?? `${command.command}-${index}`} data-status={command.status ?? "recorded"}>
+                    <div>
+                      <strong>{command.command}</strong>
+                      <small>
+                        {command.status ? formatStatusLabel(command.status) : "已记录"}
+                        {command.exitCode !== undefined && command.exitCode !== null ? ` · exit ${command.exitCode}` : ""}
+                        {command.durationMs ? ` · ${command.durationMs}ms` : ""}
+                      </small>
+                    </div>
+                    {command.summary ? <p>{command.summary}</p> : null}
+                    {command.cwd ? <code>{command.cwd}</code> : null}
+                    {command.id && (onRefreshCommandJob || onStopCommandJob) ? (
+                      <div className="session-tool-actions">
+                        {onRefreshCommandJob ? (
+                          <Button
+                            size="xs"
+                            variant="secondary"
+                            onClick={() => {
+                              void onRefreshCommandJob(command.id ?? "");
+                            }}
+                          >
+                            刷新
+                          </Button>
+                        ) : null}
+                        {onStopCommandJob && command.status === "running" ? (
+                          <Button
+                            size="xs"
+                            variant="secondary"
+                            onClick={() => {
+                              void onStopCommandJob(command.id ?? "");
+                            }}
+                          >
+                            停止
+                          </Button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="session-tool-muted">命令运行后会在这里保留摘要。</p>
+            )}
+          </>
+        ) : null}
+
+        {activeTool === "git" ? (
+          <>
+            <div className="session-tool-panel-header">
+              <div>
+                <strong>Git 状态</strong>
+                <small>{compactText(branchName, 58)}</small>
+              </div>
+              <span className="session-tool-diff-stat">{dirtyFiles} 个文件</span>
+            </div>
+            <p className="session-tool-muted" title={workspaceLabel}>
+              {compactText(workspaceLabel, 80)}
+            </p>
+            <div className="session-tool-actions">
+              {activeWorktree && onRefreshWorktree ? (
+                <Button
+                  size="xs"
+                  variant="secondary"
+                  loading={worktreeBusyAction === "status"}
+                  onClick={() => {
+                    void onRefreshWorktree(activeWorktree.id);
+                  }}
+                >
+                  状态
+                </Button>
+              ) : null}
+              {activeWorktree && onLoadWorktreeDiff ? (
+                <Button
+                  size="xs"
+                  variant="secondary"
+                  loading={worktreeBusyAction === "diff"}
+                  onClick={() => {
+                    void onLoadWorktreeDiff(activeWorktree.id, true);
+                  }}
+                >
+                  差异
+                </Button>
+              ) : null}
+              {activeWorktree && onMergeWorktree ? (
+                <Button
+                  size="xs"
+                  variant="secondary"
+                  loading={worktreeBusyAction === "requestMergeApproval" || worktreeBusyAction === "merge"}
+                  disabled={!canRequestMerge}
+                  onClick={() => {
+                    void onMergeWorktree(activeWorktree.id);
+                  }}
+                >
+                  合并申请
+                </Button>
+              ) : null}
+              {activeWorktree && onCleanupWorktree ? (
+                <Button
+                  size="xs"
+                  variant="secondary"
+                  loading={worktreeBusyAction === "cleanup"}
+                  disabled={!canCleanup}
+                  onClick={() => {
+                    void onCleanupWorktree(activeWorktree.id, false);
+                  }}
+                >
+                  清理
+                </Button>
+              ) : null}
+            </div>
+            {worktreeStatus?.error ? <p className="session-tool-error">{worktreeStatus.error}</p> : null}
+            {worktreeStatus?.files?.length ? (
+              <ul className="session-tool-list">
+                {worktreeStatus.files.slice(0, 12).map((file) => (
+                  <li key={file}>
+                    <strong>{fileNameFromPath(file)}</strong>
+                    <small>{normalizeWorkspaceRelativePath(file)}</small>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="session-tool-muted">还没有 Git 扫描结果。</p>
+            )}
+          </>
+        ) : null}
+
+        {activeTool === "browser" ? (
+          <div className="session-tool-placeholder">
+            <strong>浏览器预览</strong>
+            <p>这里会放运行中的本地页面和打开网站入口，方便和主任务结果并排检查。</p>
           </div>
         ) : null}
-      </article>
-      <article className="session-tool-card session-tool-card-muted" data-tool="side-chat">
-        <span className="session-tool-icon" aria-hidden="true" />
-        <strong>侧边聊天</strong>
-        <small>入口待接入独立上下文</small>
-      </article>
-      <article className="session-tool-card session-tool-card-muted" data-tool="browser">
-        <span className="session-tool-icon" aria-hidden="true" />
-        <strong>浏览器</strong>
-        <small>入口待接入预览目标</small>
-      </article>
+
+        {activeTool === "side-chat" ? (
+          <div className="session-tool-placeholder">
+            <strong>侧边聊天</strong>
+            <p>这里会放独立上下文的辅助对话，不污染当前主任务链路。</p>
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -830,7 +1198,7 @@ export function SessionWorkspace({
         </section>
 
         <aside className="session-runtime-column" aria-label="运行态侧栏">
-          <SessionToolDock
+          <SessionWorkspaceToolDock
             activeTask={visibleActiveTask}
             patches={patches}
             backgroundJobs={backgroundJobs}
@@ -839,6 +1207,8 @@ export function SessionWorkspace({
             worktreeBusyAction={worktreeBusyAction}
             composerContext={composerContext}
             onLoadPatch={onLoadPatch}
+            onRefreshCommandJob={onRefreshCommandJob}
+            onStopCommandJob={onStopCommandJob}
             onRefreshWorktree={onRefreshWorktree}
             onLoadWorktreeDiff={onLoadWorktreeDiff}
             onMergeWorktree={onMergeWorktree}

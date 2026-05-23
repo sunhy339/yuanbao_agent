@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     env,
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
@@ -13,7 +13,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -206,6 +206,32 @@ struct CommandCancelPayload {
 #[serde(rename_all = "camelCase")]
 struct DiffGetPayload {
     patch_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceFileListPayload {
+    workspace_root: String,
+    path: Option<String>,
+    max_entries: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceFileReadPayload {
+    workspace_root: String,
+    path: String,
+    max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceFileEntryView {
+    name: String,
+    path: String,
+    kind: String,
+    size: Option<u64>,
+    modified_at: Option<u128>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -560,6 +586,49 @@ fn open_path_in_file_manager(path: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
+fn relative_path_string(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .ok()
+        .map(|relative| {
+            relative
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_default()
+}
+
+fn resolve_workspace_path(workspace_root: &str, relative_path: Option<&str>) -> Result<(PathBuf, PathBuf), String> {
+    let root = PathBuf::from(workspace_root)
+        .canonicalize()
+        .map_err(|reason| format!("Failed to resolve workspace root: {reason}"))?;
+    let raw_relative = relative_path.unwrap_or("").trim();
+    let target = if raw_relative.is_empty() || raw_relative == "." {
+        root.clone()
+    } else {
+        let relative = PathBuf::from(raw_relative);
+        if relative.is_absolute() {
+            return Err("Workspace file paths must be relative to the workspace root".to_string());
+        }
+        root.join(relative)
+            .canonicalize()
+            .map_err(|reason| format!("Failed to resolve workspace path: {reason}"))?
+    };
+    if target != root && !target.starts_with(&root) {
+        return Err("Workspace path is outside the selected workspace".to_string());
+    }
+    Ok((root, target))
+}
+
+fn file_modified_at_ms(metadata: &fs::Metadata) -> Option<u128> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis())
+}
+
 fn append_path_env(name: &str, first_path: &Path) -> Result<std::ffi::OsString, String> {
     let mut paths = vec![first_path.to_path_buf()];
     if let Some(existing) = env::var_os(name) {
@@ -686,6 +755,99 @@ async fn message_list(
         "message.list".to_string(),
         json!({ "sessionId": payload.session_id, "limit": payload.limit }),
     ).await
+}
+
+#[tauri::command]
+fn workspace_file_list(payload: WorkspaceFileListPayload) -> Result<Value, String> {
+    let (root, target) = resolve_workspace_path(&payload.workspace_root, payload.path.as_deref())?;
+    if !target.is_dir() {
+        return Err("Workspace path is not a directory".to_string());
+    }
+
+    let limit = payload.max_entries.unwrap_or(200).clamp(1, 500);
+    let mut entries = Vec::new();
+    let mut truncated = false;
+    for entry_result in fs::read_dir(&target).map_err(|reason| format!("Failed to read directory: {reason}"))? {
+        let entry = entry_result.map_err(|reason| format!("Failed to read directory entry: {reason}"))?;
+        if entries.len() >= limit {
+            truncated = true;
+            break;
+        }
+        let metadata = entry
+            .metadata()
+            .map_err(|reason| format!("Failed to read file metadata: {reason}"))?;
+        let kind = if metadata.is_dir() { "directory" } else { "file" };
+        entries.push(WorkspaceFileEntryView {
+            name: entry.file_name().to_string_lossy().to_string(),
+            path: relative_path_string(&root, &entry.path()),
+            kind: kind.to_string(),
+            size: if metadata.is_file() { Some(metadata.len()) } else { None },
+            modified_at: file_modified_at_ms(&metadata),
+        });
+    }
+    entries.sort_by(|left, right| {
+        let left_rank = if left.kind == "directory" { 0 } else { 1 };
+        let right_rank = if right.kind == "directory" { 0 } else { 1 };
+        left_rank
+            .cmp(&right_rank)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+
+    Ok(json!({
+        "rootPath": root.display().to_string(),
+        "path": relative_path_string(&root, &target),
+        "entries": entries,
+        "truncated": truncated,
+    }))
+}
+
+#[tauri::command]
+fn workspace_file_read(payload: WorkspaceFileReadPayload) -> Result<Value, String> {
+    let (root, target) = resolve_workspace_path(&payload.workspace_root, Some(&payload.path))?;
+    if !target.is_file() {
+        return Err("Workspace path is not a file".to_string());
+    }
+
+    let limit = payload.max_bytes.unwrap_or(64 * 1024).clamp(1, 256 * 1024);
+    let mut file = fs::File::open(&target).map_err(|reason| format!("Failed to open file: {reason}"))?;
+    let mut buffer = Vec::new();
+    std::io::Read::by_ref(&mut file)
+        .take((limit + 1) as u64)
+        .read_to_end(&mut buffer)
+        .map_err(|reason| format!("Failed to read file: {reason}"))?;
+    let truncated = buffer.len() > limit;
+    if truncated {
+        buffer.truncate(limit);
+    }
+    let bytes = buffer.len();
+    if buffer.iter().any(|byte| *byte == 0) {
+        return Ok(json!({
+            "rootPath": root.display().to_string(),
+            "path": relative_path_string(&root, &target),
+            "bytes": bytes,
+            "truncated": truncated,
+            "binary": true,
+        }));
+    }
+
+    match String::from_utf8(buffer) {
+        Ok(content) => Ok(json!({
+            "rootPath": root.display().to_string(),
+            "path": relative_path_string(&root, &target),
+            "content": content,
+            "bytes": bytes,
+            "truncated": truncated,
+            "binary": false,
+            "encoding": "utf-8",
+        })),
+        Err(_) => Ok(json!({
+            "rootPath": root.display().to_string(),
+            "path": relative_path_string(&root, &target),
+            "bytes": bytes,
+            "truncated": truncated,
+            "binary": true,
+        })),
+    }
 }
 
 #[tauri::command]
@@ -1464,6 +1626,8 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             session_list,
             message_send,
             message_list,
+            workspace_file_list,
+            workspace_file_read,
             task_get,
             task_cancel,
             task_pause,

@@ -422,6 +422,8 @@ export interface RuntimeTimelineItem {
   visibility?: "chat" | "panel" | "trace";
   taskId?: string;
   agentType?: string;
+  groupKey?: string;
+  superseded?: boolean;
 }
 
 export interface ToolRuntimePresentation {

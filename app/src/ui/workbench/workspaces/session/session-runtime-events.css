@@ -1,4 +1,4 @@
-.runtime-timeline-heading {
+﻿.runtime-timeline-heading {
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -41,8 +41,7 @@
 
 /* Final transcript polish: wider, calmer, and closer to a chronological chat log. */
 .session-workspace-chat-only .session-chat-header,
-.session-workspace-chat-only .session-console-heading,
-.session-workspace-chat-only .session-runtime-column {
+.session-workspace-chat-only .session-console-heading {
   display: none !important;
 }
 
@@ -148,12 +147,16 @@
 
 .session-workspace-chat-only .runtime-event-card,
 .session-workspace-chat-only .runtime-event-v2-card {
-  width: min(1000px, 86%);
+  width: min(860px, 88%);
   justify-self: start;
   border: 0;
   background: transparent;
   box-shadow: none;
   backdrop-filter: none;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card {
+  gap: 6px;
 }
 
 .session-workspace-chat-only .runtime-event-card::before,
@@ -167,8 +170,23 @@
   width: 100%;
   border: 1px solid rgba(15, 23, 42, 0.1) !important;
   border-radius: 9px;
-  background: rgba(255, 255, 255, 0.76) !important;
+  background: rgba(255, 255, 255, 0.92) !important;
   box-shadow: none;
+}
+
+.session-workspace-chat-only .runtime-process-card {
+  background: rgba(255, 255, 255, 0.84) !important;
+}
+
+.session-workspace-chat-only .runtime-process-card[data-status="completed"],
+.session-workspace-chat-only .runtime-process-card[data-status="succeeded"],
+.session-workspace-chat-only .runtime-process-card[data-status="passed"] {
+  border-color: rgba(22, 163, 74, 0.18) !important;
+}
+
+.session-workspace-chat-only .runtime-process-card[data-status="failed"],
+.session-workspace-chat-only .runtime-process-card[data-status="error"] {
+  border-color: rgba(225, 29, 72, 0.18) !important;
 }
 
 .session-workspace-chat-only .runtime-process-card[data-status],
@@ -177,11 +195,11 @@
 .session-workspace-chat-only .runtime-process-card[data-status="passed"],
 .session-workspace-chat-only .runtime-process-card[data-status="failed"],
 .session-workspace-chat-only .runtime-process-card[data-status="error"] {
-  background: rgba(255, 255, 255, 0.76) !important;
+  background: rgba(255, 255, 255, 0.9) !important;
 }
 
 .session-workspace-chat-only .worktree-panel {
-  width: min(1000px, 86%);
+  width: min(860px, 88%);
   justify-self: start;
   margin-bottom: 4px;
   box-shadow: none;
@@ -210,10 +228,10 @@
 
 .session-workspace-chat-only .runtime-process-head,
 .session-workspace-chat-only .runtime-trace-row-summary {
-  min-height: 42px;
+  min-height: 34px;
   grid-template-columns: 10px minmax(0, 1fr) auto auto;
-  gap: 9px;
-  padding: 8px 12px;
+  gap: 8px;
+  padding: 6px 10px;
 }
 
 .session-workspace-chat-only .runtime-process-head:hover,
@@ -231,28 +249,46 @@
 .session-workspace-chat-only .runtime-process-head h3,
 .session-workspace-chat-only .runtime-trace-row-copy strong {
   color: #1f2937;
-  font-size: 14px;
-  font-weight: 760;
+  font-size: 12px;
+  font-weight: 740;
+  letter-spacing: 0;
 }
 
 .session-workspace-chat-only .runtime-process-head time,
 .session-workspace-chat-only .runtime-trace-row-summary i {
   color: #667085;
-  font-size: 11px;
+  font-size: 10px;
+}
+
+.session-workspace-chat-only .runtime-process-summary {
+  margin: 0;
+  padding: 0 10px 8px 27px;
+  color: #4b5565;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.session-workspace-chat-only .runtime-process-meta {
+  padding: 0 10px 8px 27px;
+  gap: 6px;
 }
 
 .session-workspace-chat-only .runtime-process-summary,
 .session-workspace-chat-only .runtime-trace-row-copy small {
   margin: 0;
-  padding: 0 12px 9px 31px;
+  padding: 0 10px 8px 28px;
   color: #667085;
   font-size: 12px;
   line-height: 1.45;
 }
 
+.session-workspace-chat-only .runtime-event-actions {
+  padding-left: 28px;
+}
+
 .session-workspace-chat-only .runtime-process-meta,
 .session-workspace-chat-only .runtime-trace-row-meta {
-  padding: 0 12px 10px 31px;
+  padding: 0 10px 8px 28px;
 }
 
 .session-workspace-chat-only .runtime-process-meta span,
@@ -267,10 +303,23 @@
 .session-workspace-chat-only .runtime-event-detail pre,
 .session-workspace-chat-only .runtime-event-code-summary,
 .session-workspace-chat-only .diff-view {
-  max-height: 260px;
+  max-height: 200px;
   border-color: rgba(15, 23, 42, 0.1);
   background: #f6f7f8;
   color: #26313f;
+}
+
+.session-workspace-chat-only .runtime-process-subdetail {
+  max-height: 120px;
+  margin: 0 10px 10px 28px;
+  border: 1px dashed rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  padding: 8px 10px;
+  overflow: auto;
+  background: rgba(248, 250, 252, 0.88);
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 @media (max-width: 900px) {

@@ -61,7 +61,8 @@
 
 .yb-v2[data-theme="light"] .message-bubble[data-role="tool"],
 .yb-v2[data-theme="light"] .session-runtime-dashboard dl div,
-.yb-v2[data-theme="light"] .task-progress-steps li,
+.yb-v2[data-theme="light"] .task-progress-summary,
+.yb-v2[data-theme="light"] .task-progress-summary-row,
 .yb-v2[data-theme="light"] .task-plan-step-panel,
 .yb-v2[data-theme="light"] .task-plan-step-panel li,
 .yb-v2[data-theme="light"] .agent-task-list li,

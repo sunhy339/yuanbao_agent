@@ -3,7 +3,7 @@ import { formatStatusLabel } from "../../../copy";
 import { formatTimestamp } from "../../../../lib/formatUtils";
 import type { SessionWorkspaceMessage } from "./types";
 import { useTickWhen } from "./useTick";
-import { THINKING_STALLED_MS, formatElapsedTime, getRoleLabel, getMessageTimelineTime } from "./utils";
+import { THINKING_STALLED_MS, formatElapsedTime, getRoleLabel, getMessageDisplayTime } from "./utils";
 import { MarkdownContent } from "./MarkdownContent";
 
 export const MessageBubble = memo(function MessageBubble({ message }: { message: SessionWorkspaceMessage }) {
@@ -27,7 +27,9 @@ export const MessageBubble = memo(function MessageBubble({ message }: { message:
         {message.toolName ? <em>{message.toolName}</em> : null}
         {message.status ? <em>{formatStatusLabel(message.status)}</em> : null}
         {message.streaming && !message.placeholder ? <em>流式输出</em> : null}
-        {getMessageTimelineTime(message) ? <time>{formatTimestamp(getMessageTimelineTime(message))}</time> : null}
+        {getMessageDisplayTime(message) ? (
+          <time>{formatTimestamp(getMessageDisplayTime(message), { includeSeconds: true, forceDateTime: true })}</time>
+        ) : null}
       </div>
       {isThinking ? (
         <div className="thinking-status" data-stalled={thinkingStalled ? "true" : "false"}>

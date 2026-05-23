@@ -33,6 +33,9 @@ export function formatDuration(durationMs?: number) {
 
 export function formatElapsedTime(durationMs: number) {
   const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  if (totalSeconds <= 0) {
+    return "刚刚";
+  }
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
@@ -66,6 +69,64 @@ export function compactText(value: string | null | undefined, maxChars = 240) {
     return text;
   }
   return `${text.slice(0, Math.max(1, maxChars - 14)).trimEnd()} [已截断]`;
+}
+
+export function normalizeCommandLabel(command?: string) {
+  if (!command) {
+    return undefined;
+  }
+  return command
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\\/g, "/")
+    .replace(/^[a-z]:\/[^ ]*python(?:\.exe)?\s+-m\s+/i, "python -m ")
+    .replace(/^[a-z]:\/[^ ]*node(?:\.exe)?\s+/i, "node ")
+    .replace(/^[a-z]:\/[^ ]*git(?:\.exe)?\s+/i, "git ");
+}
+
+export function normalizeComparableCommand(command?: string) {
+  return normalizeCommandLabel(command)?.toLowerCase();
+}
+
+export function isVerificationCommand(command?: string) {
+  const normalized = normalizeComparableCommand(command);
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.startsWith("python -m pytest") ||
+    normalized.startsWith("python -m py_compile") ||
+    normalized.startsWith("node --check") ||
+    normalized.startsWith("npm test") ||
+    normalized.startsWith("npm run test") ||
+    normalized.startsWith("pnpm test") ||
+    normalized.startsWith("yarn test")
+  );
+}
+
+export function isBackgroundProbeCommand(command?: string) {
+  const normalized = normalizeComparableCommand(command);
+  if (!normalized || isVerificationCommand(normalized)) {
+    return false;
+  }
+  return (
+    normalized === "pwd" ||
+    normalized === "git status" ||
+    normalized.startsWith("git status ") ||
+    normalized === "ls" ||
+    normalized.startsWith("ls ") ||
+    normalized === "dir" ||
+    normalized.startsWith("dir ") ||
+    normalized === "get-childitem" ||
+    normalized.startsWith("get-childitem ") ||
+    normalized === "get-location" ||
+    normalized.startsWith("get-location ")
+  );
+}
+
+export function isSuccessfulRuntimeStatus(status?: string) {
+  const normalized = status?.toLowerCase();
+  return Boolean(normalized && ["completed", "passed", "succeeded", "recorded", "approved", "applied"].includes(normalized));
 }
 
 export const MAX_RENDERED_DIFF_LINES = 500;
@@ -316,12 +377,15 @@ export function getProcessStatusLabel(status?: string) {
 
 export function getProcessTimeLabel(item: RuntimeTimelineItem, now: number, fallbackStartedAt: number) {
   if (isRuntimeInFlight(item.status)) {
+    if (item.time === undefined && now - fallbackStartedAt < 1000) {
+      return undefined;
+    }
     return formatElapsedTime(now - (item.time ?? fallbackStartedAt));
   }
   const duration = formatDuration(item.durationMs);
-  const timestamp = formatTimestamp(item.time);
+  const timestamp = formatTimestamp(item.time, { includeSeconds: true, forceDateTime: true });
   if (duration && timestamp) {
-    return `${duration} · ${timestamp}`;
+    return `${duration} / ${timestamp}`;
   }
   return duration ?? timestamp ?? "刚刚";
 }
@@ -412,10 +476,11 @@ export function getConversationFinishedAt(
 }
 
 export function getMessageTimelineTime(message: SessionWorkspaceMessage) {
-  if (message.role === "assistant" && isUsableTimelineTimestamp(message.updatedAt)) {
-    return message.updatedAt;
-  }
   return message.createdAt;
+}
+
+export function getMessageDisplayTime(message: SessionWorkspaceMessage) {
+  return message.createdAt ?? message.updatedAt;
 }
 
 export function getMessageActivitySortTime(message: SessionWorkspaceMessage) {
@@ -454,6 +519,25 @@ export function parsePatchFileSummaries(code?: string) {
     .filter((entry): entry is NonNullable<ReturnType<typeof parsePatchFileSummary>> => Boolean(entry));
 }
 
+function looksLikeFilesystemPath(value: string) {
+  const normalized = value.trim();
+  return /^[a-z]:\\/i.test(normalized) || normalized.startsWith("/") || normalized.startsWith("\\\\");
+}
+
 export function buildCommandOutput(item: RuntimeTimelineItem) {
-  return compactMeta([item.summary, item.code]).join("\n\n") || "暂无输出。";
+  const sections = compactMeta([
+    item.summary,
+    item.rawDetail,
+    item.code && !item.rawDetail && !looksLikeFilesystemPath(item.code) ? item.code : null,
+  ]);
+  return sections.join("\n\n") || "暂无输出。";
+}
+
+export function buildCommandPathDetail(item: RuntimeTimelineItem) {
+  const relatedPaths = item.meta?.filter((entry) => looksLikeFilesystemPath(entry)) ?? [];
+  const sections = compactMeta([
+    item.code && looksLikeFilesystemPath(item.code) ? `日志路径\n${item.code}` : null,
+    relatedPaths.length ? `相关路径\n${relatedPaths.join("\n")}` : null,
+  ]);
+  return sections.join("\n\n");
 }

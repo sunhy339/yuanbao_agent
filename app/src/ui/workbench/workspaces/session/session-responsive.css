@@ -171,34 +171,12 @@
 }
 
 .session-workbench-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
   min-height: 100%;
-}
-
-.session-workspace-chat-only .session-workbench-grid {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.session-workspace-chat-only .session-runtime-column {
-  display: none;
 }
 
 .session-conversation-column,
 .session-runtime-column {
-  display: grid;
   min-width: 0;
-  gap: 12px;
-}
-
-.session-runtime-column {
-  display: none;
-}
-
-.workspace-frame[data-composer-visible="true"] .session-runtime-column {
-  display: none;
 }
 
 .workspace-frame[data-composer-visible="true"] .session-runtime-dashboard {
@@ -247,7 +225,6 @@
 }
 
 .session-runtime-dashboard {
-  grid-template-columns: 1fr;
   gap: 12px;
   padding: 12px;
 }
@@ -261,7 +238,7 @@
   gap: 8px;
 }
 
-.task-progress-steps,
+.task-progress-summary,
 .task-result-grid,
 .worktree-state-grid,
 .agent-worker-strip {
@@ -282,7 +259,6 @@
 }
 
 .session-runtime-lanes {
-  grid-template-columns: 1fr;
   gap: 8px;
 }
 
@@ -341,7 +317,7 @@
 
 @media (max-width: 760px) {
   .session-runtime-dashboard dl,
-  .task-progress-steps,
+  .task-progress-summary,
   .task-result-grid,
   .worktree-meta,
   .worktree-state-grid,
@@ -352,6 +328,11 @@
   .runtime-cockpit-detail dl div,
   .session-runtime-lanes {
     grid-template-columns: 1fr;
+  }
+
+  .task-progress-summary-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 
   .runtime-cockpit-detail summary strong {

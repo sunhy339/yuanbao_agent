@@ -1,12 +1,14 @@
 import { useMemo, useState } from "react";
-import {
-  ContextBudgetBar,
-} from "../../../v2/components/runtime";
 import { Button, StatusBadge } from "../../../v2/components/ui";
 import { formatStatusLabel } from "../../../copy";
 import type { SessionWorkspaceProps, RuntimeTimelineItem } from "./types";
-import { getStatusTone, isTaskControllable, getRuntimeKindLabel } from "./utils";
-import { getTaskPhase, getTaskPhaseLabel, buildTaskProgressSummary, shouldDisplayTaskScaffold, expectsAgentWork } from "./taskPhase";
+import {
+  getStatusTone,
+  isBackgroundProbeCommand,
+  isSuccessfulRuntimeStatus,
+  isTaskControllable,
+} from "./utils";
+import { shouldDisplayTaskScaffold, expectsAgentWork } from "./taskPhase";
 import { buildRuntimeItems } from "./runtimeItemBuilder";
 import { buildConversationActivity, ConversationActivity } from "./ConversationActivity";
 import { TaskProgressPanel } from "./TaskProgressPanel";
@@ -14,6 +16,8 @@ import { RuntimeCockpitPanel } from "./RuntimeCockpitPanel";
 import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
 import { TraceFilterBar } from "./TraceFilterBar";
 import { WorktreePanel } from "./WorktreePanel";
+import { RuntimeEventCard } from "./RuntimeEventCard";
+import { isChatVisibleEvent } from "./visibilityRouting";
 import "./session.css";
 
 // Re-export types for backward compatibility with external consumers
@@ -76,7 +80,14 @@ export function SessionWorkspace({
     );
   }
 
-  const visibleActiveTask = shouldDisplayTaskScaffold(activeTask) ? activeTask : null;
+  const hasTaskRuntimeEvidence = Boolean(
+    activeTask?.changedFiles?.length ||
+      activeTask?.commands?.length ||
+      activeTask?.verification?.length ||
+      activeTask?.activeWorktree,
+  );
+  const visibleActiveTask =
+    shouldDisplayTaskScaffold(activeTask) || hasTaskRuntimeEvidence ? activeTask : null;
   const runtimeItems = useMemo(
     () =>
       buildRuntimeItems({
@@ -91,33 +102,189 @@ export function SessionWorkspace({
       }),
     [visibleActiveTask, approvals, backgroundJobs, contextPreview, patches, session, toolCalls, traces],
   );
-  const activityItems = useMemo(
-    () => buildConversationActivity(messages, runtimeItems),
-    [messages, runtimeItems],
-  );
+  const activityItems = useMemo(() => {
+    const chatVisibleItems = runtimeItems.filter((item) =>
+      isChatVisibleEvent(
+        {
+          taskId: item.taskId ?? "root",
+          visibility: item.visibility,
+        },
+        new Set<string>(),
+      ),
+    );
+    const promotedVerificationByGroup = new Map<string, RuntimeTimelineItem>();
+    runtimeItems.forEach((item) => {
+      if (item.kind !== "command" || !item.groupKey || item.superseded) {
+        return;
+      }
+      const normalizedStatus = item.status?.toLowerCase();
+      const isSuccessful = Boolean(
+        normalizedStatus && ["completed", "passed", "succeeded"].includes(normalizedStatus),
+      );
+      const isVerificationLike =
+        item.groupKey.startsWith("command:python -m pytest") ||
+        item.groupKey.startsWith("command:python -m py_compile") ||
+        item.groupKey.startsWith("command:node --check");
+      if (isSuccessful && isVerificationLike) {
+        promotedVerificationByGroup.set(item.groupKey, item);
+      }
+    });
+    const promotedVerificationItems = [...promotedVerificationByGroup.values()];
+    const mergedChatItems = [...chatVisibleItems, ...promotedVerificationItems];
+    const dedupedChatItems = Array.from(
+      new Map(mergedChatItems.map((item) => [item.id, item])).values(),
+    );
+
+    const latestSuccessfulVerificationIds = new Set<string>();
+    const latestSuccessfulVerificationByGroup = new Map<string, RuntimeTimelineItem>();
+    dedupedChatItems.forEach((item) => {
+      if (item.kind !== "command" || !item.groupKey) {
+        return;
+      }
+      const normalizedStatus = item.status?.toLowerCase();
+      const isSuccessful = Boolean(
+        normalizedStatus && ["completed", "passed", "succeeded"].includes(normalizedStatus),
+      );
+      const isVerificationLike =
+        item.groupKey.startsWith("command:python -m pytest") ||
+        item.groupKey.startsWith("command:python -m py_compile") ||
+        item.groupKey.startsWith("command:node --check");
+      if (isSuccessful && isVerificationLike) {
+        latestSuccessfulVerificationByGroup.set(item.groupKey, item);
+      }
+    });
+    latestSuccessfulVerificationByGroup.forEach((item) => latestSuccessfulVerificationIds.add(item.id));
+
+    const filteredChatItems = dedupedChatItems.filter((item) => {
+      if (item.superseded) {
+        return false;
+      }
+      if (item.kind === "trace") {
+        return false;
+      }
+      if (item.kind === "command") {
+        const status = item.status?.toLowerCase();
+        const isSuccessful = Boolean(status && ["completed", "passed", "succeeded"].includes(status));
+        const isVerificationLike = Boolean(
+          item.groupKey &&
+            (item.groupKey.startsWith("command:python -m pytest") ||
+              item.groupKey.startsWith("command:python -m py_compile") ||
+              item.groupKey.startsWith("command:node --check")),
+        );
+        if (isSuccessful && isVerificationLike) {
+          return latestSuccessfulVerificationIds.has(item.id);
+        }
+        if (isSuccessful) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    const latestByGroupForChat = new Map<string, RuntimeTimelineItem>();
+    filteredChatItems.forEach((item) => {
+      if (!item.groupKey) {
+        return;
+      }
+      const existing = latestByGroupForChat.get(item.groupKey);
+      const existingTime = existing?.time ?? -1;
+      const candidateTime = item.time ?? -1;
+      if (!existing || candidateTime > existingTime) {
+        latestByGroupForChat.set(item.groupKey, item);
+      }
+    });
+    const latestIdsByGroup = new Set(
+      [...latestByGroupForChat.values()].map((item) => item.id),
+    );
+    const collapsedChatItems = filteredChatItems.filter((item) => {
+      if (!item.groupKey) {
+        return true;
+      }
+      const isVerificationLike =
+        item.groupKey.startsWith("command:python -m pytest") ||
+        item.groupKey.startsWith("command:python -m py_compile") ||
+        item.groupKey.startsWith("command:node --check");
+      if (!isVerificationLike) {
+        return true;
+      }
+      return latestIdsByGroup.has(item.id);
+    });
+
+    if (collapsedChatItems.length <= 2) {
+      const promotedRuntimeFallback = runtimeItems
+        .filter((item) => !item.superseded)
+        .filter(
+          (item) =>
+            item.kind === "command" &&
+            item.groupKey &&
+            (item.groupKey.startsWith("command:python -m pytest") ||
+              item.groupKey.startsWith("command:python -m py_compile") ||
+              item.groupKey.startsWith("command:node --check")),
+        )
+        .filter((item) => {
+          const normalizedStatus = item.status?.toLowerCase();
+          return Boolean(normalizedStatus && ["completed", "passed", "succeeded"].includes(normalizedStatus));
+        })
+        .slice(-3);
+      promotedRuntimeFallback.forEach((item) => {
+        if (!collapsedChatItems.some((existing) => existing.id === item.id)) {
+          collapsedChatItems.push(item);
+        }
+      });
+    }
+
+    const hiddenCommandGroups = new Set(
+      collapsedChatItems
+        .filter((item) => item.kind === "command" && item.groupKey)
+        .map((item) => item.groupKey as string),
+    );
+
+    return buildConversationActivity(
+      messages,
+      collapsedChatItems.filter((item) => !(item.kind === "tool" && item.groupKey && hiddenCommandGroups.has(item.groupKey))),
+    );
+  }, [messages, runtimeItems]);
   const [traceFilter, setTraceFilter] = useState<{
     taskId: string;
     visibility: "" | "chat" | "panel" | "trace";
     agentType: string;
   }>({ taskId: "", visibility: "", agentType: "" });
-  const { pendingApprovals, patchCount, commandCount, diagnosticCount, runtimeLanes, uniqueTaskIds, uniqueAgentTypes } = useMemo(() => {
-    const pendingApprovals = approvals?.filter((approval) => approval.status === "pending").length ?? 0;
-    const patchCount = (patches?.length ?? 0) || (visibleActiveTask?.changedFiles?.length ?? 0);
-    let commandCount = 0;
-    let diagnosticCount = 0;
+  const isQuietSuccessfulBackgroundItem = (item: RuntimeTimelineItem) => {
+    if (!isSuccessfulRuntimeStatus(item.status)) {
+      return false;
+    }
+    if (item.visibility === "trace" && (item.kind === "tool" || item.kind === "trace")) {
+      return true;
+    }
+    if (item.kind === "tool" && /^(list_dir|read_file|git status)\b/i.test(item.title)) {
+      return true;
+    }
+    if (item.kind === "command" && isBackgroundProbeCommand(item.title)) {
+      return true;
+    }
+    return false;
+  };
+  const { runtimeLanes, uniqueTaskIds, uniqueAgentTypes } = useMemo(() => {
     const commandsAndTools: RuntimeTimelineItem[] = [];
     const patchItems: RuntimeTimelineItem[] = [];
     const traceItems: RuntimeTimelineItem[] = [];
 
     for (const item of runtimeItems) {
+      if (isQuietSuccessfulBackgroundItem(item)) {
+        continue;
+      }
       if (item.kind === "command" || item.kind === "tool") {
-        commandsAndTools.push(item);
-        if (item.kind === "command") commandCount++;
+        if (item.visibility !== "chat") {
+          commandsAndTools.push(item);
+        }
       } else if (item.kind === "patch" || item.id.startsWith("task-files:")) {
-        patchItems.push(item);
+        if (item.visibility !== "chat") {
+          patchItems.push(item);
+        }
       } else {
-        traceItems.push(item);
-        if (item.kind === "trace") diagnosticCount++;
+        if (item.visibility !== "chat") {
+          traceItems.push(item);
+        }
       }
     }
 
@@ -132,25 +299,25 @@ export function SessionWorkspace({
       {
         id: "commands" as const,
         eyebrow: "执行",
-        title: "命令通道",
-        emptyTitle: "暂无运行中的命令",
-        emptyText: "Shell 任务会显示在这里，并提供停止和刷新控制。",
+        title: "命令与验证",
+        emptyTitle: "当前没有需要关注的命令",
+        emptyText: "失败中的命令、运行中的检查和最近通过的验证会显示在这里。",
         items: commandsAndTools,
       },
       {
         id: "patches" as const,
         eyebrow: "改动",
-        title: "改动队列",
-        emptyTitle: "暂无改动",
-        emptyText: "生成的差异会先显示在这里，再进入活动流。",
+        title: "补丁与文件",
+        emptyTitle: "当前没有待看的改动",
+        emptyText: "代码改动、补丁结果和关键文件变化会出现在这里。",
         items: patchItems,
       },
       {
         id: "trace" as const,
         eyebrow: "诊断",
-        title: "重要信号",
-        emptyTitle: "暂无诊断",
-        emptyText: "失败、路由决策和可操作信号会显示在这里。",
+        title: "异常与信号",
+        emptyTitle: "当前没有异常信号",
+        emptyText: "只保留失败、恢复、路由变化和需要处理的异常。",
         items: filteredTraceItems,
       },
     ];
@@ -158,14 +325,19 @@ export function SessionWorkspace({
     const uniqueTaskIds = [...new Set(traceItems.map((i) => i.taskId).filter(Boolean) as string[])];
     const uniqueAgentTypes = [...new Set(traceItems.map((i) => i.agentType).filter(Boolean) as string[])];
 
-    return { pendingApprovals, patchCount, commandCount, diagnosticCount, runtimeLanes, uniqueTaskIds, uniqueAgentTypes };
-  }, [visibleActiveTask?.changedFiles?.length, approvals, patches, runtimeItems, traceFilter]);
-  const activeTaskPhase = getTaskPhase(visibleActiveTask);
-  const contextBudgetStats = contextPreview?.budgetStats;
-  const contextUsedTokens =
-    contextBudgetStats?.estimatedInputTokens ?? contextBudgetStats?.estimatedTokens ?? contextBudgetStats?.messageTokens;
-  const contextMaxTokens = contextBudgetStats?.maxContextTokens;
-
+    return { runtimeLanes, uniqueTaskIds, uniqueAgentTypes };
+  }, [runtimeItems, traceFilter]);
+    const visibleRuntimeLanes = runtimeLanes
+    .map((lane) => ({
+      ...lane,
+      items:
+        lane.id === "commands"
+          ? lane.items.filter((item) => !item.superseded).slice(0, 4)
+          : lane.id === "patches"
+            ? lane.items.slice(0, 3)
+            : lane.items.slice(0, 3),
+    }))
+    .filter((lane) => lane.items.length > 0);
   return (
     <main className="session-workspace session-workspace-chat-only" aria-label="Session">
       <section className="session-workbench-grid">
@@ -230,28 +402,6 @@ export function SessionWorkspace({
               <span>{activityItems.length} 个事件</span>
             </header>
             <div className="message-stream message-stream-chat-only" aria-label="会话消息">
-              <RuntimeCockpitPanel
-                activeTask={visibleActiveTask}
-                approvals={approvals}
-                patches={patches}
-                traces={traces}
-                contextPreview={contextPreview}
-                taskBusyAction={taskBusyAction}
-                onRefreshTask={onRefreshTask}
-                onPauseTask={onPauseTask}
-                onResumeTask={onResumeTask}
-              />
-              <WorktreePanel
-                worktree={visibleActiveTask?.activeWorktree}
-                status={worktreeStatus}
-                diff={worktreeDiff}
-                busyAction={worktreeBusyAction}
-                error={worktreeError}
-                onRefresh={onRefreshWorktree}
-                onLoadDiff={onLoadWorktreeDiff}
-                onMerge={onMergeWorktree}
-                onCleanup={onCleanupWorktree}
-              />
               {messagesLoading && activityItems.length === 0 ? (
                 <div className="message-stream-loading" aria-label="加载消息">
                   <div className="message-stream-loading-bar" />
@@ -282,51 +432,35 @@ export function SessionWorkspace({
           </section>
         </section>
 
-        <aside className="session-runtime-column" aria-label="运行时智能状态">
-          <section className="session-runtime-dashboard" aria-label="运行时仪表盘">
-            <div>
-              <p className="session-kicker">任务状态</p>
-              <strong>{getTaskPhaseLabel(activeTaskPhase)}</strong>
-              <span>{buildTaskProgressSummary(visibleActiveTask)}</span>
-            </div>
-            <dl>
-              <div>
-                <dt>消息</dt>
-                <dd>{messages.length}</dd>
-              </div>
-              <div>
-                <dt>命令</dt>
-                <dd>{commandCount}</dd>
-              </div>
-              <div>
-                <dt>改动</dt>
-                <dd>{patchCount}</dd>
-              </div>
-              <div>
-                <dt>审批</dt>
-                <dd>{pendingApprovals}</dd>
-              </div>
-              <div>
-                <dt>信号</dt>
-                <dd>{diagnosticCount}</dd>
-              </div>
-            </dl>
-          </section>
+                <aside className="session-runtime-column" aria-label="运行态侧栏">
+          <RuntimeCockpitPanel
+            activeTask={visibleActiveTask}
+            approvals={approvals}
+            patches={patches}
+            traces={traces}
+            contextPreview={contextPreview}
+            taskBusyAction={taskBusyAction}
+            onRefreshTask={onRefreshTask}
+            onPauseTask={onPauseTask}
+            onResumeTask={onResumeTask}
+          />
+          <WorktreePanel
+            worktree={visibleActiveTask?.activeWorktree}
+            status={worktreeStatus}
+            diff={worktreeDiff}
+            busyAction={worktreeBusyAction}
+            error={worktreeError}
+            onRefresh={onRefreshWorktree}
+            onLoadDiff={onLoadWorktreeDiff}
+            onMerge={onMergeWorktree}
+            onCleanup={onCleanupWorktree}
+          />
+          {visibleActiveTask ? <TaskProgressPanel activeTask={visibleActiveTask} patches={patches} /> : null}
+          <AgentCollaborationPanel collaboration={collaboration} expectAgentWork={expectsAgentWork(activeTask)} />
 
-          <TaskProgressPanel activeTask={visibleActiveTask} patches={patches} />
-          <AgentCollaborationPanel collaboration={collaboration} expectAgentWork={expectsAgentWork(visibleActiveTask)} />
-
-          {typeof contextUsedTokens === "number" && typeof contextMaxTokens === "number" ? (
-            <ContextBudgetBar
-              usedTokens={contextUsedTokens}
-              reservedTokens={contextBudgetStats?.toolSchemaTokens ?? 0}
-              maxTokens={contextMaxTokens}
-              label="会话上下文"
-            />
-          ) : null}
-
-          <section className="session-runtime-lanes" aria-label="执行通道">
-            {runtimeLanes.map((lane) => (
+          {visibleRuntimeLanes.length ? (
+            <section className="session-runtime-lanes" aria-label="执行通道">
+              {visibleRuntimeLanes.map((lane) => (
               <article className="session-runtime-lane" data-lane={lane.id} key={lane.id}>
                 <header>
                   <div>
@@ -344,17 +478,22 @@ export function SessionWorkspace({
                   />
                 ) : null}
                 {lane.items.length > 0 ? (
-                  <ul>
+                  <div className="session-runtime-lane-items">
                     {lane.items.slice(0, 3).map((item) => (
-                      <li key={item.id}>
-                        <div>
-                          <strong>{getRuntimeKindLabel(item.kind)}事件</strong>
-                          <span>{item.meta?.slice(0, 2).join(" - ") || "详情可在活动流中查看"}</span>
-                        </div>
-                        {item.status ? <StatusBadge label={formatStatusLabel(item.status)} tone={getStatusTone(item.status)} compact /> : null}
-                      </li>
+                      <RuntimeEventCard
+                        key={item.id}
+                        item={item}
+                        onApprove={onApprove}
+                        onReject={onReject}
+                        onLoadPatch={onLoadPatch}
+                        onCopyPatchPath={onCopyPatchPath}
+                        onCopyRuntimeText={onCopyRuntimeText}
+                        onRefreshCommandJob={onRefreshCommandJob}
+                        onStopCommandJob={onStopCommandJob}
+                        busyId={busyId}
+                      />
                     ))}
-                  </ul>
+                  </div>
                 ) : (
                   <div className="session-runtime-lane-empty">
                     <strong>{lane.emptyTitle}</strong>
@@ -362,8 +501,9 @@ export function SessionWorkspace({
                   </div>
                 )}
               </article>
-            ))}
-          </section>
+              ))}
+            </section>
+          ) : null}
         </aside>
       </section>
     </main>

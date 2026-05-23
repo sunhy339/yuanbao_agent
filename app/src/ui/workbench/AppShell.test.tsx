@@ -231,9 +231,32 @@ describe("AppShell", () => {
 
     const checklist = screen.getByLabelText("Runtime child tasks");
     expect(within(checklist).getByText("1/2")).toBeInTheDocument();
-    expect(within(checklist).getByText("1 attention")).toBeInTheDocument();
+    expect(within(checklist).getByText("1 待留意")).toBeInTheDocument();
     expect(within(checklist).getByText(/Validation status: partial/)).toBeInTheDocument();
     expect(document.querySelector('[data-state="warning"]')).toBeInTheDocument();
+  });
+
+  it("collapses generic completed planner scans into a short summary", () => {
+    renderShell({
+      runtimeChildTasks: [
+        {
+          id: "child_one",
+          title: "Inspect workspace and identify targets",
+          status: "completed",
+          workerName: "Planner Worker",
+          summary: '{"status":"completed","changedFiles":[],"testsRun":[]}',
+        },
+        {
+          id: "child_two",
+          title: "Inspect workspace and identify targets",
+          status: "completed",
+          workerName: "Planner Worker",
+          summary: '{"status":"completed","changedFiles":[],"testsRun":[]}',
+        },
+      ],
+    });
+
+    expect(screen.queryByLabelText("Runtime child tasks")).not.toBeInTheDocument();
   });
 
   it("applies the selected shell theme", () => {

@@ -1,4 +1,4 @@
-/* Compact transcript layout: keep the session focused on the chronological chat. */
+﻿/* Compact transcript layout: keep the session focused on the chronological chat. */
 .session-workspace-chat-only {
   --session-transcript-bg: #fbfaf7;
   --session-transcript-line: rgba(120, 98, 95, 0.16);
@@ -8,14 +8,28 @@
 }
 
 .session-chat-header,
-.session-console-heading,
-.session-runtime-column {
+.session-console-heading {
   display: none !important;
 }
 
-.session-workbench-grid,
-.session-conversation-column {
+.session-workbench-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 20px;
+  align-items: start;
+}
+
+.session-conversation-column,
+.session-runtime-column {
   gap: 0;
+}
+
+.session-runtime-column {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  position: sticky;
+  top: 14px;
 }
 
 .session-console {
@@ -32,10 +46,10 @@
 }
 
 .session-console .message-stream {
-  width: min(760px, calc(100% - 28px));
+  width: min(840px, calc(100% - 24px));
   min-height: min(620px, calc(100vh - var(--wb-composer-reserve, 0px) - 126px));
-  justify-self: center;
-  margin: 0 auto;
+  justify-self: start;
+  margin: 0;
   border: 0;
   border-radius: 0;
   padding: 8px 0 22px;
@@ -68,7 +82,7 @@
 
 .message-bubble {
   width: fit-content;
-  max-width: min(64ch, 82%);
+  max-width: min(68ch, 84%);
   border-color: var(--session-transcript-line);
   border-radius: 14px;
   padding: 9px 12px 10px;
@@ -143,8 +157,8 @@
   width: 100%;
   max-width: 100%;
   border-color: rgba(120, 98, 95, 0.14);
-  border-radius: 11px;
-  background: rgba(255, 255, 255, 0.68);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.82);
   box-shadow: none;
   backdrop-filter: none;
 }
@@ -183,6 +197,12 @@
   background: #fff8f7;
 }
 
+.runtime-process-card[data-superseded="true"],
+.runtime-trace-row[data-superseded="true"],
+.runtime-event-card[data-superseded="true"] {
+  opacity: 0.58;
+}
+
 .runtime-process-head,
 .runtime-trace-row-summary,
 .runtime-event-summary {
@@ -200,7 +220,7 @@
 .runtime-trace-row-copy strong,
 .runtime-event-summary strong {
   color: #20242c;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 720;
 }
 
@@ -238,15 +258,63 @@
   padding: 0 10px 10px 28px;
 }
 
+.runtime-cockpit-panel {
+  gap: 8px;
+  border-color: rgba(120, 98, 95, 0.14);
+  border-radius: 12px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 22px rgba(35, 27, 23, 0.06);
+}
+
+.runtime-cockpit-header h2 {
+  font-size: 14px;
+  font-weight: 720;
+}
+
+.runtime-cockpit-summary {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.runtime-cockpit-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.runtime-cockpit-metrics dd {
+  font-size: 15px;
+}
+
+.runtime-cockpit-lower,
+.runtime-cockpit-detail summary,
+.runtime-cockpit-detail dl div {
+  grid-template-columns: 1fr;
+}
+
+.runtime-cockpit-detail summary strong {
+  justify-self: start;
+}
+
 .runtime-patch-files button {
   border-color: rgba(120, 98, 95, 0.14);
   background: #f8f6f2;
 }
 
 @media (max-width: 760px) {
+  .session-workbench-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .session-runtime-column {
+    display: grid;
+    order: 2;
+  }
+
   .session-console .message-stream {
     width: calc(100% - 16px);
     max-width: 760px;
+    justify-self: center;
+    margin: 0 auto;
   }
 
   .message-bubble {
@@ -399,7 +467,7 @@
   margin: -1px 0 0;
   padding: 0 12px 10px 31px;
   color: var(--session-muted);
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -506,7 +574,7 @@
 .runtime-trace-row-copy strong {
   overflow: hidden;
   color: var(--session-ink);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 780;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -629,5 +697,27 @@
 .yb-v2[data-theme="light"] .runtime-process-detail {
   color: var(--yb-ink);
   background: rgba(248, 250, 252, 0.92);
+}
+
+
+.session-runtime-lane-items {
+  display: grid;
+  gap: 8px;
+}
+
+.session-runtime-lane-items .runtime-event-card,
+.session-runtime-lane-items .runtime-event-v2-card {
+  width: 100%;
+}
+
+.session-runtime-lane-items .runtime-process-card,
+.session-runtime-lane-items .runtime-trace-row {
+  background: #ffffff;
+}
+
+.session-runtime-lane-items .runtime-process-summary,
+.session-runtime-lane-items .runtime-trace-row-copy small,
+.session-runtime-lane-items .runtime-event-collapsed-summary {
+  color: #64707d;
 }
 

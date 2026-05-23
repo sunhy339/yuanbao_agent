@@ -56,6 +56,104 @@ function runtimeChildState(childTask: ComposerRuntimeChildTask) {
   return normalizeRuntimeChildStatus(childTask.status);
 }
 
+function parseStructuredRuntimeChildSummary(value?: string) {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeRuntimeChildSummary(value?: string) {
+  const structured = parseStructuredRuntimeChildSummary(value);
+  if (structured) {
+    const changedFiles = Array.isArray(structured.changedFiles) ? structured.changedFiles.length : undefined;
+    const testsRun = Array.isArray(structured.testsRun) ? structured.testsRun.length : undefined;
+    const risks = Array.isArray(structured.risks) ? structured.risks.length : undefined;
+    const parts = [
+      changedFiles !== undefined ? (changedFiles > 0 ? `${changedFiles} 个文件改动` : "无文件改动") : null,
+      testsRun !== undefined ? (testsRun > 0 ? `${testsRun} 项测试` : "未运行测试") : null,
+      risks !== undefined && risks > 0 ? `${risks} 个风险` : null,
+    ].filter(Boolean) as string[];
+    return parts[0] ?? undefined;
+  }
+  const text = value?.trim();
+  if (!text) {
+    return undefined;
+  }
+  if (text.startsWith("{") || text.startsWith("[")) {
+    return undefined;
+  }
+  return text.length > 88 ? `${text.slice(0, 84).trimEnd()}...` : text;
+}
+
+function isGenericPlannerWorker(workerName?: string) {
+  return /planner worker/i.test(workerName ?? "");
+}
+
+function isGenericPlannerScanTask(task: ComposerRuntimeChildTask) {
+  return (
+    isGenericPlannerWorker(task.workerName) &&
+    /\b(inspect|identify|understand|locate|search|scan)\b/i.test(task.title ?? "")
+  );
+}
+
+type VisibleRuntimeChildTask = ComposerRuntimeChildTask & {
+  count?: number;
+  displaySummary?: string;
+  displayWorker?: string;
+  collapsedKind?: "planner_scan";
+};
+
+function groupRuntimeChildTasks(tasks: ComposerRuntimeChildTask[]): VisibleRuntimeChildTask[] {
+  const cards: VisibleRuntimeChildTask[] = [];
+  const grouped = new Map<string, ComposerRuntimeChildTask[]>();
+
+  for (const task of tasks) {
+    const state = runtimeChildState(task);
+    const genericPlanner = isGenericPlannerWorker(task.workerName);
+    if (state === "completed" && genericPlanner && !task.attention && isGenericPlannerScanTask(task)) {
+      const key = `planner_scan|planner`;
+      grouped.set(key, [...(grouped.get(key) ?? []), task]);
+      continue;
+    }
+    cards.push({
+      ...task,
+      displaySummary: task.attention ?? summarizeRuntimeChildSummary(task.summary),
+      displayWorker: genericPlanner ? undefined : task.workerName,
+    });
+  }
+
+  grouped.forEach((items, key) => {
+    const first = items[0];
+    cards.push({
+      ...first,
+      id: `group:${key}`,
+      count: items.length,
+      title: "已完成范围确认",
+      displaySummary: `${items.length} 次范围确认已完成，尚未进入修改或验证。`,
+      displayWorker: undefined,
+      collapsedKind: "planner_scan",
+    });
+  });
+
+  return cards.sort((left, right) => {
+    const leftState = runtimeChildState(left);
+    const rightState = runtimeChildState(right);
+    if (leftState === "warning" && rightState !== "warning") return -1;
+    if (rightState === "warning" && leftState !== "warning") return 1;
+    if (leftState === "active" && rightState !== "active") return -1;
+    if (rightState === "active" && leftState !== "active") return 1;
+    return 0;
+  });
+}
+
 export function ComposerDock({
   promptValue,
   onPromptChange,
@@ -102,6 +200,13 @@ export function ComposerDock({
   const selectedModelSubtitle =
     selectedModel?.subtitle && selectedModel.subtitle !== selectedModel.label ? selectedModel.subtitle : "";
   const visibleRuntimeChildTasks = runtimeChildTasks.slice(0, 6);
+  const groupedRuntimeChildTasks = useMemo(
+    () => groupRuntimeChildTasks(visibleRuntimeChildTasks),
+    [visibleRuntimeChildTasks],
+  );
+  const onlyPlannerScans =
+    groupedRuntimeChildTasks.length > 0 &&
+    groupedRuntimeChildTasks.every((task) => task.collapsedKind === "planner_scan");
   const completedRuntimeChildCount = visibleRuntimeChildTasks.filter(
     (childTask) => runtimeChildState(childTask) === "completed",
   ).length;
@@ -181,20 +286,24 @@ export function ComposerDock({
         <span>{providerLabel}</span>
         <span>{cwdLabel}</span>
       </div>
-      {visibleRuntimeChildTasks.length ? (
-        <details className="composer-runtime-child-tasks" aria-label="Runtime child tasks" open>
+      {visibleRuntimeChildTasks.length && !onlyPlannerScans ? (
+        <details
+          className="composer-runtime-child-tasks"
+          aria-label="Runtime child tasks"
+          open
+        >
           <summary>
             <span className="composer-task-icon" aria-hidden="true" />
-            <strong>Runtime child tasks</strong>
+            <strong>子任务进展</strong>
             <span className="composer-task-count">
               {completedRuntimeChildCount}/{visibleRuntimeChildTasks.length}
             </span>
-            {activeRuntimeChildCount ? <span className="composer-child-active-count">{activeRuntimeChildCount} running</span> : null}
-            {attentionRuntimeChildCount ? <span className="composer-child-attention-count">{attentionRuntimeChildCount} attention</span> : null}
+            {activeRuntimeChildCount ? <span className="composer-child-active-count">{activeRuntimeChildCount} 进行中</span> : null}
+            {attentionRuntimeChildCount ? <span className="composer-child-attention-count">{attentionRuntimeChildCount} 待留意</span> : null}
             <span className="composer-task-chevron" aria-hidden="true" />
           </summary>
           <ol>
-            {visibleRuntimeChildTasks.map((childTask, index) => {
+            {groupedRuntimeChildTasks.map((childTask, index) => {
               const status = runtimeChildState(childTask);
               return (
                 <li key={childTask.id || `${index}-${childTask.title}`} data-state={status}>
@@ -202,10 +311,18 @@ export function ComposerDock({
                   <div>
                     <span>#{index + 1}</span>
                     <strong>{childTask.title}</strong>
-                    {childTask.workerName || childTask.attention || childTask.summary ? (
-                      <small>{[childTask.workerName ? `worker: ${childTask.workerName}` : null, childTask.attention ?? childTask.summary].filter(Boolean).join(" - ")}</small>
+                    {childTask.displayWorker || childTask.displaySummary ? (
+                      <small>
+                        {[
+                          childTask.displayWorker ? `worker: ${childTask.displayWorker}` : null,
+                          childTask.displaySummary,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </small>
                     ) : null}
                   </div>
+                  {childTask.count && childTask.count > 1 ? <b>{childTask.count} 次</b> : null}
                 </li>
               );
             })}

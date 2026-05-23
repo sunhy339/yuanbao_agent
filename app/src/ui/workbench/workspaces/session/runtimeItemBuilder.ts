@@ -31,9 +31,170 @@ import {
   normalizeRuntimeComparableString,
   compactRepeatedReadFileCalls,
   getRepeatedReadFileKey,
+  normalizeComparableCommand,
+  isVerificationCommand,
+  isBackgroundProbeCommand,
+  isSuccessfulRuntimeStatus,
 } from "./utils";
 
 import { formatStatusLabel } from "../../../copy";
+
+function commandGroupKey(command?: string) {
+  const normalized = normalizeComparableCommand(command);
+  return normalized ? `command:${normalized}` : undefined;
+}
+
+function summarizeCommandForTitle(command?: string) {
+  const normalized = normalizeComparableCommand(command);
+  if (!normalized) {
+    return command ?? "command";
+  }
+  if (normalized.startsWith("python -m pytest")) {
+    return "pytest";
+  }
+  if (normalized.startsWith("python -m py_compile")) {
+    return "py_compile";
+  }
+  if (normalized.startsWith("node --check")) {
+    return "node --check";
+  }
+  if (normalized === "git status") {
+    return "git status";
+  }
+  return command ?? normalized;
+}
+
+function summarizeCommandAction(command?: string) {
+  const normalized = normalizeComparableCommand(command);
+  if (!normalized) {
+    return command ?? "Ran command";
+  }
+  if (normalized.startsWith("python -m pytest")) {
+    return "Ran tests";
+  }
+  if (normalized.startsWith("python -m py_compile")) {
+    return "Checked Python syntax";
+  }
+  if (normalized.startsWith("node --check")) {
+    return "Checked script syntax";
+  }
+  if (normalized === "git status") {
+    return "Checked workspace status";
+  }
+  if (normalized.startsWith("git diff")) {
+    return "Viewed code diff";
+  }
+  if (normalized.startsWith("get-content")) {
+    return "Read file contents";
+  }
+  return command ?? normalized;
+}
+
+function classifyTaskCommandVisibility(command?: string, status?: string) {
+  const normalizedStatus = status?.toLowerCase();
+  const normalizedCommand = normalizeComparableCommand(command);
+  if (normalizedStatus && ["running", "started", "pending", "queued", "failed", "error", "cancelled"].includes(normalizedStatus)) {
+    return "chat" as const;
+  }
+  if (
+    normalizedStatus &&
+    ["completed", "passed", "succeeded"].includes(normalizedStatus) &&
+    normalizedCommand &&
+    isVerificationCommand(normalizedCommand)
+  ) {
+    return "chat" as const;
+  }
+  if (normalizedStatus && isSuccessfulRuntimeStatus(normalizedStatus) && isBackgroundProbeCommand(command)) {
+    return "trace" as const;
+  }
+  return "panel" as const;
+}
+
+function classifyToolVisibility(toolCall: SessionWorkspaceToolCall): RuntimeTimelineItem["visibility"] {
+  const normalizedStatus = toolCall.status?.toLowerCase();
+  const isInFlight = Boolean(
+    normalizedStatus &&
+      ["running", "started", "planning", "verifying", "pending", "queued", "waiting_approval"].includes(normalizedStatus),
+  );
+  const needsAttention = Boolean(
+    normalizedStatus && ["failed", "error", "cancelled", "rejected"].includes(normalizedStatus),
+  );
+
+  if (toolCall.toolName === "run_command" || toolCall.toolName === "apply_patch" || toolCall.toolName === "write_file") {
+    return isInFlight || needsAttention ? "chat" : "panel";
+  }
+  if (toolCall.toolName === "list_dir" || toolCall.toolName === "git_status" || toolCall.toolName === "read_file") {
+    return isInFlight || needsAttention ? "chat" : "trace";
+  }
+  return isInFlight || needsAttention ? "chat" : "panel";
+}
+
+function shouldHideToolFromRuntimePanel(toolCall: SessionWorkspaceToolCall) {
+  return false;
+}
+
+function classifyBackgroundJobVisibility(job: { command: string; status: string; summary?: string }) {
+  const normalizedStatus = job.status.toLowerCase();
+  if (["running", "started", "pending", "queued", "failed", "error", "cancelled"].includes(normalizedStatus)) {
+    return "chat" as const;
+  }
+  const normalizedCommand = normalizeComparableCommand(job.command);
+  if (
+    normalizedStatus === "completed" &&
+    normalizedCommand &&
+    isVerificationCommand(normalizedCommand)
+  ) {
+    return "chat" as const;
+  }
+  if (isSuccessfulRuntimeStatus(normalizedStatus) && isBackgroundProbeCommand(job.command)) {
+    return "trace" as const;
+  }
+  return "panel" as const;
+}
+
+function markSupersededRuntimeItems(items: RuntimeTimelineItem[]) {
+  const latestSuccessfulByGroup = new Map<string, { index: number; time?: number }>();
+
+  items.forEach((item, index) => {
+    if (!item.groupKey) {
+      return;
+    }
+    const normalizedStatus = item.status?.toLowerCase();
+    if (isSuccessfulRuntimeStatus(normalizedStatus)) {
+      const existing = latestSuccessfulByGroup.get(item.groupKey);
+      const candidate = { index, time: item.time };
+      if (!existing) {
+        latestSuccessfulByGroup.set(item.groupKey, candidate);
+      } else {
+        const existingTime = existing.time ?? -1;
+        const candidateTime = candidate.time ?? -1;
+        if (candidateTime > existingTime || (candidateTime === existingTime && candidate.index > existing.index)) {
+          latestSuccessfulByGroup.set(item.groupKey, candidate);
+        }
+      }
+    }
+  });
+
+  items.forEach((item, index) => {
+    if (!item.groupKey) {
+      return;
+    }
+    const normalizedStatus = item.status?.toLowerCase();
+    if (!normalizedStatus || !["failed", "error", "cancelled", "rejected"].includes(normalizedStatus)) {
+      return;
+    }
+    const recovery = latestSuccessfulByGroup.get(item.groupKey);
+    const recoveryTime = recovery?.time ?? -1;
+    const itemTime = item.time ?? -1;
+    const resolvedByLaterSuccess =
+      Boolean(recovery) &&
+      (recoveryTime > itemTime || (recoveryTime === itemTime && (recovery?.index ?? -1) > index));
+    if (resolvedByLaterSuccess) {
+      item.superseded = true;
+      item.visibility = "trace";
+    }
+  });
+}
 
 // ── Tool runtime presentation ──────────────────────────────────────
 
@@ -52,7 +213,7 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
     return {
       kind: "command",
       title: command ?? toolCall.argsPreview ?? "命令",
-      summary: resultSummary,
+      summary: compactMeta([summarizeCommandAction(command), resultSummary]).join(" · "),
       meta: compactMeta([command ? "shell" : null, ...statusMeta]),
       code: command && toolCall.argsPreview && toolCall.argsPreview !== command ? toolCall.argsPreview : undefined,
     };
@@ -216,6 +377,7 @@ export function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveT
   const changedFiles = activeTask.changedFiles ?? [];
   const commands = activeTask.commands ?? [];
   const verification = activeTask.verification ?? [];
+  const taskTime = activeTask.updatedAt ?? activeTask.createdAt;
 
   if (changedFiles.length) {
     items.push({
@@ -223,50 +385,64 @@ export function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveT
       kind: "task",
       title: "变更文件",
       status: "recorded",
-      summary: `${changedFiles.length} 个文件：${compactList(
-        changedFiles.map((file) => file.path),
-      )}`,
+      summary: `${changedFiles.length} 个文件：${compactList(changedFiles.map((file) => file.path))}`,
       meta: compactMeta([`${changedFiles.length} 个文件`]),
       code: changedFiles.map(formatTaskFileChange).join("\n"),
+      visibility: "panel",
+      taskId: activeTask.id,
+      time: taskTime,
     });
   }
 
   if (commands.length) {
-    const status = aggregateRuntimeStatus(
-      commands.map((command) => command.status),
-      "recorded",
-    );
-    items.push({
-      id: `task-commands:${activeTask.id}`,
-      kind: "command",
-      title: "命令执行",
-      status,
-      summary: `已跟踪 ${commands.length} 条命令`,
-      meta: compactMeta([`${commands.length} 条命令`]),
-      code: commands.map(formatTaskCommand).join("\n"),
+    commands.slice(-4).forEach((command, index) => {
+      items.push({
+        id: `task-command:${activeTask.id}:${command.id ?? index}`,
+        kind: "command",
+        title: summarizeCommandForTitle(command.command),
+        status: command.status,
+        summary: compactMeta([summarizeCommandAction(command.command), command.summary]).join(" · "),
+        meta: compactMeta([
+          command.cwd,
+          command.shell,
+          command.exitCode !== undefined && command.exitCode !== null ? `退出码 ${command.exitCode}` : null,
+          formatDuration(command.durationMs ?? undefined),
+        ]),
+        code: command.command,
+        visibility: classifyTaskCommandVisibility(command.command, command.status),
+        taskId: activeTask.id,
+        time: taskTime,
+        groupKey: commandGroupKey(command.command),
+      });
     });
   }
 
   if (verification.length) {
-    const status = aggregateRuntimeStatus(
-      verification.map((record) => record.status),
-      "recorded",
-    );
-    items.push({
-      id: `task-verification:${activeTask.id}`,
-      kind: "task",
-      title: "验证",
-      status,
-      summary: `${verification.length} 个验证检查：${formatStatusLabel(status)}`,
-      meta: compactMeta([`${verification.length} 个检查`]),
-      code: verification.map(formatTaskVerification).join("\n"),
+    verification.slice(-3).forEach((record, index) => {
+      const title = summarizeCommandForTitle(record.command ?? record.id);
+      items.push({
+        id: `task-verification:${activeTask.id}:${record.id ?? index}`,
+        kind: "command",
+        title,
+        status: record.status,
+        summary: compactMeta([summarizeCommandAction(record.command ?? record.id), record.summary]).join(" · "),
+        meta: compactMeta([
+          record.exitCode !== undefined && record.exitCode !== null ? `退出码 ${record.exitCode}` : null,
+          formatDuration(record.durationMs ?? undefined),
+          "验证",
+        ]),
+        code: record.command ?? record.id,
+        visibility: classifyTaskCommandVisibility(record.command ?? record.id, record.status),
+        taskId: activeTask.id,
+        time: taskTime,
+        groupKey: commandGroupKey(record.command ?? record.id) ?? `verification:${title.toLowerCase()}`,
+      });
     });
   }
 
+  markSupersededRuntimeItems(items);
   return items;
 }
-
-// ── Session memory runtime items ───────────────────────────────────
 
 export function buildSessionMemoryRuntimeItems(_session?: SessionWorkspaceSession | null): RuntimeTimelineItem[] {
   // Session memory is internal context; hidden from user-facing UI.
@@ -311,7 +487,16 @@ export function isRawJsonLike(value?: string) {
 export function isUserVisibleTrace(trace: SessionWorkspaceTrace) {
   const type = trace.type.toLowerCase();
   const status = trace.status?.toLowerCase();
+  const haystack = `${trace.type} ${trace.source ?? ""} ${trace.title ?? ""} ${trace.summary ?? ""}`.toLowerCase();
   if (hiddenTraceTypes.has(type) || hiddenTracePrefixes.some((prefix) => type.startsWith(prefix))) {
+    return false;
+  }
+  if (
+    haystack.includes("provider.failure.recovery_decision") ||
+    haystack.includes("provider.preflight") ||
+    haystack.includes("agent.decision") ||
+    haystack.includes("tool_recovery")
+  ) {
     return false;
   }
   if (visibleTraceTypes.has(type) || type.endsWith(".failed") || type.endsWith(".error")) {
@@ -371,6 +556,8 @@ export function buildRuntimeItems({
 >): RuntimeTimelineItem[] {
   const items: RuntimeTimelineItem[] = [];
 
+  items.push(...buildActiveTaskRuntimeItems(activeTask));
+
   patches.forEach((patch) => {
     const changeStats = compactMeta([
       patch.additions !== undefined ? `+${patch.additions}` : null,
@@ -396,6 +583,7 @@ export function buildRuntimeItems({
       code: fileSummaries?.join("\n"),
       diffLines,
       time: patch.updatedAt,
+      visibility: "panel",
     });
   });
 
@@ -419,13 +607,14 @@ export function buildRuntimeItems({
       code: outputDetail || undefined,
       time: trace.time,
       durationMs: trace.durationMs,
-      visibility: trace.visibility,
+      visibility: trace.visibility ?? "panel",
       taskId: trace.taskId,
       agentType: trace.agentType,
     });
   });
 
   approvals.forEach((approval) => {
+    const normalizedStatus = approval.status.toLowerCase();
     items.push({
       id: `approval:${approval.id}`,
       kind: "approval",
@@ -439,10 +628,17 @@ export function buildRuntimeItems({
       rawDetail: approval.fullInput,
       completionEvidence: approval.completionEvidence,
       time: approval.requestedAt,
+      visibility:
+        normalizedStatus === "pending" || normalizedStatus === "waiting_approval" || normalizedStatus === "queued"
+          ? "chat"
+          : "panel",
     });
   });
 
   compactRepeatedReadFileCalls(toolCalls).forEach((toolCall) => {
+    if (shouldHideToolFromRuntimePanel(toolCall)) {
+      return;
+    }
     const presentation = buildToolRuntimePresentation(toolCall);
     items.push({
       id: `tool:${toolCall.id}`,
@@ -452,30 +648,53 @@ export function buildRuntimeItems({
       summary: presentation.summary,
       meta: presentation.meta,
       code: presentation.code,
-      rawDetail: compactMeta([toolCall.rawInput ? `输入\n${toolCall.rawInput}` : null, toolCall.rawOutput ? `输出\n${toolCall.rawOutput}` : null]).join("\n\n"),
+      rawDetail: compactMeta([
+        toolCall.rawOutput ? `输出\n${toolCall.rawOutput}` : null,
+        toolCall.stdout ? `标准输出\n${compactText(toolCall.stdout, 1200)}` : null,
+        toolCall.stderr ? `标准错误\n${compactText(toolCall.stderr, 1200)}` : null,
+      ]).join("\n\n"),
       time: toolCall.time,
       durationMs: toolCall.durationMs,
+      visibility: classifyToolVisibility(toolCall),
+      groupKey: presentation.kind === "command" ? commandGroupKey(presentation.title) : undefined,
     });
   });
 
   backgroundJobs.forEach((job) => {
+    const rawDetail = compactMeta([
+      job.stdout ? `输出\n${compactText(job.stdout, 1200)}` : null,
+      job.stderr ? `错误\n${compactText(job.stderr, 1200)}` : null,
+    ]).join("\n\n");
+    const pathDetail = compactMeta([
+      job.stdoutPath ? `stdout\n${job.stdoutPath}` : null,
+      job.stderrPath ? `stderr\n${job.stderrPath}` : null,
+    ]).join("\n\n");
     items.push({
       id: `command:${job.id}`,
       kind: "command",
-      title: job.command,
+      title: summarizeCommandForTitle(job.command),
       status: job.status,
-      summary: job.summary || job.stdout || job.stderr,
+      summary: compactMeta([
+        summarizeCommandAction(job.command),
+        job.summary || summarizeRuntimeOutput(job.stdout || job.stderr),
+      ]).join(" · "),
       meta: compactMeta([
         job.cwd,
         job.shell,
         job.exitCode !== undefined && job.exitCode !== null ? `退出码 ${job.exitCode}` : null,
         formatDuration(job.durationMs),
+        job.stdoutPath ?? null,
+        job.stderrPath ?? null,
       ]),
-      code: job.stdoutPath || job.stderrPath,
-      time: job.startedAt ?? job.finishedAt,
+      rawDetail: rawDetail || undefined,
+      code: job.command,
+      time: job.finishedAt ?? job.startedAt,
       durationMs: job.durationMs,
+      visibility: classifyBackgroundJobVisibility(job),
+      groupKey: commandGroupKey(job.command),
     });
   });
 
+  markSupersededRuntimeItems(items);
   return items;
 }

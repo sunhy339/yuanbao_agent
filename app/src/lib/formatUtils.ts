@@ -2,12 +2,39 @@
  * Shared formatting utilities used across App.tsx and SessionWorkspace.tsx.
  */
 
+const timeFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+const timeWithSecondsFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
 const dateTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  month: "short",
+  month: "numeric",
   day: "numeric",
   hour: "2-digit",
   minute: "2-digit",
 });
+
+const dateTimeWithSecondsFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "numeric",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+function isSameLocalDay(left: Date, right: Date) {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  );
+}
 
 /**
  * Format a millisecond duration as a human-readable string.
@@ -29,12 +56,34 @@ export function formatDuration(durationMs?: number): string | null {
  * Format a millisecond timestamp as a localized date-time string.
  * Returns `null` when the timestamp is undefined.
  */
-export function formatTimestamp(timestamp?: number): string | null {
+export function formatTimestamp(
+  timestamp?: number,
+  options?: {
+    includeSeconds?: boolean;
+    forceTimeOnly?: boolean;
+    forceDateTime?: boolean;
+  },
+): string | null {
   if (timestamp === undefined) {
     return null;
   }
 
-  return dateTimeFormatter.format(new Date(timestamp));
+  const date = new Date(timestamp);
+  const now = new Date();
+  const sameLocalDay = isSameLocalDay(date, now);
+
+  if (options?.forceDateTime) {
+    if (sameLocalDay && !options?.forceTimeOnly) {
+      return (options?.includeSeconds ? timeWithSecondsFormatter : timeFormatter).format(date);
+    }
+    return (options?.includeSeconds ? dateTimeWithSecondsFormatter : dateTimeFormatter).format(date);
+  }
+
+  if (options?.forceTimeOnly || sameLocalDay) {
+    return (options?.includeSeconds ? timeWithSecondsFormatter : timeFormatter).format(date);
+  }
+
+  return (options?.includeSeconds ? dateTimeWithSecondsFormatter : dateTimeFormatter).format(date);
 }
 
 /**

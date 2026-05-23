@@ -14,7 +14,39 @@ import {
   parsePatchPath,
   parsePatchFileSummaries,
   buildCommandOutput,
+  buildCommandPathDetail,
 } from "./utils";
+
+function buildCollapsedCommandBody(item: RuntimeTimelineItem) {
+  const primaryDetail =
+    item.kind === "command" ? buildCommandOutput(item) : item.code || item.rawDetail;
+  const actionLead =
+    item.kind === "command" && item.summary
+      ? item.summary
+          .split(/[·|]/)
+          .map((part) => part.trim())
+          .find(Boolean)
+      : undefined;
+  if (!primaryDetail && !actionLead) {
+    return "";
+  }
+  const lines = (primaryDetail ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      if (actionLead && line.startsWith(`${actionLead} · `)) {
+        return line.slice(actionLead.length + 3).trim();
+      }
+      return line;
+    })
+    .filter((line) => !/^[A-Z]:\\|^\//.test(line))
+    .filter((line) => !/^(输入|输出|错误|stdout|stderr|相关路径|日志路径)$/i.test(line))
+    .filter((line) => !/^[{\[]/.test(line))
+    .slice(0, 3);
+  const combined = [actionLead, ...lines.filter((line) => line !== actionLead)].filter(Boolean).join("\n");
+  return compactText(combined, 220);
+}
 
 function ProcessRuntimeCard({
   item,
@@ -33,14 +65,22 @@ function ProcessRuntimeCard({
 
   const statusLabel = getProcessStatusLabel(item.status);
   const timeLabel = getProcessTimeLabel(item, now, fallbackStartedAt);
-  const detail = item.code || item.rawDetail;
+  const primaryDetail =
+    item.kind === "command" ? buildCommandOutput(item) : item.code || item.rawDetail;
+  const secondaryPathDetail = item.kind === "command" ? buildCommandPathDetail(item) : "";
   const showSecondaryDetail = expanded || inFlight;
+  const summaryText =
+    item.kind === "command"
+      ? buildCollapsedCommandBody(item)
+      : compactText(item.summary, 180);
+  const shouldShowSummary = Boolean(summaryText && !item.superseded);
 
   return (
     <article
       className="runtime-process-card"
       data-kind={item.kind}
       data-status={item.status ?? "recorded"}
+      data-superseded={item.superseded ? "true" : undefined}
       data-active={inFlight ? "true" : "false"}
     >
       <button
@@ -55,15 +95,19 @@ function ProcessRuntimeCard({
         <StatusBadge label={statusLabel} tone={getStatusTone(item.status)} compact />
         {timeLabel ? <time>{timeLabel}</time> : null}
       </button>
-      {showSecondaryDetail && item.summary ? <p className="runtime-process-summary">{compactText(item.summary, 180)}</p> : null}
+      {shouldShowSummary ? <p className="runtime-process-summary">{summaryText}</p> : null}
       {showSecondaryDetail && item.meta?.length ? (
         <div className="runtime-process-meta">
-          {item.meta.slice(0, expanded ? 6 : 3).map((entry) => (
+          {item.meta
+            .filter((entry) => !/^[A-Z]:|^\//.test(entry))
+            .slice(0, expanded ? 4 : 2)
+            .map((entry) => (
             <span key={entry}>{entry}</span>
           ))}
         </div>
       ) : null}
-      {expanded && detail ? <pre className="runtime-process-detail">{detail}</pre> : null}
+      {expanded && primaryDetail ? <pre className="runtime-process-detail">{primaryDetail}</pre> : null}
+      {expanded && secondaryPathDetail ? <pre className="runtime-process-subdetail">{secondaryPathDetail}</pre> : null}
     </article>
   );
 }
@@ -271,6 +315,7 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
         data-activity-kind="runtime"
         data-kind={item.kind}
         data-status={item.status ?? "recorded"}
+        data-superseded={item.superseded ? "true" : undefined}
       >
         <button
           aria-label={`${kindLabel} ${item.title}${item.status ? ` ${formatStatusLabel(item.status)}` : ""}`}
@@ -289,7 +334,10 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
         </button>
         {item.meta?.length ? (
           <div className="runtime-trace-row-meta">
-            {item.meta.slice(0, expanded ? 5 : 3).map((entry) => (
+            {item.meta
+              .filter((entry) => !/^[A-Z]:|^\//.test(entry))
+              .slice(0, expanded ? 4 : 2)
+              .map((entry) => (
               <span key={entry}>{entry}</span>
             ))}
           </div>
@@ -318,7 +366,12 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
   }
 
   return (
-    <article className="runtime-event-card" data-activity-kind="runtime" data-kind={item.kind}>
+    <article
+      className="runtime-event-card"
+      data-activity-kind="runtime"
+      data-kind={item.kind}
+      data-superseded={item.superseded ? "true" : undefined}
+    >
       <button
         aria-label={`${kindLabel} ${item.title}${item.status ? ` ${formatStatusLabel(item.status)}` : ""}`}
         aria-expanded={expanded}

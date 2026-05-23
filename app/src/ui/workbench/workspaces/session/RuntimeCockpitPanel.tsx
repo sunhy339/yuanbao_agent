@@ -1,4 +1,4 @@
-import { Button, StatusBadge } from "../../../v2/components/ui";
+﻿import { Button, StatusBadge } from "../../../v2/components/ui";
 import { formatStatusLabel } from "../../../copy";
 import type {
   SessionWorkspaceActiveTask,
@@ -37,6 +37,87 @@ interface CockpitSignal {
   label: string;
   value: string;
   tone?: CockpitMetric["tone"];
+}
+
+interface RuntimeHighlights {
+  latestCheck?: string;
+  blocker?: string;
+  pendingApproval?: string;
+}
+
+function formatApprovalLabel(kind?: string) {
+  if (!kind) {
+    return "审批";
+  }
+  switch (kind.toLowerCase()) {
+    case "shell":
+    case "run_command":
+      return "命令审批";
+    case "write_file":
+    case "apply_patch":
+      return "写入审批";
+    case "merge":
+      return "合并审批";
+    default:
+      return kind.replace(/_/g, " ");
+  }
+}
+
+function normalizeCommandLabel(command?: string) {
+  if (!command) {
+    return undefined;
+  }
+  return command
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\\/g, "/")
+    .replace(/^[a-z]:\/[^ ]*python(?:\.exe)?\s+-m\s+/i, "python -m ")
+    .replace(/^[a-z]:\/[^ ]*node(?:\.exe)?\s+/i, "node ")
+    .replace(/^[a-z]:\/[^ ]*git(?:\.exe)?\s+/i, "git ");
+}
+
+function isVerificationLikeCommand(command?: string) {
+  const normalized = normalizeCommandLabel(command)?.toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.startsWith("python -m pytest") ||
+    normalized.startsWith("python -m py_compile") ||
+    normalized.startsWith("node --check")
+  );
+}
+
+function getVerificationLikeCommands(activeTask?: SessionWorkspaceActiveTask | null) {
+  return (activeTask?.commands ?? []).filter((command) => isVerificationLikeCommand(command.command));
+}
+
+function summarizeVerification(activeTask?: SessionWorkspaceActiveTask | null) {
+  const verification = activeTask?.verification ?? [];
+  if (!verification.length) {
+    const latestVerificationCommand = [...getVerificationLikeCommands(activeTask)]
+      .reverse()
+      .find((command) => ["passed", "completed", "succeeded"].includes(String(command.status ?? "").toLowerCase()));
+    return latestVerificationCommand?.command ? normalizeCommandLabel(latestVerificationCommand.command) : undefined;
+  }
+  const latestPassed = [...verification]
+    .reverse()
+    .find((item) => ["passed", "completed", "succeeded"].includes(String(item.status ?? "").toLowerCase()));
+  if (latestPassed?.command) {
+    return normalizeCommandLabel(latestPassed.command);
+  }
+  return `${verification.length} 项检查`;
+}
+
+function buildChangedFilesSummary(activeTask?: SessionWorkspaceActiveTask | null) {
+  const files = activeTask?.changedFiles ?? [];
+  if (!files.length) {
+    return undefined;
+  }
+  const visibleFiles = files.slice(0, 3).map((file) => file.path);
+  return visibleFiles.length < files.length
+    ? `${visibleFiles.join("、")} 等 ${files.length} 个文件`
+    : visibleFiles.join("、");
 }
 
 function formatBudgetRatio(contextPreview?: SessionWorkspaceContextPreview) {
@@ -116,9 +197,49 @@ function isProviderTrace(trace: SessionWorkspaceTrace) {
   );
 }
 
+function buildHighlights(
+  activeTask?: SessionWorkspaceActiveTask | null,
+  approvals?: SessionWorkspaceApproval[],
+) {
+  const latestPassedVerification = latestWorkspaceVerificationSignal(activeTask);
+  const latestFailure = latestWorkspaceFailureSignal(activeTask);
+  const blockingApproval = latestBlockingApproval(approvals);
+  const hasSuccessfulVerification = Boolean(latestPassedVerification?.value);
+  const hasPendingApproval = Boolean(blockingApproval?.summary || blockingApproval?.title);
+  return {
+    latestCheck: latestPassedVerification?.value,
+    blocker: hasPendingApproval ? blockingApproval?.summary || blockingApproval?.title : hasSuccessfulVerification ? undefined : latestFailure?.value,
+    pendingApproval: blockingApproval?.summary || blockingApproval?.title,
+  } satisfies RuntimeHighlights;
+}
+
 function isMcpSkillTrace(trace: SessionWorkspaceTrace) {
   const haystack = `${trace.type} ${trace.source ?? ""} ${trace.title ?? ""} ${trace.summary ?? ""}`.toLowerCase();
   return haystack.includes("mcp") || haystack.includes("skill") || haystack.includes("tool_recovery");
+}
+
+function isUsefulProviderSignal(signal: CockpitSignal) {
+  const label = signal.label.toLowerCase();
+  const value = signal.value.toLowerCase();
+  if (/provider\.failure\.recovery_decision|provider\.preflight|agent\.decision/.test(label)) {
+    return false;
+  }
+  if (value.startsWith("{") || value.startsWith("[")) {
+    return false;
+  }
+  return signal.tone === "danger" || signal.tone === "warning";
+}
+
+function isUsefulMcpSignal(signal: CockpitSignal) {
+  const label = signal.label.toLowerCase();
+  const value = signal.value.toLowerCase();
+  if (/tool_recovery|agent\.decision/.test(label)) {
+    return false;
+  }
+  if (value.startsWith("{") || value.startsWith("[")) {
+    return false;
+  }
+  return signal.tone === "danger" || signal.tone === "warning";
 }
 
 function approvalAuditSignals(completionEvidence: ReturnType<typeof latestCompletionEvidence>): CockpitSignal[] {
@@ -127,14 +248,14 @@ function approvalAuditSignals(completionEvidence: ReturnType<typeof latestComple
   const signals = compactSignals([
     counts
       ? {
-          label: "Approval audit",
-          value: `${counts.approved ?? 0} approved / ${counts.pending ?? 0} pending / ${counts.rejected ?? 0} rejected`,
+          label: "审批记录",
+          value: `${counts.approved ?? 0} 已批准 / ${counts.pending ?? 0} 待处理 / ${counts.rejected ?? 0} 已拒绝`,
           tone: (counts.rejected ?? 0) > 0 ? "danger" : (counts.pending ?? 0) > 0 ? "warning" : "success",
         }
       : null,
     audit?.completionAdvisor
       ? {
-          label: "Completion advisor",
+          label: "完成建议",
           value: compactSignals([
             { label: "source", value: audit.completionAdvisor.source ?? "" },
             {
@@ -170,28 +291,28 @@ function contextSignals(
   return compactSignals([
     budget
       ? {
-          label: "Budget",
+          label: "预算",
           value: `${budget.percent}% (${budget.used}/${budget.max})`,
           tone: budget.tone,
         }
       : null,
     stats?.trimmedSections?.length
       ? {
-          label: "Trimmed",
+          label: "已裁剪",
           value: stats.trimmedSections.join(", "),
           tone: "warning",
         }
       : null,
     stats?.droppedSections?.length
       ? {
-          label: "Dropped",
+          label: "已丢弃",
           value: stats.droppedSections.join(", "),
           tone: "danger",
         }
       : null,
     taskFocus?.currentStep
       ? {
-          label: "Current step",
+          label: "当前步骤",
           value: taskFocus.currentStep,
           tone: "info",
         }
@@ -204,18 +325,10 @@ function workflowSignals(activeTask?: SessionWorkspaceActiveTask | null): Cockpi
   const convergence = asRecord(workflow?.convergence);
   const takeover = asRecord(workflow?.userTakeover);
   const automation = asRecord(workflow?.automation);
-  const status = activeTask?.status?.toLowerCase();
   return compactSignals([
-    status
-      ? {
-          label: "Task state",
-          value: status,
-          tone: status === "paused" ? "warning" : status === "failed" ? "danger" : "neutral",
-        }
-      : null,
     convergence
       ? {
-          label: "Convergence",
+          label: "收敛状态",
           value: [
             readWorkflowString(convergence, "state"),
             readWorkflowBoolean(convergence, "resumable") ? "resumable" : "",
@@ -228,30 +341,30 @@ function workflowSignals(activeTask?: SessionWorkspaceActiveTask | null): Cockpi
       : null,
     readWorkflowString(convergence, "targetGoal")
       ? {
-          label: "Target goal",
+          label: "目标",
           value: readWorkflowString(convergence, "targetGoal") ?? "",
           tone: "primary",
         }
       : null,
     readWorkflowString(convergence, "handoffFocus")
       ? {
-          label: "Handoff focus",
+          label: "接力焦点",
           value: readWorkflowString(convergence, "handoffFocus") ?? "",
           tone: "info",
         }
       : null,
     takeover
       ? {
-          label: "User takeover",
+          label: "人工接管",
           value: [readWorkflowString(takeover, "state"), readWorkflowString(takeover, "intent")]
             .filter(Boolean)
             .join(" | ") || "recorded",
           tone: "info",
         }
       : null,
-    readWorkflowString(automation, "level")
+    readWorkflowString(automation, "level") && (convergence || takeover)
       ? {
-          label: "Automation",
+          label: "自动化",
           value: readWorkflowString(automation, "level") ?? "",
           tone: "neutral",
         }
@@ -260,27 +373,226 @@ function workflowSignals(activeTask?: SessionWorkspaceActiveTask | null): Cockpi
 }
 
 function workspaceSignals(activeTask?: SessionWorkspaceActiveTask | null): CockpitSignal[] {
-  const latestCommands = [...(activeTask?.commands ?? [])].slice(-3).reverse();
-  const latestVerification = [...(activeTask?.verification ?? [])].slice(-3).reverse();
+  const commands = activeTask?.commands ?? [];
+  const verification = activeTask?.verification ?? [];
+  const verificationCommands = getVerificationLikeCommands(activeTask);
+  const successfulCommands = [...commands]
+    .filter((command) => command.status === "completed" || command.status === "passed")
+    .slice(-2)
+    .reverse();
+  const blockingCommands = [...commands]
+    .filter((command) => command.status === "failed" || command.status === "error")
+    .slice(-1)
+    .reverse();
+  const latestVerification = [...verification].slice(-3).reverse();
+  const passedVerification = verification.filter((item) => item.status === "passed" || item.status === "completed");
+  const failedVerification = verification.filter((item) => item.status === "failed" || item.status === "error");
+  const passedVerificationCommands = verificationCommands.filter((item) =>
+    ["passed", "completed", "succeeded"].includes(String(item.status ?? "").toLowerCase()),
+  );
+  const latestFailure = [...commands]
+    .reverse()
+    .find((command) => command.status === "failed" || command.status === "error");
+
   return compactSignals([
     activeTask?.changedFiles?.length
       ? {
-          label: "Changed files",
-          value: activeTask.changedFiles.slice(0, 4).map((file) => file.path).join(", "),
+          label: "变更文件",
+          value: buildChangedFilesSummary(activeTask) ?? activeTask.changedFiles.slice(0, 4).map((file) => file.path).join(", "),
           tone: "primary",
         }
       : null,
-    ...latestCommands.map((command): CockpitSignal => ({
-      label: "Command",
-      value: [command.command, command.status].filter(Boolean).join(" | "),
-      tone: command.status === "failed" ? "danger" : command.status === "completed" ? "success" : "neutral",
+    (passedVerification.length || passedVerificationCommands.length)
+      ? {
+          label: "验证结果",
+          value: summarizeVerification(activeTask) ?? `${passedVerification.length || passedVerificationCommands.length} 项通过`,
+          tone: failedVerification.length ? "warning" : "success",
+        }
+      : null,
+    ...successfulCommands.map((command): CockpitSignal => ({
+      label: "最近命令",
+      value: normalizeCommandLabel(command.command) ?? command.command,
+      tone: "success",
     })),
+    ...(!successfulCommands.length ? blockingCommands : []).map((command): CockpitSignal => ({
+      label: "需要处理",
+      value: [normalizeCommandLabel(command.command) ?? command.command, formatStatusLabel(command.status)].filter(Boolean).join(" | "),
+      tone: "danger",
+    })),
+    ...(!successfulCommands.length && !blockingCommands.length && latestFailure
+      ? [{
+          label: "最近失败",
+          value: normalizeCommandLabel(latestFailure.command) ?? latestFailure.command,
+          tone: "danger" as const,
+        }]
+      : []),
     ...latestVerification.map((item): CockpitSignal => ({
-      label: "Verification",
-      value: [item.command ?? item.id ?? "check", item.status].filter(Boolean).join(" | "),
+      label: "检查",
+      value: [normalizeCommandLabel(item.command) ?? item.command ?? item.id ?? "check", formatStatusLabel(item.status)].filter(Boolean).join(" | "),
       tone: item.status === "failed" || item.status === "error" ? "danger" : item.status === "passed" ? "success" : "neutral",
     })),
+    ...(!latestVerification.length
+      ? passedVerificationCommands
+          .slice(-2)
+          .reverse()
+          .map((item): CockpitSignal => ({
+            label: "检查",
+            value: [normalizeCommandLabel(item.command) ?? item.command, formatStatusLabel(item.status ?? "completed")]
+              .filter(Boolean)
+              .join(" | "),
+            tone: "success",
+          }))
+      : []),
   ], 6);
+}
+
+function latestWorkspaceVerificationSignal(activeTask?: SessionWorkspaceActiveTask | null): CockpitSignal | null {
+  const verification = activeTask?.verification ?? [];
+  const latestPassed = [...verification]
+    .reverse()
+    .find((item) => ["passed", "completed", "succeeded"].includes(String(item.status ?? "").toLowerCase()));
+  if (!latestPassed) {
+    const latestPassedCommand = [...getVerificationLikeCommands(activeTask)]
+      .reverse()
+      .find((item) => ["passed", "completed", "succeeded"].includes(String(item.status ?? "").toLowerCase()));
+    if (!latestPassedCommand) {
+      return null;
+    }
+    return {
+      label: "最近验证",
+      value: [normalizeCommandLabel(latestPassedCommand.command) ?? latestPassedCommand.command, formatStatusLabel(latestPassedCommand.status ?? "completed")]
+        .filter(Boolean)
+        .join(" · "),
+      tone: "success",
+    };
+  }
+  return {
+    label: "最近验证",
+    value:
+      latestPassed.summary ||
+      [normalizeCommandLabel(latestPassed.command) ?? latestPassed.command ?? latestPassed.id ?? "check", formatStatusLabel(latestPassed.status)]
+        .filter(Boolean)
+        .join(" · "),
+    tone: "success",
+  };
+}
+
+function latestWorkspaceFailureSignal(activeTask?: SessionWorkspaceActiveTask | null): CockpitSignal | null {
+  const commands = activeTask?.commands ?? [];
+  const latestFailure = [...commands]
+    .reverse()
+    .find((command) => ["failed", "error"].includes(String(command.status ?? "").toLowerCase()));
+  if (!latestFailure) {
+    return null;
+  }
+  return {
+    label: "待处理",
+    value: [normalizeCommandLabel(latestFailure.command) ?? latestFailure.command, formatStatusLabel(latestFailure.status)]
+      .filter(Boolean)
+      .join(" · "),
+    tone: "danger",
+  };
+}
+
+function buildNextCheckLabel({
+  gateStatus,
+  blockingApproval,
+  activeTask,
+}: {
+  gateStatus?: string;
+  blockingApproval?: ReturnType<typeof latestBlockingApproval>;
+  activeTask?: SessionWorkspaceActiveTask | null;
+}) {
+  if (gateStatus) {
+    return gateStatus.replace(/_/g, " ");
+  }
+  if (blockingApproval) {
+    return blockingApproval.summary || blockingApproval.title;
+  }
+  if (activeTask?.verification?.length) {
+    return "等待验证收口";
+  }
+  if (activeTask?.commands?.length || activeTask?.changedFiles?.length) {
+    return "检查最新结果";
+  }
+  return "观察执行进展";
+}
+
+function buildAcceptanceSummary(
+  completionEvidence: ReturnType<typeof latestCompletionEvidence>,
+  activeTask?: SessionWorkspaceActiveTask | null,
+) {
+  if (completionEvidence?.issues?.[0]) {
+    return completionEvidence.issues[0];
+  }
+  if (completionEvidence?.evidenceLevel) {
+    return completionEvidence.evidenceLevel;
+  }
+  const passedChecks =
+    activeTask?.verification?.filter((item) => item.status === "passed" || item.status === "completed").length ?? 0;
+  if (passedChecks > 0) {
+    return `${passedChecks} 项检查已经通过`;
+  }
+  return "当前没有阻塞证据";
+}
+
+function buildCompletedSummary(activeTask?: SessionWorkspaceActiveTask | null) {
+  const changedFiles = activeTask?.changedFiles?.length ?? 0;
+  const passedChecks =
+    activeTask?.verification?.filter((item) => item.status === "passed" || item.status === "completed").length ?? 0;
+  if (changedFiles > 0 && passedChecks > 0) {
+    return `已完成修改，并通过 ${passedChecks} 项检查`;
+  }
+  if (changedFiles > 0) {
+    return `已完成修改，共处理 ${changedFiles} 个文件`;
+  }
+  if (passedChecks > 0) {
+    return `本轮未改代码，已通过 ${passedChecks} 项检查`;
+  }
+  return "本轮任务已经完成";
+}
+
+function buildCurrentStatusLabel(activeTask?: SessionWorkspaceActiveTask | null) {
+  if (!activeTask) {
+    return "等待新任务";
+  }
+  const status = activeTask?.status?.toLowerCase();
+  if (status === "completed" || status === "succeeded") {
+    return "本轮任务已完成";
+  }
+  if (status === "failed" || status === "error" || status === "cancelled") {
+    return "有问题需要继续处理";
+  }
+  if (status === "waiting_approval" || status === "paused") {
+    return "等待继续动作";
+  }
+  return "继续观察执行进展";
+}
+
+function buildPrimaryStepLabel(activeTask?: SessionWorkspaceActiveTask | null) {
+  if (!activeTask) {
+    return "等待新任务";
+  }
+  const status = activeTask?.status?.toLowerCase();
+  if (status === "completed" || status === "succeeded") {
+    return "本轮任务已完成";
+  }
+  if (status === "failed" || status === "error" || status === "cancelled") {
+    return "需要继续处理失败项";
+  }
+  if (status === "waiting_approval" || status === "paused") {
+    return "等待继续动作";
+  }
+  if (activeTask?.currentStep) {
+    return activeTask.currentStep;
+  }
+  const activePlanStep = activeTask?.planSteps?.find((step) =>
+    ["active", "running", "started", "pending", "verifying"].includes(String(step.status ?? "").toLowerCase()),
+  );
+  if (activePlanStep?.title) {
+    return activePlanStep.title;
+  }
+  return buildCurrentStatusLabel(activeTask);
 }
 
 function CockpitDetailSection({
@@ -325,24 +637,63 @@ function buildCockpitMetrics({
     0;
   const commands = activeTask?.commands?.length ?? 0;
   const verification = activeTask?.verification ?? [];
-  const passedVerification = verification.filter((item) => item.status === "passed" || item.status === "completed").length;
+  const verificationCommands = getVerificationLikeCommands(activeTask);
+  const passedVerification =
+    verification.filter((item) => item.status === "passed" || item.status === "completed").length ||
+    verificationCommands.filter((item) => ["passed", "completed", "succeeded"].includes(String(item.status ?? "").toLowerCase())).length;
   const failedVerification = verification.filter((item) => item.status === "failed" || item.status === "error").length;
   const pendingApprovals = approvals?.filter((approval) => approval.status === "pending").length ?? 0;
   const failedSignals = traces?.filter((trace) =>
     ["failed", "error", "cancelled"].includes(String(trace.status ?? "").toLowerCase()),
   ).length ?? 0;
 
-  return [
-    { label: "Files", value: String(changedFiles), tone: changedFiles > 0 ? "primary" : "neutral" },
-    { label: "Commands", value: String(commands), tone: commands > 0 ? "primary" : "neutral" },
+  const metrics: CockpitMetric[] = [
+    { label: "文件", value: changedFiles ? `${changedFiles}` : "0", tone: changedFiles > 0 ? "primary" : "neutral" },
+    { label: "命令", value: commands ? String(commands) : "0", tone: commands > 0 ? "primary" : "neutral" },
     {
-      label: "Verified",
-      value: verification.length ? `${passedVerification}/${verification.length}` : "0",
+      label: "验证",
+      value: verification.length ? `${passedVerification} 通过` : "0",
       tone: failedVerification > 0 ? "danger" : passedVerification > 0 ? "success" : "neutral",
     },
-    { label: "Approvals", value: String(pendingApprovals), tone: pendingApprovals > 0 ? "warning" : "neutral" },
-    { label: "Signals", value: String(failedSignals), tone: failedSignals > 0 ? "danger" : "neutral" },
+    { label: "审批", value: pendingApprovals ? `${pendingApprovals} 待处理` : "0", tone: pendingApprovals > 0 ? "warning" : "neutral" },
+    { label: "异常", value: failedSignals ? String(failedSignals) : "0", tone: failedSignals > 0 ? "danger" : "neutral" },
   ];
+
+  return metrics.filter((metric) => {
+    if (metric.label === "文件") return changedFiles > 0;
+    if (metric.label === "命令") return commands > 0;
+    if (metric.label === "验证") return verification.length > 0 || verificationCommands.length > 0;
+    if (metric.label === "审批") return pendingApprovals > 0;
+    if (metric.label === "异常") return failedSignals > 0;
+    return false;
+  });
+}
+
+function shouldShowMetrics({
+  activeTask,
+  metrics,
+  blockingApproval,
+  compactOperationalSignals,
+}: {
+  activeTask?: SessionWorkspaceActiveTask | null;
+  metrics: CockpitMetric[];
+  blockingApproval?: ReturnType<typeof latestBlockingApproval>;
+  compactOperationalSignals: CockpitSignal[];
+}) {
+  const status = activeTask?.status?.toLowerCase();
+  if (!metrics.length) {
+    return false;
+  }
+  if (blockingApproval) {
+    return true;
+  }
+  if (compactOperationalSignals.some((signal) => signal.tone === "danger" || signal.tone === "warning")) {
+    return true;
+  }
+  if (["completed", "succeeded"].includes(status ?? "")) {
+    return metrics.some((metric) => metric.label === "文件");
+  }
+  return true;
 }
 
 export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
@@ -365,15 +716,19 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
   const metrics = buildCockpitMetrics(props);
   const gateStatus = completionEvidence?.gateStatus;
   const reviewSummary = completionEvidence?.summary;
-  const primarySummary = reviewSummary || blockingApproval?.summary || buildTaskProgressSummary(activeTask);
+  const primarySummary =
+    (["completed", "succeeded"].includes(String(activeTask?.status ?? "").toLowerCase()) ? buildCompletedSummary(activeTask) : undefined) ||
+    reviewSummary ||
+    blockingApproval?.summary ||
+    (activeTask ? buildTaskProgressSummary(activeTask) : "发送一条需求后，我们就开始分析、修改和验证。");
   const acceptanceSignals = compactSignals([
-    completionEvidence?.evidenceLevel ? { label: "Evidence level", value: completionEvidence.evidenceLevel, tone: "info" } : null,
-    completionEvidence?.status ? { label: "Evidence status", value: completionEvidence.status, tone: "neutral" } : null,
+    completionEvidence?.evidenceLevel ? { label: "证据级别", value: completionEvidence.evidenceLevel, tone: "info" } : null,
+    completionEvidence?.status ? { label: "证据状态", value: completionEvidence.status, tone: "neutral" } : null,
     ...(completionEvidence?.metrics ?? []).map((metric) => ({ label: metric.label, value: metric.value, tone: "neutral" as const })),
-    ...(completionEvidence?.issues ?? []).map((issue) => ({ label: "Issue", value: issue, tone: "warning" as const })),
+    ...(completionEvidence?.issues ?? []).map((issue) => ({ label: "问题", value: issue, tone: "warning" as const })),
     completionEvidence?.reviewConclusion
       ? {
-          label: "Review conclusion",
+          label: "审核结论",
           value: [
             completionEvidence.reviewConclusion.decision,
             completionEvidence.reviewConclusion.decidedBy,
@@ -386,11 +741,13 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
       : null,
     ...approvalAuditSignals(completionEvidence),
   ], 10);
-  const providerSignals = latestTraceSignals(props.traces, isProviderTrace);
-  const mcpSkillSignals = latestTraceSignals(props.traces, isMcpSkillTrace);
+  const providerSignals = latestTraceSignals(props.traces, isProviderTrace).filter(
+    isUsefulProviderSignal,
+  );
   const contextDetailSignals = contextSignals(contextPreview, budget);
   const handoffSignals = workflowSignals(activeTask);
   const workspaceDetailSignals = workspaceSignals(activeTask);
+  const highlights = buildHighlights(activeTask, approvals);
   const taskStatus = activeTask?.status?.toLowerCase();
   const canPauseTask = Boolean(
     activeTask?.id &&
@@ -399,20 +756,74 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
   );
   const canResumeTask = Boolean(activeTask?.id && props.onResumeTask && taskStatus === "paused");
   const hasTaskActions = Boolean(props.onRefreshTask || canPauseTask || canResumeTask);
+  const hasRiskyOperationalSignals =
+    providerSignals.some((signal) => signal.tone === "danger" || signal.tone === "warning");
+  const showDeepOperationalDetails =
+    Boolean(blockingApproval) || hasRiskyOperationalSignals || acceptanceSignals.some((signal) => signal.tone === "warning" || signal.tone === "danger");
+  const showWorkflowDetails = Boolean(handoffSignals.length && (taskStatus === "paused" || taskStatus === "failed"));
+  const lowerSummaryLabel = highlights.blocker ? "待处理" : highlights.latestCheck ? "最近检查" : "当前状态";
+  const lowerSummaryValue =
+    highlights.blocker ??
+    highlights.latestCheck ??
+    (activeTask ? buildAcceptanceSummary(completionEvidence, activeTask) : blockingApproval?.summary || "等待新任务");
+  const compactOperationalSignals = compactSignals([
+    highlights.pendingApproval
+      ? { label: "待审批", value: highlights.pendingApproval, tone: "warning" as const }
+      : null,
+    ...providerSignals.slice(0, 2),
+    ...contextDetailSignals.filter((signal) => signal.tone === "warning" || signal.tone === "danger").slice(0, 2),
+  ], 4);
+  const latestWorkspaceSignals = compactSignals([
+    ...workspaceDetailSignals.slice(0, 3),
+    highlights.pendingApproval
+      ? { label: "待审批", value: highlights.pendingApproval, tone: "warning" as const }
+      : null,
+  ], 4);
+  const showMetrics = shouldShowMetrics({
+    activeTask,
+    metrics,
+    blockingApproval,
+    compactOperationalSignals,
+  });
+  const isCompletedTask = ["completed", "succeeded"].includes(taskStatus ?? "");
+  const shouldShowContextCard = Boolean(budget && !isCompletedTask);
+  const contextBudgetCard = shouldShowContextCard && budget
+    ? {
+        label: "上下文预算",
+        value: `${budget.percent}%`,
+        meta: `${budget.used}/${budget.max}`,
+        tone: budget.tone,
+      }
+    : null;
+  const visibleLowerCards = [
+    { label: "任务状态", value: buildCurrentStatusLabel(activeTask) },
+    { label: lowerSummaryLabel, value: lowerSummaryValue },
+    contextBudgetCard,
+  ].filter(Boolean) as Array<{ label: string; value: string; meta?: string; tone?: "success" | "warning" | "danger" }>;
+  const compactDetailsLabel = isCompletedTask ? "摘要" : "最近动态";
+  const compactDetailsSummary = isCompletedTask
+    ? "当前无需额外关注"
+    : compactOperationalSignals.length
+      ? `${compactOperationalSignals.length} 条摘要`
+      : "当前平稳";
+  const compactSignalsForDisplay = isCompletedTask
+    ? compactOperationalSignals.filter((signal) => signal.tone === "warning" || signal.tone === "danger")
+    : compactOperationalSignals;
+  const hasCompactDetailSections = Boolean(compactSignalsForDisplay.length || showDeepOperationalDetails);
 
   return (
-    <section className="runtime-cockpit-panel" aria-label="Runtime cockpit">
+    <section className="runtime-cockpit-panel" aria-label="运行态概览">
       <header className="runtime-cockpit-header">
         <div>
-          <p className="session-kicker">Runtime cockpit</p>
-          <h2>{activeTask?.goal || "No active task"}</h2>
+          <p className="session-kicker">运行态</p>
+          <h2>{activeTask?.goal || (blockingApproval ? "等待你处理审批" : "等待新任务")}</h2>
         </div>
         <div className="runtime-cockpit-status">
           <StatusBadge label={getTaskPhaseLabel(phase)} tone={getTaskPhaseTone(phase)} compact />
           {gateStatus ? <StatusBadge label={gateStatus} tone="warning" compact /> : null}
           {blockingApproval ? (
             <StatusBadge
-              label={formatStatusLabel(blockingApproval.kind ?? "approval")}
+              label={formatApprovalLabel(blockingApproval.kind ?? "approval")}
               tone={getStatusTone(blockingApproval.status)}
               compact
             />
@@ -423,7 +834,7 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
       <p className="runtime-cockpit-summary">{primarySummary}</p>
 
       {hasTaskActions ? (
-        <div className="runtime-cockpit-actions" aria-label="Resumable task actions">
+        <div className="runtime-cockpit-actions" aria-label="任务操作">
           {props.onRefreshTask ? (
             <Button
               size="sm"
@@ -433,7 +844,7 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
                 void props.onRefreshTask?.();
               }}
             >
-              Refresh
+              刷新
             </Button>
           ) : null}
           {props.onPauseTask ? (
@@ -448,7 +859,7 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
                 }
               }}
             >
-              Pause
+              暂停
             </Button>
           ) : null}
           {props.onResumeTask ? (
@@ -463,81 +874,74 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
                 }
               }}
             >
-              Resume
+              继续
             </Button>
           ) : null}
         </div>
       ) : null}
 
-      <dl className="runtime-cockpit-metrics">
-        {metrics.map((metric) => (
-          <div key={metric.label} data-tone={metric.tone ?? "neutral"}>
-            <dt>{metric.label}</dt>
-            <dd>{metric.value}</dd>
-          </div>
-        ))}
-      </dl>
+      {showMetrics ? (
+        <dl className="runtime-cockpit-metrics">
+          {metrics.map((metric) => (
+            <div key={metric.label} data-tone={metric.tone ?? "neutral"}>
+              <dt>{metric.label}</dt>
+              <dd>{metric.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
 
       <div className="runtime-cockpit-lower">
-        <article>
-          <span>Next check</span>
-          <strong>
-            {gateStatus
-              ? gateStatus.replace(/_/g, " ")
-              : blockingApproval
-                ? "approval required"
-                : activeTask?.verification?.length
-                  ? "review verification"
-                  : "watch execution"}
-          </strong>
-        </article>
-        <article>
-          <span>Acceptance</span>
-          <strong>{completionEvidence?.issues?.[0] ?? completionEvidence?.evidenceLevel ?? "no blocking evidence"}</strong>
-        </article>
-        {budget ? (
-          <article className="runtime-cockpit-budget" data-tone={budget.tone}>
-            <span>Context budget</span>
-            <strong>{budget.percent}%</strong>
-            <i>
-              {budget.used}/{budget.max}
-            </i>
+        {visibleLowerCards.map((card) => (
+          <article key={card.label} className={card.label === "上下文预算" ? "runtime-cockpit-budget" : undefined} data-tone={card.tone}>
+            <span>{card.label}</span>
+            <strong>{card.value}</strong>
+            {card.meta ? <i>{card.meta}</i> : null}
           </article>
-        ) : null}
+        ))}
       </div>
 
-      <div className="runtime-cockpit-details" aria-label="Runtime cockpit drill-down">
-        <CockpitDetailSection
-          title="Acceptance audit"
-          summary={gateStatus ? gateStatus.replace(/_/g, " ") : "evidence trail"}
-          signals={acceptanceSignals}
-        />
-        <CockpitDetailSection
-          title="Provider recovery"
-          summary={providerSignals.length ? `${providerSignals.length} signal(s)` : "quiet"}
-          signals={providerSignals}
-        />
-        <CockpitDetailSection
-          title="MCP / Skills"
-          summary={mcpSkillSignals.length ? `${mcpSkillSignals.length} signal(s)` : "quiet"}
-          signals={mcpSkillSignals}
-        />
-        <CockpitDetailSection
-          title="Memory / Context"
-          summary={budget ? `${budget.percent}% budget` : "no pressure"}
-          signals={contextDetailSignals}
-        />
-        <CockpitDetailSection
-          title="Handoff actions"
-          summary={handoffSignals.length ? `${handoffSignals.length} signal(s)` : "quiet"}
-          signals={handoffSignals}
-        />
-        <CockpitDetailSection
-          title="Workspace status"
-          summary={workspaceDetailSignals.length ? `${workspaceDetailSignals.length} latest signal(s)` : "unchanged"}
-          signals={workspaceDetailSignals}
-        />
-      </div>
+      {hasCompactDetailSections ? (
+        <div className="runtime-cockpit-details" aria-label="运行态详情">
+          {compactSignalsForDisplay.length ? (
+            <CockpitDetailSection
+              title={compactDetailsLabel}
+              summary={compactDetailsSummary}
+              signals={compactSignalsForDisplay}
+            />
+          ) : null}
+          {showDeepOperationalDetails ? (
+            <>
+              <CockpitDetailSection
+                title="完成依据"
+                summary={gateStatus ? gateStatus.replace(/_/g, " ") : "证据轨迹"}
+                signals={acceptanceSignals}
+              />
+              {providerSignals.length ? (
+                <CockpitDetailSection
+                  title="模型异常"
+                  summary={`${providerSignals.length} 条信号`}
+                  signals={providerSignals}
+                />
+              ) : null}
+              {contextDetailSignals.length ? (
+                <CockpitDetailSection
+                  title="上下文"
+                  summary={budget ? `${budget.percent}% 预算` : "当前平稳"}
+                  signals={contextDetailSignals}
+                />
+              ) : null}
+              {showWorkflowDetails ? (
+                <CockpitDetailSection
+                  title="接力状态"
+                  summary={`${handoffSignals.length} 条信号`}
+                  signals={handoffSignals}
+                />
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -93,7 +93,8 @@ export const QUESTION_GOAL_RE = new RegExp(
 );
 export const GENERIC_ANSWER_STEP_RE =
   /\b(inspect|search|summarize|understand|locate)\b|\u7406\u89e3|\u5b9a\u4f4d|\u67e5\u627e|\u6574\u7406|\u7b54\u590d|\u603b\u7ed3/i;
-export const AGENT_WORK_REQUEST_RE = /\b(agent|worker|subagent|child task|childtask)\b|子任务|协作|多个\s*agent|多\s*agent|起\s*agent/i;
+export const AGENT_WORK_REQUEST_RE =
+  /\b(agent|agents|worker|workers|subagent|subagents|child task|child tasks|childtask|childtasks)\b|\bmultiple\s+agents?\b|子任务|协作|多个\s*agent|多\s*agent|起\s*agent/i;
 
 export function hasTaskWorkEvidence(activeTask?: SessionWorkspaceActiveTask | null) {
   return Boolean(

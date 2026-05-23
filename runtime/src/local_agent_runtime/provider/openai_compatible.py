@@ -1135,6 +1135,7 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         response_json: dict[str, Any],
         *,
         tool_name_map: dict[str, str] | None = None,
+        allow_incomplete_tool_calls: bool = False,
     ) -> dict[str, Any]:
         content_parts: list[str] = []
         output_text = response_json.get("output_text")
@@ -1153,7 +1154,11 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
                         content_parts.extend(self._responses_text_parts(item.get("content")))
                     continue
                 if item_type == "function_call":
-                    tool_calls.append(self._normalize_responses_tool_call(item, tool_name_map=tool_name_map))
+                    try:
+                        tool_calls.append(self._normalize_responses_tool_call(item, tool_name_map=tool_name_map))
+                    except ProviderAdapterError:
+                        if not allow_incomplete_tool_calls:
+                            raise
         return {
             "message": {
                 "role": "assistant",
@@ -1212,39 +1217,47 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
                 delta = event.get("delta")
                 if isinstance(delta, str) and delta:
                     if "function_call_arguments" in event_type:
-                        item_id = str(event.get("item_id") or event.get("output_index") or "0")
-                        function_calls.setdefault(item_id, {"id": item_id, "type": "function", "name": None, "arguments": ""})
+                        item_id = self._responses_stream_tool_call_key(event)
+                        function_calls.setdefault(item_id, self._responses_stream_tool_call_seed(event))
                         function_calls[item_id]["arguments"] += delta
                     else:
                         content_parts.append(delta)
                         yield {"type": "content_delta", "delta": delta}
 
-            if event_type.endswith(".done") or event_type == "response.output_item.done":
+            if event_type in {"response.output_item.added", "response.output_item.done"} or event_type.endswith(".done"):
                 item = event.get("item")
                 if isinstance(item, dict) and item.get("type") == "function_call":
-                    call = self._normalize_responses_tool_call(item, tool_name_map=tool_name_map)
-                    key = call.get("id") or str(event.get("output_index") or len(function_calls))
-                    function_calls[str(key)] = {
-                        "id": call.get("id"),
-                        "type": "function",
-                        "name": call.get("name"),
-                        "arguments": json.dumps(call.get("arguments") or {}, ensure_ascii=False),
-                    }
+                    item_id = self._responses_stream_tool_call_key(event, item=item)
+                    current = function_calls.setdefault(item_id, self._responses_stream_tool_call_seed(event, item=item))
+                    name = item.get("name")
+                    if isinstance(name, str) and name:
+                        current["name"] = self._original_tool_name(name, tool_name_map)
+                    raw_id = item.get("call_id") or item.get("id")
+                    if isinstance(raw_id, str) and raw_id:
+                        current["id"] = raw_id
+                    arguments = item.get("arguments")
+                    if isinstance(arguments, str) and arguments:
+                        current["arguments"] = arguments
 
             if event_type == "response.completed":
                 finish_reason = "completed"
                 break
 
         if response_json is not None:
-            response = self._normalize_responses_response(response_json, tool_name_map=tool_name_map)
+            response = self._normalize_responses_response(
+                response_json,
+                tool_name_map=tool_name_map,
+                allow_incomplete_tool_calls=bool(function_calls),
+            )
             message = response.get("message") if isinstance(response.get("message"), dict) else {}
             if content_parts and not message.get("content"):
                 message["content"] = "".join(content_parts)
             if function_calls and not message.get("tool_calls"):
+                merged_calls = self._merge_responses_stream_tool_call_parts(function_calls.values())
                 message["tool_calls"] = self._normalize_tool_calls(
                     [
                         {"id": item["id"], "type": item["type"], "function": {"name": item["name"], "arguments": item["arguments"]}}
-                        for item in function_calls.values()
+                        for item in merged_calls
                     ],
                     tool_name_map=tool_name_map,
                 )
@@ -1264,6 +1277,41 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         )
         yield {"type": "finish_reason", "finish_reason": finish_reason}
         yield {"type": "final", "response": response}
+
+    @staticmethod
+    def _responses_stream_tool_call_key(event: dict[str, Any], *, item: dict[str, Any] | None = None) -> str:
+        for value in (event.get("item_id"), event.get("output_index")):
+            if value is not None and value != "":
+                return str(value)
+        if isinstance(item, dict):
+            for value in (item.get("id"), item.get("call_id")):
+                if value is not None and value != "":
+                    return str(value)
+        return "0"
+
+    @staticmethod
+    def _responses_stream_tool_call_seed(event: dict[str, Any], *, item: dict[str, Any] | None = None) -> dict[str, Any]:
+        raw_id = None
+        if isinstance(item, dict):
+            raw_id = item.get("call_id") or item.get("id")
+        if not isinstance(raw_id, str) or not raw_id:
+            raw_id = event.get("call_id") or event.get("item_id") or event.get("output_index") or "0"
+        return {"id": str(raw_id), "type": "function", "name": None, "arguments": ""}
+
+    @staticmethod
+    def _merge_responses_stream_tool_call_parts(parts: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+        calls = [dict(part) for part in parts]
+        named = [call for call in calls if isinstance(call.get("name"), str) and call.get("name")]
+        unnamed = [call for call in calls if not (isinstance(call.get("name"), str) and call.get("name"))]
+        if len(named) == 1:
+            target = named[0]
+            for call in unnamed:
+                arguments = call.get("arguments")
+                if isinstance(arguments, str) and arguments:
+                    existing = target.get("arguments")
+                    target["arguments"] = (existing if isinstance(existing, str) else "") + arguments
+            return named
+        return [call for call in calls if isinstance(call.get("name"), str) and call.get("name") or not named]
 
     def _responses_text_parts(self, content: Any) -> list[str]:
         if isinstance(content, str):

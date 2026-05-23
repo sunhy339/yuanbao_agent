@@ -1153,6 +1153,85 @@ def test_openai_responses_streams_when_enabled() -> None:
     assert events[-1]["response"]["message"]["content"] == "Hello"
 
 
+def test_openai_responses_stream_merges_function_call_parts() -> None:
+    stream_calls: list[dict[str, Any]] = []
+
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**kwargs: Any) -> tuple[int, Any]:
+        stream_calls.append(kwargs)
+        return 200, iter(
+            [
+                b'event: response.created\n',
+                b'data: {"type":"response.created","response":{"id":"resp_tool","model":"test-responses","status":"in_progress","output":[]}}\n\n',
+                b'event: response.output_item.added\n',
+                b'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"workspace_read","arguments":""}}\n\n',
+                b'event: response.function_call_arguments.delta\n',
+                b'data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\\"path\\":"}\n\n',
+                b'event: response.function_call_arguments.delta\n',
+                b'data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"\\"README.md\\"}"}\n\n',
+                b'event: response.output_item.done\n',
+                b'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1"}}\n\n',
+                b'event: response.completed\n',
+                b'data: {"type":"response.completed","response":{"id":"resp_tool","model":"test-responses","status":"completed","output":[],"usage":{"total_tokens":5}}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-responses",
+            "streamingEnabled": True,
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "model": "test-chat",
+        }
+    }
+
+    events = list(
+        adapter.chat_stream(
+            messages=[{"role": "user", "content": "read"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "workspace.read",
+                        "description": "Read a file",
+                        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+                    },
+                }
+            ],
+            context=context,
+        )
+    )
+
+    assert len(stream_calls) == 1
+    assert events[-1]["type"] == "final"
+    assert events[-1]["response"]["message"]["tool_calls"] == [
+        {
+            "id": "call_1",
+            "type": "function",
+            "name": "workspace.read",
+            "arguments": {"path": "README.md"},
+        }
+    ]
+
+
 def test_plain_text_response_is_normalized() -> None:
     def fake_post(**_kwargs: Any) -> tuple[int, bytes]:
         return 200, b'{"id":"chatcmpl_1","model":"test-chat","choices":[{"message":{"role":"assistant","content":"hello"}}],"usage":{"total_tokens":7}}'
@@ -1261,7 +1340,7 @@ def test_provider_trace_records_api_format_and_request_path() -> None:
     assert payload["requestPath"] == "/v1/responses"
     assert payload["messageCount"] == 1
     assert payload["toolCount"] == 1
-    assert probe._should_stream_provider(context) is False
+    assert probe._should_stream_provider(context) is True
 
 
 def test_provider_trace_defaults_anthropic_mode_to_messages() -> None:
@@ -1330,4 +1409,4 @@ def test_provider_trace_uses_active_profile_api_format() -> None:
     assert payload["apiFormat"] == "openai-responses"
     assert payload["baseUrl"] == "https://profile.example.test/v1"
     assert payload["requestPath"] == "/v1/responses"
-    assert probe._should_stream_provider(context) is False
+    assert probe._should_stream_provider(context) is True

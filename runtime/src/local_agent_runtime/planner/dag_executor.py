@@ -332,6 +332,15 @@ class DAGExecutor:
                     **({"mcpPolicy": dict(mcp_policy)} if isinstance(mcp_policy, dict) else {}),
                     **({"activeWorktree": dict(active_worktree)} if isinstance(active_worktree, dict) else {}),
                     **({"timeoutMs": child_timeout_ms} if child_timeout_ms is not None else {}),
+                    **(
+                        {
+                            "_eventCallback": (
+                                lambda details, sid=subtask_id: on_subtask_callback(sid, "progress", details)
+                            )
+                        }
+                        if on_subtask_callback is not None
+                        else {}
+                    ),
                 })
                 dispatch_status = str(dispatch_result.get("status") or "").strip().lower()
                 if dispatch_status == "waiting_approval":

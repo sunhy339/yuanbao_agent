@@ -810,7 +810,7 @@ class ProviderTurnMixin:
             return False
         provider_config = self._provider_trace_provider_config(provider_config)
         api_format = self._provider_trace_api_format(provider_config)
-        if api_format != "openai-chat":
+        if api_format not in {"openai-chat", "openai-responses"}:
             return False
         stream_flag = self._provider_stream_flag(provider_config)
         if stream_flag is not None:

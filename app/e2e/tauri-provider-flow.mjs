@@ -131,6 +131,7 @@ function tail(value, max = 5000) {
 
 const start = Date.now();
 let exitCode = 1;
+let lastProgressAt = start;
 
 try {
   while (Date.now() - start < timeoutMs) {
@@ -143,6 +144,16 @@ try {
 
     if (child.exitCode !== null) {
       break;
+    }
+
+    const now = Date.now();
+    if (now - lastProgressAt >= 15_000) {
+      lastProgressAt = now;
+      const elapsedSeconds = Math.round((now - start) / 1000);
+      console.error(
+        `Tauri provider E2E still running after ${elapsedSeconds}s ` +
+          `(stdout ${stdout.length}B, stderr ${stderr.length}B).`,
+      );
     }
 
     await new Promise((resolve) => setTimeout(resolve, 500));

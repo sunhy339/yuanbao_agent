@@ -199,18 +199,35 @@ export function reconcileBackendMessage(
     // Try direct id match
     const idx = current.findIndex((m) => m.id === backend.id);
     if (idx >= 0) return idx;
+    // Assistant messages are created server-side, so they often do not carry a
+    // clientMessageId. Attach the backend id to the local streaming placeholder
+    // for the same session/task instead of appending a duplicate empty shell.
+    if (backend.role === "assistant") {
+      const assistantIdx = findAttachableAssistantMessageIndex(current, {
+        sessionId: backend.sessionId,
+        taskId: backend.taskId,
+      });
+      if (assistantIdx >= 0) return assistantIdx;
+    }
     return -1;
   })();
 
   if (matchIndex >= 0) {
     const local = current[matchIndex];
-    // Preserve streaming state if the local message is actively streaming
-    // (backend message for assistant streaming placeholder)
+    const localContent = local.content ?? "";
+    const backendContent = backend.content ?? "";
+    const shouldPreserveLocalContent =
+      backend.role === "assistant" &&
+      local.streaming === true &&
+      Boolean(localContent.trim()) &&
+      !backendContent.trim();
     const next = [...current];
     next[matchIndex] = {
       ...backend,
-      streaming: local.streaming,
-      placeholder: local.placeholder,
+      content: shouldPreserveLocalContent ? localContent : backendContent,
+      streaming: backend.streaming ?? local.streaming,
+      placeholder: shouldPreserveLocalContent ? local.placeholder : (backend.placeholder ?? local.placeholder),
+      status: backend.status ?? local.status,
     };
     return next;
   }
@@ -320,14 +337,65 @@ export function updateAssistantMessageByMessageId(
   current: ChatMessageView[],
   messageId: string,
   updater: (msg: ChatMessageView) => ChatMessageView,
+  options: {
+    sessionId?: string | null;
+    taskId?: string | null;
+  } = {},
 ): ChatMessageView[] {
-  const index = current.findIndex((m) => m.id === messageId);
+  const exactIndex = current.findIndex((m) => m.id === messageId);
+  const index =
+    exactIndex >= 0
+      ? exactIndex
+      : findAttachableAssistantMessageIndex(current, {
+          sessionId: options.sessionId ?? undefined,
+          taskId: options.taskId ?? undefined,
+        });
   if (index >= 0) {
     const next = [...current];
-    next[index] = updater(next[index]);
+    next[index] = updater({
+      ...next[index],
+      id: messageId,
+      taskId: options.taskId ?? next[index].taskId,
+    });
     return next;
   }
   return current;
+}
+
+function findAttachableAssistantMessageIndex(
+  messages: ChatMessageView[],
+  options: {
+    sessionId?: string;
+    taskId?: string;
+  },
+): number {
+  if (!options.sessionId) {
+    return -1;
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "assistant" || message.sessionId !== options.sessionId || message.streaming !== true) {
+      continue;
+    }
+    if (
+      options.taskId &&
+      message.taskId !== options.taskId &&
+      message.taskId !== "pending"
+    ) {
+      continue;
+    }
+    if (
+      message.placeholder === true ||
+      message.taskId === "pending" ||
+      message.id.startsWith("assistant_pending_") ||
+      message.status === "streaming"
+    ) {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 export function stopStreamingMessages(

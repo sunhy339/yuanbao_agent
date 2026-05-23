@@ -240,7 +240,11 @@ class ProviderAdapter:
             return
 
         settings = self._settings_for_request(settings, tools)
-        if settings.api_format != "openai-chat":
+        if settings.api_format == "openai-responses":
+            client = self._responses_client
+        elif settings.api_format == "openai-chat":
+            client = self._openai_client
+        else:
             response = self.chat(messages=messages, tools=tools, context=context)
             content = response["message"]["content"]
             if content:
@@ -253,7 +257,7 @@ class ProviderAdapter:
         for attempt in range(PROVIDER_RETRY_ATTEMPTS):
             emitted_event = False
             try:
-                for event in self._openai_client.stream(
+                for event in client.stream(
                     settings=settings,
                     messages=messages,
                     tools=tools,

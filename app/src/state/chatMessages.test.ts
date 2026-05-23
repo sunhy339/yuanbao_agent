@@ -5,8 +5,10 @@ import {
   failAssistantMessage,
   getVisibleChatMessages,
   isOperationalAssistantDelta,
+  reconcileBackendMessage,
   removeChatMessage,
   replaceSessionMessages,
+  updateAssistantMessageByMessageId,
   updatePendingMessageTask,
 } from "./chatMessages";
 import type { ChatMessageView } from "./chatMessages";
@@ -300,6 +302,93 @@ describe("chatMessages", () => {
       "stored_user",
       "thinking",
     ]);
+  });
+
+  it("reconciles a backend assistant message with the pending streaming placeholder", () => {
+    const pending: ChatMessageView[] = [
+      {
+        id: "stored_user",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "user",
+        content: "build the project",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: "assistant_pending_101",
+        sessionId: "sess_1",
+        taskId: "pending",
+        role: "assistant",
+        content: "thinking...",
+        createdAt: 2,
+        updatedAt: 2,
+        streaming: true,
+        placeholder: true,
+        status: "streaming",
+      },
+    ];
+
+    const next = reconcileBackendMessage(pending, {
+      id: "msg_backend_assistant",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      role: "assistant",
+      content: "",
+      createdAt: 3,
+      updatedAt: 3,
+      status: "streaming",
+    });
+
+    expect(getVisibleChatMessages(next, "sess_1").map((message) => message.id)).toEqual([
+      "stored_user",
+      "msg_backend_assistant",
+    ]);
+    expect(next).toHaveLength(2);
+    expect(next[1]).toMatchObject({
+      content: "thinking...",
+      streaming: true,
+      placeholder: true,
+    });
+  });
+
+  it("attaches a message delta to the pending assistant when the backend id is new", () => {
+    const pending: ChatMessageView[] = [
+      {
+        id: "assistant_pending_101",
+        sessionId: "sess_1",
+        taskId: "pending",
+        role: "assistant",
+        content: "thinking...",
+        createdAt: 2,
+        updatedAt: 2,
+        streaming: true,
+        placeholder: true,
+        status: "streaming",
+      },
+    ];
+
+    const next = updateAssistantMessageByMessageId(
+      pending,
+      "msg_backend_assistant",
+      (message) => ({
+        ...message,
+        content: message.placeholder ? "first token" : `${message.content}first token`,
+        placeholder: false,
+        streaming: true,
+        updatedAt: 4,
+      }),
+      { sessionId: "sess_1", taskId: "task_1" },
+    );
+
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({
+      id: "msg_backend_assistant",
+      taskId: "task_1",
+      content: "first token",
+      placeholder: false,
+      streaming: true,
+    });
   });
 
   it("drops a local pending message once the same persisted message arrives", () => {

@@ -34,6 +34,123 @@ from ..store.sqlite_store import SQLiteStore
 class MessageExecutionMixin:
     """Mixin providing execution strategies and background worker management."""
 
+    def _publish_root_subtask_progress(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        event: str,
+        details: dict[str, Any],
+    ) -> None:
+        active_msg_id = task.get("activeAssistantMessageId")
+        if not isinstance(active_msg_id, str) or not active_msg_id:
+            return
+        title = str(details.get("subtaskTitle") or details.get("title") or details.get("subtaskId") or "subtask").strip()
+        if not title:
+            title = "subtask"
+        if event == "started":
+            line = f"Started subtask: {title}"
+        elif event == "completed":
+            status = str(details.get("status") or "completed").strip() or "completed"
+            line = f"Finished subtask: {title} ({status})"
+        else:
+            return
+        try:
+            messages = self._store.list_messages({"sessionId": session_id, "limit": 1000})["messages"]
+            current = next((message for message in messages if message.get("id") == active_msg_id), None)
+        except Exception:  # noqa: BLE001
+            current = None
+        content = str((current or {}).get("content") or "")
+        if line in content.splitlines():
+            return
+        next_content = f"{content.rstrip()}\n{line}\n" if content.strip() else f"{line}\n"
+        updated = self._store.update_message(active_msg_id, content=next_content, status="streaming")
+        if updated is None:
+            return
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="message.delta",
+            payload={"messageId": active_msg_id, "delta": f"{line}\n"},
+            visibility="chat",
+        )
+
+    def _publish_root_child_progress(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        details: dict[str, Any],
+    ) -> None:
+        active_msg_id = task.get("activeAssistantMessageId")
+        if not isinstance(active_msg_id, str) or not active_msg_id:
+            return
+        bridge = details.get("_bridge") if isinstance(details.get("_bridge"), dict) else {}
+        child_event = bridge.get("childEvent") if isinstance(bridge.get("childEvent"), dict) else {}
+        child_type = str(bridge.get("childEventType") or child_event.get("type") or "").strip()
+        if child_type not in {
+            "tool.started",
+            "tool.completed",
+            "tool.failed",
+            "approval.requested",
+            "approval.resolved",
+            "command.started",
+            "command.completed",
+            "command.failed",
+            "patch.proposed",
+        }:
+            return
+        payload = child_event.get("payload") if isinstance(child_event.get("payload"), dict) else {}
+        line = self._root_child_progress_line(event_type=child_type, payload=payload)
+        if not line:
+            return
+        try:
+            messages = self._store.list_messages({"sessionId": session_id, "limit": 1000})["messages"]
+            current = next((message for message in messages if message.get("id") == active_msg_id), None)
+        except Exception:  # noqa: BLE001
+            current = None
+        content = str((current or {}).get("content") or "")
+        if line in content.splitlines():
+            return
+        next_content = f"{content.rstrip()}\n{line}\n" if content.strip() else f"{line}\n"
+        updated = self._store.update_message(active_msg_id, content=next_content, status="streaming")
+        if updated is None:
+            return
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="message.delta",
+            payload={"messageId": active_msg_id, "delta": f"{line}\n"},
+            visibility="chat",
+        )
+
+    @staticmethod
+    def _root_child_progress_line(*, event_type: str, payload: dict[str, Any]) -> str | None:
+        if event_type == "tool.started":
+            tool_name = str(payload.get("toolName") or "tool").strip() or "tool"
+            return f"Subtask running tool: {tool_name}"
+        if event_type == "tool.completed":
+            tool_name = str(payload.get("toolName") or "tool").strip() or "tool"
+            return f"Subtask tool completed: {tool_name}"
+        if event_type == "tool.failed":
+            tool_name = str(payload.get("toolName") or "tool").strip() or "tool"
+            return f"Subtask tool failed: {tool_name}"
+        if event_type == "approval.requested":
+            kind = str(payload.get("kind") or "action").strip() or "action"
+            return f"Subtask waiting for approval: {kind}"
+        if event_type == "approval.resolved":
+            decision = str(payload.get("decision") or "resolved").strip() or "resolved"
+            return f"Subtask approval {decision}"
+        if event_type == "command.started":
+            return "Subtask command started"
+        if event_type == "command.completed":
+            return "Subtask command completed"
+        if event_type == "command.failed":
+            return "Subtask command failed"
+        if event_type == "patch.proposed":
+            return str(payload.get("summary") or "Subtask patch proposed").strip() or "Subtask patch proposed"
+        return None
+
     def _persist_pending_dag_execution(
         self,
         *,
@@ -517,8 +634,21 @@ class MessageExecutionMixin:
 
             # 2. Execute subtasks
             def _on_subtask_event(subtask_id: str, event: str, details: dict[str, Any]) -> None:
+                if event == "progress":
+                    self._publish_root_child_progress(
+                        session_id=session_id,
+                        task=task,
+                        details=details,
+                    )
+                    return
                 event_type = f"task.planning.subtask.{event}"
                 self._publish(session_id=session_id, task=task, event_type=event_type, payload=details)
+                self._publish_root_subtask_progress(
+                    session_id=session_id,
+                    task=task,
+                    event=event,
+                    details=details,
+                )
 
             routing = context.get("routing", {})
             execution = self._dag_executor.execute(

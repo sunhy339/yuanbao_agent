@@ -198,6 +198,7 @@ class TaskDecomposer:
         if not self._goal_needs_execution_plan(goal):
             return [Subtask(id="sub-0", title=goal[:80], description=goal)]
 
+        parent_goal = goal.strip()
         return [
             Subtask(
                 id="sub-0",
@@ -214,9 +215,10 @@ class TaskDecomposer:
                 id="sub-1",
                 title="Implement requested changes",
                 description=(
-                        "Implement the parent task directly from the original goal and the inspection notes. "
-                        "Create or update the requested files, preserve explicit artifact names, and avoid "
-                        "unrelated refactors."
+                    "Implement the parent task directly from this original goal:\n"
+                    f"{parent_goal}\n\n"
+                    "Use the inspection notes only as workspace context. Create or update the requested "
+                    "files, preserve explicit artifact names, and avoid unrelated refactors."
                 ),
                 dependencies=["sub-0"],
                 agent_type="worker",
@@ -225,9 +227,11 @@ class TaskDecomposer:
                 id="sub-2",
                 title="Verify and summarize result",
                 description=(
-                        "Run the parent task's requested verification commands, including tests or compile "
-                        "checks when applicable. Record changed files, commands, test results, and any "
-                        "remaining blockers before final synthesis."
+                    "Verify the implementation against this original goal:\n"
+                    f"{parent_goal}\n\n"
+                    "Run the parent task's requested verification commands, including tests or compile "
+                    "checks when applicable. Record changed files, commands, test results, and any "
+                    "remaining blockers before final synthesis."
                 ),
                 dependencies=["sub-1"],
                 agent_type="worker",

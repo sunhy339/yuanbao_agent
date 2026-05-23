@@ -402,11 +402,11 @@ class OpenAICompatibleChatClient:
         payload = self._build_payload(settings=settings, messages=messages, tools=request_tools, stream=False)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         status, response_body = self._request(settings=settings, body=body)
-        response_json = self._decode_response(response_body)
         if status >= 400:
             raise ProviderAdapterError(
-                f"Provider request failed with HTTP {status}: {self._error_message(response_json)}"
+                f"Provider request failed with HTTP {status}: {self._error_response_message(response_body)}"
             )
+        response_json = self._decode_response(response_body)
         if self._contains_error(response_json):
             raise ProviderAdapterError(f"Provider returned error: {self._error_message(response_json)}")
         return self._normalize_response(response_json, tool_name_map=tool_name_map)
@@ -975,11 +975,11 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         )
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         status, response_body = self._request(settings=settings, body=body)
-        response_json = self._decode_response(response_body)
         if status >= 400:
             raise ProviderAdapterError(
-                f"Provider request failed with HTTP {status}: {self._error_message(response_json)}"
+                f"Provider request failed with HTTP {status}: {self._error_response_message(response_body)}"
             )
+        response_json = self._decode_response(response_body)
         if self._contains_error(response_json):
             raise ProviderAdapterError(f"Provider returned error: {self._error_message(response_json)}")
         return self._normalize_responses_response(response_json, tool_name_map=tool_name_map)
@@ -1026,6 +1026,7 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         tool_name_map: dict[str, str],
+        stream: bool = False,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": settings.model,
@@ -1037,7 +1038,33 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
             payload["max_output_tokens"] = settings.max_tokens
         if tools:
             payload["tools"] = tools
+        if stream:
+            payload["stream"] = True
         return payload
+
+    def stream(
+        self,
+        *,
+        settings: OpenAICompatibleSettings,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        request_tools, tool_name_map = self._prepare_responses_tools_for_request(tools)
+        payload = self._build_responses_payload(
+            settings=settings,
+            messages=messages,
+            tools=request_tools,
+            tool_name_map=tool_name_map,
+            stream=True,
+        )
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        status, chunks = self._stream_request(settings=settings, body=body)
+        if status >= 400:
+            response_body = b"".join(chunks)
+            raise ProviderAdapterError(
+                f"Provider request failed with HTTP {status}: {self._error_response_message(response_body)}"
+            )
+        yield from self._normalize_responses_stream(chunks, settings=settings, tool_name_map=tool_name_map)
 
     def _serialize_responses_input(
         self,
@@ -1141,6 +1168,103 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
             },
         }
 
+    def _normalize_responses_stream(
+        self,
+        chunks: Iterable[bytes],
+        *,
+        settings: OpenAICompatibleSettings,
+        tool_name_map: dict[str, str] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        started_at = time.monotonic()
+        content_parts: list[str] = []
+        response_json: dict[str, Any] | None = None
+        response_id: Any = None
+        model: Any = None
+        usage: Any = None
+        function_calls: dict[str, dict[str, Any]] = {}
+        finish_reason: Any = None
+
+        for data in self._iter_sse_data(chunks):
+            if time.monotonic() - started_at > settings.stream_timeout:
+                raise ProviderAdapterError(
+                    f"Provider streaming response exceeded {settings.stream_timeout:g}s before completion."
+                )
+            if data == "[DONE]":
+                break
+            event = self._decode_sse_json(data)
+            if event is None:
+                continue
+            if self._contains_error(event):
+                raise ProviderAdapterError(f"Provider returned error: {self._error_message(event)}")
+
+            event_type = str(event.get("type") or "")
+            response = event.get("response")
+            if isinstance(response, dict):
+                response_json = response
+                response_id = response.get("id", response_id)
+                model = response.get("model", model)
+                usage = response.get("usage", usage)
+                status = response.get("status")
+                if isinstance(status, str) and status:
+                    finish_reason = status
+
+            if event_type.endswith(".delta"):
+                delta = event.get("delta")
+                if isinstance(delta, str) and delta:
+                    if "function_call_arguments" in event_type:
+                        item_id = str(event.get("item_id") or event.get("output_index") or "0")
+                        function_calls.setdefault(item_id, {"id": item_id, "type": "function", "name": None, "arguments": ""})
+                        function_calls[item_id]["arguments"] += delta
+                    else:
+                        content_parts.append(delta)
+                        yield {"type": "content_delta", "delta": delta}
+
+            if event_type.endswith(".done") or event_type == "response.output_item.done":
+                item = event.get("item")
+                if isinstance(item, dict) and item.get("type") == "function_call":
+                    call = self._normalize_responses_tool_call(item, tool_name_map=tool_name_map)
+                    key = call.get("id") or str(event.get("output_index") or len(function_calls))
+                    function_calls[str(key)] = {
+                        "id": call.get("id"),
+                        "type": "function",
+                        "name": call.get("name"),
+                        "arguments": json.dumps(call.get("arguments") or {}, ensure_ascii=False),
+                    }
+
+            if event_type == "response.completed":
+                finish_reason = "completed"
+                break
+
+        if response_json is not None:
+            response = self._normalize_responses_response(response_json, tool_name_map=tool_name_map)
+            message = response.get("message") if isinstance(response.get("message"), dict) else {}
+            if content_parts and not message.get("content"):
+                message["content"] = "".join(content_parts)
+            if function_calls and not message.get("tool_calls"):
+                message["tool_calls"] = self._normalize_tool_calls(
+                    [
+                        {"id": item["id"], "type": item["type"], "function": {"name": item["name"], "arguments": item["arguments"]}}
+                        for item in function_calls.values()
+                    ],
+                    tool_name_map=tool_name_map,
+                )
+            yield {"type": "finish_reason", "finish_reason": response.get("finish_reason") or finish_reason}
+            yield {"type": "final", "response": response}
+            return
+
+        response = self._final_stream_response(
+            role="assistant",
+            content="".join(content_parts),
+            tool_call_parts={index: item for index, item in enumerate(function_calls.values())},
+            finish_reason=finish_reason,
+            response_id=response_id,
+            model=model,
+            usage=usage,
+            tool_name_map=tool_name_map,
+        )
+        yield {"type": "finish_reason", "finish_reason": finish_reason}
+        yield {"type": "final", "response": response}
+
     def _responses_text_parts(self, content: Any) -> list[str]:
         if isinstance(content, str):
             return [content]
@@ -1190,11 +1314,11 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
         )
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         status, response_body = self._request(settings=settings, body=body)
-        response_json = self._decode_response(response_body)
         if status >= 400:
             raise ProviderAdapterError(
-                f"Provider request failed with HTTP {status}: {self._error_message(response_json)}"
+                f"Provider request failed with HTTP {status}: {self._error_response_message(response_body)}"
             )
+        response_json = self._decode_response(response_body)
         if self._contains_error(response_json):
             raise ProviderAdapterError(f"Provider returned error: {self._error_message(response_json)}")
         return self._normalize_anthropic_response(response_json, tool_name_map=tool_name_map)

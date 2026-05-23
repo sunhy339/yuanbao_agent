@@ -143,12 +143,16 @@ class TestTaskDecomposerDecompose:
     def test_provider_failure_falls_back_to_execution_plan(self) -> None:
         decomposer = TaskDecomposer(FailingProvider())
 
-        result = decomposer.decompose(goal="build modules, write pytest tests, and verify py_compile")
+        goal = "build modules, write pytest tests, and verify py_compile"
+        result = decomposer.decompose(goal=goal)
 
         assert [subtask.agent_type for subtask in result.subtasks] == ["planner", "worker", "worker"]
         assert result.execution_order == ["sub-0", "sub-1", "sub-2"]
         assert result.dag == {"sub-0": [], "sub-1": ["sub-0"], "sub-2": ["sub-1"]}
         assert "LLM decomposition was unavailable" in result.subtasks[0].description
+        assert goal in result.subtasks[1].description
+        assert goal in result.subtasks[2].description
+        assert "Use the inspection notes only as workspace context" in result.subtasks[1].description
 
     def test_provider_failure_keeps_simple_read_task_single_step(self) -> None:
         decomposer = TaskDecomposer(FailingProvider())

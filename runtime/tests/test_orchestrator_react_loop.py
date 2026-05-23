@@ -2083,6 +2083,155 @@ def test_patch_completion_skips_run_command_without_validate_command(tmp_path: A
 # ── Supplement TaskInbox tests ────────────────────────────────────────────
 
 
+def test_patch_completion_uses_python_module_pytest_for_changed_tests(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_patch",
+                        "name": "apply_patch",
+                        "arguments": {
+                            "files": [{"path": "tests/test_prototype.py", "content": "def test_ok():\n    assert True\n"}],
+                        },
+                    }
+                ]
+            },
+            {"final": "Added prototype coverage."},
+        ]
+    )
+
+    commands: list[str] = []
+
+    def apply_patch(params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "status": "completed",
+            "ok": True,
+            "summary": "Updated tests/test_prototype.py",
+            "filesChanged": 1,
+            "changedPaths": ["tests/test_prototype.py"],
+            "patch": {
+                "id": "patch_pytest_module",
+                "summary": "Updated tests/test_prototype.py",
+                "status": "applied",
+                "filesChanged": 1,
+            },
+        }
+
+    def run_command(params: dict[str, Any]) -> dict[str, Any]:
+        commands.append(params["command"])
+        return {
+            "status": "completed",
+            "commandLog": {
+                "id": "cmd_pytest_module",
+                "taskId": params["taskId"],
+                "command": params["command"],
+                "cwd": ".",
+                "status": "completed",
+                "exitCode": 0,
+                "stdoutPath": None,
+                "stderrPath": None,
+            },
+            "stdout": "1 passed\n",
+            "stderr": "",
+            "exitCode": 0,
+            "cwd": ".",
+        }
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {"apply_patch": apply_patch, "run_command": run_command},
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "add prototype test"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert commands == ["python -m pytest tests/test_prototype.py"]
+    assert task["verification"][-1]["command"] == "python -m pytest tests/test_prototype.py"
+
+
+def test_patch_completion_reuses_existing_passed_pytest_command(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_patch",
+                        "name": "apply_patch",
+                        "arguments": {
+                            "files": [{"path": "tests/test_prototype.py", "content": "def test_ok():\n    assert True\n"}],
+                        },
+                    }
+                ]
+            },
+            {"final": "Updated prototype and tests."},
+        ]
+    )
+
+    runtime = _make_runtime(tmp_path, provider, {})
+    commands: list[str] = []
+
+    def apply_patch(params: dict[str, Any]) -> dict[str, Any]:
+        existing = runtime.store.create_command_log(
+            task_id=params["taskId"],
+            command=r"C:\Python314\python.exe -m pytest -q",
+            cwd=str(tmp_path / "workspace"),
+            shell="powershell",
+        )
+        runtime.store.update_command_log(existing["id"], status="completed", exit_code=0)
+        return {
+            "status": "completed",
+            "ok": True,
+            "summary": "Updated tests/test_prototype.py",
+            "filesChanged": 1,
+            "changedPaths": ["tests/test_prototype.py"],
+            "patch": {
+                "id": "patch_reuse_pytest",
+                "summary": "Updated tests/test_prototype.py",
+                "status": "applied",
+                "filesChanged": 1,
+            },
+        }
+
+    def run_command(params: dict[str, Any]) -> dict[str, Any]:
+        commands.append(params["command"])
+        return {
+            "status": "completed",
+            "commandLog": {
+                "id": "cmd_reused_pytest",
+                "taskId": params["taskId"],
+                "command": params["command"],
+                "cwd": ".",
+                "status": "completed",
+                "exitCode": 0,
+                "stdoutPath": None,
+                "stderrPath": None,
+            },
+            "stdout": "4 passed\n",
+            "stderr": "",
+            "exitCode": 0,
+            "cwd": ".",
+        }
+
+    runtime.server._orchestrator._tool_registry.register("apply_patch", apply_patch)  # noqa: SLF001
+    runtime.server._orchestrator._tool_registry.register("run_command", run_command)  # noqa: SLF001
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "update prototype test"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert commands == [r"C:\Python314\python.exe -m pytest -q"]
+    assert task["verification"][-1]["command"] == r"C:\Python314\python.exe -m pytest -q"
+
+
 class TestStoreInbox:
     """Tests for task_inbox store CRUD operations."""
 

@@ -252,6 +252,28 @@ class ResumeFlowMixin:
                 payload={"coverage": coverage, "success": execution["success"]},
             )
 
+            if execution["success"] is False:
+                return self._fail_task(
+                    session_id=state["session_id"],
+                    task=task,
+                    summary=summary,
+                    error_code="PLANNING_SUBTASKS_FAILED",
+                    structured_result={
+                        "status": "failed",
+                        "coverage": coverage,
+                        "partialHandoffs": execution.get("partialHandoffs", []),
+                        "subtasks": [
+                            {
+                                "id": subtask.id,
+                                "title": subtask.title,
+                                "status": subtask.status,
+                                "result": subtask.result,
+                            }
+                            for subtask in execution["subtasks"]
+                        ],
+                    },
+                )
+
             return self._complete_task(
                 session_id=state["session_id"],
                 task=task,

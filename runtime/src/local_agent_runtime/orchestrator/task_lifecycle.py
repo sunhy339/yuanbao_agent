@@ -273,9 +273,18 @@ class TaskLifecycleMixin:
         # Update existing active assistant message or create a new one
         active_msg_id = runtime_task.get("activeAssistantMessageId")
         if active_msg_id:
+            message_content = final_summary
+            try:
+                messages = self._store.list_messages({"sessionId": session_id, "limit": 1000})["messages"]
+                active_message = next((message for message in messages if message.get("id") == active_msg_id), None)
+                previous_content = str((active_message or {}).get("content") or "").strip()
+                if previous_content and final_summary.strip() and previous_content != final_summary.strip():
+                    message_content = f"{previous_content}\n\n{final_summary}"
+            except Exception:  # noqa: BLE001
+                message_content = final_summary
             completed_msg = self._store.update_message(
                 active_msg_id,
-                content=final_summary,
+                content=message_content,
                 status="completed",
             )
         else:
@@ -6860,7 +6869,7 @@ class TaskLifecycleMixin:
                 ]
             )
 
-        validation_command = self._resolve_validation_command(context=context, patches=patches)
+        validation_command = self._resolve_validation_command(context=context, patches=patches, task=task)
         if validation_command:
             command_check = self._run_validation_tool(
                 session_id=session_id,
@@ -7189,12 +7198,22 @@ class TaskLifecycleMixin:
             return result["stdout"].strip().splitlines()[0]
         return f"{check.get('name', 'validation')} {check.get('status', 'not_run')}"
 
-    def _resolve_validation_command(self, *, context: dict[str, Any], patches: list[dict[str, Any]]) -> str | None:
+    def _resolve_validation_command(
+        self,
+        *,
+        context: dict[str, Any],
+        patches: list[dict[str, Any]],
+        task: dict[str, Any] | None = None,
+    ) -> str | None:
         validation = context.get("post_task_validation")
         if isinstance(validation, dict):
             command = validation.get("command")
             if isinstance(command, str) and command.strip():
                 return command.strip()
+
+        existing_python_test = self._latest_passed_python_test_command(context, task=task)
+        if existing_python_test:
+            return existing_python_test
 
         changed_test_paths: list[str] = []
         for patch in patches:
@@ -7204,7 +7223,40 @@ class TaskLifecycleMixin:
                     changed_test_paths.append(normalized)
         if changed_test_paths:
             ordered_paths = list(dict.fromkeys(changed_test_paths))
-            return "pytest " + " ".join(ordered_paths)
+            return "python -m pytest " + " ".join(ordered_paths)
+        return None
+
+    def _latest_passed_python_test_command(
+        self,
+        context: dict[str, Any],
+        *,
+        task: dict[str, Any] | None = None,
+    ) -> str | None:
+        task_id = str(
+            context.get("task_id")
+            or context.get("taskId")
+            or (task or {}).get("id")
+            or ""
+        ).strip()
+        if not task_id:
+            return None
+        try:
+            command_logs = self._store.list_command_logs({"taskId": task_id}).get("commandLogs", [])
+        except Exception:
+            return None
+        for record in reversed(command_logs):
+            if not isinstance(record, dict):
+                continue
+            command = str(record.get("command") or "").strip()
+            status = str(record.get("status") or "").strip().lower()
+            exit_code = record.get("exitCode")
+            if (
+                command
+                and status in {"completed", "passed", "success"}
+                and exit_code in (0, "0", None)
+                and "pytest" in command.casefold()
+            ):
+                return command
         return None
 
     def _format_validation_summary(

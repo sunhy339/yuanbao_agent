@@ -514,6 +514,121 @@ def test_parent_approval_submit_fails_child_collaboration_when_resume_fails(
         store.close()
 
 
+def test_child_approval_resume_failure_resumes_parent_dag_to_terminal_failure(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    event_bus = EventBus()
+    events: list[dict[str, Any]] = []
+    event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
+    collaboration = CollaborationService(store, event_bus)
+    runner = WorkerRunner(collaboration)
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="child approval dag failure")
+
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=ToolRegistry({}),
+        provider=_FinalProvider("This final answer should not be used."),
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    monkeypatch.setattr(
+        orchestrator,
+        "_resume_react_after_approval",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("parent Orchestrator performed local child approval resume")
+        ),
+    )
+
+    parent_task = store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="delegate through a DAG",
+        plan=[],
+        status="waiting_approval",
+    )
+    pending_plan = {
+        "subtasks": [
+            {
+                "id": "sub-1",
+                "title": "Run failing child command",
+                "description": "Run a child command that will fail after approval.",
+                "dependencies": [],
+                "status": "waiting_approval",
+                "result": "Child worker is waiting for parent approval.",
+            }
+        ],
+        "dag": {"sub-1": []},
+        "execution_order": ["sub-1"],
+    }
+    store.upsert_pending_dag_state(
+        task_id=parent_task["id"],
+        session_id=session["id"],
+        goal=parent_task["goal"],
+        context={
+            "workspace_root": str(workspace_root),
+            "workspace_name": workspace_root.name,
+            "config": store.get_config({})["config"],
+        },
+        plan_json=json.dumps(pending_plan, ensure_ascii=False),
+        completed_ids=[],
+        failed_ids=[],
+        results={"sub-1": "Child worker is waiting for parent approval."},
+    )
+
+    approval_request = {"command": "Write-Output child-fails", "cwd": "."}
+    transport = _WaitingApprovalTransport(
+        store=store,
+        workspace_root=workspace_root,
+        approval_request=approval_request,
+        resume_status="failed",
+        resume_summary="child command failed after approval",
+    )
+    monkeypatch.setattr(
+        worker_runner_module.WorkerProcessTransport,
+        "for_python_module",
+        classmethod(lambda cls, *args, **kwargs: transport),
+    )
+
+    try:
+        response = runner.run_child_task(
+            ChildTaskRequest(
+                prompt="run failing child command",
+                title="Run failing child command",
+                agent_type="coder",
+                session_id=session["id"],
+                parent_runtime_task_id=parent_task["id"],
+            )
+        )
+        assert response["status"] == "waiting_approval"
+        assert transport.approval is not None
+
+        submit = _rpc(server, "approval.submit", {"approvalId": transport.approval["id"], "decision": "approved"})
+        assert "result" in submit, submit
+
+        stored_parent_task = store.get_task({"taskId": parent_task["id"]})["task"]
+        child_collaboration_task = store.get_collaboration_task({"taskId": response["childTaskId"]})["task"]
+
+        assert child_collaboration_task["status"] == "failed"
+        assert stored_parent_task["status"] == "failed"
+        assert stored_parent_task["errorCode"] == "PLANNING_SUBTASKS_FAILED"
+        assert "child command failed after approval" in (stored_parent_task["resultSummary"] or "")
+        assert store.get_pending_dag_state(parent_task["id"]) is None
+        assert any(
+            event["type"] == "task.failed"
+            and event["taskId"] == parent_task["id"]
+            and event["payload"]["errorCode"] == "PLANNING_SUBTASKS_FAILED"
+            for event in events
+        )
+    finally:
+        store.close()
+
+
 def test_parent_approval_submit_persists_child_resume_transport_error(
     tmp_path: Path,
     monkeypatch: Any,

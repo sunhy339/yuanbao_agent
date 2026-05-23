@@ -135,13 +135,20 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           const messageId = payload.messageId;
           if (messageId) {
             setChatMessages((current) =>
-              updateAssistantMessageByMessageId(current, messageId, (msg) => ({
-                ...msg,
-                taskId: event.taskId,
-                content: msg.placeholder ? delta : `${msg.content}${delta}`,
-                updatedAt: event.ts,
-                placeholder: false,
-              })),
+              updateAssistantMessageByMessageId(
+                current,
+                messageId,
+                (msg) => ({
+                  ...msg,
+                  taskId: event.taskId,
+                  content: msg.placeholder ? delta : `${msg.content}${delta}`,
+                  updatedAt: event.ts,
+                  streaming: true,
+                  placeholder: false,
+                  status: "streaming",
+                }),
+                { sessionId: event.sessionId, taskId: event.taskId },
+              ),
             );
           } else {
             // Fallback: no messageId, use legacy behavior
@@ -170,20 +177,25 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           flushPendingAssistantTokens();
           if (payload.messageId) {
             setChatMessages((current) =>
-              updateAssistantMessageByMessageId(current, payload.messageId!, (msg) => {
-                // Prefer existing streaming content if richer
-                const streamingContent = msg.content || "";
-                const isPlaceholder = msg.placeholder === true || streamingContent === "\u601d\u8003\u4e2d..." || streamingContent.length < 5;
-                return {
-                  ...msg,
-                  taskId: event.taskId || msg.taskId,
-                  content: isPlaceholder ? (payload.content || streamingContent) : streamingContent,
-                  updatedAt: event.ts,
-                  streaming: false,
-                  placeholder: false,
-                  status: "completed",
-                };
-              }),
+              updateAssistantMessageByMessageId(
+                current,
+                payload.messageId!,
+                (msg) => {
+                  // Prefer existing streaming content if richer
+                  const streamingContent = msg.content || "";
+                  const isPlaceholder = msg.placeholder === true || streamingContent === "\u601d\u8003\u4e2d..." || streamingContent.length < 5;
+                  return {
+                    ...msg,
+                    taskId: event.taskId || msg.taskId,
+                    content: isPlaceholder ? (payload.content || streamingContent) : streamingContent,
+                    updatedAt: event.ts,
+                    streaming: false,
+                    placeholder: false,
+                    status: "completed",
+                  };
+                },
+                { sessionId: event.sessionId, taskId: event.taskId },
+              ),
             );
           } else {
             // Fallback: no messageId, use legacy completion

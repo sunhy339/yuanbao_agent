@@ -82,6 +82,7 @@ class SubagentService:
             ),
             mcp_policy=self._optional_object(params, "mcpPolicy") or self._optional_object(params, "mcp_policy"),
             active_worktree=self._optional_object(params, "activeWorktree") or self._optional_object(params, "active_worktree"),
+            event_callback=params.get("_eventCallback") if callable(params.get("_eventCallback")) else None,
         )
         result = self._worker_runner.run_child_task(request)
         # P0.6: Annotate result with planning mode (may have been overridden by fallback)

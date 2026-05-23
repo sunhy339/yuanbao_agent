@@ -40,6 +40,7 @@ class ChildTaskRequest:
     model: str | None = None
     mcp_policy: dict[str, Any] | None = None
     active_worktree: dict[str, Any] | None = None
+    event_callback: Callable[[dict[str, Any]], None] | None = None
 
 
 @dataclass(slots=True)
@@ -592,12 +593,15 @@ class WorkerRunner:
             "parentRuntimeTaskId": context.request.parent_runtime_task_id,
             "childEventType": event_type,
         }
+        callback = context.request.event_callback
 
         if event_type.startswith("collab.") and child_task_id.startswith("ctask_"):
             payload["_bridge"] = {
                 **bridge,
                 "skipTraceMirror": True,
             }
+            if callback is not None:
+                callback(payload)
             self._collaboration.publish_runtime_event(
                 session_id=session_id,
                 task_id=child_task_id,
@@ -613,22 +617,25 @@ class WorkerRunner:
         progress_task["updatedAt"] = self._collaboration.store.now()
         progress_task["status"] = "blocked" if event_type == "approval.requested" else "running"
         progress_task["result"] = {"summary": summary}
+        bridged_payload = {
+            "task": progress_task,
+            "worker": self._progress_worker(context),
+            "_bridge": {
+                **bridge,
+                "childEvent": {
+                    "taskId": child_task_id,
+                    "type": event_type,
+                    "payload": payload,
+                },
+            },
+        }
+        if callback is not None:
+            callback(bridged_payload)
         self._collaboration.publish_runtime_event(
             session_id=session_id,
             task_id=context.task["id"],
             event_type="collab.task.updated",
-            payload={
-                "task": progress_task,
-                "worker": self._progress_worker(context),
-                "_bridge": {
-                    **bridge,
-                    "childEvent": {
-                        "taskId": child_task_id,
-                        "type": event_type,
-                        "payload": payload,
-                    },
-                },
-            },
+            payload=bridged_payload,
         )
 
     def _child_progress_summary(self, *, event_type: str, payload: dict[str, Any]) -> str | None:

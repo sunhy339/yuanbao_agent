@@ -191,6 +191,32 @@ class ReactResumeMixin:
                     "payload": {"error": error, "runtimeTask": deepcopy(runtime_task)},
                 }
             )
+            parent_task_id = self._parent_runtime_task_id_from_child(child_task)
+            if parent_task_id:
+                try:
+                    parent = self._store.get_task({"taskId": parent_task_id})["task"]
+                    pending_dag_state = self._load_pending_dag_state(parent_task_id)
+                    if parent.get("status") == "waiting_approval" and pending_dag_state is not None:
+                        pending_dag_state = self._mark_child_dag_subtask_failed(
+                            parent_task_id=parent_task_id,
+                            state=pending_dag_state,
+                            child_task=child_task,
+                            summary=str(summary),
+                        )
+                        parent = self._ensure_task_running_after_approval(
+                            task=parent,
+                            detail="Child approval failed; resuming parent DAG.",
+                        )
+                        self._resume_dag_execution(parent, pending_dag_state)
+                    elif parent.get("status") == "running" and pending_dag_state is not None:
+                        self._mark_child_dag_subtask_failed(
+                            parent_task_id=parent_task_id,
+                            state=pending_dag_state,
+                            child_task=child_task,
+                            summary=str(summary),
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Parent DAG resume after child approval failure failed for task=%s: %s", parent_task_id, exc)
             return
 
         self._collaboration_service.update_collaboration_task(
@@ -260,6 +286,60 @@ class ReactResumeMixin:
         updated["plan"] = plan
         updated["completed"] = sorted(completed)
         updated["failed"] = failed
+        updated["results"] = results
+        return updated
+
+    def _mark_child_dag_subtask_failed(
+        self,
+        *,
+        parent_task_id: str,
+        state: dict[str, Any],
+        child_task: dict[str, Any],
+        summary: str,
+    ) -> dict[str, Any]:
+        plan = state.get("plan") if isinstance(state.get("plan"), dict) else {}
+        subtasks = plan.get("subtasks") if isinstance(plan.get("subtasks"), list) else []
+        child_title = str(child_task.get("title") or "").strip()
+        completed = {str(item) for item in state.get("completed", [])}
+        failed = {str(item) for item in state.get("failed", [])}
+        results = dict(state.get("results") if isinstance(state.get("results"), dict) else {})
+        failure_summary = summary or "Child worker failed after approval."
+        matched_id: str | None = None
+        for subtask in subtasks:
+            if not isinstance(subtask, dict):
+                continue
+            subtask_id = str(subtask.get("id") or "").strip()
+            if not subtask_id:
+                continue
+            title = str(subtask.get("title") or "").strip()
+            if subtask.get("status") == "waiting_approval" or (child_title and title == child_title):
+                subtask["status"] = "failed"
+                subtask["result"] = failure_summary
+                failed.add(subtask_id)
+                completed.discard(subtask_id)
+                results[subtask_id] = f"Failed: {failure_summary}"
+                matched_id = subtask_id
+                break
+        if matched_id is None:
+            return state
+        if hasattr(self._store, "upsert_pending_dag_state"):
+            self._store.upsert_pending_dag_state(
+                task_id=parent_task_id,
+                session_id=state["session_id"],
+                goal=state["goal"],
+                context=state["context"],
+                plan_json=json.dumps(plan, ensure_ascii=False),
+                completed_ids=sorted(completed),
+                failed_ids=sorted(failed),
+                results=results,
+            )
+            refreshed = self._load_pending_dag_state(parent_task_id)
+            if refreshed is not None:
+                return refreshed
+        updated = dict(state)
+        updated["plan"] = plan
+        updated["completed"] = sorted(completed)
+        updated["failed"] = sorted(failed)
         updated["results"] = results
         return updated
 

@@ -125,6 +125,31 @@ def test_openai_compatible_request_payload(monkeypatch: pytest.MonkeyPatch) -> N
     }
 
 
+def test_openai_compatible_http_error_with_html_body_is_reported_before_json_decode() -> None:
+    def fake_post(**_kwargs: Any) -> tuple[int, bytes]:
+        return 502, "<html><title>网站请求超时</title></html>".encode("utf-8")
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    with pytest.raises(ProviderAdapterError) as exc_info:
+        adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    message = str(exc_info.value)
+    assert "HTTP 502" in message
+    assert "网站请求超时" in message
+    assert "invalid JSON" not in message
+
+
 def test_openai_compatible_maps_unsafe_tool_names_round_trip() -> None:
     calls: list[dict[str, Any]] = []
 
@@ -1067,6 +1092,65 @@ def test_generate_prefers_streaming_when_enabled() -> None:
     assert response["message"] == "Hello"
     assert response["final"] == "Hello"
     assert response["finish_reason"] == "stop"
+
+
+def test_openai_responses_streams_when_enabled() -> None:
+    stream_calls: list[dict[str, Any]] = []
+
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**kwargs: Any) -> tuple[int, Any]:
+        stream_calls.append(kwargs)
+        return 200, iter(
+            [
+                b'event: response.created\n',
+                b'data: {"type":"response.created","response":{"id":"resp_1","model":"test-responses","status":"in_progress","output":[]}}\n\n',
+                b'event: response.output_text.delta\n',
+                b'data: {"type":"response.output_text.delta","delta":"Hel"}\n\n',
+                b'event: response.output_text.delta\n',
+                b'data: {"type":"response.output_text.delta","delta":"lo"}\n\n',
+                b'event: response.completed\n',
+                b'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-responses","status":"completed","output_text":"Hello","output":[],"usage":{"total_tokens":5}}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-responses",
+            "streamingEnabled": True,
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "model": "test-chat",
+        }
+    }
+
+    events = list(adapter.chat_stream(messages=[{"role": "user", "content": "hi"}], context=context))
+
+    assert len(stream_calls) == 1
+    payload = json.loads(stream_calls[0]["body"].decode("utf-8"))
+    assert payload["stream"] is True
+    assert [event for event in events if event["type"] == "content_delta"] == [
+        {"type": "content_delta", "delta": "Hel"},
+        {"type": "content_delta", "delta": "lo"},
+    ]
+    assert events[-1]["type"] == "final"
+    assert events[-1]["response"]["message"]["content"] == "Hello"
 
 
 def test_plain_text_response_is_normalized() -> None:

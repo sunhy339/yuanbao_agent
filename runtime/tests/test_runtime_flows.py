@@ -1192,6 +1192,104 @@ def test_plan_approval_approved_resumes_dag(runtime_harness: Any, tmp_path: Path
     assert final_task["status"] == "completed"
 
 
+def test_root_task_message_receives_planning_subtask_progress(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from local_agent_runtime.planner.types import PlanResult, Subtask
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    fake_plan = PlanResult(
+        subtasks=[
+            Subtask(id="sub-0", title="Inspect workspace", description="Inspect workspace"),
+        ],
+        dag={"sub-0": []},
+        execution_order=["sub-0"],
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._meta_router,
+        "route",
+        lambda *_args, **_kwargs: RoutingDecision(
+            scenario=Scenario.CODE_EDIT,
+            strategy=ExecutionStrategy.PLAN_THEN_EXECUTE,
+            confidence=0.99,
+            enable_planning=True,
+            reasoning="force DAG path for progress visibility",
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_harness.server._orchestrator._decomposer,
+        "decompose",
+        lambda **_kwargs: fake_plan,
+    )
+
+    def fake_execute(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        callback = kwargs.get("on_subtask_callback")
+        assert callback is not None
+        callback("sub-0", "started", {"subtaskId": "sub-0", "subtaskTitle": "Inspect workspace"})
+        callback(
+            "sub-0",
+            "completed",
+            {"subtaskId": "sub-0", "subtaskTitle": "Inspect workspace", "status": "completed"},
+        )
+        return {
+            "success": True,
+            "completed": ["sub-0"],
+            "failed": [],
+            "results": {"sub-0": "Inspected"},
+            "subtasks": [
+                Subtask(
+                    id="sub-0",
+                    title="Inspect workspace",
+                    description="Inspect workspace",
+                    status="completed",
+                    result="Inspected",
+                ),
+            ],
+            "summary": "Plan executed successfully",
+        }
+
+    monkeypatch.setattr(runtime_harness.server._orchestrator._dag_executor, "execute", fake_execute)
+
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Subtask progress"},
+        ),
+        "session",
+    )
+
+    send_response = runtime_harness.call(
+        "message.send",
+        {"sessionId": session["id"], "content": "build a tiny project"},
+    )
+    task = _call_result(send_response, "task")
+    messages = runtime_harness.call(
+        "message.list",
+        {"sessionId": session["id"], "limit": 20},
+    )["result"]["messages"]
+    assistant = next(message for message in messages if message["id"] == task["activeAssistantMessageId"])
+    assert "Started subtask: Inspect workspace" in assistant["content"]
+    assert "Finished subtask: Inspect workspace (completed)" in assistant["content"]
+
+    chat_deltas = [
+        event
+        for event in runtime_harness.events
+        if event["type"] == "message.delta"
+        and event["visibility"] == "chat"
+        and event["payload"].get("messageId") == task["activeAssistantMessageId"]
+    ]
+    assert any("Started subtask: Inspect workspace" in event["payload"].get("delta", "") for event in chat_deltas)
+    assert any("Finished subtask: Inspect workspace" in event["payload"].get("delta", "") for event in chat_deltas)
+
+
 def test_plan_execute_recovers_failed_verification_subtask_with_parent_check(
     runtime_harness: Any,
     tmp_path: Path,

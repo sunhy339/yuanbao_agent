@@ -96,11 +96,13 @@ class TaskDecomposer:
             **(provider_context or {}),
             "messages": [{"role": "user", "content": prompt}],
         }
+        provider_response: dict[str, object] | None = None
         try:
             response = self._provider.generate(
                 prompt,
                 request_context,
             )
+            provider_response = response if isinstance(response, dict) else None
             raw_text = response.get("message") or ""
             subtasks = self._parse_subtasks(raw_text, fallback_goal=goal)
         except Exception:  # noqa: BLE001
@@ -109,7 +111,12 @@ class TaskDecomposer:
         dag = self.build_dag(subtasks)
         all_ids = [s.id for s in subtasks]
         execution_order = self.topological_sort(dag, all_ids)
-        return PlanResult(subtasks=subtasks, dag=dag, execution_order=execution_order)
+        return PlanResult(
+            subtasks=subtasks,
+            dag=dag,
+            execution_order=execution_order,
+            provider_response=provider_response,
+        )
 
     def build_dag(self, subtasks: list[Subtask]) -> dict[str, list[str]]:
         """Build an adjacency list {id: [dependency IDs]} from subtask dependencies."""

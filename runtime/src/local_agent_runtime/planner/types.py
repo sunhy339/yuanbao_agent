@@ -251,3 +251,4 @@ class PlanResult:
     subtasks: list[Subtask]
     dag: dict[str, list[str]]  # adjacency list {id: [dependency IDs]}
     execution_order: list[str]  # topological sort result
+    provider_response: dict[str, object] | None = None

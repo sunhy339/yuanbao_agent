@@ -523,10 +523,21 @@ class MessageExecutionMixin:
                     trace_id=getattr(self, "_active_trace_id", None),
                     attributes={"goal": goal[:200]},
                 )
+                planning_provider_context = self._planning_provider_context(context)
+                self._trace_planning_provider_request(
+                    task=task,
+                    provider_context=planning_provider_context,
+                    operation="planning.decomposition",
+                )
                 plan = self._decomposer.decompose(
                     goal=goal,
                     context=plan_context,
-                    provider_context=self._planning_provider_context(context),
+                    provider_context=planning_provider_context,
+                )
+                self._trace_planning_provider_response(
+                    task=task,
+                    plan=plan,
+                    operation="planning.decomposition",
                 )
                 self._tracer.end_span(
                     decomp_span.span_id, status="ok",
@@ -1207,6 +1218,42 @@ class MessageExecutionMixin:
                         profile["streamTimeout"] = profile_stream_timeout
                         profile["streamTimeoutSeconds"] = profile_stream_timeout
         return {"config": adjusted}
+
+    def _trace_planning_provider_request(
+        self,
+        *,
+        task: dict[str, Any],
+        provider_context: dict[str, Any],
+        operation: str,
+    ) -> None:
+        self._append_provider_trace(
+            task=task,
+            event_type="provider.request",
+            payload={
+                **self._provider_trace_payload(provider_context),
+                "step": provider_context.get("step") or operation,
+                "operation": operation,
+                "stream": False,
+            },
+        )
+
+    def _trace_planning_provider_response(
+        self,
+        *,
+        task: dict[str, Any],
+        plan: Any,
+        operation: str,
+    ) -> None:
+        self._append_provider_trace(
+            task=task,
+            event_type="provider.response",
+            payload={
+                **self._provider_response_trace(getattr(plan, "provider_response", None)),
+                "operation": operation,
+                "subtaskCount": len(getattr(plan, "subtasks", []) or []),
+                "stream": False,
+            },
+        )
 
     @staticmethod
     def _planning_timeout_seconds(provider: dict[str, Any], *, fallback: float = 180.0) -> float:
@@ -1907,10 +1954,21 @@ class MessageExecutionMixin:
             plan_context = json.dumps(
                 context.get("tool_results", []), ensure_ascii=False,
             )[:2000]
+            planning_provider_context = self._planning_provider_context(context)
+            self._trace_planning_provider_request(
+                task=task,
+                provider_context=planning_provider_context,
+                operation="supervisor.decomposition",
+            )
             plan = self._decomposer.decompose(
                 goal=goal,
                 context=plan_context,
-                provider_context=self._planning_provider_context(context),
+                provider_context=planning_provider_context,
+            )
+            self._trace_planning_provider_response(
+                task=task,
+                plan=plan,
+                operation="supervisor.decomposition",
             )
             self._publish(
                 session_id=session_id, task=task,
@@ -2002,10 +2060,21 @@ class MessageExecutionMixin:
             plan_context = json.dumps(
                 context.get("tool_results", []), ensure_ascii=False,
             )[:2000]
+            planning_provider_context = self._planning_provider_context(context)
+            self._trace_planning_provider_request(
+                task=task,
+                provider_context=planning_provider_context,
+                operation="swarm.decomposition",
+            )
             plan = self._decomposer.decompose(
                 goal=goal,
                 context=plan_context,
-                provider_context=self._planning_provider_context(context),
+                provider_context=planning_provider_context,
+            )
+            self._trace_planning_provider_response(
+                task=task,
+                plan=plan,
+                operation="swarm.decomposition",
             )
             self._publish(
                 session_id=session_id, task=task,

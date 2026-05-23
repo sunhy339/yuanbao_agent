@@ -44,6 +44,16 @@ function commandGroupKey(command?: string) {
   return normalized ? `command:${normalized}` : undefined;
 }
 
+function summarizeChangedFiles(activeTask: SessionWorkspaceActiveTask) {
+  const changedFiles = activeTask.changedFiles ?? [];
+  if (!changedFiles.length) {
+    return "";
+  }
+  const topFiles = changedFiles.slice(0, 4).map((file) => file.path);
+  const suffix = changedFiles.length > topFiles.length ? ` +${changedFiles.length - topFiles.length}` : "";
+  return `${changedFiles.length} 个文件：${topFiles.join(", ")}${suffix}`;
+}
+
 function summarizeCommandForTitle(command?: string) {
   const normalized = normalizeComparableCommand(command);
   if (!normalized) {
@@ -385,7 +395,7 @@ export function buildActiveTaskRuntimeItems(activeTask?: SessionWorkspaceActiveT
       kind: "task",
       title: "变更文件",
       status: "recorded",
-      summary: `${changedFiles.length} 个文件：${compactList(changedFiles.map((file) => file.path))}`,
+      summary: summarizeChangedFiles(activeTask),
       meta: compactMeta([`${changedFiles.length} 个文件`]),
       code: changedFiles.map(formatTaskFileChange).join("\n"),
       visibility: "chat",

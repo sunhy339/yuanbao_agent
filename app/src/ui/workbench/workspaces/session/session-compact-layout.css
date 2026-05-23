@@ -59,6 +59,37 @@
   box-shadow: none;
 }
 
+.session-workspace-chat-only .conversation-task-digest {
+  margin: 0 0 12px;
+  border-color: rgba(120, 98, 95, 0.14);
+  padding: 12px 13px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 22px rgba(35, 27, 23, 0.06);
+}
+
+.session-workspace-chat-only .conversation-task-digest-header h2,
+.session-workspace-chat-only .conversation-task-digest-card > strong,
+.session-workspace-chat-only .conversation-task-digest-card code {
+  color: #20242c;
+}
+
+.session-workspace-chat-only .conversation-task-digest-summary,
+.session-workspace-chat-only .conversation-task-digest-card small,
+.session-workspace-chat-only .conversation-task-digest-empty,
+.session-workspace-chat-only .conversation-task-digest-meta span {
+  color: #5f6774;
+}
+
+.session-workspace-chat-only .conversation-task-digest-meta span,
+.session-workspace-chat-only .conversation-task-digest-card {
+  border-color: rgba(120, 98, 95, 0.14);
+  background: #fbfaf7;
+}
+
+.session-workspace-chat-only .conversation-task-digest-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .conversation-activity {
   gap: 14px;
 }

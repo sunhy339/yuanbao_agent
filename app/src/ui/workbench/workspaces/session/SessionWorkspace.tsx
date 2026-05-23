@@ -16,6 +16,7 @@ import {
 import { shouldDisplayTaskScaffold, expectsAgentWork } from "./taskPhase";
 import { buildRuntimeItems } from "./runtimeItemBuilder";
 import { buildConversationActivity, ConversationActivity } from "./ConversationActivity";
+import { ConversationTaskDigest } from "./ConversationTaskDigest";
 import { TaskProgressPanel } from "./TaskProgressPanel";
 import { RuntimeCockpitPanel } from "./RuntimeCockpitPanel";
 import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
@@ -366,7 +367,9 @@ function SessionWorkspaceToolDock({
       durationMs: verification.durationMs,
       exitCode: verification.exitCode,
     })) ?? []),
-    ...(backgroundJobs?.map((job) => ({ ...job })) ?? []),
+    ...((backgroundJobs ?? [])
+      .filter((job) => !(isSuccessfulRuntimeStatus(job.status) && isBackgroundProbeCommand(job.command)))
+      .map((job) => ({ ...job })) ?? []),
   ];
   const latestCommand = commandItems.at(-1);
   const latestDiffPreview = worktreeDiff?.preview || worktreeDiff?.diff || "";
@@ -868,6 +871,9 @@ export function SessionWorkspace({
         new Set<string>(),
       ),
     );
+    const visibleChatItems = chatVisibleItems.filter(
+      (item) => !(isSuccessfulRuntimeStatus(item.status) && isBackgroundProbeCommand(item.title)),
+    );
     const promotedVerificationByGroup = new Map<string, RuntimeTimelineItem>();
     runtimeItems.forEach((item) => {
       if (item.kind !== "command" || !item.groupKey || item.superseded) {
@@ -886,7 +892,7 @@ export function SessionWorkspace({
       }
     });
     const promotedVerificationItems = [...promotedVerificationByGroup.values()];
-    const mergedChatItems = [...chatVisibleItems, ...promotedVerificationItems];
+    const mergedChatItems = [...visibleChatItems, ...promotedVerificationItems];
     const dedupedChatItems = Array.from(
       new Map(mergedChatItems.map((item) => [item.id, item])).values(),
     );
@@ -1167,6 +1173,12 @@ export function SessionWorkspace({
               <span>{activityItems.length} 个事件</span>
             </header>
             <div className="message-stream message-stream-chat-only" aria-label="会话消息">
+              <ConversationTaskDigest
+                activeTask={visibleActiveTask}
+                patches={patches}
+                backgroundJobs={backgroundJobs}
+                composerContext={composerContext}
+              />
               {messagesLoading && activityItems.length === 0 ? (
                 <div className="message-stream-loading" aria-label="加载消息">
                   <div className="message-stream-loading-bar" />

@@ -133,6 +133,13 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText("apply_patch")).toBeInTheDocument();
     expect(screen.getAllByText("npm run typecheck").length).toBeGreaterThan(0);
     expect(screen.getByLabelText("会话活动")).toBeInTheDocument();
+    const digest = screen.getByLabelText("工作摘要");
+    expect(within(digest).getByText("工作摘要")).toBeInTheDocument();
+    expect(within(digest).getByRole("heading", { name: "Patch the session workspace" })).toBeInTheDocument();
+    expect(within(digest).getByText("正在跟进1 个文件改动、1 条命令。")).toBeInTheDocument();
+    expect(within(digest).getByText("正在修改")).toBeInTheDocument();
+    expect(within(digest).getByText("1 个改动文件")).toBeInTheDocument();
+    expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
     const workspaceTools = screen.getByLabelText("工作区工具");
     expect(within(workspaceTools).getByText("文件")).toBeInTheDocument();
     expect(within(workspaceTools).getByText("审查")).toBeInTheDocument();
@@ -148,7 +155,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByRole("heading", { name: "Active task" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Runtime shelf" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Collaboration" })).not.toBeInTheDocument();
-    expect(screen.getByText("MiniMax-M2.7-highspeed")).toBeInTheDocument();
+    expect(screen.getAllByText("MiniMax-M2.7-highspeed").length).toBeGreaterThan(0);
   });
 
   it("switches workspace tool panels with useful file, review, command, and git details", async () => {

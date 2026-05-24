@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import subprocess
+from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,32 @@ _ADVISOR_EVIDENCE_ADAPTER_REGISTRY: tuple[dict[str, Any], ...] = (
         "confidence": 0.85,
     },
 )
+
+
+def _normalize_completion_text_for_merge(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _merge_active_assistant_completion_content(previous_content: str, final_summary: str) -> str:
+    previous = previous_content.strip()
+    final = final_summary.strip()
+    if not previous:
+        return final
+    if not final:
+        return previous
+
+    previous_norm = _normalize_completion_text_for_merge(previous)
+    final_norm = _normalize_completion_text_for_merge(final)
+    if previous_norm == final_norm:
+        return previous
+    if final_norm and final_norm in previous_norm:
+        return previous
+    if previous_norm and previous_norm in final_norm:
+        return final
+    if previous_norm and final_norm and SequenceMatcher(None, previous_norm, final_norm).ratio() >= 0.86:
+        return previous if len(previous) >= len(final) else final
+
+    return f"{previous}\n\n{final}"
 
 
 class _StaticAssetReferenceParser(HTMLParser):
@@ -272,14 +299,13 @@ class TaskLifecycleMixin:
         logger.info("Task %s completed: summary_len=%d", task["id"], len(final_summary))
         # Update existing active assistant message or create a new one
         active_msg_id = runtime_task.get("activeAssistantMessageId")
+        message_content = final_summary
         if active_msg_id:
-            message_content = final_summary
             try:
                 messages = self._store.list_messages({"sessionId": session_id, "limit": 1000})["messages"]
                 active_message = next((message for message in messages if message.get("id") == active_msg_id), None)
-                previous_content = str((active_message or {}).get("content") or "").strip()
-                if previous_content and final_summary.strip() and previous_content != final_summary.strip():
-                    message_content = f"{previous_content}\n\n{final_summary}"
+                previous_content = str((active_message or {}).get("content") or "")
+                message_content = _merge_active_assistant_completion_content(previous_content, final_summary)
             except Exception:  # noqa: BLE001
                 message_content = final_summary
             completed_msg = self._store.update_message(
@@ -338,7 +364,7 @@ class TaskLifecycleMixin:
             session_id=session_id,
             task=runtime_task,
             event_type="message.completed",
-            payload={"messageId": completed_msg["id"], "content": final_summary},
+            payload={"messageId": completed_msg["id"], "content": message_content},
         )
         self._publish(
             session_id=session_id,

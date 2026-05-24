@@ -145,13 +145,16 @@ function buildDigestSummary(
   verificationCount: number,
 ) {
   if (activeTask) {
+    const phase = getTaskPhase(activeTask);
+    if (phase === "failed") {
+      return "发现失败的验证或命令，需要继续处理后再收口。";
+    }
     if (activeTask.resultSummary) {
       return activeTask.resultSummary;
     }
     if (activeTask.summary) {
       return activeTask.summary;
     }
-    const phase = getTaskPhase(activeTask);
     if (["completed", "failed", "waiting"].includes(phase)) {
       return buildTaskProgressSummary(activeTask);
     }

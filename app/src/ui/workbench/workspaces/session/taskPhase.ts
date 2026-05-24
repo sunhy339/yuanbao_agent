@@ -1,4 +1,5 @@
 import type { SessionWorkspaceActiveTask } from "./types";
+import { isVerificationCommand, normalizeComparableCommand } from "./utils";
 
 export function aggregateRuntimeStatus(statuses: Array<string | undefined>, emptyStatus: string) {
   const normalized = statuses.filter((status): status is string => Boolean(status));
@@ -23,6 +24,46 @@ export function aggregateRuntimeStatus(statuses: Array<string | undefined>, empt
 
 export type TaskPhase = "idle" | "analyzing" | "modifying" | "verifying" | "waiting" | "completed" | "failed";
 
+const FAILED_STATUSES = new Set(["failed", "error", "cancelled", "rejected"]);
+const SUCCESS_STATUSES = new Set(["passed", "completed", "succeeded", "applied"]);
+
+type VerificationLikeRecord = {
+  id?: string;
+  command?: string;
+  status?: string;
+};
+
+function verificationRecordKey(record: VerificationLikeRecord, index: number) {
+  const commandKey = normalizeComparableCommand(record.command);
+  return commandKey || record.id || `verification:${index}`;
+}
+
+function latestVerificationLikeRecords(activeTask?: SessionWorkspaceActiveTask | null) {
+  const records: VerificationLikeRecord[] = [
+    ...(activeTask?.verification ?? []),
+    ...((activeTask?.commands ?? []).filter((command) => isVerificationCommand(command.command)) as VerificationLikeRecord[]),
+  ];
+  const latestByKey = new Map<string, VerificationLikeRecord>();
+  records.forEach((record, index) => {
+    latestByKey.set(verificationRecordKey(record, index), record);
+  });
+  return [...latestByKey.values()];
+}
+
+export function hasBlockingTaskFailure(activeTask?: SessionWorkspaceActiveTask | null) {
+  return latestVerificationLikeRecords(activeTask).some((record) => {
+    const status = record.status?.toLowerCase();
+    return Boolean(status && FAILED_STATUSES.has(status));
+  });
+}
+
+export function hasSuccessfulVerificationEvidence(activeTask?: SessionWorkspaceActiveTask | null) {
+  return latestVerificationLikeRecords(activeTask).some((record) => {
+    const status = record.status?.toLowerCase();
+    return Boolean(status && SUCCESS_STATUSES.has(status));
+  });
+}
+
 export const TASK_PHASES: Array<{ id: TaskPhase; label: string }> = [
   { id: "analyzing", label: "正在分析代码" },
   { id: "modifying", label: "正在修改" },
@@ -33,7 +74,8 @@ export const TASK_PHASES: Array<{ id: TaskPhase; label: string }> = [
 export function getTaskPhase(activeTask?: SessionWorkspaceActiveTask | null): TaskPhase {
   const status = activeTask?.status?.toLowerCase();
   if (!activeTask) return "idle";
-  if (status && ["failed", "error", "cancelled", "rejected"].includes(status)) return "failed";
+  if (status && FAILED_STATUSES.has(status)) return "failed";
+  if (hasBlockingTaskFailure(activeTask)) return "failed";
   if (status === "completed" || status === "succeeded") return "completed";
   if (status === "waiting_approval" || status === "paused") return "waiting";
   if (status === "verifying" || (activeTask.verification?.length && status !== "completed")) return "verifying";

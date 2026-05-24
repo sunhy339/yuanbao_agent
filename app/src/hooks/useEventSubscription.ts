@@ -11,7 +11,11 @@ import type {
   TraceEventRecord,
 } from "@shared";
 import { RuntimeClient } from "../lib/runtimeClient";
-import { isOperationalAssistantDelta } from "../state/chatMessages";
+import {
+  appendAssistantContentDelta,
+  isOperationalAssistantDelta,
+  summarizeOperationalAssistantDelta,
+} from "../state/chatMessages";
 import {
   appendAssistantToken,
   completeAssistantMessage,
@@ -94,7 +98,8 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
   function queueAssistantToken(event: AgentEventEnvelope) {
     const payload = event.payload as any;
     const delta = payload.delta ?? "";
-    if (!delta || isOperationalAssistantDelta(delta)) return;
+    const displayDelta = isOperationalAssistantDelta(delta) ? summarizeOperationalAssistantDelta(delta) : delta;
+    if (!displayDelta) return;
     pendingAssistantTokenEventsRef.current.push(event);
     if (assistantTokenFlushTimerRef.current !== null) return;
     assistantTokenFlushTimerRef.current = setTimeout(() => {
@@ -129,7 +134,8 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           }
           const payload = event.payload as MessageDeltaPayload;
           const delta = payload.delta ?? "";
-          if (!delta || isOperationalAssistantDelta(delta)) {
+          const displayDelta = isOperationalAssistantDelta(delta) ? summarizeOperationalAssistantDelta(delta) : delta;
+          if (!displayDelta) {
             return;
           }
           const messageId = payload.messageId;
@@ -141,7 +147,9 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 (msg) => ({
                   ...msg,
                   taskId: event.taskId,
-                  content: msg.placeholder ? delta : `${msg.content}${delta}`,
+                  content: msg.placeholder
+                    ? displayDelta.trim()
+                    : appendAssistantContentDelta(msg.content, displayDelta),
                   updatedAt: event.ts,
                   streaming: true,
                   placeholder: false,

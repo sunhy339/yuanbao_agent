@@ -1,5 +1,5 @@
 ﻿import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionWorkspace } from "./SessionWorkspace";
@@ -140,10 +140,11 @@ describe("SessionWorkspace", () => {
     expect(within(digest).getByText("正在修改")).toBeInTheDocument();
     expect(within(digest).getByText("1 个改动文件")).toBeInTheDocument();
     expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
-    const workspaceTools = screen.getByLabelText("工作区工具");
-    expect(within(workspaceTools).getByText("审查")).toBeInTheDocument();
-    expect(within(workspaceTools).getByText("终端")).toBeInTheDocument();
-    expect(within(workspaceTools).getByText("Git")).toBeInTheDocument();
+    expect(screen.getByLabelText("运行态详情")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /审查/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /终端/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Git/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: /文件/ }));
     const fileWorkspace = screen.getByLabelText("文件工作区");
     expect(within(fileWorkspace).getByLabelText("文件浏览器")).toBeInTheDocument();
     expect(within(fileWorkspace).getByText("任务相关文件")).toBeInTheDocument();
@@ -159,7 +160,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getAllByText("MiniMax-M2.7-highspeed").length).toBeGreaterThan(0);
   });
 
-  it("switches workspace tool panels with useful file, review, command, and git details", async () => {
+  it("switches workspace pane pages with useful file, review, command, and git details", async () => {
     const user = userEvent.setup();
     const onLoadPatch = vi.fn();
     const onLoadWorktreeDiff = vi.fn();
@@ -258,23 +259,25 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    const tools = screen.getByLabelText("工作区工具");
+    expect(screen.getByLabelText("运行态详情")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /文件/ }));
     const fileWorkspace = screen.getByLabelText("文件工作区");
     expect(within(fileWorkspace).getByText("任务相关文件")).toBeInTheDocument();
     expect(within(fileWorkspace).getAllByText(/SessionWorkspace\.tsx/).length).toBeGreaterThan(0);
 
-    expect(within(tools).getByRole("tab", { name: /审查/ })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("tab", { name: /审查/ }));
+    const tools = screen.getByLabelText("工作区工具");
     expect(within(tools).getByText("代码审查")).toBeInTheDocument();
     expect(within(tools).getByText("1 file changed, 12 insertions(+), 4 deletions(-)")).toBeInTheDocument();
     await user.click(within(tools).getByRole("button", { name: "打开补丁" }));
     expect(onLoadPatch).toHaveBeenCalledWith("patch_1");
 
-    await user.click(within(tools).getByRole("tab", { name: /终端/ }));
+    await user.click(screen.getByRole("tab", { name: /终端/ }));
     expect(within(tools).getAllByText("命令与验证").length).toBeGreaterThan(0);
     expect(within(tools).getAllByText("npm run typecheck").length).toBeGreaterThan(0);
     expect(within(tools).getByText("Typecheck passed.")).toBeInTheDocument();
 
-    await user.click(within(tools).getByRole("tab", { name: /Git/ }));
+    await user.click(screen.getByRole("tab", { name: /Git/ }));
     const gitPanel = within(tools).getByLabelText("Git 工作区");
     expect(within(gitPanel).getByRole("heading", { name: "feat/dev-desktop" })).toBeInTheDocument();
     expect(within(gitPanel).getByText("1 个未提交文件")).toBeInTheDocument();
@@ -312,10 +315,41 @@ describe("SessionWorkspace", () => {
     );
 
     expect(container.querySelector(".session-workspace-files-focused")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /文件/ }));
     await user.click(screen.getByRole("button", { name: "专注文件" }));
     expect(container.querySelector(".session-workspace-files-focused")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "退出专注" }));
     expect(container.querySelector(".session-workspace-files-focused")).not.toBeInTheDocument();
+  });
+
+  it("collapses, restores, and resizes the right workspace pane", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Open workspace.", createdAt: 1 }]}
+      />,
+    );
+
+    expect(screen.getByLabelText("工作区侧栏")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "隐藏右侧工作区" }));
+    expect(screen.queryByLabelText("工作区侧栏")).not.toBeInTheDocument();
+    expect(container.querySelector(".session-workspace-pane-collapsed")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "显示右侧工作区" }));
+    expect(screen.getByLabelText("工作区侧栏")).toBeInTheDocument();
+
+    const grid = container.querySelector(".session-workbench-grid") as HTMLElement;
+    Object.defineProperty(grid, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ width: 1200, height: 800, top: 0, left: 0, right: 1200, bottom: 800, x: 0, y: 0, toJSON: () => ({}) }),
+    });
+    fireEvent.pointerDown(screen.getByRole("button", { name: "调整右侧工作区宽度" }), { clientX: 900, pointerId: 1 });
+    fireEvent.pointerMove(window, { clientX: 760 });
+    fireEvent.pointerUp(window);
+
+    expect(grid.getAttribute("style")).toContain("--session-workspace-pane-width");
   });
 
   it("shows streaming progress on the assistant bubble without a duplicate live pill", () => {
@@ -1696,8 +1730,8 @@ describe("SessionWorkspace", () => {
       />,
     );
 
+    await user.click(screen.getByRole("tab", { name: /Git/ }));
     const tools = screen.getByLabelText("工作区工具");
-    await user.click(within(tools).getByRole("tab", { name: /Git/ }));
     const panel = within(tools).getByLabelText("Git 工作区");
     expect(within(panel).getByRole("heading", { name: "agent/task_1" })).toBeInTheDocument();
     expect(within(panel).getAllByText("D:/py/yuanbao_agent.worktrees/task_1").length).toBeGreaterThan(0);
@@ -1750,8 +1784,8 @@ describe("SessionWorkspace", () => {
       />,
     );
 
+    await user.click(screen.getByRole("tab", { name: /Git/ }));
     const tools = screen.getByLabelText("工作区工具");
-    await user.click(within(tools).getByRole("tab", { name: /Git/ }));
     const panel = within(tools).getByLabelText("Git 工作区");
     const mergeButton = within(panel).getByRole("button", { name: "合并申请" });
 

@@ -1,9 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import {
+  Activity,
   ClipboardList,
+  Files,
   GitBranch,
   Globe2,
+  GripVertical,
+  Home,
   MessageSquarePlus,
+  PanelRightClose,
+  PanelRightOpen,
   SquareTerminal,
   type LucideIcon,
 } from "lucide-react";
@@ -107,7 +120,7 @@ function RuntimeLanePatchDetail({ item, isBusy }: { item: RuntimeTimelineItem; i
   return (
     <div className="session-runtime-lane-detail">
       <p className="runtime-diff-empty" role="status">
-        {isBusy ? "差异正在加载。" : "差异暂不可用。请在运行时写入改动后再试一次。"}
+        {isBusy ? "差异正在加载。" : "差异暂不可用，请在运行时写入改动后再试一次。"}
       </p>
     </div>
   );
@@ -237,6 +250,7 @@ function RuntimeLaneSummaryRow({
 }
 
 type SessionToolKey = "review" | "terminal" | "git" | "browser" | "side-chat";
+type SessionWorkspacePaneKey = "home" | "files" | "review" | "terminal" | "git" | "browser" | "side-chat" | "runtime";
 
 interface SessionToolCommand {
   id?: string;
@@ -267,6 +281,9 @@ function SessionWorkspaceToolDock({
   onMergeWorktree,
   onCleanupWorktree,
   busyId,
+  activeTool,
+  onActiveToolChange,
+  showChrome = true,
 }: {
   activeTask: SessionWorkspaceProps["activeTask"];
   patches?: SessionWorkspaceProps["patches"];
@@ -284,8 +301,13 @@ function SessionWorkspaceToolDock({
   onMergeWorktree?: SessionWorkspaceProps["onMergeWorktree"];
   onCleanupWorktree?: SessionWorkspaceProps["onCleanupWorktree"];
   busyId?: string | null;
+  activeTool?: SessionToolKey;
+  onActiveToolChange?: (tool: SessionToolKey) => void;
+  showChrome?: boolean;
 }) {
-  const [activeTool, setActiveTool] = useState<SessionToolKey>("review");
+  const [internalActiveTool, setInternalActiveTool] = useState<SessionToolKey>("review");
+  const selectedTool = activeTool ?? internalActiveTool;
+  const selectTool = onActiveToolChange ?? setInternalActiveTool;
   const activeWorktree = activeTask?.activeWorktree;
   const workspacePath = composerContext?.cwd || activeWorktree?.worktreePath || "";
   const branchName = composerContext?.branch || activeWorktree?.branchName || "未识别分支";
@@ -343,42 +365,46 @@ function SessionWorkspaceToolDock({
 
   return (
     <section className="session-tool-dock session-tool-dock-live" aria-label="工作区工具">
-      <header className="session-tool-dock-header">
-        <div>
-          <p className="session-kicker">工作区</p>
-          <h2>工具</h2>
-        </div>
-        <span title={branchName}>{branchName}</span>
-      </header>
+      {showChrome ? (
+        <>
+          <header className="session-tool-dock-header">
+            <div>
+              <p className="session-kicker">工作区</p>
+              <h2>工具</h2>
+            </div>
+            <span title={branchName}>{branchName}</span>
+          </header>
 
-      <nav className="session-tool-tabs" role="tablist" aria-label="工作区工具类型">
-        {toolTabs.map((tab) => {
-          const ToolIcon = tab.icon;
-          return (
-            <button
-              key={tab.id}
-              aria-selected={activeTool === tab.id}
-              className="session-tool-tab"
-              data-tool={tab.id}
-              onClick={() => setActiveTool(tab.id)}
-              role="tab"
-              type="button"
-            >
-              <span className="session-tool-icon" aria-hidden="true">
-                <ToolIcon size={16} strokeWidth={2} />
-              </span>
-              <span>
-                <strong>{tab.label}</strong>
-                <small>{tab.description}</small>
-              </span>
-              {tab.count ? <em>{tab.count}</em> : null}
-            </button>
-          );
-        })}
-      </nav>
+          <nav className="session-tool-tabs" role="tablist" aria-label="工作区工具类型">
+            {toolTabs.map((tab) => {
+              const ToolIcon = tab.icon;
+              return (
+                <button
+                  key={tab.id}
+                  aria-selected={selectedTool === tab.id}
+                  className="session-tool-tab"
+                  data-tool={tab.id}
+                  onClick={() => selectTool(tab.id)}
+                  role="tab"
+                  type="button"
+                >
+                  <span className="session-tool-icon" aria-hidden="true">
+                    <ToolIcon size={16} strokeWidth={2} />
+                  </span>
+                  <span>
+                    <strong>{tab.label}</strong>
+                    <small>{tab.description}</small>
+                  </span>
+                  {tab.count ? <em>{tab.count}</em> : null}
+                </button>
+              );
+            })}
+          </nav>
+        </>
+      ) : null}
 
       <div className="session-tool-panel" role="tabpanel">
-        {activeTool === "review" ? (
+        {selectedTool === "review" ? (
           <>
             <div className="session-tool-panel-header">
               <div>
@@ -429,7 +455,7 @@ function SessionWorkspaceToolDock({
           </>
         ) : null}
 
-        {activeTool === "terminal" ? (
+        {selectedTool === "terminal" ? (
           <>
             <div className="session-tool-panel-header">
               <div>
@@ -486,7 +512,7 @@ function SessionWorkspaceToolDock({
           </>
         ) : null}
 
-        {activeTool === "git" ? (
+        {selectedTool === "git" ? (
           <GitWorkspacePanel
             activeTask={activeTask}
             patches={patches}
@@ -502,14 +528,14 @@ function SessionWorkspaceToolDock({
           />
         ) : null}
 
-        {activeTool === "browser" ? (
+        {selectedTool === "browser" ? (
           <div className="session-tool-placeholder">
             <strong>浏览器预览</strong>
-            <p>这里会放运行中的本地页面和打开网站入口，方便和主任务结果并排检查。</p>
+            <p>这里会放运行中的本地页面和网站入口，方便和主任务结果并排检查。</p>
           </div>
         ) : null}
 
-        {activeTool === "side-chat" ? (
+        {selectedTool === "side-chat" ? (
           <div className="session-tool-placeholder">
             <strong>侧边聊天</strong>
             <p>这里会放独立上下文的辅助对话，不污染当前主任务链路。</p>
@@ -757,7 +783,23 @@ export function SessionWorkspace({
     visibility: "" | "chat" | "panel" | "trace";
     agentType: string;
   }>({ taskId: "", visibility: "", agentType: "" });
+  const hasWorkspaceRuntimeEvidence = Boolean(
+    visibleActiveTask ||
+      approvals?.length ||
+      patches?.length ||
+      traces?.length ||
+      toolCalls?.length ||
+      backgroundJobs?.length ||
+      collaboration?.childTasks?.length,
+  );
   const [workspaceFocus, setWorkspaceFocus] = useState<"files" | null>(null);
+  const [workspacePane, setWorkspacePane] = useState<SessionWorkspacePaneKey>(() =>
+    hasWorkspaceRuntimeEvidence ? "runtime" : "home",
+  );
+  const [workspacePaneUserSelected, setWorkspacePaneUserSelected] = useState(false);
+  const [workspacePaneCollapsed, setWorkspacePaneCollapsed] = useState(false);
+  const [workspacePaneWidthPx, setWorkspacePaneWidthPx] = useState<number | null>(null);
+  const [workspacePaneResizing, setWorkspacePaneResizing] = useState(false);
   const isQuietSuccessfulBackgroundItem = (item: RuntimeTimelineItem) => {
     if (!isSuccessfulRuntimeStatus(item.status)) {
       return false;
@@ -813,7 +855,7 @@ export function SessionWorkspace({
         eyebrow: "执行",
         title: "命令与验证",
         emptyTitle: "当前没有需要关注的命令",
-        emptyText: "失败中的命令、运行中的检查和最近通过的验证会显示在这里。",
+        emptyText: "失败、运行中和最近通过的验证会显示在这里。",
         items: commandsAndTools,
       },
       {
@@ -821,7 +863,7 @@ export function SessionWorkspace({
         eyebrow: "改动",
         title: "补丁与文件",
         emptyTitle: "当前没有待看的改动",
-        emptyText: "代码改动、补丁结果和关键文件变化会出现在这里。",
+        emptyText: "代码改动、补丁结果和关键文件变化会显示在这里。",
         items: patchItems,
       },
       {
@@ -829,7 +871,7 @@ export function SessionWorkspace({
         eyebrow: "诊断",
         title: "异常与信号",
         emptyTitle: "当前没有异常信号",
-        emptyText: "只保留失败、恢复、路由变化和需要处理的异常。",
+        emptyText: "失败、恢复、路由变化和需要处理的异常会显示在这里。",
         items: filteredTraceItems,
       },
     ];
@@ -852,10 +894,89 @@ export function SessionWorkspace({
     .filter((lane) => lane.items.length > 0);
 
   const isFilesFocused = workspaceFocus === "files";
+  const isWorkspacePaneVisible = isFilesFocused || !workspacePaneCollapsed;
+  useEffect(() => {
+    if (!workspacePaneUserSelected && workspacePane === "home" && hasWorkspaceRuntimeEvidence) {
+      setWorkspacePane("runtime");
+    }
+  }, [hasWorkspaceRuntimeEvidence, workspacePane, workspacePaneUserSelected]);
+  const selectWorkspacePane = useCallback((pane: SessionWorkspacePaneKey) => {
+    setWorkspacePaneUserSelected(true);
+    setWorkspacePane(pane);
+    setWorkspacePaneCollapsed(false);
+    if (pane !== "files") {
+      setWorkspaceFocus(null);
+    }
+  }, []);
+  const toggleFileFocus = useCallback(() => {
+    setWorkspacePaneUserSelected(true);
+    setWorkspacePane("files");
+    setWorkspacePaneCollapsed(false);
+    setWorkspaceFocus((current) => (current === "files" ? null : "files"));
+  }, []);
+  const startWorkspacePaneResize = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (workspacePaneCollapsed || isFilesFocused) {
+        return;
+      }
+      const grid = event.currentTarget.closest(".session-workbench-grid") as HTMLElement | null;
+      const rect = grid?.getBoundingClientRect();
+      const gridWidth = rect?.width || window.innerWidth || 1200;
+      const startWidth = workspacePaneWidthPx ?? Math.min(720, Math.max(420, gridWidth * 0.42));
+      const startX = event.clientX;
+      const minWidth = Math.min(380, Math.max(300, gridWidth * 0.26));
+      const maxWidth = Math.max(minWidth, gridWidth - 440);
+      setWorkspacePaneResizing(true);
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      const onMove = (moveEvent: PointerEvent) => {
+        const nextWidth = startWidth - (moveEvent.clientX - startX);
+        setWorkspacePaneWidthPx(Math.round(Math.min(maxWidth, Math.max(minWidth, nextWidth))));
+      };
+      const onUp = () => {
+        setWorkspacePaneResizing(false);
+        window.removeEventListener("pointermove", onMove);
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp, { once: true });
+    },
+    [isFilesFocused, workspacePaneCollapsed, workspacePaneWidthPx],
+  );
+  const workspacePaneTabs: Array<{
+    id: SessionWorkspacePaneKey;
+    label: string;
+    description: string;
+    icon: LucideIcon;
+    count?: number;
+  }> = [
+    { id: "home", label: "工作区", description: "打开文件、审查、终端和运行态", icon: Home },
+    { id: "files", label: "文件", description: "浏览项目文件", icon: Files, count: normalizedRelatedFiles.length },
+    { id: "review", label: "审查", description: "查看代码改动", icon: ClipboardList, count: (patches?.length ?? 0) + (visibleActiveTask?.changedFiles?.length ? 1 : 0) },
+    { id: "terminal", label: "终端", description: "命令与验证", icon: SquareTerminal, count: (visibleActiveTask?.commands?.length ?? 0) + (visibleActiveTask?.verification?.length ?? 0) },
+    { id: "git", label: "Git", description: "分支与提交", icon: GitBranch, count: worktreeStatus?.dirtyFiles },
+    { id: "browser", label: "浏览器", description: "预览入口", icon: Globe2 },
+    { id: "side-chat", label: "侧聊", description: "独立上下文", icon: MessageSquarePlus },
+    { id: "runtime", label: "运行态", description: "任务、审批和异常", icon: Activity, count: visibleRuntimeLanes.length },
+  ];
+  const toolPane = ["review", "terminal", "git", "browser", "side-chat"].includes(workspacePane)
+    ? (workspacePane as SessionToolKey)
+    : "review";
+  const workspaceGridStyle =
+    workspacePaneWidthPx && !workspacePaneCollapsed && !isFilesFocused
+      ? ({ "--session-workspace-pane-width": `${workspacePaneWidthPx}px` } as CSSProperties)
+      : undefined;
+  const workspaceClassName = [
+    "session-workspace",
+    "session-workspace-chat-only",
+    isFilesFocused ? "session-workspace-files-focused" : "",
+    workspacePaneCollapsed ? "session-workspace-pane-collapsed" : "",
+    workspacePaneResizing ? "session-workspace-pane-resizing" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
-    <main className={`session-workspace session-workspace-chat-only${isFilesFocused ? " session-workspace-files-focused" : ""}`} aria-label="Session">
-      <section className="session-workbench-grid">
+    <main className={workspaceClassName} aria-label="Session">
+      <section className="session-workbench-grid" style={workspaceGridStyle}>
         <section className="session-conversation-column" aria-hidden={isFilesFocused ? "true" : undefined}>
           <header className="session-chat-header">
             <div className="session-chat-title-block">
@@ -929,7 +1050,7 @@ export function SessionWorkspace({
                 </div>
               ) : activityItems.length === 0 ? (
                 <div className="message-stream-empty">
-                  <p className="session-kicker">安静线程</p>
+                  <p className="session-kicker">空白会话</p>
                   <h2>还没有消息</h2>
                   <p>从下方输入区发送第一条消息。</p>
                 </div>
@@ -953,95 +1074,184 @@ export function SessionWorkspace({
           </section>
         </section>
 
-        <aside className="session-runtime-column" aria-label="运行态侧栏">
-          <section className="session-files-workspace" aria-label="文件工作区">
-            <FileWorkspacePanel
-              workspaceRoot={workspacePath}
-              workspaceLabel={workspaceLabel}
-              relatedFiles={normalizedRelatedFiles}
-              focused={isFilesFocused}
-              onToggleFocus={() => {
-                setWorkspaceFocus((current) => (current === "files" ? null : "files"));
-              }}
-            />
-          </section>
+        {isWorkspacePaneVisible ? (
+          <button
+            aria-label="调整右侧工作区宽度"
+            className="session-sidebar-resizer"
+            onPointerDown={startWorkspacePaneResize}
+            type="button"
+          >
+            <GripVertical size={14} aria-hidden="true" />
+          </button>
+        ) : null}
 
-          <SessionWorkspaceToolDock
-            activeTask={visibleActiveTask}
-            patches={patches}
-            backgroundJobs={backgroundJobs}
-            worktreeStatus={worktreeStatus}
-            worktreeDiff={worktreeDiff}
-            worktreeBusyAction={worktreeBusyAction}
-            worktreeError={worktreeError}
-            composerContext={composerContext}
-            onLoadPatch={onLoadPatch}
-            onRefreshCommandJob={onRefreshCommandJob}
-            onStopCommandJob={onStopCommandJob}
-            onRefreshWorktree={onRefreshWorktree}
-            onLoadWorktreeDiff={onLoadWorktreeDiff}
-            onMergeWorktree={onMergeWorktree}
-            onCleanupWorktree={onCleanupWorktree}
-            busyId={busyId}
-          />
-          <RuntimeCockpitPanel
-            activeTask={visibleActiveTask}
-            approvals={approvals}
-            patches={patches}
-            traces={traces}
-            contextPreview={contextPreview}
-            taskBusyAction={taskBusyAction}
-            onRefreshTask={onRefreshTask}
-            onPauseTask={onPauseTask}
-            onResumeTask={onResumeTask}
-          />
-          {visibleActiveTask ? <TaskProgressPanel activeTask={visibleActiveTask} patches={patches} /> : null}
-          <AgentCollaborationPanel collaboration={collaboration} expectAgentWork={expectsAgentWork(activeTask)} />
+        {isWorkspacePaneVisible ? (
+          <aside className="session-runtime-column session-workspace-pane" aria-label="工作区侧栏">
+            <header className="session-pane-chrome">
+              <nav className="session-pane-tabs" aria-label="工作区页签" role="tablist">
+                {workspacePaneTabs.map((tab) => {
+                  const PaneIcon = tab.icon;
+                  return (
+                    <button
+                      key={tab.id}
+                      aria-selected={workspacePane === tab.id}
+                      className="session-pane-tab"
+                      onClick={() => selectWorkspacePane(tab.id)}
+                      role="tab"
+                      title={tab.description}
+                      type="button"
+                    >
+                      <PaneIcon size={15} aria-hidden="true" />
+                      <span>{tab.label}</span>
+                      {tab.count ? <em>{tab.count}</em> : null}
+                    </button>
+                  );
+                })}
+              </nav>
+              <button
+                aria-label="隐藏右侧工作区"
+                className="session-pane-action"
+                disabled={isFilesFocused}
+                onClick={() => setWorkspacePaneCollapsed(true)}
+                title="隐藏右侧工作区"
+                type="button"
+              >
+                <PanelRightClose size={16} aria-hidden="true" />
+              </button>
+            </header>
 
-          {visibleRuntimeLanes.length ? (
-            <section className="session-runtime-lanes" aria-label="运行态摘要">
-              {visibleRuntimeLanes.map((lane) => (
-                <article className="session-runtime-lane" data-lane={lane.id} key={lane.id}>
-                  <header>
-                    <div>
-                      <p className="session-kicker">{lane.eyebrow}</p>
-                      <h3>{lane.title}</h3>
-                    </div>
-                    <span>{lane.items.length}</span>
-                  </header>
-                  {lane.id === "trace" ? (
-                    <TraceFilterBar
-                      filter={traceFilter}
-                      onChange={setTraceFilter}
-                      taskIds={uniqueTaskIds}
-                      agentTypes={uniqueAgentTypes}
-                    />
-                  ) : null}
-                  {lane.items.length > 0 ? (
-                    <ul className="session-runtime-lane-items">
-                      {lane.items.map((item) => (
-                        <RuntimeLaneSummaryRow
-                          key={item.id}
-                          item={item}
-                          onApprove={onApprove}
-                          onReject={onReject}
-                          onLoadPatch={onLoadPatch}
-                          onCopyRuntimeText={onCopyRuntimeText}
-                          busyId={busyId}
-                        />
+            <div className="session-pane-body">
+              {workspacePane === "home" ? (
+                <section className="session-pane-home" aria-label="工作区入口">
+                  {workspacePaneTabs.filter((tab) => tab.id !== "home").map((tab) => {
+                    const PaneIcon = tab.icon;
+                    return (
+                      <button
+                        key={tab.id}
+                        className="session-pane-home-card"
+                        onClick={() => selectWorkspacePane(tab.id)}
+                        type="button"
+                      >
+                        <PaneIcon size={22} aria-hidden="true" />
+                        <strong>{tab.label}</strong>
+                        <span>{tab.description}</span>
+                        {tab.count ? <em>{tab.count}</em> : null}
+                      </button>
+                    );
+                  })}
+                </section>
+              ) : null}
+
+              {workspacePane === "files" ? (
+                <section className="session-files-workspace" aria-label="文件工作区">
+                  <FileWorkspacePanel
+                    workspaceRoot={workspacePath}
+                    workspaceLabel={workspaceLabel}
+                    relatedFiles={normalizedRelatedFiles}
+                    focused={isFilesFocused}
+                    onToggleFocus={toggleFileFocus}
+                  />
+                </section>
+              ) : null}
+
+              {["review", "terminal", "git", "browser", "side-chat"].includes(workspacePane) ? (
+                <SessionWorkspaceToolDock
+                  activeTask={visibleActiveTask}
+                  patches={patches}
+                  backgroundJobs={backgroundJobs}
+                  worktreeStatus={worktreeStatus}
+                  worktreeDiff={worktreeDiff}
+                  worktreeBusyAction={worktreeBusyAction}
+                  worktreeError={worktreeError}
+                  composerContext={composerContext}
+                  onLoadPatch={onLoadPatch}
+                  onRefreshCommandJob={onRefreshCommandJob}
+                  onStopCommandJob={onStopCommandJob}
+                  onRefreshWorktree={onRefreshWorktree}
+                  onLoadWorktreeDiff={onLoadWorktreeDiff}
+                  onMergeWorktree={onMergeWorktree}
+                  onCleanupWorktree={onCleanupWorktree}
+                  busyId={busyId}
+                  activeTool={toolPane}
+                  onActiveToolChange={(tool) => setWorkspacePane(tool)}
+                  showChrome={false}
+                />
+              ) : null}
+
+              {workspacePane === "runtime" ? (
+                <section className="session-pane-runtime" aria-label="运行态详情">
+                  <RuntimeCockpitPanel
+                    activeTask={visibleActiveTask}
+                    approvals={approvals}
+                    patches={patches}
+                    traces={traces}
+                    contextPreview={contextPreview}
+                    taskBusyAction={taskBusyAction}
+                    onRefreshTask={onRefreshTask}
+                    onPauseTask={onPauseTask}
+                    onResumeTask={onResumeTask}
+                  />
+                  {visibleActiveTask ? <TaskProgressPanel activeTask={visibleActiveTask} patches={patches} /> : null}
+                  <AgentCollaborationPanel collaboration={collaboration} expectAgentWork={expectsAgentWork(activeTask)} />
+
+                  {visibleRuntimeLanes.length ? (
+                    <section className="session-runtime-lanes" aria-label="运行态摘要">
+                      {visibleRuntimeLanes.map((lane) => (
+                        <article className="session-runtime-lane" data-lane={lane.id} key={lane.id}>
+                          <header>
+                            <div>
+                              <p className="session-kicker">{lane.eyebrow}</p>
+                              <h3>{lane.title}</h3>
+                            </div>
+                            <span>{lane.items.length}</span>
+                          </header>
+                          {lane.id === "trace" ? (
+                            <TraceFilterBar
+                              filter={traceFilter}
+                              onChange={setTraceFilter}
+                              taskIds={uniqueTaskIds}
+                              agentTypes={uniqueAgentTypes}
+                            />
+                          ) : null}
+                          {lane.items.length > 0 ? (
+                            <ul className="session-runtime-lane-items">
+                              {lane.items.map((item) => (
+                                <RuntimeLaneSummaryRow
+                                  key={item.id}
+                                  item={item}
+                                  onApprove={onApprove}
+                                  onReject={onReject}
+                                  onLoadPatch={onLoadPatch}
+                                  onCopyRuntimeText={onCopyRuntimeText}
+                                  busyId={busyId}
+                                />
+                              ))}
+                            </ul>
+                          ) : (
+                            <div className="session-runtime-lane-empty">
+                              <strong>{lane.emptyTitle}</strong>
+                              <span>{lane.emptyText}</span>
+                            </div>
+                          )}
+                        </article>
                       ))}
-                    </ul>
-                  ) : (
-                    <div className="session-runtime-lane-empty">
-                      <strong>{lane.emptyTitle}</strong>
-                      <span>{lane.emptyText}</span>
-                    </div>
-                  )}
-                </article>
-              ))}
-            </section>
-          ) : null}
-        </aside>
+                    </section>
+                  ) : null}
+                </section>
+              ) : null}
+            </div>
+          </aside>
+        ) : (
+          <button
+            aria-label="显示右侧工作区"
+            className="session-sidebar-restore"
+            onClick={() => setWorkspacePaneCollapsed(false)}
+            type="button"
+          >
+            <PanelRightOpen size={16} aria-hidden="true" />
+            <span>工作区</span>
+          </button>
+        )}
       </section>
     </main>
   );

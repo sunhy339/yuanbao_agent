@@ -8,6 +8,7 @@ import {
   reconcileBackendMessage,
   removeChatMessage,
   replaceSessionMessages,
+  summarizeOperationalAssistantDelta,
   updateAssistantMessageByMessageId,
   updatePendingMessageTask,
 } from "./chatMessages";
@@ -145,6 +146,16 @@ describe("chatMessages", () => {
     expect(isOperationalAssistantDelta("Completed the minimal tool loop and preparing a summary...")).toBe(true);
     expect(isOperationalAssistantDelta("我已经创建好了文件。")).toBe(false);
   });
+  it("turns runtime progress tokens into readable chat progress summaries", () => {
+    expect(summarizeOperationalAssistantDelta("Running tool: list_dir")).toBe("正在使用目录。");
+    expect(summarizeOperationalAssistantDelta("Subtask waiting for approval: run_command")).toBe(
+      "需要你审批后才能继续执行命令。",
+    );
+    expect(summarizeOperationalAssistantDelta("Subtask tool failed: run_command")).toBe(
+      "子任务里的命令失败了，我会继续看失败原因。",
+    );
+  });
+
   it("replaces one session with persisted messages while keeping live streaming placeholders", () => {
     const persisted: MessageRecord[] = [
       {

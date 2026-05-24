@@ -902,7 +902,7 @@ export function RuntimeCockpitPanel(props: RuntimeCockpitPanelProps) {
       </div>
 
       {hasCompactDetailSections ? (
-        <div className="runtime-cockpit-details" aria-label="运行态详情">
+        <div className="runtime-cockpit-details" aria-label="运行态概览详情">
           {compactSignalsForDisplay.length ? (
             <CockpitDetailSection
               title={compactDetailsLabel}

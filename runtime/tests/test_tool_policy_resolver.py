@@ -404,6 +404,27 @@ def test_permission_engine_keeps_low_risk_verification_command_allowed_after_unt
     assert decision.decision == "allow"
 
 
+def test_permission_engine_allows_low_risk_read_and_verification_commands_when_shell_asks() -> None:
+    from local_agent_runtime.policy.permission_engine import PermissionEngine, PermissionRequest
+
+    engine = PermissionEngine({
+        "permissions": {
+            "preset": "balanced",
+            "capabilities": {
+                "runCommand": {"mode": "ask", "scope": "*"},
+            },
+        },
+    })
+
+    for command in ("Get-ChildItem -Force", "git diff --stat", "python -m py_compile blog_service.py"):
+        decision = engine.evaluate(PermissionRequest(
+            capability="runCommand",
+            tool_name="run_command",
+            context={"command": command},
+        ))
+        assert decision.decision == "allow"
+
+
 def test_skill_strict_whitelist_filters_provider_tools() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(

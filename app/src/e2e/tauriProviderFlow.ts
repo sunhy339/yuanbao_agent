@@ -371,6 +371,9 @@ async function runUiSmokeFlow(workspacePath?: string) {
     }
     click('button[aria-label="创建会话"]', "create session from applied workspace");
     await waitFor("session workspace after file workspace check", () => query(".session-workspace:not(.session-workspace-empty)"));
+    assertElement('aside[aria-label="工作区侧栏"]', "workspace side pane");
+    click('nav[aria-label="工作区页签"] button[role="tab"][title="浏览项目文件"]', "workspace file tab");
+    await waitFor("session file workspace panel", () => query(".session-file-workspace"));
     assertElement(".session-file-workspace", "session file workspace panel");
     assertions.push("workspace file list/read bridge works");
     assertions.push("session file workspace renders");

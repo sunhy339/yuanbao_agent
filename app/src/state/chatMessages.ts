@@ -440,6 +440,84 @@ export function isOperationalAssistantDelta(delta: string): boolean {
   );
 }
 
+function friendlyToolLabel(toolName: string) {
+  const normalized = toolName.trim();
+  if (!normalized) return "工具";
+  if (normalized === "list_dir") return "目录";
+  if (normalized === "read_file") return "文件";
+  if (normalized === "run_command") return "命令";
+  if (normalized === "apply_patch" || normalized === "write_file") return "文件改动";
+  return normalized;
+}
+
+export function summarizeOperationalAssistantDelta(delta: string): string | null {
+  const normalized = delta.trim();
+  if (!normalized) return null;
+  if (normalized === "Building context and preparing the first tool calls...") {
+    return "我在准备上下文，并定位这轮需要先看的文件和工具。";
+  }
+  if (normalized === "Completed the minimal tool loop and preparing a summary...") {
+    return "我已经跑完这一段工具调用，正在整理结果。";
+  }
+  if (normalized.startsWith("Started subtask: ")) {
+    return `开始子任务：${normalized.slice("Started subtask: ".length).trim()}`;
+  }
+  if (normalized.startsWith("Finished subtask: ")) {
+    return `子任务结束：${normalized.slice("Finished subtask: ".length).trim()}`;
+  }
+  if (normalized.startsWith("Subtask running tool: ")) {
+    return `子任务正在使用${friendlyToolLabel(normalized.slice("Subtask running tool: ".length))}。`;
+  }
+  if (normalized.startsWith("Subtask tool completed: ")) {
+    return `子任务完成了${friendlyToolLabel(normalized.slice("Subtask tool completed: ".length))}检查。`;
+  }
+  if (normalized.startsWith("Subtask tool failed: ")) {
+    return `子任务里的${friendlyToolLabel(normalized.slice("Subtask tool failed: ".length))}失败了，我会继续看失败原因。`;
+  }
+  if (normalized.startsWith("Subtask waiting for approval: ")) {
+    return `需要你审批后才能继续执行${friendlyToolLabel(normalized.slice("Subtask waiting for approval: ".length))}。`;
+  }
+  if (normalized.startsWith("Subtask approval ")) {
+    return `子任务审批状态：${normalized.slice("Subtask approval ".length).trim()}。`;
+  }
+  if (normalized.startsWith("Subtask command ")) {
+    return `子任务命令状态：${normalized.slice("Subtask command ".length).trim()}。`;
+  }
+  if (normalized.startsWith("Running tool: ")) {
+    return `正在使用${friendlyToolLabel(normalized.slice("Running tool: ".length))}。`;
+  }
+  if (normalized.startsWith("Running post-task validation command: ")) {
+    return `正在做收尾验证：${normalized.slice("Running post-task validation command: ".length).trim()}`;
+  }
+  if (normalized.startsWith("Running post-task ")) {
+    return "正在做任务后的收尾检查。";
+  }
+  if (normalized.startsWith("Approval accepted. Running the command now")) {
+    return "审批已通过，正在运行命令。";
+  }
+  if (normalized.startsWith("Approval accepted. Applying the patch now")) {
+    return "审批已通过，正在应用文件改动。";
+  }
+  return null;
+}
+
+export function appendAssistantContentDelta(existingContent: string, delta: string) {
+  const text = delta.trim();
+  if (!text) return existingContent;
+  const existing = existingContent ?? "";
+  const recentLines = existing
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-8);
+  if (recentLines.includes(text) || existing.trim().endsWith(text)) {
+    return existing;
+  }
+  if (!existing.trim()) return text;
+  const separator = text.startsWith("\n") || existing.endsWith("\n") ? "" : "\n\n";
+  return `${existing}${separator}${text}`;
+}
+
 export function getVisibleChatMessages(
   messages: ChatMessageView[],
   sessionId: string | null | undefined,

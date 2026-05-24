@@ -4,12 +4,18 @@ import type {
 } from "@shared";
 import type { ChatMessageView } from "./chatMessages";
 import { getPayloadValue, summarizeValue } from "./traceReaders";
-import { isOperationalAssistantDelta, failAssistantMessage } from "./chatMessages";
+import {
+  appendAssistantContentDelta,
+  failAssistantMessage,
+  isOperationalAssistantDelta,
+  summarizeOperationalAssistantDelta,
+} from "./chatMessages";
 
 export function appendAssistantToken(current: ChatMessageView[], event: AgentEventEnvelope): ChatMessageView[] {
   const payload = event.payload as AssistantTokenPayload;
   const delta = payload.delta ?? "";
-  if (!delta || isOperationalAssistantDelta(delta)) {
+  const displayDelta = isOperationalAssistantDelta(delta) ? summarizeOperationalAssistantDelta(delta) : delta;
+  if (!displayDelta) {
     return current;
   }
 
@@ -33,7 +39,9 @@ export function appendAssistantToken(current: ChatMessageView[], event: AgentEve
     next[lastAssistantIndex] = {
       ...currentMessage,
       taskId: event.taskId,
-      content: currentMessage.placeholder ? delta : `${currentMessage.content}${delta}`,
+      content: currentMessage.placeholder
+        ? displayDelta.trim()
+        : appendAssistantContentDelta(currentMessage.content, displayDelta),
       updatedAt: event.ts,
       placeholder: false,
     };
@@ -47,7 +55,7 @@ export function appendAssistantToken(current: ChatMessageView[], event: AgentEve
       sessionId: event.sessionId,
       taskId: event.taskId,
       role: "assistant",
-      content: delta,
+      content: displayDelta.trim(),
       createdAt: event.ts,
       updatedAt: event.ts,
       streaming: true,

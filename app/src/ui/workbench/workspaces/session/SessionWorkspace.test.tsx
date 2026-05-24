@@ -140,9 +140,8 @@ describe("SessionWorkspace", () => {
     expect(within(digest).getByText("正在修改")).toBeInTheDocument();
     expect(within(digest).getByText("1 个改动文件")).toBeInTheDocument();
     expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
-    expect(screen.getByLabelText("运行态详情")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /审查/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /终端/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /命令/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Git/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: /文件/ }));
     const fileWorkspace = screen.getByLabelText("文件工作区");
@@ -259,7 +258,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByLabelText("运行态详情")).toBeInTheDocument();
+    expect(screen.getByLabelText("工作区入口")).toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: /文件/ }));
     const fileWorkspace = screen.getByLabelText("文件工作区");
     expect(within(fileWorkspace).getByText("任务相关文件")).toBeInTheDocument();
@@ -268,12 +267,14 @@ describe("SessionWorkspace", () => {
     await user.click(screen.getByRole("tab", { name: /审查/ }));
     const tools = screen.getByLabelText("工作区工具");
     expect(within(tools).getByText("代码审查")).toBeInTheDocument();
+    expect(within(tools).getByLabelText("审查摘要")).toHaveTextContent("改动：Updated session layout");
+    expect(within(tools).getByLabelText("审查摘要")).toHaveTextContent("Diff：1 file changed, 12 insertions(+), 4 deletions(-)");
     expect(within(tools).getByText("1 file changed, 12 insertions(+), 4 deletions(-)")).toBeInTheDocument();
     await user.click(within(tools).getByRole("button", { name: "打开补丁" }));
     expect(onLoadPatch).toHaveBeenCalledWith("patch_1");
 
-    await user.click(screen.getByRole("tab", { name: /终端/ }));
-    expect(within(tools).getAllByText("本地终端").length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("tab", { name: /命令/ }));
+    expect(within(tools).getAllByText("命令记录").length).toBeGreaterThan(0);
     expect(within(tools).getAllByText(/shell/).length).toBeGreaterThan(0);
     expect(within(tools).getAllByText("npm run typecheck").length).toBeGreaterThan(0);
     expect(within(tools).getByText("Typecheck passed.")).toBeInTheDocument();
@@ -350,9 +351,9 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /终端/ }));
+    await user.click(screen.getByRole("tab", { name: /命令/ }));
     const tools = screen.getByLabelText("工作区工具");
-    expect(within(tools).getByText("本地终端")).toBeInTheDocument();
+    expect(within(tools).getByText("命令记录")).toBeInTheDocument();
     expect(within(tools).getAllByText("python -m pytest -q").length).toBeGreaterThan(0);
     expect(within(tools).getByText(/4 passed/)).toBeInTheDocument();
     expect(within(tools).getAllByText(/shell/).length).toBeGreaterThan(0);
@@ -601,7 +602,8 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByLabelText("Runtime timeline")).not.toBeInTheDocument();
   });
 
-  it("hides low-level trace noise while keeping important diagnostics readable", () => {
+  it("hides low-level trace noise while keeping important diagnostics readable", async () => {
+    const user = userEvent.setup();
     render(
       <SessionWorkspace
         session={session}
@@ -638,6 +640,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
+    await user.click(screen.getByRole("tab", { name: /诊断/ }));
     expect(screen.queryByText("assistant.token")).not.toBeInTheDocument();
     expect(screen.queryByText("provider.request")).not.toBeInTheDocument();
     expect(screen.queryByText("task.started")).not.toBeInTheDocument();
@@ -905,6 +908,7 @@ describe("SessionWorkspace", () => {
       expect.stringContaining("Command failed with exit 1."),
     );
 
+    await user.click(screen.getByRole("tab", { name: /诊断/ }));
     await user.click(screen.getByRole("button", { name: /trace Runtime Error 失败/i }));
     await user.click(screen.getByRole("button", { name: "复制详情" }));
 
@@ -912,6 +916,32 @@ describe("SessionWorkspace", () => {
       "诊断详情",
       expect.stringContaining("Command process exited unexpectedly."),
     );
+  });
+
+  it("explains when a command was blocked by the allowlist policy", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Run the game", createdAt: 1 }]}
+        toolCalls={[
+          {
+            id: "tool_blocked",
+            toolName: "run_command",
+            status: "failed",
+            resultSummary: "Command is not allowed by command allowlist",
+            rawInput: '{"command":"python main.py","cwd":"snake_game"}',
+            rawOutput: '{"failureKind":"permission_denied","recoveryDecision":{"action":"request_permission"}}',
+            time: 2,
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /命令 python main\.py 失败/i }));
+    expect(screen.getAllByText(/命令没有真正执行：运行时策略拦截了这条命令/).length).toBeGreaterThan(0);
   });
 
   it("shows a clear patch diff state when the runtime has not returned diff text", async () => {
@@ -1050,7 +1080,8 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText("Listed fixture files.")).not.toBeInTheDocument();
   });
 
-  it("renders active task execution progress without duplicating task summary cards", () => {
+  it("renders active task execution progress without duplicating task summary cards", async () => {
+    const user = userEvent.setup();
 
     render(
       <SessionWorkspace
@@ -1104,6 +1135,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
+    await user.click(screen.getByRole("tab", { name: /诊断/ }));
     const taskProgress = screen.getByRole("region", { name: "任务进度" });
     expect(taskProgress).toBeInTheDocument();
     expect(within(taskProgress).getByRole("heading", { name: "正在验证" })).toBeInTheDocument();
@@ -1504,7 +1536,8 @@ describe("SessionWorkspace", () => {
     expect(within(evidence).getByText("Code/test changes need targeted test, build, or typecheck verification.")).toBeInTheDocument();
   });
 
-  it("summarizes runtime gate, verification, and context budget in the cockpit", () => {
+  it("summarizes runtime gate, verification, and context budget in the cockpit", async () => {
+    const user = userEvent.setup();
     render(
       <SessionWorkspace
         session={session}
@@ -1581,6 +1614,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
+    await user.click(screen.getByRole("tab", { name: /诊断/ }));
     const cockpit = screen.getByLabelText("运行态概览");
     expect(within(cockpit).getByText("Ship the guarded frontend")).toBeInTheDocument();
     expect(within(cockpit).getByText("needs_acceptance_review")).toBeInTheDocument();
@@ -1599,7 +1633,8 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText("Internal focus should stay hidden.")).not.toBeInTheDocument();
   });
 
-  it("prefers current successful checks over stale failed commands in workspace status", () => {
+  it("prefers current successful checks over stale failed commands in workspace status", async () => {
+    const user = userEvent.setup();
     render(
       <SessionWorkspace
         session={session}
@@ -1621,6 +1656,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
+    await user.click(screen.getByRole("tab", { name: /诊断/ }));
     const cockpit = screen.getByLabelText("运行态概览");
     expect(within(cockpit).getByText("本轮任务已完成")).toBeInTheDocument();
     expect(
@@ -1666,6 +1702,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
+    await user.click(screen.getByRole("tab", { name: /诊断/ }));
     const cockpit = screen.getByLabelText("运行态概览");
     const actions = within(cockpit).getByLabelText("任务操作");
 
@@ -1680,7 +1717,8 @@ describe("SessionWorkspace", () => {
     expect(onResumeTask).toHaveBeenCalledWith("task_handoff");
   });
 
-  it("renders trace filter bar with task id, visibility, and agent type filters", () => {
+  it("renders trace filter bar with task id, visibility, and agent type filters", async () => {
+    const user = userEvent.setup();
     render(
       <SessionWorkspace
         session={session}
@@ -1709,6 +1747,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
+    await user.click(screen.getByRole("tab", { name: /诊断/ }));
     expect(screen.getByLabelText("诊断过滤")).toBeInTheDocument();
     const filterBar = screen.getByLabelText("诊断过滤");
     expect(within(filterBar).getByText("任务")).toBeInTheDocument();
@@ -1716,7 +1755,8 @@ describe("SessionWorkspace", () => {
     expect(within(filterBar).getByText("Agent")).toBeInTheDocument();
   });
 
-  it("shows child task fields including agentType and duration in the collaboration panel", () => {
+  it("shows child task fields including agentType and duration in the collaboration panel", async () => {
+    const user = userEvent.setup();
     render(
       <SessionWorkspace
         session={session}
@@ -1754,6 +1794,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
+    await user.click(screen.getByRole("tab", { name: /诊断/ }));
     const agentPanel = screen.getByLabelText("真实 Agent 任务");
     expect(within(agentPanel).getByText(/类型: explorer/)).toBeInTheDocument();
     expect(within(agentPanel).getByText(/4.5s/)).toBeInTheDocument();

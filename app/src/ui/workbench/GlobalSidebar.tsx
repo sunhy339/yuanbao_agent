@@ -23,6 +23,28 @@ interface ContextMenuState {
   y: number;
 }
 
+function formatSessionRailMeta(session: WorkbenchSession, activeSessionId: string | null) {
+  if (session.id === activeSessionId) {
+    return "当前";
+  }
+  if (session.status === "failed") {
+    return "失败";
+  }
+  if (session.status === "archived") {
+    return "归档";
+  }
+  if (session.updatedAt) {
+    return new Date(session.updatedAt).toLocaleString("zh-CN", {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  }
+  return formatStatusLabel(session.status);
+}
+
 export function GlobalSidebar({
   sessions,
   activeSessionId,
@@ -178,7 +200,7 @@ export function GlobalSidebar({
                 >
                   <span className="session-dot" data-status={session.status} aria-hidden="true" />
                   <span className="session-title">{session.title || "未命名会话"}</span>
-                  <span className="session-meta">{formatStatusLabel(session.status)}</span>
+                  <span className="session-meta">{formatSessionRailMeta(session, activeSessionId)}</span>
                 </button>
               ),
             )

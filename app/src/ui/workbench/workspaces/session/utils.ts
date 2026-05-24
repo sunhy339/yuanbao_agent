@@ -525,7 +525,15 @@ function looksLikeFilesystemPath(value: string) {
 }
 
 export function buildCommandOutput(item: RuntimeTimelineItem) {
+  const haystack = compactMeta([item.summary, item.rawDetail, item.code]).join("\n").toLowerCase();
+  const policyHint =
+    haystack.includes("command is not allowed by command allowlist") ||
+    haystack.includes("permission_denied") ||
+    haystack.includes('"action": "request_permission"')
+      ? "命令没有真正执行：运行时策略拦截了这条命令。需要允许该命令，或改用当前白名单允许的等价命令。"
+      : null;
   const sections = compactMeta([
+    policyHint,
     item.summary,
     item.rawDetail,
     item.code && !item.rawDetail && !looksLikeFilesystemPath(item.code) ? item.code : null,

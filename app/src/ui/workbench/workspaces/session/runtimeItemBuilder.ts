@@ -217,7 +217,9 @@ export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall)
   const duration = formatDuration(toolCall.durationMs);
   const tokenCount = toolCall.tokenCount !== undefined ? `${toolCall.tokenCount} 令牌` : null;
   const statusMeta = compactMeta([duration, tokenCount]);
-  const resultSummary = summarizeRuntimeOutput(toolCall.resultSummary || toolCall.output || toolCall.stdout || toolCall.stderr);
+  const resultSummary = summarizeRuntimeOutput(
+    toolCall.resultSummary || toolCall.output || toolCall.stdout || toolCall.stderr || toolCall.rawOutput,
+  );
 
   if (toolCall.toolName === "run_command") {
     return {

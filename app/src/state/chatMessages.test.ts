@@ -152,8 +152,19 @@ describe("chatMessages", () => {
     expect(appendAssistantContentDelta("我就可以", "正在使用 git_status。")).toBe("我就可以正在使用 git_status。");
   });
 
-  it("turns runtime progress tokens into readable chat progress summaries", () => {
-    expect(summarizeOperationalAssistantDelta("Running tool: list_dir")).toBe("正在使用目录。");
+  it("replaces repeated full assistant snapshots instead of appending duplicates", () => {
+    expect(
+      appendAssistantContentDelta(
+        "当前目录内容如下：\n\n- snake_game/\n",
+        "当前目录内容如下：\n\n- snake_game/\n- README.md\n",
+      ),
+    ).toBe("当前目录内容如下：\n\n- snake_game/\n- README.md\n");
+  });
+
+  it("keeps low-value runtime progress out of chat while preserving action signals", () => {
+    expect(summarizeOperationalAssistantDelta("Running tool: list_dir")).toBeNull();
+    expect(summarizeOperationalAssistantDelta("Building context and preparing the first tool calls...")).toBeNull();
+    expect(summarizeOperationalAssistantDelta("Subtask tool completed: run_command")).toBeNull();
     expect(summarizeOperationalAssistantDelta("Subtask waiting for approval: run_command")).toBe(
       "需要你审批后才能继续执行命令。",
     );

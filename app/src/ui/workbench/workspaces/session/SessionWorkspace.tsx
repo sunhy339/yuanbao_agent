@@ -2,7 +2,6 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   useCallback,
-  useEffect,
   useMemo,
   useState,
 } from "react";
@@ -11,10 +10,8 @@ import {
   ClipboardList,
   Files,
   GitBranch,
-  Globe2,
   GripVertical,
   Home,
-  MessageSquarePlus,
   PanelRightClose,
   PanelRightOpen,
   SquareTerminal,
@@ -25,6 +22,7 @@ import { formatStatusLabel } from "../../../copy";
 import type { SessionWorkspaceProps, RuntimeTimelineItem } from "./types";
 import {
   buildCommandOutput,
+  compactMeta,
   compactText,
   getRuntimeKindLabel,
   getStatusTone,
@@ -98,6 +96,15 @@ function normalizeWorkspaceRelativePath(path: string) {
 function fileNameFromPath(path: string) {
   const normalized = normalizeWorkspaceRelativePath(path);
   return normalized.split("/").filter(Boolean).at(-1) || normalized || ".";
+}
+
+function readObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function readText(record: Record<string, unknown> | null, key: string): string {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
 function RuntimeLanePatchDetail({ item, isBusy }: { item: RuntimeTimelineItem; isBusy: boolean }) {
@@ -250,8 +257,8 @@ function RuntimeLaneSummaryRow({
   );
 }
 
-type SessionToolKey = "review" | "terminal" | "git" | "browser" | "side-chat";
-type SessionWorkspacePaneKey = "home" | "files" | "review" | "terminal" | "git" | "browser" | "side-chat" | "runtime";
+type SessionToolKey = "review" | "terminal" | "git";
+type SessionWorkspacePaneKey = "home" | "files" | "review" | "terminal" | "git" | "diagnostics";
 
 interface SessionToolCommand {
   id?: string;
@@ -264,6 +271,116 @@ interface SessionToolCommand {
   exitCode?: number | null;
   stdoutPath?: string | null;
   stderrPath?: string | null;
+}
+
+interface SessionToolReviewFile {
+  path: string;
+  status?: string;
+  additions?: number;
+  deletions?: number;
+  reason?: string;
+  source: "task" | "patch" | "git";
+}
+
+function normalizeReviewStatus(status?: string) {
+  const normalized = String(status ?? "").trim();
+  if (!normalized) return "";
+  if (normalized === "M") return "modified";
+  if (normalized === "A") return "added";
+  if (normalized === "D") return "deleted";
+  if (normalized === "R") return "renamed";
+  if (normalized === "??") return "untracked";
+  return normalized;
+}
+
+function readGitStatusPath(path: string) {
+  const normalized = path.trim();
+  const match = normalized.match(/^([ MADRCU?!]{1,2})\s+(.+)$/);
+  if (!match) {
+    return { status: "", path: normalizeWorkspaceRelativePath(normalized) };
+  }
+  return {
+    status: normalizeReviewStatus(match[1].trim()),
+    path: normalizeWorkspaceRelativePath(match[2]),
+  };
+}
+
+function mergeReviewFileRows(rows: SessionToolReviewFile[]) {
+  const merged = new Map<string, SessionToolReviewFile>();
+  rows.forEach((row) => {
+    const path = normalizeWorkspaceRelativePath(row.path);
+    if (!path) return;
+    const existing = merged.get(path);
+    merged.set(path, {
+      path,
+      status: normalizeReviewStatus(row.status) || existing?.status,
+      additions: row.additions ?? existing?.additions,
+      deletions: row.deletions ?? existing?.deletions,
+      reason: row.reason || existing?.reason,
+      source: existing?.source ?? row.source,
+    });
+  });
+  return [...merged.values()];
+}
+
+function buildReviewFileRows(
+  activeTask: SessionWorkspaceProps["activeTask"],
+  patches: SessionWorkspaceProps["patches"],
+  worktreeStatus: SessionWorkspaceProps["worktreeStatus"],
+) {
+  return mergeReviewFileRows([
+    ...(activeTask?.changedFiles?.map((file) => ({
+      path: file.path,
+      status: file.status,
+      additions: file.additions,
+      deletions: file.deletions,
+      reason: file.reason,
+      source: "task" as const,
+    })) ?? []),
+    ...((patches ?? []).flatMap((patch) =>
+      (patch.files ?? []).map((file) => ({
+        path: file.path,
+        status: file.status,
+        additions: file.additions,
+        deletions: file.deletions,
+        source: "patch" as const,
+      })),
+    ) as SessionToolReviewFile[]),
+    ...(worktreeStatus?.files?.map((rawPath) => {
+      const parsed = readGitStatusPath(rawPath);
+      return {
+        path: parsed.path,
+        status: parsed.status,
+        source: "git" as const,
+      };
+    }) ?? []),
+  ]);
+}
+
+function formatReviewFileStatus(status?: string) {
+  const normalized = normalizeReviewStatus(status);
+  if (!normalized) return "recorded";
+  if (normalized === "modified") return "modified";
+  if (normalized === "added") return "added";
+  if (normalized === "deleted") return "deleted";
+  if (normalized === "untracked") return "untracked";
+  return normalized;
+}
+
+function formatReviewFileStats(file: SessionToolReviewFile) {
+  const hasStats = file.additions !== undefined || file.deletions !== undefined;
+  if (!hasStats) return "";
+  return `+${file.additions ?? 0} -${file.deletions ?? 0}`;
+}
+
+function isCommandPolicyBlocked(command: SessionToolCommand) {
+  const haystack = [command.summary, command.command].filter(Boolean).join("\n").toLowerCase();
+  return (
+    haystack.includes("command is not allowed by command allowlist") ||
+    haystack.includes("permission_denied") ||
+    haystack.includes("request_permission") ||
+    haystack.includes("not allowed by command allowlist")
+  );
 }
 
 function SessionWorkspaceToolDock({
@@ -317,12 +434,8 @@ function SessionWorkspaceToolDock({
   const branchName = composerContext?.branch || activeWorktree?.branchName || "未识别分支";
   const workspaceLabel = workspacePath || "当前会话未提供工作目录";
 
-  const relatedFiles = uniqueNonEmptyStrings([
-    ...(activeTask?.changedFiles?.map((file) => file.path) ?? []),
-    ...((patches ?? []).flatMap((patch) => (patch.files ?? []).map((file) => file.path ?? "")) as string[]),
-    ...(worktreeStatus?.files ?? []),
-  ]).map(normalizeWorkspaceRelativePath);
-  const normalizedRelatedFiles = uniqueNonEmptyStrings(relatedFiles);
+  const reviewFileRows = buildReviewFileRows(activeTask, patches, worktreeStatus);
+  const normalizedRelatedFiles = uniqueNonEmptyStrings(reviewFileRows.map((file) => file.path));
 
   const patchStats = (patches ?? []).reduce(
     (stats, patch) => ({
@@ -347,6 +460,39 @@ function SessionWorkspaceToolDock({
   const reviewFileCount = normalizedRelatedFiles.length;
   const firstPatchId = patches?.[0]?.id;
   const dirtyFiles = worktreeStatus?.dirtyFiles ?? normalizedRelatedFiles.length;
+  const latestPatch = patches?.[0];
+  const reviewRecord = readObject(activeWorktree?.lastStatus?.review);
+  const mergeApprovalRecord = readObject(activeWorktree?.lastStatus?.mergeApproval);
+  const reviewSummary = compactText(
+    compactMeta([
+      readText(reviewRecord, "reviewer"),
+      readText(reviewRecord, "summary") || readText(reviewRecord, "status"),
+    ]).join(" - "),
+    180,
+  );
+  const mergeApprovalSummary = compactText(
+    compactMeta([
+      readText(mergeApprovalRecord, "decision"),
+      readText(mergeApprovalRecord, "targetBranch"),
+      readText(mergeApprovalRecord, "verificationStatus"),
+    ]).join(" - "),
+    180,
+  );
+  const latestPatchSummary = compactText(latestPatch?.summary || activeTask?.summary || activeTask?.currentStep, 180);
+  const reviewFileSummary =
+    reviewFileRows.length && !latestPatchSummary
+      ? `${reviewFileRows.length} 个文件：${reviewFileRows
+          .slice(0, 4)
+          .map((file) => `${fileNameFromPath(file.path)} ${formatReviewFileStatus(file.status)}`)
+          .join("、")}${reviewFileRows.length > 4 ? " 等" : ""}`
+      : "";
+  const reviewHighlights = compactMeta([
+    latestPatchSummary ? `改动：${latestPatchSummary}` : null,
+    reviewFileSummary ? `文件：${reviewFileSummary}` : null,
+    reviewSummary ? `审查：${reviewSummary}` : null,
+    mergeApprovalSummary ? `合并：${mergeApprovalSummary}` : null,
+    worktreeDiff?.diffStat ? `Diff：${worktreeDiff.diffStat}` : null,
+  ]);
   const rawCommandItems: SessionToolCommand[] = [
     ...(activeTask?.commands?.map((command) => ({ ...command })) ?? []),
     ...(activeTask?.verification?.map((verification) => ({
@@ -392,10 +538,8 @@ function SessionWorkspaceToolDock({
   const latestDiffPreview = worktreeDiff?.preview || worktreeDiff?.diff || "";
   const toolTabs: Array<{ id: SessionToolKey; label: string; description: string; icon: LucideIcon; count?: number }> = [
     { id: "review", label: "审查", description: "查看代码改动", icon: ClipboardList, count: patchCount },
-    { id: "terminal", label: "终端", description: "本地命令历史", icon: SquareTerminal, count: commandItems.length },
+    { id: "terminal", label: "命令", description: "运行记录", icon: SquareTerminal, count: commandItems.length },
     { id: "git", label: "Git", description: "分支与提交", icon: GitBranch, count: dirtyFiles },
-    { id: "browser", label: "浏览器", description: "预览入口", icon: Globe2 },
-    { id: "side-chat", label: "侧聊", description: "独立上下文", icon: MessageSquarePlus },
   ];
 
   return (
@@ -452,6 +596,15 @@ function SessionWorkspaceToolDock({
                 <span className="session-tool-file-stat">{reviewFileCount} 个文件</span>
               ) : null}
             </div>
+            {reviewHighlights.length ? (
+              <div className="session-tool-review-summary" aria-label="审查摘要">
+                {reviewHighlights.map((item) => (
+                  <p key={item}>{item}</p>
+                ))}
+              </div>
+            ) : (
+              <p className="session-tool-muted">还没有 diff 或审查摘要；有文件改动后这里会显示改了什么、验证和审查状态。</p>
+            )}
             <div className="session-tool-actions">
               {firstPatchId && onLoadPatch ? (
                 <Button
@@ -478,14 +631,24 @@ function SessionWorkspaceToolDock({
                 </Button>
               ) : null}
             </div>
-            {normalizedRelatedFiles.length ? (
-              <ul className="session-tool-list">
-                {normalizedRelatedFiles.slice(0, 10).map((path) => (
-                  <li key={path}>
-                    <strong>{fileNameFromPath(path)}</strong>
-                    <small>{path}</small>
+            {reviewFileRows.length ? (
+              <ul className="session-tool-list session-tool-review-file-list" aria-label="审查文件">
+                {reviewFileRows.slice(0, 10).map((file) => {
+                  const stats = formatReviewFileStats(file);
+                  return (
+                    <li className="session-tool-review-file-row" key={file.path}>
+                      <div className="session-tool-review-file-copy">
+                        <strong>{fileNameFromPath(file.path)}</strong>
+                        <small>{file.path}</small>
+                        {file.reason ? <p>{file.reason}</p> : null}
+                      </div>
+                      <span className="session-tool-file-badges">
+                        <code>{formatReviewFileStatus(file.status)}</code>
+                        {stats ? <code>{stats}</code> : null}
+                      </span>
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             ) : null}
             {worktreeDiff?.error ? <p className="session-tool-error">{worktreeDiff.error}</p> : null}
@@ -498,10 +661,11 @@ function SessionWorkspaceToolDock({
           <>
             <div className="session-tool-panel-header">
               <div>
-                <strong>本地终端</strong>
+                <strong>命令记录</strong>
                 <small>{latestCommand ? compactText(latestCommand.command, 58) : "还没有运行命令"}</small>
               </div>
             </div>
+            <p className="session-tool-muted">这里显示本轮运行时命令和验证记录；交互式本地 shell 会作为单独终端能力接入。</p>
             {commandItems.length ? (
               <ul className="session-tool-command-list">
                 {commandItems.slice(-8).map((command, index) => (
@@ -518,6 +682,11 @@ function SessionWorkspaceToolDock({
                       </small>
                     </div>
                     {command.summary ? <p>{command.summary}</p> : null}
+                    {isCommandPolicyBlocked(command) ? (
+                      <p className="session-tool-warning">
+                        命令没有真正执行：运行时策略拦截了这条命令。需要允许该命令，或改用当前白名单允许的等价命令。
+                      </p>
+                    ) : null}
                     {command.stdoutPath || command.stderrPath ? (
                       <code>
                         {[command.stdoutPath, command.stderrPath].filter(Boolean).join(" · ")}
@@ -574,19 +743,6 @@ function SessionWorkspaceToolDock({
           />
         ) : null}
 
-        {selectedTool === "browser" ? (
-          <div className="session-tool-placeholder">
-            <strong>浏览器预览</strong>
-            <p>这里会放运行中的本地页面和网站入口，方便和主任务结果并排检查。</p>
-          </div>
-        ) : null}
-
-        {selectedTool === "side-chat" ? (
-          <div className="session-tool-placeholder">
-            <strong>侧边聊天</strong>
-            <p>这里会放独立上下文的辅助对话，不污染当前主任务链路。</p>
-          </div>
-        ) : null}
       </div>
     </section>
   );
@@ -829,20 +985,8 @@ export function SessionWorkspace({
     visibility: "" | "chat" | "panel" | "trace";
     agentType: string;
   }>({ taskId: "", visibility: "", agentType: "" });
-  const hasWorkspaceRuntimeEvidence = Boolean(
-    visibleActiveTask ||
-      approvals?.length ||
-      patches?.length ||
-      traces?.length ||
-      toolCalls?.length ||
-      backgroundJobs?.length ||
-      collaboration?.childTasks?.length,
-  );
   const [workspaceFocus, setWorkspaceFocus] = useState<"files" | null>(null);
-  const [workspacePane, setWorkspacePane] = useState<SessionWorkspacePaneKey>(() =>
-    hasWorkspaceRuntimeEvidence ? "runtime" : "home",
-  );
-  const [workspacePaneUserSelected, setWorkspacePaneUserSelected] = useState(false);
+  const [workspacePane, setWorkspacePane] = useState<SessionWorkspacePaneKey>("home");
   const [workspacePaneCollapsed, setWorkspacePaneCollapsed] = useState(false);
   const [workspacePaneWidthPx, setWorkspacePaneWidthPx] = useState<number | null>(null);
   const [workspacePaneResizing, setWorkspacePaneResizing] = useState(false);
@@ -941,13 +1085,7 @@ export function SessionWorkspace({
 
   const isFilesFocused = workspaceFocus === "files";
   const isWorkspacePaneVisible = isFilesFocused || !workspacePaneCollapsed;
-  useEffect(() => {
-    if (!workspacePaneUserSelected && workspacePane === "home" && hasWorkspaceRuntimeEvidence) {
-      setWorkspacePane("runtime");
-    }
-  }, [hasWorkspaceRuntimeEvidence, workspacePane, workspacePaneUserSelected]);
   const selectWorkspacePane = useCallback((pane: SessionWorkspacePaneKey) => {
-    setWorkspacePaneUserSelected(true);
     setWorkspacePane(pane);
     setWorkspacePaneCollapsed(false);
     if (pane !== "files") {
@@ -955,7 +1093,6 @@ export function SessionWorkspace({
     }
   }, []);
   const toggleFileFocus = useCallback(() => {
-    setWorkspacePaneUserSelected(true);
     setWorkspacePane("files");
     setWorkspacePaneCollapsed(false);
     setWorkspaceFocus((current) => (current === "files" ? null : "files"));
@@ -994,18 +1131,17 @@ export function SessionWorkspace({
     icon: LucideIcon;
     count?: number;
   }> = [
-    { id: "home", label: "工作区", description: "打开文件、审查、终端和运行态", icon: Home },
+    { id: "home", label: "工作区", description: "打开常用面板", icon: Home },
     { id: "files", label: "文件", description: "浏览项目文件", icon: Files, count: normalizedRelatedFiles.length },
     { id: "review", label: "审查", description: "查看代码改动", icon: ClipboardList, count: (patches?.length ?? 0) + (visibleActiveTask?.changedFiles?.length ? 1 : 0) },
-    { id: "terminal", label: "终端", description: "本地命令历史", icon: SquareTerminal, count: (visibleActiveTask?.commands?.length ?? 0) + (visibleActiveTask?.verification?.length ?? 0) },
+    { id: "terminal", label: "命令", description: "查看运行记录", icon: SquareTerminal, count: (visibleActiveTask?.commands?.length ?? 0) + (visibleActiveTask?.verification?.length ?? 0) },
     { id: "git", label: "Git", description: "分支与提交", icon: GitBranch, count: worktreeStatus?.dirtyFiles },
-    { id: "browser", label: "浏览器", description: "预览入口", icon: Globe2 },
-    { id: "side-chat", label: "侧聊", description: "独立上下文", icon: MessageSquarePlus },
-    { id: "runtime", label: "运行态", description: "任务、审批和异常", icon: Activity, count: visibleRuntimeLanes.length },
+    { id: "diagnostics", label: "诊断", description: "失败、审批与子任务", icon: Activity, count: visibleRuntimeLanes.length },
   ];
-  const toolPane = ["review", "terminal", "git", "browser", "side-chat"].includes(workspacePane)
+  const toolPane = ["review", "terminal", "git"].includes(workspacePane)
     ? (workspacePane as SessionToolKey)
     : "review";
+  const showDiagnosticsPane = workspacePane === "diagnostics" || workspacePane === "home";
   const workspaceGridStyle =
     workspacePaneWidthPx && !workspacePaneCollapsed && !isFilesFocused
       ? ({ "--session-workspace-pane-width": `${workspacePaneWidthPx}px` } as CSSProperties)
@@ -1200,7 +1336,7 @@ export function SessionWorkspace({
                 </section>
               ) : null}
 
-              {["review", "terminal", "git", "browser", "side-chat"].includes(workspacePane) ? (
+              {["review", "terminal", "git"].includes(workspacePane) ? (
                 <SessionWorkspaceToolDock
                   activeTask={visibleActiveTask}
                   patches={patches}
@@ -1225,8 +1361,8 @@ export function SessionWorkspace({
                 />
               ) : null}
 
-              {workspacePane === "runtime" ? (
-                <section className="session-pane-runtime" aria-label="运行态详情">
+              {showDiagnosticsPane ? (
+                <section className="session-pane-runtime session-pane-diagnostics" aria-label="运行态详情" hidden={workspacePane === "home"}>
                   <RuntimeCockpitPanel
                     activeTask={visibleActiveTask}
                     approvals={approvals}

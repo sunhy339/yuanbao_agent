@@ -97,6 +97,19 @@ function scheduleLabel(task?: ScheduledTaskRecord) {
   return task.name;
 }
 
+function sessionBadge(session: SessionRecord, index: number) {
+  if (session.status === "failed") {
+    return { label: "失败", tone: "danger" as const };
+  }
+  if (session.status === "archived") {
+    return { label: "归档", tone: "neutral" as const };
+  }
+  if (index === 0) {
+    return { label: "最近", tone: "info" as const };
+  }
+  return { label: "可继续", tone: "neutral" as const };
+}
+
 export function WorkbenchOverviewPage({
   workspace,
   workspacePath,
@@ -176,15 +189,18 @@ export function WorkbenchOverviewPage({
             <Panel eyebrow="最近会话" title="对话通道">
               <div className="overview-list">
                 {recentSessions.length ? (
-                  recentSessions.map((session) => (
+                  recentSessions.map((session, index) => {
+                    const badge = sessionBadge(session, index);
+                    return (
                     <button key={session.id} type="button" className="overview-row" onClick={() => onOpenSession(session)}>
                       <span>
                         <strong>{session.title || "未命名会话"}</strong>
-                        <small>{session.workspaceRoot || session.summary || formatStatusLabel(session.status)}</small>
+                        <small>{session.workspaceRoot || session.summary || `更新于 ${formatTimestamp(session.updatedAt)}`}</small>
                       </span>
-                      <StatusBadge label={formatStatusLabel(session.status)} tone={session.status === "active" ? "success" : "neutral"} compact />
+                      <StatusBadge label={badge.label} tone={badge.tone} compact />
                     </button>
-                  ))
+                    );
+                  })
                 ) : (
                   <div className="overview-empty">
                     <strong>还没有会话</strong>

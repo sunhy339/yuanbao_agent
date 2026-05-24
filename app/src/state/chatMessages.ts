@@ -454,22 +454,22 @@ export function summarizeOperationalAssistantDelta(delta: string): string | null
   const normalized = delta.trim();
   if (!normalized) return null;
   if (normalized === "Building context and preparing the first tool calls...") {
-    return "我在准备上下文，并定位这轮需要先看的文件和工具。";
+    return null;
   }
   if (normalized === "Completed the minimal tool loop and preparing a summary...") {
-    return "我已经跑完这一段工具调用，正在整理结果。";
+    return null;
   }
   if (normalized.startsWith("Started subtask: ")) {
-    return `开始子任务：${normalized.slice("Started subtask: ".length).trim()}`;
+    return null;
   }
   if (normalized.startsWith("Finished subtask: ")) {
-    return `子任务结束：${normalized.slice("Finished subtask: ".length).trim()}`;
+    return null;
   }
   if (normalized.startsWith("Subtask running tool: ")) {
-    return `子任务正在使用${friendlyToolLabel(normalized.slice("Subtask running tool: ".length))}。`;
+    return null;
   }
   if (normalized.startsWith("Subtask tool completed: ")) {
-    return `子任务完成了${friendlyToolLabel(normalized.slice("Subtask tool completed: ".length))}检查。`;
+    return null;
   }
   if (normalized.startsWith("Subtask tool failed: ")) {
     return `子任务里的${friendlyToolLabel(normalized.slice("Subtask tool failed: ".length))}失败了，我会继续看失败原因。`;
@@ -478,13 +478,13 @@ export function summarizeOperationalAssistantDelta(delta: string): string | null
     return `需要你审批后才能继续执行${friendlyToolLabel(normalized.slice("Subtask waiting for approval: ".length))}。`;
   }
   if (normalized.startsWith("Subtask approval ")) {
-    return `子任务审批状态：${normalized.slice("Subtask approval ".length).trim()}。`;
+    return null;
   }
   if (normalized.startsWith("Subtask command ")) {
-    return `子任务命令状态：${normalized.slice("Subtask command ".length).trim()}。`;
+    return null;
   }
   if (normalized.startsWith("Running tool: ")) {
-    return `正在使用${friendlyToolLabel(normalized.slice("Running tool: ".length))}。`;
+    return null;
   }
   if (normalized.startsWith("Running post-task validation command: ")) {
     return `正在做收尾验证：${normalized.slice("Running post-task validation command: ".length).trim()}`;
@@ -507,6 +507,11 @@ export function appendAssistantContentDelta(existingContent: string, delta: stri
   const existing = existingContent ?? "";
   if (existing.endsWith(text)) {
     return existing;
+  }
+  const existingTrimmed = existing.trim();
+  const incomingTrimmedStart = text.trimStart();
+  if (existingTrimmed && incomingTrimmedStart.startsWith(existingTrimmed)) {
+    return incomingTrimmedStart;
   }
   if (!existing.trim()) return text.trimStart();
   return `${existing}${text}`;

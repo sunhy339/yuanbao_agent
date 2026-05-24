@@ -41,6 +41,7 @@ import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
 import { TraceFilterBar } from "./TraceFilterBar";
 import { FileWorkspacePanel } from "./FileWorkspacePanel";
 import { GitWorkspacePanel } from "./GitWorkspacePanel";
+import { LocalTerminalPanel } from "./LocalTerminalPanel";
 import { isChatVisibleEvent } from "./visibilityRouting";
 import "./session.css";
 
@@ -383,6 +384,138 @@ function isCommandPolicyBlocked(command: SessionToolCommand) {
   );
 }
 
+interface UnifiedDiffLine {
+  type: "meta" | "hunk" | "add" | "remove" | "context";
+  content: string;
+  oldLine?: number;
+  newLine?: number;
+}
+
+interface UnifiedDiffFile {
+  key: string;
+  path: string;
+  additions: number;
+  deletions: number;
+  lines: UnifiedDiffLine[];
+}
+
+function diffPathFromHeader(line: string) {
+  const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+  return match?.[2] || match?.[1] || line.replace(/^diff --git\s+/, "").trim() || "diff";
+}
+
+function parseUnifiedDiff(diffText: string): UnifiedDiffFile[] {
+  const files: UnifiedDiffFile[] = [];
+  let current: UnifiedDiffFile | null = null;
+  let oldLine = 0;
+  let newLine = 0;
+
+  diffText.replace(/\r\n/g, "\n").split("\n").forEach((line, index) => {
+    if (line.startsWith("diff --git ")) {
+      current = {
+        key: `${index}:${line}`,
+        path: diffPathFromHeader(line),
+        additions: 0,
+        deletions: 0,
+        lines: [{ type: "meta", content: line }],
+      };
+      files.push(current);
+      oldLine = 0;
+      newLine = 0;
+      return;
+    }
+
+    if (!current) {
+      current = {
+        key: `inline:${index}`,
+        path: "diff",
+        additions: 0,
+        deletions: 0,
+        lines: [],
+      };
+      files.push(current);
+    }
+
+    const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      oldLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
+      current.lines.push({ type: "hunk", content: line });
+      return;
+    }
+
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      current.additions += 1;
+      current.lines.push({ type: "add", content: line.slice(1), newLine });
+      newLine += 1;
+      return;
+    }
+
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      current.deletions += 1;
+      current.lines.push({ type: "remove", content: line.slice(1), oldLine });
+      oldLine += 1;
+      return;
+    }
+
+    if (line.startsWith(" ") || line === "") {
+      current.lines.push({ type: "context", content: line.startsWith(" ") ? line.slice(1) : line, oldLine, newLine });
+      if (oldLine) oldLine += 1;
+      if (newLine) newLine += 1;
+      return;
+    }
+
+    current.lines.push({ type: "meta", content: line });
+  });
+
+  return files.filter((file) => file.lines.length > 0);
+}
+
+function diffTextFromReviewSources(
+  worktreeDiff: SessionWorkspaceProps["worktreeDiff"],
+  patches?: SessionWorkspaceProps["patches"],
+) {
+  const directDiff = worktreeDiff?.diff || worktreeDiff?.preview;
+  if (directDiff?.trim()) {
+    return directDiff;
+  }
+  return (patches ?? [])
+    .flatMap((patch) => [patch.diff, ...(patch.files ?? []).map((file) => file.diff)])
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join("\n");
+}
+
+function UnifiedDiffViewer({ diffText }: { diffText: string }) {
+  const files = parseUnifiedDiff(diffText);
+  if (!files.length) {
+    return <p className="session-tool-muted">还没有可展示的差异内容。</p>;
+  }
+
+  return (
+    <div className="session-diff-viewer" aria-label="真实差异">
+      {files.slice(0, 10).map((file) => (
+        <article className="session-diff-file" key={file.key}>
+          <header>
+            <strong title={file.path}>{file.path}</strong>
+            <span>
+              +{file.additions} -{file.deletions}
+            </span>
+          </header>
+          <ol className="session-diff-lines">
+            {file.lines.slice(0, 800).map((line, index) => (
+              <li className={`session-diff-line session-diff-line-${line.type}`} key={`${file.key}:${index}`}>
+                <span className="session-diff-line-old">{line.oldLine ?? ""}</span>
+                <span className="session-diff-line-new">{line.newLine ?? ""}</span>
+                <code>{line.content || " "}</code>
+              </li>
+            ))}
+          </ol>
+        </article>
+      ))}
+    </div>
+  );
+}
+
 function SessionWorkspaceToolDock({
   activeTask,
   patches,
@@ -535,10 +668,10 @@ function SessionWorkspaceToolDock({
     })
     .reverse();
   const latestCommand = commandItems.at(-1);
-  const latestDiffPreview = worktreeDiff?.preview || worktreeDiff?.diff || "";
+  const latestDiffPreview = diffTextFromReviewSources(worktreeDiff, patches);
   const toolTabs: Array<{ id: SessionToolKey; label: string; description: string; icon: LucideIcon; count?: number }> = [
     { id: "review", label: "审查", description: "查看代码改动", icon: ClipboardList, count: patchCount },
-    { id: "terminal", label: "命令", description: "运行记录", icon: SquareTerminal, count: commandItems.length },
+    { id: "terminal", label: "终端", description: "本地 shell", icon: SquareTerminal, count: commandItems.length },
     { id: "git", label: "Git", description: "分支与提交", icon: GitBranch, count: dirtyFiles },
   ];
 
@@ -653,7 +786,7 @@ function SessionWorkspaceToolDock({
             ) : null}
             {worktreeDiff?.error ? <p className="session-tool-error">{worktreeDiff.error}</p> : null}
             {worktreeDiff?.diffStat ? <p className="session-tool-muted">{worktreeDiff.diffStat}</p> : null}
-            {latestDiffPreview ? <pre className="session-tool-code-preview">{latestDiffPreview.slice(0, 5000)}</pre> : null}
+            {latestDiffPreview ? <UnifiedDiffViewer diffText={latestDiffPreview} /> : null}
           </>
         ) : null}
 
@@ -661,11 +794,17 @@ function SessionWorkspaceToolDock({
           <>
             <div className="session-tool-panel-header">
               <div>
-                <strong>命令记录</strong>
+                <strong>终端</strong>
                 <small>{latestCommand ? compactText(latestCommand.command, 58) : "还没有运行命令"}</small>
               </div>
             </div>
-            <p className="session-tool-muted">这里显示本轮运行时命令和验证记录；交互式本地 shell 会作为单独终端能力接入。</p>
+            <LocalTerminalPanel workspaceRoot={workspacePath} workspaceLabel={workspaceLabel} />
+            <div className="session-tool-panel-header session-tool-command-history-head">
+              <div>
+                <strong>命令记录</strong>
+                <small>Agent 运行和验证命令</small>
+              </div>
+            </div>
             {commandItems.length ? (
               <ul className="session-tool-command-list">
                 {commandItems.slice(-8).map((command, index) => (
@@ -1134,7 +1273,7 @@ export function SessionWorkspace({
     { id: "home", label: "工作区", description: "打开常用面板", icon: Home },
     { id: "files", label: "文件", description: "浏览项目文件", icon: Files, count: normalizedRelatedFiles.length },
     { id: "review", label: "审查", description: "查看代码改动", icon: ClipboardList, count: (patches?.length ?? 0) + (visibleActiveTask?.changedFiles?.length ? 1 : 0) },
-    { id: "terminal", label: "命令", description: "查看运行记录", icon: SquareTerminal, count: (visibleActiveTask?.commands?.length ?? 0) + (visibleActiveTask?.verification?.length ?? 0) },
+    { id: "terminal", label: "终端", description: "本地 shell 与命令记录", icon: SquareTerminal, count: (visibleActiveTask?.commands?.length ?? 0) + (visibleActiveTask?.verification?.length ?? 0) },
     { id: "git", label: "Git", description: "分支与提交", icon: GitBranch, count: worktreeStatus?.dirtyFiles },
     { id: "diagnostics", label: "诊断", description: "失败、审批与子任务", icon: Activity, count: visibleRuntimeLanes.length },
   ];

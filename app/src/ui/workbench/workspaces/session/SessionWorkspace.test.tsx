@@ -141,7 +141,7 @@ describe("SessionWorkspace", () => {
     expect(within(digest).getByText("1 个改动文件")).toBeInTheDocument();
     expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /审查/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /命令/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /终端/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Git/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: /文件/ }));
     const fileWorkspace = screen.getByLabelText("文件工作区");
@@ -250,7 +250,14 @@ describe("SessionWorkspace", () => {
         }}
         worktreeDiff={{
           diffStat: "1 file changed, 12 insertions(+), 4 deletions(-)",
-          preview: "diff --git a/SessionWorkspace.tsx b/SessionWorkspace.tsx",
+          preview: [
+            "diff --git a/SessionWorkspace.tsx b/SessionWorkspace.tsx",
+            "--- a/SessionWorkspace.tsx",
+            "+++ b/SessionWorkspace.tsx",
+            "@@ -1,2 +1,2 @@",
+            "-old layout",
+            "+new layout",
+          ].join("\n"),
         }}
         onLoadPatch={onLoadPatch}
         onLoadWorktreeDiff={onLoadWorktreeDiff}
@@ -270,10 +277,14 @@ describe("SessionWorkspace", () => {
     expect(within(tools).getByLabelText("审查摘要")).toHaveTextContent("改动：Updated session layout");
     expect(within(tools).getByLabelText("审查摘要")).toHaveTextContent("Diff：1 file changed, 12 insertions(+), 4 deletions(-)");
     expect(within(tools).getByText("1 file changed, 12 insertions(+), 4 deletions(-)")).toBeInTheDocument();
+    expect(within(tools).getByLabelText("真实差异")).toBeInTheDocument();
+    expect(within(tools).getByText("old layout")).toBeInTheDocument();
+    expect(within(tools).getByText("new layout")).toBeInTheDocument();
     await user.click(within(tools).getByRole("button", { name: "打开补丁" }));
     expect(onLoadPatch).toHaveBeenCalledWith("patch_1");
 
-    await user.click(screen.getByRole("tab", { name: /命令/ }));
+    await user.click(screen.getByRole("tab", { name: /终端/ }));
+    expect(within(tools).getByLabelText("本地终端")).toBeInTheDocument();
     expect(within(tools).getAllByText("命令记录").length).toBeGreaterThan(0);
     expect(within(tools).getAllByText(/shell/).length).toBeGreaterThan(0);
     expect(within(tools).getAllByText("npm run typecheck").length).toBeGreaterThan(0);
@@ -287,7 +298,7 @@ describe("SessionWorkspace", () => {
     expect(within(gitPanel).getByText("1 项通过")).toBeInTheDocument();
     expect(within(gitPanel).getByText("reviewer-agent - Looks good.")).toBeInTheDocument();
     expect(within(gitPanel).getByText("main - passed")).toBeInTheDocument();
-    expect(within(gitPanel).getByText("diff --git a/SessionWorkspace.tsx b/SessionWorkspace.tsx")).toBeInTheDocument();
+    expect(within(gitPanel).getByText(/diff --git a\/SessionWorkspace\.tsx b\/SessionWorkspace\.tsx/)).toBeInTheDocument();
     expect(within(gitPanel).getAllByText("1 个文件").length).toBeGreaterThan(0);
     await user.click(within(gitPanel).getByRole("button", { name: "刷新状态" }));
     expect(onRefreshWorktree).toHaveBeenCalledWith("wt_1");
@@ -351,7 +362,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /命令/ }));
+    await user.click(screen.getByRole("tab", { name: /终端/ }));
     const tools = screen.getByLabelText("工作区工具");
     expect(within(tools).getByText("命令记录")).toBeInTheDocument();
     expect(within(tools).getAllByText("python -m pytest -q").length).toBeGreaterThan(0);
@@ -972,13 +983,15 @@ describe("SessionWorkspace", () => {
     expect(screen.getByRole("status")).toHaveTextContent("差异暂不可用");
   });
 
-  it("truncates large patch diffs before rendering", async () => {
+  it("renders patch diffs as a structured review viewer", async () => {
     const user = userEvent.setup();
     const largeDiff = [
+      "diff --git a/app/src/App.tsx b/app/src/App.tsx",
       "--- a/app/src/App.tsx",
       "+++ b/app/src/App.tsx",
-      "@@ -1,1 +1,620 @@",
-      ...Array.from({ length: 620 }, (_, index) => `+added line ${index + 1}`),
+      "@@ -1,2 +1,2 @@",
+      "-old copy",
+      "+new copy",
     ].join("\n");
 
     render(
@@ -999,11 +1012,12 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "查看差异" }));
-
-    expect(screen.getByText("[差异已截断：仅显示 623 行中的前 500 行]")).toBeInTheDocument();
-    expect(screen.getByText("added line 1")).toBeInTheDocument();
-    expect(screen.queryByText("added line 620")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /审查/ }));
+    const viewer = screen.getByLabelText("真实差异");
+    expect(within(viewer).getByText("app/src/App.tsx")).toBeInTheDocument();
+    expect(within(viewer).getByText("old copy")).toBeInTheDocument();
+    expect(within(viewer).getByText("new copy")).toBeInTheDocument();
+    expect(within(viewer).getByText("+1 -1")).toBeInTheDocument();
   });
 
   it("keeps completed list_dir probes quiet and does not expose raw tool JSON", () => {

@@ -1,9 +1,9 @@
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    env,
-    fs,
+    env, fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
@@ -13,11 +13,12 @@ use std::{
         Arc, Mutex,
     },
     thread,
-    time::{Duration, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const EVENT_CHANNEL: &str = "agent://event";
+const TERMINAL_EVENT_CHANNEL: &str = "terminal://event";
 const RPC_TIMEOUT: Duration = Duration::from_secs(240);
 
 #[derive(Debug, Serialize)]
@@ -224,6 +225,36 @@ struct WorkspaceFileReadPayload {
     max_bytes: Option<usize>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct TerminalStartPayload {
+    cwd: Option<String>,
+    shell: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalWritePayload {
+    terminal_id: String,
+    data: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalResizePayload {
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalStopPayload {
+    terminal_id: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkspaceFileEntryView {
@@ -266,6 +297,22 @@ struct MetricsListPayload {
 #[derive(Clone, Default)]
 struct RuntimeManager {
     bridge: Arc<Mutex<RuntimeBridge>>,
+}
+
+#[derive(Default)]
+struct TerminalManager {
+    sessions: Mutex<HashMap<String, TerminalSession>>,
+    next_id: AtomicU64,
+}
+
+struct TerminalSession {
+    id: String,
+    cwd: String,
+    shell: String,
+    started_at: u128,
+    master: Box<dyn MasterPty + Send>,
+    writer: Box<dyn Write + Send>,
+    child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -323,7 +370,9 @@ impl RuntimeManager {
             }))
             .map_err(|reason| format!("Failed to serialize RPC request: {reason}"))?;
 
-            if let Err(reason) = writeln!(process.stdin, "{payload}").and_then(|_| process.stdin.flush()) {
+            if let Err(reason) =
+                writeln!(process.stdin, "{payload}").and_then(|_| process.stdin.flush())
+            {
                 let _ = process
                     .pending
                     .lock()
@@ -346,7 +395,12 @@ impl RuntimeManager {
         }
     }
 
-    async fn call_async(&self, app_handle: AppHandle, method: String, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    async fn call_async(
+        &self,
+        app_handle: AppHandle,
+        method: String,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         let manager = self.clone();
         tauri::async_runtime::spawn_blocking(move || manager.call(&app_handle, &method, params))
             .await
@@ -423,6 +477,281 @@ impl RuntimeBridge {
 
         Ok(())
     }
+}
+
+impl TerminalManager {
+    fn next_terminal_id(&self) -> String {
+        format!("term_{}", self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn session_view(session: &TerminalSession, status: &str) -> Value {
+        json!({
+            "id": session.id,
+            "cwd": session.cwd,
+            "shell": session.shell,
+            "status": status,
+            "startedAt": session.started_at,
+        })
+    }
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+fn default_terminal_shell() -> String {
+    if let Ok(shell) = env::var("LOCAL_AGENT_TERMINAL_SHELL") {
+        if !shell.trim().is_empty() {
+            return shell;
+        }
+    }
+    if cfg!(target_os = "windows") {
+        "powershell.exe".to_string()
+    } else {
+        env::var("SHELL").unwrap_or_else(|_| "bash".to_string())
+    }
+}
+
+fn terminal_shell_command(shell: &str) -> CommandBuilder {
+    let normalized = shell.trim();
+    let lower = normalized.to_ascii_lowercase();
+    if cfg!(target_os = "windows") {
+        if lower == "powershell" || lower == "powershell.exe" {
+            let mut command = CommandBuilder::new("powershell.exe");
+            command.arg("-NoLogo");
+            return command;
+        }
+        if lower == "pwsh" || lower == "pwsh.exe" {
+            let mut command = CommandBuilder::new("pwsh.exe");
+            command.arg("-NoLogo");
+            return command;
+        }
+        if lower == "cmd" || lower == "cmd.exe" {
+            return CommandBuilder::new("cmd.exe");
+        }
+    }
+
+    CommandBuilder::new(if normalized.is_empty() {
+        default_terminal_shell()
+    } else {
+        normalized.to_string()
+    })
+}
+
+fn terminal_cwd(payload_cwd: Option<String>) -> Result<PathBuf, String> {
+    let cwd = payload_cwd
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let resolved = cwd
+        .canonicalize()
+        .map_err(|reason| format!("Failed to resolve terminal working directory: {reason}"))?;
+    if !resolved.is_dir() {
+        return Err("Terminal working directory is not a directory".to_string());
+    }
+    Ok(resolved)
+}
+
+fn emit_terminal_event(app_handle: &AppHandle, payload: Value) {
+    let _ = app_handle.emit(TERMINAL_EVENT_CHANNEL, payload);
+}
+
+#[tauri::command]
+fn terminal_start(
+    app_handle: AppHandle,
+    state: State<'_, TerminalManager>,
+    payload: TerminalStartPayload,
+) -> Result<Value, String> {
+    let cwd_path = terminal_cwd(payload.cwd)?;
+    let cwd = cwd_path.display().to_string();
+    let shell = payload.shell.unwrap_or_else(default_terminal_shell);
+    let cols = payload.cols.unwrap_or(100).clamp(20, 240);
+    let rows = payload.rows.unwrap_or(30).clamp(6, 80);
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|reason| format!("Failed to open PTY: {reason}"))?;
+
+    let mut command = terminal_shell_command(&shell);
+    command.cwd(&cwd_path);
+    command.env("TERM", "xterm-256color");
+
+    let child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|reason| format!("Failed to start terminal shell: {reason}"))?;
+    drop(pair.slave);
+
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|reason| format!("Failed to clone terminal reader: {reason}"))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|reason| format!("Failed to open terminal writer: {reason}"))?;
+
+    let terminal_id = state.next_terminal_id();
+    let started_at = now_ms();
+    let session = TerminalSession {
+        id: terminal_id.clone(),
+        cwd: cwd.clone(),
+        shell: shell.clone(),
+        started_at,
+        master: pair.master,
+        writer,
+        child,
+    };
+    let terminal_view = TerminalManager::session_view(&session, "running");
+    state
+        .sessions
+        .lock()
+        .map_err(|_| "Failed to lock terminal sessions".to_string())?
+        .insert(terminal_id.clone(), session);
+
+    emit_terminal_event(
+        &app_handle,
+        json!({
+            "terminalId": terminal_id,
+            "kind": "output",
+            "chunk": format!("PTY terminal started: {shell}\r\n{cwd}> "),
+            "cwd": cwd,
+            "shell": shell,
+            "ts": now_ms(),
+        }),
+    );
+
+    let reader_app = app_handle.clone();
+    let reader_terminal_id = terminal_view
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => {
+                    emit_terminal_event(
+                        &reader_app,
+                        json!({
+                            "terminalId": reader_terminal_id,
+                            "kind": "exit",
+                            "exitCode": null,
+                            "ts": now_ms(),
+                        }),
+                    );
+                    break;
+                }
+                Ok(size) => {
+                    let chunk = String::from_utf8_lossy(&buffer[..size]).to_string();
+                    emit_terminal_event(
+                        &reader_app,
+                        json!({
+                            "terminalId": reader_terminal_id,
+                            "kind": "output",
+                            "chunk": chunk,
+                            "ts": now_ms(),
+                        }),
+                    );
+                }
+                Err(reason) => {
+                    emit_terminal_event(
+                        &reader_app,
+                        json!({
+                            "terminalId": reader_terminal_id,
+                            "kind": "error",
+                            "message": format!("Terminal output failed: {reason}"),
+                            "ts": now_ms(),
+                        }),
+                    );
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(json!({ "terminal": terminal_view }))
+}
+
+#[tauri::command]
+fn terminal_write(
+    state: State<'_, TerminalManager>,
+    payload: TerminalWritePayload,
+) -> Result<Value, String> {
+    let mut sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| "Failed to lock terminal sessions".to_string())?;
+    let session = sessions
+        .get_mut(&payload.terminal_id)
+        .ok_or_else(|| "Terminal session was not found".to_string())?;
+    session
+        .writer
+        .write_all(payload.data.as_bytes())
+        .and_then(|_| session.writer.flush())
+        .map_err(|reason| format!("Failed to write to terminal: {reason}"))?;
+    Ok(json!({ "terminal": TerminalManager::session_view(session, "running") }))
+}
+
+#[tauri::command]
+fn terminal_resize(
+    state: State<'_, TerminalManager>,
+    payload: TerminalResizePayload,
+) -> Result<Value, String> {
+    let sessions = state
+        .sessions
+        .lock()
+        .map_err(|_| "Failed to lock terminal sessions".to_string())?;
+    let session = sessions
+        .get(&payload.terminal_id)
+        .ok_or_else(|| "Terminal session was not found".to_string())?;
+    let rows = payload.rows.clamp(6, 120);
+    let cols = payload.cols.clamp(20, 300);
+    session
+        .master
+        .resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|reason| format!("Failed to resize terminal: {reason}"))?;
+    Ok(json!({ "terminal": TerminalManager::session_view(session, "running") }))
+}
+
+#[tauri::command]
+fn terminal_stop(
+    app_handle: AppHandle,
+    state: State<'_, TerminalManager>,
+    payload: TerminalStopPayload,
+) -> Result<Value, String> {
+    let mut session = state
+        .sessions
+        .lock()
+        .map_err(|_| "Failed to lock terminal sessions".to_string())?
+        .remove(&payload.terminal_id)
+        .ok_or_else(|| "Terminal session was not found".to_string())?;
+    let _ = session.child.kill();
+    let terminal_view = TerminalManager::session_view(&session, "exited");
+    emit_terminal_event(
+        &app_handle,
+        json!({
+            "terminalId": session.id,
+            "kind": "exit",
+            "exitCode": null,
+            "ts": now_ms(),
+        }),
+    );
+    Ok(json!({ "terminal": terminal_view }))
 }
 
 fn spawn_stdout_pump(
@@ -522,9 +851,9 @@ fn resolve_data_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
         Ok(dir) => Ok(dir),
         Err(reason) => {
             // Fallback: try repo_root for dev mode
-            repo_root().map(|root| root.join("runtime")).map_err(|_| {
-                format!("Failed to resolve data directory: {reason}")
-            })
+            repo_root()
+                .map(|root| root.join("runtime"))
+                .map_err(|_| format!("Failed to resolve data directory: {reason}"))
         }
     }
 }
@@ -599,7 +928,10 @@ fn relative_path_string(root: &Path, path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn resolve_workspace_path(workspace_root: &str, relative_path: Option<&str>) -> Result<(PathBuf, PathBuf), String> {
+fn resolve_workspace_path(
+    workspace_root: &str,
+    relative_path: Option<&str>,
+) -> Result<(PathBuf, PathBuf), String> {
     let root = PathBuf::from(workspace_root)
         .canonicalize()
         .map_err(|reason| format!("Failed to resolve workspace root: {reason}"))?;
@@ -657,7 +989,13 @@ async fn workspace_open(
     state: State<'_, RuntimeManager>,
     path: String,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "workspace.open".to_string(), json!({ "path": path })).await
+    state
+        .call_async(
+            app_handle,
+            "workspace.open".to_string(),
+            json!({ "path": path }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -666,11 +1004,13 @@ async fn workspace_memory_clear(
     state: State<'_, RuntimeManager>,
     payload: WorkspaceMemoryClearPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "workspace.memory.clear".to_string(),
-        json!({ "workspaceId": payload.workspace_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "workspace.memory.clear".to_string(),
+            json!({ "workspaceId": payload.workspace_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -679,11 +1019,13 @@ async fn workspace_memory_init(
     state: State<'_, RuntimeManager>,
     payload: WorkspaceMemoryInitPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "workspace.memory.init".to_string(),
-        json!({ "workspaceId": payload.workspace_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "workspace.memory.init".to_string(),
+            json!({ "workspaceId": payload.workspace_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -692,11 +1034,13 @@ async fn workspace_focus_update(
     state: State<'_, RuntimeManager>,
     payload: WorkspaceFocusUpdatePayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "workspace.focus.update".to_string(),
-        json!({ "workspaceId": payload.workspace_id, "focus": payload.focus }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "workspace.focus.update".to_string(),
+            json!({ "workspaceId": payload.workspace_id, "focus": payload.focus }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -705,19 +1049,26 @@ async fn session_create(
     state: State<'_, RuntimeManager>,
     payload: SessionCreatePayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "session.create".to_string(),
-        json!({
-            "workspaceId": payload.workspace_id,
-            "title": payload.title,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "session.create".to_string(),
+            json!({
+                "workspaceId": payload.workspace_id,
+                "title": payload.title,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
-async fn session_list(app_handle: AppHandle, state: State<'_, RuntimeManager>) -> Result<Value, String> {
-    state.call_async(app_handle, "session.list".to_string(), json!({})).await
+async fn session_list(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+) -> Result<Value, String> {
+    state
+        .call_async(app_handle, "session.list".to_string(), json!({}))
+        .await
 }
 
 #[tauri::command]
@@ -728,20 +1079,22 @@ async fn message_send(
 ) -> Result<Value, String> {
     let is_supplement = payload.mode.as_deref() == Some("supplement");
     let background = payload.background.unwrap_or(!is_supplement);
-    state.call_async(
-        app_handle,
-        "message.send".to_string(),
-        json!({
-            "sessionId": payload.session_id,
-            "content": payload.content,
-            "attachments": payload.attachments,
-            "taskId": payload.task_id,
-            "mode": payload.mode,
-            "newTask": payload.new_task,
-            "background": background,
-            "clientMessageId": payload.client_message_id,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "message.send".to_string(),
+            json!({
+                "sessionId": payload.session_id,
+                "content": payload.content,
+                "attachments": payload.attachments,
+                "taskId": payload.task_id,
+                "mode": payload.mode,
+                "newTask": payload.new_task,
+                "background": background,
+                "clientMessageId": payload.client_message_id,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -750,11 +1103,13 @@ async fn message_list(
     state: State<'_, RuntimeManager>,
     payload: MessageListPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "message.list".to_string(),
-        json!({ "sessionId": payload.session_id, "limit": payload.limit }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "message.list".to_string(),
+            json!({ "sessionId": payload.session_id, "limit": payload.limit }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -767,8 +1122,11 @@ fn workspace_file_list(payload: WorkspaceFileListPayload) -> Result<Value, Strin
     let limit = payload.max_entries.unwrap_or(200).clamp(1, 500);
     let mut entries = Vec::new();
     let mut truncated = false;
-    for entry_result in fs::read_dir(&target).map_err(|reason| format!("Failed to read directory: {reason}"))? {
-        let entry = entry_result.map_err(|reason| format!("Failed to read directory entry: {reason}"))?;
+    for entry_result in
+        fs::read_dir(&target).map_err(|reason| format!("Failed to read directory: {reason}"))?
+    {
+        let entry =
+            entry_result.map_err(|reason| format!("Failed to read directory entry: {reason}"))?;
         if entries.len() >= limit {
             truncated = true;
             break;
@@ -776,12 +1134,20 @@ fn workspace_file_list(payload: WorkspaceFileListPayload) -> Result<Value, Strin
         let metadata = entry
             .metadata()
             .map_err(|reason| format!("Failed to read file metadata: {reason}"))?;
-        let kind = if metadata.is_dir() { "directory" } else { "file" };
+        let kind = if metadata.is_dir() {
+            "directory"
+        } else {
+            "file"
+        };
         entries.push(WorkspaceFileEntryView {
             name: entry.file_name().to_string_lossy().to_string(),
             path: relative_path_string(&root, &entry.path()),
             kind: kind.to_string(),
-            size: if metadata.is_file() { Some(metadata.len()) } else { None },
+            size: if metadata.is_file() {
+                Some(metadata.len())
+            } else {
+                None
+            },
             modified_at: file_modified_at_ms(&metadata),
         });
     }
@@ -809,7 +1175,8 @@ fn workspace_file_read(payload: WorkspaceFileReadPayload) -> Result<Value, Strin
     }
 
     let limit = payload.max_bytes.unwrap_or(64 * 1024).clamp(1, 256 * 1024);
-    let mut file = fs::File::open(&target).map_err(|reason| format!("Failed to open file: {reason}"))?;
+    let mut file =
+        fs::File::open(&target).map_err(|reason| format!("Failed to open file: {reason}"))?;
     let mut buffer = Vec::new();
     std::io::Read::by_ref(&mut file)
         .take((limit + 1) as u64)
@@ -856,11 +1223,13 @@ async fn task_get(
     state: State<'_, RuntimeManager>,
     payload: TaskGetPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "task.get".to_string(),
-        json!({ "taskId": payload.task_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "task.get".to_string(),
+            json!({ "taskId": payload.task_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -869,11 +1238,13 @@ async fn task_cancel(
     state: State<'_, RuntimeManager>,
     payload: TaskControlPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "task.cancel".to_string(),
-        json!({ "taskId": payload.task_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "task.cancel".to_string(),
+            json!({ "taskId": payload.task_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -882,11 +1253,13 @@ async fn task_pause(
     state: State<'_, RuntimeManager>,
     payload: TaskControlPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "task.pause".to_string(),
-        json!({ "taskId": payload.task_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "task.pause".to_string(),
+            json!({ "taskId": payload.task_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -895,11 +1268,13 @@ async fn task_resume(
     state: State<'_, RuntimeManager>,
     payload: TaskControlPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "task.resume".to_string(),
-        json!({ "taskId": payload.task_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "task.resume".to_string(),
+            json!({ "taskId": payload.task_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -912,7 +1287,9 @@ async fn task_list(
         Some(session_id) => json!({ "sessionId": session_id }),
         None => json!({}),
     };
-    state.call_async(app_handle, "task.list".to_string(), params).await
+    state
+        .call_async(app_handle, "task.list".to_string(), params)
+        .await
 }
 
 #[tauri::command]
@@ -921,11 +1298,13 @@ async fn worktree_get(
     state: State<'_, RuntimeManager>,
     payload: WorktreeIdPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "worktree.get".to_string(),
-        json!({ "worktreeId": payload.worktree_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "worktree.get".to_string(),
+            json!({ "worktreeId": payload.worktree_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -934,11 +1313,13 @@ async fn worktree_get_by_task(
     state: State<'_, RuntimeManager>,
     payload: WorktreeByTaskPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "worktree.getByTask".to_string(),
-        json!({ "taskId": payload.task_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "worktree.getByTask".to_string(),
+            json!({ "taskId": payload.task_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -947,11 +1328,13 @@ async fn worktree_status(
     state: State<'_, RuntimeManager>,
     payload: WorktreeIdPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "worktree.status".to_string(),
-        json!({ "worktreeId": payload.worktree_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "worktree.status".to_string(),
+            json!({ "worktreeId": payload.worktree_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -960,17 +1343,19 @@ async fn worktree_diff(
     state: State<'_, RuntimeManager>,
     payload: WorktreeIdPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "worktree.diff".to_string(),
-        json!({
-            "worktreeId": payload.worktree_id,
-            "full": payload.full,
-            "includeFullDiff": payload.include_full_diff,
-            "maxDiffBytes": payload.max_diff_bytes,
-            "diffPreviewBytes": payload.diff_preview_bytes,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "worktree.diff".to_string(),
+            json!({
+                "worktreeId": payload.worktree_id,
+                "full": payload.full,
+                "includeFullDiff": payload.include_full_diff,
+                "maxDiffBytes": payload.max_diff_bytes,
+                "diffPreviewBytes": payload.diff_preview_bytes,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -979,23 +1364,25 @@ async fn worktree_merge(
     state: State<'_, RuntimeManager>,
     payload: WorktreeMergePayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "worktree.merge".to_string(),
-        json!({
-            "worktreeId": payload.worktree_id,
-            "approved": payload.approved.unwrap_or(false),
-            "approvalId": payload.approval_id,
-            "targetBranch": payload.target_branch,
-            "verificationCommands": payload.verification_commands,
-            "verificationTimeoutMs": payload.verification_timeout_ms,
-            "reviewStatus": payload.review_status,
-            "reviewerSummary": payload.reviewer_summary,
-            "reviewer": payload.reviewer,
-            "multiAgentWorktreeStrategy": payload.multi_agent_worktree_strategy,
-            "diffPreviewBytes": payload.diff_preview_bytes,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "worktree.merge".to_string(),
+            json!({
+                "worktreeId": payload.worktree_id,
+                "approved": payload.approved.unwrap_or(false),
+                "approvalId": payload.approval_id,
+                "targetBranch": payload.target_branch,
+                "verificationCommands": payload.verification_commands,
+                "verificationTimeoutMs": payload.verification_timeout_ms,
+                "reviewStatus": payload.review_status,
+                "reviewerSummary": payload.reviewer_summary,
+                "reviewer": payload.reviewer,
+                "multiAgentWorktreeStrategy": payload.multi_agent_worktree_strategy,
+                "diffPreviewBytes": payload.diff_preview_bytes,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1004,21 +1391,23 @@ async fn worktree_request_merge_approval(
     state: State<'_, RuntimeManager>,
     payload: WorktreeMergePayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "worktree.requestMergeApproval".to_string(),
-        json!({
-            "worktreeId": payload.worktree_id,
-            "targetBranch": payload.target_branch,
-            "verificationCommands": payload.verification_commands,
-            "verificationTimeoutMs": payload.verification_timeout_ms,
-            "reviewStatus": payload.review_status,
-            "reviewerSummary": payload.reviewer_summary,
-            "reviewer": payload.reviewer,
-            "multiAgentWorktreeStrategy": payload.multi_agent_worktree_strategy,
-            "diffPreviewBytes": payload.diff_preview_bytes,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "worktree.requestMergeApproval".to_string(),
+            json!({
+                "worktreeId": payload.worktree_id,
+                "targetBranch": payload.target_branch,
+                "verificationCommands": payload.verification_commands,
+                "verificationTimeoutMs": payload.verification_timeout_ms,
+                "reviewStatus": payload.review_status,
+                "reviewerSummary": payload.reviewer_summary,
+                "reviewer": payload.reviewer,
+                "multiAgentWorktreeStrategy": payload.multi_agent_worktree_strategy,
+                "diffPreviewBytes": payload.diff_preview_bytes,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1027,11 +1416,13 @@ async fn worktree_cleanup(
     state: State<'_, RuntimeManager>,
     payload: WorktreeCleanupPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "worktree.cleanup".to_string(),
-        json!({ "worktreeId": payload.worktree_id, "force": payload.force.unwrap_or(false) }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "worktree.cleanup".to_string(),
+            json!({ "worktreeId": payload.worktree_id, "force": payload.force.unwrap_or(false) }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1040,22 +1431,29 @@ async fn schedule_create(
     state: State<'_, RuntimeManager>,
     payload: ScheduledTaskCreatePayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "schedule.create".to_string(),
-        json!({
-            "name": payload.name,
-            "prompt": payload.prompt,
-            "schedule": payload.schedule,
-            "enabled": payload.enabled,
-            "status": payload.status,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "schedule.create".to_string(),
+            json!({
+                "name": payload.name,
+                "prompt": payload.prompt,
+                "schedule": payload.schedule,
+                "enabled": payload.enabled,
+                "status": payload.status,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
-async fn schedule_list(app_handle: AppHandle, state: State<'_, RuntimeManager>) -> Result<Value, String> {
-    state.call_async(app_handle, "schedule.list".to_string(), json!({})).await
+async fn schedule_list(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+) -> Result<Value, String> {
+    state
+        .call_async(app_handle, "schedule.list".to_string(), json!({}))
+        .await
 }
 
 #[tauri::command]
@@ -1064,18 +1462,20 @@ async fn schedule_update(
     state: State<'_, RuntimeManager>,
     payload: ScheduledTaskUpdatePayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "schedule.update".to_string(),
-        json!({
-            "taskId": payload.task_id,
-            "name": payload.name,
-            "prompt": payload.prompt,
-            "schedule": payload.schedule,
-            "enabled": payload.enabled,
-            "status": payload.status,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "schedule.update".to_string(),
+            json!({
+                "taskId": payload.task_id,
+                "name": payload.name,
+                "prompt": payload.prompt,
+                "schedule": payload.schedule,
+                "enabled": payload.enabled,
+                "status": payload.status,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1084,14 +1484,16 @@ async fn schedule_toggle(
     state: State<'_, RuntimeManager>,
     payload: ScheduledTaskTogglePayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "schedule.toggle".to_string(),
-        json!({
-            "taskId": payload.task_id,
-            "enabled": payload.enabled,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "schedule.toggle".to_string(),
+            json!({
+                "taskId": payload.task_id,
+                "enabled": payload.enabled,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1100,11 +1502,13 @@ async fn schedule_run_now(
     state: State<'_, RuntimeManager>,
     payload: ScheduledTaskIdPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "schedule.run_now".to_string(),
-        json!({ "taskId": payload.task_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "schedule.run_now".to_string(),
+            json!({ "taskId": payload.task_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1120,7 +1524,9 @@ async fn schedule_logs(
         }),
         None => json!({}),
     };
-    state.call_async(app_handle, "schedule.logs".to_string(), params).await
+    state
+        .call_async(app_handle, "schedule.logs".to_string(), params)
+        .await
 }
 
 #[tauri::command]
@@ -1129,19 +1535,26 @@ async fn approval_submit(
     state: State<'_, RuntimeManager>,
     payload: ApprovalSubmitPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "approval.submit".to_string(),
-        json!({
-            "approvalId": payload.approval_id,
-            "decision": payload.decision,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "approval.submit".to_string(),
+            json!({
+                "approvalId": payload.approval_id,
+                "decision": payload.decision,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
-async fn config_get(app_handle: AppHandle, state: State<'_, RuntimeManager>) -> Result<Value, String> {
-    state.call_async(app_handle, "config.get".to_string(), json!({})).await
+async fn config_get(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+) -> Result<Value, String> {
+    state
+        .call_async(app_handle, "config.get".to_string(), json!({}))
+        .await
 }
 
 #[tauri::command]
@@ -1150,7 +1563,9 @@ async fn config_update(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "config.update".to_string(), payload).await
+    state
+        .call_async(app_handle, "config.update".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1159,7 +1574,9 @@ async fn provider_test(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "provider.test".to_string(), payload).await
+    state
+        .call_async(app_handle, "provider.test".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1168,11 +1585,13 @@ async fn command_log_get(
     state: State<'_, RuntimeManager>,
     payload: CommandLogGetPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "command_log.get".to_string(),
-        json!({ "commandId": payload.command_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "command_log.get".to_string(),
+            json!({ "commandId": payload.command_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1182,16 +1601,18 @@ async fn command_log_list(
     payload: Option<CommandLogListPayload>,
 ) -> Result<Value, String> {
     let payload = payload.unwrap_or_default();
-    state.call_async(
-        app_handle,
-        "command_log.list".to_string(),
-        json!({
-            "taskId": payload.task_id,
-            "sessionId": payload.session_id,
-            "status": payload.status,
-            "limit": payload.limit,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "command_log.list".to_string(),
+            json!({
+                "taskId": payload.task_id,
+                "sessionId": payload.session_id,
+                "status": payload.status,
+                "limit": payload.limit,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1200,11 +1621,13 @@ async fn command_cancel(
     state: State<'_, RuntimeManager>,
     payload: CommandCancelPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "command.cancel".to_string(),
-        json!({ "commandId": payload.command_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "command.cancel".to_string(),
+            json!({ "commandId": payload.command_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1213,11 +1636,13 @@ async fn diff_get(
     state: State<'_, RuntimeManager>,
     payload: DiffGetPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "diff.get".to_string(),
-        json!({ "patchId": payload.patch_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "diff.get".to_string(),
+            json!({ "patchId": payload.patch_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1226,14 +1651,16 @@ async fn trace_list(
     state: State<'_, RuntimeManager>,
     payload: TraceListPayload,
 ) -> Result<Value, String> {
-    state.call_async(
-        app_handle,
-        "trace.list".to_string(),
-        json!({
-            "taskId": payload.task_id,
-            "limit": payload.limit,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "trace.list".to_string(),
+            json!({
+                "taskId": payload.task_id,
+                "limit": payload.limit,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1243,11 +1670,13 @@ async fn log_export(
     payload: Option<LogExportPayload>,
 ) -> Result<Value, String> {
     let payload = payload.unwrap_or_default();
-    state.call_async(
-        app_handle,
-        "log.export".to_string(),
-        json!({ "sessionId": payload.session_id }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "log.export".to_string(),
+            json!({ "sessionId": payload.session_id }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1257,16 +1686,18 @@ async fn errors_list(
     payload: Option<ErrorsListPayload>,
 ) -> Result<Value, String> {
     let payload = payload.unwrap_or_default();
-    state.call_async(
-        app_handle,
-        "errors.list".to_string(),
-        json!({
-            "sessionId": payload.session_id,
-            "taskId": payload.task_id,
-            "source": payload.source,
-            "limit": payload.limit,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "errors.list".to_string(),
+            json!({
+                "sessionId": payload.session_id,
+                "taskId": payload.task_id,
+                "source": payload.source,
+                "limit": payload.limit,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1276,14 +1707,16 @@ async fn metrics_list(
     payload: Option<MetricsListPayload>,
 ) -> Result<Value, String> {
     let payload = payload.unwrap_or_default();
-    state.call_async(
-        app_handle,
-        "metrics.list".to_string(),
-        json!({
-            "sessionId": payload.session_id,
-            "limit": payload.limit,
-        }),
-    ).await
+    state
+        .call_async(
+            app_handle,
+            "metrics.list".to_string(),
+            json!({
+                "sessionId": payload.session_id,
+                "limit": payload.limit,
+            }),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1319,7 +1752,13 @@ async fn skill_list(
     state: State<'_, RuntimeManager>,
     payload: Option<Value>,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "skill.list".to_string(), payload.unwrap_or_else(|| json!({}))).await
+    state
+        .call_async(
+            app_handle,
+            "skill.list".to_string(),
+            payload.unwrap_or_else(|| json!({})),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1328,7 +1767,9 @@ async fn skill_create(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "skill.create".to_string(), payload).await
+    state
+        .call_async(app_handle, "skill.create".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1337,7 +1778,9 @@ async fn skill_update(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "skill.update".to_string(), payload).await
+    state
+        .call_async(app_handle, "skill.update".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1346,7 +1789,9 @@ async fn skill_delete(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "skill.delete".to_string(), payload).await
+    state
+        .call_async(app_handle, "skill.delete".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1355,7 +1800,13 @@ async fn mcp_server_list(
     state: State<'_, RuntimeManager>,
     payload: Option<Value>,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "mcp.server.list".to_string(), payload.unwrap_or_else(|| json!({}))).await
+    state
+        .call_async(
+            app_handle,
+            "mcp.server.list".to_string(),
+            payload.unwrap_or_else(|| json!({})),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1364,7 +1815,9 @@ async fn mcp_server_create(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "mcp.server.create".to_string(), payload).await
+    state
+        .call_async(app_handle, "mcp.server.create".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1373,7 +1826,9 @@ async fn mcp_server_update(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "mcp.server.update".to_string(), payload).await
+    state
+        .call_async(app_handle, "mcp.server.update".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1382,7 +1837,9 @@ async fn mcp_server_delete(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "mcp.server.delete".to_string(), payload).await
+    state
+        .call_async(app_handle, "mcp.server.delete".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1391,7 +1848,13 @@ async fn mcp_tools_refresh(
     state: State<'_, RuntimeManager>,
     payload: Option<Value>,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "mcp.tools.refresh".to_string(), payload.unwrap_or_else(|| json!({}))).await
+    state
+        .call_async(
+            app_handle,
+            "mcp.tools.refresh".to_string(),
+            payload.unwrap_or_else(|| json!({})),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1400,7 +1863,13 @@ async fn agent_profile_list(
     state: State<'_, RuntimeManager>,
     payload: Option<Value>,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "agent.profile.list".to_string(), payload.unwrap_or_else(|| json!({}))).await
+    state
+        .call_async(
+            app_handle,
+            "agent.profile.list".to_string(),
+            payload.unwrap_or_else(|| json!({})),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1409,7 +1878,9 @@ async fn agent_profile_create(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "agent.profile.create".to_string(), payload).await
+    state
+        .call_async(app_handle, "agent.profile.create".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1418,7 +1889,9 @@ async fn agent_profile_update(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "agent.profile.update".to_string(), payload).await
+    state
+        .call_async(app_handle, "agent.profile.update".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1427,7 +1900,9 @@ async fn agent_profile_delete(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "agent.profile.delete".to_string(), payload).await
+    state
+        .call_async(app_handle, "agent.profile.delete".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1436,7 +1911,9 @@ async fn agent_profile_validate(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "agent.profile.validate".to_string(), payload).await
+    state
+        .call_async(app_handle, "agent.profile.validate".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1445,7 +1922,13 @@ async fn agent_profile_preview_tools(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "agent.profile.previewTools".to_string(), payload).await
+    state
+        .call_async(
+            app_handle,
+            "agent.profile.previewTools".to_string(),
+            payload,
+        )
+        .await
 }
 
 #[tauri::command]
@@ -1454,7 +1937,9 @@ async fn hook_list(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "hook.list".to_string(), payload).await
+    state
+        .call_async(app_handle, "hook.list".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1463,7 +1948,9 @@ async fn hook_create(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "hook.create".to_string(), payload).await
+    state
+        .call_async(app_handle, "hook.create".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1472,7 +1959,9 @@ async fn hook_update(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "hook.update".to_string(), payload).await
+    state
+        .call_async(app_handle, "hook.update".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1481,7 +1970,9 @@ async fn hook_delete(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "hook.delete".to_string(), payload).await
+    state
+        .call_async(app_handle, "hook.delete".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1490,7 +1981,9 @@ async fn hook_get(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "hook.get".to_string(), payload).await
+    state
+        .call_async(app_handle, "hook.get".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1499,7 +1992,9 @@ async fn hook_list_executions(
     state: State<'_, RuntimeManager>,
     payload: Value,
 ) -> Result<Value, String> {
-    state.call_async(app_handle, "hook.listExecutions".to_string(), payload).await
+    state
+        .call_async(app_handle, "hook.listExecutions".to_string(), payload)
+        .await
 }
 
 #[tauri::command]
@@ -1508,7 +2003,8 @@ fn e2e_fixture() -> Result<Value, String> {
     if flow == "ui-smoke"
         || flow == "mcp-live"
         || flow == "session-recovery-seed"
-        || flow == "session-recovery-verify" {
+        || flow == "session-recovery-verify"
+    {
         let repo_root = repo_root()?;
         let workspace_path = env::var("YUANBAO_TAURI_E2E_WORKSPACE")
             .unwrap_or_else(|_| repo_root.display().to_string());
@@ -1532,16 +2028,19 @@ fn e2e_fixture() -> Result<Value, String> {
     }
 
     let repo_root = repo_root()?;
-    let api_key_env_var_name =
-        env::var("YUANBAO_TAURI_E2E_API_KEY_ENV").unwrap_or_else(|_| "LOCAL_AGENT_PROVIDER_API_KEY".to_string());
-    if env::var(&api_key_env_var_name).unwrap_or_default().is_empty() {
+    let api_key_env_var_name = env::var("YUANBAO_TAURI_E2E_API_KEY_ENV")
+        .unwrap_or_else(|_| "LOCAL_AGENT_PROVIDER_API_KEY".to_string());
+    if env::var(&api_key_env_var_name)
+        .unwrap_or_default()
+        .is_empty()
+    {
         return Err(format!(
             "E2E provider API key env var is not set: {api_key_env_var_name}"
         ));
     }
 
-    let workspace_path = env::var("YUANBAO_TAURI_E2E_WORKSPACE")
-        .unwrap_or_else(|_| repo_root.display().to_string());
+    let workspace_path =
+        env::var("YUANBAO_TAURI_E2E_WORKSPACE").unwrap_or_else(|_| repo_root.display().to_string());
     let prompt = env::var("YUANBAO_TAURI_E2E_PROMPT").unwrap_or_else(|_| {
         "Read-only check: confirm whether app/src/lib/runtimeClient.ts exists. Answer in one short sentence and do not modify files.".to_string()
     });
@@ -1576,7 +2075,8 @@ fn e2e_finish(app_handle: AppHandle, payload: Value) -> Result<(), String> {
         && flow != "mcp-live"
         && flow != "ui-smoke"
         && flow != "session-recovery-seed"
-        && flow != "session-recovery-verify" {
+        && flow != "session-recovery-verify"
+    {
         return Err("E2E result writing is disabled.".to_string());
     }
 
@@ -1594,11 +2094,7 @@ fn e2e_finish(app_handle: AppHandle, payload: Value) -> Result<(), String> {
         .map_err(|reason| format!("Failed to write E2E result: {reason}"))?;
 
     if env::var("YUANBAO_TAURI_E2E_EXIT").unwrap_or_else(|_| "1".to_string()) != "0" {
-        let exit_code = if payload
-            .get("ok")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
+        let exit_code = if payload.get("ok").and_then(Value::as_bool).unwrap_or(false) {
             0
         } else {
             1
@@ -1616,6 +2112,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(RuntimeManager::default())
+        .manage(TerminalManager::default())
         .invoke_handler(tauri::generate_handler![
             host_status,
             workspace_open,
@@ -1628,6 +2125,10 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             message_list,
             workspace_file_list,
             workspace_file_read,
+            terminal_start,
+            terminal_write,
+            terminal_resize,
+            terminal_stop,
             task_get,
             task_cancel,
             task_pause,

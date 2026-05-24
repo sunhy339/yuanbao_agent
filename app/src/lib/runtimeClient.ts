@@ -95,6 +95,13 @@ import type {
   TaskListResult,
   TaskRecord,
   TaskResumeParams,
+  TerminalControlResult,
+  TerminalEvent,
+  TerminalResizeParams,
+  TerminalStartParams,
+  TerminalStartResult,
+  TerminalStopParams,
+  TerminalWriteParams,
   TraceEventRecord,
   TraceListParams,
   TraceListResult,
@@ -133,6 +140,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 }
 
 const EVENT_CHANNEL = "agent://event";
+const TERMINAL_EVENT_CHANNEL = "terminal://event";
 const RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE =
   "桌面运行时桥接不可用。请通过 Tauri 桌面应用打开 Yuanbao Agent，或为测试/预览显式启用浏览器预览模式。";
 
@@ -450,6 +458,22 @@ export class RuntimeClient {
     return invokePayloadOrReject<WorkspaceFileReadResult>("workspace_file_read", payload);
   }
 
+  async terminalStart(payload: TerminalStartParams = {}): Promise<TerminalStartResult> {
+    return invokePayloadOrReject<TerminalStartResult>("terminal_start", payload);
+  }
+
+  async terminalWrite(payload: TerminalWriteParams): Promise<TerminalControlResult> {
+    return invokePayloadOrReject<TerminalControlResult>("terminal_write", payload);
+  }
+
+  async terminalResize(payload: TerminalResizeParams): Promise<TerminalControlResult> {
+    return invokePayloadOrReject<TerminalControlResult>("terminal_resize", payload);
+  }
+
+  async terminalStop(payload: TerminalStopParams): Promise<TerminalControlResult> {
+    return invokePayloadOrReject<TerminalControlResult>("terminal_stop", payload);
+  }
+
   async approvalSubmit(payload: ApprovalSubmitParams): Promise<ApprovalSubmitResult> {
     return invokePayloadOrReject<ApprovalSubmitResult>("approval_submit", payload);
   }
@@ -719,6 +743,16 @@ export class RuntimeClient {
   async subscribeEvents(handler: (event: AgentEventEnvelope) => void): Promise<() => void> {
     assertRuntimeBridgeAvailable("agent_event_subscribe");
     const unlisten = await listen<AgentEventEnvelope>(EVENT_CHANNEL, (event) => {
+      handler(event.payload);
+    });
+    return () => {
+      unlisten();
+    };
+  }
+
+  async subscribeTerminalEvents(handler: (event: TerminalEvent) => void): Promise<() => void> {
+    assertRuntimeBridgeAvailable("terminal_event_subscribe");
+    const unlisten = await listen<TerminalEvent>(TERMINAL_EVENT_CHANNEL, (event) => {
       handler(event.payload);
     });
     return () => {

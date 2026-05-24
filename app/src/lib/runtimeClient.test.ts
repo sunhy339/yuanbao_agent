@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(),
 }));
 
+import { listen } from "@tauri-apps/api/event";
 import { RuntimeClient } from "./runtimeClient";
 
 beforeEach(() => {
@@ -133,6 +134,52 @@ describe("RuntimeClient desktop transport", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("workspace_memory_init", {
       payload: { workspaceId: "ws_real" },
     });
+  });
+
+  it("wraps local terminal PTY commands and subscribes to terminal events", async () => {
+    const client = new RuntimeClient();
+    const terminal = {
+      id: "term_1",
+      cwd: "D:/project",
+      shell: "powershell.exe",
+      status: "running",
+      startedAt: 1,
+    };
+    const listenMock = vi.mocked(listen);
+    const unlisten = vi.fn();
+    listenMock.mockResolvedValueOnce(unlisten);
+
+    invokeMock.mockResolvedValueOnce({ terminal });
+    await expect(client.terminalStart({ cwd: "D:/project", cols: 100, rows: 30 })).resolves.toEqual({ terminal });
+    expect(invokeMock).toHaveBeenLastCalledWith("terminal_start", {
+      payload: { cwd: "D:/project", cols: 100, rows: 30 },
+    });
+
+    invokeMock.mockResolvedValueOnce({ terminal });
+    await expect(client.terminalWrite({ terminalId: "term_1", data: "dir\r\n" })).resolves.toEqual({ terminal });
+    expect(invokeMock).toHaveBeenLastCalledWith("terminal_write", {
+      payload: { terminalId: "term_1", data: "dir\r\n" },
+    });
+
+    invokeMock.mockResolvedValueOnce({ terminal });
+    await expect(client.terminalResize({ terminalId: "term_1", cols: 120, rows: 32 })).resolves.toEqual({ terminal });
+    expect(invokeMock).toHaveBeenLastCalledWith("terminal_resize", {
+      payload: { terminalId: "term_1", cols: 120, rows: 32 },
+    });
+
+    invokeMock.mockResolvedValueOnce({ terminal: { ...terminal, status: "exited" } });
+    await expect(client.terminalStop({ terminalId: "term_1" })).resolves.toEqual({
+      terminal: { ...terminal, status: "exited" },
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("terminal_stop", {
+      payload: { terminalId: "term_1" },
+    });
+
+    const handler = vi.fn();
+    const unsubscribe = await client.subscribeTerminalEvents(handler);
+    expect(listenMock).toHaveBeenLastCalledWith("terminal://event", expect.any(Function));
+    unsubscribe();
+    expect(unlisten).toHaveBeenCalled();
   });
 
   it("wraps workspace focus update payload for Tauri command arguments", async () => {

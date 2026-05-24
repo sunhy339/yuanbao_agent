@@ -196,6 +196,59 @@ export interface WorkspaceFileReadResult {
   encoding?: string;
 }
 
+export type TerminalShell = "powershell" | "pwsh" | "cmd" | "bash" | "zsh" | "sh" | string;
+export type TerminalSessionStatus = "running" | "exited" | "failed";
+export type TerminalEventKind = "output" | "exit" | "error";
+
+export interface TerminalStartParams {
+  cwd?: string;
+  shell?: TerminalShell;
+  cols?: number;
+  rows?: number;
+}
+
+export interface TerminalSessionRecord {
+  id: Identifier;
+  cwd: string;
+  shell: string;
+  status: TerminalSessionStatus;
+  startedAt: number;
+}
+
+export interface TerminalStartResult {
+  terminal: TerminalSessionRecord;
+}
+
+export interface TerminalWriteParams {
+  terminalId: Identifier;
+  data: string;
+}
+
+export interface TerminalResizeParams {
+  terminalId: Identifier;
+  cols: number;
+  rows: number;
+}
+
+export interface TerminalStopParams {
+  terminalId: Identifier;
+}
+
+export interface TerminalControlResult {
+  terminal: TerminalSessionRecord;
+}
+
+export interface TerminalEvent {
+  terminalId: Identifier;
+  kind: TerminalEventKind;
+  chunk?: string;
+  exitCode?: number | null;
+  message?: string;
+  cwd?: string;
+  shell?: string;
+  ts?: number;
+}
+
 export interface SessionCreateParams {
   workspaceId: Identifier;
   title: string;

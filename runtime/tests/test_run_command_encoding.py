@@ -3,8 +3,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from local_agent_runtime.policy.guard import PolicyGuard
+from local_agent_runtime.policy.permission_engine import PermissionEngine
+from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools._shared import run_shell
-from local_agent_runtime.tools.run_command import _powershell_execution_command
+from local_agent_runtime.tools.run_command import _powershell_execution_command, build_run_command_tool
 
 
 def test_powershell_type_reads_utf8_file_without_mojibake(tmp_path: Path) -> None:
@@ -96,3 +99,38 @@ def test_powershell_multi_file_listing_adaptation_executes(tmp_path: Path) -> No
     assert stderr == ""
     assert "index.html" in stdout
     assert "README.md" in stdout
+
+
+def test_run_command_falls_back_from_missing_bash_and_expands_py_compile_globs(tmp_path: Path) -> None:
+    package = tmp_path / "kanban_cli"
+    tests = tmp_path / "tests"
+    package.mkdir()
+    tests.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "models.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tests / "test_models.py").write_text("def test_value():\n    assert 1 == 1\n", encoding="utf-8")
+
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    workspace = store.upsert_workspace(str(tmp_path))
+    session = store.create_session(workspace_id=workspace["id"], title="run command")
+    task = store.create_task(session_id=session["id"], task_type="main", goal="verify", plan=[])
+    config = store.get_config({})["config"]
+    tool = build_run_command_tool(
+        PolicyGuard(approval_mode=config["policy"]["approvalMode"]),
+        store,
+        permission_engine=PermissionEngine(config=config, store=store),
+    )["handler"]
+
+    result = tool({
+        "workspaceRoot": str(tmp_path),
+        "taskId": task["id"],
+        "command": "python -m py_compile kanban_cli/*.py tests/*.py",
+        "cwd": ".",
+        "shell": "bash",
+        "timeoutMs": 30_000,
+    })
+
+    assert result["status"] == "completed"
+    assert result["exitCode"] == 0
+    assert result["shell"] == "powershell"
+    assert "executedCommand" in result

@@ -11,6 +11,7 @@ from typing import Any
 
 from ..models import RuntimeEvent
 from ..store.sqlite_store import SQLiteStore
+from ..tools.command_compat import CommandCompatAdapter
 from .command_execution import build_shell_command
 from .worker_process_runtime import WorkerProcessRuntime
 
@@ -148,8 +149,9 @@ class BackgroundCommandService:
         try:
             cwd_path = Path(request.cwd)
             cwd_abs = cwd_path.resolve() if cwd_path.is_absolute() else (Path(request.workspace_root) / cwd_path).resolve()
+            execution_command = CommandCompatAdapter().adapt(request.command, request.shell).adapted
             runtime = WorkerProcessRuntime(
-                build_shell_command(request.shell, request.command),
+                build_shell_command(request.shell, execution_command),
                 cwd=str(cwd_abs),
                 stdin=None,
                 stdout=-1,

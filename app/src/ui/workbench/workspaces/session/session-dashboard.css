@@ -80,16 +80,24 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
+}
+
+.conversation-task-digest-header > div:first-child {
+  min-width: 0;
 }
 
 .conversation-task-digest-header h2 {
+  display: -webkit-box;
   overflow: hidden;
   margin: 4px 0 0;
   color: var(--session-ink);
   font-size: 15px;
   line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .conversation-task-digest-status {

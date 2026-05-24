@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendAssistantContentDelta,
   appendAssistantPlaceholder,
   appendUserMessage,
   failAssistantMessage,
@@ -146,6 +147,11 @@ describe("chatMessages", () => {
     expect(isOperationalAssistantDelta("Completed the minimal tool loop and preparing a summary...")).toBe(true);
     expect(isOperationalAssistantDelta("我已经创建好了文件。")).toBe(false);
   });
+
+  it("keeps assistant stream content contiguous", () => {
+    expect(appendAssistantContentDelta("我就可以", "正在使用 git_status。")).toBe("我就可以正在使用 git_status。");
+  });
+
   it("turns runtime progress tokens into readable chat progress summaries", () => {
     expect(summarizeOperationalAssistantDelta("Running tool: list_dir")).toBe("正在使用目录。");
     expect(summarizeOperationalAssistantDelta("Subtask waiting for approval: run_command")).toBe(

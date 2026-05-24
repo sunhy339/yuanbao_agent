@@ -273,7 +273,8 @@ describe("SessionWorkspace", () => {
     expect(onLoadPatch).toHaveBeenCalledWith("patch_1");
 
     await user.click(screen.getByRole("tab", { name: /终端/ }));
-    expect(within(tools).getAllByText("命令与验证").length).toBeGreaterThan(0);
+    expect(within(tools).getAllByText("本地终端").length).toBeGreaterThan(0);
+    expect(within(tools).getAllByText(/shell/).length).toBeGreaterThan(0);
     expect(within(tools).getAllByText("npm run typecheck").length).toBeGreaterThan(0);
     expect(within(tools).getByText("Typecheck passed.")).toBeInTheDocument();
 
@@ -289,6 +290,95 @@ describe("SessionWorkspace", () => {
     expect(within(gitPanel).getAllByText("1 个文件").length).toBeGreaterThan(0);
     await user.click(within(gitPanel).getByRole("button", { name: "刷新状态" }));
     expect(onRefreshWorktree).toHaveBeenCalledWith("wt_1");
+  });
+
+  it("counts all changed files in the digest and avoids fake review diff stats", async () => {
+    const user = userEvent.setup();
+    const changedFiles = Array.from({ length: 8 }, (_, index) => ({
+      path: `kanban_cli/file_${index + 1}.py`,
+      status: index === 0 ? "added" : "modified",
+    }));
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_files",
+          status: "running",
+          goal: "Build a small Kanban CLI with package layout and tests",
+          changedFiles,
+        }}
+        messages={[{ id: "m1", role: "user", content: "Build the CLI", createdAt: 1 }]}
+      />,
+    );
+
+    const digest = screen.getByLabelText("工作摘要");
+    expect(within(digest).getByText("8 个改动文件")).toBeInTheDocument();
+    expect(within(digest).getByText("另有 4 个文件在右侧文件/审查中查看。")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: /审查/ }));
+    const tools = screen.getByLabelText("工作区工具");
+    expect(within(tools).getByText("8 个文件")).toBeInTheDocument();
+    expect(within(tools).queryByText("+0 -0")).not.toBeInTheDocument();
+  });
+
+  it("shows terminal history from runtime command tool events when task commands are empty", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_tool_commands",
+          status: "completed",
+          goal: "Verify generated files",
+          changedFiles: [{ path: "kanban_cli/service.py", status: "modified" }],
+        }}
+        messages={[{ id: "m1", role: "user", content: "Run verification", createdAt: 1 }]}
+        toolCalls={[
+          {
+            id: "tool_run_pytest",
+            toolName: "run_command",
+            status: "completed",
+            rawInput: '{"command":"python -m pytest -q","cwd":"D:/tmp/kanban"}',
+            argsPreview: "python -m pytest -q",
+            resultSummary: "4 passed",
+            durationMs: 1400,
+            time: 2,
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: /终端/ }));
+    const tools = screen.getByLabelText("工作区工具");
+    expect(within(tools).getByText("本地终端")).toBeInTheDocument();
+    expect(within(tools).getAllByText("python -m pytest -q").length).toBeGreaterThan(0);
+    expect(within(tools).getByText(/4 passed/)).toBeInTheDocument();
+    expect(within(tools).getAllByText(/shell/).length).toBeGreaterThan(0);
+  });
+
+  it("keeps assistant paragraphs readable instead of splitting them into one-word lines", () => {
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          {
+            id: "assistant_paragraph",
+            role: "assistant",
+            content: "我就可以正在使用 git_status。当前工作区路径不可访问：`C:/tmp/workspace`。",
+            createdAt: 1,
+          },
+        ]}
+      />,
+    );
+
+    const paragraph = container.querySelector(".message-bubble[data-role='assistant'] p");
+    expect(paragraph).toBeInTheDocument();
+    expect(paragraph?.textContent).toContain("我就可以正在使用 git_status。当前工作区路径不可访问：");
+    expect(paragraph?.textContent).toContain("C:/tmp/workspace");
+    expect(paragraph?.textContent).not.toContain("我\n");
   });
 
   it("renders a message empty state inside the conversation area", () => {

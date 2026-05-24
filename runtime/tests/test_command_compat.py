@@ -238,6 +238,19 @@ class TestEdgeCases:
         assert command.startswith(f'& "{node}"')
         assert command.endswith(" --check app.js")
 
+    def test_py_compile_globs_expand_on_powershell(self, adapter: CommandCompatAdapter) -> None:
+        r = adapter.adapt("python -m py_compile kanban_cli/*.py tests/*.py", "powershell")
+
+        assert "$__pyCompileTargets" in r.adapted
+        assert "Get-ChildItem -Path $_ -File" in r.adapted
+        assert "python -m py_compile @__pyCompileTargets" in r.adapted
+        assert r.shell_target == "powershell"
+
+    def test_py_compile_without_globs_stays_literal(self, adapter: CommandCompatAdapter) -> None:
+        r = adapter.adapt("python -m py_compile kanban_cli/models.py", "powershell")
+
+        assert r.adapted == "python -m py_compile kanban_cli/models.py"
+
 
 # ── J. Mixed scenario ────────────────────────────────────────────────
 

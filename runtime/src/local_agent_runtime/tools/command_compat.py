@@ -272,6 +272,9 @@ class CommandCompatAdapter:
         cd_match = re.match(r"""^(\s*)cd\s+/d\s+(.+?)\s*$""", segment, re.IGNORECASE)
         if cd_match:
             return f"{cd_match.group(1)}Set-Location -LiteralPath {cd_match.group(2).strip()}"
+        py_compile = CommandCompatAdapter._adapt_python_py_compile_globs(segment)
+        if py_compile is not None:
+            return py_compile
         listing = CommandCompatAdapter._adapt_multi_path_listing(segment)
         if listing is not None:
             return listing
@@ -311,6 +314,53 @@ class CommandCompatAdapter:
             values.append(value)
         literal_paths = ",".join(CommandCompatAdapter._ps_single_quote(value) for value in values)
         return f"{match.group(1)}Get-ChildItem -LiteralPath {literal_paths}"
+
+    @staticmethod
+    def _adapt_python_py_compile_globs(segment: str) -> str | None:
+        match = re.match(
+            r"""^(?P<leading>\s*)(?P<python>(?:python|py|python\d+(?:\.\d+)?))\s+-m\s+py_compile\s+(?P<args>.+?)\s*$""",
+            segment,
+            re.IGNORECASE,
+        )
+        if not match:
+            return None
+        args_text = match.group("args").strip()
+        if "|" in args_text or any(token in args_text for token in (";", "&&", "||")):
+            return None
+        try:
+            raw_args = re.findall(r""""[^"]+"|'[^']+'|\S+""", args_text)
+        except re.error:
+            return None
+        if not raw_args or not any(any(ch in raw for ch in "*?[]") for raw in raw_args):
+            return None
+        patterns: list[str] = []
+        passthrough: list[str] = []
+        for raw in raw_args:
+            token = raw.strip()
+            if not token:
+                continue
+            if token.startswith("-"):
+                passthrough.append(token)
+                continue
+            if (token.startswith('"') and token.endswith('"')) or (token.startswith("'") and token.endswith("'")):
+                token = token[1:-1]
+            if any(ch in token for ch in "*?[]"):
+                patterns.append(token)
+            else:
+                passthrough.append(token)
+        if not patterns:
+            return None
+        pattern_expr = "@(" + ",".join(CommandCompatAdapter._ps_single_quote(value) for value in patterns) + ")"
+        passthrough_expr = "@(" + ",".join(CommandCompatAdapter._ps_single_quote(value) for value in passthrough) + ")"
+        python = match.group("python")
+        return (
+            f"{match.group('leading')}$__pyCompileTargets = {passthrough_expr} + "
+            f"({pattern_expr} | ForEach-Object {{ Get-ChildItem -Path $_ -File -ErrorAction Stop | "
+            "ForEach-Object { $_.FullName } }); "
+            "if (-not $__pyCompileTargets -or $__pyCompileTargets.Count -eq 0) { "
+            "Write-Error 'No files matched py_compile target patterns'; exit 1 }; "
+            f"{python} -m py_compile @__pyCompileTargets"
+        )
 
     @staticmethod
     def _ps_single_quote(value: str) -> str:

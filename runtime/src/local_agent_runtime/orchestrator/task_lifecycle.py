@@ -274,10 +274,15 @@ class TaskLifecycleMixin:
                 skip_drain=skip_drain,
             )
         if completion_gate["action"] == "fail":
+            failure_summary = self._merge_failed_completion_summary(
+                final_summary=final_summary,
+                failure_reason=completion_gate["reason"],
+                completion_evidence=completion_evidence,
+            )
             return self._fail_task(
                 session_id=session_id,
                 task=task,
-                summary=completion_gate["reason"],
+                summary=failure_summary,
                 error_code="COMPLETION_EVIDENCE_INSUFFICIENT",
                 structured_result=structured_result,
                 skip_drain=skip_drain,
@@ -581,6 +586,58 @@ class TaskLifecycleMixin:
         if not skip_drain:
             self._drain_session_queue(session_id)
         return runtime_task
+
+    def _merge_failed_completion_summary(
+        self,
+        *,
+        final_summary: str,
+        failure_reason: str,
+        completion_evidence: dict[str, Any],
+    ) -> str:
+        parts: list[str] = []
+        if final_summary.strip():
+            parts.append(final_summary.strip())
+        blocking_lines = self._completion_blocking_evidence_lines(completion_evidence)
+        suffix_lines = [failure_reason.strip()]
+        if blocking_lines:
+            suffix_lines.append("Blocking evidence:")
+            suffix_lines.extend(f"- {line}" for line in blocking_lines[:6])
+        suffix = "\n".join(line for line in suffix_lines if line)
+        if suffix:
+            parts.append(suffix)
+        return _merge_active_assistant_completion_content("\n\n".join(parts[:-1]), parts[-1]) if len(parts) > 1 else (parts[0] if parts else failure_reason)
+
+    def _completion_blocking_evidence_lines(self, completion_evidence: dict[str, Any]) -> list[str]:
+        lines: list[str] = []
+        for item in completion_evidence.get("verification") or []:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            if status not in {"failed", "timeout", "killed", "validation_failed"}:
+                continue
+            command = str(item.get("command") or item.get("name") or "verification").strip()
+            summary = str(item.get("summary") or item.get("reason") or "").strip()
+            lines.append(f"{command}: {summary or status}")
+        for item in completion_evidence.get("testsRun") or []:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").strip().lower()
+            if status not in {"failed", "timeout", "killed", "validation_failed"}:
+                continue
+            command = str(item.get("command") or item.get("name") or "test").strip()
+            summary = str(item.get("summary") or "").strip()
+            line = f"{command}: {summary or status}"
+            if line not in lines:
+                lines.append(line)
+        for item in completion_evidence.get("unresolvedToolFailures") or []:
+            if not isinstance(item, dict):
+                continue
+            command = str(item.get("command") or item.get("name") or "tool").strip()
+            summary = str(item.get("summary") or item.get("error") or "").strip()
+            line = f"{command}: {summary or 'failed'}"
+            if line not in lines:
+                lines.append(line)
+        return lines
 
     def _completion_unresolved_runtime_work_gate(self, completion_evidence: dict[str, Any]) -> dict[str, str] | None:
         pending_approvals = self._completion_pending_approval_items(completion_evidence)
@@ -1320,7 +1377,7 @@ class TaskLifecycleMixin:
             if found < test_expectation:
                 return False
         verification_items = []
-        for source_name in ("verification", "testsRun"):
+        for source_name in ("verification", "testsRun", "commands"):
             items = completion_evidence.get(source_name)
             if isinstance(items, list):
                 verification_items.extend(item for item in items if isinstance(item, dict))
@@ -4758,6 +4815,7 @@ class TaskLifecycleMixin:
         records: list[dict[str, Any]] = []
         completion_evidence_stub = {
             "changedFiles": task.get("changedFiles") or [],
+            "commands": task.get("commands") or [],
             "verification": task.get("verification") or [],
             "testsRun": task.get("testsRun") or [],
         }
@@ -6739,10 +6797,18 @@ class TaskLifecycleMixin:
         }
         # Update existing active assistant message or create a failure message
         active_msg_id = runtime_task.get("activeAssistantMessageId")
+        message_content = summary
         if active_msg_id:
+            try:
+                messages = self._store.list_messages({"sessionId": session_id, "limit": 1000})["messages"]
+                active_message = next((message for message in messages if message.get("id") == active_msg_id), None)
+                previous_content = str((active_message or {}).get("content") or "")
+                message_content = _merge_active_assistant_completion_content(previous_content, summary)
+            except Exception:  # noqa: BLE001
+                message_content = summary
             failed_msg = self._store.update_message(
                 active_msg_id,
-                content=summary,
+                content=message_content,
                 status="failed",
                 kind="failure",
             )
@@ -6751,7 +6817,7 @@ class TaskLifecycleMixin:
                 session_id=session_id,
                 task_id=runtime_task["id"],
                 role="assistant",
-                content=summary,
+                content=message_content,
                 kind="failure",
                 status="failed",
             )
@@ -6774,7 +6840,7 @@ class TaskLifecycleMixin:
             session_id=session_id,
             task=runtime_task,
             event_type="message.failed",
-            payload={"messageId": failed_msg["id"], "content": summary, "errorCode": error_code},
+            payload={"messageId": failed_msg["id"], "content": message_content, "errorCode": error_code},
         )
         self._publish(
             session_id=session_id,

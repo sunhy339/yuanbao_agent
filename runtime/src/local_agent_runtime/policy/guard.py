@@ -202,6 +202,8 @@ _DEFAULT_SAFE_COMMAND_ALLOWLIST = (
     "pytest*",
     "python -m py_compile*",
     "*python* -m py_compile*",
+    "python --version*",
+    "*python* --version*",
     "python -c*",
     "*python* -c*",
     "node --check*",

@@ -31,6 +31,7 @@ import {
   isBackgroundProbeCommand,
   isSuccessfulRuntimeStatus,
   isTaskControllable,
+  normalizeCommandLabel,
 } from "./utils";
 import { shouldDisplayTaskScaffold, expectsAgentWork } from "./taskPhase";
 import { buildRuntimeItems } from "./runtimeItemBuilder";
@@ -256,6 +257,7 @@ interface SessionToolCommand {
   id?: string;
   command: string;
   cwd?: string;
+  shell?: string;
   status?: string;
   summary?: string;
   durationMs?: number | null;
@@ -268,6 +270,7 @@ function SessionWorkspaceToolDock({
   activeTask,
   patches,
   backgroundJobs,
+  runtimeItems,
   worktreeStatus,
   worktreeDiff,
   worktreeBusyAction,
@@ -288,6 +291,7 @@ function SessionWorkspaceToolDock({
   activeTask: SessionWorkspaceProps["activeTask"];
   patches?: SessionWorkspaceProps["patches"];
   backgroundJobs?: SessionWorkspaceProps["backgroundJobs"];
+  runtimeItems?: RuntimeTimelineItem[];
   worktreeStatus?: SessionWorkspaceProps["worktreeStatus"];
   worktreeDiff?: SessionWorkspaceProps["worktreeDiff"];
   worktreeBusyAction?: SessionWorkspaceProps["worktreeBusyAction"];
@@ -334,12 +338,16 @@ function SessionWorkspaceToolDock({
     }),
     { additions: 0, deletions: 0 },
   );
+  const hasPatchLineStats = (patches ?? []).some((patch) => patch.additions !== undefined || patch.deletions !== undefined);
+  const hasTaskLineStats = (activeTask?.changedFiles ?? []).some((file) => file.additions !== undefined || file.deletions !== undefined);
+  const hasLineStats = hasPatchLineStats || hasTaskLineStats;
   const additions = patchStats.additions || taskPatchStats.additions;
   const deletions = patchStats.deletions || taskPatchStats.deletions;
   const patchCount = (patches?.length ?? 0) + (activeTask?.changedFiles?.length ? 1 : 0);
+  const reviewFileCount = normalizedRelatedFiles.length;
   const firstPatchId = patches?.[0]?.id;
   const dirtyFiles = worktreeStatus?.dirtyFiles ?? normalizedRelatedFiles.length;
-  const commandItems: SessionToolCommand[] = [
+  const rawCommandItems: SessionToolCommand[] = [
     ...(activeTask?.commands?.map((command) => ({ ...command })) ?? []),
     ...(activeTask?.verification?.map((verification) => ({
       id: verification.id,
@@ -352,12 +360,39 @@ function SessionWorkspaceToolDock({
     ...((backgroundJobs ?? [])
       .filter((job) => !(isSuccessfulRuntimeStatus(job.status) && isBackgroundProbeCommand(job.command)))
       .map((job) => ({ ...job })) ?? []),
+    ...((runtimeItems ?? [])
+      .filter((item) => item.kind === "command")
+      .filter((item) => item.id.startsWith("tool:"))
+      .filter((item) => !item.superseded)
+      .filter((item) => !(isSuccessfulRuntimeStatus(item.status) && isBackgroundProbeCommand(item.code || item.title)))
+      .map((item) => ({
+        id: item.id,
+        command: item.code || item.title,
+        status: item.status,
+        summary: item.summary,
+        durationMs: item.durationMs,
+        shell: item.meta?.find((part) => /^(powershell|pwsh|cmd|bash|zsh|sh|shell)$/i.test(part)),
+      })) ?? []),
   ];
+  const seenCommands = new Set<string>();
+  const commandItems = rawCommandItems
+    .slice()
+    .reverse()
+    .filter((command) => {
+      const normalized = normalizeCommandLabel(command.command)?.toLowerCase() ?? command.command.toLowerCase();
+      const key = command.id ? `id:${command.id}` : `${normalized}|${command.status ?? ""}|${command.exitCode ?? ""}`;
+      if (seenCommands.has(key)) {
+        return false;
+      }
+      seenCommands.add(key);
+      return true;
+    })
+    .reverse();
   const latestCommand = commandItems.at(-1);
   const latestDiffPreview = worktreeDiff?.preview || worktreeDiff?.diff || "";
   const toolTabs: Array<{ id: SessionToolKey; label: string; description: string; icon: LucideIcon; count?: number }> = [
     { id: "review", label: "审查", description: "查看代码改动", icon: ClipboardList, count: patchCount },
-    { id: "terminal", label: "终端", description: "命令与验证", icon: SquareTerminal, count: commandItems.length },
+    { id: "terminal", label: "终端", description: "本地命令历史", icon: SquareTerminal, count: commandItems.length },
     { id: "git", label: "Git", description: "分支与提交", icon: GitBranch, count: dirtyFiles },
     { id: "browser", label: "浏览器", description: "预览入口", icon: Globe2 },
     { id: "side-chat", label: "侧聊", description: "独立上下文", icon: MessageSquarePlus },
@@ -409,9 +444,13 @@ function SessionWorkspaceToolDock({
             <div className="session-tool-panel-header">
               <div>
                 <strong>代码审查</strong>
-                <small>{patchCount ? `${patchCount} 个改动记录` : "等待代码变更"}</small>
+                <small>{patchCount ? `${patchCount} 个改动记录` : reviewFileCount ? `${reviewFileCount} 个相关文件` : "等待代码变更"}</small>
               </div>
-              <span className="session-tool-diff-stat">+{additions} -{deletions}</span>
+              {hasLineStats ? (
+                <span className="session-tool-diff-stat">+{additions} -{deletions}</span>
+              ) : reviewFileCount ? (
+                <span className="session-tool-file-stat">{reviewFileCount} 个文件</span>
+              ) : null}
             </div>
             <div className="session-tool-actions">
               {firstPatchId && onLoadPatch ? (
@@ -459,7 +498,7 @@ function SessionWorkspaceToolDock({
           <>
             <div className="session-tool-panel-header">
               <div>
-                <strong>命令与验证</strong>
+                <strong>本地终端</strong>
                 <small>{latestCommand ? compactText(latestCommand.command, 58) : "还没有运行命令"}</small>
               </div>
             </div>
@@ -467,6 +506,9 @@ function SessionWorkspaceToolDock({
               <ul className="session-tool-command-list">
                 {commandItems.slice(-8).map((command, index) => (
                   <li key={command.id ?? `${command.command}-${index}`} data-status={command.status ?? "recorded"}>
+                    <code className="session-tool-terminal-prompt">
+                      {command.shell || "shell"} {command.cwd ? compactText(command.cwd, 42) : "."}
+                    </code>
                     <div>
                       <strong>{command.command}</strong>
                       <small>
@@ -476,7 +518,11 @@ function SessionWorkspaceToolDock({
                       </small>
                     </div>
                     {command.summary ? <p>{command.summary}</p> : null}
-                    {command.cwd ? <code>{command.cwd}</code> : null}
+                    {command.stdoutPath || command.stderrPath ? (
+                      <code>
+                        {[command.stdoutPath, command.stderrPath].filter(Boolean).join(" · ")}
+                      </code>
+                    ) : null}
                     {command.id && (onRefreshCommandJob || onStopCommandJob) ? (
                       <div className="session-tool-actions">
                         {onRefreshCommandJob ? (
@@ -922,10 +968,10 @@ export function SessionWorkspace({
       const grid = event.currentTarget.closest(".session-workbench-grid") as HTMLElement | null;
       const rect = grid?.getBoundingClientRect();
       const gridWidth = rect?.width || window.innerWidth || 1200;
-      const startWidth = workspacePaneWidthPx ?? Math.min(720, Math.max(420, gridWidth * 0.42));
+      const minWidth = Math.min(420, Math.max(360, gridWidth * 0.28));
+      const maxWidth = Math.max(minWidth, gridWidth - 670);
+      const startWidth = workspacePaneWidthPx ?? Math.min(maxWidth, Math.max(minWidth, gridWidth * 0.32));
       const startX = event.clientX;
-      const minWidth = Math.min(380, Math.max(300, gridWidth * 0.26));
-      const maxWidth = Math.max(minWidth, gridWidth - 440);
       setWorkspacePaneResizing(true);
       event.currentTarget.setPointerCapture?.(event.pointerId);
       const onMove = (moveEvent: PointerEvent) => {
@@ -951,7 +997,7 @@ export function SessionWorkspace({
     { id: "home", label: "工作区", description: "打开文件、审查、终端和运行态", icon: Home },
     { id: "files", label: "文件", description: "浏览项目文件", icon: Files, count: normalizedRelatedFiles.length },
     { id: "review", label: "审查", description: "查看代码改动", icon: ClipboardList, count: (patches?.length ?? 0) + (visibleActiveTask?.changedFiles?.length ? 1 : 0) },
-    { id: "terminal", label: "终端", description: "命令与验证", icon: SquareTerminal, count: (visibleActiveTask?.commands?.length ?? 0) + (visibleActiveTask?.verification?.length ?? 0) },
+    { id: "terminal", label: "终端", description: "本地命令历史", icon: SquareTerminal, count: (visibleActiveTask?.commands?.length ?? 0) + (visibleActiveTask?.verification?.length ?? 0) },
     { id: "git", label: "Git", description: "分支与提交", icon: GitBranch, count: worktreeStatus?.dirtyFiles },
     { id: "browser", label: "浏览器", description: "预览入口", icon: Globe2 },
     { id: "side-chat", label: "侧聊", description: "独立上下文", icon: MessageSquarePlus },
@@ -1159,6 +1205,7 @@ export function SessionWorkspace({
                   activeTask={visibleActiveTask}
                   patches={patches}
                   backgroundJobs={backgroundJobs}
+                  runtimeItems={runtimeItems}
                   worktreeStatus={worktreeStatus}
                   worktreeDiff={worktreeDiff}
                   worktreeBusyAction={worktreeBusyAction}

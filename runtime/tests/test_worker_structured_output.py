@@ -337,6 +337,50 @@ class TestCompletionHardGate:
         ).fetchall()
         assert approvals == []
 
+    def test_failed_verification_preserves_active_assistant_summary(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="build a Python CLI project",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        active_message = store.create_message(
+            session_id=session["id"],
+            task_id=task["id"],
+            role="assistant",
+            content="Created kanban_cli files and tests. I am now verifying the project.",
+            status="streaming",
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            active_assistant_message_id=active_message["id"],
+            changed_files=[{"path": "kanban_cli/service.py", "action": "created"}],
+            verification=[{"name": "pytest", "status": "failed", "summary": "allowlist blocked pytest"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Implemented the Kanban CLI with package modules and tests.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "failed"
+        message = next(
+            item for item in store.list_messages({"sessionId": session["id"], "limit": 100})["messages"]
+            if item["id"] == active_message["id"]
+        )
+        assert "Created kanban_cli files" in message["content"]
+        assert "Implemented the Kanban CLI" in message["content"]
+        assert "Blocking evidence" in message["content"]
+        assert "allowlist blocked pytest" in message["content"]
+
     def test_failed_verification_blocks_forced_completion_after_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
@@ -1876,6 +1920,79 @@ class TestCompletionHardGate:
         assert "Expected artifact exists: feedback_storage.py" in failed
         assert "Expected artifact exists: app.js" in failed
         assert "Expected pytest file count >= 2" in failed
+
+    def test_package_layout_commands_satisfy_root_artifact_mentions(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        project = tmp_path / "project"
+        package = project / "kanban_cli"
+        tests_dir = project / "tests"
+        package.mkdir(parents=True)
+        tests_dir.mkdir()
+        for name in ("models.py", "store.py", "service.py", "cli.py"):
+            (package / name).write_text("VALUE = 1\n", encoding="utf-8")
+        (tests_dir / "test_kanban.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+        workspace = store.upsert_workspace(str(project))
+        session = store.create_session(workspace_id=workspace["id"], title="package layout")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="agent",
+            goal=(
+                "Create package kanban_cli/ with models.py, store.py, service.py, cli.py, "
+                "and tests/test_kanban.py. Run python -m py_compile and python -m pytest -q."
+            ),
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[
+                {"path": "kanban_cli/models.py", "status": "added"},
+                {"path": "kanban_cli/store.py", "status": "added"},
+                {"path": "kanban_cli/service.py", "status": "added"},
+                {"path": "kanban_cli/cli.py", "status": "added"},
+                {"path": "tests/test_kanban.py", "status": "added"},
+            ],
+            commands=[
+                {
+                    "id": "cmd_compile",
+                    "command": "python -m py_compile kanban_cli/*.py",
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "Command completed with exit 0",
+                },
+                {
+                    "id": "cmd_pytest",
+                    "command": "python -m pytest -q",
+                    "status": "completed",
+                    "exitCode": 0,
+                    "summary": "1 passed",
+                },
+            ],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Packaged Kanban CLI completed and verified.",
+            context={"workspace_root": str(project), "routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        acceptance = result["structuredResult"]["completionEvidence"]["acceptance"]
+        structural = [
+            item for item in acceptance
+            if item.get("source") == "structural_file_check"
+            and item["criterion"] in {
+                "Expected artifact exists: models.py",
+                "Expected artifact exists: store.py",
+                "Expected artifact exists: service.py",
+                "Expected artifact exists: cli.py",
+            }
+        ]
+        assert structural
+        assert all(item["status"] == "supported" for item in structural)
 
     def test_generated_artifact_mojibake_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)

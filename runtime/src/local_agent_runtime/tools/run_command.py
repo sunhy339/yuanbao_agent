@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +48,12 @@ def _powershell_execution_command(command: str, shell_name: str) -> str:
     return f"{match.group(1)}& {command[len(match.group(1)):]}"
 
 
+def _available_execution_shell(shell_name: str) -> str:
+    if os.name == "nt" and shell_name in {"bash", "zsh"} and shutil.which(shell_name) is None:
+        return "powershell"
+    return shell_name
+
+
 def _rewrite_missing_node_executable(command: str) -> str:
     match = _POWERSHELL_NODE_EXECUTABLE_RE.search(command)
     replacement = _available_node_executable()
@@ -76,6 +84,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         command = str(params.get("command", "")).strip()
         if not command:
             raise ValueError("command is required")
+        requested_command = command
 
         active_command_policy = current_command_policy(store)
         active_run_command_config = current_run_command_config(store)
@@ -84,12 +93,12 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         internal_validation = bool(params.get("internalValidation") or params.get("internal_validation"))
         background = background_requested(params)
         cwd_rel = normalize_cwd(policy_guard, workspace_root, params, store)
-        shell_name = normalize_shell(params.get("shell"), store)
-        command = _powershell_execution_command(command, shell_name)
+        shell_name = _available_execution_shell(normalize_shell(params.get("shell"), store))
+        execution_command = _powershell_execution_command(requested_command, shell_name)
         timeout_ms = int(params.get("timeoutMs") or params.get("timeout_ms") or active_command_policy["commandTimeoutMs"])
         timeout_ms = max(1000, min(timeout_ms, 1_800_000))
 
-        policy_guard.validate_command(command, active_run_command_config)
+        policy_guard.validate_command(requested_command, active_run_command_config)
         permission_decision = None
 
         # PermissionEngine gate (new path)
@@ -122,13 +131,13 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
             scope_reasons = WriteScopeEnforcer(store).check_command_allowed(
                 request_task_id,
                 command_scope=cwd_rel,
-                command=command,
+                command=requested_command,
             )
             if scope_reasons:
                 raise ValueError("Write scope violation: " + "; ".join(scope_reasons))
         request = approval_request(
             task_id=request_task_id or "",
-            command=command,
+            command=requested_command,
             cwd=cwd_rel,
             shell=shell_name,
             timeout_ms=timeout_ms,
@@ -219,7 +228,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         duration_ms = 0
         command_error: Exception | None = None
         try:
-            stdout, stderr, exit_code, status, duration_ms = run_shell(shell_name, command, cwd_abs, timeout_ms)
+            stdout, stderr, exit_code, status, duration_ms = run_shell(shell_name, execution_command, cwd_abs, timeout_ms)
         except Exception as exc:  # noqa: BLE001
             command_error = exc
             stderr = str(exc)
@@ -248,6 +257,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
             "durationMs": duration_ms,
             "shell": shell_name,
             "cwd": cwd_rel,
+            **({"executedCommand": execution_command} if execution_command != requested_command else {}),
         }
 
     return {"handler": run_command}

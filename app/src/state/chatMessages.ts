@@ -502,20 +502,14 @@ export function summarizeOperationalAssistantDelta(delta: string): string | null
 }
 
 export function appendAssistantContentDelta(existingContent: string, delta: string) {
-  const text = delta.trim();
-  if (!text) return existingContent;
+  const text = delta.replace(/\r\n/g, "\n");
+  if (!text.trim()) return existingContent;
   const existing = existingContent ?? "";
-  const recentLines = existing
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-8);
-  if (recentLines.includes(text) || existing.trim().endsWith(text)) {
+  if (existing.endsWith(text)) {
     return existing;
   }
-  if (!existing.trim()) return text;
-  const separator = text.startsWith("\n") || existing.endsWith("\n") ? "" : "\n\n";
-  return `${existing}${separator}${text}`;
+  if (!existing.trim()) return text.trimStart();
+  return `${existing}${text}`;
 }
 
 export function getVisibleChatMessages(

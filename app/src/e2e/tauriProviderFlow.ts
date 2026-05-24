@@ -178,6 +178,58 @@ function assertElement(selector: string, description: string) {
   }
 }
 
+function clickWorkspaceTab(title: string, description: string) {
+  const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>('nav[aria-label="工作区页签"] button[role="tab"]'));
+  const tab = tabs.find((item) => item.title === title || item.textContent?.includes(title));
+  if (!tab) {
+    throw new Error(`Expected workspace tab not found: ${description}`);
+  }
+  tab.click();
+}
+
+function assertRectContainedHorizontally(child: Element, parent: Element, description: string) {
+  const childRect = child.getBoundingClientRect();
+  const parentRect = parent.getBoundingClientRect();
+  const tolerance = 2;
+  if (childRect.left < parentRect.left - tolerance || childRect.right > parentRect.right + tolerance) {
+    throw new Error(
+      `${description} overflows horizontally: child ${Math.round(childRect.left)}..${Math.round(childRect.right)}, ` +
+        `parent ${Math.round(parentRect.left)}..${Math.round(parentRect.right)}.`,
+    );
+  }
+}
+
+async function assertSessionWorkspacePanels() {
+  const pane = await waitFor("workspace side pane", () => query<HTMLElement>('aside[aria-label="工作区侧栏"]'));
+  const digestTitle = query<HTMLElement>(".conversation-task-digest-header h2");
+  const digest = query<HTMLElement>(".conversation-task-digest");
+  if (digestTitle && digest) {
+    assertRectContainedHorizontally(digestTitle, digest, "task digest title");
+  }
+
+  clickWorkspaceTab("浏览项目文件", "file workspace tab");
+  const fileWorkspace = await waitFor("session file workspace panel", () => query<HTMLElement>(".session-file-workspace"));
+  const fileLayout = await waitFor("session file browser layout", () => query<HTMLElement>(".session-file-browser-layout"));
+  const fileViewer = await waitFor("session file viewer", () => query<HTMLElement>(".session-file-viewer"));
+  const fileTree = await waitFor("session file tree", () => query<HTMLElement>(".session-file-tree-pane"));
+  assertRectContainedHorizontally(fileWorkspace, pane, "file workspace");
+  assertRectContainedHorizontally(fileViewer, fileLayout, "file preview");
+  assertRectContainedHorizontally(fileTree, fileLayout, "file tree");
+
+  clickWorkspaceTab("查看代码改动", "review tab");
+  await waitFor("review panel", () => query(".session-tool-panel"));
+  const reviewText = query<HTMLElement>(".session-tool-panel")?.textContent ?? "";
+  if (reviewText.includes("+0 -0")) {
+    throw new Error("Review panel exposed fake +0 -0 diff stats.");
+  }
+
+  clickWorkspaceTab("本地命令历史", "terminal tab");
+  const terminalPanel = await waitFor("local terminal panel", () => query<HTMLElement>(".session-tool-panel"));
+  if (!terminalPanel.textContent?.includes("本地终端")) {
+    throw new Error("Terminal panel did not show the local terminal heading.");
+  }
+}
+
 function countTextOccurrences(text: string, needle: string) {
   if (!needle) return 0;
   let count = 0;
@@ -895,6 +947,7 @@ export async function maybeRunTauriProviderFlowE2e() {
         );
       }
     }
+    await assertSessionWorkspacePanels();
 
     phase = "complete";
     await finish({
@@ -922,6 +975,7 @@ export async function maybeRunTauriProviderFlowE2e() {
         "composer submitted through UI",
         "session task completion visible in UI",
         "runtime timeline rendered in UI",
+        "workspace file/review/terminal panes render without misleading stats",
         "message persistence verified through runtime API",
       ],
     });

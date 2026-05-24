@@ -63,7 +63,7 @@ function buildDigestFiles(activeTask?: SessionWorkspaceActiveTask | null, patche
     }
   }
 
-  return files.slice(0, 4);
+  return files;
 }
 
 function buildDigestCommands(
@@ -192,6 +192,7 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
   composerContext?: SessionWorkspaceComposerContext;
 }) {
   const files = buildDigestFiles(activeTask, patches);
+  const visibleFiles = files.slice(0, 4);
   const commands = buildDigestCommands(activeTask, backgroundJobs);
   const verifications = buildDigestVerificationRows(activeTask);
 
@@ -201,6 +202,7 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
 
   const phase = getTaskPhase(activeTask);
   const summary = buildDigestSummary(activeTask, files.length, commands.length, verifications.length);
+  const title = activeTask?.goal || "最近工作";
   const contextBits = compactMeta([
     composerContext?.cwd || activeTask?.activeWorktree?.worktreePath || null,
     composerContext?.branch || activeTask?.activeWorktree?.branchName || null,
@@ -213,7 +215,7 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
       <header className="conversation-task-digest-header">
         <div>
           <p className="session-kicker">工作摘要</p>
-          <h2>{activeTask?.goal || "最近工作"}</h2>
+          <h2 title={title}>{title}</h2>
         </div>
         <div className="conversation-task-digest-status">
           <StatusBadge label={getTaskPhaseLabel(phase)} tone={getTaskPhaseTone(phase)} pulse={["analyzing", "modifying", "verifying"].includes(phase)} compact />
@@ -237,7 +239,7 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
           <strong>{files.length ? `${files.length} 个改动文件` : "暂无文件改动"}</strong>
           {files.length ? (
             <ul>
-              {files.map((file) => (
+              {visibleFiles.map((file) => (
                 <li key={normalizeDigestPath(file.path)}>
                   <code>{file.path}</code>
                   <small>
@@ -250,6 +252,11 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
                   </small>
                 </li>
               ))}
+              {files.length > visibleFiles.length ? (
+                <li>
+                  <small className="conversation-task-digest-empty">另有 {files.length - visibleFiles.length} 个文件在右侧文件/审查中查看。</small>
+                </li>
+              ) : null}
             </ul>
           ) : (
             <small className="conversation-task-digest-empty">这一轮还没有记录到文件改动。</small>

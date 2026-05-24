@@ -38,6 +38,7 @@ _HIGH_RISK_CAPABILITIES = {"writeFile", "runCommand", "subagents"}
 _LOW_RISK_COMMAND_MARKERS = (
     "pytest",
     "py_compile",
+    "python --version",
     "unittest",
     "node --check",
     "tsc",

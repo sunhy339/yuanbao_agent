@@ -218,7 +218,7 @@ export function MarkdownContent({ content }: { content: string }) {
       paragraphLines.push(lines[index]);
       index += 1;
     }
-    blocks.push(<p key={`p-${index}`}>{renderInlineMarkdown(paragraphLines.join("\n"), `p-${index}`)}</p>);
+    blocks.push(<p key={`p-${index}`}>{renderInlineMarkdown(paragraphLines.join(" "), `p-${index}`)}</p>);
   }
 
   return <div className="markdown-content">{blocks}</div>;

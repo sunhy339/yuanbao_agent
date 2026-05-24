@@ -87,17 +87,18 @@
   margin-bottom: 0;
   color: var(--yb-ink-soft);
   line-height: 1.52;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .markdown-content {
   display: grid;
   gap: 8px;
   color: var(--yb-ink-soft);
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .markdown-content h2,

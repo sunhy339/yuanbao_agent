@@ -74,7 +74,7 @@
 }
 
 .session-workspace-chat-only .message-bubble {
-  width: fit-content;
+  width: min(820px, 76%);
   max-width: min(820px, 76%);
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 10px;
@@ -121,6 +121,16 @@
   color: #30343b;
   font-size: 15px;
   line-height: 1.7;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.session-workspace-chat-only .markdown-content p {
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 
 .session-workspace-chat-only .markdown-image {

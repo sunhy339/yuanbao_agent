@@ -732,6 +732,7 @@ class SchemaBootstrapMixin:
         self._ensure_collaboration_task_columns()
         self._ensure_schedule_columns()
         self._ensure_compaction_columns()
+        self._ensure_skill_preset_columns()
         self._ensure_provider_turn_columns()
         self._ensure_context_snapshot_columns()
         self._ensure_inbox_columns()
@@ -863,6 +864,18 @@ class SchemaBootstrapMixin:
         for column, definition in expected.items():
             if column not in columns:
                 self._conn.execute(f"ALTER TABLE compaction_records ADD COLUMN {column} {definition}")
+        self._conn.commit()
+
+    def _ensure_skill_preset_columns(self) -> None:
+        """Add skill preset columns introduced after the original skill schema."""
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(skill_presets)").fetchall()
+        }
+        if "tool_policy" not in columns:
+            self._conn.execute(
+                "ALTER TABLE skill_presets ADD COLUMN tool_policy TEXT NOT NULL DEFAULT 'strict_whitelist'"
+            )
         self._conn.commit()
 
     def _ensure_context_snapshot_columns(self) -> None:

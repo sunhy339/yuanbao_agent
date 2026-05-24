@@ -10,6 +10,8 @@ Test categories:
 from __future__ import annotations
 
 import json
+import sqlite3
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -142,6 +144,58 @@ class TestSkillRegistryPolicyPersistence:
         fetched = self.registry.get("bad_policy_skill")
         assert fetched is not None
         assert fetched.tool_policy == ToolPolicy.STRICT_WHITELIST
+
+
+def test_legacy_skill_presets_table_migrates_tool_policy(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy_skill_presets.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE skill_presets (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            system_prompt TEXT,
+            tool_whitelist TEXT DEFAULT '[]',
+            parameter_constraints TEXT DEFAULT '{}',
+            category TEXT DEFAULT 'custom',
+            is_builtin INTEGER DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO skill_presets (
+            id, name, description, system_prompt, tool_whitelist,
+            parameter_constraints, category, is_builtin, created_at, updated_at
+        )
+        VALUES (
+            'legacy_skill', 'Legacy Skill', '', '', '["read_file"]',
+            '{}', 'custom', 0, 1, 1
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = SQLiteStore(str(db_path))
+    try:
+        columns = {
+            row["name"]
+            for row in store._conn.execute("PRAGMA table_info(skill_presets)").fetchall()
+        }
+        assert "tool_policy" in columns
+
+        registry = SkillRegistry(store)
+        legacy = registry.get("legacy_skill")
+        assert legacy is not None
+        assert legacy.tool_policy == ToolPolicy.STRICT_WHITELIST
+        for skill in BUILTIN_SKILLS:
+            assert registry.get(skill.id) is not None
+    finally:
+        store.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

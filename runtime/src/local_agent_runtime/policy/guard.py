@@ -85,9 +85,11 @@ class PolicyGuard:
         configured = self._command_patterns(config, "allowedCommands", "allowlist")
         if configured:
             return configured
-        if config.get("useDefaultCommandAllowlist", True) is False:
-            return []
-        return list(_DEFAULT_SAFE_COMMAND_ALLOWLIST)
+        # Default local-agent behavior is capability based: deny explicitly
+        # dangerous commands here, then let the approval/permission layer decide
+        # whether an arbitrary developer command may run. A positive allowlist is
+        # only enforced when the user or policy explicitly configures one.
+        return []
 
     def _first_command_match(self, command: str, config: dict[str, Any], *keys: str) -> str | None:
         return self._first_match(command, self._command_patterns(config, *keys))
@@ -195,29 +197,3 @@ class PolicyGuard:
             if re.search(pattern, normalized):
                 return label
         return None
-
-
-_DEFAULT_SAFE_COMMAND_ALLOWLIST = (
-    "python -m pytest*",
-    "pytest*",
-    "python -m py_compile*",
-    "*python* -m py_compile*",
-    "python --version*",
-    "*python* --version*",
-    "python -c*",
-    "*python* -c*",
-    "node --check*",
-    "*node* --check*",
-    "git status*",
-    "git diff*",
-    "git rev-parse*",
-    "Get-ChildItem*",
-    "Get-Content*",
-    "Start-Sleep*",
-    "Write-Output*",
-    "rg*",
-    "ls*",
-    "dir*",
-    "cat*",
-    "type*",
-)

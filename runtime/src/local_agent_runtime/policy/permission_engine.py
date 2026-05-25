@@ -35,33 +35,6 @@ _CAPABILITY_APPROVAL_KIND: dict[str, str] = {
 }
 
 _HIGH_RISK_CAPABILITIES = {"writeFile", "runCommand", "subagents"}
-_LOW_RISK_COMMAND_MARKERS = (
-    "pytest",
-    "py_compile",
-    "python --version",
-    "unittest",
-    "node --check",
-    "tsc",
-    "npm test",
-    "pnpm test",
-    "yarn test",
-    "git status",
-    "git diff",
-    "git rev-parse",
-    "git branch",
-    "get-childitem",
-    "get-content",
-    "get-location",
-)
-_LOW_RISK_COMMAND_PREFIXES = (
-    "ls",
-    "dir",
-    "pwd",
-    "cat",
-    "type",
-    "rg",
-    "findstr",
-)
 
 
 def collect_untrusted_content_signals(context: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -96,26 +69,12 @@ def collect_untrusted_content_signals(context: dict[str, Any] | None) -> list[di
     return signals
 
 
-def _is_low_risk_command(command: str) -> bool:
-    normalized = " ".join(command.strip().lower().replace("\\", "/").split())
-    if not normalized:
-        return False
-    lowered = f" {normalized} "
-    if any(marker in lowered for marker in _LOW_RISK_COMMAND_MARKERS):
-        return True
-    return any(normalized == prefix or normalized.startswith(f"{prefix} ") for prefix in _LOW_RISK_COMMAND_PREFIXES)
-
-
 def _untrusted_content_guard(request: PermissionRequest) -> PermissionDecision | None:
     if request.capability not in _HIGH_RISK_CAPABILITIES:
         return None
     signals = collect_untrusted_content_signals(request.context)
     if not signals:
         return None
-    if request.capability == "runCommand":
-        command = str(request.context.get("command") or "").strip()
-        if command and _is_low_risk_command(command):
-            return None
     sources = ", ".join(sorted({str(item.get("source") or "external") for item in signals}))
     tool_label = request.tool_name or request.capability
     return PermissionDecision(
@@ -167,15 +126,6 @@ class PermissionEngine:
             )
 
         # mode == "ask"
-        if cap == "runCommand":
-            command = str(request.context.get("command") or "").strip()
-            if command and _is_low_risk_command(command):
-                return PermissionDecision(
-                    decision="allow",
-                    capability=cap,
-                    reason="Low-risk inspection or verification command is allowed without an approval prompt.",
-                )
-
         approval_kind = _CAPABILITY_APPROVAL_KIND.get(cap, cap)
         # Refine writeFile approval kind based on tool_name
         if cap == "writeFile" and request.tool_name == "write_file":

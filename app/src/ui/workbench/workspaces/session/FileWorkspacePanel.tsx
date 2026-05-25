@@ -501,6 +501,61 @@ export function FileWorkspacePanel({
       {error ? <p className="session-tool-error">{error}</p> : null}
 
       <div className="session-file-browser-layout">
+        <aside className="session-file-tree-pane" aria-label="项目文件">
+          <label className="session-file-search">
+            <span>筛选文件</span>
+            <Search size={14} strokeWidth={2} aria-hidden="true" />
+            <input
+              aria-label="筛选文件"
+              value={query}
+              placeholder="筛选文件..."
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
+          <div className="session-file-tree-scroll">
+            {rootEntries.length ? (
+              <FileTreeRows
+                entries={rootEntries}
+                childrenByPath={childrenByPath}
+                expanded={expanded}
+                loadingPath={loadingPath}
+                query={query}
+                selectedPath={selectedFile}
+                onOpenDirectory={openDirectory}
+                onOpenFile={openFile}
+              />
+            ) : loadingPath === ROOT_DIR ? (
+              <div className="session-file-tree-empty">正在加载目录...</div>
+            ) : (
+              <div className="session-file-tree-empty">还没有目录数据。</div>
+            )}
+          </div>
+
+          <section className="session-file-related">
+            <strong>任务相关文件</strong>
+            {normalizedRelatedFiles.length ? (
+              <ul>
+                {normalizedRelatedFiles.slice(0, 10).map((path) => (
+                  <li key={path}>
+                    <button
+                      disabled={!canBrowseFiles || !workspaceRoot}
+                      type="button"
+                      onClick={() => {
+                        void openFile(path);
+                      }}
+                    >
+                      <span>{fileNameFromPath(path)}</span>
+                      <small>{path}</small>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="session-tool-muted">本轮还没有记录关联文件。</p>
+            )}
+          </section>
+        </aside>
+
         <main className="session-file-viewer" aria-label="文件内容">
           <header className="session-file-viewer-header">
             <div>
@@ -557,61 +612,6 @@ export function FileWorkspacePanel({
             </div>
           )}
         </main>
-
-        <aside className="session-file-tree-pane" aria-label="项目文件">
-          <label className="session-file-search">
-            <span>筛选文件</span>
-            <Search size={14} strokeWidth={2} aria-hidden="true" />
-            <input
-              aria-label="筛选文件"
-              value={query}
-              placeholder="筛选文件..."
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-          <div className="session-file-tree-scroll">
-            {rootEntries.length ? (
-              <FileTreeRows
-                entries={rootEntries}
-                childrenByPath={childrenByPath}
-                expanded={expanded}
-                loadingPath={loadingPath}
-                query={query}
-                selectedPath={selectedFile}
-                onOpenDirectory={openDirectory}
-                onOpenFile={openFile}
-              />
-            ) : loadingPath === ROOT_DIR ? (
-              <div className="session-file-tree-empty">正在加载目录...</div>
-            ) : (
-              <div className="session-file-tree-empty">还没有目录数据。</div>
-            )}
-          </div>
-
-          <section className="session-file-related">
-            <strong>任务相关文件</strong>
-            {normalizedRelatedFiles.length ? (
-              <ul>
-                {normalizedRelatedFiles.slice(0, 10).map((path) => (
-                  <li key={path}>
-                    <button
-                      disabled={!canBrowseFiles || !workspaceRoot}
-                      type="button"
-                      onClick={() => {
-                        void openFile(path);
-                      }}
-                    >
-                      <span>{fileNameFromPath(path)}</span>
-                      <small>{path}</small>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="session-tool-muted">本轮还没有记录关联文件。</p>
-            )}
-          </section>
-        </aside>
       </div>
     </section>
   );

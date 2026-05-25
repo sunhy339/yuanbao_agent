@@ -1,3 +1,7 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronDown, GitCommitHorizontal, GitPullRequestCreate, RefreshCw } from "lucide-react";
+import type { GitLocalDiffResult, GitLocalStatusResult } from "@shared";
+import { RuntimeClient } from "../../../../lib/runtimeClient";
 import { Button, StatusBadge } from "../../../v2/components/ui";
 import { formatStatusLabel } from "../../../copy";
 import type {
@@ -9,7 +13,10 @@ import type {
   SessionWorkspaceWorktreeDiff,
   SessionWorkspaceWorktreeStatus,
 } from "./types";
+import { UnifiedDiffViewer } from "./UnifiedDiffViewer";
 import { compactMeta, compactText, formatDuration, isSuccessfulRuntimeStatus } from "./utils";
+
+const gitClient = new RuntimeClient();
 
 type GitFileRow = {
   path: string;
@@ -51,19 +58,6 @@ function fileNameFromPath(path: string) {
   return normalized.split("/").filter(Boolean).at(-1) || normalized || ".";
 }
 
-function formatBytes(bytes?: number | null) {
-  if (bytes === undefined || bytes === null) {
-    return null;
-  }
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
 function formatSignedCount(value: number | undefined, prefix: string) {
   return value === undefined ? null : `${prefix}${value}`;
 }
@@ -77,11 +71,20 @@ function formatGitStatus(status?: string) {
   const normalized = status?.trim().toUpperCase();
   if (!normalized) return "changed";
   if (normalized === "M") return "modified";
+  if (normalized === "MM") return "modified";
   if (normalized === "A") return "added";
   if (normalized === "D") return "deleted";
   if (normalized === "R") return "renamed";
   if (normalized === "??") return "untracked";
   return normalized.toLowerCase();
+}
+
+function statusRowsFromLocalGit(status?: GitLocalStatusResult | null): GitFileRow[] {
+  return (status?.files ?? []).map((file) => ({
+    path: file.path,
+    status: file.status,
+    source: "git" as const,
+  }));
 }
 
 function collectGitFiles(
@@ -229,8 +232,17 @@ export function GitWorkspacePanel({
 }) {
   const worktree = activeTask?.activeWorktree;
   const workspacePath = composerContext?.cwd || worktree?.worktreePath || "";
-  const branchName = composerContext?.branch || worktree?.branchName || "未识别分支";
-  const fileRows = collectGitFiles(activeTask, patches, worktreeStatus);
+  const [localStatus, setLocalStatus] = useState<GitLocalStatusResult | null>(null);
+  const [localDiff, setLocalDiff] = useState<GitLocalDiffResult | null>(null);
+  const [gitBusy, setGitBusy] = useState<"status" | "diff" | "init" | "checkout" | "commit" | null>(null);
+  const [gitError, setGitError] = useState<string | null>(null);
+  const [selectedBranch, setSelectedBranch] = useState("");
+  const [commitMessage, setCommitMessage] = useState("");
+  const branchName = localStatus?.branch || composerContext?.branch || worktree?.branchName || "未识别分支";
+  const fileRows = useMemo(() => {
+    const localRows = statusRowsFromLocalGit(localStatus);
+    return localRows.length ? collectGitFiles(activeTask, patches, { files: localRows.map((row) => `${row.status ?? "M"} ${row.path}`) }) : collectGitFiles(activeTask, patches, worktreeStatus);
+  }, [activeTask, localStatus, patches, worktreeStatus]);
   const patchStats = (patches ?? []).reduce(
     (stats, patch) => ({
       additions: stats.additions + (patch.additions ?? 0),
@@ -247,7 +259,7 @@ export function GitWorkspacePanel({
   );
   const additions = patchStats.additions || taskStats.additions;
   const deletions = patchStats.deletions || taskStats.deletions;
-  const dirtyFiles = worktreeStatus?.dirtyFiles ?? fileRows.length;
+  const dirtyFiles = localStatus?.dirtyFiles ?? worktreeStatus?.dirtyFiles ?? fileRows.length;
   const diffLoaded = Boolean(
     worktreeDiff && !worktreeDiff.error && (worktreeDiff.diffStat || worktreeDiff.diff || worktreeDiff.preview || worktreeDiff.files?.length),
   );
@@ -260,58 +272,207 @@ export function GitWorkspacePanel({
   const reviewSummary = compactMeta([readText(review, "reviewer"), readText(review, "summary")]).join(" - ");
   const approvalDecision = readText(approval, "decision") || "未申请";
   const approvalSummary = compactMeta([readText(approval, "targetBranch"), readText(approval, "verificationStatus")]).join(" - ");
-  const diffMeta = compactMeta([
-    worktreeDiff?.truncated ? "预览已截断" : worktreeDiff?.mode === "full" ? "完整 diff" : null,
-    formatBytes(worktreeDiff?.bytes ?? worktreeDiff?.previewBytes),
-  ]);
-  const diffPreview = worktreeDiff?.preview || worktreeDiff?.diff || "";
+  const diffPreview = localDiff?.diff || worktreeDiff?.preview || worktreeDiff?.diff || "";
+  const diffStat = localDiff?.stat || worktreeDiff?.diffStat || "";
   const statusSummary = worktreeStatus?.error
     ? worktreeStatus.error
     : dirtyFiles > 0
       ? `${dirtyFiles} 个未提交文件`
-      : worktreeStatus
+      : localStatus || worktreeStatus
         ? "工作区干净"
         : "等待 Git 扫描";
+  const canUseLocalGit = Boolean(workspacePath);
+  const branchOptions = localStatus?.branches ?? [];
+  const canInitRepo = Boolean(
+    workspacePath &&
+      !localStatus &&
+      (gitError?.toLowerCase().includes("not a git repository") || gitError?.toLowerCase().includes("not a git repo")),
+  );
+
+  const refreshLocalStatus = useCallback(async () => {
+    if (!workspacePath) {
+      return;
+    }
+    setGitBusy("status");
+    setGitError(null);
+    try {
+      const result = await gitClient.gitLocalStatus({ cwd: workspacePath });
+      setLocalStatus(result);
+      setSelectedBranch(result.branch);
+    } catch (reason) {
+      setGitError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setGitBusy(null);
+    }
+  }, [workspacePath]);
+
+  const loadLocalDiff = useCallback(async (path?: string) => {
+    if (!workspacePath) {
+      return;
+    }
+    setGitBusy("diff");
+    setGitError(null);
+    try {
+      setLocalDiff(await gitClient.gitLocalDiff({ cwd: workspacePath, path }));
+    } catch (reason) {
+      setGitError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setGitBusy(null);
+    }
+  }, [workspacePath]);
+
+  async function initRepository() {
+    if (!workspacePath) {
+      return;
+    }
+    setGitBusy("init");
+    setGitError(null);
+    try {
+      const result = await gitClient.gitLocalInit({ cwd: workspacePath });
+      setLocalStatus(result.status ?? null);
+      setSelectedBranch(result.status?.branch ?? "");
+      setLocalDiff(null);
+    } catch (reason) {
+      setGitError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setGitBusy(null);
+    }
+  }
+
+  async function checkoutBranch() {
+    if (!workspacePath || !selectedBranch || selectedBranch === branchName) {
+      return;
+    }
+    setGitBusy("checkout");
+    setGitError(null);
+    try {
+      const result = await gitClient.gitLocalCheckout({ cwd: workspacePath, branch: selectedBranch });
+      setLocalStatus(result.status ?? null);
+      setLocalDiff(null);
+    } catch (reason) {
+      setGitError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setGitBusy(null);
+    }
+  }
+
+  async function commitAllChanges() {
+    if (!workspacePath || !commitMessage.trim()) {
+      return;
+    }
+    setGitBusy("commit");
+    setGitError(null);
+    try {
+      const result = await gitClient.gitLocalCommit({ cwd: workspacePath, message: commitMessage.trim() });
+      setLocalStatus(result.status ?? null);
+      setLocalDiff(null);
+      setCommitMessage("");
+    } catch (reason) {
+      setGitError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setGitBusy(null);
+    }
+  }
+
+  useEffect(() => {
+    setLocalStatus(null);
+    setLocalDiff(null);
+    setSelectedBranch("");
+    setGitError(null);
+    if (workspacePath) {
+      void refreshLocalStatus();
+    }
+  }, [refreshLocalStatus, workspacePath]);
 
   return (
     <section className="git-workspace-panel" aria-label="Git 工作区">
-      <header className="git-workspace-panel-header">
-        <div>
-          <p className="session-kicker">Git</p>
-          <h3>{branchName}</h3>
-          <small title={workspacePath}>{compactText(workspacePath || "当前会话未提供工作目录", 90)}</small>
+      <header className="git-workspace-panel-header git-workspace-toolbar">
+        <h3 className="git-workspace-branch-title">{branchName}</h3>
+        <div className="git-workspace-branch">
+          <label>
+            <span>分支</span>
+            <select
+              aria-label="切换 Git 分支"
+              disabled={!branchOptions.length || gitBusy === "checkout"}
+              value={selectedBranch || branchName}
+              onChange={(event) => setSelectedBranch(event.target.value)}
+            >
+              {branchOptions.length ? (
+                branchOptions.map((branch) => (
+                  <option key={branch.name} value={branch.name}>
+                    {branch.current ? "✓ " : ""}{branch.name}
+                  </option>
+                ))
+              ) : (
+                <option value={branchName}>{branchName}</option>
+              )}
+            </select>
+          </label>
+          <ChevronDown size={14} aria-hidden="true" />
         </div>
-        <StatusBadge
-          label={dirtyFiles > 0 ? `${dirtyFiles} 个文件` : "干净"}
-          tone={dirtyFiles > 0 ? "warning" : "success"}
-          compact
-        />
+        <div className="git-workspace-toolbar-stats">
+          <strong className="git-workspace-line-stat">+{additions} -{deletions}</strong>
+          <StatusBadge label={dirtyFiles > 0 ? `${dirtyFiles} 个文件` : "干净"} tone={dirtyFiles > 0 ? "warning" : "success"} compact />
+        </div>
+        <div className="git-workspace-toolbar-actions">
+          <Button
+            size="xs"
+            variant="secondary"
+            loading={gitBusy === "status"}
+            disabled={!canUseLocalGit}
+            onClick={() => {
+              void refreshLocalStatus();
+            }}
+          >
+            <RefreshCw size={13} aria-hidden="true" />
+            状态
+          </Button>
+          <Button
+            size="xs"
+            variant="secondary"
+            loading={gitBusy === "checkout"}
+            disabled={!selectedBranch || selectedBranch === branchName}
+            onClick={() => {
+              void checkoutBranch();
+            }}
+          >
+            切换
+          </Button>
+          <Button
+            size="xs"
+            variant="secondary"
+            loading={gitBusy === "diff"}
+            disabled={!canUseLocalGit}
+            onClick={() => {
+              void loadLocalDiff();
+            }}
+          >
+            查看 diff
+          </Button>
+          {canInitRepo ? (
+            <Button
+              size="xs"
+              variant="secondary"
+              loading={gitBusy === "init"}
+              onClick={() => {
+                void initRepository();
+              }}
+            >
+              <GitPullRequestCreate size={13} aria-hidden="true" />
+              初始化
+            </Button>
+          ) : null}
+        </div>
       </header>
 
-      <div className="git-workspace-stats" aria-label="Git 概览">
-        <article>
-          <span>状态</span>
-          <strong>{statusSummary}</strong>
-          {worktreeStatus?.files?.length ? <small>来自最近一次 git status</small> : null}
-        </article>
-        <article>
-          <span>改动</span>
-          <strong>{additions || deletions ? `+${additions} -${deletions}` : `${fileRows.length} 个文件`}</strong>
-          <small>{fileRows.length ? "任务和 Git 扫描合并去重" : "暂无文件记录"}</small>
-        </article>
-        <article>
-          <span>diff</span>
-          <strong>{compactText(diffSummary(worktreeDiff), 68)}</strong>
-          {diffMeta.length ? <small>{diffMeta.join(" - ")}</small> : null}
-        </article>
-        <article>
-          <span>验证</span>
-          <strong>{verificationSummary(verificationRows)}</strong>
-          {verificationRows[0]?.command ? <small>{verificationRows[0].command}</small> : null}
-        </article>
+      <div className="git-workspace-status-line">
+        <span title={workspacePath}>{compactText(workspacePath || "当前会话未提供工作目录", 96)}</span>
+        <span>{statusSummary}</span>
+        {localStatus?.upstream ? <span>{localStatus.upstream}</span> : null}
+        {localStatus && (localStatus.ahead || localStatus.behind) ? <span>↑{localStatus.ahead ?? 0} ↓{localStatus.behind ?? 0}</span> : null}
       </div>
 
-      <div className="git-workspace-actions">
+      <div className="git-workspace-actions git-worktree-actions">
         {worktree && onRefreshWorktree ? (
           <Button
             size="xs"
@@ -379,85 +540,124 @@ export function GitWorkspacePanel({
       {worktreeError || worktreeStatus?.error ? (
         <p className="session-tool-error">{worktreeError || worktreeStatus?.error}</p>
       ) : null}
+      {gitError ? <p className="session-tool-error">{gitError}</p> : null}
 
-      <div className="git-workspace-meta-grid">
-        <article>
-          <span>Worktree</span>
-          <strong>{worktree?.branchName || branchName}</strong>
-          <small title={worktree?.worktreePath || workspacePath}>{compactText(worktree?.worktreePath || workspacePath, 96)}</small>
-          <small>{compactMeta([worktree?.baseRef ? `base ${worktree.baseRef}` : null, worktree?.mergePolicy]).join(" - ")}</small>
-        </article>
-        <article>
-          <span>Review</span>
-          <strong>{reviewStatus}</strong>
-          {reviewSummary ? <small>{reviewSummary}</small> : <small>等待代码审查结果</small>}
-        </article>
-        <article>
-          <span>Merge</span>
-          <strong>{approvalDecision}</strong>
-          {approvalSummary ? <small>{approvalSummary}</small> : <small>加载 diff 且工作区干净后可申请</small>}
-        </article>
-      </div>
-
-      <div className="git-workspace-section">
-        <div className="git-workspace-section-head">
-          <strong>变更文件</strong>
-          <small>{fileRows.length ? `${fileRows.length} 个文件` : "暂无记录"}</small>
-        </div>
-        {fileRows.length ? (
-          <ul className="git-workspace-file-list">
-            {fileRows.slice(0, 12).map((file) => (
-              <li key={`${file.source}:${file.path}`}>
-                <span>{formatGitStatus(file.status)}</span>
-                <div>
-                  <strong>{fileNameFromPath(file.path)}</strong>
-                  <small title={file.path}>{file.path}</small>
-                  {file.reason ? <small>{file.reason}</small> : null}
-                </div>
-                <code>{compactMeta([formatSignedCount(file.additions, "+"), formatSignedCount(file.deletions, "-")]).join(" ")}</code>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="session-tool-muted">暂无未提交文件，等待 Git 扫描或代码变更。</p>
-        )}
-      </div>
-
-      {verificationRows.length ? (
-        <div className="git-workspace-section">
-          <div className="git-workspace-section-head">
-            <strong>验证记录</strong>
-            <small>{verificationRows.length} 项</small>
+      <div className="git-workspace-layout">
+        <main className="git-workspace-diff-pane">
+          <div className="git-workspace-section-head git-workspace-diff-head">
+            <div>
+              <strong>{localDiff ? "本地 diff" : "审查 diff"}</strong>
+              <small>{diffStat || diffSummary(worktreeDiff)}</small>
+            </div>
+            <span className="git-workspace-line-stat">+{additions} -{deletions}</span>
           </div>
-          <ul className="git-workspace-verification-list">
-            {verificationRows.slice(0, 5).map((item) => (
-              <li key={item.id} data-status={item.status ?? "recorded"}>
-                <StatusBadge label={formatStatusLabel(item.status ?? "recorded")} tone={isSuccessfulRuntimeStatus(item.status) ? "success" : "neutral"} compact />
-                <div>
-                  <strong>{item.command}</strong>
-                  <small>
-                    {compactMeta([
-                      item.exitCode !== undefined && item.exitCode !== null ? `退出码 ${item.exitCode}` : null,
-                      formatDuration(item.durationMs ?? undefined),
-                      item.summary,
-                    ]).join(" - ")}
-                  </small>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+          {diffPreview ? (
+            <UnifiedDiffViewer diffText={diffPreview} />
+          ) : (
+            <div className="git-workspace-empty-diff">
+              <strong>等待代码变更</strong>
+              <span>点击“查看 diff”后会显示当前工作区的真实差异。</span>
+            </div>
+          )}
+        </main>
 
-      {diffPreview ? (
-        <div className="git-workspace-section">
-          <div className="git-workspace-section-head">
-            <strong>Diff 预览</strong>
-            <small>{worktreeDiff?.truncated ? "已截断" : "已加载"}</small>
-          </div>
-          <pre className="session-tool-code-preview">{diffPreview.slice(0, 5000)}</pre>
-        </div>
-      ) : null}
+        <aside className="git-workspace-file-pane">
+          <section className="git-workspace-section">
+            <div className="git-workspace-section-head">
+              <strong>变更文件</strong>
+              <small>{fileRows.length ? `${fileRows.length} 个文件` : "暂无记录"}</small>
+            </div>
+            {fileRows.length ? (
+              <ul className="git-workspace-file-list">
+                {fileRows.slice(0, 80).map((file) => (
+                  <li key={`${file.source}:${file.path}`}>
+                    <span>{formatGitStatus(file.status)}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void loadLocalDiff(file.path);
+                      }}
+                    >
+                      <strong>{fileNameFromPath(file.path)}</strong>
+                      <small title={file.path}>{file.path}</small>
+                      {file.reason ? <small>{file.reason}</small> : null}
+                    </button>
+                    <code>{compactMeta([formatSignedCount(file.additions, "+"), formatSignedCount(file.deletions, "-")]).join(" ")}</code>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="session-tool-muted">暂无未提交文件。</p>
+            )}
+          </section>
+
+          <section className="git-workspace-section git-workspace-commit-box">
+            <div className="git-workspace-section-head">
+              <strong>提交</strong>
+              <small>提交全部当前改动</small>
+            </div>
+            <input
+              aria-label="Git 提交信息"
+              placeholder="Commit message"
+              value={commitMessage}
+              onChange={(event) => setCommitMessage(event.target.value)}
+            />
+            <Button
+              size="xs"
+              variant="secondary"
+              loading={gitBusy === "commit"}
+              disabled={!commitMessage.trim() || !dirtyFiles}
+              onClick={() => {
+                void commitAllChanges();
+              }}
+            >
+              <GitCommitHorizontal size={13} aria-hidden="true" />
+              提交
+            </Button>
+          </section>
+
+          <section className="git-workspace-section">
+            <div className="git-workspace-section-head">
+              <strong>审查状态</strong>
+              <small>{verificationSummary(verificationRows)}</small>
+            </div>
+            <div className="git-workspace-review-meta">
+              <span>Review</span>
+              <strong>{reviewStatus}</strong>
+              <small>{reviewSummary || "等待代码审查结果"}</small>
+              <span>Merge</span>
+              <strong>{approvalDecision}</strong>
+              <small>{approvalSummary || "加载 diff 且工作区干净后可申请"}</small>
+            </div>
+          </section>
+
+          {verificationRows.length ? (
+            <section className="git-workspace-section">
+              <div className="git-workspace-section-head">
+                <strong>验证记录</strong>
+                <small>{verificationRows.length} 项</small>
+              </div>
+              <ul className="git-workspace-verification-list">
+                {verificationRows.slice(0, 5).map((item) => (
+                  <li key={item.id} data-status={item.status ?? "recorded"}>
+                    <StatusBadge label={formatStatusLabel(item.status ?? "recorded")} tone={isSuccessfulRuntimeStatus(item.status) ? "success" : "neutral"} compact />
+                    <div>
+                      <strong>{item.command}</strong>
+                      <small>
+                        {compactMeta([
+                          item.exitCode !== undefined && item.exitCode !== null ? `退出码 ${item.exitCode}` : null,
+                          formatDuration(item.durationMs ?? undefined),
+                          item.summary,
+                        ]).join(" - ")}
+                      </small>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+        </aside>
+      </div>
     </section>
   );
 }

@@ -12,6 +12,7 @@ import {
   GitBranch,
   GripVertical,
   Home,
+  Plus,
   PanelRightClose,
   PanelRightOpen,
   SquareTerminal,
@@ -42,6 +43,7 @@ import { TraceFilterBar } from "./TraceFilterBar";
 import { FileWorkspacePanel } from "./FileWorkspacePanel";
 import { GitWorkspacePanel } from "./GitWorkspacePanel";
 import { LocalTerminalPanel } from "./LocalTerminalPanel";
+import { UnifiedDiffViewer } from "./UnifiedDiffViewer";
 import { isChatVisibleEvent } from "./visibilityRouting";
 import "./session.css";
 
@@ -384,93 +386,6 @@ function isCommandPolicyBlocked(command: SessionToolCommand) {
   );
 }
 
-interface UnifiedDiffLine {
-  type: "meta" | "hunk" | "add" | "remove" | "context";
-  content: string;
-  oldLine?: number;
-  newLine?: number;
-}
-
-interface UnifiedDiffFile {
-  key: string;
-  path: string;
-  additions: number;
-  deletions: number;
-  lines: UnifiedDiffLine[];
-}
-
-function diffPathFromHeader(line: string) {
-  const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
-  return match?.[2] || match?.[1] || line.replace(/^diff --git\s+/, "").trim() || "diff";
-}
-
-function parseUnifiedDiff(diffText: string): UnifiedDiffFile[] {
-  const files: UnifiedDiffFile[] = [];
-  let current: UnifiedDiffFile | null = null;
-  let oldLine = 0;
-  let newLine = 0;
-
-  diffText.replace(/\r\n/g, "\n").split("\n").forEach((line, index) => {
-    if (line.startsWith("diff --git ")) {
-      current = {
-        key: `${index}:${line}`,
-        path: diffPathFromHeader(line),
-        additions: 0,
-        deletions: 0,
-        lines: [{ type: "meta", content: line }],
-      };
-      files.push(current);
-      oldLine = 0;
-      newLine = 0;
-      return;
-    }
-
-    if (!current) {
-      current = {
-        key: `inline:${index}`,
-        path: "diff",
-        additions: 0,
-        deletions: 0,
-        lines: [],
-      };
-      files.push(current);
-    }
-
-    const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-    if (hunk) {
-      oldLine = Number(hunk[1]);
-      newLine = Number(hunk[2]);
-      current.lines.push({ type: "hunk", content: line });
-      return;
-    }
-
-    if (line.startsWith("+") && !line.startsWith("+++")) {
-      current.additions += 1;
-      current.lines.push({ type: "add", content: line.slice(1), newLine });
-      newLine += 1;
-      return;
-    }
-
-    if (line.startsWith("-") && !line.startsWith("---")) {
-      current.deletions += 1;
-      current.lines.push({ type: "remove", content: line.slice(1), oldLine });
-      oldLine += 1;
-      return;
-    }
-
-    if (line.startsWith(" ") || line === "") {
-      current.lines.push({ type: "context", content: line.startsWith(" ") ? line.slice(1) : line, oldLine, newLine });
-      if (oldLine) oldLine += 1;
-      if (newLine) newLine += 1;
-      return;
-    }
-
-    current.lines.push({ type: "meta", content: line });
-  });
-
-  return files.filter((file) => file.lines.length > 0);
-}
-
 function diffTextFromReviewSources(
   worktreeDiff: SessionWorkspaceProps["worktreeDiff"],
   patches?: SessionWorkspaceProps["patches"],
@@ -483,37 +398,6 @@ function diffTextFromReviewSources(
     .flatMap((patch) => [patch.diff, ...(patch.files ?? []).map((file) => file.diff)])
     .filter((value): value is string => Boolean(value?.trim()))
     .join("\n");
-}
-
-function UnifiedDiffViewer({ diffText }: { diffText: string }) {
-  const files = parseUnifiedDiff(diffText);
-  if (!files.length) {
-    return <p className="session-tool-muted">还没有可展示的差异内容。</p>;
-  }
-
-  return (
-    <div className="session-diff-viewer" aria-label="真实差异">
-      {files.slice(0, 10).map((file) => (
-        <article className="session-diff-file" key={file.key}>
-          <header>
-            <strong title={file.path}>{file.path}</strong>
-            <span>
-              +{file.additions} -{file.deletions}
-            </span>
-          </header>
-          <ol className="session-diff-lines">
-            {file.lines.slice(0, 800).map((line, index) => (
-              <li className={`session-diff-line session-diff-line-${line.type}`} key={`${file.key}:${index}`}>
-                <span className="session-diff-line-old">{line.oldLine ?? ""}</span>
-                <span className="session-diff-line-new">{line.newLine ?? ""}</span>
-                <code>{line.content || " "}</code>
-              </li>
-            ))}
-          </ol>
-        </article>
-      ))}
-    </div>
-  );
 }
 
 function SessionWorkspaceToolDock({
@@ -786,7 +670,11 @@ function SessionWorkspaceToolDock({
             ) : null}
             {worktreeDiff?.error ? <p className="session-tool-error">{worktreeDiff.error}</p> : null}
             {worktreeDiff?.diffStat ? <p className="session-tool-muted">{worktreeDiff.diffStat}</p> : null}
-            {latestDiffPreview ? <UnifiedDiffViewer diffText={latestDiffPreview} /> : null}
+            {latestDiffPreview ? (
+              <UnifiedDiffViewer diffText={latestDiffPreview} />
+            ) : reviewFileRows.length ? (
+              <p className="session-tool-muted">已记录文件变化；加载补丁或 diff 后会在这里展开逐行差异。</p>
+            ) : null}
           </>
         ) : null}
 
@@ -823,7 +711,7 @@ function SessionWorkspaceToolDock({
                     {command.summary ? <p>{command.summary}</p> : null}
                     {isCommandPolicyBlocked(command) ? (
                       <p className="session-tool-warning">
-                        命令没有真正执行：运行时策略拦截了这条命令。需要允许该命令，或改用当前白名单允许的等价命令。
+                        命令没有真正执行：运行时策略要求先审批这条命令。允许后会按原命令继续执行。
                       </p>
                     ) : null}
                     {command.stdoutPath || command.stderrPath ? (
@@ -1119,6 +1007,12 @@ export function SessionWorkspace({
       collapsedChatItems.filter((item) => !(item.kind === "tool" && item.groupKey && hiddenCommandGroups.has(item.groupKey))),
     );
   }, [messages, runtimeItems]);
+  const latestAssistantMessageContent = useMemo(() => {
+    return [...messages]
+      .reverse()
+      .find((message) => message.role === "assistant" && !message.placeholder && message.content.trim())
+      ?.content;
+  }, [messages]);
   const [traceFilter, setTraceFilter] = useState<{
     taskId: string;
     visibility: "" | "chat" | "panel" | "trace";
@@ -1273,7 +1167,7 @@ export function SessionWorkspace({
     { id: "home", label: "工作区", description: "打开常用面板", icon: Home },
     { id: "files", label: "文件", description: "浏览项目文件", icon: Files, count: normalizedRelatedFiles.length },
     { id: "review", label: "审查", description: "查看代码改动", icon: ClipboardList, count: (patches?.length ?? 0) + (visibleActiveTask?.changedFiles?.length ? 1 : 0) },
-    { id: "terminal", label: "终端", description: "本地 shell 与命令记录", icon: SquareTerminal, count: (visibleActiveTask?.commands?.length ?? 0) + (visibleActiveTask?.verification?.length ?? 0) },
+    { id: "terminal", label: "终端", description: "本地命令历史", icon: SquareTerminal, count: (visibleActiveTask?.commands?.length ?? 0) + (visibleActiveTask?.verification?.length ?? 0) },
     { id: "git", label: "Git", description: "分支与提交", icon: GitBranch, count: worktreeStatus?.dirtyFiles },
     { id: "diagnostics", label: "诊断", description: "失败、审批与子任务", icon: Activity, count: visibleRuntimeLanes.length },
   ];
@@ -1361,6 +1255,7 @@ export function SessionWorkspace({
             <div className="message-stream message-stream-chat-only" aria-label="会话消息">
               <ConversationTaskDigest
                 activeTask={visibleActiveTask}
+                latestAssistantMessage={latestAssistantMessageContent}
                 patches={patches}
                 backgroundJobs={backgroundJobs}
                 composerContext={composerContext}
@@ -1429,16 +1324,27 @@ export function SessionWorkspace({
                   );
                 })}
               </nav>
-              <button
-                aria-label="隐藏右侧工作区"
-                className="session-pane-action"
-                disabled={isFilesFocused}
-                onClick={() => setWorkspacePaneCollapsed(true)}
-                title="隐藏右侧工作区"
-                type="button"
-              >
-                <PanelRightClose size={16} aria-hidden="true" />
-              </button>
+              <div className="session-pane-actions">
+                <button
+                  aria-label="打开工作区入口"
+                  className="session-pane-action"
+                  onClick={() => selectWorkspacePane("home")}
+                  title="打开工作区入口"
+                  type="button"
+                >
+                  <Plus size={16} aria-hidden="true" />
+                </button>
+                <button
+                  aria-label="隐藏右侧工作区"
+                  className="session-pane-action"
+                  disabled={isFilesFocused}
+                  onClick={() => setWorkspacePaneCollapsed(true)}
+                  title="隐藏右侧工作区"
+                  type="button"
+                >
+                  <PanelRightClose size={16} aria-hidden="true" />
+                </button>
+              </div>
             </header>
 
             <div className="session-pane-body">

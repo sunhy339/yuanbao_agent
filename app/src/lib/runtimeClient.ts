@@ -28,6 +28,13 @@ import type {
   ConfigUpdateResult,
   DiffGetParams,
   DiffGetResult,
+  GitLocalCheckoutParams,
+  GitLocalCommandResult,
+  GitLocalCommitParams,
+  GitLocalDiffParams,
+  GitLocalDiffResult,
+  GitLocalParams,
+  GitLocalStatusResult,
   HookCreateParams,
   HookDeleteParams,
   HookDeleteResult,
@@ -472,6 +479,26 @@ export class RuntimeClient {
 
   async terminalStop(payload: TerminalStopParams): Promise<TerminalControlResult> {
     return invokePayloadOrReject<TerminalControlResult>("terminal_stop", payload);
+  }
+
+  async gitLocalStatus(payload: GitLocalParams): Promise<GitLocalStatusResult> {
+    return invokePayloadOrReject<GitLocalStatusResult>("git_local_status", payload);
+  }
+
+  async gitLocalDiff(payload: GitLocalDiffParams): Promise<GitLocalDiffResult> {
+    return invokePayloadOrReject<GitLocalDiffResult>("git_local_diff", payload);
+  }
+
+  async gitLocalInit(payload: GitLocalParams): Promise<GitLocalCommandResult> {
+    return invokePayloadOrReject<GitLocalCommandResult>("git_local_init", payload);
+  }
+
+  async gitLocalCheckout(payload: GitLocalCheckoutParams): Promise<GitLocalCommandResult> {
+    return invokePayloadOrReject<GitLocalCommandResult>("git_local_checkout", payload);
+  }
+
+  async gitLocalCommit(payload: GitLocalCommitParams): Promise<GitLocalCommandResult> {
+    return invokePayloadOrReject<GitLocalCommandResult>("git_local_commit", payload);
   }
 
   async approvalSubmit(payload: ApprovalSubmitParams): Promise<ApprovalSubmitResult> {

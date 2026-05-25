@@ -294,7 +294,7 @@ describe("SessionWorkspace", () => {
     const gitPanel = within(tools).getByLabelText("Git 工作区");
     expect(within(gitPanel).getByRole("heading", { name: "feat/dev-desktop" })).toBeInTheDocument();
     expect(within(gitPanel).getByText("1 个未提交文件")).toBeInTheDocument();
-    expect(within(gitPanel).getByText("+12 -4")).toBeInTheDocument();
+    expect(within(gitPanel).getAllByText("+12 -4").length).toBeGreaterThan(0);
     expect(within(gitPanel).getByText("1 项通过")).toBeInTheDocument();
     expect(within(gitPanel).getByText("reviewer-agent - Looks good.")).toBeInTheDocument();
     expect(within(gitPanel).getByText("main - passed")).toBeInTheDocument();
@@ -302,6 +302,29 @@ describe("SessionWorkspace", () => {
     expect(within(gitPanel).getAllByText("1 个文件").length).toBeGreaterThan(0);
     await user.click(within(gitPanel).getByRole("button", { name: "刷新状态" }));
     expect(onRefreshWorktree).toHaveBeenCalledWith("wt_1");
+  });
+
+  it("does not repeat the final assistant answer in the work summary", () => {
+    const finalAnswer = "README.md exists.";
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_1",
+          status: "completed",
+          goal: "Read-only UI smoke",
+          resultSummary: finalAnswer,
+        }}
+        messages={[
+          { id: "m1", role: "user", content: "Check README", createdAt: 1 },
+          { id: "m2", role: "assistant", content: finalAnswer, createdAt: 2 },
+        ]}
+      />,
+    );
+
+    const messageStream = screen.getByLabelText("会话消息");
+    expect(within(messageStream).getAllByText(finalAnswer)).toHaveLength(1);
+    expect(within(screen.getByLabelText("工作摘要")).getByText(/任务已完成/)).toBeInTheDocument();
   });
 
   it("counts all changed files in the digest and avoids fake review diff stats", async () => {
@@ -929,7 +952,7 @@ describe("SessionWorkspace", () => {
     );
   });
 
-  it("explains when a command was blocked by the allowlist policy", async () => {
+  it("explains when a command needs policy approval", async () => {
     const user = userEvent.setup();
 
     render(
@@ -952,7 +975,7 @@ describe("SessionWorkspace", () => {
     );
 
     await user.click(screen.getByRole("button", { name: /命令 python main\.py 失败/i }));
-    expect(screen.getAllByText(/命令没有真正执行：运行时策略拦截了这条命令/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/命令没有真正执行：运行时策略要求先审批这条命令/).length).toBeGreaterThan(0);
   });
 
   it("shows a clear patch diff state when the runtime has not returned diff text", async () => {

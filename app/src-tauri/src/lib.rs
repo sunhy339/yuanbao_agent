@@ -255,6 +255,33 @@ struct TerminalStopPayload {
     terminal_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitLocalPayload {
+    cwd: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitLocalDiffPayload {
+    cwd: String,
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitLocalCheckoutPayload {
+    cwd: String,
+    branch: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitLocalCommitPayload {
+    cwd: String,
+    message: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkspaceFileEntryView {
@@ -509,7 +536,7 @@ fn default_terminal_shell() -> String {
         }
     }
     if cfg!(target_os = "windows") {
-        "powershell.exe".to_string()
+        "cmd.exe".to_string()
     } else {
         env::var("SHELL").unwrap_or_else(|_| "bash".to_string())
     }
@@ -522,11 +549,13 @@ fn terminal_shell_command(shell: &str) -> CommandBuilder {
         if lower == "powershell" || lower == "powershell.exe" {
             let mut command = CommandBuilder::new("powershell.exe");
             command.arg("-NoLogo");
+            command.arg("-NoProfile");
             return command;
         }
         if lower == "pwsh" || lower == "pwsh.exe" {
             let mut command = CommandBuilder::new("pwsh.exe");
             command.arg("-NoLogo");
+            command.arg("-NoProfile");
             return command;
         }
         if lower == "cmd" || lower == "cmd.exe" {
@@ -582,7 +611,11 @@ fn terminal_start(
 
     let mut command = terminal_shell_command(&shell);
     command.cwd(&cwd_path);
-    command.env("TERM", "xterm-256color");
+    if cfg!(target_os = "windows") {
+        command.env("TERM", "dumb");
+    } else {
+        command.env("TERM", "xterm-256color");
+    }
 
     let child = pair
         .slave
@@ -622,7 +655,7 @@ fn terminal_start(
         json!({
             "terminalId": terminal_id,
             "kind": "output",
-            "chunk": format!("PTY terminal started: {shell}\r\n{cwd}> "),
+            "chunk": format!("Started {shell} in {cwd}\r\n"),
             "cwd": cwd,
             "shell": shell,
             "ts": now_ms(),
@@ -752,6 +785,272 @@ fn terminal_stop(
         }),
     );
     Ok(json!({ "terminal": terminal_view }))
+}
+
+fn resolve_existing_dir(raw_cwd: &str) -> Result<PathBuf, String> {
+    let cwd = PathBuf::from(raw_cwd.trim());
+    if raw_cwd.trim().is_empty() {
+        return Err("Working directory is required".to_string());
+    }
+    let resolved = cwd
+        .canonicalize()
+        .map_err(|reason| format!("Failed to resolve working directory: {reason}"))?;
+    if !resolved.is_dir() {
+        return Err("Working directory is not a directory".to_string());
+    }
+    Ok(resolved)
+}
+
+fn run_git(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|reason| format!("Failed to start git: {reason}"))
+}
+
+fn run_git_success(cwd: &Path, args: &[&str]) -> Result<std::process::Output, String> {
+    let output = run_git(cwd, args)?;
+    if output.status.success() {
+        return Ok(output);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Err(if stderr.is_empty() { stdout } else { stderr })
+}
+
+fn git_stdout(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    let output = run_git_success(cwd, args)?;
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn resolve_git_repo(cwd: &Path) -> Result<PathBuf, String> {
+    let root = git_stdout(cwd, &["rev-parse", "--show-toplevel"])?;
+    let root = PathBuf::from(root.trim());
+    if !root.is_dir() {
+        return Err("Git repository root was not found".to_string());
+    }
+    Ok(root)
+}
+
+fn parse_status_file(raw: &str) -> Value {
+    let status = raw.get(0..2).unwrap_or("").trim().to_string();
+    let path = raw
+        .get(3..)
+        .unwrap_or("")
+        .trim()
+        .trim_matches('"')
+        .to_string();
+    json!({
+        "path": path,
+        "status": if status.is_empty() { "M".to_string() } else { status },
+        "raw": raw,
+    })
+}
+
+fn parse_branch_header(header: &str) -> (String, Option<String>, u64, u64) {
+    let text = header.trim().strip_prefix("## ").unwrap_or(header.trim());
+    let mut branch = text.to_string();
+    let mut upstream = None;
+    let mut ahead = 0_u64;
+    let mut behind = 0_u64;
+
+    if let Some((left, right)) = text.split_once("...") {
+        branch = left.to_string();
+        let mut remote = right.to_string();
+        if let Some((remote_name, flags)) = right.split_once(' ') {
+            remote = remote_name.to_string();
+            for part in flags.trim_matches(|ch| ch == '[' || ch == ']').split(',') {
+                let trimmed = part.trim();
+                if let Some(value) = trimmed.strip_prefix("ahead ") {
+                    ahead = value.parse().unwrap_or(0);
+                }
+                if let Some(value) = trimmed.strip_prefix("behind ") {
+                    behind = value.parse().unwrap_or(0);
+                }
+            }
+        }
+        upstream = Some(remote);
+    }
+
+    (branch, upstream, ahead, behind)
+}
+
+fn git_status_value(cwd: &Path) -> Result<Value, String> {
+    let repo_root = resolve_git_repo(cwd)?;
+    let raw_status = git_stdout(cwd, &["status", "--short", "--branch"])?;
+    let mut lines = raw_status.lines();
+    let header = lines.next().unwrap_or("## HEAD");
+    let (branch, upstream, ahead, behind) = parse_branch_header(header);
+    let files: Vec<Value> = lines
+        .filter(|line| !line.trim().is_empty())
+        .map(parse_status_file)
+        .collect();
+    let branch_raw = git_stdout(cwd, &["branch", "--format=%(HEAD)%09%(refname:short)"])?;
+    let branches: Vec<Value> = branch_raw
+        .lines()
+        .filter_map(|line| {
+            let (head, name) = line.split_once('\t')?;
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            Some(json!({
+                "name": trimmed,
+                "current": head.trim() == "*",
+            }))
+        })
+        .collect();
+    let dirty_files = files.len();
+
+    Ok(json!({
+        "cwd": cwd.display().to_string(),
+        "repoRoot": repo_root.display().to_string(),
+        "branch": branch,
+        "upstream": upstream,
+        "ahead": ahead,
+        "behind": behind,
+        "dirtyFiles": dirty_files,
+        "files": files,
+        "branches": branches,
+        "clean": dirty_files == 0,
+        "rawStatus": raw_status,
+    }))
+}
+
+fn is_safe_branch_name(branch: &str) -> bool {
+    let trimmed = branch.trim();
+    !trimmed.is_empty()
+        && !trimmed.starts_with('-')
+        && trimmed.len() <= 180
+        && trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '/' | '_' | '-' | '.'))
+}
+
+fn changed_files_from_diff(diff: &str) -> Vec<String> {
+    diff.lines()
+        .filter_map(|line| {
+            if !line.starts_with("diff --git ") {
+                return None;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            let path = parts.get(3).or_else(|| parts.get(2))?;
+            Some(
+                path.trim_start_matches("b/")
+                    .trim_start_matches("a/")
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn git_local_status(payload: GitLocalPayload) -> Result<Value, String> {
+    let cwd = resolve_existing_dir(&payload.cwd)?;
+    git_status_value(&cwd)
+}
+
+#[tauri::command]
+fn git_local_diff(payload: GitLocalDiffPayload) -> Result<Value, String> {
+    let cwd = resolve_existing_dir(&payload.cwd)?;
+    let repo_root = resolve_git_repo(&cwd)?;
+    let mut args = vec!["diff", "--no-ext-diff", "--"];
+    if let Some(path) = payload
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        args.push(path);
+    }
+    let diff = git_stdout(&cwd, &args)?;
+    let mut stat_args = vec!["diff", "--stat", "--"];
+    if let Some(path) = payload
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        stat_args.push(path);
+    }
+    let stat = git_stdout(&cwd, &stat_args)?;
+    let truncated = diff.len() > 240_000;
+    let diff_view = if truncated {
+        diff.chars().take(240_000).collect::<String>()
+    } else {
+        diff.clone()
+    };
+
+    Ok(json!({
+        "cwd": cwd.display().to_string(),
+        "repoRoot": repo_root.display().to_string(),
+        "diff": diff_view,
+        "stat": stat,
+        "files": changed_files_from_diff(&diff),
+        "truncated": truncated,
+    }))
+}
+
+#[tauri::command]
+fn git_local_init(payload: GitLocalPayload) -> Result<Value, String> {
+    let cwd = resolve_existing_dir(&payload.cwd)?;
+    let output = run_git_success(&cwd, &["init"])?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let repo_root = resolve_git_repo(&cwd)?;
+    Ok(json!({
+        "cwd": cwd.display().to_string(),
+        "repoRoot": repo_root.display().to_string(),
+        "stdout": stdout,
+        "stderr": stderr,
+        "status": git_status_value(&cwd)?,
+    }))
+}
+
+#[tauri::command]
+fn git_local_checkout(payload: GitLocalCheckoutPayload) -> Result<Value, String> {
+    let cwd = resolve_existing_dir(&payload.cwd)?;
+    let repo_root = resolve_git_repo(&cwd)?;
+    let branch = payload.branch.trim().to_string();
+    if !is_safe_branch_name(&branch) {
+        return Err("Branch name is invalid".to_string());
+    }
+    let output = run_git_success(&cwd, &["checkout", branch.as_str()])?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    Ok(json!({
+        "cwd": cwd.display().to_string(),
+        "repoRoot": repo_root.display().to_string(),
+        "branch": branch,
+        "stdout": stdout,
+        "stderr": stderr,
+        "status": git_status_value(&cwd)?,
+    }))
+}
+
+#[tauri::command]
+fn git_local_commit(payload: GitLocalCommitPayload) -> Result<Value, String> {
+    let cwd = resolve_existing_dir(&payload.cwd)?;
+    let repo_root = resolve_git_repo(&cwd)?;
+    let message = payload.message.trim().to_string();
+    if message.is_empty() {
+        return Err("Commit message is required".to_string());
+    }
+    run_git_success(&cwd, &["add", "-A"])?;
+    let output = run_git_success(&cwd, &["commit", "-m", message.as_str()])?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    Ok(json!({
+        "cwd": cwd.display().to_string(),
+        "repoRoot": repo_root.display().to_string(),
+        "stdout": stdout,
+        "stderr": stderr,
+        "status": git_status_value(&cwd)?,
+    }))
 }
 
 fn spawn_stdout_pump(
@@ -2129,6 +2428,11 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             terminal_write,
             terminal_resize,
             terminal_stop,
+            git_local_status,
+            git_local_diff,
+            git_local_init,
+            git_local_checkout,
+            git_local_commit,
             task_get,
             task_cancel,
             task_pause,

@@ -14,8 +14,8 @@
 
 .session-workbench-grid {
   display: grid;
-  grid-template-columns: minmax(560px, 1fr) 10px clamp(320px, var(--session-workspace-pane-width, 30vw), 560px);
-  gap: 10px;
+  grid-template-columns: minmax(520px, 1fr) 1px clamp(520px, var(--session-workspace-pane-width, 46vw), 1120px);
+  gap: 0;
   align-items: start;
 }
 
@@ -29,11 +29,11 @@
   grid-column: 3;
   display: grid;
   align-content: start;
-  gap: 12px;
+  gap: 0;
   position: sticky;
-  top: 14px;
+  top: 8px;
   min-width: 0;
-  max-height: calc(100vh - var(--wb-composer-reserve, 0px) - 36px);
+  max-height: calc(100vh - var(--wb-composer-reserve, 0px) - 18px);
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -57,19 +57,19 @@
 .session-sidebar-resizer {
   grid-column: 2;
   align-self: stretch;
-  width: 10px;
+  width: 1px;
   min-height: calc(100vh - var(--wb-composer-reserve, 0px) - 36px);
   border: 0;
-  border-radius: 999px;
-  color: rgba(100, 116, 139, 0.74);
-  background: transparent;
+  border-radius: 0;
+  color: transparent;
+  background: rgba(15, 23, 42, 0.08);
   cursor: col-resize;
 }
 
 .session-sidebar-resizer:hover,
 .session-sidebar-resizer:focus-visible {
-  color: #1d4ed8;
-  background: rgba(29, 78, 216, 0.08);
+  color: transparent;
+  background: rgba(29, 78, 216, 0.38);
   outline: none;
 }
 
@@ -82,8 +82,10 @@
 }
 
 .session-sidebar-restore {
-  position: sticky;
-  top: 18px;
+  position: fixed;
+  top: 72px;
+  right: 18px;
+  z-index: 30;
   grid-column: 1 / -1;
   justify-self: end;
   display: inline-flex;
@@ -137,11 +139,14 @@
 }
 
 .session-workspace-pane {
-  border: 1px solid rgba(120, 98, 95, 0.14);
-  border-radius: 14px;
-  padding: 10px;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 12px 30px rgba(35, 27, 23, 0.07);
+  min-height: calc(100vh - var(--wb-composer-reserve, 0px) - 18px);
+  border: 0;
+  border-left: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 0;
+  padding: 0;
+  background: #ffffff;
+  box-shadow: none;
+  overflow: hidden;
 }
 
 .session-pane-chrome {
@@ -150,20 +155,21 @@
   z-index: 5;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-  padding-bottom: 8px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.78));
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  padding: 6px 10px;
+  background: #ffffff;
   backdrop-filter: blur(10px);
 }
 
 .session-pane-tabs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex-wrap: nowrap;
+  gap: 2px;
   align-items: center;
   min-width: 0;
-  overflow: visible;
+  overflow: auto hidden;
   scrollbar-width: none;
 }
 
@@ -175,17 +181,18 @@
 .session-pane-action {
   display: inline-flex;
   flex: none;
-  gap: 6px;
+  gap: 5px;
   align-items: center;
-  min-height: 30px;
+  min-height: 28px;
   border: 1px solid transparent;
   border-radius: 8px;
-  padding: 5px 7px;
+  padding: 4px 7px;
   color: #475467;
   background: transparent;
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .session-pane-tab[aria-selected="true"],
@@ -202,53 +209,59 @@
 }
 
 .session-pane-tab em {
-  min-width: 18px;
+  min-width: 17px;
   border-radius: 999px;
-  padding: 1px 5px;
+  padding: 1px 4px;
   color: #475467;
   background: rgba(15, 23, 42, 0.07);
-  font-size: 10px;
+  font-size: 9px;
   font-style: normal;
   text-align: center;
+}
+
+.session-pane-actions {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
 }
 
 .session-pane-body,
 .session-pane-runtime {
   display: grid;
-  gap: 12px;
+  gap: 0;
   min-width: 0;
+  padding: 0;
 }
 
 .session-pane-home {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
-  gap: 8px;
-  min-height: 220px;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 10px;
+  min-height: 360px;
   align-content: center;
-  padding: 10px;
+  justify-content: center;
+  padding: 24px;
 }
 
 .session-pane-home-card {
   position: relative;
   display: grid;
-  gap: 7px;
+  gap: 8px;
   place-items: center;
-  min-height: 102px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  min-height: 116px;
+  border: 0;
   border-radius: 8px;
-  padding: 12px 10px;
+  padding: 16px 12px;
   color: #344054;
-  background: rgba(248, 250, 252, 0.88);
+  background: #f4f4f5;
   text-align: center;
   cursor: pointer;
 }
 
 .session-pane-home-card:hover,
 .session-pane-home-card:focus-visible {
-  border-color: rgba(29, 78, 216, 0.26);
-  background: #ffffff;
+  background: #eeeeef;
   outline: none;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
 }
 
 .session-pane-home-card strong {
@@ -282,11 +295,11 @@
   display: grid;
   gap: 10px;
   min-width: 0;
-  border: 1px solid rgba(120, 98, 95, 0.14);
-  border-radius: 14px;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 8px 22px rgba(35, 27, 23, 0.06);
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .session-file-workspace-toolbar {
@@ -358,23 +371,38 @@
 
 .session-file-browser-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 12px;
+  grid-template-areas: "tree viewer";
+  grid-template-columns: minmax(220px, 32%) minmax(0, 1fr);
+  gap: 0;
   min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  background: #ffffff;
 }
 
-@container (min-width: 760px) {
-  .session-file-browser-layout {
-    grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+@container (max-width: 520px) {
+  .session-file-browser-layout,
+  .session-workspace-files-focused .session-file-browser-layout,
+  .session-workspace-pane:not(.session-workspace-files-focused) .session-file-browser-layout {
+    grid-template-areas:
+      "tree"
+      "viewer";
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .session-file-viewer {
+    border-top: 1px solid rgba(15, 23, 42, 0.08);
+    border-left: 0;
   }
 }
 
 .session-workspace-files-focused .session-file-browser-layout {
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  grid-template-columns: minmax(260px, 26%) minmax(0, 1fr);
 }
 
 .session-workspace-pane:not(.session-workspace-files-focused) .session-file-browser-layout {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(190px, 30%) minmax(0, 1fr);
 }
 
 .session-workspace-files-focused .session-file-viewer,
@@ -385,15 +413,18 @@
 .session-file-viewer {
   display: grid;
   gap: 10px;
+  grid-area: viewer;
   min-width: 0;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 12px;
+  min-height: 0;
+  border: 0;
+  border-left: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 0;
   padding: 12px;
-  background: rgba(255, 255, 255, 0.9);
+  background: #ffffff;
 }
 
 .session-workspace:not(.session-workspace-files-focused) .session-file-tree-pane {
-  order: -1;
+  order: initial;
 }
 
 .session-workspace:not(.session-workspace-files-focused) .session-file-viewer {
@@ -401,8 +432,8 @@
 }
 
 .session-workspace-pane:not(.session-workspace-files-focused) .session-file-workspace {
-  border-radius: 10px;
-  padding: 10px;
+  border-radius: 12px;
+  padding: 0;
   box-shadow: none;
 }
 
@@ -525,12 +556,14 @@
 
 .session-file-tree-pane {
   display: grid;
+  grid-area: tree;
   gap: 10px;
   min-width: 0;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 12px;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
   padding: 12px;
-  background: rgba(248, 250, 252, 0.76);
+  background: #f8fafc;
 }
 
 .session-file-search {
@@ -561,17 +594,18 @@
 }
 
 .session-file-tree-scroll {
-  max-height: min(52vh, 640px);
+  max-height: none;
   min-width: 0;
+  min-height: 0;
   overflow: auto;
 }
 
 .session-workspace:not(.session-workspace-files-focused) .session-file-tree-scroll {
-  max-height: min(32vh, 360px);
+  max-height: none;
 }
 
 .session-workspace-files-focused .session-file-tree-scroll {
-  max-height: calc(100vh - var(--wb-composer-reserve, 0px) - 360px);
+  max-height: none;
 }
 
 .session-file-tree-list {
@@ -1049,6 +1083,9 @@
 
   .session-file-browser-layout,
   .session-workspace-files-focused .session-file-browser-layout {
+    grid-template-areas:
+      "tree"
+      "viewer";
     grid-template-columns: 1fr;
   }
 
@@ -1459,14 +1496,14 @@
 
 .session-tool-dock {
   display: grid;
-  gap: 10px;
+  gap: 0;
   min-width: 0;
   overflow: visible;
-  border: 1px solid rgba(120, 98, 95, 0.14);
-  border-radius: 12px;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 8px 22px rgba(35, 27, 23, 0.06);
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .session-workspace-pane .session-tool-dock {
@@ -1605,11 +1642,11 @@
   gap: 10px;
   min-width: 0;
   overflow: auto;
-  max-height: min(70vh, calc(100vh - var(--wb-composer-reserve, 0px) - 120px));
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 10px;
-  padding: 10px;
-  background: rgba(248, 250, 252, 0.72);
+  max-height: calc(100vh - var(--wb-composer-reserve, 0px) - 58px);
+  border: 0;
+  border-radius: 0;
+  padding: 12px;
+  background: #ffffff;
 }
 
 .session-tool-panel-header {
@@ -1666,9 +1703,9 @@
   display: grid;
   gap: 6px;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 9px 10px;
-  background: rgba(248, 250, 252, 0.92);
+  background: #fafafa;
 }
 
 .session-tool-review-summary p {
@@ -1707,8 +1744,8 @@
 
 .session-file-browser {
   display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 34%);
+  gap: 12px;
   min-width: 0;
 }
 
@@ -1747,7 +1784,7 @@
 .session-tool-command-list {
   display: grid;
   gap: 6px;
-  max-height: 260px;
+  max-height: min(44vh, 420px);
   min-width: 0;
   overflow: auto;
   margin: 0;
@@ -1808,21 +1845,21 @@
 .session-file-preview {
   overflow: hidden;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 9px;
+  border-radius: 8px;
   padding: 9px;
-  background: rgba(255, 255, 255, 0.78);
+  background: #ffffff;
 }
 
 .session-file-preview pre,
 .session-tool-code-preview {
-  max-height: 300px;
+  max-height: min(58vh, 680px);
   min-width: 0;
   overflow: auto;
   margin: 0;
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 10px;
   color: #334155;
-  background: #f8fafc;
+  background: #fafafa;
   font-family: var(--session-mono);
   font-size: 11px;
   line-height: 1.5;
@@ -1832,16 +1869,16 @@
 
 .session-diff-viewer {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
-  max-height: 420px;
+  max-height: min(72vh, 860px);
   overflow: auto;
 }
 
 .session-diff-file {
   overflow: hidden;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 9px;
+  border-radius: 7px;
   background: #ffffff;
 }
 
@@ -1853,7 +1890,7 @@
   min-width: 0;
   border-bottom: 1px solid rgba(15, 23, 42, 0.08);
   padding: 7px 9px;
-  background: rgba(248, 250, 252, 0.92);
+  background: #f8fafc;
 }
 
 .session-diff-file header strong {
@@ -1879,13 +1916,13 @@
   padding: 0;
   list-style: none;
   font-family: var(--session-mono);
-  font-size: 11px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .session-diff-line {
   display: grid;
-  grid-template-columns: 36px 36px minmax(0, 1fr);
+  grid-template-columns: 44px 44px minmax(0, 1fr);
   min-width: 0;
 }
 
@@ -1901,7 +1938,7 @@
 .session-diff-line code {
   display: block;
   min-width: 0;
-  padding: 0 9px;
+  padding: 1px 10px;
   color: #334155;
   white-space: pre;
 }
@@ -1937,13 +1974,16 @@
 
 .session-local-terminal {
   display: grid;
-  gap: 8px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 0;
   min-width: 0;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 10px;
-  padding: 9px;
-  background: #0f172a;
-  color: #e5e7eb;
+  min-height: calc(100vh - var(--wb-composer-reserve, 0px) - 128px);
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 8px;
+  padding: 0;
+  background: #ffffff;
+  color: #1f2937;
+  overflow: hidden;
 }
 
 .session-local-terminal-header {
@@ -1952,6 +1992,9 @@
   align-items: start;
   justify-content: space-between;
   min-width: 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  padding: 7px 10px;
+  background: #fafafa;
 }
 
 .session-local-terminal-header > div {
@@ -1961,21 +2004,35 @@
 }
 
 .session-local-terminal-header strong,
-.session-local-terminal-header small {
+.session-local-terminal-header small,
+.session-local-terminal-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.session-local-terminal-title {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+}
+
 .session-local-terminal-header strong {
-  color: #f8fafc;
+  color: #111827;
   font-size: 13px;
 }
 
 .session-local-terminal-header small {
-  color: #94a3b8;
+  color: #64748b;
   font-family: var(--session-mono);
   font-size: 10px;
+}
+
+.session-local-terminal-controls {
+  display: inline-flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
 }
 
 .session-local-terminal-header span {
@@ -1983,29 +2040,29 @@
   border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 999px;
   padding: 3px 7px;
-  color: #cbd5e1;
+  color: #64748b;
   font-size: 10px;
   font-weight: 750;
 }
 
 .session-local-terminal-header span[data-status="running"] {
   border-color: rgba(34, 197, 94, 0.35);
-  color: #bbf7d0;
+  color: #166534;
 }
 
 .session-local-terminal-output {
-  min-height: 150px;
-  max-height: 260px;
+  min-height: 0;
+  max-height: none;
   min-width: 0;
   overflow: auto;
   margin: 0;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 8px;
-  padding: 10px;
-  color: #e2e8f0;
-  background: #020617;
+  border: 0;
+  border-radius: 0;
+  padding: 12px;
+  color: #111827;
+  background: #ffffff;
   font-family: var(--session-mono);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -2013,18 +2070,21 @@
 
 .session-local-terminal-input {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 7px;
   min-width: 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  padding: 8px;
+  background: #fafafa;
 }
 
 .session-local-terminal-input input {
   min-width: 0;
-  border: 1px solid rgba(148, 163, 184, 0.22);
+  border: 1px solid rgba(15, 23, 42, 0.1);
   border-radius: 8px;
   padding: 7px 9px;
-  color: #f8fafc;
-  background: rgba(15, 23, 42, 0.96);
+  color: #111827;
+  background: #ffffff;
   font-family: var(--session-mono);
   font-size: 12px;
 }
@@ -2154,6 +2214,101 @@
   min-width: 0;
 }
 
+.git-workspace-toolbar {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.8fr) minmax(170px, 1fr) auto auto;
+  gap: 8px;
+  align-items: end;
+  border: 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 0;
+  padding: 0 0 9px;
+  background: transparent;
+}
+
+.git-workspace-branch-title {
+  align-self: center;
+  overflow: hidden;
+  margin: 0;
+  color: #111827;
+  font-family: var(--session-mono);
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-workspace-branch {
+  position: relative;
+  display: inline-flex;
+  flex: 1 1 180px;
+  min-width: 180px;
+  align-items: center;
+}
+
+.git-workspace-branch label {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+}
+
+.git-workspace-branch label span {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.git-workspace-branch select {
+  width: 100%;
+  appearance: none;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  padding: 6px 26px 6px 8px;
+  color: #111827;
+  background: #f8fafc;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.git-workspace-branch > svg {
+  position: absolute;
+  right: 6px;
+  bottom: 7px;
+  color: #667085;
+  pointer-events: none;
+}
+
+.git-workspace-toolbar-stats,
+.git-workspace-toolbar-actions {
+  display: inline-flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+}
+
+.git-workspace-line-stat {
+  color: #16a34a;
+  font-family: var(--session-mono);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.git-workspace-status-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.git-workspace-status-line span {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: #ffffff;
+}
+
 .git-workspace-panel-header > div {
   display: grid;
   gap: 3px;
@@ -2193,9 +2348,9 @@
   gap: 5px;
   min-width: 0;
   border: 1px solid rgba(15, 23, 42, 0.07);
-  border-radius: 9px;
+  border-radius: 8px;
   padding: 8px;
-  background: rgba(255, 255, 255, 0.68);
+  background: #ffffff;
 }
 
 .git-workspace-stats span,
@@ -2242,6 +2397,69 @@
   min-width: 0;
 }
 
+.git-worktree-actions:empty {
+  display: none;
+}
+
+.git-workspace-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 28%);
+  gap: 0;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.git-workspace-diff-pane {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: #ffffff;
+}
+
+.git-workspace-diff-head {
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  padding: 8px 10px;
+  background: #fafafa;
+}
+
+.git-workspace-diff-head > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.git-workspace-file-pane {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid rgba(15, 23, 42, 0.08);
+  padding: 10px;
+  background: #f8fafc;
+}
+
+.git-workspace-empty-diff {
+  display: grid;
+  gap: 5px;
+  min-height: 430px;
+  align-content: center;
+  justify-items: center;
+  color: #64748b;
+  text-align: center;
+}
+
+.git-workspace-empty-diff strong {
+  color: #1f2937;
+  font-size: 14px;
+}
+
 .git-workspace-section-head {
   display: flex;
   gap: 8px;
@@ -2254,7 +2472,7 @@
 .git-workspace-verification-list {
   display: grid;
   gap: 6px;
-  max-height: 260px;
+  max-height: min(48vh, 520px);
   min-width: 0;
   overflow: auto;
   margin: 0;
@@ -2269,13 +2487,29 @@
   align-items: center;
   min-width: 0;
   border: 1px solid rgba(15, 23, 42, 0.06);
-  border-radius: 8px;
+  border-radius: 7px;
   padding: 7px;
-  background: rgba(248, 250, 252, 0.72);
+  background: #fafafa;
 }
 
 .git-workspace-file-list li {
   grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.git-workspace-file-list button {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.git-workspace-file-list button:hover strong {
+  color: #1d4ed8;
 }
 
 .git-workspace-verification-list li {
@@ -2308,6 +2542,66 @@
   font-weight: 800;
   text-align: right;
   white-space: nowrap;
+}
+
+.git-workspace-commit-box input {
+  min-width: 0;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 7px;
+  padding: 7px 8px;
+  color: #111827;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.git-workspace-review-meta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.git-workspace-review-meta span {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.git-workspace-review-meta strong,
+.git-workspace-review-meta small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container (max-width: 720px) {
+  .git-workspace-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .git-workspace-file-pane {
+    border-top: 1px solid rgba(15, 23, 42, 0.08);
+    border-left: 0;
+  }
+}
+
+@container (max-width: 620px) {
+  .session-file-browser {
+    grid-template-columns: 1fr;
+  }
+
+  .git-workspace-toolbar,
+  .session-tool-panel-header {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .git-workspace-toolbar-actions {
+    flex-wrap: wrap;
+  }
 }
 
 .session-runtime-lane-items {

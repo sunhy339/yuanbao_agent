@@ -530,7 +530,7 @@ export function buildCommandOutput(item: RuntimeTimelineItem) {
     haystack.includes("command is not allowed by command allowlist") ||
     haystack.includes("permission_denied") ||
     haystack.includes('"action": "request_permission"')
-      ? "命令没有真正执行：运行时策略拦截了这条命令。需要允许该命令，或改用当前白名单允许的等价命令。"
+      ? "命令没有真正执行：运行时策略要求先审批这条命令。允许后会按原命令继续执行。"
       : null;
   const sections = compactMeta([
     policyHint,

@@ -73,15 +73,50 @@ def test_run_command_denylist_rejects_before_approval(tmp_path: Path) -> None:
         store.close()
 
 
-def test_run_command_default_allowlist_rejects_non_developer_command(tmp_path: Path) -> None:
+def test_run_command_default_policy_sends_unknown_command_to_approval(tmp_path: Path) -> None:
     store, run_command, ctx = _make_run_command(tmp_path)
+    try:
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": "python main.py",
+            }
+        )
+        assert result["status"] == "approval_required"
+        assert result["command"] == "python main.py"
+    finally:
+        store.close()
+
+
+def test_run_command_default_policy_sends_git_init_to_approval(tmp_path: Path) -> None:
+    store, run_command, ctx = _make_run_command(tmp_path)
+    try:
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": "git init",
+            }
+        )
+        assert result["status"] == "approval_required"
+        assert result["command"] == "git init"
+    finally:
+        store.close()
+
+
+def test_run_command_configured_allowlist_still_rejects_unmatched_command(tmp_path: Path) -> None:
+    store, run_command, ctx = _make_run_command(
+        tmp_path,
+        {"tools": {"runCommand": {"allowedCommands": ["python -m pytest*"]}}},
+    )
     try:
         with pytest.raises(ValueError, match="allowlist"):
             run_command(
                 {
                     "workspaceRoot": str(ctx["workspace_root"]),
                     "taskId": ctx["task_id"],
-                    "command": "curl https://example.com",
+                    "command": "python main.py",
                 }
             )
     finally:

@@ -8,6 +8,7 @@ import type {
   SessionWorkspacePatch,
 } from "./types";
 import {
+  compactText,
   compactMeta,
   isBackgroundProbeCommand,
   isSuccessfulRuntimeStatus,
@@ -143,17 +144,21 @@ function buildDigestSummary(
   fileCount: number,
   commandCount: number,
   verificationCount: number,
+  options: { suppressFinalAnswer?: boolean } = {},
 ) {
   if (activeTask) {
     const phase = getTaskPhase(activeTask);
     if (phase === "failed") {
       return "发现失败的验证或命令，需要继续处理后再收口。";
     }
-    if (activeTask.resultSummary) {
+    if (activeTask.resultSummary && !options.suppressFinalAnswer) {
       return activeTask.resultSummary;
     }
-    if (activeTask.summary) {
+    if (activeTask.summary && !options.suppressFinalAnswer) {
       return activeTask.summary;
+    }
+    if (options.suppressFinalAnswer && phase === "completed") {
+      return "任务已完成，下面可以查看变更和验证结果。";
     }
     if (["completed", "failed", "waiting"].includes(phase)) {
       return buildTaskProgressSummary(activeTask);
@@ -182,11 +187,13 @@ function buildDigestSummary(
 
 export const ConversationTaskDigest = memo(function ConversationTaskDigest({
   activeTask,
+  latestAssistantMessage,
   patches,
   backgroundJobs,
   composerContext,
 }: {
   activeTask?: SessionWorkspaceActiveTask | null;
+  latestAssistantMessage?: string | null;
   patches?: SessionWorkspacePatch[];
   backgroundJobs?: SessionWorkspaceBackgroundJob[];
   composerContext?: SessionWorkspaceComposerContext;
@@ -201,7 +208,16 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
   }
 
   const phase = getTaskPhase(activeTask);
-  const summary = buildDigestSummary(activeTask, files.length, commands.length, verifications.length);
+  const normalizedSummary = compactText(activeTask?.resultSummary || activeTask?.summary || "", 1000).trim();
+  const normalizedAssistant = compactText(latestAssistantMessage || "", 1000).trim();
+  const suppressFinalAnswer = Boolean(
+    normalizedSummary &&
+      normalizedAssistant &&
+      (normalizedSummary === normalizedAssistant || normalizedAssistant.includes(normalizedSummary)),
+  );
+  const summary = buildDigestSummary(activeTask, files.length, commands.length, verifications.length, {
+    suppressFinalAnswer,
+  });
   const title = activeTask?.goal || "最近工作";
   const contextBits = compactMeta([
     composerContext?.cwd || activeTask?.activeWorktree?.worktreePath || null,

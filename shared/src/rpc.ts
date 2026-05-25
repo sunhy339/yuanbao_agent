@@ -249,6 +249,65 @@ export interface TerminalEvent {
   ts?: number;
 }
 
+export interface GitLocalParams {
+  cwd: string;
+}
+
+export interface GitLocalDiffParams extends GitLocalParams {
+  path?: string;
+}
+
+export interface GitLocalCheckoutParams extends GitLocalParams {
+  branch: string;
+}
+
+export interface GitLocalCommitParams extends GitLocalParams {
+  message: string;
+}
+
+export interface GitLocalBranchRecord {
+  name: string;
+  current: boolean;
+}
+
+export interface GitLocalStatusFile {
+  path: string;
+  status: string;
+  raw: string;
+}
+
+export interface GitLocalStatusResult {
+  cwd: string;
+  repoRoot: string;
+  branch: string;
+  upstream?: string;
+  ahead?: number;
+  behind?: number;
+  dirtyFiles: number;
+  files: GitLocalStatusFile[];
+  branches: GitLocalBranchRecord[];
+  clean: boolean;
+  rawStatus: string;
+}
+
+export interface GitLocalDiffResult {
+  cwd: string;
+  repoRoot: string;
+  diff: string;
+  stat: string;
+  files: string[];
+  truncated: boolean;
+}
+
+export interface GitLocalCommandResult {
+  cwd: string;
+  repoRoot: string;
+  branch?: string;
+  stdout: string;
+  stderr: string;
+  status?: GitLocalStatusResult;
+}
+
 export interface SessionCreateParams {
   workspaceId: Identifier;
   title: string;

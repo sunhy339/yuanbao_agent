@@ -44,7 +44,7 @@ describe("LocalTerminalPanel", () => {
       terminal: {
         id: "term_1",
         cwd: "D:/project",
-        shell: "powershell.exe",
+        shell: "cmd.exe",
         status: "running",
         startedAt: 1,
       },
@@ -53,7 +53,7 @@ describe("LocalTerminalPanel", () => {
       terminal: {
         id: "term_1",
         cwd: "D:/project",
-        shell: "powershell.exe",
+        shell: "cmd.exe",
         status: "running",
         startedAt: 1,
       },
@@ -64,7 +64,7 @@ describe("LocalTerminalPanel", () => {
     await user.click(screen.getByRole("button", { name: /启动/ }));
     expect(terminalStart).toHaveBeenCalledWith({ cwd: "D:/project", rows: 30, cols: 110 });
 
-    await waitFor(() => expect(screen.getByText(/Started powershell\.exe/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Started cmd\.exe/)).toBeInTheDocument());
     terminalHandler?.({
       terminalId: "term_1",
       kind: "output",
@@ -75,7 +75,37 @@ describe("LocalTerminalPanel", () => {
 
     await user.type(screen.getByLabelText("终端输入"), "pwd");
     fireEvent.keyDown(screen.getByLabelText("终端输入"), { key: "Enter" });
-    expect(terminalWrite).toHaveBeenCalledWith({ terminalId: "term_1", data: "pwd\r\n" });
+    expect(terminalWrite).toHaveBeenCalledWith({ terminalId: "term_1", data: "pwd\n" });
+  });
+
+  it("uses carriage return for PowerShell terminals", async () => {
+    const user = userEvent.setup();
+    terminalStart.mockResolvedValueOnce({
+      terminal: {
+        id: "term_ps",
+        cwd: "D:/project",
+        shell: "powershell.exe",
+        status: "running",
+        startedAt: 1,
+      },
+    });
+    terminalWrite.mockResolvedValueOnce({
+      terminal: {
+        id: "term_ps",
+        cwd: "D:/project",
+        shell: "powershell.exe",
+        status: "running",
+        startedAt: 1,
+      },
+    });
+
+    render(<LocalTerminalPanel workspaceRoot="D:/project" />);
+
+    await user.click(screen.getByRole("button", { name: /启动/ }));
+    await user.type(screen.getByLabelText("终端输入"), "dir");
+    fireEvent.keyDown(screen.getByLabelText("终端输入"), { key: "Enter" });
+
+    expect(terminalWrite).toHaveBeenCalledWith({ terminalId: "term_ps", data: "dir\r" });
   });
 
   it("stops the terminal session", async () => {
@@ -84,7 +114,7 @@ describe("LocalTerminalPanel", () => {
       terminal: {
         id: "term_1",
         cwd: "D:/project",
-        shell: "powershell.exe",
+        shell: "cmd.exe",
         status: "running",
         startedAt: 1,
       },
@@ -93,7 +123,7 @@ describe("LocalTerminalPanel", () => {
       terminal: {
         id: "term_1",
         cwd: "D:/project",
-        shell: "powershell.exe",
+        shell: "cmd.exe",
         status: "exited",
         startedAt: 1,
       },

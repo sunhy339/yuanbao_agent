@@ -22,7 +22,7 @@ export interface LocalTerminalPanelProps {
 function displayWorkspace(path?: string) {
   const normalized = String(path ?? "").trim();
   if (!normalized) {
-    return "当前工作区";
+    return "workspace";
   }
   return normalized.replace(/\\/g, "/");
 }
@@ -61,6 +61,11 @@ function appendOutput(lines: TerminalLine[], event: TerminalEvent): TerminalLine
   return lines;
 }
 
+function newlineForShell(shell?: string) {
+  const normalized = String(shell ?? "").toLowerCase();
+  return normalized.includes("powershell") || normalized.includes("pwsh") ? "\r" : "\n";
+}
+
 export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTerminalPanelProps) {
   const [terminal, setTerminal] = useState<TerminalSessionRecord | null>(null);
   const [lines, setLines] = useState<TerminalLine[]>([]);
@@ -72,6 +77,10 @@ export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTermi
   const cwd = workspaceRoot || workspaceLabel || "";
   const isRunning = terminal?.status === "running";
   const subtitle = useMemo(() => displayWorkspace(cwd), [cwd]);
+  const prompt = useMemo(() => {
+    const path = displayWorkspace(cwd);
+    return path.match(/^[A-Za-z]:\//) ? `${path}>` : `${path} $`;
+  }, [cwd]);
 
   useEffect(() => {
     let disposed = false;
@@ -159,16 +168,8 @@ export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTermi
     }
     setInput("");
     setError(null);
-    setLines((current) => [
-      ...current,
-      {
-        id: `${terminal.id}-${Date.now()}-input`,
-        text: `> ${text}\n`,
-        kind: "output",
-      },
-    ]);
     try {
-      await terminalClient.terminalWrite({ terminalId: terminal.id, data: `${text}\r\n` });
+      await terminalClient.terminalWrite({ terminalId: terminal.id, data: `${text}${newlineForShell(terminal.shell)}` });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -178,13 +179,40 @@ export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTermi
     <section className="session-local-terminal" aria-label="本地终端">
       <header className="session-local-terminal-header">
         <div>
-          <strong>本地终端</strong>
+          <span className="session-local-terminal-title">本地终端</span>
+          <strong>{terminal?.shell || "Terminal"}</strong>
           <small title={subtitle}>{subtitle}</small>
         </div>
-        <span data-status={terminal?.status ?? "idle"}>{terminal?.status === "running" ? "运行中" : terminal ? "已停止" : "未启动"}</span>
+        <div className="session-local-terminal-controls">
+          <span data-status={terminal?.status ?? "idle"}>{terminal?.status === "running" ? "运行中" : terminal ? "已停止" : "未启动"}</span>
+          <Button
+            size="xs"
+            variant="secondary"
+            loading={busy && !isRunning}
+            disabled={isRunning}
+            onClick={() => {
+              void startTerminal();
+            }}
+          >
+            <Play size={13} aria-hidden="true" />
+            启动
+          </Button>
+          <Button
+            size="xs"
+            variant="secondary"
+            loading={busy && isRunning}
+            disabled={!terminal}
+            onClick={() => {
+              void stopTerminal();
+            }}
+          >
+            <Square size={13} aria-hidden="true" />
+            停止
+          </Button>
+        </div>
       </header>
       <pre className="session-local-terminal-output" aria-label="本地终端输出" ref={outputRef}>
-        {lines.length ? lines.map((line) => line.text).join("") : "启动后会显示真实 PTY 输出。"}
+        {lines.length ? lines.map((line) => line.text).join("") : `${prompt} `}
       </pre>
       {error ? <p className="session-tool-error">{error}</p> : null}
       <div className="session-local-terminal-input">
@@ -201,42 +229,9 @@ export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTermi
           placeholder={isRunning ? "输入命令后按 Enter" : "先启动终端"}
           value={input}
         />
-        <Button
-          size="xs"
-          variant="secondary"
-          disabled={!isRunning || !input.trim()}
-          onClick={() => {
-            void sendInput();
-          }}
-        >
+        <Button size="xs" variant="secondary" disabled={!isRunning || !input.trim()} onClick={() => void sendInput()}>
           <Send size={13} aria-hidden="true" />
           发送
-        </Button>
-      </div>
-      <div className="session-tool-actions">
-        <Button
-          size="xs"
-          variant="secondary"
-          loading={busy && !isRunning}
-          disabled={isRunning}
-          onClick={() => {
-            void startTerminal();
-          }}
-        >
-          <Play size={13} aria-hidden="true" />
-          启动
-        </Button>
-        <Button
-          size="xs"
-          variant="secondary"
-          loading={busy && isRunning}
-          disabled={!terminal}
-          onClick={() => {
-            void stopTerminal();
-          }}
-        >
-          <Square size={13} aria-hidden="true" />
-          停止
         </Button>
         <Button
           size="xs"

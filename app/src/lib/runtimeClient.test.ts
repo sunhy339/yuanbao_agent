@@ -156,9 +156,9 @@ describe("RuntimeClient desktop transport", () => {
     });
 
     invokeMock.mockResolvedValueOnce({ terminal });
-    await expect(client.terminalWrite({ terminalId: "term_1", data: "dir\r\n" })).resolves.toEqual({ terminal });
+    await expect(client.terminalWrite({ terminalId: "term_1", data: "dir\r" })).resolves.toEqual({ terminal });
     expect(invokeMock).toHaveBeenLastCalledWith("terminal_write", {
-      payload: { terminalId: "term_1", data: "dir\r\n" },
+      payload: { terminalId: "term_1", data: "dir\r" },
     });
 
     invokeMock.mockResolvedValueOnce({ terminal });
@@ -180,6 +180,58 @@ describe("RuntimeClient desktop transport", () => {
     expect(listenMock).toHaveBeenLastCalledWith("terminal://event", expect.any(Function));
     unsubscribe();
     expect(unlisten).toHaveBeenCalled();
+  });
+
+  it("wraps local git management commands for the desktop workspace", async () => {
+    const client = new RuntimeClient();
+    const status = {
+      cwd: "D:/project",
+      repoRoot: "D:/project",
+      branch: "main",
+      dirtyFiles: 1,
+      files: [{ path: "src/app.ts", status: "M", raw: " M src/app.ts" }],
+      branches: [{ name: "main", current: true }],
+      clean: false,
+      rawStatus: "## main\n M src/app.ts\n",
+    };
+
+    invokeMock.mockResolvedValueOnce(status);
+    await expect(client.gitLocalStatus({ cwd: "D:/project" })).resolves.toEqual(status);
+    expect(invokeMock).toHaveBeenLastCalledWith("git_local_status", {
+      payload: { cwd: "D:/project" },
+    });
+
+    const diff = {
+      cwd: "D:/project",
+      repoRoot: "D:/project",
+      diff: "diff --git a/src/app.ts b/src/app.ts\n",
+      stat: " src/app.ts | 1 +",
+      files: ["src/app.ts"],
+      truncated: false,
+    };
+    invokeMock.mockResolvedValueOnce(diff);
+    await expect(client.gitLocalDiff({ cwd: "D:/project", path: "src/app.ts" })).resolves.toEqual(diff);
+    expect(invokeMock).toHaveBeenLastCalledWith("git_local_diff", {
+      payload: { cwd: "D:/project", path: "src/app.ts" },
+    });
+
+    invokeMock.mockResolvedValueOnce({ cwd: "D:/project", repoRoot: "D:/project", stdout: "Initialized", stderr: "", status });
+    await expect(client.gitLocalInit({ cwd: "D:/project" })).resolves.toMatchObject({ stdout: "Initialized" });
+    expect(invokeMock).toHaveBeenLastCalledWith("git_local_init", {
+      payload: { cwd: "D:/project" },
+    });
+
+    invokeMock.mockResolvedValueOnce({ cwd: "D:/project", repoRoot: "D:/project", branch: "feature", stdout: "", stderr: "", status });
+    await expect(client.gitLocalCheckout({ cwd: "D:/project", branch: "feature" })).resolves.toMatchObject({ branch: "feature" });
+    expect(invokeMock).toHaveBeenLastCalledWith("git_local_checkout", {
+      payload: { cwd: "D:/project", branch: "feature" },
+    });
+
+    invokeMock.mockResolvedValueOnce({ cwd: "D:/project", repoRoot: "D:/project", stdout: "[main abc] Update", stderr: "", status });
+    await expect(client.gitLocalCommit({ cwd: "D:/project", message: "Update" })).resolves.toMatchObject({ stdout: "[main abc] Update" });
+    expect(invokeMock).toHaveBeenLastCalledWith("git_local_commit", {
+      payload: { cwd: "D:/project", message: "Update" },
+    });
   });
 
   it("wraps workspace focus update payload for Tauri command arguments", async () => {

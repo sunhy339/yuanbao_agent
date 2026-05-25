@@ -449,4 +449,11 @@ export type ConversationActivityItem =
       order: number;
       time?: number;
       runtime: RuntimeTimelineItem;
+    }
+  | {
+      id: string;
+      kind: "worklog";
+      order: number;
+      time?: number;
+      runtimeItems: RuntimeTimelineItem[];
     };

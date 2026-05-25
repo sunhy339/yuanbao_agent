@@ -720,6 +720,54 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText(/"command":"npm test"/)).not.toBeInTheDocument();
   });
 
+  it("groups completed command and tool activity into a readable worklog", async () => {
+    const user = userEvent.setup();
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Check workspace", createdAt: 1 }]}
+        toolCalls={[
+          {
+            id: "tool_1",
+            toolName: "run_command",
+            status: "completed",
+            resultSummary: "Command completed with exit 0.",
+            rawInput: '{"command":"python -m pytest -q","cwd":"app"}',
+            durationMs: 900,
+            time: 2,
+          },
+          {
+            id: "tool_2",
+            toolName: "run_command",
+            status: "completed",
+            resultSummary: "Command completed with exit 0.",
+            rawInput: '{"command":"python -m py_compile app.py","cwd":"app"}',
+            durationMs: 120,
+            time: 3,
+          },
+          {
+            id: "tool_3",
+            toolName: "git_status",
+            status: "completed",
+            resultSummary: "Workspace clean.",
+            durationMs: 80,
+            time: 4,
+          },
+        ]}
+      />,
+    );
+
+    const worklog = screen.getByLabelText("运行摘要");
+    expect(within(worklog).getByText("已运行 2 条命令")).toBeInTheDocument();
+    expect(within(worklog).getAllByText(/python -m pytest -q/).length).toBeGreaterThan(0);
+    expect(within(worklog).getAllByText(/python -m py_compile app.py/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("heading", { name: "python -m pytest -q" })).not.toBeInTheDocument();
+
+    await user.click(within(worklog).getByRole("button", { name: /已运行 2 条命令/ }));
+    expect(within(worklog).getAllByText(/Command completed with exit 0/).length).toBeGreaterThan(0);
+  });
+
   it("keeps completed background read_file rows out of the main activity stream", () => {
     render(
       <SessionWorkspace

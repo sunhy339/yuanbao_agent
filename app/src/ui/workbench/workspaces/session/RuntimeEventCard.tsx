@@ -5,6 +5,7 @@ import { formatStatusLabel } from "../../../copy";
 import type { RuntimeTimelineItem, DiffLine } from "./types";
 import { useTickWhen } from "./useTick";
 import {
+  compactMeta,
   compactText,
   getRuntimeKindLabel,
   getStatusTone,
@@ -155,6 +156,121 @@ function PatchDiffDetail({
   );
 }
 
+interface RuntimeFileChangeRow {
+  path: string;
+  status?: string;
+  additions?: number;
+  deletions?: number;
+  reason?: string;
+}
+
+function parseRuntimeFileChangeRows(code?: string): RuntimeFileChangeRow[] {
+  if (!code) {
+    return [];
+  }
+
+  return code
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const statusMatch = /^(added|modified|deleted|changed)\s+/i.exec(line);
+      const status = statusMatch?.[1]?.toLowerCase();
+      const rest = statusMatch ? line.slice(statusMatch[0].length).trim() : line;
+      const parts = rest.split(/\s+-\s+/);
+      const path = parts.shift()?.trim() ?? rest;
+      const detail = parts.join(" - ");
+      const additions = /\+(\d+)/.exec(detail)?.[1];
+      const deletions = /-(\d+)/.exec(detail)?.[1];
+      const reason = detail
+        .replace(/\+\d+/g, "")
+        .replace(/-\d+/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      return {
+        path,
+        status,
+        additions: additions ? Number(additions) : undefined,
+        deletions: deletions ? Number(deletions) : undefined,
+        reason: reason || undefined,
+      };
+    })
+    .filter((row) => Boolean(row.path));
+}
+
+function formatFileChangeStatus(status?: string) {
+  if (status === "added") {
+    return "新增";
+  }
+  if (status === "deleted") {
+    return "删除";
+  }
+  if (status === "modified" || status === "changed") {
+    return "修改";
+  }
+  return "变更";
+}
+
+function RuntimeFileChangeCard({
+  item,
+  expanded,
+  onToggleExpanded,
+}: {
+  item: RuntimeTimelineItem;
+  expanded: boolean;
+  onToggleExpanded(): void;
+}) {
+  const rows = parseRuntimeFileChangeRows(item.code);
+  const visibleRows = expanded ? rows : rows.slice(0, 5);
+  const fileCount = rows.length || item.meta?.find((entry) => /个文件/.test(entry)) || "若干";
+  const title = typeof fileCount === "number" ? `已记录 ${fileCount} 个文件改动` : `已记录 ${fileCount}改动`;
+
+  return (
+    <article
+      aria-label="代码改动摘要"
+      className="runtime-file-change-card"
+      data-activity-kind="runtime"
+      data-kind={item.kind}
+      data-status={item.status ?? "recorded"}
+    >
+      <button
+        type="button"
+        className="runtime-file-change-head"
+        aria-expanded={expanded}
+        onClick={onToggleExpanded}
+      >
+        <span className="runtime-file-change-icon" aria-hidden="true">+</span>
+        <span>
+          <strong>{title}</strong>
+          <small>{compactText(item.summary, 140) || "这轮任务产生了文件改动，可在右侧审查面板查看 diff。"}</small>
+        </span>
+        <StatusBadge label={formatStatusLabel(item.status ?? "recorded")} tone={getStatusTone(item.status)} compact />
+        <i aria-hidden="true">{expanded ? "^" : "v"}</i>
+      </button>
+      {visibleRows.length ? (
+        <div className="runtime-file-change-list">
+          {visibleRows.map((row) => (
+            <div className="runtime-file-change-row" key={`${row.status}:${row.path}`}>
+              <strong>{row.path}</strong>
+              <span>{formatFileChangeStatus(row.status)}</span>
+              {row.additions !== undefined || row.deletions !== undefined ? (
+                <em>
+                  {compactMeta([
+                    row.additions !== undefined ? `+${row.additions}` : undefined,
+                    row.deletions !== undefined ? `-${row.deletions}` : undefined,
+                  ]).join(" ")}
+                </em>
+              ) : null}
+              {expanded && row.reason ? <small>{row.reason}</small> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {!expanded && rows.length > visibleRows.length ? <p className="runtime-file-change-more">另有 {rows.length - visibleRows.length} 个文件。</p> : null}
+    </article>
+  );
+}
+
 export const RuntimeEventCard = memo(function RuntimeEventCard({
   item,
   onApprove,
@@ -192,6 +308,16 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
   const canCopyCommandOutput = Boolean(item.kind === "command" && onCopyRuntimeText && commandOutput.trim());
   const canCopyTraceDetail = Boolean(item.kind === "trace" && onCopyRuntimeText && item.code?.trim());
   const hasCommandActions = canRefreshCommand || canStopCommand || canCopyCommandOutput;
+
+  if (item.kind === "task" && item.id.startsWith("task-files:")) {
+    return (
+      <RuntimeFileChangeCard
+        item={item}
+        expanded={expanded}
+        onToggleExpanded={() => setExpanded((current) => !current)}
+      />
+    );
+  }
 
   if (item.kind === "approval" && item.sourceId) {
     return (

@@ -156,7 +156,9 @@
 }
 
 .session-workspace-chat-only .runtime-event-card,
-.session-workspace-chat-only .runtime-event-v2-card {
+.session-workspace-chat-only .runtime-event-v2-card,
+.session-workspace-chat-only .runtime-worklog-card,
+.session-workspace-chat-only .runtime-file-change-card {
   width: min(860px, 88%);
   justify-self: start;
   border: 0;
@@ -167,6 +169,234 @@
 
 .session-workspace-chat-only .runtime-event-v2-card {
   gap: 6px;
+}
+
+.runtime-worklog-card,
+.runtime-file-change-card {
+  display: grid;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+}
+
+.runtime-worklog-head,
+.runtime-file-change-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  border: 0;
+  padding: 10px 12px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.runtime-worklog-head:hover,
+.runtime-file-change-head:hover {
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.runtime-worklog-dot,
+.runtime-worklog-row-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #16a34a;
+}
+
+.runtime-worklog-card[data-status="running"] .runtime-worklog-dot,
+.runtime-worklog-card[data-status="running"] .runtime-worklog-row-dot {
+  background: #0284c7;
+}
+
+.runtime-worklog-card[data-status="failed"] .runtime-worklog-dot,
+.runtime-worklog-card[data-status="failed"] .runtime-worklog-row-dot {
+  background: #dc2626;
+}
+
+.runtime-worklog-card[data-status="failed"],
+.runtime-file-change-card[data-status="failed"],
+.runtime-file-change-card[data-status="error"] {
+  border-color: rgba(225, 29, 72, 0.22);
+  background: rgba(255, 251, 251, 0.96);
+}
+
+.runtime-worklog-copy,
+.runtime-file-change-head > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.runtime-worklog-copy strong,
+.runtime-file-change-head strong {
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-worklog-copy small,
+.runtime-file-change-head small,
+.runtime-file-change-more {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.runtime-worklog-head i,
+.runtime-file-change-head i {
+  color: #667085;
+  font-style: normal;
+  font-size: 11px;
+}
+
+.runtime-worklog-list,
+.runtime-file-change-list {
+  display: grid;
+  gap: 6px;
+  padding: 0 12px 12px 29px;
+}
+
+.runtime-worklog-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: start;
+  min-width: 0;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  padding-top: 7px;
+}
+
+.runtime-worklog-row:first-child {
+  border-top: 0;
+}
+
+.runtime-worklog-row-main {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.runtime-worklog-row-main strong {
+  overflow: hidden;
+  color: #1f2937;
+  font-family: var(--session-mono);
+  font-size: 12px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-worklog-row-main small {
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.runtime-worklog-row-main pre {
+  max-height: 180px;
+  margin: 6px 0 0;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 8px;
+  padding: 9px 10px;
+  overflow: auto;
+  background: #f6f7f8;
+  color: #26313f;
+  font-family: var(--session-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.runtime-worklog-row-actions {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.runtime-worklog-more {
+  justify-self: start;
+  margin: -2px 0 12px 29px;
+  border: 0;
+  padding: 0;
+  color: #2563eb;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.runtime-file-change-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid rgba(37, 99, 235, 0.24);
+  border-radius: 7px;
+  color: #2563eb;
+  font-family: var(--session-mono);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.runtime-file-change-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  padding-top: 7px;
+}
+
+.runtime-file-change-row:first-child {
+  border-top: 0;
+}
+
+.runtime-file-change-row strong {
+  overflow: hidden;
+  color: #1f2937;
+  font-family: var(--session-mono);
+  font-size: 12px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-file-change-row span,
+.runtime-file-change-row em {
+  color: #667085;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 740;
+  white-space: nowrap;
+}
+
+.runtime-file-change-row em {
+  color: #15803d;
+}
+
+.runtime-file-change-row small {
+  grid-column: 1 / -1;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.runtime-file-change-more {
+  margin: -4px 0 12px 29px;
 }
 
 .session-workspace-chat-only .runtime-event-card::before,
@@ -341,7 +571,9 @@
   .session-workspace-chat-only .message-bubble[data-role="assistant"],
   .session-workspace-chat-only .message-bubble[data-role="user"],
   .session-workspace-chat-only .runtime-event-card,
-  .session-workspace-chat-only .runtime-event-v2-card {
+  .session-workspace-chat-only .runtime-event-v2-card,
+  .session-workspace-chat-only .runtime-worklog-card,
+  .session-workspace-chat-only .runtime-file-change-card {
     width: auto;
     max-width: 94%;
   }

@@ -199,8 +199,80 @@ function assertRectContainedHorizontally(child: Element, parent: Element, descri
   }
 }
 
-async function assertSessionWorkspacePanels() {
+function assertNoHorizontalOverflow(element: HTMLElement, description: string) {
+  const tolerance = 3;
+  if (element.scrollWidth > element.clientWidth + tolerance) {
+    throw new Error(
+      `${description} overflows horizontally: scrollWidth ${element.scrollWidth}, clientWidth ${element.clientWidth}.`,
+    );
+  }
+}
+
+function assertSideBySide(left: Element, right: Element, description: string) {
+  const leftRect = left.getBoundingClientRect();
+  const rightRect = right.getBoundingClientRect();
+  if (leftRect.width < 120 || rightRect.width < 180 || leftRect.right > rightRect.left + 4) {
+    throw new Error(
+      `${description} is not side-by-side: left ${Math.round(leftRect.left)}..${Math.round(leftRect.right)}, ` +
+        `right ${Math.round(rightRect.left)}..${Math.round(rightRect.right)}.`,
+    );
+  }
+}
+
+async function assertLocalTerminalWorks() {
+  const startButton = await waitFor("terminal start button", () =>
+    Array.from(document.querySelectorAll<HTMLButtonElement>(".session-local-terminal-controls button")).find((button) =>
+      button.textContent?.includes("启动") && !button.disabled,
+    ),
+    30_000,
+  );
+  startButton.click();
+
+  const input = await waitFor("enabled terminal input", () => {
+    const field = query<HTMLInputElement>('input[aria-label="终端输入"]');
+    return field && !field.disabled ? field : null;
+  }, 30_000);
+
+  const output = await waitFor("terminal output", () => query<HTMLElement>(".session-local-terminal-output"), 30_000);
+  await waitFor("terminal running status", () =>
+    document.body.textContent?.includes("运行中") ? true : null,
+    30_000,
+  );
+  assertNoHorizontalOverflow(output, "terminal output");
+  if (output.textContent?.includes("[6n")) {
+    throw new Error("Terminal output leaked cursor-position control sequence [6n.");
+  }
+
+  setFieldValue('input[aria-label="终端输入"]', "echo yuanbao-terminal-smoke");
+  const sendButton = await waitFor("enabled terminal send button", () => {
+    const button = Array.from(document.querySelectorAll<HTMLButtonElement>(".session-local-terminal-input button")).find((item) =>
+      item.textContent?.includes("发送"),
+    );
+    return button && !button.disabled ? button : null;
+  }, 10_000);
+  sendButton.click();
+  try {
+    await waitFor("terminal command echo", () =>
+      query<HTMLElement>(".session-local-terminal-output")?.textContent?.includes("yuanbao-terminal-smoke") ? true : null,
+      30_000,
+    );
+  } catch (reason) {
+    const snapshot = query<HTMLElement>(".session-local-terminal-output")?.textContent?.slice(-600) ?? "";
+    throw new Error(`Timed out waiting for terminal command echo. Terminal output tail: ${JSON.stringify(snapshot)}`);
+  }
+  if (query<HTMLElement>(".session-local-terminal-output")?.textContent?.includes("[6n")) {
+    throw new Error("Terminal output leaked cursor-position control sequence after command execution.");
+  }
+}
+
+async function assertSessionWorkspacePanels(assertions?: string[]) {
   const pane = await waitFor("workspace side pane", () => query<HTMLElement>('aside[aria-label="工作区侧栏"]'));
+  const grid = await waitFor("session workbench grid", () => query<HTMLElement>(".session-workbench-grid"));
+  const resizer = await waitFor("workspace resize handle", () => query<HTMLElement>(".session-sidebar-resizer"));
+  assertNoHorizontalOverflow(grid, "session workbench grid");
+  if (resizer.getBoundingClientRect().width > 10) {
+    throw new Error(`Workspace resize handle is visually too wide: ${resizer.getBoundingClientRect().width}px.`);
+  }
   const digestTitle = query<HTMLElement>(".conversation-task-digest-header h2");
   const digest = query<HTMLElement>(".conversation-task-digest");
   if (digestTitle && digest) {
@@ -215,6 +287,9 @@ async function assertSessionWorkspacePanels() {
   assertRectContainedHorizontally(fileWorkspace, pane, "file workspace");
   assertRectContainedHorizontally(fileViewer, fileLayout, "file preview");
   assertRectContainedHorizontally(fileTree, fileLayout, "file tree");
+  assertSideBySide(fileTree, fileViewer, "file tree and preview");
+  assertNoHorizontalOverflow(fileWorkspace, "file workspace");
+  assertions?.push("session file workspace stays side-by-side without horizontal overflow");
 
   clickWorkspaceTab("查看代码改动", "review tab");
   await waitFor("review panel", () => query(".session-tool-panel"));
@@ -222,12 +297,15 @@ async function assertSessionWorkspacePanels() {
   if (reviewText.includes("+0 -0")) {
     throw new Error("Review panel exposed fake +0 -0 diff stats.");
   }
+  assertions?.push("review panel avoids fake zero diff stats");
 
   clickWorkspaceTab("本地命令历史", "terminal tab");
   const terminalPanel = await waitFor("local terminal panel", () => query<HTMLElement>(".session-tool-panel"));
   if (!terminalPanel.textContent?.includes("本地终端")) {
     throw new Error("Terminal panel did not show the local terminal heading.");
   }
+  await assertLocalTerminalWorks();
+  assertions?.push("local terminal starts, accepts input, and renders sanitized output");
 }
 
 function countTextOccurrences(text: string, needle: string) {
@@ -424,9 +502,7 @@ async function runUiSmokeFlow(workspacePath?: string) {
     click('button[aria-label="创建会话"]', "create session from applied workspace");
     await waitFor("session workspace after file workspace check", () => query(".session-workspace:not(.session-workspace-empty)"));
     assertElement('aside[aria-label="工作区侧栏"]', "workspace side pane");
-    click('nav[aria-label="工作区页签"] button[role="tab"][title="浏览项目文件"]', "workspace file tab");
-    await waitFor("session file workspace panel", () => query(".session-file-workspace"));
-    assertElement(".session-file-workspace", "session file workspace panel");
+    await assertSessionWorkspacePanels(assertions);
     assertions.push("workspace file list/read bridge works");
     assertions.push("session file workspace renders");
   }

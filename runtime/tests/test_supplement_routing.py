@@ -234,3 +234,42 @@ class TestSupplementRouting:
 
         # No routing info when no children
         assert result.get("supplementRouting") is None
+
+    def test_cancelled_open_task_is_not_auto_supplemented(self, tmp_path: Any) -> None:
+        """Auto supplement should ignore terminal tasks returned by open-task lookup."""
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+
+        cancelled = store.create_task(
+            session_id="s1",
+            task_type="main",
+            goal="cancelled task",
+            plan=[],
+            status="cancelled",
+        )
+
+        original_lookup = rt.orchestrator._find_open_session_task
+        rt.orchestrator._find_open_session_task = lambda _session_id: cancelled
+        try:
+            assert rt.orchestrator._find_supplement_target_task(session_id="s1", task_id=None, strict=False) is None
+        finally:
+            rt.orchestrator._find_open_session_task = original_lookup
+
+    def test_attach_supplemental_rejects_terminal_task(self, tmp_path: Any) -> None:
+        """Attaching a supplement directly to a terminal task is rejected before state transition."""
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        cancelled = store.create_task(
+            session_id="s1",
+            task_type="main",
+            goal="cancelled task",
+            plan=[],
+            status="cancelled",
+        )
+
+        with pytest.raises(ValueError, match="not active"):
+            rt.orchestrator._attach_supplemental_message(
+                session_id="s1",
+                task=cancelled,
+                content="continue",
+            )

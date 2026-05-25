@@ -498,7 +498,7 @@ describe("SessionWorkspace", () => {
     expect(flow).toHaveLength(2);
   });
 
-  it("does not show the live pill while a thinking bubble is already visible", () => {
+  it("keeps a live status visible while a thinking placeholder is waiting", () => {
     const { container } = render(
       <SessionWorkspace
         session={session}
@@ -525,7 +525,8 @@ describe("SessionWorkspace", () => {
     );
     expect(flow[0]).toContain("Patch the game");
     expect(flow[1]).toContain("思考");
-    expect(flow).toHaveLength(2);
+    expect(flow[2]).toContain("正在输出");
+    expect(flow).toHaveLength(3);
   });
 
   it("does not move a streaming assistant message below a later user message when updatedAt changes", () => {
@@ -581,7 +582,7 @@ describe("SessionWorkspace", () => {
     );
 
     expect(screen.getByText("仍在思考…")).toBeInTheDocument();
-    expect(screen.getByText(/长时间无新输出/)).toBeInTheDocument();
+    expect(screen.getByText(/长时间没有收到新 token/)).toBeInTheDocument();
   });
 
   it("does not invent plan steps when the runtime did not create a plan", () => {

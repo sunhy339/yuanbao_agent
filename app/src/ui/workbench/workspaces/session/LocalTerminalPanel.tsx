@@ -7,6 +7,8 @@ import { Button } from "../../../v2/components/ui";
 const terminalClient = new RuntimeClient();
 const DEFAULT_COLS = 110;
 const DEFAULT_ROWS = 30;
+const ANSI_SEQUENCE_PATTERN = /\u001B\][^\u0007]*(?:\u0007|\u001B\\)|\u001B\[[0-?]*[ -/]*[@-~]|\u001B[@-Z\\-_]/g;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u0008\u000B\u000C\u000E-\u001A\u001C-\u001F\u007F]/g;
 
 interface TerminalLine {
   id: string;
@@ -20,20 +22,35 @@ export interface LocalTerminalPanelProps {
 }
 
 function displayWorkspace(path?: string) {
-  const normalized = String(path ?? "").trim();
+  const normalized = String(path ?? "")
+    .trim()
+    .replace(/^\\\\\?\\UNC\\/i, "//")
+    .replace(/^\\\\\?\\/i, "");
   if (!normalized) {
     return "workspace";
   }
   return normalized.replace(/\\/g, "/");
 }
 
+function cleanTerminalText(text: string) {
+  return text
+    .replace(ANSI_SEQUENCE_PATTERN, "")
+    .replace(CONTROL_CHARACTER_PATTERN, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+}
+
 function appendOutput(lines: TerminalLine[], event: TerminalEvent): TerminalLine[] {
   if (event.kind === "output" && event.chunk) {
+    const text = cleanTerminalText(event.chunk);
+    if (!text) {
+      return lines;
+    }
     return [
       ...lines,
       {
         id: `${event.terminalId}-${event.ts ?? Date.now()}-${lines.length}`,
-        text: event.chunk,
+        text,
         kind: "output" as const,
       },
     ].slice(-300);
@@ -43,7 +60,7 @@ function appendOutput(lines: TerminalLine[], event: TerminalEvent): TerminalLine
       ...lines,
       {
         id: `${event.terminalId}-${event.ts ?? Date.now()}-error`,
-        text: event.message || "Terminal error",
+        text: cleanTerminalText(event.message || "Terminal error"),
         kind: "error" as const,
       },
     ].slice(-300);
@@ -63,7 +80,7 @@ function appendOutput(lines: TerminalLine[], event: TerminalEvent): TerminalLine
 
 function newlineForShell(shell?: string) {
   const normalized = String(shell ?? "").toLowerCase();
-  return normalized.includes("powershell") || normalized.includes("pwsh") ? "\r" : "\n";
+  return normalized.includes("powershell") || normalized.includes("pwsh") ? "\r\n" : "\n";
 }
 
 export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTerminalPanelProps) {
@@ -72,15 +89,21 @@ export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTermi
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [eventsReady, setEventsReady] = useState(false);
   const outputRef = useRef<HTMLPreElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const terminalIdRef = useRef<string | null>(null);
   const cwd = workspaceRoot || workspaceLabel || "";
   const isRunning = terminal?.status === "running";
   const subtitle = useMemo(() => displayWorkspace(cwd), [cwd]);
   const prompt = useMemo(() => {
     const path = displayWorkspace(cwd);
+    const shell = String(terminal?.shell || "powershell.exe").toLowerCase();
+    if (shell.includes("powershell") || shell.includes("pwsh")) {
+      return `PS ${path}>`;
+    }
     return path.match(/^[A-Za-z]:\//) ? `${path}>` : `${path} $`;
-  }, [cwd]);
+  }, [cwd, terminal?.shell]);
 
   useEffect(() => {
     let disposed = false;
@@ -101,6 +124,7 @@ export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTermi
           return;
         }
         unsubscribe = nextUnsubscribe;
+        setEventsReady(true);
       })
       .catch((reason) => {
         setError(reason instanceof Error ? reason.message : String(reason));
@@ -119,6 +143,12 @@ export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTermi
     element.scrollTop = element.scrollHeight;
   }, [lines]);
 
+  useEffect(() => {
+    if (isRunning) {
+      inputRef.current?.focus();
+    }
+  }, [isRunning]);
+
   async function startTerminal() {
     setBusy(true);
     setError(null);
@@ -133,7 +163,7 @@ export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTermi
       setLines([
         {
           id: `${result.terminal.id}-ready`,
-          text: `Started ${result.terminal.shell} in ${result.terminal.cwd}\n`,
+          text: cleanTerminalText(`Started ${result.terminal.shell} in ${displayWorkspace(result.terminal.cwd)}\n`),
           kind: "output",
         },
       ]);
@@ -189,7 +219,7 @@ export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTermi
             size="xs"
             variant="secondary"
             loading={busy && !isRunning}
-            disabled={isRunning}
+            disabled={!eventsReady || isRunning}
             onClick={() => {
               void startTerminal();
             }}
@@ -218,6 +248,9 @@ export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTermi
       <div className="session-local-terminal-input">
         <input
           aria-label="终端输入"
+          ref={inputRef}
+          autoCapitalize="none"
+          autoCorrect="off"
           disabled={!isRunning}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={(event) => {
@@ -227,6 +260,7 @@ export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTermi
             }
           }}
           placeholder={isRunning ? "输入命令后按 Enter" : "先启动终端"}
+          spellCheck={false}
           value={input}
         />
         <Button size="xs" variant="secondary" disabled={!isRunning || !input.trim()} onClick={() => void sendInput()}>

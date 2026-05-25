@@ -11,13 +11,20 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+ACTIVE_SUPPLEMENT_STATUSES = {"running", "planning", "verifying", "waiting_approval", "queued", "paused"}
+
 
 class SupplementFlowMixin:
     """Mixin providing supplement message routing and task focus helpers."""
 
     def _find_supplement_target_task(self, *, session_id: str, task_id: str | None, strict: bool) -> dict[str, Any] | None:
         if not task_id:
-            return self._find_open_session_task(session_id)
+            task = self._find_open_session_task(session_id)
+            if task is None:
+                return None
+            if task.get("status") not in ACTIVE_SUPPLEMENT_STATUSES:
+                return None
+            return task
         try:
             task = self._store.get_task({"taskId": task_id})["task"]
         except Exception:  # noqa: BLE001
@@ -28,13 +35,15 @@ class SupplementFlowMixin:
             if strict:
                 raise ValueError(f"Cannot supplement task outside session: {task_id}")
             return None
-        if task.get("status") not in {"running", "planning", "verifying", "waiting_approval", "queued", "paused"}:
+        if task.get("status") not in ACTIVE_SUPPLEMENT_STATUSES:
             if strict:
                 raise ValueError(f"Cannot supplement task that is not active: {task_id}")
             return None
         return task
 
     def _attach_supplemental_message(self, *, session_id: str, task: dict[str, Any], content: str) -> dict[str, Any]:
+        if task.get("status") not in ACTIVE_SUPPLEMENT_STATUSES:
+            raise ValueError(f"Cannot supplement task that is not active: {task.get('id')}")
         # Create user message for chat history
         user_msg = self._store.create_message(
             session_id=session_id,

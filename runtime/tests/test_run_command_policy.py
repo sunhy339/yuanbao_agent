@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -105,20 +106,24 @@ def test_run_command_default_policy_sends_git_init_to_approval(tmp_path: Path) -
         store.close()
 
 
-def test_run_command_configured_allowlist_still_rejects_unmatched_command(tmp_path: Path) -> None:
+def test_run_command_configured_allowlist_routes_unmatched_command_to_approval(tmp_path: Path) -> None:
     store, run_command, ctx = _make_run_command(
         tmp_path,
         {"tools": {"runCommand": {"allowedCommands": ["python -m pytest*"]}}},
     )
     try:
-        with pytest.raises(ValueError, match="allowlist"):
-            run_command(
-                {
-                    "workspaceRoot": str(ctx["workspace_root"]),
-                    "taskId": ctx["task_id"],
-                    "command": "python main.py",
-                }
-            )
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": "python main.py",
+            }
+        )
+        assert result["status"] == "approval_required"
+        assert result["command"] == "python main.py"
+        request = json.loads(result["approval"]["requestJson"])
+        assert request["policyAction"] == "approval_required"
+        assert "allowlist" in request["policyReason"]
     finally:
         store.close()
 

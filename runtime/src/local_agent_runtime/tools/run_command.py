@@ -98,7 +98,14 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         timeout_ms = int(params.get("timeoutMs") or params.get("timeout_ms") or active_command_policy["commandTimeoutMs"])
         timeout_ms = max(1000, min(timeout_ms, 1_800_000))
 
-        policy_guard.validate_command(requested_command, active_run_command_config)
+        allowlist_review_reason: str | None = None
+        try:
+            policy_guard.validate_command(requested_command, active_run_command_config)
+        except ValueError as exc:
+            reason = str(exc)
+            if "allowlist" not in reason.casefold():
+                raise
+            allowlist_review_reason = reason
         permission_decision = None
 
         # PermissionEngine gate (new path)
@@ -144,6 +151,11 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
             workspace_root=str(workspace_root),
             background=background,
         )
+        if allowlist_review_reason:
+            request["policyReason"] = allowlist_review_reason
+            request["policyAction"] = "approval_required"
+        if allowlist_review_reason and internal_validation:
+            raise ValueError(allowlist_review_reason)
         existing_approval = approval_for_request(store, request_task_id, request, approval_id)
         if existing_approval is not None:
             decision = existing_approval.get("decision")
@@ -162,6 +174,8 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         elif (
             not internal_validation
             and (
+                allowlist_review_reason is not None
+                or
                 (permission_decision is not None and permission_decision.decision == "approval_required")
                 or (permission_engine is None and policy_guard.requires_approval("run_command", approval_mode=active_command_policy["approvalMode"]))
             )

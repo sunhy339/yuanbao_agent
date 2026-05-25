@@ -337,9 +337,18 @@ struct TerminalSession {
     cwd: String,
     shell: String,
     started_at: u128,
-    master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
-    child: Box<dyn portable_pty::Child + Send + Sync>,
+    backend: TerminalBackend,
+}
+
+enum TerminalBackend {
+    Pty {
+        master: Box<dyn MasterPty + Send>,
+        child: Box<dyn portable_pty::Child + Send + Sync>,
+    },
+    Process {
+        child: Child,
+    },
 }
 
 #[derive(Default)]
@@ -536,7 +545,7 @@ fn default_terminal_shell() -> String {
         }
     }
     if cfg!(target_os = "windows") {
-        "cmd.exe".to_string()
+        "powershell.exe".to_string()
     } else {
         env::var("SHELL").unwrap_or_else(|_| "bash".to_string())
     }
@@ -550,6 +559,8 @@ fn terminal_shell_command(shell: &str) -> CommandBuilder {
             let mut command = CommandBuilder::new("powershell.exe");
             command.arg("-NoLogo");
             command.arg("-NoProfile");
+            command.arg("-ExecutionPolicy");
+            command.arg("Bypass");
             return command;
         }
         if lower == "pwsh" || lower == "pwsh.exe" {
@@ -581,11 +592,165 @@ fn terminal_cwd(payload_cwd: Option<String>) -> Result<PathBuf, String> {
     if !resolved.is_dir() {
         return Err("Terminal working directory is not a directory".to_string());
     }
-    Ok(resolved)
+    Ok(normalize_windows_verbatim_path(&resolved))
+}
+
+fn normalize_windows_verbatim_path(path: &Path) -> PathBuf {
+    if !cfg!(target_os = "windows") {
+        return path.to_path_buf();
+    }
+
+    let value = path.to_string_lossy();
+    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = value.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path.to_path_buf()
 }
 
 fn emit_terminal_event(app_handle: &AppHandle, payload: Value) {
     let _ = app_handle.emit(TERMINAL_EVENT_CHANNEL, payload);
+}
+
+fn spawn_terminal_reader(
+    app_handle: AppHandle,
+    terminal_id: String,
+    mut reader: Box<dyn Read + Send>,
+) {
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => {
+                    emit_terminal_event(
+                        &app_handle,
+                        json!({
+                            "terminalId": terminal_id,
+                            "kind": "exit",
+                            "exitCode": null,
+                            "ts": now_ms(),
+                        }),
+                    );
+                    break;
+                }
+                Ok(size) => {
+                    let chunk = String::from_utf8_lossy(&buffer[..size]).to_string();
+                    emit_terminal_event(
+                        &app_handle,
+                        json!({
+                            "terminalId": terminal_id,
+                            "kind": "output",
+                            "chunk": chunk,
+                            "ts": now_ms(),
+                        }),
+                    );
+                }
+                Err(reason) => {
+                    emit_terminal_event(
+                        &app_handle,
+                        json!({
+                            "terminalId": terminal_id,
+                            "kind": "error",
+                            "message": format!("Terminal output failed: {reason}"),
+                            "ts": now_ms(),
+                        }),
+                    );
+                    break;
+                }
+            }
+        }
+    });
+}
+
+fn spawn_pipe_terminal(
+    app_handle: &AppHandle,
+    state: &TerminalManager,
+    cwd_path: &Path,
+    cwd: &str,
+    shell: &str,
+) -> Result<Value, String> {
+    let mut command = if cfg!(target_os = "windows") {
+        let lower = shell.trim().to_ascii_lowercase();
+        if lower == "cmd" || lower == "cmd.exe" {
+            let mut command = Command::new("cmd.exe");
+            command.arg("/d");
+            command.arg("/q");
+            command.arg("/k");
+            command
+        } else {
+            let executable = if lower == "pwsh" || lower == "pwsh.exe" {
+                "pwsh.exe"
+            } else {
+                "powershell.exe"
+            };
+            let mut command = Command::new(executable);
+            command.arg("-NoLogo");
+            command.arg("-NoProfile");
+            command.arg("-NoExit");
+            command
+        }
+    } else {
+        Command::new(shell)
+    };
+
+    command
+        .current_dir(cwd_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("TERM", if cfg!(target_os = "windows") { "dumb" } else { "xterm-256color" });
+
+    let mut child = command
+        .spawn()
+        .map_err(|reason| format!("Failed to start terminal shell: {reason}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Terminal stdin is not available".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Terminal stdout is not available".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Terminal stderr is not available".to_string())?;
+
+    let terminal_id = state.next_terminal_id();
+    let started_at = now_ms();
+    let session = TerminalSession {
+        id: terminal_id.clone(),
+        cwd: cwd.to_string(),
+        shell: shell.to_string(),
+        started_at,
+        writer: Box::new(stdin),
+        backend: TerminalBackend::Process { child },
+    };
+    let terminal_view = TerminalManager::session_view(&session, "running");
+    state
+        .sessions
+        .lock()
+        .map_err(|_| "Failed to lock terminal sessions".to_string())?
+        .insert(terminal_id.clone(), session);
+
+    spawn_terminal_reader(app_handle.clone(), terminal_id.clone(), Box::new(stdout));
+    spawn_terminal_reader(app_handle.clone(), terminal_id.clone(), Box::new(stderr));
+
+    emit_terminal_event(
+        app_handle,
+        json!({
+            "terminalId": terminal_id,
+            "kind": "output",
+            "chunk": format!("Started {shell} in {cwd}\r\n"),
+            "cwd": cwd,
+            "shell": shell,
+            "ts": now_ms(),
+        }),
+    );
+
+    Ok(json!({ "terminal": terminal_view }))
 }
 
 #[tauri::command]
@@ -599,6 +764,11 @@ fn terminal_start(
     let shell = payload.shell.unwrap_or_else(default_terminal_shell);
     let cols = payload.cols.unwrap_or(100).clamp(20, 240);
     let rows = payload.rows.unwrap_or(30).clamp(6, 80);
+
+    if cfg!(target_os = "windows") {
+        return spawn_pipe_terminal(&app_handle, &state, &cwd_path, &cwd, &shell);
+    }
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -623,7 +793,7 @@ fn terminal_start(
         .map_err(|reason| format!("Failed to start terminal shell: {reason}"))?;
     drop(pair.slave);
 
-    let mut reader = pair
+    let reader = pair
         .master
         .try_clone_reader()
         .map_err(|reason| format!("Failed to clone terminal reader: {reason}"))?;
@@ -639,9 +809,11 @@ fn terminal_start(
         cwd: cwd.clone(),
         shell: shell.clone(),
         started_at,
-        master: pair.master,
         writer,
-        child,
+        backend: TerminalBackend::Pty {
+            master: pair.master,
+            child,
+        },
     };
     let terminal_view = TerminalManager::session_view(&session, "running");
     state
@@ -662,55 +834,12 @@ fn terminal_start(
         }),
     );
 
-    let reader_app = app_handle.clone();
     let reader_terminal_id = terminal_view
         .get("id")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    thread::spawn(move || {
-        let mut buffer = [0_u8; 8192];
-        loop {
-            match reader.read(&mut buffer) {
-                Ok(0) => {
-                    emit_terminal_event(
-                        &reader_app,
-                        json!({
-                            "terminalId": reader_terminal_id,
-                            "kind": "exit",
-                            "exitCode": null,
-                            "ts": now_ms(),
-                        }),
-                    );
-                    break;
-                }
-                Ok(size) => {
-                    let chunk = String::from_utf8_lossy(&buffer[..size]).to_string();
-                    emit_terminal_event(
-                        &reader_app,
-                        json!({
-                            "terminalId": reader_terminal_id,
-                            "kind": "output",
-                            "chunk": chunk,
-                            "ts": now_ms(),
-                        }),
-                    );
-                }
-                Err(reason) => {
-                    emit_terminal_event(
-                        &reader_app,
-                        json!({
-                            "terminalId": reader_terminal_id,
-                            "kind": "error",
-                            "message": format!("Terminal output failed: {reason}"),
-                            "ts": now_ms(),
-                        }),
-                    );
-                    break;
-                }
-            }
-        }
-    });
+    spawn_terminal_reader(app_handle.clone(), reader_terminal_id, reader);
 
     Ok(json!({ "terminal": terminal_view }))
 }
@@ -749,15 +878,16 @@ fn terminal_resize(
         .ok_or_else(|| "Terminal session was not found".to_string())?;
     let rows = payload.rows.clamp(6, 120);
     let cols = payload.cols.clamp(20, 300);
-    session
-        .master
-        .resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|reason| format!("Failed to resize terminal: {reason}"))?;
+    if let TerminalBackend::Pty { master, .. } = &session.backend {
+        master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|reason| format!("Failed to resize terminal: {reason}"))?;
+    }
     Ok(json!({ "terminal": TerminalManager::session_view(session, "running") }))
 }
 
@@ -773,7 +903,14 @@ fn terminal_stop(
         .map_err(|_| "Failed to lock terminal sessions".to_string())?
         .remove(&payload.terminal_id)
         .ok_or_else(|| "Terminal session was not found".to_string())?;
-    let _ = session.child.kill();
+    match &mut session.backend {
+        TerminalBackend::Pty { child, .. } => {
+            let _ = child.kill();
+        }
+        TerminalBackend::Process { child } => {
+            let _ = child.kill();
+        }
+    }
     let terminal_view = TerminalManager::session_view(&session, "exited");
     emit_terminal_event(
         &app_handle,

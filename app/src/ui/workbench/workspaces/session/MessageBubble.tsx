@@ -40,7 +40,7 @@ export const MessageBubble = memo(function MessageBubble({ message }: { message:
             <strong>{thinkingStalled ? "仍在思考…" : "思考中…"}</strong>
             <time>{formatElapsedTime(thinkingElapsedMs)}</time>
           </p>
-          {thinkingStalled ? <small>长时间无新输出。可以停止当前轮次或暂存下一条消息。</small> : null}
+          {thinkingStalled ? <small>长时间没有收到新 token。后台可能正在等待模型、工具或审批；最近运行状态会继续显示在下方。</small> : null}
         </div>
       ) : message.role === "assistant" ? (
         <MarkdownContent content={message.content} />

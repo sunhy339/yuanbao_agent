@@ -542,14 +542,10 @@ class MessageRoutingMixin:
         is_queued_mode = params.get("mode") == "queued"
         should_auto_supplement = not is_queued_mode and params.get("background") is not True and params.get("newTask") is not True
         if explicit_supplement or should_auto_supplement:
-            active_task = (
-                self._find_supplement_target_task(
-                    session_id=session["id"],
-                    task_id=str(explicit_task_id) if explicit_task_id else None,
-                    strict=explicit_supplement,
-                )
-                if explicit_task_id
-                else self._find_open_session_task(session["id"])
+            active_task = self._find_supplement_target_task(
+                session_id=session["id"],
+                task_id=str(explicit_task_id) if explicit_task_id else None,
+                strict=explicit_supplement,
             )
             if active_task is not None:
                 return self._attach_supplemental_message(session_id=session["id"], task=active_task, content=goal)

@@ -1037,9 +1037,9 @@ export function SessionWorkspace({
       const grid = event.currentTarget.closest(".session-workbench-grid") as HTMLElement | null;
       const rect = grid?.getBoundingClientRect();
       const gridWidth = rect?.width || window.innerWidth || 1200;
-      const minWidth = Math.min(420, Math.max(360, gridWidth * 0.28));
-      const maxWidth = Math.max(minWidth, gridWidth - 670);
-      const startWidth = workspacePaneWidthPx ?? Math.min(maxWidth, Math.max(minWidth, gridWidth * 0.32));
+      const minWidth = Math.min(760, Math.max(560, gridWidth * 0.34));
+      const maxWidth = Math.max(minWidth, gridWidth - 520);
+      const startWidth = workspacePaneWidthPx ?? Math.min(maxWidth, Math.max(minWidth, gridWidth * 0.44));
       const startX = event.clientX;
       setWorkspacePaneResizing(true);
       event.currentTarget.setPointerCapture?.(event.pointerId);

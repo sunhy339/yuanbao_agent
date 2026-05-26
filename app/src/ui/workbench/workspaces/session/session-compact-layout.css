@@ -3901,3 +3901,778 @@ pre.session-runtime-lane-detail,
   }
 }
 
+/* Visible internal scroll regions. The session workspace owns its own scroll,
+   so the actual scrollbars must be visible inside the chat and tool panes. */
+.session-workspace-chat-only .session-conversation-column {
+  overflow-x: hidden;
+  overflow-y: scroll;
+  padding-right: 8px;
+  scrollbar-gutter: stable;
+}
+
+.session-workspace-chat-only .session-console .message-stream {
+  padding-bottom: max(150px, calc(var(--wb-composer-live-height, 0px) + 64px));
+}
+
+.session-workspace-chat-only .session-conversation-column,
+.session-workspace-chat-only .session-tool-panel,
+.session-workspace-chat-only .session-file-tree-scroll,
+.session-workspace-chat-only .session-file-code-lines,
+.session-workspace-chat-only .session-file-markdown,
+.session-workspace-chat-only .session-diff-viewer {
+  scrollbar-width: auto;
+  scrollbar-color: rgba(71, 85, 105, 0.58) rgba(226, 232, 240, 0.86);
+}
+
+.session-workspace-chat-only .session-conversation-column::-webkit-scrollbar,
+.session-workspace-chat-only .session-tool-panel::-webkit-scrollbar,
+.session-workspace-chat-only .session-file-tree-scroll::-webkit-scrollbar,
+.session-workspace-chat-only .session-file-code-lines::-webkit-scrollbar,
+.session-workspace-chat-only .session-file-markdown::-webkit-scrollbar,
+.session-workspace-chat-only .session-diff-viewer::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.session-workspace-chat-only .session-conversation-column::-webkit-scrollbar-track,
+.session-workspace-chat-only .session-tool-panel::-webkit-scrollbar-track,
+.session-workspace-chat-only .session-file-tree-scroll::-webkit-scrollbar-track,
+.session-workspace-chat-only .session-file-code-lines::-webkit-scrollbar-track,
+.session-workspace-chat-only .session-file-markdown::-webkit-scrollbar-track,
+.session-workspace-chat-only .session-diff-viewer::-webkit-scrollbar-track {
+  background: rgba(226, 232, 240, 0.72);
+}
+
+.session-workspace-chat-only .session-conversation-column::-webkit-scrollbar-thumb,
+.session-workspace-chat-only .session-tool-panel::-webkit-scrollbar-thumb,
+.session-workspace-chat-only .session-file-tree-scroll::-webkit-scrollbar-thumb,
+.session-workspace-chat-only .session-file-code-lines::-webkit-scrollbar-thumb,
+.session-workspace-chat-only .session-file-markdown::-webkit-scrollbar-thumb,
+.session-workspace-chat-only .session-diff-viewer::-webkit-scrollbar-thumb {
+  border: 3px solid rgba(226, 232, 240, 0.72);
+  border-radius: 999px;
+  background: rgba(71, 85, 105, 0.58);
+  background-clip: padding-box;
+}
+
+.session-workspace-chat-only .session-conversation-column::-webkit-scrollbar-thumb:hover,
+.session-workspace-chat-only .session-tool-panel::-webkit-scrollbar-thumb:hover,
+.session-workspace-chat-only .session-file-tree-scroll::-webkit-scrollbar-thumb:hover,
+.session-workspace-chat-only .session-file-code-lines::-webkit-scrollbar-thumb:hover,
+.session-workspace-chat-only .session-file-markdown::-webkit-scrollbar-thumb:hover,
+.session-workspace-chat-only .session-diff-viewer::-webkit-scrollbar-thumb:hover {
+  background: rgba(51, 65, 85, 0.74);
+  background-clip: padding-box;
+}
+
+/* Workbench v2: two independent panes, minimal chrome, no card pile. */
+.session-workspace-chat-only {
+  --session-workspace-pane-width: clamp(460px, 34vw, 820px);
+  --session-divider: #e7e2dc;
+  --session-muted-surface: #faf9f7;
+  --session-panel-border: #ebe7e1;
+  background: #fff;
+}
+
+.session-workspace-chat-only .session-workbench-grid {
+  grid-template-columns: minmax(520px, 1fr) 1px var(--session-workspace-pane-width);
+  gap: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #fff;
+}
+
+.session-workspace-chat-only.session-workspace-pane-collapsed .session-workbench-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.session-workspace-chat-only.session-workspace-pane-expanded .session-workbench-grid {
+  grid-template-columns: minmax(500px, 1fr) 1px var(--session-workspace-pane-width);
+}
+
+.session-workspace-chat-only.session-workspace-files-focused .session-conversation-column {
+  display: grid;
+}
+
+.session-workspace-chat-only.session-workspace-files-focused .session-workbench-grid {
+  grid-template-columns: minmax(520px, 1fr) 1px var(--session-workspace-pane-width);
+}
+
+.session-workspace-chat-only .session-conversation-column,
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+}
+
+.session-workspace-chat-only .session-conversation-column {
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 0;
+  scrollbar-gutter: stable;
+  background: #fff;
+}
+
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane {
+  display: grid;
+  grid-template-rows: 42px minmax(0, 1fr);
+  overflow: hidden;
+  border-left: 0;
+  background: #fff;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer {
+  width: 1px;
+  min-width: 1px;
+  max-width: 1px;
+  background: var(--session-divider);
+}
+
+.session-workspace-chat-only .session-sidebar-resizer::before {
+  inset: 0 -5px;
+  width: auto;
+  background: transparent;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer:hover,
+.session-workspace-chat-only .session-sidebar-resizer:focus-visible,
+.session-workspace-chat-only.session-workspace-pane-resizing .session-sidebar-resizer {
+  background: #d7c8bd;
+}
+
+.session-workspace-chat-only .session-pane-chrome {
+  position: relative;
+  min-height: 42px;
+  border-bottom: 1px solid var(--session-divider);
+  padding: 0 10px;
+  background: #fff;
+  backdrop-filter: none;
+}
+
+.session-workspace-chat-only .session-pane-tabs {
+  gap: 2px;
+  overflow-x: auto;
+}
+
+.session-workspace-chat-only .session-pane-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.session-workspace-chat-only .session-pane-tab,
+.session-workspace-chat-only .session-pane-action,
+.session-workspace-chat-only .session-file-toolbar-actions button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 8px;
+  padding: 4px 8px;
+  background: transparent;
+  color: #4b5563;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .session-pane-tab[aria-selected="true"],
+.session-workspace-chat-only .session-pane-tab:hover,
+.session-workspace-chat-only .session-pane-action:hover,
+.session-workspace-chat-only .session-file-toolbar-actions button:hover {
+  background: #f3f0ec;
+  color: #111827;
+}
+
+.session-workspace-chat-only .session-pane-body,
+.session-workspace-chat-only .session-files-workspace,
+.session-workspace-chat-only .session-tool-dock,
+.session-workspace-chat-only .session-tool-panel {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  background: #fff;
+}
+
+.session-workspace-chat-only .session-console .message-stream {
+  width: min(820px, calc(100% - 56px));
+  padding-top: 18px;
+  padding-bottom: max(120px, calc(var(--wb-composer-live-height, 0px) + 64px));
+}
+
+.session-workspace-chat-only .conversation-task-digest {
+  border: 0;
+  border-bottom: 1px solid var(--session-divider);
+  border-radius: 0;
+  padding: 4px 0 14px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .conversation-task-digest-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.session-workspace-chat-only .conversation-task-digest-card {
+  border: 0;
+  border-radius: 0;
+  padding: 4px 0;
+  background: transparent;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"],
+.session-workspace-chat-only .message-bubble[data-role="tool"] {
+  width: min(74ch, 100%);
+  max-width: min(74ch, 100%);
+  border: 0;
+  border-radius: 0;
+  padding: 4px 0 8px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="user"] {
+  max-width: min(72ch, 92%);
+  border: 1px solid #ecd7c7;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff9f4;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .session-file-workspace {
+  display: grid;
+  grid-template-rows: 38px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: #fff;
+}
+
+.session-workspace-chat-only .session-file-workspace-toolbar {
+  min-height: 38px;
+  border: 0;
+  border-bottom: 1px solid var(--session-divider);
+  border-radius: 0;
+  padding: 0 10px;
+  background: #fff;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .session-file-breadcrumbs {
+  min-width: 0;
+  color: #667085;
+}
+
+.session-workspace-chat-only .session-file-open-tabs,
+.session-workspace-chat-only .session-file-inline-tabs,
+.session-workspace-chat-only .session-file-related,
+.session-workspace-chat-only .session-file-runtime-note {
+  display: none;
+}
+
+.session-workspace-chat-only .session-file-browser-layout,
+.session-workspace-chat-only.session-workspace-files-focused .session-file-browser-layout {
+  display: grid;
+  grid-template-areas: "viewer tree";
+  grid-template-columns: minmax(0, 1fr) clamp(220px, 34%, 360px);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+}
+
+.session-workspace-chat-only .session-file-viewer {
+  grid-area: viewer;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  border: 0;
+  padding: 12px 14px;
+  background: #fff;
+}
+
+.session-workspace-chat-only .session-file-tree-pane {
+  grid-area: tree;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  border-left: 1px solid var(--session-divider);
+  padding: 10px;
+  background: var(--session-muted-surface);
+}
+
+.session-workspace-chat-only .session-file-search {
+  min-height: 32px;
+  border: 1px solid var(--session-panel-border);
+  border-radius: 8px;
+  padding: 5px 8px;
+  background: #fff;
+}
+
+.session-workspace-chat-only .session-file-tree-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding-top: 8px;
+}
+
+.session-workspace-chat-only .session-file-viewer-header {
+  min-width: 0;
+  border: 0;
+  padding: 0 0 10px;
+}
+
+.session-workspace-chat-only .session-file-code-lines,
+.session-workspace-chat-only .session-file-markdown {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  border: 0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.session-workspace-chat-only .session-file-code-lines {
+  display: block;
+  padding: 10px 0;
+}
+
+.session-workspace-chat-only .session-file-code-lines li {
+  display: grid;
+  grid-template-columns: 44px max-content;
+  min-width: 100%;
+  width: max-content;
+}
+
+.session-workspace-chat-only .session-file-line-text {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: pre;
+}
+
+.session-workspace-chat-only .session-tool-panel {
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.session-workspace-chat-only .session-tool-panel-review {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.session-workspace-chat-only .session-tool-panel-review .session-tool-panel-header,
+.session-workspace-chat-only .session-tool-panel-review .session-tool-actions,
+.session-workspace-chat-only .session-tool-panel-review .session-tool-review-summary,
+.session-workspace-chat-only .session-tool-panel-review .session-tool-review-status {
+  display: none;
+}
+
+.session-workspace-chat-only .session-tool-review-file-list {
+  max-height: none;
+  overflow: auto;
+  border-right: 1px solid var(--session-divider);
+  padding: 10px;
+}
+
+.session-workspace-chat-only .session-diff-viewer {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+}
+
+.session-workspace-chat-only .session-diff-file {
+  border: 0;
+  border-bottom: 1px solid var(--session-divider);
+  border-radius: 0;
+}
+
+.session-workspace-chat-only .session-conversation-column,
+.session-workspace-chat-only .session-tool-panel,
+.session-workspace-chat-only .session-file-tree-scroll,
+.session-workspace-chat-only .session-file-code-lines,
+.session-workspace-chat-only .session-file-markdown,
+.session-workspace-chat-only .session-diff-viewer {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(120, 113, 108, 0.58) transparent;
+}
+
+.session-workspace-chat-only .session-conversation-column::-webkit-scrollbar,
+.session-workspace-chat-only .session-tool-panel::-webkit-scrollbar,
+.session-workspace-chat-only .session-file-tree-scroll::-webkit-scrollbar,
+.session-workspace-chat-only .session-file-code-lines::-webkit-scrollbar,
+.session-workspace-chat-only .session-file-markdown::-webkit-scrollbar,
+.session-workspace-chat-only .session-diff-viewer::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.session-workspace-chat-only .session-conversation-column::-webkit-scrollbar-track,
+.session-workspace-chat-only .session-tool-panel::-webkit-scrollbar-track,
+.session-workspace-chat-only .session-file-tree-scroll::-webkit-scrollbar-track,
+.session-workspace-chat-only .session-file-code-lines::-webkit-scrollbar-track,
+.session-workspace-chat-only .session-file-markdown::-webkit-scrollbar-track,
+.session-workspace-chat-only .session-diff-viewer::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.session-workspace-chat-only .session-conversation-column::-webkit-scrollbar-thumb,
+.session-workspace-chat-only .session-tool-panel::-webkit-scrollbar-thumb,
+.session-workspace-chat-only .session-file-tree-scroll::-webkit-scrollbar-thumb,
+.session-workspace-chat-only .session-file-code-lines::-webkit-scrollbar-thumb,
+.session-workspace-chat-only .session-file-markdown::-webkit-scrollbar-thumb,
+.session-workspace-chat-only .session-diff-viewer::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(120, 113, 108, 0.45);
+  background-clip: padding-box;
+}
+
+@media (max-width: 1180px) {
+  .session-workspace-chat-only .session-workbench-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .session-workspace-chat-only .session-runtime-column.session-workspace-pane {
+    display: none;
+  }
+}
+
+/* Workbench v3: chat-first flow with a single file sidecar. */
+.session-workspace-chat-only {
+  --session-workspace-pane-width: clamp(640px, 42vw, 980px);
+  --session-divider: #e9e3dc;
+  --session-muted-surface: #fbfaf8;
+  --session-panel-border: #eee9e3;
+  height: 100%;
+  overflow: hidden;
+}
+
+.session-workspace-chat-only .session-workbench-grid,
+.session-workspace-chat-only.session-workspace-pane-expanded .session-workbench-grid,
+.session-workspace-chat-only.session-workspace-files-focused .session-workbench-grid {
+  grid-template-columns: minmax(560px, 1fr) 1px var(--session-workspace-pane-width);
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.session-workspace-chat-only.session-workspace-pane-collapsed .session-workbench-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.session-workspace-chat-only .session-conversation-column {
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane {
+  grid-template-rows: 36px minmax(0, 1fr);
+  overflow: hidden;
+  background: #fff;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer {
+  width: 1px;
+  min-width: 1px;
+  max-width: 1px;
+  background: var(--session-divider);
+  cursor: col-resize;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer svg {
+  display: none;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer::before {
+  inset: 0 -4px;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer:hover,
+.session-workspace-chat-only .session-sidebar-resizer:focus-visible,
+.session-workspace-chat-only.session-workspace-pane-resizing .session-sidebar-resizer {
+  background: #d8c8bc;
+}
+
+.session-workspace-chat-only .session-pane-chrome {
+  min-height: 36px;
+  border-bottom: 1px solid var(--session-divider);
+  padding: 0 8px;
+}
+
+.session-workspace-chat-only .session-pane-tabs {
+  gap: 0;
+  min-width: 0;
+}
+
+.session-workspace-chat-only .session-pane-tab[data-pane="review"] {
+  display: none;
+}
+
+.session-workspace-chat-only .session-pane-tab {
+  min-height: 28px;
+  border-radius: 7px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.session-workspace-chat-only .session-pane-tab em {
+  min-width: 18px;
+  height: 18px;
+  border: 0;
+  background: #f2f1ef;
+  color: #667085;
+}
+
+.session-workspace-chat-only .session-pane-action {
+  min-width: 28px;
+  min-height: 28px;
+}
+
+.session-workspace-chat-only .session-pane-body {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.session-workspace-chat-only .session-file-workspace {
+  grid-template-rows: 34px minmax(0, 1fr);
+}
+
+.session-workspace-chat-only .session-file-workspace-toolbar {
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.session-workspace-chat-only .session-file-toolbar-actions button[aria-label="专注文件"],
+.session-workspace-chat-only .session-file-toolbar-actions button[aria-label="退出专注"] {
+  display: none;
+}
+
+.session-workspace-chat-only .session-file-browser-layout,
+.session-workspace-chat-only.session-workspace-files-focused .session-file-browser-layout {
+  grid-template-areas: "viewer tree";
+  grid-template-columns: minmax(360px, 1fr) minmax(260px, 340px);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.session-workspace-chat-only .session-file-viewer,
+.session-workspace-chat-only .session-file-tree-pane {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.session-workspace-chat-only .session-file-viewer {
+  padding: 12px 14px;
+}
+
+.session-workspace-chat-only .session-file-tree-pane {
+  border-left: 1px solid var(--session-divider);
+  padding: 10px;
+}
+
+.session-workspace-chat-only .session-file-code-lines,
+.session-workspace-chat-only .session-file-markdown {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+}
+
+.session-workspace-chat-only .session-file-code-lines {
+  width: 100%;
+}
+
+.session-workspace-chat-only .session-file-code-lines li {
+  grid-template-columns: 44px max-content;
+  min-width: 100%;
+  width: max-content;
+}
+
+.session-workspace-chat-only .session-file-line-text {
+  overflow: visible;
+  white-space: pre;
+}
+
+.session-workspace-chat-only .conversation-task-digest-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  border-top: 1px solid var(--session-divider);
+}
+
+.session-workspace-chat-only .conversation-task-digest-card {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 6px 12px;
+  border-bottom: 1px solid var(--session-divider);
+  padding: 9px 0;
+}
+
+.session-workspace-chat-only .conversation-task-digest-card > span {
+  grid-row: span 2;
+  color: #667085;
+}
+
+.session-workspace-chat-only .conversation-task-digest-card ul {
+  margin: 0;
+}
+
+.session-workspace-chat-only .conversation-task-digest-review {
+  margin: 8px 0 0;
+  color: #475467;
+}
+
+.session-workspace-chat-only .conversation-task-digest-diff {
+  margin-top: 12px;
+  border-top: 1px solid var(--session-divider);
+  padding-top: 10px;
+}
+
+.session-workspace-chat-only .conversation-task-digest-diff > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #475467;
+}
+
+.session-workspace-chat-only .conversation-task-digest-diff details {
+  margin-top: 8px;
+  border: 1px solid var(--session-panel-border);
+  border-radius: 9px;
+  background: #fbfaf8;
+}
+
+.session-workspace-chat-only .conversation-task-digest-diff summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  padding: 8px 10px;
+}
+
+.session-workspace-chat-only .conversation-task-digest-diff pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  border-top: 1px solid var(--session-panel-border);
+  padding: 10px;
+  background: #fff;
+  color: #344054;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+@media (max-width: 1320px) {
+  .session-workspace-chat-only .session-workbench-grid,
+  .session-workspace-chat-only.session-workspace-pane-expanded .session-workbench-grid,
+  .session-workspace-chat-only.session-workspace-files-focused .session-workbench-grid {
+    grid-template-columns: minmax(520px, 1fr) 1px minmax(560px, var(--session-workspace-pane-width));
+  }
+
+  .session-workspace-chat-only .session-file-browser-layout,
+  .session-workspace-chat-only.session-workspace-files-focused .session-file-browser-layout {
+    grid-template-columns: minmax(300px, 1fr) minmax(220px, 300px);
+  }
+}
+
+/* Final file sidecar guard: keep older focus/review rules from reshaping it. */
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane .session-pane-body,
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane .session-files-workspace,
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane .session-file-workspace {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane .session-file-browser-layout,
+.session-workspace-chat-only.session-workspace-files-focused
+  .session-runtime-column.session-workspace-pane
+  .session-file-browser-layout,
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane:not(.session-workspace-files-focused)
+  .session-file-browser-layout {
+  display: grid;
+  grid-template-areas: "viewer tree";
+  grid-template-columns: minmax(360px, 1fr) minmax(260px, 340px);
+  gap: 0;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane .session-file-viewer {
+  grid-area: viewer;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  padding: 12px 14px;
+}
+
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane .session-file-tree-pane {
+  grid-area: tree;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  border-left: 1px solid var(--session-divider);
+  padding: 10px;
+}
+
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane .session-file-code-lines,
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane .session-file-markdown,
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane .session-file-tree-scroll {
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  height: 100%;
+  overflow: auto;
+}
+
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane .session-file-code-lines {
+  width: 100%;
+}
+
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane .session-file-code-lines li {
+  display: grid;
+  grid-template-columns: 44px max-content;
+  min-width: 100%;
+  width: max-content;
+}
+
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane .session-file-line-text {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: pre;
+}
+

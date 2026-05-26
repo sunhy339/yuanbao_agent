@@ -141,7 +141,7 @@ describe("SessionWorkspace", () => {
     expect(within(digest).getByText("1 个改动文件")).toBeInTheDocument();
     expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /文件/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /审查/ })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /终端/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
@@ -161,7 +161,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getAllByText("MiniMax-M2.7-highspeed").length).toBeGreaterThan(0);
   });
 
-  it("switches workspace pane pages with useful file and review details", async () => {
+  it("keeps the side pane focused on files and surfaces review details in chat", async () => {
     const user = userEvent.setup();
     const onLoadPatch = vi.fn();
 
@@ -240,6 +240,16 @@ describe("SessionWorkspace", () => {
               {
                 path: "app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx",
                 status: "modified",
+                additions: 12,
+                deletions: 4,
+                diff: [
+                  "diff --git a/SessionWorkspace.tsx b/SessionWorkspace.tsx",
+                  "--- a/SessionWorkspace.tsx",
+                  "+++ b/SessionWorkspace.tsx",
+                  "@@ -1,2 +1,2 @@",
+                  "-old layout",
+                  "+new layout",
+                ].join("\n"),
               },
             ],
           },
@@ -264,6 +274,8 @@ describe("SessionWorkspace", () => {
     );
 
     expect(screen.getByRole("tablist", { name: "工作区页签" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /文件/ })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /终端/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: /文件/ }));
@@ -271,17 +283,15 @@ describe("SessionWorkspace", () => {
     expect(within(fileWorkspace).getByText("任务相关文件")).toBeInTheDocument();
     expect(within(fileWorkspace).getAllByText(/SessionWorkspace\.tsx/).length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole("tab", { name: /审查/ }));
-    const tools = screen.getByLabelText("工作区工具");
-    expect(within(tools).getByText("代码审查")).toBeInTheDocument();
-    expect(within(tools).getByLabelText("审查摘要")).toHaveTextContent("改动：Updated session layout");
-    expect(within(tools).getByLabelText("审查摘要")).toHaveTextContent("Diff：1 file changed, 12 insertions(+), 4 deletions(-)");
-    expect(within(tools).getByText("1 file changed, 12 insertions(+), 4 deletions(-)")).toBeInTheDocument();
-    expect(within(tools).getByLabelText("真实差异")).toBeInTheDocument();
-    expect(within(tools).getByText("old layout")).toBeInTheDocument();
-    expect(within(tools).getByText("new layout")).toBeInTheDocument();
-    await user.click(within(tools).getByRole("button", { name: "打开补丁" }));
-    expect(onLoadPatch).toHaveBeenCalledWith("patch_1");
+    const digest = screen.getByLabelText("工作摘要");
+    expect(within(digest).getByText(/审查：reviewer-agent - Looks good/)).toBeInTheDocument();
+    expect(within(digest).getByText(/合并：approved - main - passed/)).toBeInTheDocument();
+    expect(within(digest).getByText(/Diff：1 file changed, 12 insertions/)).toBeInTheDocument();
+    const inlineDiff = within(digest).getByLabelText("代码改动 diff");
+    expect(inlineDiff.textContent).toContain("SessionWorkspace.tsx");
+    expect(inlineDiff.textContent).toContain("old layout");
+    expect(inlineDiff.textContent).toContain("new layout");
+    expect(onLoadPatch).not.toHaveBeenCalled();
   });
 
   it("does not repeat the final assistant answer in the work summary", () => {
@@ -329,12 +339,9 @@ describe("SessionWorkspace", () => {
 
     const digest = screen.getByLabelText("工作摘要");
     expect(within(digest).getByText("8 个改动文件")).toBeInTheDocument();
-    expect(within(digest).getByText("另有 4 个文件在右侧文件/审查中查看。")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: /审查/ }));
-    const tools = screen.getByLabelText("工作区工具");
-    expect(within(tools).getByText("8 个文件")).toBeInTheDocument();
-    expect(within(tools).queryByText("+0 -0")).not.toBeInTheDocument();
+    expect(within(digest).getByText("另有 4 个文件可在右侧文件浏览中打开。")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("+0 -0")).not.toBeInTheDocument();
   });
 
   it("surfaces verification command history in the main conversation when task commands are empty", () => {
@@ -398,7 +405,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText(/发送第一条消息/)).toBeInTheDocument();
   });
 
-  it("toggles the file workspace focus mode", async () => {
+  it("keeps the file workspace in a simple side pane without focus mode", async () => {
     const user = userEvent.setup();
     const { container } = render(
       <SessionWorkspace
@@ -414,12 +421,13 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(container.querySelector(".session-workspace-files-focused")).not.toBeInTheDocument();
+    expect(container.querySelector(".session-workspace-pane-expanded")).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: /文件/ }));
-    await user.click(screen.getByRole("button", { name: "专注文件" }));
-    expect(container.querySelector(".session-workspace-files-focused")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "退出专注" }));
-    expect(container.querySelector(".session-workspace-files-focused")).not.toBeInTheDocument();
+    expect(container.querySelector(".session-conversation-column")).toBeInTheDocument();
+    expect(screen.getByLabelText("工作区侧栏")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "专注文件" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "退出专注" })).not.toBeInTheDocument();
+    expect(container.querySelector(".session-workspace-pane-expanded")).not.toBeInTheDocument();
   });
 
   it("collapses, restores, and resizes the right workspace pane", async () => {
@@ -1034,8 +1042,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getByRole("status")).toHaveTextContent("差异暂不可用");
   });
 
-  it("renders patch diffs as a structured review viewer", async () => {
-    const user = userEvent.setup();
+  it("renders patch diffs in the main work summary", () => {
     const largeDiff = [
       "diff --git a/app/src/App.tsx b/app/src/App.tsx",
       "--- a/app/src/App.tsx",
@@ -1063,12 +1070,12 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /审查/ }));
-    const viewer = screen.getByLabelText("真实差异");
-    expect(within(viewer).getByText("app/src/App.tsx")).toBeInTheDocument();
-    expect(within(viewer).getByText("old copy")).toBeInTheDocument();
-    expect(within(viewer).getByText("new copy")).toBeInTheDocument();
-    expect(within(viewer).getByText("+1 -1")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
+    const digest = screen.getByLabelText("工作摘要");
+    const viewer = within(digest).getByLabelText("代码改动 diff");
+    expect(within(viewer).getByText("Update generated report")).toBeInTheDocument();
+    expect(viewer.textContent).toContain("old copy");
+    expect(viewer.textContent).toContain("new copy");
   });
 
   it("keeps completed list_dir probes quiet and does not expose raw tool JSON", () => {
@@ -1902,24 +1909,19 @@ describe("SessionWorkspace", () => {
     );
 
     expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
-    const tools = screen.getByLabelText("工作区工具");
-    expect(within(tools).getByText("代码审查")).toBeInTheDocument();
-    expect(within(tools).getByLabelText("审查摘要")).toHaveTextContent("审查：reviewer-agent - Looks good.");
-    expect(within(tools).getByLabelText("审查摘要")).toHaveTextContent("合并：approved - main - passed");
-    expect(within(tools).getByLabelText("审查摘要")).toHaveTextContent("Diff：app/src/App.tsx | 12 ++++++++++++");
-    expect(within(tools).getByText("app/src/App.tsx | 12 ++++++++++++")).toBeInTheDocument();
-    expect(within(tools).getByText("App.tsx")).toBeInTheDocument();
-    expect(within(tools).getByText("modified")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
+    const digest = screen.getByLabelText("工作摘要");
+    expect(within(digest).getByText(/审查：reviewer-agent - Looks good/)).toBeInTheDocument();
+    expect(within(digest).getByText(/合并：approved - main - passed/)).toBeInTheDocument();
+    expect(within(digest).getByText(/Diff：app\/src\/App\.tsx \| 12/)).toBeInTheDocument();
+    expect(screen.getAllByText("App.tsx").length).toBeGreaterThan(0);
 
-    await user.click(within(tools).getByRole("button", { name: "查看差异" }));
-
-    expect(onLoadWorktreeDiff).toHaveBeenCalledWith("wt_1", false);
+    expect(onLoadWorktreeDiff).not.toHaveBeenCalled();
     expect(onMergeWorktree).not.toHaveBeenCalled();
     expect(onCleanupWorktree).not.toHaveBeenCalled();
   });
 
-  it("does not expose merge approval actions in the compact session review pane", async () => {
-    const user = userEvent.setup();
+  it("does not expose merge approval actions in the compact file side pane", () => {
     const onMergeWorktree = vi.fn();
 
     render(
@@ -1948,11 +1950,10 @@ describe("SessionWorkspace", () => {
     );
 
     expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: /审查/ }));
-    const tools = screen.getByLabelText("工作区工具");
-    expect(within(tools).getByText("代码审查")).toBeInTheDocument();
-    expect(within(tools).getByText("app/src/App.tsx | 12 ++++++++++++")).toBeInTheDocument();
-    expect(within(tools).queryByRole("button", { name: "合并申请" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
+    const digest = screen.getByLabelText("工作摘要");
+    expect(within(digest).getByText(/Diff：app\/src\/App\.tsx \| 12/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "合并申请" })).not.toBeInTheDocument();
 
     expect(onMergeWorktree).not.toHaveBeenCalled();
   });

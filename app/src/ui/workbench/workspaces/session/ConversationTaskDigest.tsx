@@ -6,6 +6,7 @@ import type {
   SessionWorkspaceBackgroundJob,
   SessionWorkspaceComposerContext,
   SessionWorkspacePatch,
+  SessionWorkspaceWorktreeDiff,
 } from "./types";
 import {
   compactText,
@@ -24,6 +25,22 @@ type DigestFileRow = {
   deletions?: number;
   reason?: string;
 };
+
+type DigestDiffEntry = {
+  id: string;
+  path: string;
+  additions?: number;
+  deletions?: number;
+  diff: string;
+};
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function readText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
 
 function normalizeDigestPath(path: string) {
   return path.replace(/\\/g, "/").trim();
@@ -65,6 +82,75 @@ function buildDigestFiles(activeTask?: SessionWorkspaceActiveTask | null, patche
   }
 
   return files;
+}
+
+function buildDigestDiffEntries(patches?: SessionWorkspacePatch[], worktreeDiff?: SessionWorkspaceWorktreeDiff | null) {
+  const entries: DigestDiffEntry[] = [];
+  for (const patch of patches ?? []) {
+    for (const file of patch.files ?? []) {
+      if (!file.diff?.trim()) {
+        continue;
+      }
+      entries.push({
+        id: `${patch.id}:${file.path}`,
+        path: file.path,
+        additions: file.additions,
+        deletions: file.deletions,
+        diff: file.diff,
+      });
+    }
+    if (!patch.files?.some((file) => file.diff?.trim()) && patch.diff?.trim()) {
+      entries.push({
+        id: patch.id,
+        path: patch.summary || "workspace diff",
+        additions: patch.additions,
+        deletions: patch.deletions,
+        diff: patch.diff,
+      });
+    }
+  }
+  const worktreeDiffText = readText(worktreeDiff?.diff) || readText(worktreeDiff?.preview);
+  if (worktreeDiffText && !entries.some((entry) => entry.diff === worktreeDiffText)) {
+    entries.push({
+      id: "worktree-diff",
+      path: worktreeDiff?.diffStat || "workspace diff",
+      diff: worktreeDiffText,
+    });
+  }
+  return entries;
+}
+
+function previewDigestDiff(diff: string, maxLines = 80) {
+  const lines = diff.replace(/\r\n/g, "\n").split("\n");
+  return {
+    lines: lines.slice(0, maxLines),
+    truncated: lines.length > maxLines,
+  };
+}
+
+function buildWorktreeReviewSummary(activeTask?: SessionWorkspaceActiveTask | null, worktreeDiffStat?: string | null) {
+  const lastStatus = readRecord(activeTask?.activeWorktree?.lastStatus);
+  if (!lastStatus && !worktreeDiffStat) {
+    return null;
+  }
+  const review = readRecord(lastStatus?.review);
+  const mergeApproval = readRecord(lastStatus?.mergeApproval);
+  const reviewSummary = compactMeta([
+    readText(review?.reviewer),
+    readText(review?.summary),
+    readText(review?.status),
+  ]).join(" - ");
+  const mergeSummary = compactMeta([
+    readText(mergeApproval?.decision),
+    readText(mergeApproval?.targetBranch),
+    readText(mergeApproval?.verificationStatus),
+  ]).join(" - ");
+  const parts = compactMeta([
+    reviewSummary ? `审查：${reviewSummary}` : null,
+    mergeSummary ? `合并：${mergeSummary}` : null,
+    worktreeDiffStat ? `Diff：${worktreeDiffStat}` : null,
+  ]);
+  return parts.length ? parts.join("；") : null;
 }
 
 function buildDigestCommands(
@@ -193,18 +279,24 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
   patches,
   backgroundJobs,
   composerContext,
+  worktreeDiff,
 }: {
   activeTask?: SessionWorkspaceActiveTask | null;
   latestAssistantMessage?: string | null;
   patches?: SessionWorkspacePatch[];
   backgroundJobs?: SessionWorkspaceBackgroundJob[];
   composerContext?: SessionWorkspaceComposerContext;
+  worktreeDiff?: SessionWorkspaceWorktreeDiff | null;
 }) {
   const files = buildDigestFiles(activeTask, patches);
   const visibleFiles = files.slice(0, 4);
+  const diffEntries = buildDigestDiffEntries(patches, worktreeDiff);
+  const visibleDiffEntries = diffEntries.slice(0, 2);
   const commands = buildDigestCommands(activeTask, backgroundJobs);
   const verifications = buildDigestVerificationRows(activeTask);
-  const hasConcreteWork = Boolean(files.length || commands.length || verifications.length);
+  const worktreeDiffStat = readText(worktreeDiff?.diffStat) || readText(activeTask?.activeWorktree?.lastStatus?.diffStat);
+  const worktreeReviewSummary = buildWorktreeReviewSummary(activeTask, worktreeDiffStat);
+  const hasConcreteWork = Boolean(files.length || commands.length || verifications.length || diffEntries.length || worktreeReviewSummary);
 
   if (!activeTask && !hasConcreteWork) {
     return null;
@@ -244,6 +336,8 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
 
       <p className="conversation-task-digest-summary">{summary}</p>
 
+      {worktreeReviewSummary ? <p className="conversation-task-digest-review">{worktreeReviewSummary}</p> : null}
+
       {contextBits.length ? (
         <div className="conversation-task-digest-meta" aria-label="工作区上下文">
           {contextBits.map((item) => (
@@ -253,6 +347,7 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
       ) : null}
 
       {hasConcreteWork ? (
+        <>
         <div className="conversation-task-digest-grid" aria-label="工作明细">
         <article className="conversation-task-digest-card">
           <span>文件</span>
@@ -274,7 +369,7 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
               ))}
               {files.length > visibleFiles.length ? (
                 <li>
-                  <small className="conversation-task-digest-empty">另有 {files.length - visibleFiles.length} 个文件在右侧文件/审查中查看。</small>
+                  <small className="conversation-task-digest-empty">另有 {files.length - visibleFiles.length} 个文件可在右侧文件浏览中打开。</small>
                 </li>
               ) : null}
             </ul>
@@ -329,6 +424,30 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
           )}
         </article>
         </div>
+        {visibleDiffEntries.length ? (
+          <section className="conversation-task-digest-diff" aria-label="代码改动 diff">
+            <header>
+              <strong>代码改动</strong>
+              <span>
+                {diffEntries.length} 个 diff
+                {diffEntries.length > visibleDiffEntries.length ? `，另有 ${diffEntries.length - visibleDiffEntries.length} 个未展开` : ""}
+              </span>
+            </header>
+            {visibleDiffEntries.map((entry) => {
+              const preview = previewDigestDiff(entry.diff);
+              return (
+                <details key={entry.id} open={visibleDiffEntries.length === 1}>
+                  <summary>
+                    <code>{entry.path}</code>
+                    <small>{compactMeta([entry.additions !== undefined ? `+${entry.additions}` : null, entry.deletions !== undefined ? `-${entry.deletions}` : null]).join(" ")}</small>
+                  </summary>
+                  <pre>{`${preview.lines.join("\n")}${preview.truncated ? "\n..." : ""}`}</pre>
+                </details>
+              );
+            })}
+          </section>
+        ) : null}
+        </>
       ) : null}
     </section>
   );

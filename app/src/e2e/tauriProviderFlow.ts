@@ -179,7 +179,7 @@ function assertElement(selector: string, description: string) {
   }
 }
 
-function clickWorkspacePane(pane: "files" | "review") {
+function clickWorkspacePane(pane: "files") {
   const tab = query<HTMLButtonElement>(`.session-pane-tab[data-pane="${pane}"]`);
   if (!tab) {
     throw new Error(`Expected workspace pane tab not found: ${pane}`);
@@ -253,6 +253,13 @@ function assertLaidOutBesideEachOther(first: Element, second: Element, descripti
   }
 }
 
+function assertScrollableRegion(element: HTMLElement, description: string) {
+  const style = window.getComputedStyle(element);
+  if (!["auto", "scroll"].includes(style.overflowY)) {
+    throw new Error(`${description} should own vertical scrolling, got overflow-y: ${style.overflowY}.`);
+  }
+}
+
 function textSample(element: HTMLElement | null) {
   return (element?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 180);
 }
@@ -317,6 +324,10 @@ async function assertSessionWorkspacePanels(assertions?: string[]) {
   assertNoHorizontalOverflow(grid, "session workbench grid");
   assertWorkspaceScrollContained("session workspace");
   assertDocumentDoesNotOwnSessionScroll("session workspace");
+  const conversationColumn = await waitFor("conversation column", () => query<HTMLElement>(".session-conversation-column"));
+  assertVisibleBox(conversationColumn, "conversation column", 420, 300);
+  assertLaidOutBesideEachOther(conversationColumn, pane, "chat and workspace pane");
+  assertScrollableRegion(conversationColumn, "conversation column");
   if (resizer.getBoundingClientRect().width > 10) {
     throw new Error(`Workspace resize handle is visually too wide: ${resizer.getBoundingClientRect().width}px.`);
   }
@@ -327,12 +338,12 @@ async function assertSessionWorkspacePanels(assertions?: string[]) {
   }
   const paneTabs = Array.from(document.querySelectorAll<HTMLButtonElement>(".session-pane-tab"));
   const paneKeys = paneTabs.map((tab) => tab.dataset.pane);
-  const hiddenPane = paneKeys.find((paneKey) => paneKey && !["files", "review"].includes(paneKey));
+  const hiddenPane = paneKeys.find((paneKey) => paneKey && paneKey !== "files");
   if (hiddenPane) {
     throw new Error(`Workspace pane exposed a nonessential tab: ${hiddenPane}.`);
   }
-  if (!paneKeys.includes("files") || !paneKeys.includes("review")) {
-    throw new Error(`Workspace pane should expose files and review only, got: ${paneKeys.join(",")}.`);
+  if (paneKeys.length !== 1 || !paneKeys.includes("files")) {
+    throw new Error(`Workspace pane should expose only files, got: ${paneKeys.join(",")}.`);
   }
 
   clickWorkspacePane("files");
@@ -348,33 +359,14 @@ async function assertSessionWorkspacePanels(assertions?: string[]) {
   assertWorkspaceScrollContained("file workspace");
   assertions?.push("session file workspace stays side-by-side without horizontal overflow");
 
-  const focusButton = query<HTMLButtonElement>(".session-file-toolbar-actions button");
+  const focusButton = query<HTMLButtonElement>('.session-file-toolbar-actions button[aria-label="专注文件"]');
   if (focusButton) {
-    focusButton.click();
-    const focusedWorkspace = await waitFor("focused file workspace", () => query<HTMLElement>(".session-workspace-files-focused"));
-    const focusedFileLayout = await waitFor("focused file browser layout", () => query<HTMLElement>(".session-workspace-files-focused .session-file-browser-layout"));
-    const focusedFileViewer = await waitFor("focused file viewer", () => query<HTMLElement>(".session-workspace-files-focused .session-file-viewer"));
-    const focusedFileTree = await waitFor("focused file tree", () => query<HTMLElement>(".session-workspace-files-focused .session-file-tree-pane"));
-    assertVisibleBox(focusedWorkspace, "focused file workspace", 900, 360);
-    assertVisibleBox(focusedFileLayout, "focused file browser layout", 900, 320);
-    assertVisibleBox(focusedFileViewer, "focused file viewer", 420, 260);
-    assertVisibleBox(focusedFileTree, "focused file tree", 220, 260);
-    assertLaidOutBesideEachOther(focusedFileViewer, focusedFileTree, "focused file preview and tree");
-    assertNoHorizontalOverflow(focusedFileLayout, "focused file browser layout");
-    assertDocumentDoesNotOwnSessionScroll("focused file workspace");
-    assertions?.push("focused file workspace keeps file preview and tree visible");
-    focusButton.click();
-    await waitFor("split workspace restored", () => query<HTMLElement>(".session-workbench-grid .session-conversation-column"));
+    throw new Error("File side pane should not expose the old full-screen focus button.");
   }
-
-  clickWorkspacePane("review");
-  const reviewPanel = await waitFor("review panel", () => query<HTMLElement>(".session-tool-panel"));
-  assertVisibleBox(reviewPanel, "review panel", 420, 300);
-  const reviewText = query<HTMLElement>(".session-tool-panel")?.textContent ?? "";
-  if (reviewText.includes("+0 -0")) {
-    throw new Error("Review panel exposed fake +0 -0 diff stats.");
+  if (query(".session-tool-panel") || query(".session-tool-panel-review")) {
+    throw new Error("Review/diff panels should stay out of the right side pane.");
   }
-  assertions?.push("review panel avoids fake zero diff stats");
+  assertions?.push("workspace side pane is file-only and avoids fake review stats");
 }
 
 function countTextOccurrences(text: string, needle: string) {
@@ -1121,7 +1113,7 @@ export async function maybeRunTauriProviderFlowE2e() {
         "composer submitted through UI",
         "session task completion visible in UI",
         "runtime timeline rendered in UI",
-        "workspace file/review panes render without misleading stats",
+        "workspace file pane renders while change details stay in chat",
         "message persistence verified through runtime API",
       ],
     });

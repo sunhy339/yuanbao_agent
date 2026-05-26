@@ -1018,38 +1018,20 @@ export function SessionWorkspace({
       .find((message) => message.role === "assistant" && !message.placeholder && message.content.trim())
       ?.content;
   }, [messages]);
-  const [workspaceFocus, setWorkspaceFocus] = useState<"files" | null>(null);
-  const hasReviewSignal = Boolean(
-    visibleActiveTask?.changedFiles?.length ||
-      visibleActiveTask?.activeWorktree ||
-      patches?.length ||
-      worktreeDiff ||
-      worktreeStatus?.files?.length,
-  );
-  const defaultWorkspacePane: SessionWorkspacePaneKey = hasReviewSignal ? "review" : "files";
+  const defaultWorkspacePane: SessionWorkspacePaneKey = "files";
   const [workspacePaneOverride, setWorkspacePaneOverride] = useState<SessionWorkspacePaneKey | null>(null);
   const workspacePane = workspacePaneOverride ?? defaultWorkspacePane;
   const [workspacePaneCollapsed, setWorkspacePaneCollapsed] = useState(false);
   const [workspacePaneWidthPx, setWorkspacePaneWidthPx] = useState<number | null>(null);
   const [workspacePaneResizing, setWorkspacePaneResizing] = useState(false);
-  const isFilesFocused = workspaceFocus === "files";
-  const isFileFocusActive = isFilesFocused && workspacePane === "files";
-  const isWorkspacePaneVisible = isFileFocusActive || !workspacePaneCollapsed;
+  const isWorkspacePaneVisible = !workspacePaneCollapsed;
   const selectWorkspacePane = useCallback((pane: SessionWorkspacePaneKey) => {
     setWorkspacePaneOverride(pane);
     setWorkspacePaneCollapsed(false);
-    if (pane !== "files") {
-      setWorkspaceFocus(null);
-    }
-  }, []);
-  const toggleFileFocus = useCallback(() => {
-    setWorkspacePaneOverride("files");
-    setWorkspacePaneCollapsed(false);
-    setWorkspaceFocus((current) => (current === "files" ? null : "files"));
   }, []);
   const startWorkspacePaneResize = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
-      if (workspacePaneCollapsed || isFileFocusActive) {
+      if (workspacePaneCollapsed) {
         return;
       }
       const grid = event.currentTarget.closest(".session-workbench-grid") as HTMLElement | null;
@@ -1072,7 +1054,7 @@ export function SessionWorkspace({
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp, { once: true });
     },
-    [isFileFocusActive, workspacePaneCollapsed, workspacePaneWidthPx],
+    [workspacePaneCollapsed, workspacePaneWidthPx],
   );
   const workspacePaneTabs: Array<{
     id: SessionWorkspacePaneKey;
@@ -1082,17 +1064,14 @@ export function SessionWorkspace({
     count?: number;
   }> = [
     { id: "files", label: "文件", description: "浏览项目文件", icon: Files, count: normalizedRelatedFiles.length },
-    { id: "review", label: "审查", description: "查看代码改动", icon: ClipboardList, count: (patches?.length ?? 0) + (visibleActiveTask?.changedFiles?.length ? 1 : 0) },
   ];
-  const toolPane: SessionToolKey = "review";
   const workspaceGridStyle =
-    workspacePaneWidthPx && !workspacePaneCollapsed && !isFileFocusActive
+    workspacePaneWidthPx && !workspacePaneCollapsed
       ? ({ "--session-workspace-pane-width": `${workspacePaneWidthPx}px` } as CSSProperties)
       : undefined;
   const workspaceClassName = [
     "session-workspace",
     "session-workspace-chat-only",
-    isFileFocusActive ? "session-workspace-files-focused" : "",
     workspacePaneCollapsed ? "session-workspace-pane-collapsed" : "",
     workspacePaneResizing ? "session-workspace-pane-resizing" : "",
   ]
@@ -1102,7 +1081,7 @@ export function SessionWorkspace({
   return (
     <main className={workspaceClassName} aria-label="Session">
       <section className="session-workbench-grid" style={workspaceGridStyle}>
-        <section className="session-conversation-column" aria-hidden={isFileFocusActive ? "true" : undefined}>
+        <section className="session-conversation-column">
           <header className="session-chat-header">
             <div className="session-chat-title-block">
               <p className="session-kicker">会话</p>
@@ -1158,6 +1137,7 @@ export function SessionWorkspace({
                 patches={patches}
                 backgroundJobs={backgroundJobs}
                 composerContext={composerContext}
+                worktreeDiff={worktreeDiff}
               />
               {messagesLoading && activityItems.length === 0 ? (
                 <div className="message-stream-loading" aria-label="加载消息">
@@ -1228,7 +1208,6 @@ export function SessionWorkspace({
                 <button
                   aria-label="隐藏右侧工作区"
                   className="session-pane-action"
-                  disabled={isFileFocusActive}
                   onClick={() => setWorkspacePaneCollapsed(true)}
                   title="隐藏右侧工作区"
                   type="button"
@@ -1245,34 +1224,8 @@ export function SessionWorkspace({
                     workspaceRoot={workspacePath}
                     workspaceLabel={workspaceLabel}
                     relatedFiles={normalizedRelatedFiles}
-                    focused={isFilesFocused}
-                    onToggleFocus={toggleFileFocus}
                   />
                 </section>
-              ) : null}
-
-              {workspacePane === "review" ? (
-                <SessionWorkspaceToolDock
-                  activeTask={visibleActiveTask}
-                  patches={patches}
-                  backgroundJobs={backgroundJobs}
-                  runtimeItems={runtimeItems}
-                  worktreeStatus={worktreeStatus}
-                  worktreeDiff={worktreeDiff}
-                  worktreeBusyAction={worktreeBusyAction}
-                  worktreeError={worktreeError}
-                  composerContext={composerContext}
-                  onLoadPatch={onLoadPatch}
-                  onRefreshCommandJob={onRefreshCommandJob}
-                  onStopCommandJob={onStopCommandJob}
-                  onRefreshWorktree={onRefreshWorktree}
-                  onLoadWorktreeDiff={onLoadWorktreeDiff}
-                  onMergeWorktree={onMergeWorktree}
-                  onCleanupWorktree={onCleanupWorktree}
-                  busyId={busyId}
-                  activeTool={toolPane}
-                  showChrome={false}
-                />
               ) : null}
             </div>
           </aside>

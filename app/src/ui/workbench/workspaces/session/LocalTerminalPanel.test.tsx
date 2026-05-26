@@ -157,13 +157,14 @@ describe("LocalTerminalPanel", () => {
     terminalHandler?.({
       terminalId: "term_clean",
       kind: "output",
-      chunk: "\u001b[6nhello\u001b[0m\r\n",
+      chunk: "\u001b[6n\uFFFD[6nhello\u001b[0m\r\n",
       ts: 2,
     });
 
     const output = await screen.findByLabelText("本地终端输出");
     expect(output).toHaveTextContent("hello");
     expect(output.textContent).not.toContain("[6n");
+    expect(output.textContent).not.toContain("\uFFFD");
     expect(output.textContent).not.toContain("\u001b");
   });
 });

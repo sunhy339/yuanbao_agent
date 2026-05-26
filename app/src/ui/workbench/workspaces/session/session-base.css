@@ -81,6 +81,9 @@
 
 .session-workspace-chat-only {
   display: grid;
-  min-height: 100%;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
-

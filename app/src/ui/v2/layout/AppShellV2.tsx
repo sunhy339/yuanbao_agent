@@ -97,7 +97,6 @@ export function AppShellV2({
   providerLabel,
   cwdLabel,
   runtimeLabel,
-  mcpLabel,
   approvalLabel,
   contextLabel,
   contextPreview,
@@ -109,6 +108,7 @@ export function AppShellV2({
 }: AppShellV2Props) {
   const activeSystemTab = activeTabId.startsWith("system:") ? activeTabId.slice("system:".length) : "session";
   const activeTaskSessions = sessions.filter((session) => session.status === "active").length;
+  const showApprovalPill = Boolean(approvalLabel && !/^0\s*个?审批/.test(approvalLabel));
 
   return (
     <div className="yb-app-shell">
@@ -136,10 +136,8 @@ export function AppShellV2({
             <div className="yb-topbar-status">
               <StatusBadge compact label={providerLabel} tone={disabled ? "info" : "success"} pulse={!disabled} />
               <StatusBadge compact label={runtimeLabel ?? `${activeTaskSessions} 个活跃任务`} tone={disabled ? "danger" : "success"} pulse={!disabled} />
-              <span className="yb-topbar-divider" aria-hidden="true" />
-              <span className="yb-topbar-pill" title={mcpLabel ?? "MCP"}>MCP</span>
-              <span className="yb-topbar-pill" title={approvalLabel ?? "审批"}>{approvalLabel ?? "审批"}</span>
-              <span className="yb-topbar-pill" title={contextLabel ?? "上下文"}>{contextLabel ?? "上下文"}</span>
+              {showApprovalPill ? <span className="yb-topbar-pill" title={approvalLabel}>{approvalLabel}</span> : null}
+              {contextLabel ? <span className="yb-topbar-pill" title={contextLabel}>上下文</span> : null}
             </div>
             <div className="yb-topbar-actions">
               <Button variant="ghost" size="sm" aria-label="打开 MCP 中心" onClick={() => onOpenSystemTab("mcp")}>MCP</Button>

@@ -14,33 +14,46 @@
 
 .session-workbench-grid {
   display: grid;
-  grid-template-columns: minmax(480px, 1fr) 6px clamp(560px, var(--session-workspace-pane-width, 42vw), 1040px);
+  grid-template-columns: minmax(420px, 1fr) 3px clamp(600px, var(--session-workspace-pane-width, 42vw), 1080px);
   gap: 0;
   align-items: stretch;
-  min-height: calc(100vh - var(--wb-composer-reserve, 0px));
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .session-conversation-column,
 .session-runtime-column {
   gap: 0;
   min-width: 0;
+  min-height: 0;
+}
+
+.session-conversation-column {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  padding-bottom: calc(max(var(--wb-composer-live-height), var(--wb-composer-reserve, 0px)) + 24px + env(safe-area-inset-bottom, 0px));
 }
 
 .session-runtime-column {
   grid-column: 3;
   display: grid;
-  align-content: start;
+  align-content: stretch;
   gap: 0;
-  position: sticky;
-  top: 0;
+  position: relative;
   min-width: 0;
-  height: calc(100vh - var(--wb-composer-reserve, 0px));
-  max-height: calc(100vh - var(--wb-composer-reserve, 0px));
+  height: 100%;
+  max-height: 100%;
   overflow: hidden;
   overscroll-behavior: contain;
 }
 
-@media (max-width: 1260px) {
+@media (max-width: 980px) {
   .session-workbench-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -51,8 +64,10 @@
 
   .session-runtime-column {
     grid-column: 1;
-    position: static;
+    position: relative;
+    height: auto;
     max-height: none;
+    overflow: visible;
   }
 }
 
@@ -61,17 +76,18 @@
   grid-column: 2;
   align-self: stretch;
   appearance: none;
-  width: 6px;
-  min-width: 6px;
-  max-width: 6px;
+  width: 3px;
+  min-width: 3px;
+  max-width: 3px;
   height: 100%;
-  min-height: calc(100vh - var(--wb-composer-reserve, 0px));
+  min-height: 0;
   border: 0;
   border-radius: 0;
   padding: 0;
   color: transparent;
   background: transparent;
   cursor: col-resize;
+  z-index: 8;
 }
 
 .session-sidebar-resizer::before {
@@ -79,9 +95,9 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 2px;
+  left: 1px;
   width: 1px;
-  background: rgba(15, 23, 42, 0.08);
+  background: rgba(15, 23, 42, 0.06);
 }
 
 .session-sidebar-resizer:hover::before,
@@ -136,12 +152,13 @@
 }
 
 .session-workspace-files-focused .session-runtime-column {
-  position: static;
+  position: relative;
   grid-column: 1 / -1;
   width: 100%;
-  min-height: calc(100vh - var(--wb-composer-reserve, 0px) - 112px);
-  max-height: none;
-  overflow: visible;
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
 }
 
 .session-workspace-files-focused .session-sidebar-resizer {
@@ -149,7 +166,12 @@
 }
 
 .session-files-workspace {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .session-workspace-files-focused .session-files-workspace {
@@ -157,14 +179,16 @@
 }
 
 .session-workspace-files-focused .session-file-workspace {
-  min-height: calc(100vh - var(--wb-composer-reserve, 0px) - 112px);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .session-workspace-pane {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  height: calc(100vh - var(--wb-composer-reserve, 0px));
-  min-height: calc(100vh - var(--wb-composer-reserve, 0px));
+  height: 100%;
+  min-height: 0;
   border: 0;
   border-left: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 0;
@@ -256,18 +280,21 @@
   gap: 0;
   min-width: 0;
   min-height: 0;
-  overflow: hidden auto;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: contain;
   padding: 0;
 }
 
 .session-pane-home {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(132px, 176px));
   gap: 10px;
-  min-height: 360px;
+  min-height: 0;
   align-content: center;
   justify-content: center;
   padding: 24px;
+  overflow: hidden auto;
 }
 
 .session-pane-home-card {
@@ -276,6 +303,7 @@
   gap: 8px;
   place-items: center;
   min-height: 116px;
+  max-width: 176px;
   border: 0;
   border-radius: 8px;
   padding: 16px 12px;
@@ -320,15 +348,17 @@
 .session-file-workspace {
   container-type: inline-size;
   display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
   min-width: 0;
-  height: calc(100vh - var(--wb-composer-reserve, 0px) - 64px);
-  min-height: 460px;
+  height: 100%;
+  min-height: 0;
   border: 0;
   border-radius: 0;
   padding: 0;
   background: transparent;
   box-shadow: none;
+  overflow: hidden;
 }
 
 .session-file-workspace-toolbar {
@@ -414,7 +444,6 @@
 
 @container (max-width: 420px) {
   .session-file-browser-layout,
-  .session-workspace-files-focused .session-file-browser-layout,
   .session-workspace-pane:not(.session-workspace-files-focused) .session-file-browser-layout {
     grid-template-areas:
       "tree"
@@ -429,6 +458,7 @@
 }
 
 .session-workspace-files-focused .session-file-browser-layout {
+  grid-template-areas: "tree viewer";
   grid-template-columns: minmax(300px, 28%) minmax(0, 1fr);
 }
 
@@ -438,15 +468,17 @@
 
 .session-workspace-files-focused .session-file-viewer,
 .session-workspace-files-focused .session-file-tree-pane {
-  min-height: calc(100vh - var(--wb-composer-reserve, 0px) - 216px);
+  min-height: 0;
 }
 
 .session-file-viewer {
   display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
   grid-area: viewer;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   border: 0;
   border-left: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 0;
@@ -459,7 +491,7 @@
 }
 
 .session-workspace:not(.session-workspace-files-focused) .session-file-viewer {
-  min-height: 220px;
+  min-height: 0;
 }
 
 .session-workspace-pane:not(.session-workspace-files-focused) .session-file-workspace {
@@ -536,6 +568,9 @@
 
 .session-file-markdown {
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
   overflow: auto;
   padding-right: 4px;
 }
@@ -544,7 +579,9 @@
   display: grid;
   gap: 0;
   min-width: 0;
-  max-height: min(68vh, 760px);
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
   overflow: auto;
   margin: 0;
   border: 1px solid rgba(15, 23, 42, 0.08);
@@ -556,7 +593,7 @@
 
 .session-workspace-files-focused .session-file-code-lines,
 .session-workspace-files-focused .session-file-markdown {
-  max-height: calc(100vh - var(--wb-composer-reserve, 0px) - 280px);
+  max-height: none;
 }
 
 .session-file-code-lines li {
@@ -587,10 +624,12 @@
 
 .session-file-tree-pane {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   grid-area: tree;
   gap: 10px;
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
   border: 0;
   border-radius: 0;
   padding: 12px;
@@ -625,9 +664,10 @@
 }
 
 .session-file-tree-scroll {
-  max-height: none;
   min-width: 0;
   min-height: 0;
+  height: 100%;
+  max-height: 100%;
   overflow: auto;
 }
 
@@ -787,11 +827,11 @@
 }
 
 .session-workspace-files-focused .session-runtime-column .session-files-workspace {
-  display: block;
+  display: grid;
 }
 
 .session-console {
-  min-height: min(680px, calc(100vh - var(--wb-composer-reserve, 0px) - 104px));
+  min-height: 0;
   border: 0;
   border-radius: 0;
   padding: 10px 0 18px;
@@ -805,7 +845,7 @@
 
 .session-console .message-stream {
   width: min(960px, calc(100% - 24px));
-  min-height: min(620px, calc(100vh - var(--wb-composer-reserve, 0px) - 126px));
+  min-height: 0;
   justify-self: start;
   margin: 0;
   border: 0;
@@ -817,10 +857,10 @@
 
 .session-workspace-chat-only .conversation-task-digest {
   margin: 0 0 12px;
-  border-color: rgba(120, 98, 95, 0.14);
-  padding: 12px 13px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 8px 22px rgba(35, 27, 23, 0.06);
+  border-color: #e5e7eb;
+  padding: 0 0 12px;
+  background: transparent;
+  box-shadow: none;
 }
 
 .session-workspace-chat-only .conversation-task-digest-header h2,
@@ -838,12 +878,12 @@
 
 .session-workspace-chat-only .conversation-task-digest-meta span,
 .session-workspace-chat-only .conversation-task-digest-card {
-  border-color: rgba(120, 98, 95, 0.14);
-  background: #fbfaf7;
+  border-color: transparent;
+  background: transparent;
 }
 
 .session-workspace-chat-only .conversation-task-digest-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .conversation-activity {
@@ -1118,6 +1158,12 @@
       "tree"
       "viewer";
     grid-template-columns: 1fr;
+  }
+
+  .session-workspace-files-focused .session-runtime-column {
+    height: auto;
+    max-height: none;
+    overflow: visible;
   }
 
   .session-workspace-files-focused .session-file-workspace,
@@ -1527,9 +1573,12 @@
 
 .session-tool-dock {
   display: grid;
+  grid-template-rows: minmax(0, 1fr);
   gap: 0;
   min-width: 0;
-  overflow: visible;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   border: 0;
   border-radius: 0;
   padding: 0;
@@ -1672,12 +1721,42 @@
   display: grid;
   gap: 10px;
   min-width: 0;
-  overflow: auto;
-  max-height: calc(100vh - var(--wb-composer-reserve, 0px) - 58px);
+  min-height: 0;
+  height: 100%;
+  overflow: hidden auto;
+  max-height: 100%;
   border: 0;
   border-radius: 0;
   padding: 12px;
   background: #ffffff;
+}
+
+.session-tool-panel-review .session-diff-viewer,
+.session-tool-panel-git .session-diff-viewer {
+  max-height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.session-tool-panel-terminal {
+  grid-template-rows: auto minmax(360px, 1fr) auto minmax(0, 0.48fr);
+  overflow: hidden;
+}
+
+.session-tool-panel-terminal .session-tool-command-list {
+  max-height: none;
+  min-height: 0;
+  overflow: auto;
+}
+
+.session-tool-panel-review {
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.session-tool-panel-git {
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .session-tool-panel-header {
@@ -2008,8 +2087,8 @@
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 0;
   min-width: 0;
-  height: calc(100vh - var(--wb-composer-reserve, 0px) - 122px);
-  min-height: 420px;
+  height: 100%;
+  min-height: 0;
   max-height: none;
   border: 1px solid rgba(15, 23, 42, 0.1);
   border-radius: 8px;
@@ -2238,8 +2317,17 @@
 
 .git-workspace-panel {
   display: grid;
-  gap: 10px;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  gap: 8px;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.git-workspace-panel > :last-child {
+  min-height: 0;
+  overflow: auto;
 }
 
 .git-workspace-panel-header {
@@ -2252,13 +2340,13 @@
 
 .git-workspace-toolbar {
   display: grid;
-  grid-template-columns: minmax(130px, 0.8fr) minmax(170px, 1fr) auto auto;
+  grid-template-columns: minmax(120px, 0.28fr) minmax(220px, 1fr) auto;
   gap: 8px;
-  align-items: end;
+  align-items: center;
   border: 0;
   border-bottom: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 0;
-  padding: 0 0 9px;
+  padding: 0 0 7px;
   background: transparent;
 }
 
@@ -2272,6 +2360,10 @@
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.git-workspace-toolbar-actions {
+  grid-column: 1 / -1;
 }
 
 .git-workspace-branch {
@@ -2322,6 +2414,11 @@
   align-items: center;
 }
 
+.git-workspace-toolbar-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .git-workspace-line-stat {
   color: #16a34a;
   font-family: var(--session-mono);
@@ -2331,21 +2428,32 @@
 
 .git-workspace-status-line {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   min-width: 0;
+  min-height: 22px;
+  align-items: center;
+  overflow: hidden;
   color: #64748b;
   font-size: 11px;
 }
 
 .git-workspace-status-line span {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(42ch, 100%);
+  height: 22px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 999px;
   padding: 3px 7px;
   background: #ffffff;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.git-workspace-panel-header > div {
+.git-workspace-panel-header:not(.git-workspace-toolbar) > div {
   display: grid;
   gap: 3px;
   min-width: 0;
@@ -2442,6 +2550,9 @@
   grid-template-columns: minmax(0, 1fr) minmax(220px, 28%);
   gap: 0;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
   overflow: hidden;
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 12px;
@@ -2450,12 +2561,18 @@
 
 .git-workspace-diff-pane {
   display: grid;
-  align-content: start;
+  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
   border: 0;
   border-radius: 0;
   background: #ffffff;
+}
+
+.git-workspace-diff-pane > .session-diff-viewer {
+  max-height: 100%;
+  overflow: auto;
 }
 
 .git-workspace-diff-head {
@@ -2476,15 +2593,17 @@
   gap: 8px;
   min-width: 0;
   min-height: 0;
+  max-height: 100%;
   border-left: 1px solid rgba(15, 23, 42, 0.08);
   padding: 10px;
   background: #f8fafc;
+  overflow: auto;
 }
 
 .git-workspace-empty-diff {
   display: grid;
   gap: 5px;
-  min-height: 430px;
+  min-height: clamp(240px, 42vh, 380px);
   align-content: center;
   justify-items: center;
   color: #64748b;
@@ -2769,5 +2888,793 @@ pre.session-runtime-lane-detail,
   font-size: 11px;
   line-height: 1.45;
   white-space: pre-wrap;
+}
+
+/* Current session layout: chat first, lightweight files/review side pane. */
+.session-workspace-chat-only {
+  --session-transcript-bg: #ffffff;
+  --session-transcript-line: rgba(15, 23, 42, 0.1);
+  --session-transcript-line-strong: rgba(15, 23, 42, 0.16);
+  --session-transcript-muted: #667085;
+  background: #ffffff;
+}
+
+.session-workspace-chat-only .session-workbench-grid {
+  grid-template-columns: minmax(440px, 1fr) 1px clamp(520px, var(--session-workspace-pane-width, 38vw), 920px);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.session-workspace-chat-only .session-conversation-column {
+  min-height: 0;
+  overflow: hidden auto;
+  background: #ffffff;
+  padding-right: 0;
+  scrollbar-gutter: stable;
+}
+
+.session-workspace-chat-only .session-runtime-column {
+  min-height: 0;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer {
+  width: 1px;
+  min-width: 1px;
+  max-width: 1px;
+  background: #e5e7eb;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer::before {
+  left: 0;
+  width: 1px;
+  background: #e5e7eb;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer:hover::before,
+.session-workspace-chat-only .session-sidebar-resizer:focus-visible::before {
+  background: #94a3b8;
+}
+
+.session-workspace-chat-only .session-workspace-pane {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid #e5e7eb;
+  background: #ffffff;
+}
+
+.session-workspace-chat-only .session-pane-chrome {
+  min-height: 42px;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 5px 10px;
+  background: #ffffff;
+  backdrop-filter: none;
+}
+
+.session-workspace-chat-only .session-pane-tabs {
+  gap: 4px;
+}
+
+.session-workspace-chat-only .session-pane-tab,
+.session-workspace-chat-only .session-pane-action {
+  min-height: 30px;
+  border-radius: 7px;
+  padding: 4px 8px;
+  color: #475467;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.session-workspace-chat-only .session-pane-tab[aria-selected="true"] {
+  border-color: #d0d5dd;
+  background: #f8fafc;
+  color: #101828;
+}
+
+.session-workspace-chat-only .session-pane-tab em {
+  background: #eef2f7;
+  color: #475467;
+}
+
+.session-workspace-chat-only .session-pane-body,
+.session-workspace-chat-only .session-pane-runtime {
+  min-height: 0;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.session-workspace-chat-only .session-console {
+  min-height: 0;
+  padding: 0;
+  background: #ffffff;
+}
+
+.session-workspace-chat-only .session-console .message-stream {
+  width: min(820px, calc(100% - 48px));
+  justify-self: center;
+  padding: 22px 0 calc(max(var(--wb-composer-live-height), var(--wb-composer-reserve, 0px)) + 42px);
+}
+
+.session-workspace-chat-only .conversation-task-digest {
+  margin: 0 0 18px;
+  border: 0;
+  border-bottom: 1px solid #e5e7eb;
+  border-radius: 0;
+  padding: 0 0 14px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .conversation-task-digest-header {
+  align-items: start;
+}
+
+.session-workspace-chat-only .conversation-task-digest-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+}
+
+.session-workspace-chat-only .conversation-task-digest-card {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 4px 10px;
+  align-items: start;
+  border: 0;
+  border-radius: 0;
+  padding: 2px 0;
+  background: transparent;
+}
+
+.session-workspace-chat-only .conversation-task-digest-card > span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.session-workspace-chat-only .conversation-task-digest-card > strong {
+  color: #1f2937;
+  font-size: 13px;
+}
+
+.session-workspace-chat-only .conversation-task-digest-card ul {
+  grid-column: 2;
+  gap: 3px;
+}
+
+.session-workspace-chat-only .conversation-task-digest-card li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.session-workspace-chat-only .conversation-task-digest-card li code {
+  font-size: 12px;
+}
+
+.session-workspace-chat-only .message-bubble {
+  border: 0;
+  border-radius: 0;
+  padding: 4px 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"],
+.session-workspace-chat-only .message-bubble[data-role="tool"] {
+  width: min(76ch, 96%);
+  max-width: min(76ch, 96%);
+}
+
+.session-workspace-chat-only .message-bubble[data-role="user"] {
+  border: 1px solid #fed7aa;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff7ed;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="system"] {
+  border-radius: 999px;
+  padding: 6px 11px;
+  background: #f8fafc;
+}
+
+.session-workspace-chat-only .message-bubble-head {
+  margin-bottom: 4px;
+}
+
+.session-workspace-chat-only .runtime-process-card,
+.session-workspace-chat-only .runtime-event-card,
+.session-workspace-chat-only .runtime-trace-row {
+  border-color: #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .session-file-browser-layout,
+.session-workspace-chat-only .session-tool-review-summary,
+.session-workspace-chat-only .session-diff-file,
+.session-workspace-chat-only .session-file-code-lines {
+  border-color: #e5e7eb;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .session-file-tree-pane {
+  background: #fbfcfe;
+}
+
+.session-workspace-chat-only .session-tool-panel {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  background: #ffffff;
+}
+
+.session-workspace-chat-only .session-tool-panel-review {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.session-workspace-chat-only .session-files-workspace,
+.session-workspace-chat-only .session-file-workspace,
+.session-workspace-chat-only .session-file-browser-layout {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.session-workspace-chat-only .runtime-progress-note {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  width: min(76ch, 96%);
+  justify-self: start;
+  padding: 2px 0;
+  color: #475467;
+}
+
+.session-workspace-chat-only .runtime-progress-note-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: #94a3b8;
+}
+
+.session-workspace-chat-only .runtime-progress-note strong {
+  display: block;
+  color: #344054;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.55;
+}
+
+.session-workspace-chat-only .runtime-progress-note small {
+  display: block;
+  margin-top: 2px;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 1180px) {
+  .session-workspace-chat-only .session-workbench-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .session-workspace-chat-only .session-runtime-column {
+    grid-column: 1;
+    min-height: min(620px, 72vh);
+    border-top: 1px solid #e5e7eb;
+  }
+}
+
+@media (max-width: 760px) {
+  .session-workspace-chat-only .session-console .message-stream {
+    width: calc(100% - 24px);
+  }
+}
+
+/* cc-haha inspired simplification: transcript first, right pane as a quiet tool drawer. */
+.session-workspace-chat-only {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  color: #1f2937;
+}
+
+.session-workspace-chat-only .session-workbench-grid {
+  grid-template-columns: minmax(480px, 1fr) 1px clamp(420px, var(--session-workspace-pane-width, 34vw), 760px);
+  gap: 0;
+}
+
+.session-workspace-chat-only.session-workspace-pane-collapsed .session-workbench-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.session-workspace-chat-only.session-workspace-files-focused .session-workbench-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.session-workspace-chat-only .session-conversation-column,
+.session-workspace-chat-only .session-runtime-column,
+.session-workspace-chat-only .session-pane-body,
+.session-workspace-chat-only .session-files-workspace,
+.session-workspace-chat-only .session-file-workspace,
+.session-workspace-chat-only .session-tool-dock,
+.session-workspace-chat-only .session-tool-panel {
+  min-width: 0;
+  min-height: 0;
+}
+
+.session-workspace-chat-only .session-conversation-column {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer {
+  position: relative;
+  width: 1px;
+  min-width: 1px;
+  border: 0;
+  background: #edf0f4;
+  cursor: col-resize;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer svg {
+  display: none;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer::before {
+  content: "";
+  position: absolute;
+  inset: 0 -3px;
+  width: auto;
+  background: transparent;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer:hover,
+.session-workspace-chat-only .session-sidebar-resizer:focus-visible,
+.session-workspace-chat-only.session-workspace-pane-resizing .session-sidebar-resizer {
+  background: #c7d2fe;
+}
+
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border-left: 0;
+}
+
+.session-workspace-chat-only .session-pane-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 6px 10px;
+}
+
+.session-workspace-chat-only .session-pane-tabs {
+  display: flex;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.session-workspace-chat-only .session-pane-tab,
+.session-workspace-chat-only .session-pane-action,
+.session-workspace-chat-only .session-file-toolbar-actions button {
+  min-height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .session-pane-tab[aria-selected="true"],
+.session-workspace-chat-only .session-pane-tab:hover,
+.session-workspace-chat-only .session-pane-action:hover,
+.session-workspace-chat-only .session-file-toolbar-actions button:hover {
+  background: #f3f4f6;
+}
+
+.session-workspace-chat-only .session-pane-tab em {
+  min-width: 18px;
+  padding: 1px 5px;
+  background: #eef2f7;
+  font-size: 10px;
+}
+
+.session-workspace-chat-only .session-sidebar-restore {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  padding: 6px 9px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+}
+
+.session-workspace-chat-only .session-sidebar-restore span {
+  display: none;
+}
+
+.session-workspace-chat-only .session-console .message-stream {
+  width: min(800px, calc(100% - 56px));
+  margin-inline: auto;
+  padding-top: 26px;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"],
+.session-workspace-chat-only .message-bubble[data-role="tool"] {
+  width: min(72ch, 100%);
+  max-width: min(72ch, 100%);
+}
+
+.session-workspace-chat-only .message-bubble[data-role="user"] {
+  max-width: min(72ch, 92%);
+  margin-left: auto;
+}
+
+.session-workspace-chat-only .conversation-activity-command-summary,
+.session-workspace-chat-only .conversation-activity-edit-summary {
+  color: #667085;
+  font-size: 12px;
+}
+
+.session-workspace-chat-only .runtime-progress-note {
+  border: 0;
+  background: transparent;
+}
+
+.session-workspace-chat-only .session-pane-body {
+  display: grid;
+  overflow: hidden;
+}
+
+.session-workspace-chat-only .session-file-workspace {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  padding: 10px;
+  background: #ffffff;
+}
+
+.session-workspace-chat-only .session-file-workspace-toolbar {
+  min-height: 34px;
+  border: 0;
+  border-radius: 0;
+  padding: 0 0 8px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .session-file-breadcrumbs {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.session-workspace-chat-only .session-file-open-tabs {
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  overflow-x: auto;
+}
+
+.session-workspace-chat-only .session-file-open-tab,
+.session-workspace-chat-only .session-file-inline-tab {
+  min-height: 30px;
+  border-radius: 8px;
+  padding: 5px 8px;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .session-file-runtime-note {
+  display: none;
+}
+
+.session-workspace-chat-only .session-file-browser-layout {
+  grid-template-areas: "viewer tree";
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 32%);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.session-workspace-chat-only.session-workspace-files-focused .session-file-browser-layout {
+  grid-template-areas: "viewer tree";
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 28%);
+}
+
+.session-workspace-chat-only .session-file-tree-pane {
+  border-left: 1px solid #e5e7eb;
+  padding: 10px;
+  background: #fbfcfe;
+}
+
+.session-workspace-chat-only .session-file-viewer {
+  border-left: 0;
+  padding: 10px;
+  overflow: hidden;
+}
+
+.session-workspace-chat-only .session-file-search {
+  min-height: 34px;
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: #ffffff;
+}
+
+.session-workspace-chat-only .session-file-related {
+  display: none;
+}
+
+.session-workspace-chat-only .session-file-code-lines {
+  min-height: 0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.session-workspace-chat-only .session-file-line-text {
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.session-workspace-chat-only .session-file-viewer-empty {
+  min-height: 180px;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.session-workspace-chat-only .session-tool-dock {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.session-workspace-chat-only .session-tool-panel {
+  display: grid;
+  gap: 10px;
+  height: 100%;
+  overflow: hidden;
+  padding: 12px;
+}
+
+.session-workspace-chat-only .session-tool-panel-review {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.session-workspace-chat-only .session-tool-panel-header,
+.session-workspace-chat-only .session-tool-review-summary,
+.session-workspace-chat-only .session-tool-actions {
+  flex: none;
+}
+
+.session-workspace-chat-only .session-tool-review-summary {
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.session-workspace-chat-only .session-tool-review-file-list {
+  max-height: 180px;
+  overflow: auto;
+}
+
+.session-workspace-chat-only .session-diff-viewer {
+  min-height: 0;
+  overflow: auto;
+}
+
+@media (max-width: 1180px) {
+  .session-workspace-chat-only .session-workbench-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .session-workspace-chat-only .session-sidebar-resizer {
+    display: none;
+  }
+
+  .session-workspace-chat-only .session-runtime-column.session-workspace-pane {
+    min-height: min(600px, 70vh);
+    border-top: 1px solid #e5e7eb;
+  }
+}
+
+@media (max-width: 780px) {
+  .session-workspace-chat-only .session-file-browser-layout,
+  .session-workspace-chat-only.session-workspace-files-focused .session-file-browser-layout {
+    grid-template-areas:
+      "tree"
+      "viewer";
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .session-workspace-chat-only .session-file-tree-pane {
+    border-left: 0;
+    border-bottom: 1px solid #e5e7eb;
+  }
+}
+
+/* Final cc-haha style guardrails: transcript is primary, the right pane is a quiet drawer. */
+.session-workspace-chat-only {
+  height: 100%;
+  max-height: 100%;
+}
+
+.session-workspace-chat-only .session-workbench-grid {
+  height: 100%;
+  max-height: 100%;
+  grid-template-columns: minmax(520px, 1fr) 1px clamp(360px, var(--session-workspace-pane-width, 30vw), 680px);
+  overflow: hidden;
+}
+
+.session-workspace-chat-only.session-workspace-pane-collapsed .session-workbench-grid,
+.session-workspace-chat-only.session-workspace-files-focused .session-workbench-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.session-workspace-chat-only .session-conversation-column {
+  height: 100%;
+  max-height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.session-workspace-chat-only .session-runtime-column.session-workspace-pane,
+.session-workspace-chat-only .session-pane-body,
+.session-workspace-chat-only .session-tool-dock {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.session-workspace-chat-only .session-pane-chrome {
+  min-height: 40px;
+  padding: 4px 8px;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer {
+  background: #e9edf3;
+}
+
+.session-workspace-chat-only .session-sidebar-resizer:hover,
+.session-workspace-chat-only .session-sidebar-resizer:focus-visible,
+.session-workspace-chat-only.session-workspace-pane-resizing .session-sidebar-resizer {
+  background: #94a3b8;
+}
+
+.session-workspace-chat-only .session-console .message-stream {
+  width: min(820px, calc(100% - 48px));
+  padding-top: 16px;
+  padding-bottom: 36px;
+}
+
+.session-workspace-chat-only .conversation-task-digest {
+  border: 0;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 0;
+  padding: 8px 0 16px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .conversation-task-digest-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.session-workspace-chat-only .conversation-task-digest-card {
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fbfcfe;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"],
+.session-workspace-chat-only .message-bubble[data-role="tool"] {
+  width: min(74ch, 100%);
+  max-width: min(74ch, 100%);
+  border: 0;
+  border-radius: 0;
+  padding: 4px 0 8px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="user"] {
+  max-width: min(72ch, 92%);
+  border-color: rgba(232, 168, 124, 0.35);
+  border-radius: 10px;
+  background: #fffaf7;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .runtime-event-card,
+.session-workspace-chat-only .runtime-event-v2-card,
+.session-workspace-chat-only .runtime-worklog-card,
+.session-workspace-chat-only .runtime-file-change-card {
+  width: min(74ch, 100%);
+  max-width: min(74ch, 100%);
+}
+
+.session-workspace-chat-only .runtime-worklog-card,
+.session-workspace-chat-only .runtime-file-change-card,
+.session-workspace-chat-only .runtime-process-card,
+.session-workspace-chat-only .runtime-trace-row {
+  border-left: 1px solid #e5e7eb !important;
+  padding-left: 12px;
+}
+
+.session-workspace-chat-only .session-file-workspace {
+  padding: 8px;
+}
+
+.session-workspace-chat-only .session-file-browser-layout,
+.session-workspace-chat-only.session-workspace-files-focused .session-file-browser-layout {
+  grid-template-areas: "viewer tree";
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 30%);
+  border: 0;
+  border-radius: 0;
+}
+
+.session-workspace-chat-only .session-file-tree-pane {
+  border-left: 1px solid #e5e7eb;
+  padding: 8px;
+}
+
+.session-workspace-chat-only .session-file-viewer {
+  padding: 8px 10px;
+  overflow: auto;
+}
+
+.session-workspace-chat-only .session-file-code-lines {
+  border: 0;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.session-workspace-chat-only .session-tool-panel {
+  height: 100%;
+  overflow: auto;
+  padding: 12px;
+}
+
+.session-workspace-chat-only .session-tool-panel-review {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.session-workspace-chat-only .session-tool-panel-header,
+.session-workspace-chat-only .session-tool-actions,
+.session-workspace-chat-only .session-tool-review-summary,
+.session-workspace-chat-only .session-tool-review-status {
+  display: none;
+}
+
+.session-workspace-chat-only .session-diff-viewer {
+  min-height: 0;
+  overflow: auto;
+}
+
+@media (max-width: 1180px) {
+  .session-workspace-chat-only .session-workbench-grid {
+    grid-template-columns: minmax(0, 1fr);
+    overflow: auto;
+  }
+
+  .session-workspace-chat-only .session-conversation-column {
+    max-height: none;
+  }
 }
 

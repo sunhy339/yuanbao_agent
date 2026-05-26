@@ -128,6 +128,29 @@ def test_run_command_configured_allowlist_routes_unmatched_command_to_approval(t
         store.close()
 
 
+def test_run_command_internal_validation_routes_allowlist_mismatch_to_approval(tmp_path: Path) -> None:
+    store, run_command, ctx = _make_run_command(
+        tmp_path,
+        {"tools": {"runCommand": {"allowedCommands": ["python -m pytest*"]}}},
+    )
+    try:
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": "python main.py",
+                "internalValidation": True,
+            }
+        )
+        assert result["status"] == "approval_required"
+        request = json.loads(result["approval"]["requestJson"])
+        assert request["command"] == "python main.py"
+        assert request["policyAction"] == "approval_required"
+        assert "allowlist" in request["policyReason"]
+    finally:
+        store.close()
+
+
 def test_run_command_default_allowlist_keeps_verification_command_available(tmp_path: Path) -> None:
     store, run_command, ctx = _make_run_command(tmp_path)
     try:

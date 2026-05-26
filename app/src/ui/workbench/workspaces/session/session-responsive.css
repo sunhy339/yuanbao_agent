@@ -1,4 +1,4 @@
-.session-console {
+.session-workspace:not(.session-workspace-chat-only) .session-console {
   min-height: min(580px, calc(100vh - 390px));
   padding: 16px;
 }
@@ -26,7 +26,7 @@
   text-transform: uppercase;
 }
 
-.session-console .message-stream {
+.session-workspace:not(.session-workspace-chat-only) .session-console .message-stream {
   min-height: min(500px, calc(100vh - 470px));
   border: 0;
   border-radius: 0;
@@ -152,7 +152,7 @@
   padding: 9px;
 }
 
-.session-console {
+.session-workspace:not(.session-workspace-chat-only) .session-console {
   min-height: 240px;
   padding: 14px 16px;
 }
@@ -166,7 +166,7 @@
   font-size: 24px;
 }
 
-.session-console .message-stream {
+.session-workspace:not(.session-workspace-chat-only) .session-console .message-stream {
   min-height: 128px;
 }
 
@@ -287,12 +287,21 @@
   padding: 8px;
 }
 
-.session-console {
+.session-workspace:not(.session-workspace-chat-only) .session-console {
   min-height: min(620px, calc(100vh - 210px));
 }
 
-.session-console .message-stream {
+.session-workspace:not(.session-workspace-chat-only) .session-console .message-stream {
   min-height: min(540px, calc(100vh - 296px));
+}
+
+.session-workspace-chat-only .session-console {
+  min-height: 0;
+  padding: 10px 0 18px;
+}
+
+.session-workspace-chat-only .session-console .message-stream {
+  min-height: 0;
 }
 
 .message-bubble,

@@ -161,16 +161,24 @@ describe("chatMessages", () => {
     ).toBe("当前目录内容如下：\n\n- snake_game/\n- README.md\n");
   });
 
-  it("keeps low-value runtime progress out of chat while preserving action signals", () => {
-    expect(summarizeOperationalAssistantDelta("Running tool: list_dir")).toBeNull();
-    expect(summarizeOperationalAssistantDelta("Building context and preparing the first tool calls...")).toBeNull();
-    expect(summarizeOperationalAssistantDelta("Subtask tool completed: run_command")).toBeNull();
+  it("turns runtime progress into short useful chat updates", () => {
+    expect(summarizeOperationalAssistantDelta("Running tool: list_dir")).toBe("\n\n正在使用目录。");
+    expect(summarizeOperationalAssistantDelta("Building context and preparing the first tool calls...")).toBe(
+      "\n\n正在整理上下文，并确定要先查看的文件和工具。",
+    );
+    expect(summarizeOperationalAssistantDelta("Subtask tool completed: run_command")).toBe(
+      "\n\n命令已完成。",
+    );
     expect(summarizeOperationalAssistantDelta("Subtask waiting for approval: run_command")).toBe(
-      "需要你审批后才能继续执行命令。",
+      "\n\n等待审批：命令。",
     );
     expect(summarizeOperationalAssistantDelta("Subtask tool failed: run_command")).toBe(
-      "子任务里的命令失败了，我会继续看失败原因。",
+      "\n\n命令失败，正在根据输出定位原因。",
     );
+  });
+
+  it("does not append the same operational update twice", () => {
+    expect(appendAssistantContentDelta("正在使用目录。", "\n\n正在使用目录。")).toBe("正在使用目录。");
   });
 
   it("replaces one session with persisted messages while keeping live streaming placeholders", () => {

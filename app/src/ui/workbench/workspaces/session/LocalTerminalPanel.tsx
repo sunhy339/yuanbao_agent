@@ -34,6 +34,7 @@ function displayWorkspace(path?: string) {
 
 function cleanTerminalText(text: string) {
   return text
+    .replace(/\uFFFD\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(ANSI_SEQUENCE_PATTERN, "")
     .replace(CONTROL_CHARACTER_PATTERN, "")
     .replace(/\r\n/g, "\n")
@@ -44,6 +45,9 @@ function appendOutput(lines: TerminalLine[], event: TerminalEvent): TerminalLine
   if (event.kind === "output" && event.chunk) {
     const text = cleanTerminalText(event.chunk);
     if (!text) {
+      return lines;
+    }
+    if (lines.at(-1)?.text === text) {
       return lines;
     }
     return [
@@ -198,6 +202,16 @@ export function LocalTerminalPanel({ workspaceRoot, workspaceLabel }: LocalTermi
     }
     setInput("");
     setError(null);
+    setLines((current) =>
+      [
+        ...current,
+        {
+          id: `${terminal.id}-${Date.now()}-input`,
+          text: `${prompt} ${text}\n`,
+          kind: "output" as const,
+        },
+      ].slice(-300),
+    );
     try {
       await terminalClient.terminalWrite({ terminalId: terminal.id, data: `${text}${newlineForShell(terminal.shell)}` });
     } catch (reason) {

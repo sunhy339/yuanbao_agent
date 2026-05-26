@@ -46,7 +46,7 @@
 }
 
 .session-workspace-chat-only .session-console {
-  min-height: min(720px, calc(100vh - var(--wb-composer-reserve, 0px) - 88px));
+  min-height: 0;
   border: 0;
   border-radius: 0;
   padding: 8px 0 20px;
@@ -60,7 +60,7 @@
 
 .session-workspace-chat-only .session-console .message-stream {
   width: min(1180px, calc(100% - 56px));
-  min-height: min(660px, calc(100vh - var(--wb-composer-reserve, 0px) - 116px));
+  min-height: 0;
   margin: 0 auto;
   border: 0;
   border-radius: 0;
@@ -176,10 +176,10 @@
   display: grid;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid rgba(15, 23, 42, 0.1);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .runtime-worklog-head,
@@ -190,7 +190,7 @@
   align-items: center;
   width: 100%;
   border: 0;
-  padding: 10px 12px;
+  padding: 4px 0;
   color: inherit;
   background: transparent;
   cursor: pointer;
@@ -200,7 +200,7 @@
 
 .runtime-worklog-head:hover,
 .runtime-file-change-head:hover {
-  background: rgba(15, 23, 42, 0.03);
+  background: transparent;
 }
 
 .runtime-worklog-dot,
@@ -265,7 +265,7 @@
 .runtime-file-change-list {
   display: grid;
   gap: 6px;
-  padding: 0 12px 12px 29px;
+  padding: 2px 0 4px 18px;
 }
 
 .runtime-worklog-row {
@@ -408,14 +408,14 @@
 .session-workspace-chat-only .runtime-trace-row,
 .session-workspace-chat-only .worktree-panel {
   width: 100%;
-  border: 1px solid rgba(15, 23, 42, 0.1) !important;
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.92) !important;
+  border: 0 !important;
+  border-radius: 0;
+  background: transparent !important;
   box-shadow: none;
 }
 
 .session-workspace-chat-only .runtime-process-card {
-  background: rgba(255, 255, 255, 0.84) !important;
+  background: transparent !important;
 }
 
 .session-workspace-chat-only .runtime-process-card[data-status="completed"],
@@ -435,7 +435,7 @@
 .session-workspace-chat-only .runtime-process-card[data-status="passed"],
 .session-workspace-chat-only .runtime-process-card[data-status="failed"],
 .session-workspace-chat-only .runtime-process-card[data-status="error"] {
-  background: rgba(255, 255, 255, 0.9) !important;
+  background: transparent !important;
 }
 
 .session-workspace-chat-only .worktree-panel {
@@ -471,12 +471,12 @@
   min-height: 34px;
   grid-template-columns: 10px minmax(0, 1fr) auto auto;
   gap: 8px;
-  padding: 6px 10px;
+  padding: 3px 0;
 }
 
 .session-workspace-chat-only .runtime-process-head:hover,
 .session-workspace-chat-only .runtime-trace-row-summary:hover {
-  background: rgba(15, 23, 42, 0.03);
+  background: transparent;
 }
 
 .session-workspace-chat-only .runtime-process-spark,
@@ -502,33 +502,33 @@
 
 .session-workspace-chat-only .runtime-process-summary {
   margin: 0;
-  padding: 0 10px 8px 27px;
+  padding: 0 0 6px 20px;
   color: #4b5565;
   font-size: 12px;
   line-height: 1.55;
 }
 
 .session-workspace-chat-only .runtime-process-meta {
-  padding: 0 10px 8px 27px;
+  padding: 0 0 6px 20px;
   gap: 6px;
 }
 
 .session-workspace-chat-only .runtime-process-summary,
 .session-workspace-chat-only .runtime-trace-row-copy small {
   margin: 0;
-  padding: 0 10px 8px 28px;
+  padding: 0 0 6px 20px;
   color: #667085;
   font-size: 12px;
   line-height: 1.45;
 }
 
 .session-workspace-chat-only .runtime-event-actions {
-  padding-left: 28px;
+  padding-left: 20px;
 }
 
 .session-workspace-chat-only .runtime-process-meta,
 .session-workspace-chat-only .runtime-trace-row-meta {
-  padding: 0 10px 8px 28px;
+  padding: 0 0 6px 20px;
 }
 
 .session-workspace-chat-only .runtime-process-meta span,
@@ -544,6 +544,7 @@
 .session-workspace-chat-only .runtime-event-code-summary,
 .session-workspace-chat-only .diff-view {
   max-height: 200px;
+  margin-left: 20px;
   border-color: rgba(15, 23, 42, 0.1);
   background: #f6f7f8;
   color: #26313f;

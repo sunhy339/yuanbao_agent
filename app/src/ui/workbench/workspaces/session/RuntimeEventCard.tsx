@@ -294,7 +294,11 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const kindLabel = getRuntimeKindLabel(item.kind);
-  const canResolveApproval = item.kind === "approval" && item.status === "pending" && item.sourceId;
+  const normalizedApprovalStatus = item.status?.toLowerCase();
+  const canResolveApproval =
+    item.kind === "approval" &&
+    item.sourceId &&
+    ["pending", "queued", "waiting", "waiting_approval"].includes(normalizedApprovalStatus ?? "");
   const canLoadPatch = item.kind === "patch" && Boolean(item.sourceId && onLoadPatch);
   const patchPaths = item.kind === "patch" && item.sourceId && item.code
     ? item.code.split("\n").map(parsePatchPath).filter(Boolean)

@@ -256,6 +256,19 @@ export interface ApprovalRecordView {
     summary: string;
     metrics: Array<{ label: string; value: string }>;
     issues: string[];
+    audit?: {
+      approvals?: Array<{
+        approvalId?: string;
+        kind?: string;
+        decision?: string;
+        decidedBy?: string;
+        gateStatus?: string;
+        evidenceLevel?: string;
+        summary?: string;
+        reviewStatus?: string;
+        verificationStatus?: string;
+      }>;
+    };
     reviewConclusion?: {
       approvalId?: string;
       decision?: string;
@@ -340,6 +353,10 @@ function CompletionEvidencePanel({
 }: {
   evidence: NonNullable<ApprovalRecordView["completionEvidence"]>;
 }) {
+  const auditApprovals = (evidence.audit?.approvals ?? [])
+    .filter((approval) => approval.summary || approval.decision || approval.gateStatus || approval.reviewStatus || approval.verificationStatus)
+    .slice(-3);
+
   return (
     <section className="yb-approval-evidence" aria-label="Completion evidence">
       <div className="yb-approval-evidence-head">
@@ -362,6 +379,20 @@ function CompletionEvidencePanel({
         <ul className="yb-approval-evidence-issues">
           {evidence.issues.slice(0, 4).map((issue) => (
             <li key={issue}>{issue}</li>
+          ))}
+        </ul>
+      ) : null}
+      {auditApprovals.length ? (
+        <ul className="yb-approval-evidence-issues" aria-label="Completion audit">
+          {auditApprovals.map((approval, index) => (
+            <li key={approval.approvalId ?? `${approval.kind ?? "approval"}:${index}`}>
+              {approval.summary ? <span>{approval.summary}</span> : null}
+              {[approval.decision, approval.gateStatus, approval.reviewStatus, approval.verificationStatus]
+                .filter(Boolean)
+                .map((part) => (
+                  <small key={part}> {part}</small>
+                ))}
+            </li>
           ))}
         </ul>
       ) : null}

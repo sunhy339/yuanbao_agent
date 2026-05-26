@@ -140,9 +140,11 @@ describe("SessionWorkspace", () => {
     expect(within(digest).getByText("正在修改")).toBeInTheDocument();
     expect(within(digest).getByText("1 个改动文件")).toBeInTheDocument();
     expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /文件/ })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /审查/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /终端/ })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /Git/ })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /终端/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: /文件/ }));
     const fileWorkspace = screen.getByLabelText("文件工作区");
     expect(within(fileWorkspace).getByLabelText("文件浏览器")).toBeInTheDocument();
@@ -151,7 +153,7 @@ describe("SessionWorkspace", () => {
       item.textContent ?? "",
     );
     expect(activityText[0]).toContain("Check the current failing test.");
-    expect(activityText[1]).toContain("I found the failure in the session renderer.");
+    expect(activityText.some((item) => item.includes("I found the failure in the session renderer."))).toBe(true);
 
     expect(screen.queryByRole("heading", { name: "Active task" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Runtime shelf" })).not.toBeInTheDocument();
@@ -159,11 +161,9 @@ describe("SessionWorkspace", () => {
     expect(screen.getAllByText("MiniMax-M2.7-highspeed").length).toBeGreaterThan(0);
   });
 
-  it("switches workspace pane pages with useful file, review, command, and git details", async () => {
+  it("switches workspace pane pages with useful file and review details", async () => {
     const user = userEvent.setup();
     const onLoadPatch = vi.fn();
-    const onLoadWorktreeDiff = vi.fn();
-    const onRefreshWorktree = vi.fn();
 
     render(
       <SessionWorkspace
@@ -260,12 +260,12 @@ describe("SessionWorkspace", () => {
           ].join("\n"),
         }}
         onLoadPatch={onLoadPatch}
-        onLoadWorktreeDiff={onLoadWorktreeDiff}
-        onRefreshWorktree={onRefreshWorktree}
       />,
     );
 
-    expect(screen.getByLabelText("工作区入口")).toBeInTheDocument();
+    expect(screen.getByRole("tablist", { name: "工作区页签" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /终端/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("tab", { name: /文件/ }));
     const fileWorkspace = screen.getByLabelText("文件工作区");
     expect(within(fileWorkspace).getByText("任务相关文件")).toBeInTheDocument();
@@ -282,26 +282,6 @@ describe("SessionWorkspace", () => {
     expect(within(tools).getByText("new layout")).toBeInTheDocument();
     await user.click(within(tools).getByRole("button", { name: "打开补丁" }));
     expect(onLoadPatch).toHaveBeenCalledWith("patch_1");
-
-    await user.click(screen.getByRole("tab", { name: /终端/ }));
-    expect(within(tools).getByLabelText("本地终端")).toBeInTheDocument();
-    expect(within(tools).getAllByText("命令记录").length).toBeGreaterThan(0);
-    expect(within(tools).getAllByText(/shell/).length).toBeGreaterThan(0);
-    expect(within(tools).getAllByText("npm run typecheck").length).toBeGreaterThan(0);
-    expect(within(tools).getByText("Typecheck passed.")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: /Git/ }));
-    const gitPanel = within(tools).getByLabelText("Git 工作区");
-    expect(within(gitPanel).getByRole("heading", { name: "feat/dev-desktop" })).toBeInTheDocument();
-    expect(within(gitPanel).getByText("1 个未提交文件")).toBeInTheDocument();
-    expect(within(gitPanel).getAllByText("+12 -4").length).toBeGreaterThan(0);
-    expect(within(gitPanel).getByText("1 项通过")).toBeInTheDocument();
-    expect(within(gitPanel).getByText("reviewer-agent - Looks good.")).toBeInTheDocument();
-    expect(within(gitPanel).getByText("main - passed")).toBeInTheDocument();
-    expect(within(gitPanel).getByText(/diff --git a\/SessionWorkspace\.tsx b\/SessionWorkspace\.tsx/)).toBeInTheDocument();
-    expect(within(gitPanel).getAllByText("1 个文件").length).toBeGreaterThan(0);
-    await user.click(within(gitPanel).getByRole("button", { name: "刷新状态" }));
-    expect(onRefreshWorktree).toHaveBeenCalledWith("wt_1");
   });
 
   it("does not repeat the final assistant answer in the work summary", () => {
@@ -357,9 +337,7 @@ describe("SessionWorkspace", () => {
     expect(within(tools).queryByText("+0 -0")).not.toBeInTheDocument();
   });
 
-  it("shows terminal history from runtime command tool events when task commands are empty", async () => {
-    const user = userEvent.setup();
-
+  it("surfaces verification command history in the main conversation when task commands are empty", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -385,12 +363,9 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /终端/ }));
-    const tools = screen.getByLabelText("工作区工具");
-    expect(within(tools).getByText("命令记录")).toBeInTheDocument();
-    expect(within(tools).getAllByText("python -m pytest -q").length).toBeGreaterThan(0);
-    expect(within(tools).getByText(/4 passed/)).toBeInTheDocument();
-    expect(within(tools).getAllByText(/shell/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("tab", { name: /终端/ })).not.toBeInTheDocument();
+    expect(screen.getAllByText("python -m pytest -q").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/4 passed/).length).toBeGreaterThan(0);
   });
 
   it("keeps assistant paragraphs readable instead of splitting them into one-word lines", () => {
@@ -524,7 +499,8 @@ describe("SessionWorkspace", () => {
       (item) => item.textContent ?? "",
     );
     expect(flow[0]).toContain("Patch the game");
-    expect(flow[1]).toContain("思考");
+    expect(flow[1]).toContain("正在处理");
+    expect(flow[1]).toMatch(/正在等待模型|最近活动|正在执行|等待审批/);
     expect(flow[2]).toContain("正在输出");
     expect(flow).toHaveLength(3);
   });
@@ -581,8 +557,8 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByText("仍在思考…")).toBeInTheDocument();
-    expect(screen.getByText(/长时间没有收到新 token/)).toBeInTheDocument();
+    expect(screen.getByText("仍在处理…")).toBeInTheDocument();
+    expect(screen.getByText(/还没有收到可展示内容|正在等待模型/)).toBeInTheDocument();
   });
 
   it("does not invent plan steps when the runtime did not create a plan", () => {
@@ -610,7 +586,7 @@ describe("SessionWorkspace", () => {
           {
             id: "m1",
             role: "assistant",
-            content: "## Can do\n- **Read files**\n- Run `npm test`\n\n| Tool | Use |\n| --- | --- |\n| list_dir | Browse |",
+            content: "##Can do\n- **Read files** and then - Run `npm test`\n---\n| Tool | Use |\n| --- | --- |\n| list_dir | Browse |",
             createdAt: 1,
           },
         ]}
@@ -621,6 +597,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText("Read files")).toBeInTheDocument();
     expect(screen.getByText("npm test")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Tool" })).toBeInTheDocument();
+    expect(screen.getByRole("separator")).toBeInTheDocument();
     expect(screen.queryByText(/## Can do/)).not.toBeInTheDocument();
   });
 
@@ -638,7 +615,6 @@ describe("SessionWorkspace", () => {
   });
 
   it("hides low-level trace noise while keeping important diagnostics readable", async () => {
-    const user = userEvent.setup();
     render(
       <SessionWorkspace
         session={session}
@@ -675,7 +651,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /诊断/ }));
+    expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
     expect(screen.queryByText("assistant.token")).not.toBeInTheDocument();
     expect(screen.queryByText("provider.request")).not.toBeInTheDocument();
     expect(screen.queryByText("task.started")).not.toBeInTheDocument();
@@ -991,7 +967,6 @@ describe("SessionWorkspace", () => {
       expect.stringContaining("Command failed with exit 1."),
     );
 
-    await user.click(screen.getByRole("tab", { name: /诊断/ }));
     await user.click(screen.getByRole("button", { name: /trace Runtime Error 失败/i }));
     await user.click(screen.getByRole("button", { name: "复制详情" }));
 
@@ -1166,9 +1141,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText("Listed fixture files.")).not.toBeInTheDocument();
   });
 
-  it("renders active task execution progress without duplicating task summary cards", async () => {
-    const user = userEvent.setup();
-
+  it("renders active task execution progress in the main digest without restoring diagnostics chrome", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -1221,22 +1194,17 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /诊断/ }));
-    const taskProgress = screen.getByRole("region", { name: "任务进度" });
-    expect(taskProgress).toBeInTheDocument();
-    expect(within(taskProgress).getByRole("heading", { name: "正在验证" })).toBeInTheDocument();
-    expect(screen.getByLabelText("任务进度")).toBeInTheDocument();
-    expect(screen.getAllByText(/Run the generated CLI against a sample image/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Create a pixel-art image tool").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("任务进度")).not.toBeInTheDocument();
+    const digest = screen.getByLabelText("工作摘要");
+    expect(within(digest).getByRole("heading", { name: "Create a pixel-art image tool" })).toBeInTheDocument();
+    expect(within(digest).getByText(/Run the generated CLI against a sample image/)).toBeInTheDocument();
+    expect(within(digest).getByText("1 个改动文件")).toBeInTheDocument();
+    expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
+    expect(within(digest).getByText("1 项验证")).toBeInTheDocument();
     expect(screen.queryByText("Inspect workspace")).not.toBeInTheDocument();
     expect(screen.queryByText("Implement the generator")).not.toBeInTheDocument();
     expect(screen.queryByText("Verify the CLI")).not.toBeInTheDocument();
-    expect(within(taskProgress).getAllByText("当前步骤").length).toBeGreaterThan(0);
-    expect(within(taskProgress).getAllByText("最近检查").length).toBeGreaterThan(0);
-    expect(within(taskProgress).getAllByText("代码变更").length).toBeGreaterThan(0);
-    expect(within(taskProgress).getAllByText("执行状态").length).toBeGreaterThan(0);
-    expect(within(taskProgress).getAllByText("验证").length).toBeGreaterThan(0);
-    expect(within(taskProgress).getAllByText("执行").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /changed files/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /verification/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/sessionId/)).not.toBeInTheDocument();
@@ -1249,7 +1217,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getAllByText(/CLI help is available|已通过/).length).toBeGreaterThan(0);
   });
 
-  it("renders real agent child tasks separately from the execution plan", () => {
+  it("keeps raw agent child-task internals out of the compact session workspace", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -1294,14 +1262,13 @@ describe("SessionWorkspace", () => {
     );
 
     expect(screen.queryByLabelText("计划步骤")).not.toBeInTheDocument();
-    const agentPanel = screen.getByLabelText("真实 Agent 任务");
-    expect(within(agentPanel).getAllByText("Implement food sprite polish").length).toBeGreaterThan(0);
-    expect(within(agentPanel).getByText(/worker: Worker 1/)).toBeInTheDocument();
-    expect(within(agentPanel).getByText("Worker 1")).toBeInTheDocument();
-    expect(within(agentPanel).getByText("Food rendering updated.")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("真实 Agent 任务")).not.toBeInTheDocument();
+    expect(screen.queryByText(/worker: Worker 1/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Food rendering updated.")).not.toBeInTheDocument();
   });
 
-  it("shows that no real agent child task exists when agent work was requested but none was emitted", () => {
+  it("does not show an empty agent-child-task panel when no child task was emitted", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -1316,8 +1283,9 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    const agentPanel = screen.getByLabelText("真实 Agent 任务");
-    expect(within(agentPanel).getByText(/尚未检测到运行时创建的真实 agent child task/i)).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("真实 Agent 任务")).not.toBeInTheDocument();
+    expect(screen.queryByText(/尚未检测到运行时创建的真实 agent child task/i)).not.toBeInTheDocument();
   });
 
   it("collapses generic planner-only child tasks into a short collaboration summary", () => {
@@ -1622,8 +1590,7 @@ describe("SessionWorkspace", () => {
     expect(within(evidence).getByText("Code/test changes need targeted test, build, or typecheck verification.")).toBeInTheDocument();
   });
 
-  it("summarizes runtime gate, verification, and context budget in the cockpit", async () => {
-    const user = userEvent.setup();
+  it("surfaces completion gate evidence in the chat stream without exposing internal cockpit panels", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -1700,27 +1667,23 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /诊断/ }));
-    const cockpit = screen.getByLabelText("运行态概览");
-    expect(within(cockpit).getByText("Ship the guarded frontend")).toBeInTheDocument();
-    expect(within(cockpit).getByText("needs_acceptance_review")).toBeInTheDocument();
-    expect(within(cockpit).getByText("命令")).toBeInTheDocument();
-    expect(within(cockpit).getByText("1 通过")).toBeInTheDocument();
-    expect(within(cockpit).getByText("1 待处理")).toBeInTheDocument();
-    expect(within(cockpit).getByText("上下文预算")).toBeInTheDocument();
-    expect(within(cockpit).getByText("72%")).toBeInTheDocument();
-    expect(within(cockpit).getAllByText("failed: Static frontend asset reachable: index.html -> app.js").length).toBeGreaterThan(0);
-    expect(within(cockpit).getByText("完成依据")).toBeInTheDocument();
-    expect(within(cockpit).getByText("1 已批准 / 0 待处理 / 0 已拒绝")).toBeInTheDocument();
-    expect(within(cockpit).getByText("llm | 82% | proposal_completion")).toBeInTheDocument();
-    expect(within(cockpit).queryByText("模型异常")).not.toBeInTheDocument();
-    expect(within(cockpit).queryByText("Switched provider profile.")).not.toBeInTheDocument();
-    expect(within(cockpit).getByText("Review generated frontend acceptance evidence.")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("运行态概览")).not.toBeInTheDocument();
+    const digest = screen.getByLabelText("工作摘要");
+    expect(within(digest).getByRole("heading", { name: "Ship the guarded frontend" })).toBeInTheDocument();
+    expect(within(digest).getByText("2 个改动文件")).toBeInTheDocument();
+    expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
+    expect(within(digest).getByText("2 项验证")).toBeInTheDocument();
+    expect(screen.getByText("needs_acceptance_review")).toBeInTheDocument();
+    expect(screen.getAllByText("failed: Static frontend asset reachable: index.html -> app.js").length).toBeGreaterThan(0);
+    expect(screen.getByText("Completion review approved by user.")).toBeInTheDocument();
+    expect(screen.queryByText("模型异常")).not.toBeInTheDocument();
+    expect(screen.queryByText("Switched provider profile.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Review generated frontend acceptance evidence.")).not.toBeInTheDocument();
     expect(screen.queryByText("Internal focus should stay hidden.")).not.toBeInTheDocument();
   });
 
-  it("prefers current successful checks over stale failed commands in workspace status", async () => {
-    const user = userEvent.setup();
+  it("prefers current successful checks over stale failed commands in the chat summary", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -1742,21 +1705,19 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /诊断/ }));
-    const cockpit = screen.getByLabelText("运行态概览");
-    expect(within(cockpit).getByText("本轮任务已完成")).toBeInTheDocument();
-    expect(
-      within(cockpit).getByText("python -m py_compile blog_service.py blog_api.py · 已通过"),
-    ).toBeInTheDocument();
-    expect(within(cockpit).queryByText("最近动作")).not.toBeInTheDocument();
-    expect(within(cockpit).getByText("python -m py_compile blog_service.py blog_api.py · 已通过")).toBeInTheDocument();
-    expect(within(cockpit).queryByText("python -m py_compile blog_service.py blog_api.py | failed")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("运行态概览")).not.toBeInTheDocument();
+    const digest = screen.getByLabelText("工作摘要");
+    expect(within(digest).getByText(/任务已完成/)).toBeInTheDocument();
+    expect(within(digest).getByText("2 项验证")).toBeInTheDocument();
+    expect(screen.getAllByText("python -m py_compile blog_service.py blog_api.py").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/已通过|passed/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText("python -m py_compile blog_service.py blog_api.py | failed")).not.toBeInTheDocument();
   });
 
-  it("surfaces resumable handoff controls in the cockpit", async () => {
+  it("keeps resumable handoff state summarized without raw convergence details", async () => {
     const user = userEvent.setup();
     const onRefreshTask = vi.fn();
-    const onResumeTask = vi.fn();
 
     render(
       <SessionWorkspace
@@ -1784,27 +1745,21 @@ describe("SessionWorkspace", () => {
         }}
         messages={[{ id: "m1", role: "assistant", content: "Paused with handoff.", createdAt: 1 }]}
         onRefreshTask={onRefreshTask}
-        onResumeTask={onResumeTask}
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /诊断/ }));
-    const cockpit = screen.getByLabelText("运行态概览");
-    const actions = within(cockpit).getByLabelText("任务操作");
+    expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("运行态概览")).not.toBeInTheDocument();
+    expect(screen.getByText("Resume the provider recovery follow-up")).toBeInTheDocument();
+    expect(screen.queryByText("接力状态")).not.toBeInTheDocument();
+    expect(screen.queryByText("Continue provider recovery validation.")).not.toBeInTheDocument();
 
-    expect(within(cockpit).getByText("等待继续动作")).toBeInTheDocument();
-    expect(within(cockpit).queryByText("接力状态")).not.toBeInTheDocument();
-    expect(within(cockpit).queryByText("Continue provider recovery validation.")).not.toBeInTheDocument();
-
-    await user.click(within(actions).getByRole("button", { name: "刷新" }));
-    await user.click(within(actions).getByRole("button", { name: "继续" }));
+    await user.click(screen.getByRole("button", { name: "刷新任务" }));
 
     expect(onRefreshTask).toHaveBeenCalledTimes(1);
-    expect(onResumeTask).toHaveBeenCalledWith("task_handoff");
   });
 
-  it("renders trace filter bar with task id, visibility, and agent type filters", async () => {
-    const user = userEvent.setup();
+  it("keeps low-value trace filters out while surfacing important runtime errors", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -1833,16 +1788,13 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /诊断/ }));
-    expect(screen.getByLabelText("诊断过滤")).toBeInTheDocument();
-    const filterBar = screen.getByLabelText("诊断过滤");
-    expect(within(filterBar).getByText("任务")).toBeInTheDocument();
-    expect(within(filterBar).getAllByText("全部")[0]).toBeInTheDocument();
-    expect(within(filterBar).getByText("Agent")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("诊断过滤")).not.toBeInTheDocument();
+    expect(screen.queryByText("collab.task.created")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /trace Runtime Error 失败/i })).toBeInTheDocument();
   });
 
-  it("shows child task fields including agentType and duration in the collaboration panel", async () => {
-    const user = userEvent.setup();
+  it("does not expose raw child task fields in the compact collaboration surface", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -1880,17 +1832,16 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /诊断/ }));
-    const agentPanel = screen.getByLabelText("真实 Agent 任务");
-    expect(within(agentPanel).getByText(/类型: explorer/)).toBeInTheDocument();
-    expect(within(agentPanel).getByText(/4.5s/)).toBeInTheDocument();
-    expect(within(agentPanel).getByText(/2 产物/)).toBeInTheDocument();
-    expect(within(agentPanel).getByText(/CHILD_TASK_TIMEOUT/)).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("真实 Agent 任务")).not.toBeInTheDocument();
+    expect(screen.queryByText(/类型: explorer/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/4.5s/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/2 产物/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/CHILD_TASK_TIMEOUT/)).not.toBeInTheDocument();
   });
 
-  it("shows active worktree details and guarded lifecycle actions", async () => {
+  it("shows active worktree review details through the compact review pane", async () => {
     const user = userEvent.setup();
-    const onRefreshWorktree = vi.fn();
     const onLoadWorktreeDiff = vi.fn();
     const onMergeWorktree = vi.fn();
     const onCleanupWorktree = vi.fn();
@@ -1940,39 +1891,30 @@ describe("SessionWorkspace", () => {
         messages={[{ id: "m1", role: "user", content: "Change the runtime.", createdAt: 1 }]}
         worktreeStatus={{ dirtyFiles: 1, files: ["M app/src/App.tsx"] }}
         worktreeDiff={{ diffStat: "app/src/App.tsx | 12 ++++++++++++" }}
-        onRefreshWorktree={onRefreshWorktree}
         onLoadWorktreeDiff={onLoadWorktreeDiff}
         onMergeWorktree={onMergeWorktree}
         onCleanupWorktree={onCleanupWorktree}
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /Git/ }));
+    expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
     const tools = screen.getByLabelText("工作区工具");
-    const panel = within(tools).getByLabelText("Git 工作区");
-    expect(within(panel).getByRole("heading", { name: "agent/task_1" })).toBeInTheDocument();
-    expect(within(panel).getAllByText("D:/py/yuanbao_agent.worktrees/task_1").length).toBeGreaterThan(0);
-    expect(within(panel).getByText("1 个未提交文件")).toBeInTheDocument();
-    expect(within(panel).getByText("app/src/App.tsx | 12 ++++++++++++")).toBeInTheDocument();
-    expect(within(panel).getByText("1 项通过")).toBeInTheDocument();
-    expect(within(panel).getAllByText("npm test").length).toBeGreaterThan(0);
-    expect(within(panel).getAllByText("approved")).toHaveLength(2);
-    expect(within(panel).getByText("reviewer-agent - Looks good.")).toBeInTheDocument();
-    expect(within(panel).getByText("main - passed")).toBeInTheDocument();
+    expect(within(tools).getByText("代码审查")).toBeInTheDocument();
+    expect(within(tools).getByLabelText("审查摘要")).toHaveTextContent("审查：reviewer-agent - Looks good.");
+    expect(within(tools).getByLabelText("审查摘要")).toHaveTextContent("合并：approved - main - passed");
+    expect(within(tools).getByLabelText("审查摘要")).toHaveTextContent("Diff：app/src/App.tsx | 12 ++++++++++++");
+    expect(within(tools).getByText("app/src/App.tsx | 12 ++++++++++++")).toBeInTheDocument();
+    expect(within(tools).getByText("App.tsx")).toBeInTheDocument();
+    expect(within(tools).getByText("modified")).toBeInTheDocument();
 
-    await user.click(within(panel).getByRole("button", { name: "刷新状态" }));
-    await user.click(within(panel).getByRole("button", { name: "查看差异" }));
-    await user.click(within(panel).getByRole("button", { name: "合并申请" }));
+    await user.click(within(tools).getByRole("button", { name: "查看差异" }));
 
-    expect(onRefreshWorktree).toHaveBeenCalledWith("wt_1");
-    expect(onLoadWorktreeDiff).toHaveBeenCalledWith("wt_1");
+    expect(onLoadWorktreeDiff).toHaveBeenCalledWith("wt_1", false);
     expect(onMergeWorktree).not.toHaveBeenCalled();
-    expect(within(panel).getByRole("button", { name: "合并申请" })).toBeDisabled();
-    expect(within(panel).getByRole("button", { name: "清理" })).toBeDisabled();
     expect(onCleanupWorktree).not.toHaveBeenCalled();
   });
 
-  it("allows merge approval requests after a clean diff review", async () => {
+  it("does not expose merge approval actions in the compact session review pane", async () => {
     const user = userEvent.setup();
     const onMergeWorktree = vi.fn();
 
@@ -2001,14 +1943,13 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    await user.click(screen.getByRole("tab", { name: /Git/ }));
+    expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: /审查/ }));
     const tools = screen.getByLabelText("工作区工具");
-    const panel = within(tools).getByLabelText("Git 工作区");
-    const mergeButton = within(panel).getByRole("button", { name: "合并申请" });
+    expect(within(tools).getByText("代码审查")).toBeInTheDocument();
+    expect(within(tools).getByText("app/src/App.tsx | 12 ++++++++++++")).toBeInTheDocument();
+    expect(within(tools).queryByRole("button", { name: "合并申请" })).not.toBeInTheDocument();
 
-    expect(mergeButton).toBeEnabled();
-    await user.click(mergeButton);
-
-    expect(onMergeWorktree).toHaveBeenCalledWith("wt_1");
+    expect(onMergeWorktree).not.toHaveBeenCalled();
   });
 });

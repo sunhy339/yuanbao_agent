@@ -36,15 +36,6 @@ type GitVerificationRow = {
   exitCode?: number | null;
 };
 
-function readObject(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
-
-function readText(record: Record<string, unknown> | null, key: string): string {
-  const value = record?.[key];
-  return typeof value === "string" ? value : "";
-}
-
 function normalizeWorkspaceRelativePath(path: string) {
   return path
     .replace(/\\/g, "/")
@@ -266,12 +257,6 @@ export function GitWorkspacePanel({
   const canRequestMerge = Boolean(worktree && onMergeWorktree && diffLoaded && dirtyFiles === 0 && !worktreeStatus?.error);
   const canCleanup = Boolean(worktree && onCleanupWorktree && dirtyFiles === 0 && !worktreeStatus?.error);
   const verificationRows = collectVerificationRows(worktree, activeTask);
-  const review = readObject(worktree?.lastStatus?.review);
-  const approval = readObject(worktree?.lastStatus?.mergeApproval);
-  const reviewStatus = readText(review, "status") || "未审查";
-  const reviewSummary = compactMeta([readText(review, "reviewer"), readText(review, "summary")]).join(" - ");
-  const approvalDecision = readText(approval, "decision") || "未申请";
-  const approvalSummary = compactMeta([readText(approval, "targetBranch"), readText(approval, "verificationStatus")]).join(" - ");
   const diffPreview = localDiff?.diff || worktreeDiff?.preview || worktreeDiff?.diff || "";
   const diffStat = localDiff?.stat || worktreeDiff?.diffStat || "";
   const statusSummary = worktreeStatus?.error
@@ -555,8 +540,8 @@ export function GitWorkspacePanel({
             <UnifiedDiffViewer diffText={diffPreview} />
           ) : (
             <div className="git-workspace-empty-diff">
-              <strong>等待代码变更</strong>
-              <span>点击“查看 diff”后会显示当前工作区的真实差异。</span>
+              <strong>还没有 diff</strong>
+              <span>点击“查看 diff”读取当前工作区改动；没有改动时这里会保持空白。</span>
             </div>
           )}
         </main>
@@ -616,26 +601,11 @@ export function GitWorkspacePanel({
             </Button>
           </section>
 
-          <section className="git-workspace-section">
-            <div className="git-workspace-section-head">
-              <strong>审查状态</strong>
-              <small>{verificationSummary(verificationRows)}</small>
-            </div>
-            <div className="git-workspace-review-meta">
-              <span>Review</span>
-              <strong>{reviewStatus}</strong>
-              <small>{reviewSummary || "等待代码审查结果"}</small>
-              <span>Merge</span>
-              <strong>{approvalDecision}</strong>
-              <small>{approvalSummary || "加载 diff 且工作区干净后可申请"}</small>
-            </div>
-          </section>
-
           {verificationRows.length ? (
             <section className="git-workspace-section">
               <div className="git-workspace-section-head">
                 <strong>验证记录</strong>
-                <small>{verificationRows.length} 项</small>
+                <small>{verificationSummary(verificationRows)}</small>
               </div>
               <ul className="git-workspace-verification-list">
                 {verificationRows.slice(0, 5).map((item) => (

@@ -688,7 +688,15 @@ fn spawn_pipe_terminal(
             let mut command = Command::new(executable);
             command.arg("-NoLogo");
             command.arg("-NoProfile");
+            command.arg("-ExecutionPolicy");
+            command.arg("Bypass");
             command.arg("-NoExit");
+            command.arg("-Command");
+            command.arg(
+                "Remove-Module PSReadLine -ErrorAction SilentlyContinue; \
+                 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new(); \
+                 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new();",
+            );
             command
         }
     } else {

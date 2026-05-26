@@ -77,25 +77,40 @@ function summarizeCommandForTitle(command?: string) {
 function summarizeCommandAction(command?: string) {
   const normalized = normalizeComparableCommand(command);
   if (!normalized) {
-    return command ?? "Ran command";
+    return command ?? "运行命令";
   }
   if (normalized.startsWith("python -m pytest")) {
-    return "Ran tests";
+    return "运行测试";
   }
   if (normalized.startsWith("python -m py_compile")) {
-    return "Checked Python syntax";
+    return "检查 Python 语法";
   }
   if (normalized.startsWith("node --check")) {
-    return "Checked script syntax";
+    return "检查脚本语法";
   }
-  if (normalized === "git status") {
-    return "Checked workspace status";
+  if (normalized === "git status" || normalized.startsWith("git status ")) {
+    return "查看 Git 状态";
   }
   if (normalized.startsWith("git diff")) {
-    return "Viewed code diff";
+    return "查看代码差异";
   }
-  if (normalized.startsWith("get-content")) {
-    return "Read file contents";
+  if (normalized.startsWith("git init")) {
+    return "初始化 Git 仓库";
+  }
+  if (normalized.startsWith("get-content") || normalized.startsWith("type ")) {
+    return "读取文件";
+  }
+  if (
+    normalized === "ls" ||
+    normalized.startsWith("ls ") ||
+    normalized === "dir" ||
+    normalized.startsWith("dir ") ||
+    normalized.startsWith("get-childitem")
+  ) {
+    return "查看目录";
+  }
+  if (normalized.startsWith("python ")) {
+    return "运行 Python 程序";
   }
   return command ?? normalized;
 }
@@ -130,7 +145,10 @@ function classifyToolVisibility(toolCall: SessionWorkspaceToolCall): RuntimeTime
     normalizedStatus && ["failed", "error", "cancelled", "rejected"].includes(normalizedStatus),
   );
 
-  if (toolCall.toolName === "run_command" || toolCall.toolName === "apply_patch" || toolCall.toolName === "write_file") {
+  if (toolCall.toolName === "apply_patch" || toolCall.toolName === "write_file") {
+    return "chat";
+  }
+  if (toolCall.toolName === "run_command") {
     return isInFlight || needsAttention ? "chat" : "panel";
   }
   if (toolCall.toolName === "list_dir" || toolCall.toolName === "git_status" || toolCall.toolName === "read_file") {
@@ -640,10 +658,7 @@ export function buildRuntimeItems({
       rawDetail: approval.fullInput,
       completionEvidence: approval.completionEvidence,
       time: approval.requestedAt,
-      visibility:
-        normalizedStatus === "pending" || normalizedStatus === "waiting_approval" || normalizedStatus === "queued"
-          ? "chat"
-          : "panel",
+      visibility: "chat",
     });
   });
 

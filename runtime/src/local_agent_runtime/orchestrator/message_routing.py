@@ -600,7 +600,7 @@ class MessageRoutingMixin:
                     "task.routing.decided",
                     {**routing_dict, "latency_ms": 0},
                 )
-                return {"task": queued_task, "userMessage": user_msg}
+                return {"task": queued_task, "userMessage": user_msg, "acceptedMode": "queued"}
 
         # --- Phase 0: MetaRouter scenario classification ---
         import time as _time
@@ -723,7 +723,7 @@ class MessageRoutingMixin:
                 session_id=session["id"],
                 skill_id=routing.skill_id,
             )
-            return {"task": runtime_task, "userMessage": user_msg, "assistantMessage": assistant_msg}
+            return {"task": runtime_task, "userMessage": user_msg, "assistantMessage": assistant_msg, "acceptedMode": "new"}
 
         context = self._context_builder.build(session_id=session["id"], goal=goal, skill_id=routing.skill_id, lightweight=False)
         if isinstance(context.get("skillFallback"), dict):
@@ -844,12 +844,14 @@ class MessageRoutingMixin:
             payload={"delta": "Building context and preparing the first tool calls..."},
         )
 
-        return self._execute_message_task(
+        result = self._execute_message_task(
             session_id=session["id"],
             task=runtime_task,
             goal=goal,
             context=context,
         )
+        result.setdefault("acceptedMode", "new")
+        return result
 
     def _route_goal(self, goal: str) -> Any:
         route_context = {"config": self._store.get_config({})["config"]}

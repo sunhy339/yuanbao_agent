@@ -57,19 +57,19 @@
   overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 8px;
-  padding: 8px 10px 10px;
+  gap: 6px;
+  padding: 6px 8px 8px;
 }
 
 .yb-topbar {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto auto;
-  gap: 10px;
+  grid-template-columns: minmax(140px, 1fr) auto auto;
+  gap: 6px;
   align-items: center;
-  min-height: 42px;
+  min-height: 30px;
   border: 1px solid var(--yb-line);
-  border-radius: var(--yb-radius-lg);
-  padding: 6px 10px;
+  border-radius: 8px;
+  padding: 3px 8px;
   background:
     linear-gradient(90deg, rgba(232, 168, 124, 0.08), transparent 34%),
     rgba(18, 16, 16, 0.88);
@@ -80,15 +80,19 @@
 .yb-topbar-title {
   min-width: 0;
   display: flex;
-  gap: 10px;
+  gap: 6px;
   align-items: baseline;
+}
+
+.yb-topbar-title .yb-kicker {
+  display: none;
 }
 
 .yb-topbar-title h1 {
   margin: 0;
   overflow: hidden;
   color: var(--yb-ink);
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.2;
   letter-spacing: 0;
   text-overflow: ellipsis;
@@ -98,34 +102,37 @@
 .yb-topbar-status,
 .yb-topbar-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-wrap: nowrap;
+  gap: 5px;
   align-items: center;
   justify-content: flex-end;
 }
 
 .yb-topbar-divider {
-  width: 1px;
-  height: 18px;
-  background: var(--yb-line-strong);
-  opacity: 0.5;
+  display: none;
 }
 
 .yb-topbar-pill {
   display: inline-flex;
   align-items: center;
-  min-height: 20px;
+  min-height: 18px;
   border: 1px solid var(--yb-line);
   border-radius: 999px;
-  padding: 0 8px;
+  padding: 0 6px;
   background: rgba(22, 18, 16, 0.48);
   color: var(--yb-muted);
   font-family: var(--yb-font-mono);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   white-space: nowrap;
   cursor: default;
+}
+
+.yb-topbar-actions button {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
 }
 
 .yb-v2[data-theme="light"] .yb-topbar-pill {
@@ -135,6 +142,8 @@
 .yb-workspace-chrome {
   min-width: 0;
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 6px;
@@ -260,6 +269,14 @@
     linear-gradient(rgba(232, 168, 124, 0.035) 1px, transparent 1px),
     linear-gradient(90deg, rgba(232, 168, 124, 0.035) 1px, transparent 1px);
   background-size: 42px 42px;
+}
+
+.yb-app-shell .workspace-scroll:has(.session-workspace-chat-only) {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  scroll-padding-bottom: 0;
 }
 
 .yb-app-shell .composer-dock {
@@ -460,6 +477,14 @@
 
 .yb-v2[data-density="compact"] .yb-app-shell .workspace-scroll {
   padding: 8px;
+}
+
+.yb-v2[data-density="compact"] .yb-app-shell .workspace-scroll:has(.session-workspace-chat-only) {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  scroll-padding-bottom: 0;
 }
 
 .yb-shell-loading {
@@ -706,4 +731,72 @@
   .sidebar-context-bar-fill {
     transition: none;
   }
+}
+
+/* Minimal local-agent workspace chrome. Keep the main chat and file/review pane calm. */
+.yb-app-shell {
+  background: #ffffff;
+}
+
+.yb-app-shell::before {
+  display: none;
+}
+
+.yb-app-main {
+  gap: 0;
+  padding: 0;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.yb-topbar {
+  display: none;
+}
+
+.yb-topbar-title h1 {
+  color: #101828;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.yb-topbar-status,
+.yb-topbar-actions {
+  display: none;
+}
+
+.yb-workspace-chrome {
+  gap: 0;
+}
+
+.yb-app-shell .workspace-frame {
+  border: 0;
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.yb-app-shell .workspace-frame::before {
+  display: none;
+}
+
+.yb-app-shell .workspace-scroll,
+.yb-v2[data-theme="light"] .yb-app-shell .workspace-scroll {
+  background: #ffffff;
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell {
+  background: #ffffff;
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell::before {
+  display: none;
+}
+
+.yb-v2[data-theme="light"] .yb-topbar {
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.yb-v2[data-theme="light"] .yb-app-shell .workspace-frame {
+  background: #ffffff;
+  box-shadow: none;
 }

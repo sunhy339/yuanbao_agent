@@ -36,8 +36,6 @@ class SupplementFlowMixin:
                 raise ValueError(f"Cannot supplement task outside session: {task_id}")
             return None
         if task.get("status") not in ACTIVE_SUPPLEMENT_STATUSES:
-            if strict:
-                raise ValueError(f"Cannot supplement task that is not active: {task_id}")
             return None
         return task
 

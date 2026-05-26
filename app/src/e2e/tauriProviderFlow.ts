@@ -42,6 +42,7 @@ interface TauriProviderFlowResult {
   traceTypes: string[];
   missingTraceTypes?: string[];
   uiAssertions?: string[];
+  uiLayout?: Record<string, unknown>;
   error?: string;
 }
 
@@ -178,11 +179,10 @@ function assertElement(selector: string, description: string) {
   }
 }
 
-function clickWorkspaceTab(title: string, description: string) {
-  const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>('nav[aria-label="工作区页签"] button[role="tab"]'));
-  const tab = tabs.find((item) => item.title === title || item.textContent?.includes(title));
+function clickWorkspacePane(pane: "files" | "review") {
+  const tab = query<HTMLButtonElement>(`.session-pane-tab[data-pane="${pane}"]`);
   if (!tab) {
-    throw new Error(`Expected workspace tab not found: ${description}`);
+    throw new Error(`Expected workspace pane tab not found: ${pane}`);
   }
   tab.click();
 }
@@ -208,68 +208,115 @@ function assertNoHorizontalOverflow(element: HTMLElement, description: string) {
   }
 }
 
-function assertSideBySide(left: Element, right: Element, description: string) {
-  const leftRect = left.getBoundingClientRect();
-  const rightRect = right.getBoundingClientRect();
-  if (leftRect.width < 120 || rightRect.width < 180 || leftRect.right > rightRect.left + 4) {
+function assertVisibleBox(element: HTMLElement, description: string, minWidth = 80, minHeight = 32) {
+  const rect = element.getBoundingClientRect();
+  if (rect.width < minWidth || rect.height < minHeight) {
+    throw new Error(`${description} is too small or blank: ${Math.round(rect.width)}x${Math.round(rect.height)}.`);
+  }
+}
+
+function assertWorkspaceScrollContained(description: string) {
+  const workspaceScroll = query<HTMLElement>(".workspace-scroll");
+  if (!workspaceScroll) {
+    throw new Error("Expected workspace scroll container.");
+  }
+  const tolerance = 8;
+  if (workspaceScroll.scrollHeight > workspaceScroll.clientHeight + tolerance) {
     throw new Error(
-      `${description} is not side-by-side: left ${Math.round(leftRect.left)}..${Math.round(leftRect.right)}, ` +
-        `right ${Math.round(rightRect.left)}..${Math.round(rightRect.right)}.`,
+      `${description} leaked into the outer workspace scroll: scrollHeight ${workspaceScroll.scrollHeight}, ` +
+        `clientHeight ${workspaceScroll.clientHeight}.`,
     );
   }
 }
 
-async function assertLocalTerminalWorks() {
-  const startButton = await waitFor("terminal start button", () =>
-    Array.from(document.querySelectorAll<HTMLButtonElement>(".session-local-terminal-controls button")).find((button) =>
-      button.textContent?.includes("启动") && !button.disabled,
-    ),
-    30_000,
-  );
-  startButton.click();
-
-  const input = await waitFor("enabled terminal input", () => {
-    const field = query<HTMLInputElement>('input[aria-label="终端输入"]');
-    return field && !field.disabled ? field : null;
-  }, 30_000);
-
-  const output = await waitFor("terminal output", () => query<HTMLElement>(".session-local-terminal-output"), 30_000);
-  await waitFor("terminal running status", () =>
-    document.body.textContent?.includes("运行中") ? true : null,
-    30_000,
-  );
-  assertNoHorizontalOverflow(output, "terminal output");
-  if (output.textContent?.includes("[6n")) {
-    throw new Error("Terminal output leaked cursor-position control sequence [6n.");
-  }
-
-  setFieldValue('input[aria-label="终端输入"]', "echo yuanbao-terminal-smoke");
-  const sendButton = await waitFor("enabled terminal send button", () => {
-    const button = Array.from(document.querySelectorAll<HTMLButtonElement>(".session-local-terminal-input button")).find((item) =>
-      item.textContent?.includes("发送"),
+function assertDocumentDoesNotOwnSessionScroll(description: string) {
+  const tolerance = 16;
+  const root = document.documentElement;
+  if (root.scrollHeight > window.innerHeight + tolerance || document.body.scrollHeight > window.innerHeight + tolerance) {
+    throw new Error(
+      `${description} should not create a shared page scrollbar: document ${root.scrollHeight}/${window.innerHeight}, ` +
+        `body ${document.body.scrollHeight}.`,
     );
-    return button && !button.disabled ? button : null;
-  }, 10_000);
-  sendButton.click();
-  try {
-    await waitFor("terminal command echo", () =>
-      query<HTMLElement>(".session-local-terminal-output")?.textContent?.includes("yuanbao-terminal-smoke") ? true : null,
-      30_000,
+  }
+}
+
+function assertLaidOutBesideEachOther(first: Element, second: Element, description: string) {
+  const firstRect = first.getBoundingClientRect();
+  const secondRect = second.getBoundingClientRect();
+  const separatedHorizontally = firstRect.right <= secondRect.left + 4 || secondRect.right <= firstRect.left + 4;
+  const overlapsVertically = firstRect.bottom > secondRect.top + 16 && secondRect.bottom > firstRect.top + 16;
+  if (firstRect.width < 120 || secondRect.width < 180 || !separatedHorizontally || !overlapsVertically) {
+    throw new Error(
+      `${description} is not side-by-side: first ${Math.round(firstRect.left)}..${Math.round(firstRect.right)}, ` +
+        `second ${Math.round(secondRect.left)}..${Math.round(secondRect.right)}.`,
     );
-  } catch (reason) {
-    const snapshot = query<HTMLElement>(".session-local-terminal-output")?.textContent?.slice(-600) ?? "";
-    throw new Error(`Timed out waiting for terminal command echo. Terminal output tail: ${JSON.stringify(snapshot)}`);
   }
-  if (query<HTMLElement>(".session-local-terminal-output")?.textContent?.includes("[6n")) {
-    throw new Error("Terminal output leaked cursor-position control sequence after command execution.");
+}
+
+function textSample(element: HTMLElement | null) {
+  return (element?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 180);
+}
+
+function layoutSnapshot(selector: string) {
+  const element = query<HTMLElement>(selector);
+  if (!element) {
+    return { present: false };
   }
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  return {
+    present: true,
+    left: Math.round(rect.left),
+    top: Math.round(rect.top),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+    clientWidth: element.clientWidth,
+    clientHeight: element.clientHeight,
+    scrollWidth: element.scrollWidth,
+    scrollHeight: element.scrollHeight,
+    overflowX: style.overflowX,
+    overflowY: style.overflowY,
+    sample: textSample(element),
+  };
+}
+
+function readUiLayoutSnapshot() {
+  const paneTabs = Array.from(document.querySelectorAll<HTMLButtonElement>(".session-pane-tab")).map((tab) => ({
+    pane: tab.dataset.pane,
+    selected: tab.getAttribute("aria-selected"),
+    text: textSample(tab),
+  }));
+  return {
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      documentScrollHeight: document.documentElement.scrollHeight,
+      bodyScrollHeight: document.body.scrollHeight,
+    },
+    appShell: layoutSnapshot(".yb-app-shell"),
+    workspaceScroll: layoutSnapshot(".workspace-scroll"),
+    workbenchGrid: layoutSnapshot(".session-workbench-grid"),
+    conversationColumn: layoutSnapshot(".session-conversation-column"),
+    workspacePane: layoutSnapshot('aside[aria-label="工作区侧栏"]'),
+    resizer: layoutSnapshot(".session-sidebar-resizer"),
+    paneTabs,
+    toolPanel: layoutSnapshot(".session-tool-panel"),
+    fileWorkspace: layoutSnapshot(".session-file-workspace"),
+    fileLayout: layoutSnapshot(".session-file-browser-layout"),
+    fileTree: layoutSnapshot(".session-file-tree-pane"),
+    fileViewer: layoutSnapshot(".session-file-viewer"),
+    reviewPanel: layoutSnapshot(".session-tool-panel-review"),
+  };
 }
 
 async function assertSessionWorkspacePanels(assertions?: string[]) {
   const pane = await waitFor("workspace side pane", () => query<HTMLElement>('aside[aria-label="工作区侧栏"]'));
   const grid = await waitFor("session workbench grid", () => query<HTMLElement>(".session-workbench-grid"));
   const resizer = await waitFor("workspace resize handle", () => query<HTMLElement>(".session-sidebar-resizer"));
+  assertVisibleBox(grid, "session workbench grid", 900, 360);
   assertNoHorizontalOverflow(grid, "session workbench grid");
+  assertWorkspaceScrollContained("session workspace");
+  assertDocumentDoesNotOwnSessionScroll("session workspace");
   if (resizer.getBoundingClientRect().width > 10) {
     throw new Error(`Workspace resize handle is visually too wide: ${resizer.getBoundingClientRect().width}px.`);
   }
@@ -278,8 +325,17 @@ async function assertSessionWorkspacePanels(assertions?: string[]) {
   if (digestTitle && digest) {
     assertRectContainedHorizontally(digestTitle, digest, "task digest title");
   }
+  const paneTabs = Array.from(document.querySelectorAll<HTMLButtonElement>(".session-pane-tab"));
+  const paneKeys = paneTabs.map((tab) => tab.dataset.pane);
+  const hiddenPane = paneKeys.find((paneKey) => paneKey && !["files", "review"].includes(paneKey));
+  if (hiddenPane) {
+    throw new Error(`Workspace pane exposed a nonessential tab: ${hiddenPane}.`);
+  }
+  if (!paneKeys.includes("files") || !paneKeys.includes("review")) {
+    throw new Error(`Workspace pane should expose files and review only, got: ${paneKeys.join(",")}.`);
+  }
 
-  clickWorkspaceTab("浏览项目文件", "file workspace tab");
+  clickWorkspacePane("files");
   const fileWorkspace = await waitFor("session file workspace panel", () => query<HTMLElement>(".session-file-workspace"));
   const fileLayout = await waitFor("session file browser layout", () => query<HTMLElement>(".session-file-browser-layout"));
   const fileViewer = await waitFor("session file viewer", () => query<HTMLElement>(".session-file-viewer"));
@@ -287,25 +343,29 @@ async function assertSessionWorkspacePanels(assertions?: string[]) {
   assertRectContainedHorizontally(fileWorkspace, pane, "file workspace");
   assertRectContainedHorizontally(fileViewer, fileLayout, "file preview");
   assertRectContainedHorizontally(fileTree, fileLayout, "file tree");
-  assertSideBySide(fileTree, fileViewer, "file tree and preview");
+  assertLaidOutBesideEachOther(fileTree, fileViewer, "file tree and preview");
   assertNoHorizontalOverflow(fileWorkspace, "file workspace");
+  assertWorkspaceScrollContained("file workspace");
   assertions?.push("session file workspace stays side-by-side without horizontal overflow");
 
-  clickWorkspaceTab("查看代码改动", "review tab");
-  await waitFor("review panel", () => query(".session-tool-panel"));
+  const focusButton = query<HTMLButtonElement>(".session-file-toolbar-actions button");
+  if (focusButton) {
+    focusButton.click();
+    const focusedWorkspace = await waitFor("focused file workspace", () => query<HTMLElement>(".session-workspace-files-focused"));
+    assertVisibleBox(focusedWorkspace, "focused file workspace", 900, 360);
+    assertDocumentDoesNotOwnSessionScroll("focused file workspace");
+    focusButton.click();
+    await waitFor("split workspace restored", () => query<HTMLElement>(".session-workbench-grid .session-conversation-column"));
+  }
+
+  clickWorkspacePane("review");
+  const reviewPanel = await waitFor("review panel", () => query<HTMLElement>(".session-tool-panel"));
+  assertVisibleBox(reviewPanel, "review panel", 420, 300);
   const reviewText = query<HTMLElement>(".session-tool-panel")?.textContent ?? "";
   if (reviewText.includes("+0 -0")) {
     throw new Error("Review panel exposed fake +0 -0 diff stats.");
   }
   assertions?.push("review panel avoids fake zero diff stats");
-
-  clickWorkspaceTab("本地命令历史", "terminal tab");
-  const terminalPanel = await waitFor("local terminal panel", () => query<HTMLElement>(".session-tool-panel"));
-  if (!terminalPanel.textContent?.includes("本地终端")) {
-    throw new Error("Terminal panel did not show the local terminal heading.");
-  }
-  await assertLocalTerminalWorks();
-  assertions?.push("local terminal starts, accepts input, and renders sanitized output");
 }
 
 function countTextOccurrences(text: string, needle: string) {
@@ -516,6 +576,7 @@ async function runUiSmokeFlow(workspacePath?: string) {
     uiAssertions: workspacePath
       ? [...assertions, `workspace path fixture received: ${workspacePath}`]
       : assertions,
+    uiLayout: readUiLayoutSnapshot(),
   });
 }
 
@@ -1051,7 +1112,7 @@ export async function maybeRunTauriProviderFlowE2e() {
         "composer submitted through UI",
         "session task completion visible in UI",
         "runtime timeline rendered in UI",
-        "workspace file/review/terminal panes render without misleading stats",
+        "workspace file/review panes render without misleading stats",
         "message persistence verified through runtime API",
       ],
     });

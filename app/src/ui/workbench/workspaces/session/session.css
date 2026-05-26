@@ -2,9 +2,9 @@
 @import "./session-base.css";
 @import "./session-chat-header.css";
 @import "./session-task-checklist.css";
+@import "./session-dashboard.css";
 @import "./session-messages.css";
 @import "./session-runtime-events.css";
-@import "./session-compact-layout.css";
 @import "./session-theme-light.css";
-@import "./session-dashboard.css";
 @import "./session-responsive.css";
+@import "./session-compact-layout.css";

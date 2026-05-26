@@ -167,6 +167,47 @@ function buildRuntimeRowSummary(item: RuntimeTimelineItem) {
   );
 }
 
+function collectActivityRuntimeItems(items: ConversationActivityItem[]) {
+  const runtimeItems: RuntimeTimelineItem[] = [];
+  for (const item of items) {
+    if (item.kind === "runtime") {
+      runtimeItems.push(item.runtime);
+    } else if (item.kind === "worklog") {
+      runtimeItems.push(...item.runtimeItems);
+    }
+  }
+  return runtimeItems;
+}
+
+function buildThinkingActivityHint(items: ConversationActivityItem[], activeTask?: SessionWorkspaceActiveTask | null) {
+  const runtimeItems = collectActivityRuntimeItems(items).sort((left, right) => (right.time ?? 0) - (left.time ?? 0));
+  const priority =
+    runtimeItems.find((item) => isRuntimeInFlight(item.status)) ??
+    runtimeItems.find((item) => item.kind === "approval" && ["pending", "waiting"].includes(item.status ?? "")) ??
+    runtimeItems[0];
+
+  if (priority) {
+    const title = compactText(priority.title, 86);
+    const status = priority.status?.toLowerCase() ?? "";
+    if (isRuntimeInFlight(priority.status)) {
+      return `正在执行：${title}`;
+    }
+    if (priority.kind === "approval" && ["pending", "waiting"].includes(status)) {
+      return `等待审批：${title}`;
+    }
+    if (["failed", "error", "rejected"].includes(status)) {
+      return `最近失败：${title}，需要继续处理。`;
+    }
+    return `最近活动：${title}`;
+  }
+
+  if (activeTask && isTaskControllable(activeTask.status)) {
+    return `任务仍在运行：${compactText(activeTask.currentStep || activeTask.goal || getProcessStatusLabel(activeTask.status), 86)}`;
+  }
+
+  return "正在等待模型或运行时返回第一段内容。";
+}
+
 function RuntimeWorklogCard({
   items,
   onCopyRuntimeText,
@@ -314,6 +355,8 @@ export const ConversationActivity = memo(function ConversationActivity({
   const activeTaskIsRunning = isTaskControllable(activeTask?.status);
   const hasStreamingAssistantContent = messages.some((message) => message.streaming && !message.placeholder);
   const hasThinkingPlaceholder = messages.some((message) => message.streaming && message.placeholder);
+  const thinkingActivityHint = buildThinkingActivityHint(items, activeTask);
+  const hasVisibleRuntimeActivity = items.some((item) => item.kind === "runtime" || item.kind === "worklog");
   const showLivePill = Boolean(
     !hasStreamingAssistantContent &&
       (messages.length || activeTask || messagesLoading || activeTaskIsRunning || hasThinkingPlaceholder),
@@ -324,7 +367,10 @@ export const ConversationActivity = memo(function ConversationActivity({
       {items.map((item) =>
         item.kind === "message" ? (
           <Fragment key={item.id}>
-            <MessageBubble message={item.message} />
+            <MessageBubble
+              message={item.message}
+              activityHint={item.message.streaming && item.message.placeholder ? thinkingActivityHint : undefined}
+            />
           </Fragment>
         ) : item.kind === "worklog" ? (
           <RuntimeWorklogCard
@@ -350,6 +396,15 @@ export const ConversationActivity = memo(function ConversationActivity({
           />
         ),
       )}
+      {showLivePill && activeTaskIsRunning && !hasVisibleRuntimeActivity ? (
+        <article className="runtime-progress-note" aria-label="运行进展">
+          <span className="runtime-progress-note-dot" aria-hidden="true" />
+          <div>
+            <strong>{thinkingActivityHint}</strong>
+            <small>后台还没有返回可展示的工具或命令结果；一旦进入审批、改动、命令或验证，会显示在这里。</small>
+          </div>
+        </article>
+      ) : null}
       {showLivePill ? livePill : null}
     </div>
   );

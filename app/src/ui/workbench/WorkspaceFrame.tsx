@@ -11,7 +11,7 @@ export function WorkspaceFrame({ children, composerVisible }: WorkspaceFrameProp
       id="workspace-frame"
       className="workspace-frame"
       data-composer-visible={composerVisible}
-        aria-label="工作区框架"
+      aria-label="工作区框架"
     >
       <div className="workspace-scroll">{children}</div>
     </main>

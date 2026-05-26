@@ -446,57 +446,66 @@ function friendlyToolLabel(toolName: string) {
   if (normalized === "list_dir") return "目录";
   if (normalized === "read_file") return "文件";
   if (normalized === "run_command") return "命令";
-  if (normalized === "apply_patch" || normalized === "write_file") return "文件改动";
+  if (normalized === "apply_patch") return "补丁";
+  if (normalized === "write_file") return "写入文件";
   return normalized;
+}
+
+function progressLine(text: string) {
+  return `\n\n${text}`;
 }
 
 export function summarizeOperationalAssistantDelta(delta: string): string | null {
   const normalized = delta.trim();
   if (!normalized) return null;
   if (normalized === "Building context and preparing the first tool calls...") {
-    return null;
+    return progressLine("正在整理上下文，并确定要先查看的文件和工具。");
   }
   if (normalized === "Completed the minimal tool loop and preparing a summary...") {
-    return null;
+    return progressLine("工具检查已完成，正在整理当前结论。");
   }
   if (normalized.startsWith("Started subtask: ")) {
-    return null;
+    return progressLine(`开始处理：${normalized.slice("Started subtask: ".length).trim()}`);
   }
   if (normalized.startsWith("Finished subtask: ")) {
-    return null;
+    return progressLine(`处理完成：${normalized.slice("Finished subtask: ".length).trim()}`);
   }
   if (normalized.startsWith("Subtask running tool: ")) {
-    return null;
+    return progressLine(`正在使用${friendlyToolLabel(normalized.slice("Subtask running tool: ".length))}。`);
   }
   if (normalized.startsWith("Subtask tool completed: ")) {
-    return null;
+    return progressLine(`${friendlyToolLabel(normalized.slice("Subtask tool completed: ".length))}已完成。`);
   }
   if (normalized.startsWith("Subtask tool failed: ")) {
-    return `子任务里的${friendlyToolLabel(normalized.slice("Subtask tool failed: ".length))}失败了，我会继续看失败原因。`;
+    return progressLine(`${friendlyToolLabel(normalized.slice("Subtask tool failed: ".length))}失败，正在根据输出定位原因。`);
   }
   if (normalized.startsWith("Subtask waiting for approval: ")) {
-    return `需要你审批后才能继续执行${friendlyToolLabel(normalized.slice("Subtask waiting for approval: ".length))}。`;
+    return progressLine(`等待审批：${friendlyToolLabel(normalized.slice("Subtask waiting for approval: ".length))}。`);
   }
   if (normalized.startsWith("Subtask approval ")) {
-    return null;
+    return progressLine("审批状态已更新，继续推进。");
   }
   if (normalized.startsWith("Subtask command ")) {
-    return null;
+    const commandStatus = normalized.slice("Subtask command ".length).trim();
+    if (commandStatus === "started") return progressLine("命令已开始运行。");
+    if (commandStatus === "completed") return progressLine("命令已完成。");
+    if (commandStatus === "failed") return progressLine("命令失败，正在查看输出并准备修复。");
+    return progressLine(`命令状态：${commandStatus}`);
   }
   if (normalized.startsWith("Running tool: ")) {
-    return null;
+    return progressLine(`正在使用${friendlyToolLabel(normalized.slice("Running tool: ".length))}。`);
   }
   if (normalized.startsWith("Running post-task validation command: ")) {
-    return `正在做收尾验证：${normalized.slice("Running post-task validation command: ".length).trim()}`;
+    return progressLine(`正在做收尾验证：${normalized.slice("Running post-task validation command: ".length).trim()}`);
   }
   if (normalized.startsWith("Running post-task ")) {
-    return "正在做任务后的收尾检查。";
+    return progressLine("正在做任务后的收尾检查。");
   }
   if (normalized.startsWith("Approval accepted. Running the command now")) {
-    return "审批已通过，正在运行命令。";
+    return progressLine("审批已通过，正在运行命令。");
   }
   if (normalized.startsWith("Approval accepted. Applying the patch now")) {
-    return "审批已通过，正在应用文件改动。";
+    return progressLine("审批已通过，正在应用文件改动。");
   }
   return null;
 }
@@ -510,6 +519,10 @@ export function appendAssistantContentDelta(existingContent: string, delta: stri
   }
   const existingTrimmed = existing.trim();
   const incomingTrimmedStart = text.trimStart();
+  const incomingTrimmed = text.trim();
+  if (incomingTrimmed && existing.includes(incomingTrimmed)) {
+    return existing;
+  }
   if (existingTrimmed && incomingTrimmedStart.startsWith(existingTrimmed)) {
     return incomingTrimmedStart;
   }

@@ -3,9 +3,11 @@ import { type ReactNode } from "react";
 function normalizeMarkdownContent(content: string) {
   return content
     .replace(/\r\n/g, "\n")
-    .replace(/([^\n])(\s+#{1,3}\s+)/g, "$1\n$2")
-    .replace(/([^\n])(\s+-\s+\*\*)/g, "$1\n$2")
-    .replace(/([^\n])(\s+\d+\.\s+\*\*)/g, "$1\n$2");
+    .replace(/^(\s*#{1,6})(?=\S)/gm, "$1 ")
+    .replace(/([^\n])(\s+#{1,6})(?=\S)/g, "$1\n$2 ")
+    .replace(/([^\n])(\s+[-*]\s+)/g, "$1\n$2")
+    .replace(/([^\n])(\s+\d+\.\s+)/g, "$1\n$2")
+    .replace(/\n{3,}/g, "\n\n");
 }
 
 function isSafeLink(url: string) {
@@ -80,6 +82,10 @@ function isTableDivider(line: string) {
   return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
 }
 
+function isHorizontalRule(line: string) {
+  return /^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line);
+}
+
 function parseTableRow(line: string) {
   return line
     .trim()
@@ -91,7 +97,8 @@ function parseTableRow(line: string) {
 
 function isMarkdownBlockStart(line: string) {
   return (
-    /^#{1,3}\s+/.test(line) ||
+    /^#{1,6}\s+/.test(line) ||
+    isHorizontalRule(line) ||
     /^!\[[^\]]*\]\([^)]+\)\s*$/.test(line) ||
     /^[-*]\s+/.test(line) ||
     /^\d+\.\s+/.test(line) ||
@@ -108,6 +115,12 @@ export function MarkdownContent({ content }: { content: string }) {
   while (index < lines.length) {
     const line = lines[index];
     if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    if (isHorizontalRule(line)) {
+      blocks.push(<hr className="markdown-divider" key={`hr-${index}`} />);
       index += 1;
       continue;
     }
@@ -131,12 +144,12 @@ export function MarkdownContent({ content }: { content: string }) {
       continue;
     }
 
-    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
       const level = heading[1].length;
       const children = renderInlineMarkdown(heading[2], `heading-${index}`);
       blocks.push(
-        level === 1 ? (
+        level <= 1 ? (
           <h2 key={`h-${index}`}>{children}</h2>
         ) : level === 2 ? (
           <h3 key={`h-${index}`}>{children}</h3>

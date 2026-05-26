@@ -6,13 +6,10 @@ import {
   useState,
 } from "react";
 import {
-  Activity,
   ClipboardList,
   Files,
   GitBranch,
   GripVertical,
-  Home,
-  Plus,
   PanelRightClose,
   PanelRightOpen,
   SquareTerminal,
@@ -32,14 +29,10 @@ import {
   isTaskControllable,
   normalizeCommandLabel,
 } from "./utils";
-import { shouldDisplayTaskScaffold, expectsAgentWork } from "./taskPhase";
+import { shouldDisplayTaskScaffold } from "./taskPhase";
 import { buildRuntimeItems } from "./runtimeItemBuilder";
 import { buildConversationActivity, ConversationActivity } from "./ConversationActivity";
 import { ConversationTaskDigest } from "./ConversationTaskDigest";
-import { TaskProgressPanel } from "./TaskProgressPanel";
-import { RuntimeCockpitPanel } from "./RuntimeCockpitPanel";
-import { AgentCollaborationPanel } from "./AgentCollaborationPanel";
-import { TraceFilterBar } from "./TraceFilterBar";
 import { FileWorkspacePanel } from "./FileWorkspacePanel";
 import { GitWorkspacePanel } from "./GitWorkspacePanel";
 import { LocalTerminalPanel } from "./LocalTerminalPanel";
@@ -108,6 +101,30 @@ function readObject(value: unknown): Record<string, unknown> | null {
 function readText(record: Record<string, unknown> | null, key: string): string {
   const value = record?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function isImportantTraceForChat(item: RuntimeTimelineItem) {
+  const status = item.status?.toLowerCase() ?? "";
+  if (["failed", "error", "warning", "cancelled", "rejected"].includes(status)) {
+    return true;
+  }
+  const haystack = compactMeta([item.title, item.summary, item.code, item.rawDetail, ...(item.meta ?? [])])
+    .join("\n")
+    .toLowerCase();
+  return /runtime error|provider error|mcp error|task failed|permission|approval|blocked|timeout|recovery|failed|error/.test(haystack);
+}
+
+function isRuntimeItemVisibleInChat(item: RuntimeTimelineItem) {
+  if (item.kind === "trace") {
+    return isImportantTraceForChat(item);
+  }
+  return isChatVisibleEvent(
+    {
+      taskId: item.taskId ?? "root",
+      visibility: item.visibility,
+    },
+    new Set<string>(),
+  );
 }
 
 function RuntimeLanePatchDetail({ item, isBusy }: { item: RuntimeTimelineItem; isBusy: boolean }) {
@@ -261,7 +278,7 @@ function RuntimeLaneSummaryRow({
 }
 
 type SessionToolKey = "review" | "terminal" | "git";
-type SessionWorkspacePaneKey = "home" | "files" | "review" | "terminal" | "git" | "diagnostics";
+type SessionWorkspacePaneKey = "files" | "review";
 
 interface SessionToolCommand {
   id?: string;
@@ -599,7 +616,7 @@ function SessionWorkspaceToolDock({
         </>
       ) : null}
 
-      <div className="session-tool-panel" role="tabpanel">
+      <div className={`session-tool-panel session-tool-panel-${selectedTool}`} role="tabpanel">
         {selectedTool === "review" ? (
           <>
             <div className="session-tool-panel-header">
@@ -779,7 +796,6 @@ export function SessionWorkspace({
   session,
   messages,
   activeTask,
-  collaboration,
   contextPreview,
   approvals,
   patches,
@@ -794,10 +810,7 @@ export function SessionWorkspace({
   onRefreshCommandJob,
   onStopCommandJob,
   onRefreshTask,
-  onPauseTask,
-  onResumeTask,
   onStopTask,
-  onRefreshTrace,
   onRefreshWorktree,
   onLoadWorktreeDiff,
   onMergeWorktree,
@@ -857,15 +870,7 @@ export function SessionWorkspace({
     [visibleActiveTask, approvals, backgroundJobs, contextPreview, patches, session, toolCalls, traces],
   );
   const activityItems = useMemo(() => {
-    const chatVisibleItems = runtimeItems.filter((item) =>
-      isChatVisibleEvent(
-        {
-          taskId: item.taskId ?? "root",
-          visibility: item.visibility,
-        },
-        new Set<string>(),
-      ),
-    );
+    const chatVisibleItems = runtimeItems.filter(isRuntimeItemVisibleInChat);
     const visibleChatItems = chatVisibleItems.filter(
       (item) => !(isSuccessfulRuntimeStatus(item.status) && isBackgroundProbeCommand(item.title)),
     );
@@ -917,13 +922,13 @@ export function SessionWorkspace({
         return false;
       }
       if (item.kind === "trace") {
-        return false;
+        return isImportantTraceForChat(item);
       }
       if (item.kind === "patch" || item.id.startsWith("task-files:")) {
         return true;
       }
-      if (item.kind === "approval" && item.status !== "pending") {
-        return false;
+      if (item.kind === "approval") {
+        return true;
       }
       if (item.kind === "command") {
         const status = item.status?.toLowerCase();
@@ -1013,126 +1018,38 @@ export function SessionWorkspace({
       .find((message) => message.role === "assistant" && !message.placeholder && message.content.trim())
       ?.content;
   }, [messages]);
-  const [traceFilter, setTraceFilter] = useState<{
-    taskId: string;
-    visibility: "" | "chat" | "panel" | "trace";
-    agentType: string;
-  }>({ taskId: "", visibility: "", agentType: "" });
   const [workspaceFocus, setWorkspaceFocus] = useState<"files" | null>(null);
-  const [workspacePane, setWorkspacePane] = useState<SessionWorkspacePaneKey>("home");
+  const hasReviewSignal = Boolean(
+    visibleActiveTask?.changedFiles?.length ||
+      visibleActiveTask?.activeWorktree ||
+      patches?.length ||
+      worktreeDiff ||
+      worktreeStatus?.files?.length,
+  );
+  const defaultWorkspacePane: SessionWorkspacePaneKey = hasReviewSignal ? "review" : "files";
+  const [workspacePaneOverride, setWorkspacePaneOverride] = useState<SessionWorkspacePaneKey | null>(null);
+  const workspacePane = workspacePaneOverride ?? defaultWorkspacePane;
   const [workspacePaneCollapsed, setWorkspacePaneCollapsed] = useState(false);
   const [workspacePaneWidthPx, setWorkspacePaneWidthPx] = useState<number | null>(null);
   const [workspacePaneResizing, setWorkspacePaneResizing] = useState(false);
-  const isQuietSuccessfulBackgroundItem = (item: RuntimeTimelineItem) => {
-    if (!isSuccessfulRuntimeStatus(item.status)) {
-      return false;
-    }
-    if (item.visibility === "trace" && (item.kind === "tool" || item.kind === "trace")) {
-      return true;
-    }
-    if (item.kind === "tool" && /^(list_dir|read_file|git status)\b/i.test(item.title)) {
-      return true;
-    }
-    if (item.kind === "command" && isBackgroundProbeCommand(item.title)) {
-      return true;
-    }
-    return false;
-  };
-  const { runtimeLanes, uniqueTaskIds, uniqueAgentTypes } = useMemo(() => {
-    const commandsAndTools: RuntimeTimelineItem[] = [];
-    const patchItems: RuntimeTimelineItem[] = [];
-    const traceItems: RuntimeTimelineItem[] = [];
-
-    for (const item of runtimeItems) {
-      if (isQuietSuccessfulBackgroundItem(item)) {
-        continue;
-      }
-      if (item.kind === "tool" && isSuccessfulRuntimeStatus(item.status)) {
-        continue;
-      }
-      if (item.kind === "command" || item.kind === "tool") {
-        if (item.visibility !== "chat") {
-          commandsAndTools.push(item);
-        }
-      } else if (item.kind === "patch" || item.id.startsWith("task-files:")) {
-        if (item.visibility !== "chat") {
-          patchItems.push(item);
-        }
-      } else {
-        if (item.visibility !== "chat") {
-          traceItems.push(item);
-        }
-      }
-    }
-
-    const filteredTraceItems = traceItems.filter((item) => {
-      if (traceFilter.taskId && item.taskId !== traceFilter.taskId) return false;
-      if (traceFilter.visibility && item.visibility !== traceFilter.visibility) return false;
-      if (traceFilter.agentType && item.agentType !== traceFilter.agentType) return false;
-      return true;
-    });
-
-    const runtimeLanes = [
-      {
-        id: "commands" as const,
-        eyebrow: "执行",
-        title: "命令与验证",
-        emptyTitle: "当前没有需要关注的命令",
-        emptyText: "失败、运行中和最近通过的验证会显示在这里。",
-        items: commandsAndTools,
-      },
-      {
-        id: "patches" as const,
-        eyebrow: "改动",
-        title: "补丁与文件",
-        emptyTitle: "当前没有待看的改动",
-        emptyText: "代码改动、补丁结果和关键文件变化会显示在这里。",
-        items: patchItems,
-      },
-      {
-        id: "trace" as const,
-        eyebrow: "诊断",
-        title: "异常与信号",
-        emptyTitle: "当前没有异常信号",
-        emptyText: "失败、恢复、路由变化和需要处理的异常会显示在这里。",
-        items: filteredTraceItems,
-      },
-    ];
-
-    const uniqueTaskIds = [...new Set(traceItems.map((i) => i.taskId).filter(Boolean) as string[])];
-    const uniqueAgentTypes = [...new Set(traceItems.map((i) => i.agentType).filter(Boolean) as string[])];
-
-    return { runtimeLanes, uniqueTaskIds, uniqueAgentTypes };
-  }, [runtimeItems, traceFilter]);
-  const visibleRuntimeLanes = runtimeLanes
-    .map((lane) => ({
-      ...lane,
-      items:
-        lane.id === "commands"
-          ? lane.items.filter((item) => !item.superseded).slice(0, 2)
-          : lane.id === "patches"
-            ? lane.items.slice(0, 2)
-            : lane.items.slice(0, 1),
-    }))
-    .filter((lane) => lane.items.length > 0);
-
   const isFilesFocused = workspaceFocus === "files";
-  const isWorkspacePaneVisible = isFilesFocused || !workspacePaneCollapsed;
+  const isFileFocusActive = isFilesFocused && workspacePane === "files";
+  const isWorkspacePaneVisible = isFileFocusActive || !workspacePaneCollapsed;
   const selectWorkspacePane = useCallback((pane: SessionWorkspacePaneKey) => {
-    setWorkspacePane(pane);
+    setWorkspacePaneOverride(pane);
     setWorkspacePaneCollapsed(false);
     if (pane !== "files") {
       setWorkspaceFocus(null);
     }
   }, []);
   const toggleFileFocus = useCallback(() => {
-    setWorkspacePane("files");
+    setWorkspacePaneOverride("files");
     setWorkspacePaneCollapsed(false);
     setWorkspaceFocus((current) => (current === "files" ? null : "files"));
   }, []);
   const startWorkspacePaneResize = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
-      if (workspacePaneCollapsed || isFilesFocused) {
+      if (workspacePaneCollapsed || isFileFocusActive) {
         return;
       }
       const grid = event.currentTarget.closest(".session-workbench-grid") as HTMLElement | null;
@@ -1155,7 +1072,7 @@ export function SessionWorkspace({
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp, { once: true });
     },
-    [isFilesFocused, workspacePaneCollapsed, workspacePaneWidthPx],
+    [isFileFocusActive, workspacePaneCollapsed, workspacePaneWidthPx],
   );
   const workspacePaneTabs: Array<{
     id: SessionWorkspacePaneKey;
@@ -1164,25 +1081,18 @@ export function SessionWorkspace({
     icon: LucideIcon;
     count?: number;
   }> = [
-    { id: "home", label: "工作区", description: "打开常用面板", icon: Home },
     { id: "files", label: "文件", description: "浏览项目文件", icon: Files, count: normalizedRelatedFiles.length },
     { id: "review", label: "审查", description: "查看代码改动", icon: ClipboardList, count: (patches?.length ?? 0) + (visibleActiveTask?.changedFiles?.length ? 1 : 0) },
-    { id: "terminal", label: "终端", description: "本地命令历史", icon: SquareTerminal, count: (visibleActiveTask?.commands?.length ?? 0) + (visibleActiveTask?.verification?.length ?? 0) },
-    { id: "git", label: "Git", description: "分支与提交", icon: GitBranch, count: worktreeStatus?.dirtyFiles },
-    { id: "diagnostics", label: "诊断", description: "失败、审批与子任务", icon: Activity, count: visibleRuntimeLanes.length },
   ];
-  const toolPane = ["review", "terminal", "git"].includes(workspacePane)
-    ? (workspacePane as SessionToolKey)
-    : "review";
-  const showDiagnosticsPane = workspacePane === "diagnostics" || workspacePane === "home";
+  const toolPane: SessionToolKey = "review";
   const workspaceGridStyle =
-    workspacePaneWidthPx && !workspacePaneCollapsed && !isFilesFocused
+    workspacePaneWidthPx && !workspacePaneCollapsed && !isFileFocusActive
       ? ({ "--session-workspace-pane-width": `${workspacePaneWidthPx}px` } as CSSProperties)
       : undefined;
   const workspaceClassName = [
     "session-workspace",
     "session-workspace-chat-only",
-    isFilesFocused ? "session-workspace-files-focused" : "",
+    isFileFocusActive ? "session-workspace-files-focused" : "",
     workspacePaneCollapsed ? "session-workspace-pane-collapsed" : "",
     workspacePaneResizing ? "session-workspace-pane-resizing" : "",
   ]
@@ -1192,7 +1102,7 @@ export function SessionWorkspace({
   return (
     <main className={workspaceClassName} aria-label="Session">
       <section className="session-workbench-grid" style={workspaceGridStyle}>
-        <section className="session-conversation-column" aria-hidden={isFilesFocused ? "true" : undefined}>
+        <section className="session-conversation-column" aria-hidden={isFileFocusActive ? "true" : undefined}>
           <header className="session-chat-header">
             <div className="session-chat-title-block">
               <p className="session-kicker">会话</p>
@@ -1216,17 +1126,6 @@ export function SessionWorkspace({
                 }}
               >
                 刷新任务
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={!onRefreshTrace}
-                loading={busyId === "trace"}
-                onClick={() => {
-                  void onRefreshTrace?.();
-                }}
-              >
-                刷新诊断
               </Button>
               <Button
                 size="sm"
@@ -1312,6 +1211,7 @@ export function SessionWorkspace({
                       key={tab.id}
                       aria-selected={workspacePane === tab.id}
                       className="session-pane-tab"
+                      data-pane={tab.id}
                       onClick={() => selectWorkspacePane(tab.id)}
                       role="tab"
                       title={tab.description}
@@ -1326,18 +1226,9 @@ export function SessionWorkspace({
               </nav>
               <div className="session-pane-actions">
                 <button
-                  aria-label="打开工作区入口"
-                  className="session-pane-action"
-                  onClick={() => selectWorkspacePane("home")}
-                  title="打开工作区入口"
-                  type="button"
-                >
-                  <Plus size={16} aria-hidden="true" />
-                </button>
-                <button
                   aria-label="隐藏右侧工作区"
                   className="session-pane-action"
-                  disabled={isFilesFocused}
+                  disabled={isFileFocusActive}
                   onClick={() => setWorkspacePaneCollapsed(true)}
                   title="隐藏右侧工作区"
                   type="button"
@@ -1348,27 +1239,6 @@ export function SessionWorkspace({
             </header>
 
             <div className="session-pane-body">
-              {workspacePane === "home" ? (
-                <section className="session-pane-home" aria-label="工作区入口">
-                  {workspacePaneTabs.filter((tab) => tab.id !== "home").map((tab) => {
-                    const PaneIcon = tab.icon;
-                    return (
-                      <button
-                        key={tab.id}
-                        className="session-pane-home-card"
-                        onClick={() => selectWorkspacePane(tab.id)}
-                        type="button"
-                      >
-                        <PaneIcon size={22} aria-hidden="true" />
-                        <strong>{tab.label}</strong>
-                        <span>{tab.description}</span>
-                        {tab.count ? <em>{tab.count}</em> : null}
-                      </button>
-                    );
-                  })}
-                </section>
-              ) : null}
-
               {workspacePane === "files" ? (
                 <section className="session-files-workspace" aria-label="文件工作区">
                   <FileWorkspacePanel
@@ -1381,7 +1251,7 @@ export function SessionWorkspace({
                 </section>
               ) : null}
 
-              {["review", "terminal", "git"].includes(workspacePane) ? (
+              {workspacePane === "review" ? (
                 <SessionWorkspaceToolDock
                   activeTask={visibleActiveTask}
                   patches={patches}
@@ -1401,71 +1271,8 @@ export function SessionWorkspace({
                   onCleanupWorktree={onCleanupWorktree}
                   busyId={busyId}
                   activeTool={toolPane}
-                  onActiveToolChange={(tool) => setWorkspacePane(tool)}
                   showChrome={false}
                 />
-              ) : null}
-
-              {showDiagnosticsPane ? (
-                <section className="session-pane-runtime session-pane-diagnostics" aria-label="运行态详情" hidden={workspacePane === "home"}>
-                  <RuntimeCockpitPanel
-                    activeTask={visibleActiveTask}
-                    approvals={approvals}
-                    patches={patches}
-                    traces={traces}
-                    contextPreview={contextPreview}
-                    taskBusyAction={taskBusyAction}
-                    onRefreshTask={onRefreshTask}
-                    onPauseTask={onPauseTask}
-                    onResumeTask={onResumeTask}
-                  />
-                  {visibleActiveTask ? <TaskProgressPanel activeTask={visibleActiveTask} patches={patches} /> : null}
-                  <AgentCollaborationPanel collaboration={collaboration} expectAgentWork={expectsAgentWork(activeTask)} />
-
-                  {visibleRuntimeLanes.length ? (
-                    <section className="session-runtime-lanes" aria-label="运行态摘要">
-                      {visibleRuntimeLanes.map((lane) => (
-                        <article className="session-runtime-lane" data-lane={lane.id} key={lane.id}>
-                          <header>
-                            <div>
-                              <p className="session-kicker">{lane.eyebrow}</p>
-                              <h3>{lane.title}</h3>
-                            </div>
-                            <span>{lane.items.length}</span>
-                          </header>
-                          {lane.id === "trace" ? (
-                            <TraceFilterBar
-                              filter={traceFilter}
-                              onChange={setTraceFilter}
-                              taskIds={uniqueTaskIds}
-                              agentTypes={uniqueAgentTypes}
-                            />
-                          ) : null}
-                          {lane.items.length > 0 ? (
-                            <ul className="session-runtime-lane-items">
-                              {lane.items.map((item) => (
-                                <RuntimeLaneSummaryRow
-                                  key={item.id}
-                                  item={item}
-                                  onApprove={onApprove}
-                                  onReject={onReject}
-                                  onLoadPatch={onLoadPatch}
-                                  onCopyRuntimeText={onCopyRuntimeText}
-                                  busyId={busyId}
-                                />
-                              ))}
-                            </ul>
-                          ) : (
-                            <div className="session-runtime-lane-empty">
-                              <strong>{lane.emptyTitle}</strong>
-                              <span>{lane.emptyText}</span>
-                            </div>
-                          )}
-                        </article>
-                      ))}
-                    </section>
-                  ) : null}
-                </section>
               ) : null}
             </div>
           </aside>

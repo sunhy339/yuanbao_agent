@@ -2524,9 +2524,9 @@ def test_supplement_to_completed_task_creates_new_task(tmp_path: Any) -> None:
     assert new_task["resultSummary"] == "New task response."
 
 
-def test_explicit_supplement_to_completed_task_rejected(tmp_path: Any) -> None:
-    """Explicit mode=supplement to a completed task raises error."""
-    provider = ScriptedProvider([])
+def test_explicit_supplement_to_completed_task_creates_new_task(tmp_path: Any) -> None:
+    """Explicit mode=supplement to a terminal task starts a fresh task instead of failing the chat."""
+    provider = ScriptedProvider([{"final": "Fresh follow-up response."}])
     runtime = _make_runtime(tmp_path, provider)
     session = _open_session(runtime, tmp_path)
 
@@ -2548,9 +2548,10 @@ def test_explicit_supplement_to_completed_task_rejected(tmp_path: Any) -> None:
             "mode": "supplement",
         },
     )
-    # Should return error since completed task cannot be supplemented
-    assert "error" in resp
-    assert "not active" in resp["error"]["message"].lower() or "cannot supplement" in resp["error"]["message"].lower()
+    result = resp["result"]
+    assert result["task"]["id"] != completed_task["id"]
+    assert result["task"]["status"] in {"completed", "waiting_approval"}
+    assert result["acceptedMode"] == "new"
 
 
 def test_supplement_to_waiting_approval_task(tmp_path: Any) -> None:

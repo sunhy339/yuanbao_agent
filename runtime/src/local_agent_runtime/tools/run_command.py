@@ -154,8 +154,6 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         if allowlist_review_reason:
             request["policyReason"] = allowlist_review_reason
             request["policyAction"] = "approval_required"
-        if allowlist_review_reason and internal_validation:
-            raise ValueError(allowlist_review_reason)
         existing_approval = approval_for_request(store, request_task_id, request, approval_id)
         if existing_approval is not None:
             decision = existing_approval.get("decision")
@@ -172,12 +170,13 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
                     "background": background,
                 }
         elif (
-            not internal_validation
-            and (
-                allowlist_review_reason is not None
-                or
-                (permission_decision is not None and permission_decision.decision == "approval_required")
-                or (permission_engine is None and policy_guard.requires_approval("run_command", approval_mode=active_command_policy["approvalMode"]))
+            allowlist_review_reason is not None
+            or (
+                not internal_validation
+                and (
+                    (permission_decision is not None and permission_decision.decision == "approval_required")
+                    or (permission_engine is None and policy_guard.requires_approval("run_command", approval_mode=active_command_policy["approvalMode"]))
+                )
             )
         ):
             if not request_task_id:

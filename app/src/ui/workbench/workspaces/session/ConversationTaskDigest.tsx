@@ -73,7 +73,6 @@ function buildDigestCommands(
 ) {
   const commands = [
     ...((activeTask?.commands ?? [])
-      .filter((command) => !isVerificationCommand(command.command))
       .filter((command) => !(isSuccessfulRuntimeStatus(command.status) && isBackgroundProbeCommand(command.command)))
       .map((command) => ({
         id: command.id ?? command.command,
@@ -96,16 +95,19 @@ function buildDigestCommands(
   ];
 
   const seen = new Set<string>();
-  const deduped = commands.filter((command) => {
+  const dedupedLatestFirst = commands
+    .slice()
+    .reverse()
+    .filter((command) => {
     const key = normalizeCommandLabel(command.command)?.toLowerCase() ?? command.command.toLowerCase();
     if (seen.has(key)) {
       return false;
     }
     seen.add(key);
     return true;
-  });
+    });
 
-  return deduped.slice(-3).reverse();
+  return dedupedLatestFirst.slice(0, 3);
 }
 
 function buildDigestVerificationRows(activeTask?: SessionWorkspaceActiveTask | null) {
@@ -202,8 +204,9 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
   const visibleFiles = files.slice(0, 4);
   const commands = buildDigestCommands(activeTask, backgroundJobs);
   const verifications = buildDigestVerificationRows(activeTask);
+  const hasConcreteWork = Boolean(files.length || commands.length || verifications.length);
 
-  if (!activeTask && !files.length && !commands.length && !verifications.length && !composerContext) {
+  if (!activeTask && !hasConcreteWork) {
     return null;
   }
 
@@ -249,7 +252,8 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
         </div>
       ) : null}
 
-      <div className="conversation-task-digest-grid" aria-label="工作明细">
+      {hasConcreteWork ? (
+        <div className="conversation-task-digest-grid" aria-label="工作明细">
         <article className="conversation-task-digest-card">
           <span>文件</span>
           <strong>{files.length ? `${files.length} 个改动文件` : "暂无文件改动"}</strong>
@@ -324,7 +328,8 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
             <small className="conversation-task-digest-empty">这一轮还没有记录到验证。</small>
           )}
         </article>
-      </div>
+        </div>
+      ) : null}
     </section>
   );
 });

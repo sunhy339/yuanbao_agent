@@ -159,6 +159,7 @@
 
 .workspace-frame {
   position: relative;
+  height: 100%;
   min-height: 0;
   overflow: hidden;
   border: 1px solid rgba(60, 40, 30, 0.1);
@@ -189,4 +190,16 @@
 .workspace-frame[data-composer-visible="true"] .workspace-scroll {
   padding-bottom: calc(max(var(--wb-composer-reserve), var(--wb-composer-live-height)) + env(safe-area-inset-bottom, 0px));
   scroll-padding-bottom: calc(max(var(--wb-composer-reserve), var(--wb-composer-live-height)) + 24px + env(safe-area-inset-bottom, 0px));
+}
+
+.workspace-frame:has(.session-workspace-chat-only) .workspace-scroll {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.workspace-frame[data-composer-visible="true"]:has(.session-workspace-chat-only) .workspace-scroll {
+  padding-bottom: 0;
+  scroll-padding-bottom: 0;
 }

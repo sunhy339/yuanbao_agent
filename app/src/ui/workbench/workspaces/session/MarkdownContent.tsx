@@ -1,13 +1,32 @@
 import { type ReactNode } from "react";
 
 function normalizeMarkdownContent(content: string) {
-  return content
+  const lines = content
     .replace(/\r\n/g, "\n")
     .replace(/^(\s*#{1,6})(?=\S)/gm, "$1 ")
     .replace(/([^\n])(\s+#{1,6})(?=\S)/g, "$1\n$2 ")
     .replace(/([^\n])(\s+[-*]\s+)/g, "$1\n$2")
     .replace(/([^\n])(\s+\d+\.\s+)/g, "$1\n$2")
-    .replace(/\n{3,}/g, "\n\n");
+    .replace(/\n{3,}/g, "\n\n")
+    .split("\n");
+
+  const normalized: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const previous = normalized.at(-1)?.trim();
+    const nextIsDivider = /^[-*_]{3,}$/.test(trimmed);
+    const duplicateTransition =
+      nextIsDivider &&
+      (previous === trimmed || previous === "---" || /^[-*_]{3,}$/.test(previous ?? ""));
+
+    if (duplicateTransition) {
+      continue;
+    }
+
+    normalized.push(line);
+  }
+
+  return normalized.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 function isSafeLink(url: string) {
@@ -210,9 +229,25 @@ export function MarkdownContent({ content }: { content: string }) {
     if (/^[-*]\s+/.test(line) || /^\d+\.\s+/.test(line)) {
       const ordered = /^\d+\.\s+/.test(line);
       const items: string[] = [];
-      while (index < lines.length && (ordered ? /^\d+\.\s+/.test(lines[index]) : /^[-*]\s+/.test(lines[index]))) {
-        items.push(lines[index].replace(ordered ? /^\d+\.\s+/ : /^[-*]\s+/, ""));
-        index += 1;
+      while (index < lines.length) {
+        const currentLine = lines[index];
+        const itemPattern = ordered ? /^\d+\.\s+/ : /^[-*]\s+/;
+        if (itemPattern.test(currentLine)) {
+          items.push(currentLine.replace(itemPattern, ""));
+          index += 1;
+          continue;
+        }
+
+        if (
+          currentLine.trim() === "" &&
+          index + 1 < lines.length &&
+          itemPattern.test(lines[index + 1])
+        ) {
+          index += 1;
+          continue;
+        }
+
+        break;
       }
       const ListTag = ordered ? "ol" : "ul";
       blocks.push(

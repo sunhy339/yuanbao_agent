@@ -140,6 +140,19 @@
   line-height: 1.5;
 }
 
+.markdown-content ul {
+  list-style: disc outside;
+}
+
+.markdown-content ol {
+  list-style: decimal outside;
+}
+
+.markdown-content li {
+  display: list-item;
+  padding-left: 2px;
+}
+
 .markdown-content code {
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 5px;

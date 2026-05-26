@@ -586,7 +586,8 @@ describe("SessionWorkspace", () => {
           {
             id: "m1",
             role: "assistant",
-            content: "##Can do\n- **Read files** and then - Run `npm test`\n---\n| Tool | Use |\n| --- | --- |\n| list_dir | Browse |",
+            content:
+              "##Can do\n- **Read files** and then - Run `npm test`\n---\n---\n1. First\n\n1. Second\n\n1. Third\n| Tool | Use |\n| --- | --- |\n| list_dir | Browse |",
             createdAt: 1,
           },
         ]}
@@ -596,8 +597,11 @@ describe("SessionWorkspace", () => {
     expect(screen.getByRole("heading", { name: "Can do" })).toBeInTheDocument();
     expect(screen.getByText("Read files")).toBeInTheDocument();
     expect(screen.getByText("npm test")).toBeInTheDocument();
+    const orderedList = screen.getAllByRole("list").find((list) => list.tagName.toLowerCase() === "ol");
+    expect(orderedList).toBeTruthy();
+    expect(within(orderedList!).getAllByRole("listitem")).toHaveLength(3);
     expect(screen.getByRole("columnheader", { name: "Tool" })).toBeInTheDocument();
-    expect(screen.getByRole("separator")).toBeInTheDocument();
+    expect(screen.getAllByRole("separator")).toHaveLength(1);
     expect(screen.queryByText(/## Can do/)).not.toBeInTheDocument();
   });
 

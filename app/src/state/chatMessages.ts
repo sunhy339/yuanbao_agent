@@ -277,10 +277,14 @@ export function failAssistantMessage(
     taskId?: string;
     content: string;
     now: number;
+    appendOnly?: boolean;
   },
 ): ChatMessageView[] {
   const next = [...current];
   const targetIndex = (() => {
+    if (payload.appendOnly) {
+      return -1;
+    }
     if (payload.messageId) {
       const exactIndex = next.findIndex((message) => message.id === payload.messageId);
       if (exactIndex >= 0) {

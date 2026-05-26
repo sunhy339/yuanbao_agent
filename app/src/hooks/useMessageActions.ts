@@ -33,6 +33,11 @@ import { shouldPromoteTaskToActive } from "../state/sessionDerivedViews";
 import type { HookDeps } from "./types";
 
 const runtimeClient = new RuntimeClient();
+const SUPPLEMENTABLE_TASK_STATUSES = new Set(["running", "planning", "verifying", "waiting_approval", "queued", "paused"]);
+
+function canReceiveSupplement(status?: string | null) {
+  return Boolean(status && SUPPLEMENTABLE_TASK_STATUSES.has(status));
+}
 
 export interface UseMessageActionsDeps extends HookDeps {
   // State
@@ -167,7 +172,9 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
       const clientMessageId = `client_${messageCreatedAt}`;
       const pendingUserMessageId = `user_${messageCreatedAt}`;
       const pendingAssistantMessageId = `assistant_pending_${messageCreatedAt}`;
-      const shouldCreateAssistantPlaceholder = options.mode !== "supplement";
+      const taskCanReceiveSupplement = canReceiveSupplement(task?.status) && Boolean(task?.id);
+      const requestedMode = options.mode === "supplement" && !taskCanReceiveSupplement ? "new" : options.mode;
+      const shouldCreateAssistantPlaceholder = requestedMode !== "supplement";
       pendingAssistantMessageIdForCatch = shouldCreateAssistantPlaceholder ? pendingAssistantMessageId : null;
       const currentTaskIdBeforeSend = task?.id ?? null;
       if (shouldCreateAssistantPlaceholder) {
@@ -208,9 +215,9 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
         sessionId: activeSession.id,
         content: messageContent,
         attachments: messageAttachments,
-        mode: options.mode,
-        taskId: options.mode === "supplement" ? task?.id ?? activeTaskId ?? undefined : undefined,
-        newTask: options.mode === "new" ? true : undefined,
+        mode: requestedMode,
+        taskId: requestedMode === "supplement" ? task?.id ?? activeTaskId ?? undefined : undefined,
+        newTask: requestedMode === "new" ? true : undefined,
         clientMessageId,
       });
 
@@ -253,6 +260,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
             taskId: task?.id ?? activeTaskId ?? undefined,
             content: `发送失败：${errorSummary}`,
             now: Date.now(),
+            appendOnly: options.mode === "supplement" && !pendingAssistantMessageIdForCatch,
           }),
         );
       }
@@ -281,7 +289,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
 
     await sendMessageContent(prompt, promptAttachments, {
       clearComposer: true,
-      mode: composerCanStop || composerHasStreamingMessage ? "supplement" : "new",
+      mode: canReceiveSupplement(task?.status) ? "supplement" : "new",
     });
   }
 

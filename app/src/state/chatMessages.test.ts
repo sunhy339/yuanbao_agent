@@ -135,6 +135,28 @@ describe("chatMessages", () => {
     });
   });
 
+  it("appends supplement send failures instead of overwriting the previous assistant answer", () => {
+    const next = failAssistantMessage(messages, {
+      sessionId: "sess_1",
+      taskId: "task_1",
+      content: "发送失败：Cannot supplement task that is not active",
+      now: 5,
+      appendOnly: true,
+    });
+
+    expect(next.map((message) => message.content)).toEqual([
+      "你好",
+      "你好，有什么可以帮你？",
+      "Other session",
+      "发送失败：Cannot supplement task that is not active",
+    ]);
+    expect(next.at(-1)).toMatchObject({
+      role: "assistant",
+      kind: "failure",
+      status: "failed",
+    });
+  });
+
   it("classifies runtime progress tokens as non-chat assistant deltas", () => {
     expect(isOperationalAssistantDelta("Building context and preparing the first tool calls...")).toBe(true);
     expect(isOperationalAssistantDelta("Running tool: list_dir")).toBe(true);

@@ -352,8 +352,17 @@ async function assertSessionWorkspacePanels(assertions?: string[]) {
   if (focusButton) {
     focusButton.click();
     const focusedWorkspace = await waitFor("focused file workspace", () => query<HTMLElement>(".session-workspace-files-focused"));
+    const focusedFileLayout = await waitFor("focused file browser layout", () => query<HTMLElement>(".session-workspace-files-focused .session-file-browser-layout"));
+    const focusedFileViewer = await waitFor("focused file viewer", () => query<HTMLElement>(".session-workspace-files-focused .session-file-viewer"));
+    const focusedFileTree = await waitFor("focused file tree", () => query<HTMLElement>(".session-workspace-files-focused .session-file-tree-pane"));
     assertVisibleBox(focusedWorkspace, "focused file workspace", 900, 360);
+    assertVisibleBox(focusedFileLayout, "focused file browser layout", 900, 320);
+    assertVisibleBox(focusedFileViewer, "focused file viewer", 420, 260);
+    assertVisibleBox(focusedFileTree, "focused file tree", 220, 260);
+    assertLaidOutBesideEachOther(focusedFileViewer, focusedFileTree, "focused file preview and tree");
+    assertNoHorizontalOverflow(focusedFileLayout, "focused file browser layout");
     assertDocumentDoesNotOwnSessionScroll("focused file workspace");
+    assertions?.push("focused file workspace keeps file preview and tree visible");
     focusButton.click();
     await waitFor("split workspace restored", () => query<HTMLElement>(".session-workbench-grid .session-conversation-column"));
   }

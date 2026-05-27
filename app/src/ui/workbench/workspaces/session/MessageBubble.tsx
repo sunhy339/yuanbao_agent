@@ -58,7 +58,7 @@ export const MessageBubble = memo(function MessageBubble({
         {message.toolName ? <em>{message.toolName}</em> : null}
         {message.status ? <em>{formatStatusLabel(message.status)}</em> : null}
         {getMessageDisplayTime(message) ? (
-          <time>{formatTimestamp(getMessageDisplayTime(message), { includeSeconds: true, forceDateTime: true })}</time>
+          <time>{formatTimestamp(getMessageDisplayTime(message), { includeSeconds: true, forceTimeOnly: true })}</time>
         ) : null}
       </div>
       {isThinking ? (

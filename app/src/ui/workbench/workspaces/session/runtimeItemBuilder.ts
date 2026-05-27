@@ -132,7 +132,7 @@ function classifyTaskCommandVisibility(command?: string, status?: string) {
   if (normalizedStatus && isSuccessfulRuntimeStatus(normalizedStatus) && isBackgroundProbeCommand(command)) {
     return "trace" as const;
   }
-  return "panel" as const;
+  return "chat" as const;
 }
 
 function classifyToolVisibility(toolCall: SessionWorkspaceToolCall): RuntimeTimelineItem["visibility"] {
@@ -149,12 +149,12 @@ function classifyToolVisibility(toolCall: SessionWorkspaceToolCall): RuntimeTime
     return "chat";
   }
   if (toolCall.toolName === "run_command") {
-    return isInFlight || needsAttention ? "chat" : "panel";
+    return "chat";
   }
   if (toolCall.toolName === "list_dir" || toolCall.toolName === "git_status" || toolCall.toolName === "read_file") {
     return isInFlight || needsAttention ? "chat" : "trace";
   }
-  return isInFlight || needsAttention ? "chat" : "panel";
+  return "chat";
 }
 
 function shouldHideToolFromRuntimePanel(toolCall: SessionWorkspaceToolCall) {
@@ -177,7 +177,7 @@ function classifyBackgroundJobVisibility(job: { command: string; status: string;
   if (isSuccessfulRuntimeStatus(normalizedStatus) && isBackgroundProbeCommand(job.command)) {
     return "trace" as const;
   }
-  return "panel" as const;
+  return "chat" as const;
 }
 
 function markSupersededRuntimeItems(items: RuntimeTimelineItem[]) {

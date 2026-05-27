@@ -167,6 +167,8 @@ describe("chatMessages", () => {
     expect(isOperationalAssistantDelta("Running post-task git status validation...")).toBe(true);
     expect(isOperationalAssistantDelta("Approval accepted. Applying the patch now...")).toBe(true);
     expect(isOperationalAssistantDelta("Completed the minimal tool loop and preparing a summary...")).toBe(true);
+    expect(isOperationalAssistantDelta('Task Cancelled {"acceptanceCriteria":["Keep focused"]}')).toBe(true);
+    expect(isOperationalAssistantDelta('{"cwd":"D:\\\\py\\\\test_pro","sessionId":"sess_1","taskId":"task_1"}')).toBe(true);
     expect(isOperationalAssistantDelta("我已经创建好了文件。")).toBe(false);
   });
 
@@ -197,6 +199,10 @@ describe("chatMessages", () => {
     expect(summarizeOperationalAssistantDelta("Subtask tool failed: run_command")).toBe(
       "\n\n命令失败，正在根据输出定位原因。",
     );
+    expect(summarizeOperationalAssistantDelta('Task Cancelled {"acceptanceCriteria":["Keep focused"]}')).toBe(
+      "\n\n任务已取消，已停止继续执行。",
+    );
+    expect(summarizeOperationalAssistantDelta('{"cwd":"D:\\\\py\\\\test_pro","sessionId":"sess_1","taskId":"task_1"}')).toBeNull();
   });
 
   it("does not append the same operational update twice", () => {

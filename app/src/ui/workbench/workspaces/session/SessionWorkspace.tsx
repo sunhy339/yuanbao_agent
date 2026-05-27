@@ -5,16 +5,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import {
-  ClipboardList,
-  Files,
-  GitBranch,
-  GripVertical,
-  PanelRightClose,
-  PanelRightOpen,
-  SquareTerminal,
-  type LucideIcon,
-} from "lucide-react";
+import { Files, GripVertical, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button, StatusBadge } from "../../../v2/components/ui";
 import { formatStatusLabel } from "../../../copy";
 import type { SessionWorkspaceProps, RuntimeTimelineItem } from "./types";
@@ -27,16 +18,12 @@ import {
   isBackgroundProbeCommand,
   isSuccessfulRuntimeStatus,
   isTaskControllable,
-  normalizeCommandLabel,
 } from "./utils";
 import { shouldDisplayTaskScaffold } from "./taskPhase";
 import { buildRuntimeItems } from "./runtimeItemBuilder";
 import { buildConversationActivity, ConversationActivity } from "./ConversationActivity";
 import { ConversationTaskDigest } from "./ConversationTaskDigest";
 import { FileWorkspacePanel } from "./FileWorkspacePanel";
-import { GitWorkspacePanel } from "./GitWorkspacePanel";
-import { LocalTerminalPanel } from "./LocalTerminalPanel";
-import { UnifiedDiffViewer } from "./UnifiedDiffViewer";
 import { isChatVisibleEvent } from "./visibilityRouting";
 import "./session.css";
 
@@ -277,520 +264,11 @@ function RuntimeLaneSummaryRow({
   );
 }
 
-type SessionToolKey = "review" | "terminal" | "git";
-type SessionWorkspacePaneKey = "files" | "review";
-
-interface SessionToolCommand {
-  id?: string;
-  command: string;
-  cwd?: string;
-  shell?: string;
-  status?: string;
-  summary?: string;
-  durationMs?: number | null;
-  exitCode?: number | null;
-  stdoutPath?: string | null;
-  stderrPath?: string | null;
-}
-
-interface SessionToolReviewFile {
-  path: string;
-  status?: string;
-  additions?: number;
-  deletions?: number;
-  reason?: string;
-  source: "task" | "patch" | "git";
-}
-
-function normalizeReviewStatus(status?: string) {
-  const normalized = String(status ?? "").trim();
-  if (!normalized) return "";
-  if (normalized === "M") return "modified";
-  if (normalized === "A") return "added";
-  if (normalized === "D") return "deleted";
-  if (normalized === "R") return "renamed";
-  if (normalized === "??") return "untracked";
-  return normalized;
-}
-
-function readGitStatusPath(path: string) {
-  const normalized = path.trim();
-  const match = normalized.match(/^([ MADRCU?!]{1,2})\s+(.+)$/);
-  if (!match) {
-    return { status: "", path: normalizeWorkspaceRelativePath(normalized) };
-  }
-  return {
-    status: normalizeReviewStatus(match[1].trim()),
-    path: normalizeWorkspaceRelativePath(match[2]),
-  };
-}
-
-function mergeReviewFileRows(rows: SessionToolReviewFile[]) {
-  const merged = new Map<string, SessionToolReviewFile>();
-  rows.forEach((row) => {
-    const path = normalizeWorkspaceRelativePath(row.path);
-    if (!path) return;
-    const existing = merged.get(path);
-    merged.set(path, {
-      path,
-      status: normalizeReviewStatus(row.status) || existing?.status,
-      additions: row.additions ?? existing?.additions,
-      deletions: row.deletions ?? existing?.deletions,
-      reason: row.reason || existing?.reason,
-      source: existing?.source ?? row.source,
-    });
-  });
-  return [...merged.values()];
-}
-
-function buildReviewFileRows(
-  activeTask: SessionWorkspaceProps["activeTask"],
-  patches: SessionWorkspaceProps["patches"],
-  worktreeStatus: SessionWorkspaceProps["worktreeStatus"],
-) {
-  return mergeReviewFileRows([
-    ...(activeTask?.changedFiles?.map((file) => ({
-      path: file.path,
-      status: file.status,
-      additions: file.additions,
-      deletions: file.deletions,
-      reason: file.reason,
-      source: "task" as const,
-    })) ?? []),
-    ...((patches ?? []).flatMap((patch) =>
-      (patch.files ?? []).map((file) => ({
-        path: file.path,
-        status: file.status,
-        additions: file.additions,
-        deletions: file.deletions,
-        source: "patch" as const,
-      })),
-    ) as SessionToolReviewFile[]),
-    ...(worktreeStatus?.files?.map((rawPath) => {
-      const parsed = readGitStatusPath(rawPath);
-      return {
-        path: parsed.path,
-        status: parsed.status,
-        source: "git" as const,
-      };
-    }) ?? []),
-  ]);
-}
-
-function formatReviewFileStatus(status?: string) {
-  const normalized = normalizeReviewStatus(status);
-  if (!normalized) return "recorded";
-  if (normalized === "modified") return "modified";
-  if (normalized === "added") return "added";
-  if (normalized === "deleted") return "deleted";
-  if (normalized === "untracked") return "untracked";
-  return normalized;
-}
-
-function formatReviewFileStats(file: SessionToolReviewFile) {
-  const hasStats = file.additions !== undefined || file.deletions !== undefined;
-  if (!hasStats) return "";
-  return `+${file.additions ?? 0} -${file.deletions ?? 0}`;
-}
-
-function isCommandPolicyBlocked(command: SessionToolCommand) {
-  const haystack = [command.summary, command.command].filter(Boolean).join("\n").toLowerCase();
-  return (
-    haystack.includes("command is not allowed by command allowlist") ||
-    haystack.includes("permission_denied") ||
-    haystack.includes("request_permission") ||
-    haystack.includes("not allowed by command allowlist")
-  );
-}
-
-function diffTextFromReviewSources(
-  worktreeDiff: SessionWorkspaceProps["worktreeDiff"],
-  patches?: SessionWorkspaceProps["patches"],
-) {
-  const directDiff = worktreeDiff?.diff || worktreeDiff?.preview;
-  if (directDiff?.trim()) {
-    return directDiff;
-  }
-  return (patches ?? [])
-    .flatMap((patch) => [patch.diff, ...(patch.files ?? []).map((file) => file.diff)])
-    .filter((value): value is string => Boolean(value?.trim()))
-    .join("\n");
-}
-
-function SessionWorkspaceToolDock({
-  activeTask,
-  patches,
-  backgroundJobs,
-  runtimeItems,
-  worktreeStatus,
-  worktreeDiff,
-  worktreeBusyAction,
-  worktreeError,
-  composerContext,
-  onLoadPatch,
-  onRefreshCommandJob,
-  onStopCommandJob,
-  onRefreshWorktree,
-  onLoadWorktreeDiff,
-  onMergeWorktree,
-  onCleanupWorktree,
-  busyId,
-  activeTool,
-  onActiveToolChange,
-  showChrome = true,
-}: {
-  activeTask: SessionWorkspaceProps["activeTask"];
-  patches?: SessionWorkspaceProps["patches"];
-  backgroundJobs?: SessionWorkspaceProps["backgroundJobs"];
-  runtimeItems?: RuntimeTimelineItem[];
-  worktreeStatus?: SessionWorkspaceProps["worktreeStatus"];
-  worktreeDiff?: SessionWorkspaceProps["worktreeDiff"];
-  worktreeBusyAction?: SessionWorkspaceProps["worktreeBusyAction"];
-  worktreeError?: SessionWorkspaceProps["worktreeError"];
-  composerContext?: SessionWorkspaceProps["composerContext"];
-  onLoadPatch?: SessionWorkspaceProps["onLoadPatch"];
-  onRefreshCommandJob?: SessionWorkspaceProps["onRefreshCommandJob"];
-  onStopCommandJob?: SessionWorkspaceProps["onStopCommandJob"];
-  onRefreshWorktree?: SessionWorkspaceProps["onRefreshWorktree"];
-  onLoadWorktreeDiff?: SessionWorkspaceProps["onLoadWorktreeDiff"];
-  onMergeWorktree?: SessionWorkspaceProps["onMergeWorktree"];
-  onCleanupWorktree?: SessionWorkspaceProps["onCleanupWorktree"];
-  busyId?: string | null;
-  activeTool?: SessionToolKey;
-  onActiveToolChange?: (tool: SessionToolKey) => void;
-  showChrome?: boolean;
-}) {
-  const [internalActiveTool, setInternalActiveTool] = useState<SessionToolKey>("review");
-  const selectedTool = activeTool ?? internalActiveTool;
-  const selectTool = onActiveToolChange ?? setInternalActiveTool;
-  const activeWorktree = activeTask?.activeWorktree;
-  const workspacePath = composerContext?.cwd || activeWorktree?.worktreePath || "";
-  const branchName = composerContext?.branch || activeWorktree?.branchName || "未识别分支";
-  const workspaceLabel = workspacePath || "当前会话未提供工作目录";
-
-  const reviewFileRows = buildReviewFileRows(activeTask, patches, worktreeStatus);
-  const normalizedRelatedFiles = uniqueNonEmptyStrings(reviewFileRows.map((file) => file.path));
-
-  const patchStats = (patches ?? []).reduce(
-    (stats, patch) => ({
-      additions: stats.additions + (patch.additions ?? 0),
-      deletions: stats.deletions + (patch.deletions ?? 0),
-    }),
-    { additions: 0, deletions: 0 },
-  );
-  const taskPatchStats = (activeTask?.changedFiles ?? []).reduce(
-    (stats, file) => ({
-      additions: stats.additions + (file.additions ?? 0),
-      deletions: stats.deletions + (file.deletions ?? 0),
-    }),
-    { additions: 0, deletions: 0 },
-  );
-  const hasPatchLineStats = (patches ?? []).some((patch) => patch.additions !== undefined || patch.deletions !== undefined);
-  const hasTaskLineStats = (activeTask?.changedFiles ?? []).some((file) => file.additions !== undefined || file.deletions !== undefined);
-  const hasLineStats = hasPatchLineStats || hasTaskLineStats;
-  const additions = patchStats.additions || taskPatchStats.additions;
-  const deletions = patchStats.deletions || taskPatchStats.deletions;
-  const patchCount = (patches?.length ?? 0) + (activeTask?.changedFiles?.length ? 1 : 0);
-  const reviewFileCount = normalizedRelatedFiles.length;
-  const firstPatchId = patches?.[0]?.id;
-  const dirtyFiles = worktreeStatus?.dirtyFiles ?? normalizedRelatedFiles.length;
-  const latestPatch = patches?.[0];
-  const reviewRecord = readObject(activeWorktree?.lastStatus?.review);
-  const mergeApprovalRecord = readObject(activeWorktree?.lastStatus?.mergeApproval);
-  const reviewSummary = compactText(
-    compactMeta([
-      readText(reviewRecord, "reviewer"),
-      readText(reviewRecord, "summary") || readText(reviewRecord, "status"),
-    ]).join(" - "),
-    180,
-  );
-  const mergeApprovalSummary = compactText(
-    compactMeta([
-      readText(mergeApprovalRecord, "decision"),
-      readText(mergeApprovalRecord, "targetBranch"),
-      readText(mergeApprovalRecord, "verificationStatus"),
-    ]).join(" - "),
-    180,
-  );
-  const latestPatchSummary = compactText(latestPatch?.summary || activeTask?.summary || activeTask?.currentStep, 180);
-  const reviewFileSummary =
-    reviewFileRows.length && !latestPatchSummary
-      ? `${reviewFileRows.length} 个文件：${reviewFileRows
-          .slice(0, 4)
-          .map((file) => `${fileNameFromPath(file.path)} ${formatReviewFileStatus(file.status)}`)
-          .join("、")}${reviewFileRows.length > 4 ? " 等" : ""}`
-      : "";
-  const reviewHighlights = compactMeta([
-    latestPatchSummary ? `改动：${latestPatchSummary}` : null,
-    reviewFileSummary ? `文件：${reviewFileSummary}` : null,
-    reviewSummary ? `审查：${reviewSummary}` : null,
-    mergeApprovalSummary ? `合并：${mergeApprovalSummary}` : null,
-    worktreeDiff?.diffStat ? `Diff：${worktreeDiff.diffStat}` : null,
-  ]);
-  const rawCommandItems: SessionToolCommand[] = [
-    ...(activeTask?.commands?.map((command) => ({ ...command })) ?? []),
-    ...(activeTask?.verification?.map((verification) => ({
-      id: verification.id,
-      command: verification.command ?? "verification",
-      status: verification.status,
-      summary: verification.summary,
-      durationMs: verification.durationMs,
-      exitCode: verification.exitCode,
-    })) ?? []),
-    ...((backgroundJobs ?? [])
-      .filter((job) => !(isSuccessfulRuntimeStatus(job.status) && isBackgroundProbeCommand(job.command)))
-      .map((job) => ({ ...job })) ?? []),
-    ...((runtimeItems ?? [])
-      .filter((item) => item.kind === "command")
-      .filter((item) => item.id.startsWith("tool:"))
-      .filter((item) => !item.superseded)
-      .filter((item) => !(isSuccessfulRuntimeStatus(item.status) && isBackgroundProbeCommand(item.code || item.title)))
-      .map((item) => ({
-        id: item.id,
-        command: item.code || item.title,
-        status: item.status,
-        summary: item.summary,
-        durationMs: item.durationMs,
-        shell: item.meta?.find((part) => /^(powershell|pwsh|cmd|bash|zsh|sh|shell)$/i.test(part)),
-      })) ?? []),
-  ];
-  const seenCommands = new Set<string>();
-  const commandItems = rawCommandItems
-    .slice()
-    .reverse()
-    .filter((command) => {
-      const normalized = normalizeCommandLabel(command.command)?.toLowerCase() ?? command.command.toLowerCase();
-      const key = command.id ? `id:${command.id}` : `${normalized}|${command.status ?? ""}|${command.exitCode ?? ""}`;
-      if (seenCommands.has(key)) {
-        return false;
-      }
-      seenCommands.add(key);
-      return true;
-    })
-    .reverse();
-  const latestCommand = commandItems.at(-1);
-  const latestDiffPreview = diffTextFromReviewSources(worktreeDiff, patches);
-  const toolTabs: Array<{ id: SessionToolKey; label: string; description: string; icon: LucideIcon; count?: number }> = [
-    { id: "review", label: "审查", description: "查看代码改动", icon: ClipboardList, count: patchCount },
-    { id: "terminal", label: "终端", description: "本地 shell", icon: SquareTerminal, count: commandItems.length },
-    { id: "git", label: "Git", description: "分支与提交", icon: GitBranch, count: dirtyFiles },
-  ];
-
-  return (
-    <section className="session-tool-dock session-tool-dock-live" aria-label="工作区工具">
-      {showChrome ? (
-        <>
-          <header className="session-tool-dock-header">
-            <div>
-              <p className="session-kicker">工作区</p>
-              <h2>工具</h2>
-            </div>
-            <span title={branchName}>{branchName}</span>
-          </header>
-
-          <nav className="session-tool-tabs" role="tablist" aria-label="工作区工具类型">
-            {toolTabs.map((tab) => {
-              const ToolIcon = tab.icon;
-              return (
-                <button
-                  key={tab.id}
-                  aria-selected={selectedTool === tab.id}
-                  className="session-tool-tab"
-                  data-tool={tab.id}
-                  onClick={() => selectTool(tab.id)}
-                  role="tab"
-                  type="button"
-                >
-                  <span className="session-tool-icon" aria-hidden="true">
-                    <ToolIcon size={16} strokeWidth={2} />
-                  </span>
-                  <span>
-                    <strong>{tab.label}</strong>
-                    <small>{tab.description}</small>
-                  </span>
-                  {tab.count ? <em>{tab.count}</em> : null}
-                </button>
-              );
-            })}
-          </nav>
-        </>
-      ) : null}
-
-      <div className={`session-tool-panel session-tool-panel-${selectedTool}`} role="tabpanel">
-        {selectedTool === "review" ? (
-          <>
-            <div className="session-tool-panel-header">
-              <div>
-                <strong>代码审查</strong>
-                <small>{patchCount ? `${patchCount} 个改动记录` : reviewFileCount ? `${reviewFileCount} 个相关文件` : "等待代码变更"}</small>
-              </div>
-              {hasLineStats ? (
-                <span className="session-tool-diff-stat">+{additions} -{deletions}</span>
-              ) : reviewFileCount ? (
-                <span className="session-tool-file-stat">{reviewFileCount} 个文件</span>
-              ) : null}
-            </div>
-            {reviewHighlights.length ? (
-              <div className="session-tool-review-summary" aria-label="审查摘要">
-                {reviewHighlights.map((item) => (
-                  <p key={item}>{item}</p>
-                ))}
-              </div>
-            ) : (
-              <p className="session-tool-muted">还没有 diff 或审查摘要；有文件改动后这里会显示改了什么、验证和审查状态。</p>
-            )}
-            <div className="session-tool-actions">
-              {firstPatchId && onLoadPatch ? (
-                <Button
-                  size="xs"
-                  variant="secondary"
-                  loading={busyId === firstPatchId}
-                  onClick={() => {
-                    void onLoadPatch(firstPatchId);
-                  }}
-                >
-                  打开补丁
-                </Button>
-              ) : null}
-              {activeWorktree && onLoadWorktreeDiff ? (
-                <Button
-                  size="xs"
-                  variant="secondary"
-                  loading={worktreeBusyAction === "diff"}
-                  onClick={() => {
-                    void onLoadWorktreeDiff(activeWorktree.id, Boolean(worktreeDiff?.truncated));
-                  }}
-                >
-                  {worktreeDiff?.truncated ? "加载完整差异" : "查看差异"}
-                </Button>
-              ) : null}
-            </div>
-            {reviewFileRows.length ? (
-              <ul className="session-tool-list session-tool-review-file-list" aria-label="审查文件">
-                {reviewFileRows.slice(0, 10).map((file) => {
-                  const stats = formatReviewFileStats(file);
-                  return (
-                    <li className="session-tool-review-file-row" key={file.path}>
-                      <div className="session-tool-review-file-copy">
-                        <strong>{fileNameFromPath(file.path)}</strong>
-                        <small>{file.path}</small>
-                        {file.reason ? <p>{file.reason}</p> : null}
-                      </div>
-                      <span className="session-tool-file-badges">
-                        <code>{formatReviewFileStatus(file.status)}</code>
-                        {stats ? <code>{stats}</code> : null}
-                      </span>
-                  </li>
-                  );
-                })}
-              </ul>
-            ) : null}
-            {worktreeDiff?.error ? <p className="session-tool-error">{worktreeDiff.error}</p> : null}
-            {worktreeDiff?.diffStat ? <p className="session-tool-muted">{worktreeDiff.diffStat}</p> : null}
-            {latestDiffPreview ? (
-              <UnifiedDiffViewer diffText={latestDiffPreview} />
-            ) : reviewFileRows.length ? (
-              <p className="session-tool-muted">已记录文件变化；加载补丁或 diff 后会在这里展开逐行差异。</p>
-            ) : null}
-          </>
-        ) : null}
-
-        {selectedTool === "terminal" ? (
-          <>
-            <div className="session-tool-panel-header">
-              <div>
-                <strong>终端</strong>
-                <small>{latestCommand ? compactText(latestCommand.command, 58) : "还没有运行命令"}</small>
-              </div>
-            </div>
-            <LocalTerminalPanel workspaceRoot={workspacePath} workspaceLabel={workspaceLabel} />
-            <div className="session-tool-panel-header session-tool-command-history-head">
-              <div>
-                <strong>命令记录</strong>
-                <small>Agent 运行和验证命令</small>
-              </div>
-            </div>
-            {commandItems.length ? (
-              <ul className="session-tool-command-list">
-                {commandItems.slice(-8).map((command, index) => (
-                  <li key={command.id ?? `${command.command}-${index}`} data-status={command.status ?? "recorded"}>
-                    <code className="session-tool-terminal-prompt">
-                      {command.shell || "shell"} {command.cwd ? compactText(command.cwd, 42) : "."}
-                    </code>
-                    <div>
-                      <strong>{command.command}</strong>
-                      <small>
-                        {command.status ? formatStatusLabel(command.status) : "已记录"}
-                        {command.exitCode !== undefined && command.exitCode !== null ? ` · exit ${command.exitCode}` : ""}
-                        {command.durationMs ? ` · ${command.durationMs}ms` : ""}
-                      </small>
-                    </div>
-                    {command.summary ? <p>{command.summary}</p> : null}
-                    {isCommandPolicyBlocked(command) ? (
-                      <p className="session-tool-warning">
-                        命令没有真正执行：运行时策略要求先审批这条命令。允许后会按原命令继续执行。
-                      </p>
-                    ) : null}
-                    {command.stdoutPath || command.stderrPath ? (
-                      <code>
-                        {[command.stdoutPath, command.stderrPath].filter(Boolean).join(" · ")}
-                      </code>
-                    ) : null}
-                    {command.id && (onRefreshCommandJob || onStopCommandJob) ? (
-                      <div className="session-tool-actions">
-                        {onRefreshCommandJob ? (
-                          <Button
-                            size="xs"
-                            variant="secondary"
-                            onClick={() => {
-                              void onRefreshCommandJob(command.id ?? "");
-                            }}
-                          >
-                            刷新
-                          </Button>
-                        ) : null}
-                        {onStopCommandJob && command.status === "running" ? (
-                          <Button
-                            size="xs"
-                            variant="secondary"
-                            onClick={() => {
-                              void onStopCommandJob(command.id ?? "");
-                            }}
-                          >
-                            停止
-                          </Button>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="session-tool-muted">命令运行后会在这里保留摘要。</p>
-            )}
-          </>
-        ) : null}
-
-        {selectedTool === "git" ? (
-          <GitWorkspacePanel
-            activeTask={activeTask}
-            patches={patches}
-            worktreeStatus={worktreeStatus}
-            worktreeDiff={worktreeDiff}
-            worktreeBusyAction={worktreeBusyAction}
-            worktreeError={worktreeError}
-            composerContext={composerContext}
-            onRefreshWorktree={onRefreshWorktree}
-            onLoadWorktreeDiff={onLoadWorktreeDiff}
-            onMergeWorktree={onMergeWorktree}
-            onCleanupWorktree={onCleanupWorktree}
-          />
-        ) : null}
-
-      </div>
-    </section>
-  );
-}
+/*
+ * Historical review/git/terminal dock code intentionally removed from the visible
+ * workspace. Diff, command, approval, and failure details now live in the main
+ * chat stream; the right pane is file browsing only.
+ */
 
 export function SessionWorkspace({
   session,
@@ -942,9 +420,6 @@ export function SessionWorkspace({
         if (isSuccessful && isVerificationLike) {
           return latestSuccessfulVerificationIds.has(item.id);
         }
-        if (isSuccessful) {
-          return false;
-        }
       }
       return true;
     });
@@ -1018,17 +493,10 @@ export function SessionWorkspace({
       .find((message) => message.role === "assistant" && !message.placeholder && message.content.trim())
       ?.content;
   }, [messages]);
-  const defaultWorkspacePane: SessionWorkspacePaneKey = "files";
-  const [workspacePaneOverride, setWorkspacePaneOverride] = useState<SessionWorkspacePaneKey | null>(null);
-  const workspacePane = workspacePaneOverride ?? defaultWorkspacePane;
   const [workspacePaneCollapsed, setWorkspacePaneCollapsed] = useState(false);
   const [workspacePaneWidthPx, setWorkspacePaneWidthPx] = useState<number | null>(null);
   const [workspacePaneResizing, setWorkspacePaneResizing] = useState(false);
   const isWorkspacePaneVisible = !workspacePaneCollapsed;
-  const selectWorkspacePane = useCallback((pane: SessionWorkspacePaneKey) => {
-    setWorkspacePaneOverride(pane);
-    setWorkspacePaneCollapsed(false);
-  }, []);
   const startWorkspacePaneResize = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
       if (workspacePaneCollapsed) {
@@ -1056,15 +524,6 @@ export function SessionWorkspace({
     },
     [workspacePaneCollapsed, workspacePaneWidthPx],
   );
-  const workspacePaneTabs: Array<{
-    id: SessionWorkspacePaneKey;
-    label: string;
-    description: string;
-    icon: LucideIcon;
-    count?: number;
-  }> = [
-    { id: "files", label: "文件", description: "浏览项目文件", icon: Files, count: normalizedRelatedFiles.length },
-  ];
   const workspaceGridStyle =
     workspacePaneWidthPx && !workspacePaneCollapsed
       ? ({ "--session-workspace-pane-width": `${workspacePaneWidthPx}px` } as CSSProperties)
@@ -1181,29 +640,13 @@ export function SessionWorkspace({
         ) : null}
 
         {isWorkspacePaneVisible ? (
-          <aside className="session-runtime-column session-workspace-pane" aria-label="工作区侧栏">
+          <aside className="session-runtime-column session-workspace-pane" aria-label="右侧文件工作区">
             <header className="session-pane-chrome">
-              <nav className="session-pane-tabs" aria-label="工作区页签" role="tablist">
-                {workspacePaneTabs.map((tab) => {
-                  const PaneIcon = tab.icon;
-                  return (
-                    <button
-                      key={tab.id}
-                      aria-selected={workspacePane === tab.id}
-                      className="session-pane-tab"
-                      data-pane={tab.id}
-                      onClick={() => selectWorkspacePane(tab.id)}
-                      role="tab"
-                      title={tab.description}
-                      type="button"
-                    >
-                      <PaneIcon size={15} aria-hidden="true" />
-                      <span>{tab.label}</span>
-                      {tab.count ? <em>{tab.count}</em> : null}
-                    </button>
-                  );
-                })}
-              </nav>
+              <div className="session-pane-title">
+                <Files size={15} aria-hidden="true" />
+                <span>文件</span>
+                {normalizedRelatedFiles.length ? <em>{normalizedRelatedFiles.length}</em> : null}
+              </div>
               <div className="session-pane-actions">
                 <button
                   aria-label="隐藏右侧工作区"
@@ -1218,15 +661,13 @@ export function SessionWorkspace({
             </header>
 
             <div className="session-pane-body">
-              {workspacePane === "files" ? (
-                <section className="session-files-workspace" aria-label="文件工作区">
-                  <FileWorkspacePanel
-                    workspaceRoot={workspacePath}
-                    workspaceLabel={workspaceLabel}
-                    relatedFiles={normalizedRelatedFiles}
-                  />
-                </section>
-              ) : null}
+              <section className="session-files-workspace" aria-label="文件工作区">
+                <FileWorkspacePanel
+                  workspaceRoot={workspacePath}
+                  workspaceLabel={workspaceLabel}
+                  relatedFiles={normalizedRelatedFiles}
+                />
+              </section>
             </div>
           </aside>
         ) : (

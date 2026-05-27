@@ -179,12 +179,11 @@ function assertElement(selector: string, description: string) {
   }
 }
 
-function clickWorkspacePane(pane: "files") {
-  const tab = query<HTMLButtonElement>(`.session-pane-tab[data-pane="${pane}"]`);
-  if (!tab) {
-    throw new Error(`Expected workspace pane tab not found: ${pane}`);
+function clickWorkspacePane(_pane: "files") {
+  const paneElement = query<HTMLElement>('aside[aria-label="右侧文件工作区"]');
+  if (!paneElement) {
+    throw new Error("Expected file workspace pane not found.");
   }
-  tab.click();
 }
 
 function assertRectContainedHorizontally(child: Element, parent: Element, description: string) {
@@ -304,7 +303,7 @@ function readUiLayoutSnapshot() {
     workspaceScroll: layoutSnapshot(".workspace-scroll"),
     workbenchGrid: layoutSnapshot(".session-workbench-grid"),
     conversationColumn: layoutSnapshot(".session-conversation-column"),
-    workspacePane: layoutSnapshot('aside[aria-label="工作区侧栏"]'),
+    workspacePane: layoutSnapshot('aside[aria-label="右侧文件工作区"]'),
     resizer: layoutSnapshot(".session-sidebar-resizer"),
     paneTabs,
     toolPanel: layoutSnapshot(".session-tool-panel"),
@@ -317,7 +316,7 @@ function readUiLayoutSnapshot() {
 }
 
 async function assertSessionWorkspacePanels(assertions?: string[]) {
-  const pane = await waitFor("workspace side pane", () => query<HTMLElement>('aside[aria-label="工作区侧栏"]'));
+  const pane = await waitFor("workspace side pane", () => query<HTMLElement>('aside[aria-label="右侧文件工作区"]'));
   const grid = await waitFor("session workbench grid", () => query<HTMLElement>(".session-workbench-grid"));
   const resizer = await waitFor("workspace resize handle", () => query<HTMLElement>(".session-sidebar-resizer"));
   assertVisibleBox(grid, "session workbench grid", 900, 360);
@@ -336,16 +335,6 @@ async function assertSessionWorkspacePanels(assertions?: string[]) {
   if (digestTitle && digest) {
     assertRectContainedHorizontally(digestTitle, digest, "task digest title");
   }
-  const paneTabs = Array.from(document.querySelectorAll<HTMLButtonElement>(".session-pane-tab"));
-  const paneKeys = paneTabs.map((tab) => tab.dataset.pane);
-  const hiddenPane = paneKeys.find((paneKey) => paneKey && paneKey !== "files");
-  if (hiddenPane) {
-    throw new Error(`Workspace pane exposed a nonessential tab: ${hiddenPane}.`);
-  }
-  if (paneKeys.length !== 1 || !paneKeys.includes("files")) {
-    throw new Error(`Workspace pane should expose only files, got: ${paneKeys.join(",")}.`);
-  }
-
   clickWorkspacePane("files");
   const fileWorkspace = await waitFor("session file workspace panel", () => query<HTMLElement>(".session-file-workspace"));
   const fileLayout = await waitFor("session file browser layout", () => query<HTMLElement>(".session-file-browser-layout"));
@@ -562,7 +551,7 @@ async function runUiSmokeFlow(workspacePath?: string) {
     }
     click('button[aria-label="创建会话"]', "create session from applied workspace");
     await waitFor("session workspace after file workspace check", () => query(".session-workspace:not(.session-workspace-empty)"));
-    assertElement('aside[aria-label="工作区侧栏"]', "workspace side pane");
+    assertElement('aside[aria-label="右侧文件工作区"]', "workspace side pane");
     await assertSessionWorkspacePanels(assertions);
     assertions.push("workspace file list/read bridge works");
     assertions.push("session file workspace renders");

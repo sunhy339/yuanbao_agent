@@ -426,6 +426,7 @@ export function isOperationalAssistantDelta(delta: string): boolean {
   }
 
   return (
+    looksLikeRuntimeMachinePayload(normalized) ||
     normalized === "Building context and preparing the first tool calls..." ||
     normalized === "Completed the minimal tool loop and preparing a summary..." ||
     normalized.startsWith("Started subtask: ") ||
@@ -442,6 +443,41 @@ export function isOperationalAssistantDelta(delta: string): boolean {
     normalized.startsWith("Approval accepted. Running the command now") ||
     normalized.startsWith("Approval accepted. Applying the patch now")
   );
+}
+
+function looksLikeRuntimeMachinePayload(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) return false;
+  if (/^(Task Cancelled|task\.cancelled|task\.failed|task\.completed|command\.|provider\.)/i.test(normalized)) {
+    return true;
+  }
+  if (
+    /"?(sessionId|taskId|workspaceRoot|acceptanceCriteria|toolCallId|recoveryDecision|failureKind)"?\s*:/.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  if (!/^[{\[]/.test(normalized)) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(normalized);
+    if (!parsed || typeof parsed !== "object") return false;
+    const keys = new Set(Object.keys(parsed as Record<string, unknown>));
+    return [
+      "sessionId",
+      "taskId",
+      "workspaceRoot",
+      "acceptanceCriteria",
+      "toolCallId",
+      "failureKind",
+      "recoveryDecision",
+      "cwd",
+    ].some((key) => keys.has(key));
+  } catch {
+    return true;
+  }
 }
 
 function friendlyToolLabel(toolName: string) {
@@ -462,6 +498,12 @@ function progressLine(text: string) {
 export function summarizeOperationalAssistantDelta(delta: string): string | null {
   const normalized = delta.trim();
   if (!normalized) return null;
+  if (/^(Task Cancelled|task\.cancelled)/i.test(normalized)) {
+    return progressLine("任务已取消，已停止继续执行。");
+  }
+  if (looksLikeRuntimeMachinePayload(normalized)) {
+    return null;
+  }
   if (normalized === "Building context and preparing the first tool calls...") {
     return progressLine("正在整理上下文，并确定要先查看的文件和工具。");
   }

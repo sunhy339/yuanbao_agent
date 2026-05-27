@@ -18,12 +18,79 @@ import {
   buildCommandPathDetail,
 } from "./utils";
 
+function looksLikeRuntimeMachineText(value?: string | null) {
+  const normalized = (value ?? "").trim();
+  if (!normalized) return false;
+  if (/^(Task Cancelled|task\.cancelled|task\.failed|task\.completed)\b/i.test(normalized)) {
+    return true;
+  }
+  if (
+    /"?(sessionId|taskId|workspaceRoot|acceptanceCriteria|toolCallId|recoveryDecision|failureKind)"?\s*:/.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  if (!/^[{\[]/.test(normalized)) {
+    return false;
+  }
+  try {
+    const parsed = JSON.parse(normalized) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+    const keys = new Set(Object.keys(parsed as Record<string, unknown>));
+    return [
+      "sessionId",
+      "taskId",
+      "workspaceRoot",
+      "acceptanceCriteria",
+      "toolCallId",
+      "failureKind",
+      "recoveryDecision",
+      "cwd",
+    ].some((key) => keys.has(key));
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeRuntimeDetail(value?: string | null) {
+  const raw = (value ?? "").replace(/\r\n/g, "\n").trim();
+  if (!raw) return "";
+  if (/^(Task Cancelled|task\.cancelled)\b/i.test(raw)) {
+    return "任务已取消，已停止继续执行。";
+  }
+  const lines = raw
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return true;
+      if (looksLikeRuntimeMachineText(trimmed)) return false;
+      if (/^task\.[a-z0-9_.-]+/i.test(trimmed)) return false;
+      return true;
+    });
+  const cleaned = lines.join("\n").trim();
+  if (cleaned) return cleaned;
+  if (/Command is not allowed by command allowlist|permission_denied/i.test(raw)) {
+    return "命令被当前策略拦截，需要换用受控命令或申请允许。";
+  }
+  return "";
+}
+
+function readableTraceTitle(item: RuntimeTimelineItem) {
+  const blob = `${item.title}\n${item.summary ?? ""}\n${item.code ?? ""}`;
+  if (/^(Task Cancelled|task\.cancelled)/i.test(blob.trim())) return "任务已取消";
+  if (/provider returned error|concurrency limit|provider request/i.test(blob)) return "模型调用异常";
+  const sanitized = sanitizeRuntimeDetail(item.title);
+  return sanitized || getRuntimeKindLabel(item.kind);
+}
+
 function buildCollapsedCommandBody(item: RuntimeTimelineItem) {
-  const primaryDetail =
-    item.kind === "command" ? buildCommandOutput(item) : item.code || item.rawDetail;
+  const primaryDetail = sanitizeRuntimeDetail(
+    item.kind === "command" ? buildCommandOutput(item) : item.code || item.rawDetail,
+  );
   const actionLead =
     item.kind === "command" && item.summary
-      ? item.summary
+      ? sanitizeRuntimeDetail(item.summary)
           .split(/[·|]/)
           .map((part) => part.trim())
           .find(Boolean)
@@ -66,14 +133,15 @@ function ProcessRuntimeCard({
 
   const statusLabel = getProcessStatusLabel(item.status);
   const timeLabel = getProcessTimeLabel(item, now, fallbackStartedAt);
-  const primaryDetail =
-    item.kind === "command" ? buildCommandOutput(item) : item.code || item.rawDetail;
+  const primaryDetail = sanitizeRuntimeDetail(
+    item.kind === "command" ? buildCommandOutput(item) : item.code || item.rawDetail,
+  );
   const secondaryPathDetail = item.kind === "command" ? buildCommandPathDetail(item) : "";
   const showSecondaryDetail = expanded || inFlight;
   const summaryText =
     item.kind === "command"
       ? buildCollapsedCommandBody(item)
-      : compactText(item.summary, 180);
+      : compactText(sanitizeRuntimeDetail(item.summary), 180);
   const shouldShowSummary = Boolean(summaryText && !item.superseded);
 
   return (
@@ -242,7 +310,7 @@ function RuntimeFileChangeCard({
         <span className="runtime-file-change-icon" aria-hidden="true">+</span>
         <span>
           <strong>{title}</strong>
-          <small>{compactText(item.summary, 140) || "这轮任务产生了文件改动，可在右侧审查面板查看 diff。"}</small>
+          <small>{compactText(item.summary, 140) || "这轮任务产生了文件改动；diff 会在主聊天里展开，文件可在右侧文件区打开。"}</small>
         </span>
         <StatusBadge label={formatStatusLabel(item.status ?? "recorded")} tone={getStatusTone(item.status)} compact />
         <i aria-hidden="true">{expanded ? "^" : "v"}</i>
@@ -310,7 +378,8 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
   const isBusy = item.sourceId ? busyId === item.sourceId : false;
   const commandOutput = item.kind === "command" ? buildCommandOutput(item) : "";
   const canCopyCommandOutput = Boolean(item.kind === "command" && onCopyRuntimeText && commandOutput.trim());
-  const canCopyTraceDetail = Boolean(item.kind === "trace" && onCopyRuntimeText && item.code?.trim());
+  const traceDetail = item.kind === "trace" ? sanitizeRuntimeDetail(item.code) : "";
+  const canCopyTraceDetail = Boolean(item.kind === "trace" && onCopyRuntimeText && traceDetail.trim());
   const hasCommandActions = canRefreshCommand || canStopCommand || canCopyCommandOutput;
 
   if (item.kind === "task" && item.id.startsWith("task-files:")) {
@@ -439,6 +508,8 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
   }
 
   if (item.kind === "trace") {
+    const traceTitle = readableTraceTitle(item);
+    const traceSummary = sanitizeRuntimeDetail(item.summary);
     return (
       <article
         className="runtime-event-card runtime-trace-row"
@@ -448,7 +519,7 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
         data-superseded={item.superseded ? "true" : undefined}
       >
         <button
-          aria-label={`${kindLabel} ${item.title}${item.status ? ` ${formatStatusLabel(item.status)}` : ""}`}
+          aria-label={`${kindLabel} ${traceTitle}${item.status ? ` ${formatStatusLabel(item.status)}` : ""}`}
           aria-expanded={expanded}
           className="runtime-trace-row-summary"
           onClick={() => setExpanded((current) => !current)}
@@ -456,8 +527,8 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
         >
           <span className="runtime-trace-dot" aria-hidden="true" />
           <span className="runtime-trace-row-copy">
-            <strong>{item.title}</strong>
-            {item.summary ? <small>{compactText(item.summary, 160)}</small> : null}
+            <strong>{traceTitle}</strong>
+            {traceSummary ? <small>{compactText(traceSummary, 160)}</small> : null}
           </span>
           {item.status ? <StatusBadge label={formatStatusLabel(item.status)} tone={getStatusTone(item.status)} compact /> : null}
           <i aria-hidden="true">{expanded ? "^" : "v"}</i>
@@ -472,7 +543,7 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
             ))}
           </div>
         ) : null}
-        {expanded && item.code ? (
+        {expanded && traceDetail ? (
           <div className="runtime-trace-row-detail">
             {canCopyTraceDetail ? (
               <div className="runtime-trace-row-actions">
@@ -481,14 +552,14 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
                   variant="secondary"
                   aria-label="复制详情"
                   onClick={() => {
-                    void onCopyRuntimeText?.("诊断详情", item.code ?? "");
+                    void onCopyRuntimeText?.("诊断详情", traceDetail);
                   }}
                 >
                   复制详情
                 </Button>
               </div>
             ) : null}
-            <pre>{item.code}</pre>
+            <pre>{traceDetail}</pre>
           </div>
         ) : null}
       </article>

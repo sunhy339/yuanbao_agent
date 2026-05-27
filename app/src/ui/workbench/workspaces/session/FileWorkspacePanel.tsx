@@ -607,7 +607,7 @@ export function FileWorkspacePanel({
             )
           ) : (
             <div className="session-file-viewer-empty">
-              <strong>从右侧目录树打开文件</strong>
+              <strong>从目录树打开文件</strong>
               <span>Markdown 会渲染为文档，代码会保留行号和等宽排版。</span>
             </div>
           )}

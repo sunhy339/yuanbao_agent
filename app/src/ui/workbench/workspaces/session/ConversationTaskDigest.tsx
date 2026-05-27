@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { Fragment, memo } from "react";
 import { StatusBadge } from "../../../v2/components/ui";
 import { formatStatusLabel } from "../../../copy";
 import type {
@@ -320,6 +320,21 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
     composerContext?.model || null,
     composerContext?.permissionMode ? `审批：${composerContext.permissionMode}` : null,
   ]);
+  const activityBits = compactMeta([
+    files.length ? `${files.length} 个改动文件` : null,
+    commands.length ? `${commands.length} 条最近命令` : null,
+    verifications.length ? `${verifications.length} 项验证` : null,
+    diffEntries.length ? `${diffEntries.length} 个 diff` : null,
+  ]);
+  const filePreview = visibleFiles
+    .map((file) =>
+      compactMeta([
+        file.path,
+        file.additions !== undefined ? `+${file.additions}` : null,
+        file.deletions !== undefined ? `-${file.deletions}` : null,
+      ]).join(" "),
+    )
+    .join("；");
 
   return (
     <section className="conversation-task-digest" aria-label="工作摘要">
@@ -347,83 +362,45 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
       ) : null}
 
       {hasConcreteWork ? (
-        <>
-        <div className="conversation-task-digest-grid" aria-label="工作明细">
-        <article className="conversation-task-digest-card">
-          <span>文件</span>
-          <strong>{files.length ? `${files.length} 个改动文件` : "暂无文件改动"}</strong>
-          {files.length ? (
-            <ul>
-              {visibleFiles.map((file) => (
-                <li key={normalizeDigestPath(file.path)}>
-                  <code>{file.path}</code>
-                  <small>
-                    {compactMeta([
-                      file.status ? formatStatusLabel(file.status) : null,
-                      file.additions !== undefined ? `+${file.additions}` : null,
-                      file.deletions !== undefined ? `-${file.deletions}` : null,
-                      file.reason,
-                    ]).join(" · ")}
-                  </small>
-                </li>
+        <div className="conversation-task-digest-activity" aria-label="本轮工作概览">
+          {activityBits.length ? (
+            <strong>
+              {activityBits.map((item, index) => (
+                <Fragment key={item}>
+                  {index ? <span aria-hidden="true"> · </span> : null}
+                  <span>{item}</span>
+                </Fragment>
               ))}
+            </strong>
+          ) : null}
+          {filePreview ? (
+            <small>
+              {filePreview}
               {files.length > visibleFiles.length ? (
-                <li>
-                  <small className="conversation-task-digest-empty">另有 {files.length - visibleFiles.length} 个文件可在右侧文件浏览中打开。</small>
-                </li>
+                <>
+                  {"；"}
+                  <span>另有 {files.length - visibleFiles.length} 个文件可在右侧文件浏览中打开。</span>
+                </>
               ) : null}
-            </ul>
-          ) : (
-            <small className="conversation-task-digest-empty">这一轮还没有记录到文件改动。</small>
-          )}
-        </article>
-
-        <article className="conversation-task-digest-card">
-          <span>命令</span>
-          <strong>{commands.length ? `${commands.length} 条最近命令` : "暂无命令"}</strong>
-          {commands.length ? (
-            <ul>
-              {commands.map((command) => (
-                <li key={command.id}>
-                  <code>{normalizeCommandLabel(command.command) ?? command.command}</code>
-                  <small>
-                    {compactMeta([
-                      command.status ? formatStatusLabel(command.status) : null,
-                      command.summary,
-                      command.cwd,
-                    ]).join(" · ")}
-                  </small>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <small className="conversation-task-digest-empty">这一轮还没有记录到命令。</small>
-          )}
-        </article>
-
-        <article className="conversation-task-digest-card">
-          <span>验证</span>
-          <strong>{verifications.length ? `${verifications.length} 项验证` : "暂无验证"}</strong>
+            </small>
+          ) : null}
           {verifications.length ? (
-            <ul>
-              {verifications.map((verification) => (
-                <li key={verification.id}>
-                  <code>{normalizeCommandLabel(verification.command) ?? verification.command}</code>
-                  <small>
-                    {compactMeta([
-                      verification.status ? formatStatusLabel(verification.status) : null,
-                      verification.summary,
-                      verification.exitCode !== undefined && verification.exitCode !== null ? `退出码 ${verification.exitCode}` : null,
-                    ]).join(" · ")}
-                  </small>
-                </li>
+            <div className="conversation-task-digest-checks" aria-label="最近验证">
+              <span className="conversation-task-digest-checks-label">验证：</span>
+              {verifications.map((item) => (
+                <span className="conversation-task-digest-check" key={item.id}>
+                  <code>{item.command}</code>
+                  {item.status ? <em>{formatStatusLabel(item.status)}</em> : null}
+                  {item.summary ? <small>{item.summary}</small> : null}
+                </span>
               ))}
-            </ul>
-          ) : (
-            <small className="conversation-task-digest-empty">这一轮还没有记录到验证。</small>
-          )}
-        </article>
+            </div>
+          ) : null}
         </div>
+      ) : null}
+
+      {hasConcreteWork ? (
+        <>
         {visibleDiffEntries.length ? (
           <section className="conversation-task-digest-diff" aria-label="代码改动 diff">
             <header>

@@ -303,47 +303,30 @@ class ContextBuilder(HistoryMixin):
             ),
         ]
 
-        # In lightweight mode, skip heavy context sections (project memory, git,
-        # key files) so the LLM can decide through tool calls if it needs them.
-        if not lightweight:
-            project_focus = self._project_focus_summary(workspace, max_chars=min(1200, max_context_tokens * 2))
-            if project_focus:
-                sections.append(
-                    BudgetSection(
-                        name="project_focus",
-                        text=project_focus,
-                        priority=950,
-                        truncatable=False,
-                    )
-                )
-            canonical_memory = self._canonical_memory_section(workspace["rootPath"], cache_policy=cache_policy)
-            if canonical_memory:
-                sections.append(canonical_memory)
-            project_memory = self._workspace_memory_section(workspace)
-            if project_memory:
-                sections.append(project_memory)
-            sections.extend(self._key_file_sections(workspace["rootPath"], cache_policy=cache_policy))
-            stable_pack = self._stable_workspace_context_pack(
-                workspace["rootPath"],
-                cache_policy=cache_policy,
-                reserved_tokens=tool_schema_tokens + estimate_tokens(goal) + 2000,
-            )
-            if stable_pack is not None:
-                sections.append(stable_pack)
-            if include_history:
-                sections.extend(self._history_sections(session, policy=cache_policy))
+        project_focus = self._project_focus_summary(workspace, max_chars=min(1200, max_context_tokens * 2))
+        if project_focus:
             sections.append(
                 BudgetSection(
-                    name="git_status",
-                    text=self._git_summary(workspace["rootPath"]),
-                    priority=260,
-                    minimum_tokens=16,
+                    name="project_focus",
+                    text=project_focus,
+                    priority=950,
+                    truncatable=False,
                 )
             )
-        else:
-            if include_history:
-                sections.extend(self._conversation_history_sections(session))
-
+        canonical_memory = self._canonical_memory_section(workspace["rootPath"], cache_policy=cache_policy)
+        if canonical_memory:
+            sections.append(canonical_memory)
+        project_memory = self._workspace_memory_section(workspace)
+        if project_memory:
+            sections.append(project_memory)
+        sections.extend(self._key_file_sections(workspace["rootPath"], cache_policy=cache_policy))
+        stable_pack = self._stable_workspace_context_pack(
+            workspace["rootPath"],
+            cache_policy=cache_policy,
+            reserved_tokens=tool_schema_tokens + estimate_tokens(goal) + 2000,
+        )
+        if stable_pack is not None:
+            sections.append(stable_pack)
         if role_text:
             sections.append(
                 BudgetSection(
@@ -354,6 +337,29 @@ class ContextBuilder(HistoryMixin):
                 )
             )
 
+        if include_history:
+            if lightweight:
+                sections.extend(self._conversation_history_sections(session))
+            else:
+                sections.extend(self._history_sections(session, policy=cache_policy))
+        if not lightweight:
+            sections.append(
+                BudgetSection(
+                    name="git_status",
+                    text=self._git_summary(workspace["rootPath"]),
+                    priority=260,
+                    minimum_tokens=16,
+                )
+            )
+
+        # Scratchpad is volatile, so keep it after stable memory/history and
+        # before the current request. This keeps the final user message as the
+        # only per-turn tail and improves provider-side prefix caching.
+        if include_scratchpad:
+            scratchpad_section = self._scratchpad_section(session["id"])
+            if scratchpad_section is not None:
+                sections.append(scratchpad_section)
+
         sections.append(
             BudgetSection(
                 name="user_message",
@@ -362,12 +368,6 @@ class ContextBuilder(HistoryMixin):
                 truncatable=False,
             )
         )
-
-        # Scratchpad: inject intermediate reasoning state if available
-        if include_scratchpad:
-            scratchpad_section = self._scratchpad_section(session["id"])
-            if scratchpad_section is not None:
-                sections.append(scratchpad_section)
 
         budget = TokenBudget(max_context_tokens)
         budget_result = budget.fit(sections, fixed_tokens=tool_schema_tokens)
@@ -435,7 +435,7 @@ class ContextBuilder(HistoryMixin):
         raw = raw if isinstance(raw, dict) else {}
         merged = {**self._DEFAULT_PROMPT_CACHE_POLICY, **raw}
         max_context_tokens = self._max_context_tokens(config)
-        enabled = bool(merged.get("enabled", True)) and not lightweight
+        enabled = bool(merged.get("enabled", True))
         ratio = self._bounded_float(merged.get("targetFillRatio"), 0.0, 0.98, 0.92)
         max_stable = self._bounded_int(
             merged.get("maxStableContextTokens"),
@@ -450,6 +450,7 @@ class ContextBuilder(HistoryMixin):
             "targetFillRatio": ratio,
             "targetContextTokens": target_context_tokens,
             "maxStableContextTokens": max_stable,
+            "lightweight": lightweight,
         }
         for key in (
             "recentMessages",
@@ -1125,10 +1126,10 @@ class ContextBuilder(HistoryMixin):
         return stdout or ""
 
     def _is_git_repository(self, root: Path) -> bool:
-        for candidate in (root, *root.parents):
-            if (candidate / ".git").exists():
-                return True
-        return False
+        # Treat only the workspace root itself as the Git boundary. A scratch
+        # workspace can live under this repo during tests or local runs, and it
+        # should not inherit the parent repo's status.
+        return (root / ".git").exists()
 
     def _load_workspace(self, workspace_id: str) -> dict[str, Any]:
         row = self._store._conn.execute(  # noqa: SLF001

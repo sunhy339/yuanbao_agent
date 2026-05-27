@@ -58,11 +58,6 @@ function collapseRuntimeWorklogItems(items: RawConversationActivityItem[]): Conv
     if (buffer.length === 0) {
       return;
     }
-    if (buffer.length === 1) {
-      collapsed.push(buffer[0]);
-      buffer = [];
-      return;
-    }
     const first = buffer[0];
     collapsed.push({
       id: `worklog:${buffer.map((item) => item.runtime.id).join(":")}`,
@@ -179,7 +174,53 @@ function collectActivityRuntimeItems(items: ConversationActivityItem[]) {
   return runtimeItems;
 }
 
+function buildRuntimeActivityHint(item: RuntimeTimelineItem) {
+  const title = compactText(item.title, 96);
+  const status = item.status?.toLowerCase() ?? "";
+  if (isRuntimeInFlight(item.status)) {
+    if (item.kind === "command") {
+      return `正在运行命令：${title}`;
+    }
+    if (item.kind === "tool") {
+      return `正在使用工具：${title}`;
+    }
+    if (item.kind === "patch") {
+      return `正在处理文件改动：${title}`;
+    }
+    return `正在处理：${title}`;
+  }
+  if (item.kind === "approval" && ["pending", "waiting"].includes(status)) {
+    return `等待审批：${title}`;
+  }
+  if (["failed", "error", "rejected"].includes(status)) {
+    return `最近失败：${title}，需要继续处理。`;
+  }
+  if (item.kind === "patch") {
+    return `最近改动：${title}`;
+  }
+  if (item.kind === "command") {
+    return `最近运行：${title}`;
+  }
+  return `最近活动：${title}`;
+}
+
+function buildTaskActivityHint(activeTask?: SessionWorkspaceActiveTask | null) {
+  if (!activeTask || !isTaskControllable(activeTask.status)) {
+    return "";
+  }
+  const currentStep = compactText(activeTask.currentStep, 96);
+  if (currentStep) {
+    return `任务仍在运行：${currentStep}`;
+  }
+  return `任务仍在运行：${compactText(activeTask.goal || getProcessStatusLabel(activeTask.status), 96)}`;
+}
+
 function buildThinkingActivityHint(items: ConversationActivityItem[], activeTask?: SessionWorkspaceActiveTask | null) {
+  const taskHint = buildTaskActivityHint(activeTask);
+  if (taskHint) {
+    return taskHint;
+  }
+
   const runtimeItems = collectActivityRuntimeItems(items).sort((left, right) => (right.time ?? 0) - (left.time ?? 0));
   const priority =
     runtimeItems.find((item) => isRuntimeInFlight(item.status)) ??
@@ -187,22 +228,7 @@ function buildThinkingActivityHint(items: ConversationActivityItem[], activeTask
     runtimeItems[0];
 
   if (priority) {
-    const title = compactText(priority.title, 86);
-    const status = priority.status?.toLowerCase() ?? "";
-    if (isRuntimeInFlight(priority.status)) {
-      return `正在执行：${title}`;
-    }
-    if (priority.kind === "approval" && ["pending", "waiting"].includes(status)) {
-      return `等待审批：${title}`;
-    }
-    if (["failed", "error", "rejected"].includes(status)) {
-      return `最近失败：${title}，需要继续处理。`;
-    }
-    return `最近活动：${title}`;
-  }
-
-  if (activeTask && isTaskControllable(activeTask.status)) {
-    return `任务仍在运行：${compactText(activeTask.currentStep || activeTask.goal || getProcessStatusLabel(activeTask.status), 86)}`;
+    return buildRuntimeActivityHint(priority);
   }
 
   return "正在等待模型或运行时返回第一段内容。";

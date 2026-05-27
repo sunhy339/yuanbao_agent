@@ -140,12 +140,13 @@ describe("SessionWorkspace", () => {
     expect(within(digest).getByText("正在修改")).toBeInTheDocument();
     expect(within(digest).getByText("1 个改动文件")).toBeInTheDocument();
     expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /文件/ })).toBeInTheDocument();
+    const rightPane = screen.getByLabelText("右侧文件工作区");
+    expect(rightPane).toBeInTheDocument();
+    expect(within(rightPane).getByText("文件")).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /终端/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: /文件/ }));
     const fileWorkspace = screen.getByLabelText("文件工作区");
     expect(within(fileWorkspace).getByLabelText("文件浏览器")).toBeInTheDocument();
     expect(within(fileWorkspace).getByText("任务相关文件")).toBeInTheDocument();
@@ -161,8 +162,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getAllByText("MiniMax-M2.7-highspeed").length).toBeGreaterThan(0);
   });
 
-  it("keeps the side pane focused on files and surfaces review details in chat", async () => {
-    const user = userEvent.setup();
+  it("keeps the side pane focused on files and surfaces review details in chat", () => {
     const onLoadPatch = vi.fn();
 
     render(
@@ -273,12 +273,11 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("tablist", { name: "工作区页签" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: /文件/ })).toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "工作区页签" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("右侧文件工作区")).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /终端/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: /文件/ }));
     const fileWorkspace = screen.getByLabelText("文件工作区");
     expect(within(fileWorkspace).getByText("任务相关文件")).toBeInTheDocument();
     expect(within(fileWorkspace).getAllByText(/SessionWorkspace\.tsx/).length).toBeGreaterThan(0);
@@ -422,9 +421,8 @@ describe("SessionWorkspace", () => {
     );
 
     expect(container.querySelector(".session-workspace-pane-expanded")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("tab", { name: /文件/ }));
     expect(container.querySelector(".session-conversation-column")).toBeInTheDocument();
-    expect(screen.getByLabelText("工作区侧栏")).toBeInTheDocument();
+    expect(screen.getByLabelText("右侧文件工作区")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "专注文件" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "退出专注" })).not.toBeInTheDocument();
     expect(container.querySelector(".session-workspace-pane-expanded")).not.toBeInTheDocument();
@@ -440,13 +438,13 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByLabelText("工作区侧栏")).toBeInTheDocument();
+    expect(screen.getByLabelText("右侧文件工作区")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "隐藏右侧工作区" }));
-    expect(screen.queryByLabelText("工作区侧栏")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("右侧文件工作区")).not.toBeInTheDocument();
     expect(container.querySelector(".session-workspace-pane-collapsed")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "显示右侧工作区" }));
-    expect(screen.getByLabelText("工作区侧栏")).toBeInTheDocument();
+    expect(screen.getByLabelText("右侧文件工作区")).toBeInTheDocument();
 
     const grid = container.querySelector(".session-workbench-grid") as HTMLElement;
     Object.defineProperty(grid, "getBoundingClientRect", {
@@ -754,6 +752,36 @@ describe("SessionWorkspace", () => {
 
     await user.click(within(worklog).getByRole("button", { name: /已运行 2 条命令/ }));
     expect(within(worklog).getAllByText(/Command completed with exit 0/).length).toBeGreaterThan(0);
+  });
+
+  it("keeps a single completed run command visible in the main worklog", async () => {
+    const user = userEvent.setup();
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Launch the project", createdAt: 1 }]}
+        toolCalls={[
+          {
+            id: "tool_launch",
+            toolName: "run_command",
+            status: "completed",
+            resultSummary: "Started the game successfully.",
+            rawInput: '{"command":"python main.py","cwd":"snake_game"}',
+            durationMs: 500,
+            time: 2,
+          },
+        ]}
+      />,
+    );
+
+    const worklog = screen.getByLabelText("运行摘要");
+    expect(within(worklog).getByText("已运行 1 条命令")).toBeInTheDocument();
+    expect(within(worklog).getAllByText(/python main.py/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("heading", { name: "python main.py" })).not.toBeInTheDocument();
+
+    await user.click(within(worklog).getByRole("button", { name: /已运行 1 条命令/ }));
+    expect(within(worklog).getAllByText(/Started the game successfully/).length).toBeGreaterThan(0);
   });
 
   it("keeps completed background read_file rows out of the main activity stream", () => {

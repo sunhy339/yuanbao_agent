@@ -1,5 +1,5 @@
-import { memo } from "react";
-import { Bot, CheckCircle2, Info, ShieldAlert, TerminalSquare, UserRound, Wrench } from "lucide-react";
+import { memo, useState } from "react";
+import { Bot, CheckCircle2, ChevronDown, ChevronRight, Info, ShieldAlert, TerminalSquare, UserRound, Wrench } from "lucide-react";
 import { Button } from "../../../v2/components/ui";
 import { formatStatusLabel } from "../../../copy";
 import { formatTimestamp } from "../../../../lib/formatUtils";
@@ -57,22 +57,62 @@ function getMessageMetadataString(message: SessionWorkspaceMessage, key: string)
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
+function summarizeToolContent(content: string, kind: string) {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return kind === "tool_result" ? "无结果内容" : "无参数";
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>;
+      const preferred = ["command", "path", "query", "status", "summary", "error"]
+        .map((key) => {
+          const value = record[key];
+          if (value === undefined || value === null || value === "") return "";
+          return `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`;
+        })
+        .filter(Boolean);
+      if (preferred.length) {
+        return preferred.slice(0, 2).join(" · ");
+      }
+      const keys = Object.keys(record).slice(0, 4);
+      if (keys.length) {
+        return keys.join(", ");
+      }
+    }
+  } catch {
+    // Non-JSON tool output is common; fall through to compact text.
+  }
+  return trimmed.replace(/\s+/g, " ").slice(0, 140);
+}
+
 function ToolBlockContent({ message }: { message: SessionWorkspaceMessage }) {
+  const [expanded, setExpanded] = useState(false);
   const kind = getMessageMetadataKind(message);
   const isResult = kind === "tool_result";
   const isError = message.metadata?.isError === true || message.status === "failed";
   const Icon = isResult ? CheckCircle2 : TerminalSquare;
   const title = isResult ? "工具结果" : "工具调用";
   const content = message.content.trim();
+  const summary = summarizeToolContent(content, kind);
+  const ToggleIcon = expanded ? ChevronDown : ChevronRight;
 
   return (
     <section className="message-tool-block" data-kind={kind} data-error={isError ? "true" : "false"}>
-      <div className="message-tool-block-head">
+      <button
+        aria-expanded={expanded}
+        className="message-tool-block-head"
+        onClick={() => setExpanded((current) => !current)}
+        type="button"
+      >
+        <ToggleIcon className="message-tool-block-toggle" size={14} strokeWidth={2} aria-hidden="true" />
         <Icon size={14} strokeWidth={2} aria-hidden="true" />
         <strong>{message.toolName || title}</strong>
         <span>{title}</span>
-      </div>
-      {content ? <pre>{content}</pre> : null}
+        <small>{summary}</small>
+      </button>
+      {expanded && content ? <pre>{content}</pre> : null}
     </section>
   );
 }

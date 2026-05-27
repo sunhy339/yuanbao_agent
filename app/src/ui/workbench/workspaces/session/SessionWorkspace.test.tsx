@@ -684,7 +684,8 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText(/"internal":"hidden"/)).not.toBeInTheDocument();
   });
 
-  it("renders chat-compatible tool blocks as compact message content", () => {
+  it("renders chat-compatible tool blocks as compact expandable message content", async () => {
+    const user = userEvent.setup();
     const { container } = render(
       <SessionWorkspace
         session={session}
@@ -716,6 +717,12 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText("工具调用")).toBeInTheDocument();
     expect(screen.getByText("工具结果")).toBeInTheDocument();
     expect(screen.getAllByText("run_command").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/command: npm test/)).toBeInTheDocument();
+    expect(screen.getByText(/status: completed/)).toBeInTheDocument();
+    expect(screen.queryByText(/"command": "npm test"/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /工具调用/ }));
+    expect(screen.getByText(/"command": "npm test"/)).toBeInTheDocument();
   });
 
   it("renders chat-compatible status and permission blocks", async () => {

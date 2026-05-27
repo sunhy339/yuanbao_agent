@@ -941,6 +941,10 @@
   color: var(--session-text);
 }
 
+.session-workspace-chat-only .message-tool-block-head small {
+  color: #6b7280;
+}
+
 .session-workspace-chat-only .message-permission-block-head strong {
   color: var(--session-text);
 }

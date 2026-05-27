@@ -21,7 +21,8 @@ import { getVisibleChatMessages } from "../state/chatMessages";
 import { normalizeProviderConfig, formatCompactCount, buildSettingsAgentBehaviorConfig } from "../state/providerConfig";
 import { buildSettingsProviderLastTest, getProviderStatusView, getProviderRuntimeNotice, getProviderHealthView } from "../state/providerStatus";
 import { normalizeSkillForSettings } from "../state/mcpSkillPayloads";
-import { buildSettingsGeneralConfig } from "../state/providerPayloadParsing";
+import { approvalModeToSettingsMode, buildSettingsGeneralConfig } from "../state/providerPayloadParsing";
+import { permissionModes } from "../ui/workbench/workspaces/settings/settingsTypes";
 import { scheduledRecordToWorkspaceTask, scheduledRunToExecutionLog } from "../state/scheduleHelpers";
 import { readEventText, readEventNumber, summarizeValue, countAddedLines, countDeletedLines, parsePatchFiles, riskToLevel } from "../state/traceReaders";
 import { computeToolTimelineItems, computeApprovalCards, computeApprovalByPatchId, computePatchCards } from "../state/viewComputations";
@@ -317,6 +318,11 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
     providerSettings.mode === "mock"
       ? "本地预览模型"
       : providerSettings.model || providerSettings.name || "未配置模型";
+  const permissionMode = approvalModeToSettingsMode(config?.policy.approvalMode);
+  const permissionLabel =
+    permissionMode === "skip"
+      ? "完全访问权限"
+      : permissionModes.find((mode) => mode.id === permissionMode)?.title ?? permissionMode;
 
   const hostStatusText = !hostStatus
     ? "正在检测运行时"
@@ -367,6 +373,6 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
     sessionCollaboration, composerRuntimeChildTasks, sessionBackgroundJobs,
     workspaceName, providerLabel, hostStatusText, overviewRuntimeStatus,
     runtimeStatusLabel, mcpStatusLabel, approvalStatusLabel, contextStatusLabel,
-    cwdLabel, runtimeUnavailableReason,
+    cwdLabel, permissionLabel, runtimeUnavailableReason,
   };
 }

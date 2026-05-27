@@ -2,6 +2,7 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   useCallback,
+  useEffect,
   useMemo,
   useState,
 } from "react";
@@ -528,6 +529,19 @@ export function SessionWorkspace({
     workspacePaneWidthPx && !workspacePaneCollapsed
       ? ({ "--session-workspace-pane-width": `${workspacePaneWidthPx}px` } as CSSProperties)
       : undefined;
+
+  useEffect(() => {
+    const reserve = workspacePaneCollapsed
+      ? "0px"
+      : workspacePaneWidthPx
+        ? `${workspacePaneWidthPx}px`
+        : "clamp(620px, 42vw, 1040px)";
+    document.documentElement.style.setProperty("--session-composer-side-reserve", reserve);
+    return () => {
+      document.documentElement.style.removeProperty("--session-composer-side-reserve");
+    };
+  }, [workspacePaneCollapsed, workspacePaneWidthPx]);
+
   const workspaceClassName = [
     "session-workspace",
     "session-workspace-chat-only",

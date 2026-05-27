@@ -43,6 +43,7 @@ interface AppShellProps {
   runtimeChildTasks?: ComposerRuntimeChildTask[];
   providerLabel: string;
   cwdLabel: string;
+  permissionLabel?: string;
   runtimeLabel?: string;
   mcpLabel?: string;
   approvalLabel?: string;
@@ -94,6 +95,7 @@ export function AppShell({
   runtimeChildTasks,
   providerLabel,
   cwdLabel,
+  permissionLabel,
   runtimeLabel,
   mcpLabel,
   approvalLabel,
@@ -154,6 +156,7 @@ export function AppShell({
         runtimeChildTasks={runtimeChildTasks}
         providerLabel={providerLabel}
         cwdLabel={cwdLabel}
+        permissionLabel={permissionLabel}
         loading={loading}
         runtimeLabel={runtimeLabel}
         mcpLabel={mcpLabel}

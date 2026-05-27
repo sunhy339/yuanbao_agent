@@ -284,16 +284,22 @@
   bottom: 10px;
   left: 10px;
   border-color: rgba(196, 122, 74, 0.22);
-  border-radius: var(--yb-radius-lg);
-  background: rgba(26, 22, 20, 0.9);
-  color: var(--yb-ink);
-  box-shadow: 0 18px 46px rgba(26, 20, 16, 0.38);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.97);
+  color: #1f1d1a;
+  box-shadow: 0 10px 30px rgba(60, 40, 30, 0.12), var(--wb-border-inset);
   backdrop-filter: blur(20px) saturate(1.14);
+}
+
+.yb-app-shell .composer-dock[data-layout="session"] {
+  right: calc(var(--session-composer-side-reserve, clamp(620px, 42vw, 1040px)) + 24px);
+  left: 48px;
+  max-width: 760px;
 }
 
 .yb-app-shell .composer-input span,
 .yb-app-shell .composer-meta {
-  color: var(--yb-muted);
+  color: #74665e;
 }
 
 .yb-app-shell .composer-meta span,
@@ -301,9 +307,9 @@
 .yb-app-shell .composer-model-trigger,
 .yb-app-shell .composer-model-select select,
 .yb-app-shell .composer-input textarea {
-  border-color: var(--yb-line);
-  background: rgba(18, 16, 16, 0.34);
-  color: var(--yb-ink);
+  border-color: transparent;
+  background: transparent;
+  color: #1f1d1a;
 }
 
 .yb-app-shell .composer-model-menu {
@@ -351,10 +357,10 @@
 }
 
 .yb-app-shell .composer-run {
-  border-color: rgba(196, 122, 74, 0.4);
-  background: var(--yb-primary);
-  color: #2b1a0f;
-  box-shadow: 0 16px 36px rgba(196, 122, 74, 0.18);
+  border-color: transparent;
+  background: #1f242c;
+  color: #fff;
+  box-shadow: none;
 }
 
 .yb-app-shell .composer-stop {
@@ -442,13 +448,13 @@
 }
 
 .yb-v2[data-theme="light"] .yb-app-shell .composer-dock {
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 18px 44px rgba(60, 40, 30, 0.14);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 10px 30px rgba(60, 40, 30, 0.12), var(--wb-border-inset);
 }
 
 .yb-v2[data-theme="light"] .yb-app-shell .composer-meta span,
 .yb-v2[data-theme="light"] .yb-app-shell .composer-input textarea {
-  background: rgba(248, 250, 252, 0.72);
+  background: transparent;
 }
 
 .yb-v2[data-density="compact"] .yb-app-body {
@@ -532,6 +538,15 @@
 
   .yb-app-shell .composer-dock {
     left: 14px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .yb-app-shell .composer-dock[data-layout="session"] {
+    right: 14px;
+    left: 14px;
+    max-width: none;
+    min-width: 0;
   }
 }
 

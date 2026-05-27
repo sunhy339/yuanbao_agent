@@ -83,6 +83,7 @@ describe("FileWorkspacePanel", () => {
 
   afterEach(() => {
     removeDesktopBridge();
+    vi.restoreAllMocks();
     runtimeMocks.workspaceFileList.mockReset();
     runtimeMocks.workspaceFileRead.mockReset();
     cleanup();
@@ -115,5 +116,37 @@ describe("FileWorkspacePanel", () => {
 
     await user.click(screen.getByRole("button", { name: "专注文件" }));
     expect(onToggleFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it("copies the current path and toggles code wrapping from the lightweight file menu", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    render(
+      <FileWorkspacePanel
+        workspaceRoot="D:/demo-blog"
+        workspaceLabel="demo-blog"
+        relatedFiles={["src/app.py"]}
+      />,
+    );
+
+    const tree = await screen.findByLabelText("项目文件");
+    await user.click(within(tree).getByRole("treeitem", { name: /src/ }));
+    await user.click(await within(tree).findByRole("treeitem", { name: /app\.py/ }));
+    const code = await screen.findByText("def hello():");
+    const codeLines = code.closest(".session-file-code-lines");
+    expect(codeLines).toHaveAttribute("data-wrap", "false");
+
+    await user.click(screen.getByLabelText("更多文件操作"));
+    await user.click(screen.getByRole("menuitem", { name: "复制路径" }));
+    expect(writeText).toHaveBeenCalledWith("D:/demo-blog/src/app.py");
+    expect(screen.getByRole("menuitem", { name: "已复制路径" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("menuitemcheckbox", { name: "启用自动换行" }));
+    expect(codeLines).toHaveAttribute("data-wrap", "true");
   });
 });

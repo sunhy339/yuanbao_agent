@@ -824,6 +824,7 @@ export function App() {
       loading={loading}
       providerLabel={views.providerLabel}
       cwdLabel={views.cwdLabel}
+      permissionLabel={views.permissionLabel}
       runtimeLabel={views.runtimeStatusLabel}
       mcpLabel={views.mcpStatusLabel}
       approvalLabel={views.approvalStatusLabel}

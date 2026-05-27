@@ -52,6 +52,7 @@ export interface AppShellV2Props {
   runtimeChildTasks?: ComposerRuntimeChildTask[];
   providerLabel: string;
   cwdLabel: string;
+  permissionLabel?: string;
   runtimeLabel?: string;
   mcpLabel?: string;
   approvalLabel?: string;
@@ -96,6 +97,7 @@ export function AppShellV2({
   runtimeChildTasks,
   providerLabel,
   cwdLabel,
+  permissionLabel,
   runtimeLabel,
   approvalLabel,
   contextLabel,
@@ -107,6 +109,7 @@ export function AppShellV2({
   children,
 }: AppShellV2Props) {
   const activeSystemTab = activeTabId.startsWith("system:") ? activeTabId.slice("system:".length) : "session";
+  const activeTabKind = activeTabId.startsWith("session:") ? "session" : activeSystemTab;
   const activeTaskSessions = sessions.filter((session) => session.status === "active").length;
   const showApprovalPill = Boolean(approvalLabel && !/^0\s*个?审批/.test(approvalLabel));
 
@@ -180,7 +183,9 @@ export function AppShellV2({
             runtimeChildTasks={runtimeChildTasks}
             providerLabel={providerLabel}
             cwdLabel={cwdLabel}
+            permissionLabel={permissionLabel}
             hidden={!composerVisible}
+            layout={activeTabKind === "session" ? "session" : "default"}
           />
         </section>
       </div>

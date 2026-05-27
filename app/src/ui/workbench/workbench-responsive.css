@@ -66,8 +66,17 @@
     right: 12px;
     bottom: 12px;
     left: 12px;
+    max-width: none;
+    min-width: 0;
     max-height: min(280px, calc(100% - 24px));
     padding: 12px;
+  }
+
+  .composer-dock[data-layout="session"] {
+    right: 12px;
+    left: 12px;
+    max-width: none;
+    min-width: 0;
   }
 
   .composer-meta {

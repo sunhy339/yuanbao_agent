@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp, ChevronDown, ChevronUp, Plus, ShieldAlert } from "lucide-react";
 import { matchCommands, type SlashCommand } from "../../state/slashCommands";
 
 interface ComposerDockProps {
@@ -13,6 +14,7 @@ interface ComposerDockProps {
   queuedPromptCount?: number;
   providerLabel: string;
   cwdLabel: string;
+  permissionLabel?: string;
   attachments?: string[];
   onAttachmentsChange?: (attachments: string[]) => void;
   onAttachmentError?: (message: string) => void;
@@ -21,6 +23,7 @@ interface ComposerDockProps {
   onSelectModel?: (modelId: string) => void;
   runtimeChildTasks?: ComposerRuntimeChildTask[];
   hidden?: boolean;
+  layout?: "default" | "session";
 }
 
 export interface ComposerRuntimeChildTask {
@@ -39,6 +42,24 @@ const SUBMIT_LABEL = "发送";
 const SENDING_LABEL = "发送中...";
 const SUPPLEMENT_LABEL = "补充";
 const QUEUE_LABEL = "暂存";
+
+function compactProviderName(value: string) {
+  if (/openai/i.test(value)) {
+    return "OpenAI";
+  }
+  return value.split(/[/:|·-]/).map((part) => part.trim()).filter(Boolean)[0] || value;
+}
+
+function compactModelName(value?: string) {
+  if (!value) {
+    return "";
+  }
+  const match = value.match(/(?:gpt-)?(\d+(?:\.\d+)?(?:\s*[\w-]+)?)/i);
+  if (match) {
+    return match[1].replace(/\s+/g, " ").trim();
+  }
+  return value.replace(/^gpt[-_\s]*/i, "").trim() || value;
+}
 
 function normalizeRuntimeChildStatus(status?: string) {
   const normalized = status?.toLowerCase();
@@ -166,6 +187,7 @@ export function ComposerDock({
   queuedPromptCount = 0,
   providerLabel,
   cwdLabel,
+  permissionLabel,
   attachments = [],
   onAttachmentsChange,
   onAttachmentError,
@@ -174,6 +196,7 @@ export function ComposerDock({
   onSelectModel,
   runtimeChildTasks = [],
   hidden,
+  layout = "default",
 }: ComposerDockProps) {
   const dockRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -199,6 +222,8 @@ export function ComposerDock({
   const selectedModel = modelOptions.find((option) => option.id === selectedModelValue) ?? modelOptions[0];
   const selectedModelSubtitle =
     selectedModel?.subtitle && selectedModel.subtitle !== selectedModel.label ? selectedModel.subtitle : "";
+  const composerProviderLabel = compactProviderName(selectedModelSubtitle || providerLabel);
+  const composerModelLabel = compactModelName(selectedModel?.label ?? providerLabel);
   const visibleRuntimeChildTasks = runtimeChildTasks.slice(0, 6);
   const groupedRuntimeChildTasks = useMemo(
     () => groupRuntimeChildTasks(visibleRuntimeChildTasks),
@@ -275,6 +300,7 @@ export function ComposerDock({
     <form
       ref={dockRef}
       className={hidden ? "composer-dock composer-dock-hidden" : "composer-dock"}
+      data-layout={layout}
       onSubmit={(event) => {
         event.preventDefault();
         if (!submitDisabled) {
@@ -284,7 +310,7 @@ export function ComposerDock({
     >
       <div className="composer-meta" aria-label="输入区上下文">
         <span>{providerLabel}</span>
-        <span>{cwdLabel}</span>
+        {cwdLabel ? <span>{cwdLabel}</span> : null}
       </div>
       {visibleRuntimeChildTasks.length && !onlyPlannerScans ? (
         <details
@@ -329,80 +355,6 @@ export function ComposerDock({
           </ol>
         </details>
       ) : null}
-      <div className="composer-toolbar" aria-label="输入工具">
-        <button
-          type="button"
-          className="composer-tool-button"
-          disabled={disabled || Boolean(submitting) || !onAttachmentsChange}
-          onClick={() => {
-            void handleAddFiles();
-          }}
-        >
-          + 添加文件
-        </button>
-        <div className="composer-model-picker" ref={modelPickerRef}>
-          <span>模型</span>
-          <button
-            type="button"
-            className="composer-model-trigger"
-            aria-haspopup="listbox"
-            aria-expanded={modelMenuOpen}
-            disabled={disabled || Boolean(submitting) || !modelOptions.length || !onSelectModel}
-            onClick={() => setModelMenuOpen((current) => !current)}
-          >
-            <strong>{selectedModel?.label ?? providerLabel}</strong>
-            {selectedModelSubtitle ? <small>{selectedModelSubtitle}</small> : null}
-            <i aria-hidden="true">{modelMenuOpen ? "⌃" : "⌄"}</i>
-          </button>
-          {modelMenuOpen ? (
-            <div className="composer-model-menu" role="listbox" aria-label="选择模型">
-              {modelOptions.map((option) => {
-                const selected = option.id === selectedModelValue;
-                return (
-                  <button
-                    key={option.id}
-                    type="button"
-                    role="option"
-                    aria-selected={selected}
-                    className="composer-model-option"
-                    onClick={() => {
-                      onSelectModel?.(option.id);
-                      setModelMenuOpen(false);
-                    }}
-                  >
-                    <span aria-hidden="true" />
-                    <div>
-                      {option.subtitle ? <em>{option.subtitle}</em> : null}
-                      <strong>{option.label}</strong>
-                      <small>主模型</small>
-                    </div>
-                    {selected ? <b>默认</b> : null}
-                  </button>
-                );
-              })}
-            </div>
-          ) : null}
-        </div>
-        <label className="composer-model-select composer-model-select-hidden">
-          <span>模型</span>
-          <select
-            aria-label="选择模型"
-            value={selectedModelValue}
-            disabled={disabled || Boolean(submitting) || !modelOptions.length || !onSelectModel}
-            onChange={(event) => onSelectModel?.(event.currentTarget.value)}
-          >
-            {modelOptions.length ? (
-              modelOptions.map((option) => (
-                <option key={option.id} value={option.id}>
-                  {option.label}
-                </option>
-              ))
-            ) : (
-              <option value="">{providerLabel}</option>
-            )}
-          </select>
-        </label>
-      </div>
       {attachments.length ? (
         <div className="composer-attachments" aria-label="附件">
           {attachments.map((attachment) => (
@@ -481,21 +433,118 @@ export function ComposerDock({
           </div>
         )}
       </label>
-      <div className="composer-actions">
-        {canStop ? (
-          <button type="button" className="composer-stop" onClick={() => onStopPrompt?.()}>
-            停止
+      <div className="composer-toolbar" aria-label="输入工具">
+        <div className="composer-toolbar-left">
+          <button
+            type="button"
+            className="composer-tool-button"
+            disabled={disabled || Boolean(submitting) || !onAttachmentsChange}
+            aria-label="添加文件"
+            title="添加文件"
+            onClick={() => {
+              void handleAddFiles();
+            }}
+          >
+            <Plus size={17} strokeWidth={1.9} aria-hidden="true" />
+            <strong>添加文件</strong>
           </button>
-        ) : null}
-        {sending && onQueuePrompt ? (
-          <button type="button" className="composer-queue" disabled={!canQueue} onClick={() => onQueuePrompt?.()}>
-            {QUEUE_LABEL}
-            {queuedPromptCount > 0 ? <span>{queuedPromptCount}</span> : null}
-          </button>
-        ) : null}
-        <button type="submit" className="composer-run" disabled={submitDisabled} data-sending={submitting ? "true" : undefined}>
-          {submitting ? SENDING_LABEL : sending ? SUPPLEMENT_LABEL : SUBMIT_LABEL}
-        </button>
+          {permissionLabel ? (
+            <button type="button" className="composer-permission-button">
+              <ShieldAlert size={14} strokeWidth={2} aria-hidden="true" />
+              <span>{permissionLabel}</span>
+              <ChevronDown size={13} strokeWidth={2} aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
+        <div className="composer-toolbar-right">
+          <div className="composer-model-picker" ref={modelPickerRef}>
+            <button
+              type="button"
+              className="composer-model-trigger"
+              aria-label={`选择模型 ${selectedModel?.label ?? providerLabel}`}
+              aria-haspopup="listbox"
+              aria-expanded={modelMenuOpen}
+              disabled={disabled || Boolean(submitting) || !modelOptions.length || !onSelectModel}
+              onClick={() => setModelMenuOpen((current) => !current)}
+            >
+              <span className="composer-model-full-label">{selectedModel?.label ?? providerLabel}</span>
+              <span>{composerProviderLabel}</span>
+              <strong>{composerModelLabel || selectedModel?.label || providerLabel}</strong>
+              {selectedModelSubtitle ? <small>{selectedModelSubtitle}</small> : null}
+              {modelMenuOpen ? <ChevronUp size={13} strokeWidth={2} aria-hidden="true" /> : <ChevronDown size={13} strokeWidth={2} aria-hidden="true" />}
+            </button>
+            {modelMenuOpen ? (
+              <div className="composer-model-menu" role="listbox" aria-label="选择模型">
+                {modelOptions.map((option) => {
+                  const selected = option.id === selectedModelValue;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      role="option"
+                      aria-selected={selected}
+                      className="composer-model-option"
+                      onClick={() => {
+                        onSelectModel?.(option.id);
+                        setModelMenuOpen(false);
+                      }}
+                    >
+                      <span aria-hidden="true" />
+                      <div>
+                        {option.subtitle ? <em>{option.subtitle}</em> : null}
+                        <strong>{option.label}</strong>
+                        <small>主模型</small>
+                      </div>
+                      {selected ? <b>默认</b> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+          <label className="composer-model-select composer-model-select-hidden">
+            <span>模型</span>
+            <select
+              aria-label="选择模型"
+              value={selectedModelValue}
+              disabled={disabled || Boolean(submitting) || !modelOptions.length || !onSelectModel}
+              onChange={(event) => onSelectModel?.(event.currentTarget.value)}
+            >
+              {modelOptions.length ? (
+                modelOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))
+              ) : (
+                <option value="">{providerLabel}</option>
+              )}
+            </select>
+          </label>
+          <div className="composer-actions">
+            {canStop ? (
+              <button type="button" className="composer-stop" onClick={() => onStopPrompt?.()}>
+                停止
+              </button>
+            ) : null}
+            {sending && onQueuePrompt ? (
+              <button type="button" className="composer-queue" disabled={!canQueue} onClick={() => onQueuePrompt?.()}>
+                {QUEUE_LABEL}
+                {queuedPromptCount > 0 ? <span>{queuedPromptCount}</span> : null}
+              </button>
+            ) : null}
+            <button
+              type="submit"
+              className="composer-run"
+              aria-label={submitting ? SENDING_LABEL : sending ? SUPPLEMENT_LABEL : SUBMIT_LABEL}
+              disabled={submitDisabled}
+              data-sending={submitting ? "true" : undefined}
+            >
+              <ArrowUp className="composer-run-icon" size={17} strokeWidth={2.5} aria-hidden="true" />
+              <span className="composer-run-label">{submitting ? SENDING_LABEL : sending ? SUPPLEMENT_LABEL : SUBMIT_LABEL}</span>
+            </button>
+          </div>
+        </div>
       </div>
     </form>
   );

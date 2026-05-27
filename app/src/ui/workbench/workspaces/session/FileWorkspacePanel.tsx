@@ -3,6 +3,8 @@ import {
   Binary,
   ChevronDown,
   ChevronRight,
+  Copy,
+  Database,
   File,
   FileCode2,
   FileText,
@@ -10,9 +12,11 @@ import {
   FolderOpen,
   Maximize2,
   Minimize2,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   Search,
+  WrapText,
 } from "lucide-react";
 import type { WorkspaceFileEntry, WorkspaceFileReadResult } from "@shared";
 import { RuntimeClient } from "../../../../lib/runtimeClient";
@@ -73,6 +77,10 @@ function formatFileSize(bytes?: number | null) {
 
 function isMarkdownPath(path: string) {
   return /\.(md|markdown|mdx)$/i.test(path);
+}
+
+function isDatabasePath(path: string) {
+  return /\.(db|sqlite|sqlite3)$/i.test(path);
 }
 
 function isLikelyTextPath(path: string) {
@@ -154,6 +162,18 @@ function breadcrumbParts(path: string) {
   return normalizeWorkspaceRelativePath(path).split("/").filter(Boolean);
 }
 
+function workspaceAbsolutePath(workspaceRoot?: string, path?: string) {
+  const normalizedPath = normalizeWorkspaceRelativePath(path ?? "");
+  if (!workspaceRoot) {
+    return normalizedPath;
+  }
+  if (!normalizedPath) {
+    return workspaceRoot;
+  }
+  const separator = workspaceRoot.includes("\\") ? "\\" : "/";
+  return `${workspaceRoot.replace(/[\\/]+$/, "")}${separator}${normalizedPath.replace(/\//g, separator)}`;
+}
+
 function FileIcon({ kind, path, expanded = false }: { kind: WorkspaceFileEntry["kind"]; path?: string; expanded?: boolean }) {
   const icon =
     kind === "directory" ? (
@@ -162,6 +182,8 @@ function FileIcon({ kind, path, expanded = false }: { kind: WorkspaceFileEntry["
       ) : (
         <Folder size={14} strokeWidth={1.9} />
       )
+    ) : isDatabasePath(path || "") ? (
+      <Database size={14} strokeWidth={1.9} />
     ) : isMarkdownPath(path || "") ? (
       <FileText size={14} strokeWidth={1.9} />
     ) : isLikelyTextPath(path || "") ? (
@@ -169,18 +191,19 @@ function FileIcon({ kind, path, expanded = false }: { kind: WorkspaceFileEntry["
     ) : (
       <File size={14} strokeWidth={1.9} />
     );
+  const tone = kind === "file" && isDatabasePath(path || "") ? "database" : undefined;
 
   return (
-    <span className="session-file-icon" data-kind={kind} aria-hidden="true">
+    <span className="session-file-icon" data-kind={kind} data-tone={tone} aria-hidden="true">
       {icon}
     </span>
   );
 }
 
-function CodePreview({ content }: { content: string }) {
+function CodePreview({ content, wrapLines = false }: { content: string; wrapLines?: boolean }) {
   const lines = content.replace(/\r\n/g, "\n").split("\n");
   return (
-    <ol className="session-file-code-lines">
+    <ol className="session-file-code-lines" data-wrap={wrapLines}>
       {lines.map((line, index) => (
         <li key={`${index}-${line.slice(0, 16)}`}>
           <span className="session-file-line-number">{index + 1}</span>
@@ -304,11 +327,14 @@ export function FileWorkspacePanel({
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
   const [readingPath, setReadingPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [wrapLines, setWrapLines] = useState(false);
+  const [copiedPath, setCopiedPath] = useState(false);
   const initialOpenDoneRef = useRef(false);
   const rootEntries = childrenByPath[ROOT_DIR] ?? [];
   const rootName = workspaceNameFromPath(workspaceRoot || workspaceLabel);
   const previewPath = selectedFile ?? filePreview?.path ?? "";
   const previewParent = previewPath ? parentWorkspacePath(previewPath) : ROOT_DIR;
+  const currentAbsolutePath = workspaceAbsolutePath(workspaceRoot, previewPath || previewParent);
   const topTabs = useMemo(() => {
     const baseTabs = rootEntries.length ? rootEntries.filter((entry) => entry.kind === "file").slice(0, 4) : [];
     return uniquePaths([
@@ -395,6 +421,14 @@ export function FileWorkspacePanel({
     [canBrowseFiles, workspaceRoot],
   );
 
+  const copyCurrentPath = useCallback(async () => {
+    if (!currentAbsolutePath || typeof navigator === "undefined" || typeof navigator.clipboard?.writeText !== "function") {
+      return;
+    }
+    await navigator.clipboard.writeText(currentAbsolutePath);
+    setCopiedPath(true);
+  }, [currentAbsolutePath]);
+
   useEffect(() => {
     setChildrenByPath({});
     setExpanded(new Set([ROOT_DIR]));
@@ -405,6 +439,10 @@ export function FileWorkspacePanel({
     setQuery("");
     initialOpenDoneRef.current = false;
   }, [workspaceRoot]);
+
+  useEffect(() => {
+    setCopiedPath(false);
+  }, [currentAbsolutePath]);
 
   useEffect(() => {
     if (!workspaceRoot || !canBrowseFiles) {
@@ -446,6 +484,28 @@ export function FileWorkspacePanel({
               }}
             />
           ) : null}
+          <details className="session-file-more">
+            <summary aria-label="更多文件操作" title="更多文件操作">
+              <MoreHorizontal size={16} strokeWidth={2} aria-hidden="true" />
+            </summary>
+            <div className="session-file-more-menu" role="menu">
+              <button disabled={!currentAbsolutePath} role="menuitem" type="button" onClick={() => void copyCurrentPath()}>
+                <Copy size={14} strokeWidth={1.9} aria-hidden="true" />
+                <span>{copiedPath ? "已复制路径" : "复制路径"}</span>
+              </button>
+              <button
+                aria-checked={wrapLines}
+                role="menuitemcheckbox"
+                type="button"
+                onClick={() => {
+                  setWrapLines((current) => !current);
+                }}
+              >
+                <WrapText size={14} strokeWidth={1.9} aria-hidden="true" />
+                <span>{wrapLines ? "关闭自动换行" : "启用自动换行"}</span>
+              </button>
+            </div>
+          </details>
           <IconButton
             label="刷新目录"
             icon={<RefreshCw size={15} strokeWidth={2} />}
@@ -603,7 +663,7 @@ export function FileWorkspacePanel({
                 <MarkdownContent content={filePreview.content} />
               </article>
             ) : (
-              <CodePreview content={filePreview.content} />
+              <CodePreview content={filePreview.content} wrapLines={wrapLines} />
             )
           ) : (
             <div className="session-file-viewer-empty">

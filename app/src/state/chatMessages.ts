@@ -64,8 +64,19 @@ export function replaceSessionMessages(
     }
   }
 
+  const persistedIds = new Set(persistedMessages.map((message) => message.id));
+  const persistedClientMessageIds = new Set(
+    persistedMessages.map((message) => message.clientMessageId).filter((id): id is string => Boolean(id)),
+  );
+  const unmatchedLiveStreamingMessages = liveStreamingMessages.filter((message) => {
+    if (persistedIds.has(message.id)) {
+      return false;
+    }
+    return !(message.clientMessageId && persistedClientMessageIds.has(message.clientMessageId));
+  });
+
   const maxPersistedTime = persistedMessages.reduce((max, msg) => Math.max(max, msg.createdAt), 0);
-  const updatedLiveStreamingMessages = liveStreamingMessages.map((msg, index) => {
+  const updatedLiveStreamingMessages = unmatchedLiveStreamingMessages.map((msg, index) => {
     const createdAt = Math.max(msg.createdAt, maxPersistedTime + 1 + index);
     return {
       ...msg,

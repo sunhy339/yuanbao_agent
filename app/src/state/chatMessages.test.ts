@@ -867,4 +867,45 @@ describe("chatMessages", () => {
 
     expect(getVisibleChatMessages(next, "sess_1").map((message) => message.id)).toEqual(["stored_user"]);
   });
+
+  it("replaces a streaming backend shell when the completed persisted message arrives", () => {
+    const persisted: MessageRecord[] = [
+      {
+        id: "msg_backend_assistant",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "assistant",
+        content: "Final persisted answer with enough detail to render in the conversation.",
+        createdAt: 10,
+        updatedAt: 30,
+        status: "completed",
+      },
+    ];
+    const localMessages: ChatMessageView[] = [
+      {
+        id: "msg_backend_assistant",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "assistant",
+        content: "Building context and preparing the first tool calls...",
+        createdAt: 10,
+        updatedAt: 11,
+        streaming: true,
+        status: "streaming",
+      },
+    ];
+
+    const next = replaceSessionMessages(localMessages, "sess_1", persisted);
+
+    const visible = getVisibleChatMessages(next, "sess_1");
+
+    expect(next).toHaveLength(1);
+    expect(visible).toHaveLength(1);
+    expect(visible[0]).toMatchObject({
+      id: "msg_backend_assistant",
+      content: "Final persisted answer with enough detail to render in the conversation.",
+      status: "completed",
+    });
+    expect(visible[0]).not.toHaveProperty("streaming");
+  });
 });

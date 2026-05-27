@@ -742,6 +742,71 @@ export function App() {
   }, [activeTaskId, traceAutoRefreshStatus]);
 
   useEffect(() => {
+    if (!activeTaskId || !session?.id) {
+      return;
+    }
+    if (task?.id === activeTaskId && !isTaskControllable(task.status)) {
+      return;
+    }
+    let cancelled = false;
+    const taskId = activeTaskId;
+    const sessionId = session.id;
+
+    const refreshTerminalTask = async () => {
+      try {
+        const result = await runtimeClient.getTask(taskId);
+        if (cancelled) {
+          return;
+        }
+        setTask((current) => (current?.id === result.task.id ? result.task : current));
+        setTaskHistory((current) => sortByUpdatedAtDesc([result.task, ...current.filter((item) => item.id !== result.task.id)]));
+        if (!isTaskControllable(result.task.status)) {
+          setActiveTaskForSession(result.task.id, result.task.sessionId);
+          clearPendingAssistantTokens();
+          const messageResult = await runtimeClient.listMessages({ sessionId, limit: 500 });
+          setChatMessages((current) => replaceSessionMessages(current, sessionId, messageResult.messages));
+        }
+      } catch {
+        // Event delivery is still the primary path; this poll is a quiet safety net for missed terminal events.
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void refreshTerminalTask();
+    }, 2_000);
+    void refreshTerminalTask();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeTaskId, session?.id, task?.id, task?.status]);
+
+  useEffect(() => {
+    if (!task || !session?.id || !["completed", "failed", "cancelled"].includes(task.status)) {
+      return;
+    }
+    let cancelled = false;
+    const sessionId = session.id;
+
+    clearPendingAssistantTokens();
+    void runtimeClient
+      .listMessages({ sessionId, limit: 500 })
+      .then((result) => {
+        if (!cancelled) {
+          setChatMessages((current) => replaceSessionMessages(current, sessionId, result.messages));
+        }
+      })
+      .catch(() => {
+        // Terminal message events usually update the chat first; this refresh only backfills missed events.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.id, task?.id, task?.status]);
+
+  useEffect(() => {
     setTaskControlError(null);
   }, [task?.id, task?.status]);
 

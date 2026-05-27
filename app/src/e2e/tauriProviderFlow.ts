@@ -43,6 +43,7 @@ interface TauriProviderFlowResult {
   missingTraceTypes?: string[];
   uiAssertions?: string[];
   uiLayout?: Record<string, unknown>;
+  uiAssistantVisibility?: Record<string, unknown>;
   error?: string;
 }
 
@@ -269,6 +270,74 @@ function textSample(element: HTMLElement | null) {
   return (element?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 180);
 }
 
+function normalizeForTextComparison(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function meaningfulTextFragments(value: string) {
+  const normalized = normalizeForTextComparison(value);
+  const fragments = normalized
+    .split(/(?<=[.!?。！？])\s+|(?:\s+-\s+)|\s{2,}/)
+    .map((fragment) => fragment.trim())
+    .filter((fragment) => fragment.length >= 36 && /[A-Za-z0-9\u4e00-\u9fff]/.test(fragment));
+  if (fragments.length) {
+    return fragments.slice(0, 10);
+  }
+  return normalized.length >= 36 ? [normalized.slice(0, 160)] : [];
+}
+
+async function waitForAssistantContentVisible(assistantContent: string, timeoutMs = 30_000) {
+  const fragments = meaningfulTextFragments(assistantContent);
+  if (!fragments.length) {
+    throw new Error("Cannot verify assistant UI visibility because the persisted assistant content has no meaningful text fragment.");
+  }
+
+  let lastVisibleAssistant = {
+    count: 0,
+    sample: "",
+  };
+
+  try {
+    return await waitFor(
+      "persisted assistant content visible in chat",
+      () => {
+        const assistantNodes = Array.from(
+          document.querySelectorAll<HTMLElement>('[data-activity-kind="message"][data-role="assistant"]'),
+        );
+        const visibleAssistantNodes = assistantNodes.filter((node) => {
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+        const assistantText = normalizeForTextComparison(
+          visibleAssistantNodes.map((node) => node.textContent ?? "").join("\n"),
+        );
+        lastVisibleAssistant = {
+          count: visibleAssistantNodes.length,
+          sample: assistantText.slice(0, 800),
+        };
+        const matched = fragments.find((fragment) => assistantText.includes(fragment));
+        if (!matched) {
+          return false;
+        }
+        return {
+          matchedFragment: matched.slice(0, 180),
+          assistantBubbleCount: visibleAssistantNodes.length,
+          assistantTextSample: assistantText.slice(0, 500),
+        };
+      },
+      timeoutMs,
+    );
+  } catch (reason) {
+    const expected = fragments[0]?.slice(0, 220) ?? "";
+    throw new Error(
+      `Timed out waiting for persisted assistant content visible in chat. ` +
+        `Expected fragment: ${expected}. ` +
+        `Visible assistant bubbles: ${lastVisibleAssistant.count}. ` +
+        `Visible assistant sample: ${lastVisibleAssistant.sample}`,
+    );
+  }
+}
+
 function layoutSnapshot(selector: string) {
   const element = query<HTMLElement>(selector);
   if (!element) {
@@ -290,6 +359,101 @@ function layoutSnapshot(selector: string) {
     overflowY: style.overflowY,
     sample: textSample(element),
   };
+}
+
+function elementSnapshot(element: HTMLElement) {
+  const rect = element.getBoundingClientRect();
+  return {
+    visible: rect.width > 0 && rect.height > 0,
+    left: Math.round(rect.left),
+    top: Math.round(rect.top),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+    kind: element.dataset.kind,
+    role: element.dataset.role,
+    status: element.dataset.status,
+    sample: textSample(element),
+  };
+}
+
+function visibleElementSnapshots(selector: string) {
+  return Array.from(document.querySelectorAll<HTMLElement>(selector))
+    .map(elementSnapshot)
+    .filter((item) => item.visible);
+}
+
+function readConversationVisualSnapshot() {
+  return {
+    conversationActivity: layoutSnapshot(".conversation-activity"),
+    messageBubbles: visibleElementSnapshots('[data-activity-kind="message"]'),
+    assistantMessages: visibleElementSnapshots('[data-activity-kind="message"][data-role="assistant"]'),
+    runtimeCards: visibleElementSnapshots('[data-activity-kind="runtime"]'),
+    runtimeWorklogs: visibleElementSnapshots('[data-activity-kind="runtime-worklog"]'),
+    approvalBlocks: visibleElementSnapshots('[data-activity-kind="runtime"][data-kind="approval"], .runtime-event-card[data-kind="approval"]'),
+    progressNotes: visibleElementSnapshots(".runtime-progress-note"),
+    livePills: visibleElementSnapshots(".conversation-live-pill, .conversation-live-row"),
+    thinkingStates: visibleElementSnapshots(".thinking-status"),
+  };
+}
+
+function hasAnyRuntimeType(types: string[], candidates: string[]) {
+  const observed = new Set(types);
+  return candidates.some((candidate) => observed.has(candidate));
+}
+
+function assertConversationOutputVisibility(observedRuntimeTypes: string[]) {
+  const activity = query<HTMLElement>(".conversation-activity");
+  if (!activity) {
+    throw new Error("Expected conversation activity stream to be rendered.");
+  }
+  assertVisibleBox(activity, "conversation activity stream", 360, 160);
+
+  const assistantMessages = visibleElementSnapshots('[data-activity-kind="message"][data-role="assistant"]');
+  if (!assistantMessages.some((message) => message.sample.length > 0)) {
+    throw new Error("Expected at least one visible assistant message bubble with text.");
+  }
+
+  const hasRuntimeProcess =
+    observedRuntimeTypes.some((type) => type.startsWith("collab.task.")) ||
+    hasAnyRuntimeType(observedRuntimeTypes, [
+      "task.child.progress",
+      "task.subtask.progress",
+      "task.planning.subtask.started",
+      "task.planning.subtask.completed",
+      "tool.started",
+      "tool.completed",
+      "tool.failed",
+      "command.output",
+      "command.completed",
+      "task.waiting_approval",
+    ]);
+  if (hasRuntimeProcess) {
+    const processBlocks = [
+      ...visibleElementSnapshots('[data-activity-kind="runtime"]'),
+      ...visibleElementSnapshots('[data-activity-kind="runtime-worklog"]'),
+      ...visibleElementSnapshots(".runtime-progress-note"),
+    ];
+    if (processBlocks.length === 0) {
+      throw new Error("Runtime events were observed, but no visible process block rendered in the chat UI.");
+    }
+  }
+
+  const hasApprovalFlow = hasAnyRuntimeType(observedRuntimeTypes, [
+    "approval.requested",
+    "approval.resolved",
+    "permission_request",
+    "task.waiting_approval",
+  ]);
+  if (hasApprovalFlow) {
+    const approvalBlocks = visibleElementSnapshots(
+      '[data-activity-kind="runtime"][data-kind="approval"], .runtime-event-card[data-kind="approval"]',
+    );
+    if (approvalBlocks.length === 0) {
+      throw new Error("Approval events were observed, but no visible approval block rendered in the chat UI.");
+    }
+  }
+
+  return readConversationVisualSnapshot();
 }
 
 function readUiLayoutSnapshot() {
@@ -1064,6 +1228,8 @@ export async function maybeRunTauriProviderFlowE2e() {
     if (!assistantMessage?.content?.trim()) {
       throw new Error("Persisted assistant message is empty.");
     }
+    const visibleAssistantContent = await waitForAssistantContentVisible(assistantMessage.content);
+    const conversationVisual = assertConversationOutputVisibility(observedRuntimeTypes);
     const messageStream = query<HTMLElement>(".message-stream");
     const messageStreamText = messageStream?.textContent ?? "";
     const assistantText = assistantMessage.content.trim();
@@ -1102,15 +1268,22 @@ export async function maybeRunTauriProviderFlowE2e() {
       persistedMessageCount: persistedMessages.length,
       eventTypes: events.map((event) => event.type),
       traceTypes,
+      uiLayout: {
+        ...readUiLayoutSnapshot(),
+        conversationVisual,
+      },
       uiAssertions: [
         "provider settings saved through UI",
         "provider test result visible in UI",
         "composer submitted through UI",
         "session task completion visible in UI",
         "runtime timeline rendered in UI",
+        "conversation process blocks visible in UI",
+        "persisted assistant output visible in conversation UI",
         "workspace file pane renders while change details stay in chat",
         "message persistence verified through runtime API",
       ],
+      uiAssistantVisibility: visibleAssistantContent,
     });
   } catch (reason) {
     await finish({

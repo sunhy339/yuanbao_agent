@@ -616,7 +616,7 @@ describe("SessionWorkspace", () => {
     expect(orderedList).toBeTruthy();
     expect(within(orderedList!).getAllByRole("listitem")).toHaveLength(3);
     expect(screen.getByRole("columnheader", { name: "Tool" })).toBeInTheDocument();
-    expect(screen.getAllByRole("separator")).toHaveLength(1);
+    expect(screen.getByRole("separator", { name: "调整文件列表宽度" })).toBeInTheDocument();
     expect(screen.queryByText(/## Can do/)).not.toBeInTheDocument();
   });
 

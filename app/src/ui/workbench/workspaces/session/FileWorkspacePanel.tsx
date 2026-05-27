@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   Binary,
   ChevronDown,
@@ -10,6 +19,7 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  GripVertical,
   Maximize2,
   Minimize2,
   MoreHorizontal,
@@ -26,6 +36,11 @@ import { MarkdownContent } from "./MarkdownContent";
 const fileWorkspaceClient = new RuntimeClient();
 const WORKSPACE_PREVIEW_MAX_BYTES = 96 * 1024;
 const ROOT_DIR = "";
+const FILE_TREE_WIDTH_STORAGE_KEY = "session-file-tree-width";
+const FILE_TREE_MIN_WIDTH = 280;
+const FILE_VIEWER_MIN_WIDTH = 240;
+const FILE_BROWSER_RESIZER_WIDTH = 7;
+const FILE_TREE_KEYBOARD_STEP = 36;
 
 function canUseTauriInvoke() {
   if (typeof window === "undefined") {
@@ -36,6 +51,24 @@ function canUseTauriInvoke() {
     __TAURI_INTERNALS__?: unknown;
   };
   return Boolean(bridgeWindow.__TAURI__ || bridgeWindow.__TAURI_INTERNALS__);
+}
+
+function readStoredFileTreeWidth() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const stored = window.localStorage.getItem(FILE_TREE_WIDTH_STORAGE_KEY);
+    const parsed = stored ? Number.parseInt(stored, 10) : Number.NaN;
+    return Number.isFinite(parsed) && parsed >= FILE_TREE_MIN_WIDTH ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function clampFileTreeWidth(width: number, layoutWidth: number) {
+  const maxWidth = Math.max(FILE_TREE_MIN_WIDTH, layoutWidth - FILE_VIEWER_MIN_WIDTH - FILE_BROWSER_RESIZER_WIDTH);
+  return Math.round(Math.min(maxWidth, Math.max(FILE_TREE_MIN_WIDTH, width)));
 }
 
 function normalizeWorkspaceRelativePath(path: string) {
@@ -329,7 +362,10 @@ export function FileWorkspacePanel({
   const [error, setError] = useState<string | null>(null);
   const [wrapLines, setWrapLines] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
+  const [fileTreeWidthPx, setFileTreeWidthPx] = useState<number | null>(() => readStoredFileTreeWidth());
+  const [fileTreeResizing, setFileTreeResizing] = useState(false);
   const initialOpenDoneRef = useRef(false);
+  const fileBrowserLayoutRef = useRef<HTMLDivElement | null>(null);
   const rootEntries = childrenByPath[ROOT_DIR] ?? [];
   const rootName = workspaceNameFromPath(workspaceRoot || workspaceLabel);
   const previewPath = selectedFile ?? filePreview?.path ?? "";
@@ -429,6 +465,62 @@ export function FileWorkspacePanel({
     setCopiedPath(true);
   }, [currentAbsolutePath]);
 
+  const startFileTreeResize = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const layout = event.currentTarget.closest(".session-file-browser-layout") as HTMLElement | null;
+      const treePane = layout?.querySelector(".session-file-tree-pane") as HTMLElement | null;
+      const layoutWidth = layout?.getBoundingClientRect().width ?? 0;
+      if (!layout || layoutWidth <= 0) {
+        return;
+      }
+      const startWidth = fileTreeWidthPx ?? treePane?.getBoundingClientRect().width ?? layoutWidth * 0.48;
+      const startX = event.clientX;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      setFileTreeResizing(true);
+
+      const onMove = (moveEvent: PointerEvent) => {
+        const nextWidth = startWidth - (moveEvent.clientX - startX);
+        setFileTreeWidthPx(clampFileTreeWidth(nextWidth, layoutWidth));
+      };
+      const onUp = () => {
+        setFileTreeResizing(false);
+        window.removeEventListener("pointermove", onMove);
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp, { once: true });
+    },
+    [fileTreeWidthPx],
+  );
+
+  const handleFileTreeResizeKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+        return;
+      }
+      const layout = event.currentTarget.closest(".session-file-browser-layout") as HTMLElement | null;
+      const treePane = layout?.querySelector(".session-file-tree-pane") as HTMLElement | null;
+      const layoutWidth = layout?.getBoundingClientRect().width ?? 0;
+      if (!layout || layoutWidth <= 0) {
+        return;
+      }
+      event.preventDefault();
+      const currentWidth = fileTreeWidthPx ?? treePane?.getBoundingClientRect().width ?? layoutWidth * 0.48;
+      const maxWidth = layoutWidth - FILE_VIEWER_MIN_WIDTH - FILE_BROWSER_RESIZER_WIDTH;
+      const nextWidth =
+        event.key === "ArrowLeft"
+          ? currentWidth + FILE_TREE_KEYBOARD_STEP
+          : event.key === "ArrowRight"
+            ? currentWidth - FILE_TREE_KEYBOARD_STEP
+            : event.key === "End"
+              ? maxWidth
+              : FILE_TREE_MIN_WIDTH;
+      setFileTreeWidthPx(clampFileTreeWidth(nextWidth, layoutWidth));
+    },
+    [fileTreeWidthPx],
+  );
+
   useEffect(() => {
     setChildrenByPath({});
     setExpanded(new Set([ROOT_DIR]));
@@ -443,6 +535,33 @@ export function FileWorkspacePanel({
   useEffect(() => {
     setCopiedPath(false);
   }, [currentAbsolutePath]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || fileTreeWidthPx === null) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(FILE_TREE_WIDTH_STORAGE_KEY, String(fileTreeWidthPx));
+    } catch {
+      // Persisting the splitter is a convenience; browsing still works without storage.
+    }
+  }, [fileTreeWidthPx]);
+
+  useEffect(() => {
+    const layout = fileBrowserLayoutRef.current;
+    if (!layout || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(([entry]) => {
+      const layoutWidth = entry?.contentRect.width ?? 0;
+      if (layoutWidth <= 0) {
+        return;
+      }
+      setFileTreeWidthPx((current) => (current === null ? current : clampFileTreeWidth(current, layoutWidth)));
+    });
+    observer.observe(layout);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!workspaceRoot || !canBrowseFiles) {
@@ -463,6 +582,15 @@ export function FileWorkspacePanel({
   }, [canBrowseFiles, normalizedRelatedFiles, openFile, rootEntries, workspaceRoot]);
 
   const breadcrumbs = breadcrumbParts(previewPath || previewParent);
+  const fileBrowserClassName = [
+    "session-file-browser-layout",
+    fileTreeResizing ? "session-file-browser-layout-resizing" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const fileBrowserStyle = fileTreeWidthPx
+    ? ({ "--session-file-tree-width": `${fileTreeWidthPx}px` } as CSSProperties)
+    : undefined;
 
   return (
     <section className="session-file-workspace" aria-label="文件浏览器">
@@ -560,7 +688,7 @@ export function FileWorkspacePanel({
       ) : null}
       {error ? <p className="session-tool-error">{error}</p> : null}
 
-      <div className="session-file-browser-layout">
+      <div ref={fileBrowserLayoutRef} className={fileBrowserClassName} style={fileBrowserStyle}>
         <aside className="session-file-tree-pane" aria-label="项目文件">
           <label className="session-file-search">
             <span>筛选文件</span>
@@ -615,6 +743,21 @@ export function FileWorkspacePanel({
             )}
           </section>
         </aside>
+
+        <div
+          aria-label="调整文件列表宽度"
+          aria-orientation="vertical"
+          aria-valuemin={FILE_TREE_MIN_WIDTH}
+          aria-valuenow={fileTreeWidthPx ?? undefined}
+          className="session-file-browser-resizer"
+          onKeyDown={handleFileTreeResizeKeyDown}
+          onPointerDown={startFileTreeResize}
+          role="separator"
+          tabIndex={0}
+          title="拖动以调整文件列表宽度"
+        >
+          <GripVertical size={13} strokeWidth={1.9} aria-hidden="true" />
+        </div>
 
         <main className="session-file-viewer" aria-label="文件内容">
           <header className="session-file-viewer-header">

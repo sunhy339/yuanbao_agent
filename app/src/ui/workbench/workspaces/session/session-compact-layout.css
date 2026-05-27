@@ -1437,8 +1437,8 @@
 
 .session-workspace-chat-only .session-file-browser-layout {
   display: grid;
-  grid-template-areas: "viewer tree";
-  grid-template-columns: minmax(300px, 0.92fr) minmax(280px, 1.08fr);
+  grid-template-areas: "viewer resizer tree";
+  grid-template-columns: minmax(240px, 1fr) 7px minmax(280px, var(--session-file-tree-width, clamp(320px, 48%, 560px)));
   min-width: 0;
   min-height: 0;
   height: 100%;
@@ -1490,10 +1490,71 @@
   min-height: 0;
   overflow: hidden;
   border: 0;
-  border-left: 1px solid var(--session-line);
   border-radius: 0;
   padding: 10px 10px 12px;
   background: #fff;
+}
+
+.session-workspace-chat-only .session-file-browser-resizer {
+  grid-area: resizer;
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 7px;
+  min-width: 7px;
+  height: 100%;
+  border: 0;
+  border-left: 1px solid var(--session-line);
+  background: #fff;
+  color: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  outline: 0;
+}
+
+.session-workspace-chat-only .session-file-browser-resizer::before {
+  content: "";
+  position: absolute;
+  inset: 0 2px;
+  border-radius: 99px;
+  background: transparent;
+  transition:
+    background 0.16s ease,
+    inset 0.16s ease;
+}
+
+.session-workspace-chat-only .session-file-browser-resizer svg {
+  position: relative;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.session-workspace-chat-only .session-file-browser-resizer:hover::before,
+.session-workspace-chat-only .session-file-browser-resizer:focus-visible::before,
+.session-workspace-chat-only .session-file-browser-layout-resizing .session-file-browser-resizer::before {
+  inset: 0 1px;
+  background: rgba(143, 72, 47, 0.18);
+}
+
+.session-workspace-chat-only .session-file-browser-resizer:hover,
+.session-workspace-chat-only .session-file-browser-resizer:focus-visible,
+.session-workspace-chat-only .session-file-browser-layout-resizing .session-file-browser-resizer {
+  color: var(--session-primary);
+}
+
+.session-workspace-chat-only .session-file-browser-resizer:hover svg,
+.session-workspace-chat-only .session-file-browser-resizer:focus-visible svg,
+.session-workspace-chat-only .session-file-browser-layout-resizing .session-file-browser-resizer svg {
+  opacity: 1;
+}
+
+.session-workspace-chat-only .session-file-browser-layout-resizing,
+.session-workspace-chat-only .session-file-browser-layout-resizing * {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .session-workspace-chat-only .session-file-search {

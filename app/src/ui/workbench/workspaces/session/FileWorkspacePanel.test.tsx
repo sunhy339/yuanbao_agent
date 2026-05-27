@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceFileListParams, WorkspaceFileReadParams } from "@shared";
@@ -148,5 +148,34 @@ describe("FileWorkspacePanel", () => {
 
     await user.click(screen.getByRole("menuitemcheckbox", { name: "启用自动换行" }));
     expect(codeLines).toHaveAttribute("data-wrap", "true");
+  });
+
+  it("resizes the file tree pane with the lightweight separator", async () => {
+    render(
+      <FileWorkspacePanel
+        workspaceRoot="D:/demo-blog"
+        workspaceLabel="demo-blog"
+        relatedFiles={["src/app.py"]}
+      />,
+    );
+
+    await screen.findByText("def hello():");
+    const layout = document.querySelector(".session-file-browser-layout") as HTMLElement;
+    const treePane = document.querySelector(".session-file-tree-pane") as HTMLElement;
+    Object.defineProperty(layout, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ width: 900, height: 620, top: 0, left: 0, right: 900, bottom: 620, x: 0, y: 0, toJSON: () => ({}) }),
+    });
+    Object.defineProperty(treePane, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ width: 360, height: 620, top: 0, left: 540, right: 900, bottom: 620, x: 540, y: 0, toJSON: () => ({}) }),
+    });
+
+    const separator = screen.getByRole("separator", { name: "调整文件列表宽度" });
+    fireEvent.pointerDown(separator, { clientX: 500, pointerId: 1 });
+    fireEvent.pointerMove(window, { clientX: 420 });
+    fireEvent.pointerUp(window);
+
+    expect(layout.getAttribute("style")).toContain("--session-file-tree-width: 440px");
   });
 });

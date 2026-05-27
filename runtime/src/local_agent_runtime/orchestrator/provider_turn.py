@@ -588,6 +588,17 @@ class ProviderTurnMixin:
         provider_context: dict[str, Any],
         budget: Any | None = None,
     ) -> dict[str, Any]:
+        if hasattr(self, "_publish"):
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="status",
+                payload={
+                    "state": "thinking",
+                    "verb": "model",
+                    "step": provider_context.get("step"),
+                },
+            )
         if not self._should_stream_provider(provider_context):
             return self._request_non_streaming_provider_response(
                 session_id=session_id,

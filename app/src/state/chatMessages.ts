@@ -146,7 +146,12 @@ function isLocalPendingMessage(message: ChatMessageView) {
 }
 
 function isEphemeralChatBlockMessage(message: ChatMessageView) {
-  return message.metadata?.kind === "tool_use" || message.metadata?.kind === "tool_result";
+  return (
+    message.metadata?.kind === "tool_use" ||
+    message.metadata?.kind === "tool_result" ||
+    message.metadata?.kind === "assistant_thinking" ||
+    message.metadata?.kind === "permission_request"
+  );
 }
 
 export function appendUserMessage(
@@ -578,6 +583,124 @@ export function appendAssistantToolResultMessage(
       toolUseId: payload.toolUseId,
       isError: Boolean(payload.isError),
       rawContent: payload.content,
+    },
+  };
+
+  if (existingIndex >= 0) {
+    const next = [...current];
+    next[existingIndex] = nextMessage;
+    return next;
+  }
+  return [...current, nextMessage];
+}
+
+function chatStatusLabel(state?: string, verb?: string | null): string {
+  const action = verb ? String(verb).trim() : "";
+  if (state === "tool_executing") {
+    return action ? `正在调用 ${action}` : "正在调用工具";
+  }
+  if (state === "permission_pending") {
+    return action ? `等待 ${action} 审批` : "等待权限审批";
+  }
+  if (state === "streaming") {
+    return "正在输出回复";
+  }
+  if (state === "thinking") {
+    return "模型正在思考";
+  }
+  return action || "正在处理";
+}
+
+export function appendOrUpdateAssistantThinkingMessage(
+  current: ChatMessageView[],
+  payload: {
+    sessionId: string;
+    taskId?: string | null;
+    state?: string | null;
+    verb?: string | null;
+    text?: string | null;
+    now: number;
+  },
+): ChatMessageView[] {
+  const taskId = payload.taskId ?? "pending";
+  const messageId = `assistant_thinking:${taskId}`;
+  const content = payload.text?.trim() || chatStatusLabel(payload.state ?? undefined, payload.verb);
+  const existingIndex = current.findIndex((message) => message.id === messageId);
+  const nextMessage: ChatMessageView = {
+    id: messageId,
+    sessionId: payload.sessionId,
+    taskId,
+    role: "assistant",
+    content,
+    createdAt: existingIndex >= 0 ? current[existingIndex].createdAt : payload.now,
+    updatedAt: payload.now,
+    streaming: true,
+    placeholder: false,
+    status: "streaming",
+    metadata: {
+      kind: "assistant_thinking",
+      state: payload.state,
+      verb: payload.verb,
+    },
+  };
+
+  if (existingIndex >= 0) {
+    const next = [...current];
+    next[existingIndex] = nextMessage;
+    return next;
+  }
+  return [...current, nextMessage];
+}
+
+export function removeAssistantThinkingMessage(
+  current: ChatMessageView[],
+  payload: {
+    sessionId: string;
+    taskId?: string | null;
+  },
+): ChatMessageView[] {
+  return current.filter((message) => {
+    if (message.metadata?.kind !== "assistant_thinking") {
+      return true;
+    }
+    if (message.sessionId !== payload.sessionId) {
+      return true;
+    }
+    return Boolean(payload.taskId && message.taskId !== payload.taskId);
+  });
+}
+
+export function appendOrUpdatePermissionRequestMessage(
+  current: ChatMessageView[],
+  payload: {
+    requestId: string;
+    toolName?: string | null;
+    input: unknown;
+    description?: string | null;
+    sessionId: string;
+    taskId?: string | null;
+    now: number;
+  },
+): ChatMessageView[] {
+  const messageId = `permission_request:${payload.requestId}`;
+  const input = formatChatBlockValue(payload.input);
+  const content = [payload.description?.trim(), input].filter(Boolean).join("\n\n");
+  const existingIndex = current.findIndex((message) => message.id === messageId);
+  const nextMessage: ChatMessageView = {
+    id: messageId,
+    sessionId: payload.sessionId,
+    taskId: payload.taskId ?? "pending",
+    role: "assistant",
+    content: content || "此操作需要确认后继续。",
+    createdAt: existingIndex >= 0 ? current[existingIndex].createdAt : payload.now,
+    updatedAt: payload.now,
+    streaming: false,
+    placeholder: false,
+    toolName: payload.toolName ?? undefined,
+    metadata: {
+      kind: "permission_request",
+      requestId: payload.requestId,
+      input: payload.input,
     },
   };
 
@@ -1086,7 +1209,12 @@ function isEmptyStreamingAssistantShell(message: ChatMessageView): boolean {
 }
 
 function isRuntimeProgressOnlyAssistantMessage(message: ChatMessageView): boolean {
-  if (message.metadata?.kind === "tool_use" || message.metadata?.kind === "tool_result") {
+  if (
+    message.metadata?.kind === "tool_use" ||
+    message.metadata?.kind === "tool_result" ||
+    message.metadata?.kind === "assistant_thinking" ||
+    message.metadata?.kind === "permission_request"
+  ) {
     return false;
   }
   return (

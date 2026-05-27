@@ -4,6 +4,8 @@ import {
   appendOrUpdateAssistantMessageCompletion,
   appendOrUpdateAssistantMessageDelta,
   appendOrUpdateAssistantToolInputDelta,
+  appendOrUpdateAssistantThinkingMessage,
+  appendOrUpdatePermissionRequestMessage,
   appendAssistantToolResultMessage,
   appendAssistantPlaceholder,
   appendUserMessage,
@@ -14,6 +16,7 @@ import {
   isOperationalAssistantDelta,
   reconcileBackendMessage,
   removeChatMessage,
+  removeAssistantThinkingMessage,
   replaceSessionMessages,
   sanitizeAssistantStatusContent,
   stripAssistantRuntimeProgress,
@@ -104,6 +107,62 @@ describe("chatMessages", () => {
       content: "思考中...",
       streaming: true,
       placeholder: true,
+    });
+  });
+
+  it("shows and clears haha-style assistant thinking status blocks", () => {
+    const next = appendOrUpdateAssistantThinkingMessage(messages, {
+      sessionId: "sess_1",
+      taskId: "task_3",
+      state: "thinking",
+      now: 4,
+    });
+
+    const visible = getVisibleChatMessages(next, "sess_1");
+    expect(visible.at(-1)).toMatchObject({
+      id: "assistant_thinking:task_3",
+      role: "assistant",
+      streaming: true,
+      metadata: { kind: "assistant_thinking", state: "thinking" },
+    });
+
+    const cleared = removeAssistantThinkingMessage(next, {
+      sessionId: "sess_1",
+      taskId: "task_3",
+    });
+    expect(getVisibleChatMessages(cleared, "sess_1").map((message) => message.id)).not.toContain(
+      "assistant_thinking:task_3",
+    );
+  });
+
+  it("keeps permission request blocks when persisted messages refresh", () => {
+    const withPermission = appendOrUpdatePermissionRequestMessage(messages, {
+      requestId: "approval_1",
+      toolName: "run_command",
+      input: { command: "npm test" },
+      description: "Need approval",
+      sessionId: "sess_1",
+      taskId: "task_3",
+      now: 4,
+    });
+
+    const refreshed = replaceSessionMessages(withPermission, "sess_1", [
+      {
+        id: "stored_user",
+        sessionId: "sess_1",
+        role: "user",
+        content: "Run tests",
+        createdAt: 5,
+      } as MessageRecord,
+    ]);
+
+    const permission = getVisibleChatMessages(refreshed, "sess_1").find(
+      (message) => message.id === "permission_request:approval_1",
+    );
+    expect(permission).toMatchObject({
+      role: "assistant",
+      toolName: "run_command",
+      metadata: { kind: "permission_request", requestId: "approval_1" },
     });
   });
 

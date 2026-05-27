@@ -2,11 +2,13 @@ import { useEffect, useRef } from "react";
 import type {
   AgentEventEnvelope,
   ChatMessageCompletePayload,
+  ChatStatusPayload,
   ContentDeltaPayload,
   MessageDeltaPayload,
   MessageCreatedPayload,
   MessageCompletedPayload,
   MessageFailedPayload,
+  PermissionRequestPayload,
   ToolResultPayload,
   ToolUseCompletePayload,
   SessionUpdatedPayload,
@@ -31,8 +33,11 @@ import {
   appendOrUpdateAssistantMessageDelta,
   appendOrUpdateAssistantToolInputDelta,
   appendAssistantToolResultMessage,
+  appendOrUpdateAssistantThinkingMessage,
+  appendOrUpdatePermissionRequestMessage,
   completeAssistantToolUseMessage,
   completeChatCompatMessage,
+  removeAssistantThinkingMessage,
   updateAssistantMessageByMessageId,
   reconcileBackendMessage,
   failAssistantMessage,
@@ -151,6 +156,12 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           }
           const payload = event.payload as ContentDeltaPayload;
           if (typeof payload.text === "string" && payload.text) {
+            setChatMessages((current) =>
+              removeAssistantThinkingMessage(current, {
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+              }),
+            );
             const messageId =
               typeof payload.messageId === "string" && payload.messageId
                 ? payload.messageId
@@ -231,18 +242,93 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           const payload = event.payload as ChatMessageCompletePayload;
           flushPendingAssistantTokens();
           setChatMessages((current) =>
-            completeChatCompatMessage(current, {
-              messageId: payload.messageId,
+            removeAssistantThinkingMessage(
+              completeChatCompatMessage(current, {
+                messageId: payload.messageId,
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                content: payload.content,
+                now: event.ts,
+              }),
+              {
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+              },
+            ),
+          );
+          return;
+        }
+
+        if (event.type === "status") {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          const payload = event.payload as ChatStatusPayload;
+          if (payload.state === "idle") {
+            setChatMessages((current) =>
+              removeAssistantThinkingMessage(current, {
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+              }),
+            );
+            return;
+          }
+          if (["thinking", "tool_executing", "streaming"].includes(String(payload.state))) {
+            setChatMessages((current) =>
+              appendOrUpdateAssistantThinkingMessage(current, {
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                state: payload.state,
+                verb: payload.verb,
+                now: event.ts,
+              }),
+            );
+          }
+          return;
+        }
+
+        if (event.type === "thinking") {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          const payload = event.payload as { text?: unknown };
+          setChatMessages((current) =>
+            appendOrUpdateAssistantThinkingMessage(current, {
               sessionId: event.sessionId,
               taskId: event.taskId,
-              content: payload.content,
+              state: "thinking",
+              text: typeof payload.text === "string" ? payload.text : undefined,
               now: event.ts,
             }),
           );
           return;
         }
 
-        if (event.type === "status" || event.type === "thinking" || event.type === "permission_request") {
+        if (event.type === "permission_request") {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          const payload = event.payload as PermissionRequestPayload;
+          if (!payload.requestId) {
+            return;
+          }
+          setChatMessages((current) =>
+            appendOrUpdatePermissionRequestMessage(
+              removeAssistantThinkingMessage(current, {
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+              }),
+              {
+                requestId: payload.requestId,
+                toolName: payload.toolName,
+                input: payload.input,
+                description: payload.description,
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                now: event.ts,
+              },
+            ),
+          );
           return;
         }
 
@@ -264,13 +350,19 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           const messageId = payload.messageId;
           if (messageId) {
             setChatMessages((current) =>
-              appendOrUpdateAssistantMessageDelta(current, {
-                messageId,
-                sessionId: event.sessionId,
-                taskId: event.taskId,
-                delta: displayDelta,
-                now: event.ts,
-              }),
+              appendOrUpdateAssistantMessageDelta(
+                removeAssistantThinkingMessage(current, {
+                  sessionId: event.sessionId,
+                  taskId: event.taskId,
+                }),
+                {
+                  messageId,
+                  sessionId: event.sessionId,
+                  taskId: event.taskId,
+                  delta: displayDelta,
+                  now: event.ts,
+                },
+              ),
             );
           } else {
             // Fallback: no messageId, use legacy behavior
@@ -299,17 +391,28 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           flushPendingAssistantTokens();
           if (payload.messageId) {
             setChatMessages((current) =>
-              appendOrUpdateAssistantMessageCompletion(current, {
-                messageId: payload.messageId!,
-                sessionId: event.sessionId,
-                taskId: event.taskId,
-                content: payload.content,
-                now: event.ts,
-              }),
+              removeAssistantThinkingMessage(
+                appendOrUpdateAssistantMessageCompletion(current, {
+                  messageId: payload.messageId!,
+                  sessionId: event.sessionId,
+                  taskId: event.taskId,
+                  content: payload.content,
+                  now: event.ts,
+                }),
+                {
+                  sessionId: event.sessionId,
+                  taskId: event.taskId,
+                },
+              ),
             );
           } else {
             // Fallback: no messageId, use legacy completion
-            setChatMessages((current) => completeAssistantMessage(current, event));
+            setChatMessages((current) =>
+              removeAssistantThinkingMessage(completeAssistantMessage(current, event), {
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+              }),
+            );
           }
           setEvents((current) => [...current, event].slice(-500));
           return;

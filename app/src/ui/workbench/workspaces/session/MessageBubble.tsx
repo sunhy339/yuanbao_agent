@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Bot, CheckCircle2, Info, TerminalSquare, UserRound, Wrench } from "lucide-react";
+import { Bot, CheckCircle2, Info, ShieldAlert, TerminalSquare, UserRound, Wrench } from "lucide-react";
 import { formatStatusLabel } from "../../../copy";
 import { formatTimestamp } from "../../../../lib/formatUtils";
 import type { SessionWorkspaceMessage } from "./types";
@@ -71,6 +71,21 @@ function ToolBlockContent({ message }: { message: SessionWorkspaceMessage }) {
   );
 }
 
+function PermissionRequestContent({ message }: { message: SessionWorkspaceMessage }) {
+  const content = message.content.trim();
+
+  return (
+    <section className="message-permission-block">
+      <div className="message-permission-block-head">
+        <ShieldAlert size={14} strokeWidth={2} aria-hidden="true" />
+        <strong>{message.toolName || "权限请求"}</strong>
+        <span>等待确认</span>
+      </div>
+      {content ? <pre>{content}</pre> : null}
+    </section>
+  );
+}
+
 export const MessageBubble = memo(function MessageBubble({
   message,
   activityHint,
@@ -78,20 +93,30 @@ export const MessageBubble = memo(function MessageBubble({
   message: SessionWorkspaceMessage;
   activityHint?: string;
 }) {
-  const isThinking = Boolean(message.streaming && message.placeholder);
+  const metadataKind = getMessageMetadataKind(message);
+  const isStatusThinking = metadataKind === "assistant_thinking";
+  const isThinking = isStatusThinking || Boolean(message.streaming && message.placeholder);
   const now = useTickWhen(isThinking);
 
   const thinkingStartedAt = message.createdAt ?? now;
   const thinkingElapsedMs = Math.max(0, now - thinkingStartedAt);
   const thinkingStalled = thinkingElapsedMs >= THINKING_STALLED_MS;
+  const thinkingTitle =
+    isStatusThinking && message.content.trim()
+      ? message.content.trim()
+      : thinkingStalled
+        ? "仍在处理…"
+        : "正在处理…";
   const thinkingCopy =
     activityHint ||
-    (thinkingStalled
-      ? "还没有收到可展示内容；后台可能正在等待模型、工具或审批。"
-      : "正在等待模型或运行时返回第一段内容。");
+    (isStatusThinking
+      ? "收到工具、审批或正文输出后会自动更新。"
+      : thinkingStalled
+        ? "还没有收到可展示内容；后端可能正在等待模型、工具或审批。"
+        : "正在等待模型或运行时返回第一段内容。");
   const displayContent = message.role === "assistant" ? normalizeAssistantContent(message.content) : message.content;
-  const metadataKind = getMessageMetadataKind(message);
   const isToolBlock = metadataKind === "tool_use" || metadataKind === "tool_result";
+  const isPermissionRequest = metadataKind === "permission_request";
 
   return (
     <article
@@ -117,11 +142,13 @@ export const MessageBubble = memo(function MessageBubble({
               <span /><span /><span />
             </div>
             <p>
-              <strong>{thinkingStalled ? "仍在处理…" : "正在处理…"}</strong>
+              <strong>{thinkingTitle}</strong>
               <time>{formatElapsedTime(thinkingElapsedMs)}</time>
             </p>
             <small>{thinkingCopy}</small>
           </div>
+        ) : isPermissionRequest ? (
+          <PermissionRequestContent message={message} />
         ) : isToolBlock ? (
           <ToolBlockContent message={message} />
         ) : message.role === "assistant" ? (

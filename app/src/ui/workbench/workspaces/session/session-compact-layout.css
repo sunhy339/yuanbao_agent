@@ -923,12 +923,25 @@
   gap: 7px;
 }
 
+.session-workspace-chat-only .message-permission-block {
+  gap: 7px;
+}
+
 .session-workspace-chat-only .message-tool-block-head {
   color: var(--session-muted);
   font-size: 12px;
 }
 
+.session-workspace-chat-only .message-permission-block-head {
+  color: var(--session-muted);
+  font-size: 12px;
+}
+
 .session-workspace-chat-only .message-tool-block-head strong {
+  color: var(--session-text);
+}
+
+.session-workspace-chat-only .message-permission-block-head strong {
   color: var(--session-text);
 }
 
@@ -938,6 +951,11 @@
   border-radius: 10px;
   background: #f7f8fb;
   color: var(--session-text);
+}
+
+.session-workspace-chat-only .message-permission-block pre {
+  max-height: 220px;
+  border-radius: 10px;
 }
 
 .session-workspace-chat-only .markdown-content code {

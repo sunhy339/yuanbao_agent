@@ -152,6 +152,28 @@ class TestEventCompatAssistantToken:
         assert tool_result.payload["toolUseId"] == "tc_1"
         assert tool_result.payload["isError"] is False
 
+    def test_provider_request_emits_chat_thinking_status(self, tmp_path: Any) -> None:
+        """Provider requests emit a haha-cc style thinking status before output."""
+        runtime = _make_runtime(tmp_path)
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+
+        task = runtime.store.create_task(session_id="s1", task_type="chat", goal="g", plan=[])
+        runtime.orchestrator._request_provider_response(
+            session_id="s1",
+            task=task,
+            goal="g",
+            provider_context={"step": 2, "config": {}},
+            budget=None,
+        )
+
+        status_events = [event for event in collected if event.type == "status"]
+        assert status_events
+        assert status_events[0].payload["state"] == "thinking"
+        assert status_events[0].payload["verb"] == "model"
+        assert status_events[0].payload["step"] == 2
+        assert status_events[0].payload["_chatCompat"] is True
+
     def test_chat_compat_events_are_not_trace_mirrored(self, tmp_path: Any) -> None:
         """Chat compatibility events are live UI protocol, not trace timeline noise."""
         runtime = _make_runtime(tmp_path)
@@ -289,4 +311,3 @@ class TestFeatureFlagsRpc:
         runtime = _make_runtime(tmp_path)
         resp = _rpc(runtime, "feature.set", {"value": True})
         assert "error" in resp
-

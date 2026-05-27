@@ -718,6 +718,38 @@ describe("SessionWorkspace", () => {
     expect(screen.getAllByText("run_command").length).toBeGreaterThanOrEqual(2);
   });
 
+  it("renders chat-compatible status and permission blocks", () => {
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          {
+            id: "assistant_thinking:task_1",
+            role: "assistant",
+            content: "模型正在思考",
+            streaming: true,
+            metadata: { kind: "assistant_thinking", state: "thinking" },
+            createdAt: 1,
+          },
+          {
+            id: "permission_request:approval_1",
+            role: "assistant",
+            content: 'Need approval\n\n{\n  "command": "npm test"\n}',
+            toolName: "run_command",
+            metadata: { kind: "permission_request", requestId: "approval_1" },
+            createdAt: 2,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("模型正在思考")).toBeInTheDocument();
+    expect(container.querySelector(".message-permission-block")).toBeInTheDocument();
+    expect(screen.getByText("等待确认")).toBeInTheDocument();
+    expect(screen.getAllByText("run_command").length).toBeGreaterThanOrEqual(1);
+  });
+
   it("renders command runtime cards as compact rows until expanded", async () => {
     const user = userEvent.setup();
     render(

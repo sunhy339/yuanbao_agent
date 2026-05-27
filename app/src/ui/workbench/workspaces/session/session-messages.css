@@ -222,6 +222,50 @@
   color: #991b1b;
 }
 
+.message-permission-block {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.message-permission-block-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--session-muted);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.message-permission-block-head svg {
+  color: #f97316;
+}
+
+.message-permission-block-head strong {
+  color: var(--session-ink);
+  font-family: var(--session-mono);
+  font-size: 12px;
+}
+
+.message-permission-block-head span {
+  color: #9a3412;
+}
+
+.message-permission-block pre {
+  max-height: 240px;
+  min-width: 0;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid rgba(249, 115, 22, 0.18);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: rgba(255, 247, 237, 0.88);
+  color: #7c2d12;
+  font: 12px/1.55 var(--session-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .markdown-image-frame {
   display: grid;
   justify-items: start;

@@ -302,6 +302,14 @@ describe("chatMessages", () => {
     ).toBe("最终回答：已经完成。");
   });
 
+  it("strips English runtime progress when it is glued to the final answer", () => {
+    expect(
+      stripAssistantRuntimeProgress(
+        "Building context and preparing the first tool calls...Here’s what I found:\n\n1. Project structure\n- README.md",
+      ),
+    ).toBe("Here’s what I found:\n\n1. Project structure\n- README.md");
+  });
+
   it("hides assistant messages that only contain runtime progress", () => {
     const progressOnly: ChatMessageView[] = [
       {
@@ -713,6 +721,36 @@ describe("chatMessages", () => {
     expect(getVisibleChatMessages(next, "sess_1").map((message) => message.content)).toEqual([
       "Final answer",
     ]);
+  });
+
+  it("prefers completed content when streaming content only carried runtime progress", () => {
+    const current: ChatMessageView[] = [
+      {
+        id: "msg_backend_assistant",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "assistant",
+        content: "Building context and preparing the first tool calls...Here’s what I found:",
+        createdAt: 1,
+        updatedAt: 2,
+        streaming: true,
+        status: "streaming",
+      },
+    ];
+
+    const next = appendOrUpdateAssistantMessageCompletion(current, {
+      messageId: "msg_backend_assistant",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      content: "Here’s what I found:\n\n1. **Project structure**\n- README.md\n- src/ledger.py",
+      now: 5,
+    });
+
+    expect(next[0]).toMatchObject({
+      content: "Here’s what I found:\n\n1. **Project structure**\n- README.md\n- src/ledger.py",
+      streaming: false,
+      status: "completed",
+    });
   });
 
   it("merges compact tool-use and tool-result chat blocks by tool id", () => {

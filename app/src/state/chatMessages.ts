@@ -853,10 +853,11 @@ export function appendOrUpdateAssistantMessageCompletion(
         msg.placeholder === true ||
         streamingContent === "\u601d\u8003\u4e2d..." ||
         streamingContent.length < 5;
+      const content = resolveAssistantCompletionContent(streamingContent, completedContent, isPlaceholder);
       return {
         ...msg,
         taskId: payload.taskId ?? msg.taskId,
-        content: isPlaceholder ? (completedContent || streamingContent) : (streamingContent || completedContent),
+        content,
         updatedAt: payload.now,
         streaming: false,
         placeholder: false,
@@ -889,6 +890,33 @@ export function appendOrUpdateAssistantMessageCompletion(
       status: "completed",
     },
   ];
+}
+
+export function resolveAssistantCompletionContent(
+  streamingContent: string,
+  completedContent: string,
+  placeholder = false,
+): string {
+  const cleanedStreaming = stripAssistantRuntimeProgress(streamingContent);
+  const cleanedCompleted = stripAssistantRuntimeProgress(completedContent);
+  const streamingHadRuntimeProgress = cleanedStreaming.trim() !== streamingContent.replace(/\r\n/g, "\n").trim();
+  const streamingRuntimeOnly = Boolean(streamingContent.trim()) && !cleanedStreaming.trim();
+
+  if (placeholder || streamingRuntimeOnly || !cleanedStreaming.trim()) {
+    return cleanedCompleted || completedContent || cleanedStreaming || streamingContent;
+  }
+  if (cleanedCompleted.trim()) {
+    if (cleanedStreaming.includes(cleanedCompleted)) {
+      return cleanedStreaming;
+    }
+    if (cleanedCompleted.includes(cleanedStreaming)) {
+      return cleanedCompleted;
+    }
+    if (streamingHadRuntimeProgress) {
+      return cleanedCompleted;
+    }
+  }
+  return cleanedStreaming || cleanedCompleted || streamingContent || completedContent;
 }
 
 function findAttachableAssistantMessageIndex(
@@ -1125,6 +1153,9 @@ function isAssistantRuntimeProgressLine(line: string) {
   if (!normalized) {
     return false;
   }
+  if (isEnglishAssistantRuntimeProgressLine(normalized)) {
+    return true;
+  }
   return (
     /^我在(查看目录|读取文件|运行命令|准备文件改动|检查 Git 状态|读取代码差异|搜索代码|使用.+)。?$/.test(normalized) ||
     /^正在(整理上下文|做收尾验证|做任务后的收尾检查|运行命令|应用文件改动)/.test(normalized) ||
@@ -1138,8 +1169,23 @@ function isAssistantRuntimeProgressLine(line: string) {
   );
 }
 
+function isEnglishAssistantRuntimeProgressLine(normalized: string): boolean {
+  return (
+    /^Building context and preparing the first tool calls\.\.\.$/i.test(normalized) ||
+    /^Completed the minimal tool loop and preparing a summary\.\.\.$/i.test(normalized) ||
+    /^(Started|Finished) subtask:\s+/i.test(normalized) ||
+    /^Subtask (running tool|tool completed|tool failed|waiting for approval|approval|command)\b/i.test(normalized) ||
+    /^Running tool:\s+/i.test(normalized) ||
+    /^Running post-task\b/i.test(normalized) ||
+    /^Approval accepted\./i.test(normalized)
+  );
+}
+
 export function stripAssistantRuntimeProgress(content: string): string {
-  const normalized = content.replace(/\r\n/g, "\n");
+  const normalized = content
+    .replace(/\r\n/g, "\n")
+    .replace(/^\s*Building context and preparing the first tool calls\.\.\.\s*/i, "")
+    .replace(/^\s*Completed the minimal tool loop and preparing a summary\.\.\.\s*/i, "");
   const lines = normalized.split("\n");
   const kept: string[] = [];
   for (const line of lines) {

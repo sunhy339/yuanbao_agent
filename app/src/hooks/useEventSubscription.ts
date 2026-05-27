@@ -157,25 +157,29 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           }
           const payload = event.payload as ContentDeltaPayload;
           if (typeof payload.text === "string" && payload.text) {
-            setChatMessages((current) =>
-              removeAssistantThinkingMessage(current, {
-                sessionId: event.sessionId,
-                taskId: event.taskId,
-              }),
-            );
-            const messageId =
-              typeof payload.messageId === "string" && payload.messageId
-                ? payload.messageId
-                : `assistant_${event.taskId}`;
-            setChatMessages((current) =>
-              appendOrUpdateAssistantMessageDelta(current, {
-                messageId,
-                sessionId: event.sessionId,
-                taskId: event.taskId,
-                delta: payload.text!,
-                now: event.ts,
-              }),
-            );
+            const text = payload.text;
+            const displayDelta = isOperationalAssistantDelta(text) ? summarizeOperationalAssistantDelta(text) : text;
+            if (displayDelta) {
+              setChatMessages((current) =>
+                removeAssistantThinkingMessage(current, {
+                  sessionId: event.sessionId,
+                  taskId: event.taskId,
+                }),
+              );
+              const messageId =
+                typeof payload.messageId === "string" && payload.messageId
+                  ? payload.messageId
+                  : `assistant_${event.taskId}`;
+              setChatMessages((current) =>
+                appendOrUpdateAssistantMessageDelta(current, {
+                  messageId,
+                  sessionId: event.sessionId,
+                  taskId: event.taskId,
+                  delta: displayDelta,
+                  now: event.ts,
+                }),
+              );
+            }
           }
           if (typeof payload.toolInput === "string" && payload.toolInput) {
             const toolUseId =

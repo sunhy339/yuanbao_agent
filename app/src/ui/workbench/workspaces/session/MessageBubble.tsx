@@ -17,8 +17,11 @@ function normalizeAssistantContent(content: string) {
   }
 
   const lines = trimmed.split(/\r?\n/);
-  const shortLines = lines.filter((line) => line.trim().length > 0 && line.trim().length <= 4).length;
-  if (lines.length >= 8 && shortLines / lines.length > 0.72) {
+  const fragmentedCjkLines = lines.filter((line) => {
+    const text = line.trim();
+    return text.length > 0 && text.length <= 4 && /^[\u4e00-\u9fff，。！？；：、]+$/.test(text);
+  }).length;
+  if (lines.length >= 8 && fragmentedCjkLines / lines.length > 0.72) {
     return lines
       .map((line) => line.trim())
       .filter(Boolean)

@@ -9,6 +9,7 @@ import {
   failAssistantMessage,
   formatAssistantFailureContent,
   isOperationalAssistantDelta,
+  resolveAssistantCompletionContent,
   summarizeOperationalAssistantDelta,
 } from "./chatMessages";
 
@@ -111,7 +112,7 @@ export function completeAssistantMessage(current: ChatMessageView[], event: Agen
     next[lastAssistantIndex] = {
       ...currentMessage,
       taskId: event.taskId,
-      content: isPlaceholder ? (completedContent || streamingContent) : streamingContent,
+      content: resolveAssistantCompletionContent(streamingContent, completedContent, isPlaceholder),
       updatedAt: event.ts,
       streaming: false,
       placeholder: false,

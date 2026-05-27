@@ -173,6 +173,7 @@ export interface SessionWorkspaceMessage {
   updatedAt?: number;
   toolName?: string;
   status?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface SessionWorkspaceApproval {

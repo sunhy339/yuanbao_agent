@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Bot, Info, UserRound, Wrench } from "lucide-react";
+import { Bot, CheckCircle2, Info, TerminalSquare, UserRound, Wrench } from "lucide-react";
 import { formatStatusLabel } from "../../../copy";
 import { formatTimestamp } from "../../../../lib/formatUtils";
 import type { SessionWorkspaceMessage } from "./types";
@@ -46,6 +46,31 @@ function MessageAvatar({ role }: { role: SessionWorkspaceMessage["role"] }) {
   );
 }
 
+function getMessageMetadataKind(message: SessionWorkspaceMessage) {
+  const kind = message.metadata?.kind;
+  return typeof kind === "string" ? kind : "";
+}
+
+function ToolBlockContent({ message }: { message: SessionWorkspaceMessage }) {
+  const kind = getMessageMetadataKind(message);
+  const isResult = kind === "tool_result";
+  const isError = message.metadata?.isError === true || message.status === "failed";
+  const Icon = isResult ? CheckCircle2 : TerminalSquare;
+  const title = isResult ? "工具结果" : "工具调用";
+  const content = message.content.trim();
+
+  return (
+    <section className="message-tool-block" data-kind={kind} data-error={isError ? "true" : "false"}>
+      <div className="message-tool-block-head">
+        <Icon size={14} strokeWidth={2} aria-hidden="true" />
+        <strong>{message.toolName || title}</strong>
+        <span>{title}</span>
+      </div>
+      {content ? <pre>{content}</pre> : null}
+    </section>
+  );
+}
+
 export const MessageBubble = memo(function MessageBubble({
   message,
   activityHint,
@@ -65,6 +90,8 @@ export const MessageBubble = memo(function MessageBubble({
       ? "还没有收到可展示内容；后台可能正在等待模型、工具或审批。"
       : "正在等待模型或运行时返回第一段内容。");
   const displayContent = message.role === "assistant" ? normalizeAssistantContent(message.content) : message.content;
+  const metadataKind = getMessageMetadataKind(message);
+  const isToolBlock = metadataKind === "tool_use" || metadataKind === "tool_result";
 
   return (
     <article
@@ -95,6 +122,8 @@ export const MessageBubble = memo(function MessageBubble({
             </p>
             <small>{thinkingCopy}</small>
           </div>
+        ) : isToolBlock ? (
+          <ToolBlockContent message={message} />
         ) : message.role === "assistant" ? (
           <MarkdownContent content={displayContent} />
         ) : (

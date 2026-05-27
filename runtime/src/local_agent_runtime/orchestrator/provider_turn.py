@@ -611,10 +611,14 @@ class ProviderTurnMixin:
         _max_stream_retries = 1
         _stream_text_parts: list[str] = []
         _delta_count = 0
+        _content_block_started = False
+        _active_tool_streams: dict[int, dict[str, Any]] = {}
         for _stream_attempt in range(_max_stream_retries + 1):
             final_response = None
             streamed_content = False
             _stream_text_parts = []
+            _content_block_started = False
+            _active_tool_streams = {}
             try:
                 for event in self._provider.stream(goal, provider_context):
                     event_type = event.get("type")
@@ -641,6 +645,17 @@ class ProviderTurnMixin:
                                     sum(len(p) for p in _stream_text_parts),
                                 )
                                 break
+                            if not _content_block_started:
+                                self._publish(
+                                    session_id=session_id,
+                                    task=task,
+                                    event_type="content_start",
+                                    payload={
+                                        "blockType": "text",
+                                        "messageId": task.get("activeAssistantMessageId"),
+                                    },
+                                )
+                                _content_block_started = True
                             self._publish(
                                 session_id=session_id,
                                 task=task,
@@ -655,6 +670,41 @@ class ProviderTurnMixin:
                         self._append_provider_trace(task=task, event_type="provider.stream.finish", payload=event)
                     elif event_type == "tool_call_delta":
                         self._append_provider_trace(task=task, event_type="provider.stream.tool_call_delta", payload=event)
+                        index = event.get("index")
+                        if not isinstance(index, int):
+                            continue
+                        stream_state = _active_tool_streams.setdefault(index, {"toolUseId": None, "toolName": None})
+                        tool_use_id = event.get("id")
+                        tool_name = event.get("name")
+                        if isinstance(tool_use_id, str) and tool_use_id:
+                            stream_state["toolUseId"] = tool_use_id
+                        if isinstance(tool_name, str) and tool_name:
+                            stream_state["toolName"] = tool_name
+                        if stream_state.get("toolUseId") or stream_state.get("toolName"):
+                            if not stream_state.get("started"):
+                                self._publish(
+                                    session_id=session_id,
+                                    task=task,
+                                    event_type="content_start",
+                                    payload={
+                                        "blockType": "tool_use",
+                                        "toolUseId": stream_state.get("toolUseId"),
+                                        "toolName": stream_state.get("toolName"),
+                                    },
+                                )
+                                stream_state["started"] = True
+                        arguments_delta = event.get("arguments_delta")
+                        if isinstance(arguments_delta, str) and arguments_delta:
+                            self._publish(
+                                session_id=session_id,
+                                task=task,
+                                event_type="content_delta",
+                                payload={
+                                    "toolUseId": stream_state.get("toolUseId"),
+                                    "toolName": stream_state.get("toolName"),
+                                    "toolInput": arguments_delta,
+                                },
+                            )
                 logger.info(
                     "Stream completed for task=%s: deltas=%d streamed=%s has_final=%s",
                     task["id"], _delta_count, streamed_content, final_response is not None,

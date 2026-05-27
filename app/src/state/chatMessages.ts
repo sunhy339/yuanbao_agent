@@ -14,6 +14,8 @@ export interface ChatMessageView {
   kind?: MessageKind;
   status?: MessageStatus;
   createdSeq?: number;
+  toolName?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export function messageRecordToChatMessage(record: MessageRecord): ChatMessageView | null {
@@ -49,11 +51,14 @@ export function replaceSessionMessages(
   const otherSessionMessages: ChatMessageView[] = [];
   const liveStreamingMessages: ChatMessageView[] = [];
   const pendingLocalMessages: ChatMessageView[] = [];
+  const ephemeralBlockMessages: ChatMessageView[] = [];
   for (const message of current) {
     if (message.sessionId === sessionId && message.streaming) {
       liveStreamingMessages.push(message);
     } else if (message.sessionId === sessionId && isLocalPendingMessage(message)) {
       pendingLocalMessages.push(message);
+    } else if (message.sessionId === sessionId && isEphemeralChatBlockMessage(message)) {
+      ephemeralBlockMessages.push(message);
     } else if (message.sessionId !== sessionId) {
       otherSessionMessages.push(message);
     }
@@ -82,7 +87,7 @@ export function replaceSessionMessages(
     }
   }
 
-  return [...otherSessionMessages, ...persistedMessages, ...unmatchedPendingLocalMessages, ...updatedLiveStreamingMessages].sort(
+  return [...otherSessionMessages, ...persistedMessages, ...ephemeralBlockMessages, ...unmatchedPendingLocalMessages, ...updatedLiveStreamingMessages].sort(
     (left, right) => sortBySeqAndTime(left, right),
   );
 }
@@ -138,6 +143,10 @@ function isLocalPendingMessage(message: ChatMessageView) {
     message.id.startsWith("assistant_pending_") ||
     message.id.startsWith("assistant_failed_")
   );
+}
+
+function isEphemeralChatBlockMessage(message: ChatMessageView) {
+  return message.metadata?.kind === "tool_use" || message.metadata?.kind === "tool_result";
 }
 
 export function appendUserMessage(
@@ -416,6 +425,203 @@ export function appendOrUpdateAssistantMessageDelta(
       status: "streaming",
     },
   ];
+}
+
+export function appendOrUpdateAssistantToolInputDelta(
+  current: ChatMessageView[],
+  payload: {
+    toolUseId: string;
+    toolName?: string | null;
+    sessionId: string;
+    taskId?: string | null;
+    delta: string;
+    now: number;
+  },
+): ChatMessageView[] {
+  const messageId = `tool_use:${payload.toolUseId}`;
+  const next = [...current];
+  const index = next.findIndex((message) => message.id === messageId);
+  if (index >= 0) {
+    const message = next[index];
+    next[index] = {
+      ...message,
+      taskId: payload.taskId ?? message.taskId,
+      content: appendAssistantContentDelta(message.content, payload.delta),
+      updatedAt: payload.now,
+      streaming: true,
+      placeholder: false,
+      status: "streaming",
+      toolName: payload.toolName ?? message.toolName,
+      metadata: {
+        ...(message.metadata ?? {}),
+        kind: "tool_use",
+        toolUseId: payload.toolUseId,
+      },
+    };
+    return next;
+  }
+
+  return [
+    ...next,
+    {
+      id: messageId,
+      sessionId: payload.sessionId,
+      taskId: payload.taskId ?? "pending",
+      role: "assistant",
+      content: payload.delta.trimStart(),
+      createdAt: payload.now,
+      updatedAt: payload.now,
+      streaming: true,
+      placeholder: false,
+      status: "streaming",
+      toolName: payload.toolName ?? undefined,
+      metadata: {
+        kind: "tool_use",
+        toolUseId: payload.toolUseId,
+      },
+    },
+  ];
+}
+
+export function completeAssistantToolUseMessage(
+  current: ChatMessageView[],
+  payload: {
+    toolUseId: string;
+    toolName: string;
+    input: unknown;
+    sessionId: string;
+    taskId?: string | null;
+    now: number;
+  },
+): ChatMessageView[] {
+  const messageId = `tool_use:${payload.toolUseId}`;
+  const inputText = formatChatBlockValue(payload.input);
+  const next = [...current];
+  const index = next.findIndex((message) => message.id === messageId);
+  const content = inputText || "{}";
+  if (index >= 0) {
+    const message = next[index];
+    return next.map((item, itemIndex) =>
+      itemIndex === index
+        ? {
+            ...message,
+            taskId: payload.taskId ?? message.taskId,
+            content,
+            updatedAt: payload.now,
+            streaming: false,
+            placeholder: false,
+            status: "completed",
+            toolName: payload.toolName,
+            metadata: {
+              ...(message.metadata ?? {}),
+              kind: "tool_use",
+              toolUseId: payload.toolUseId,
+              input: payload.input,
+            },
+          }
+        : item,
+    );
+  }
+
+  return [
+    ...next,
+    {
+      id: messageId,
+      sessionId: payload.sessionId,
+      taskId: payload.taskId ?? "pending",
+      role: "assistant",
+      content,
+      createdAt: payload.now,
+      updatedAt: payload.now,
+      streaming: false,
+      placeholder: false,
+      status: "completed",
+      toolName: payload.toolName,
+      metadata: {
+        kind: "tool_use",
+        toolUseId: payload.toolUseId,
+        input: payload.input,
+      },
+    },
+  ];
+}
+
+export function appendAssistantToolResultMessage(
+  current: ChatMessageView[],
+  payload: {
+    toolUseId: string;
+    toolName?: string | null;
+    content: unknown;
+    isError?: boolean;
+    sessionId: string;
+    taskId?: string | null;
+    now: number;
+  },
+): ChatMessageView[] {
+  const messageId = `tool_result:${payload.toolUseId}`;
+  const content = formatToolResultSummary(payload.content, payload.isError);
+  const existingIndex = current.findIndex((message) => message.id === messageId);
+  const nextMessage: ChatMessageView = {
+    id: messageId,
+    sessionId: payload.sessionId,
+    taskId: payload.taskId ?? "pending",
+    role: "assistant",
+    content,
+    createdAt: existingIndex >= 0 ? current[existingIndex].createdAt : payload.now,
+    updatedAt: payload.now,
+    streaming: false,
+    placeholder: false,
+    status: payload.isError ? "failed" : "completed",
+    toolName: payload.toolName ?? undefined,
+    metadata: {
+      kind: "tool_result",
+      toolUseId: payload.toolUseId,
+      isError: Boolean(payload.isError),
+      rawContent: payload.content,
+    },
+  };
+
+  if (existingIndex >= 0) {
+    const next = [...current];
+    next[existingIndex] = nextMessage;
+    return next;
+  }
+  return [...current, nextMessage];
+}
+
+export function completeChatCompatMessage(
+  current: ChatMessageView[],
+  payload: {
+    messageId?: string | null;
+    sessionId: string;
+    taskId?: string | null;
+    content?: string | null;
+    now: number;
+  },
+): ChatMessageView[] {
+  const next = current.map((message) =>
+    message.sessionId === payload.sessionId &&
+    message.taskId === (payload.taskId ?? message.taskId) &&
+    message.streaming
+      ? {
+          ...message,
+          streaming: false,
+          placeholder: false,
+          status: message.status === "failed" ? message.status : ("completed" as const),
+          updatedAt: payload.now,
+        }
+      : message,
+  );
+  if (!payload.messageId) {
+    return next;
+  }
+  return appendOrUpdateAssistantMessageCompletion(next, payload as {
+    messageId: string;
+    sessionId: string;
+    taskId?: string | null;
+    content?: string | null;
+    now: number;
+  });
 }
 
 export function appendOrUpdateAssistantMessageCompletion(
@@ -708,6 +914,31 @@ function progressLine(text: string) {
   return `\n\n${text}`;
 }
 
+function formatChatBlockValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function formatToolResultSummary(value: unknown, isError?: boolean): string {
+  const raw = formatChatBlockValue(value);
+  if (!raw) {
+    return isError ? "Tool failed without a detailed result." : "Tool completed.";
+  }
+  if (raw.length <= 1600) {
+    return raw;
+  }
+  return `${raw.slice(0, 1600).trimEnd()}\n...`;
+}
+
 export function summarizeOperationalAssistantDelta(delta: string): string | null {
   const normalized = delta.trim();
   if (!normalized) return null;
@@ -821,6 +1052,9 @@ function isEmptyStreamingAssistantShell(message: ChatMessageView): boolean {
 }
 
 function isRuntimeProgressOnlyAssistantMessage(message: ChatMessageView): boolean {
+  if (message.metadata?.kind === "tool_use" || message.metadata?.kind === "tool_result") {
+    return false;
+  }
   return (
     message.role === "assistant" &&
     message.placeholder !== true &&

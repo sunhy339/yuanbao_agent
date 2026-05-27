@@ -160,12 +160,6 @@ class ToolExecutionMixin:
         self._publish(
             session_id=session_id,
             task=task,
-            event_type="assistant.token",
-            payload={"delta": tool_spec["start_token"]},
-        )
-        self._publish(
-            session_id=session_id,
-            task=task,
             event_type="tool.started",
             payload={
                 "toolCallId": tool_call_id,

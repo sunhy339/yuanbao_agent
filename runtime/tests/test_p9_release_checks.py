@@ -84,6 +84,26 @@ class TestEventCompatAssistantToken:
         assert len(delta_events) == 1
         assert delta_events[0].payload["messageId"] == "msg_42"
 
+    def test_assistant_token_emits_chat_content_delta(self, tmp_path: Any) -> None:
+        """assistant.token also emits the haha-cc style content_delta event."""
+        runtime = _make_runtime(tmp_path)
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+
+        task = {"id": "t1", "role": "root", "activeAssistantMessageId": "msg_42"}
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="assistant.token",
+            payload={"delta": "hello"},
+        )
+
+        content_events = [e for e in collected if e.type == "content_delta"]
+        assert len(content_events) == 1
+        assert content_events[0].payload["text"] == "hello"
+        assert content_events[0].payload["messageId"] == "msg_42"
+        assert content_events[0].payload["_chatCompat"] is True
+
     def test_non_token_events_no_extra_delta(self, tmp_path: Any) -> None:
         """Non-assistant.token events should NOT emit an extra message.delta."""
         runtime = _make_runtime(tmp_path)
@@ -100,6 +120,52 @@ class TestEventCompatAssistantToken:
 
         types = [e.type for e in collected]
         assert "message.delta" not in types
+
+    def test_tool_lifecycle_emits_chat_tool_blocks(self, tmp_path: Any) -> None:
+        """Tool lifecycle events emit tool_use_complete and tool_result for chat rendering."""
+        runtime = _make_runtime(tmp_path)
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+
+        task = {"id": "t1", "role": "root", "activeAssistantMessageId": "msg_1"}
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="tool.started",
+            payload={"toolCallId": "tc_1", "toolName": "run_command", "arguments": {"command": "npm test"}},
+        )
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="tool.completed",
+            payload={"toolCallId": "tc_1", "toolName": "run_command", "result": {"status": "completed"}},
+        )
+
+        types = [e.type for e in collected]
+        assert "content_start" in types
+        assert "tool_use_complete" in types
+        assert "tool_result" in types
+        tool_use = next(e for e in collected if e.type == "tool_use_complete")
+        assert tool_use.payload["toolUseId"] == "tc_1"
+        assert tool_use.payload["input"]["command"] == "npm test"
+        tool_result = next(e for e in collected if e.type == "tool_result")
+        assert tool_result.payload["toolUseId"] == "tc_1"
+        assert tool_result.payload["isError"] is False
+
+    def test_chat_compat_events_are_not_trace_mirrored(self, tmp_path: Any) -> None:
+        """Chat compatibility events are live UI protocol, not trace timeline noise."""
+        runtime = _make_runtime(tmp_path)
+        task = runtime.store.create_task(session_id="s1", task_type="chat", goal="g", plan=[])
+
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="content_delta",
+            payload={"text": "hello"},
+        )
+
+        traces = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        assert traces == []
 
 
 # ── 2. MCP server migration ──────────────────────────────────────────────
@@ -223,5 +289,4 @@ class TestFeatureFlagsRpc:
         runtime = _make_runtime(tmp_path)
         resp = _rpc(runtime, "feature.set", {"value": True})
         assert "error" in resp
-
 

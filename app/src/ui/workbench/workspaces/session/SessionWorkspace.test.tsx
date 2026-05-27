@@ -681,6 +681,40 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText(/"internal":"hidden"/)).not.toBeInTheDocument();
   });
 
+  it("renders chat-compatible tool blocks as compact message content", () => {
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          {
+            id: "tool_use:tc_1",
+            role: "assistant",
+            content: '{\n  "command": "npm test"\n}',
+            toolName: "run_command",
+            metadata: { kind: "tool_use", toolUseId: "tc_1" },
+            createdAt: 1,
+          },
+          {
+            id: "tool_result:tc_1",
+            role: "assistant",
+            content: '{\n  "status": "completed"\n}',
+            toolName: "run_command",
+            status: "completed",
+            metadata: { kind: "tool_result", toolUseId: "tc_1", isError: false },
+            createdAt: 2,
+          },
+        ]}
+      />,
+    );
+
+    const blocks = container.querySelectorAll(".message-tool-block");
+    expect(blocks).toHaveLength(2);
+    expect(screen.getByText("工具调用")).toBeInTheDocument();
+    expect(screen.getByText("工具结果")).toBeInTheDocument();
+    expect(screen.getAllByText("run_command").length).toBeGreaterThanOrEqual(2);
+  });
+
   it("renders command runtime cards as compact rows until expanded", async () => {
     const user = userEvent.setup();
     render(

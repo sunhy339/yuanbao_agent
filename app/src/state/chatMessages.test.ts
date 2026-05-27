@@ -3,8 +3,12 @@ import {
   appendAssistantContentDelta,
   appendOrUpdateAssistantMessageCompletion,
   appendOrUpdateAssistantMessageDelta,
+  appendOrUpdateAssistantToolInputDelta,
+  appendAssistantToolResultMessage,
   appendAssistantPlaceholder,
   appendUserMessage,
+  completeAssistantToolUseMessage,
+  completeChatCompatMessage,
   failAssistantMessage,
   getVisibleChatMessages,
   isOperationalAssistantDelta,
@@ -547,6 +551,92 @@ describe("chatMessages", () => {
     expect(getVisibleChatMessages(next, "sess_1").map((message) => message.content)).toEqual([
       "Final answer",
     ]);
+  });
+
+  it("builds compact tool-use and tool-result chat blocks", () => {
+    const withInput = appendOrUpdateAssistantToolInputDelta([], {
+      toolUseId: "tc_1",
+      toolName: "run_command",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      delta: "{\"command\":\"npm",
+      now: 1,
+    });
+    const completed = completeAssistantToolUseMessage(withInput, {
+      toolUseId: "tc_1",
+      toolName: "run_command",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      input: { command: "npm test" },
+      now: 2,
+    });
+    const withResult = appendAssistantToolResultMessage(completed, {
+      toolUseId: "tc_1",
+      toolName: "run_command",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      content: { status: "completed", exitCode: 0 },
+      now: 3,
+    });
+
+    expect(getVisibleChatMessages(withResult, "sess_1").map((message) => message.id)).toEqual([
+      "tool_use:tc_1",
+      "tool_result:tc_1",
+    ]);
+    expect(withResult[0]).toMatchObject({
+      toolName: "run_command",
+      streaming: false,
+      metadata: { kind: "tool_use", toolUseId: "tc_1" },
+    });
+    expect(withResult[1]).toMatchObject({
+      toolName: "run_command",
+      metadata: { kind: "tool_result", toolUseId: "tc_1", isError: false },
+    });
+  });
+
+  it("keeps chat block messages across persisted message refreshes", () => {
+    const toolBlocks = appendAssistantToolResultMessage([], {
+      toolUseId: "tc_1",
+      toolName: "read_file",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      content: "ok",
+      now: 3,
+    });
+
+    const next = replaceSessionMessages(toolBlocks, "sess_1", [
+      {
+        id: "stored_user",
+        sessionId: "sess_1",
+        role: "user",
+        content: "read file",
+        createdAt: 1,
+      },
+    ]);
+
+    expect(getVisibleChatMessages(next, "sess_1").map((message) => message.id)).toEqual([
+      "stored_user",
+      "tool_result:tc_1",
+    ]);
+  });
+
+  it("completes all streaming chat-compat blocks for a task", () => {
+    const streaming = appendOrUpdateAssistantToolInputDelta([], {
+      toolUseId: "tc_1",
+      toolName: "run_command",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      delta: "{\"command\":\"npm test\"}",
+      now: 1,
+    });
+
+    const completed = completeChatCompatMessage(streaming, {
+      sessionId: "sess_1",
+      taskId: "task_1",
+      now: 2,
+    });
+
+    expect(completed[0]).toMatchObject({ streaming: false, status: "completed" });
   });
 
   it("drops a local pending message once the same persisted message arrives", () => {

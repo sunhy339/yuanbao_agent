@@ -39,6 +39,14 @@ export type AgentEventType =
   | "provider.response"
   | "assistant.token"
   | "assistant.message.completed"
+  | "content_start"
+  | "content_delta"
+  | "thinking"
+  | "tool_use_complete"
+  | "tool_result"
+  | "permission_request"
+  | "message_complete"
+  | "status"
   | "message.created"
   | "message.delta"
   | "message.completed"
@@ -130,6 +138,74 @@ export interface SessionUpdatedPayload {
 export interface AssistantTokenPayload {
   delta: string;
   messageId?: Identifier;
+}
+
+export interface TokenUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  cachedTokens?: number;
+  [key: string]: unknown;
+}
+
+export interface ContentStartPayload {
+  blockType: "text" | "tool_use";
+  messageId?: Identifier;
+  toolName?: string;
+  toolUseId?: Identifier;
+  parentToolUseId?: Identifier;
+}
+
+export interface ContentDeltaPayload {
+  messageId?: Identifier;
+  text?: string;
+  toolInput?: string;
+  toolUseId?: Identifier;
+  toolName?: string;
+  step?: number;
+}
+
+export interface ThinkingPayload {
+  text: string;
+  messageId?: Identifier;
+}
+
+export interface ToolUseCompletePayload {
+  toolName: string;
+  toolUseId: Identifier;
+  input: unknown;
+  parentToolUseId?: Identifier;
+}
+
+export interface ToolResultPayload {
+  toolUseId: Identifier;
+  toolName?: string;
+  content: unknown;
+  isError: boolean;
+  parentToolUseId?: Identifier;
+}
+
+export interface PermissionRequestPayload {
+  requestId: Identifier;
+  toolName: string;
+  toolUseId?: Identifier;
+  input: unknown;
+  description?: string;
+}
+
+export interface ChatMessageCompletePayload {
+  messageId?: Identifier;
+  usage?: TokenUsage | null;
+  content?: string;
+}
+
+export interface ChatStatusPayload {
+  state: "thinking" | "tool_executing" | "permission_pending" | "idle" | "streaming" | string;
+  verb?: string;
+  elapsed?: number;
+  tokens?: number;
 }
 
 export interface ProviderTracePayload {

@@ -15,6 +15,18 @@ from ..models import RuntimeEvent
 from ..services.command_background import cancel_background_commands
 
 
+_CHAT_COMPAT_EVENT_TYPES = {
+    "content_start",
+    "content_delta",
+    "thinking",
+    "tool_use_complete",
+    "tool_result",
+    "permission_request",
+    "message_complete",
+    "status",
+}
+
+
 class PublishingMixin:
     """Mixin providing event publishing and hook firing helpers."""
 
@@ -100,6 +112,198 @@ class PublishingMixin:
                 "resultSummary": task.get("resultSummary"),
             },
         )
+
+    def _publish_event_raw(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        event_type: str,
+        payload: dict[str, Any],
+        visibility: str = "chat",
+    ) -> None:
+        event = RuntimeEvent(
+            event_id=self._store.new_id("evt"),
+            session_id=session_id,
+            task_id=task["id"],
+            type=event_type,
+            ts=self._store.now(),
+            payload=payload,
+            visibility=visibility,
+        )
+        self._event_bus.publish(event)
+
+    def _publish_chat_compat_event(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        event_type: str,
+        payload: dict[str, Any],
+        visibility: str = "chat",
+    ) -> None:
+        compat_payload = dict(payload)
+        compat_payload["_chatCompat"] = True
+        compat_payload["_bridge"] = {"skipTraceMirror": True}
+        self._publish_event_raw(
+            session_id=session_id,
+            task=task,
+            event_type=event_type,
+            payload=compat_payload,
+            visibility=visibility,
+        )
+
+    @staticmethod
+    def _chat_compat_usage_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+        usage = payload.get("usage")
+        if isinstance(usage, dict):
+            return dict(usage)
+        raw = payload.get("raw")
+        if isinstance(raw, dict) and isinstance(raw.get("usage"), dict):
+            return dict(raw["usage"])
+        return None
+
+    def _publish_chat_compat_for_event(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        event_type: str,
+        payload: dict[str, Any],
+        effective_visibility: str,
+    ) -> None:
+        if effective_visibility != "chat" or task.get("role", "root") != "root":
+            return
+        if event_type in _CHAT_COMPAT_EVENT_TYPES:
+            return
+
+        active_msg_id = task.get("activeAssistantMessageId")
+
+        if event_type == "assistant.token":
+            delta = payload.get("delta")
+            if not isinstance(delta, str) or not delta:
+                return
+            self._publish_chat_compat_event(
+                session_id=session_id,
+                task=task,
+                event_type="content_delta",
+                payload={
+                    "messageId": active_msg_id,
+                    "text": delta,
+                    "step": payload.get("step"),
+                },
+                visibility=effective_visibility,
+            )
+            return
+
+        if event_type == "tool.started":
+            tool_call_id = payload.get("toolCallId")
+            tool_name = payload.get("toolName")
+            arguments = payload.get("arguments")
+            self._publish_chat_compat_event(
+                session_id=session_id,
+                task=task,
+                event_type="content_start",
+                payload={
+                    "blockType": "tool_use",
+                    "toolName": tool_name,
+                    "toolUseId": tool_call_id,
+                },
+                visibility=effective_visibility,
+            )
+            if tool_call_id and tool_name:
+                self._publish_chat_compat_event(
+                    session_id=session_id,
+                    task=task,
+                    event_type="tool_use_complete",
+                    payload={
+                        "toolUseId": tool_call_id,
+                        "toolName": tool_name,
+                        "input": arguments if arguments is not None else {},
+                    },
+                    visibility=effective_visibility,
+                )
+            self._publish_chat_compat_event(
+                session_id=session_id,
+                task=task,
+                event_type="status",
+                payload={"state": "tool_executing", "verb": str(tool_name or "tool")},
+                visibility=effective_visibility,
+            )
+            return
+
+        if event_type in {"tool.completed", "tool.failed", "tool.blocked"}:
+            tool_call_id = payload.get("toolCallId")
+            if not tool_call_id:
+                return
+            self._publish_chat_compat_event(
+                session_id=session_id,
+                task=task,
+                event_type="tool_result",
+                payload={
+                    "toolUseId": tool_call_id,
+                    "toolName": payload.get("toolName"),
+                    "content": payload.get("result"),
+                    "isError": event_type != "tool.completed",
+                },
+                visibility=effective_visibility,
+            )
+            return
+
+        if event_type == "approval.requested":
+            request = payload.get("request")
+            request_id = payload.get("approvalId")
+            tool_name = payload.get("kind") or "approval"
+            self._publish_chat_compat_event(
+                session_id=session_id,
+                task=task,
+                event_type="permission_request",
+                payload={
+                    "requestId": request_id,
+                    "toolName": tool_name,
+                    "input": request if request is not None else {},
+                    "description": payload.get("summary"),
+                },
+                visibility=effective_visibility,
+            )
+            self._publish_chat_compat_event(
+                session_id=session_id,
+                task=task,
+                event_type="status",
+                payload={"state": "permission_pending", "verb": str(tool_name)},
+                visibility=effective_visibility,
+            )
+            return
+
+        if event_type == "message.completed":
+            self._publish_chat_compat_event(
+                session_id=session_id,
+                task=task,
+                event_type="message_complete",
+                payload={
+                    "messageId": payload.get("messageId") or active_msg_id,
+                    "content": payload.get("content"),
+                    "usage": self._chat_compat_usage_from_payload(payload),
+                },
+                visibility=effective_visibility,
+            )
+            self._publish_chat_compat_event(
+                session_id=session_id,
+                task=task,
+                event_type="status",
+                payload={"state": "idle"},
+                visibility=effective_visibility,
+            )
+            return
+
+        if event_type == "message.failed":
+            self._publish_chat_compat_event(
+                session_id=session_id,
+                task=task,
+                event_type="status",
+                payload={"state": "idle"},
+                visibility=effective_visibility,
+            )
 
     def cancel_task(self, params: dict[str, Any]) -> dict[str, Any]:
         task = self._store.get_task({"taskId": params["taskId"]})["task"]
@@ -214,6 +418,8 @@ class PublishingMixin:
         - "trace": fine-grained token/tool details for debugging
         """
         task_role = task.get("role", "root")
+        if event_type in _CHAT_COMPAT_EVENT_TYPES:
+            return "chat" if task_role == "root" else "trace"
         # Root streaming deltas are user-facing chat output; child deltas stay in trace.
         if event_type in {"assistant.token", "message.delta"}:
             return "chat" if task_role == "root" else "trace"
@@ -232,6 +438,10 @@ class PublishingMixin:
         return "chat"
 
     def _publish(self, session_id: str, task: dict[str, Any], event_type: str, payload: dict[str, Any], *, visibility: str | None = None) -> None:
+        if event_type in _CHAT_COMPAT_EVENT_TYPES:
+            payload = dict(payload)
+            payload.setdefault("_chatCompat", True)
+            payload.setdefault("_bridge", {"skipTraceMirror": True})
         if event_type.startswith("task."):
             payload = dict(payload)
             payload.setdefault("goal", task.get("goal"))
@@ -245,6 +455,7 @@ class PublishingMixin:
             active_msg_id = task.get("activeAssistantMessageId")
             if active_msg_id:
                 payload["messageId"] = active_msg_id
+            payload["_chatCompat"] = True
             # Emit the new unified event name alongside the legacy one
             delta_payload = {**payload}
             delta_payload.setdefault("messageId", active_msg_id or "")
@@ -258,6 +469,13 @@ class PublishingMixin:
                 visibility=effective_visibility,
             )
             self._event_bus.publish(delta_event)
+        self._publish_chat_compat_for_event(
+            session_id=session_id,
+            task=task,
+            event_type=event_type,
+            payload=payload,
+            effective_visibility=effective_visibility,
+        )
         event = RuntimeEvent(
             event_id=self._store.new_id("evt"),
             session_id=session_id,

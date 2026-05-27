@@ -172,6 +172,56 @@
   text-decoration: underline;
 }
 
+.message-tool-block {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.message-tool-block-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--session-muted);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.message-tool-block-head svg {
+  color: var(--session-primary);
+}
+
+.message-tool-block-head strong {
+  color: var(--session-ink);
+  font-family: var(--session-mono);
+  font-size: 12px;
+}
+
+.message-tool-block-head span {
+  color: var(--session-muted);
+}
+
+.message-tool-block pre {
+  max-height: 260px;
+  min-width: 0;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--session-border);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: rgba(248, 250, 252, 0.92);
+  color: var(--session-ink);
+  font: 12px/1.55 var(--session-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message-tool-block[data-error="true"] pre {
+  border-color: rgba(220, 38, 38, 0.18);
+  background: rgba(254, 242, 242, 0.9);
+  color: #991b1b;
+}
+
 .markdown-image-frame {
   display: grid;
   justify-items: start;

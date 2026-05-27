@@ -1,10 +1,14 @@
 import { useEffect, useRef } from "react";
 import type {
   AgentEventEnvelope,
+  ChatMessageCompletePayload,
+  ContentDeltaPayload,
   MessageDeltaPayload,
   MessageCreatedPayload,
   MessageCompletedPayload,
   MessageFailedPayload,
+  ToolResultPayload,
+  ToolUseCompletePayload,
   SessionUpdatedPayload,
   SessionRecord,
   TaskRecord,
@@ -25,6 +29,10 @@ import {
 import {
   appendOrUpdateAssistantMessageCompletion,
   appendOrUpdateAssistantMessageDelta,
+  appendOrUpdateAssistantToolInputDelta,
+  appendAssistantToolResultMessage,
+  completeAssistantToolUseMessage,
+  completeChatCompatMessage,
   updateAssistantMessageByMessageId,
   reconcileBackendMessage,
   failAssistantMessage,
@@ -118,6 +126,10 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     return isChatVisibleEvent(event);
   }
 
+  function isChatCompatPayload(payload: unknown): boolean {
+    return Boolean(payload && typeof payload === "object" && (payload as { _chatCompat?: unknown })._chatCompat === true);
+  }
+
   useEffect(() => {
     let active = true;
     let dispose: (() => void) | undefined;
@@ -128,9 +140,117 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           return;
         }
 
+        if (event.type === "content_start") {
+          return;
+        }
+
+        if (event.type === "content_delta") {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          const payload = event.payload as ContentDeltaPayload;
+          if (typeof payload.text === "string" && payload.text) {
+            const messageId =
+              typeof payload.messageId === "string" && payload.messageId
+                ? payload.messageId
+                : `assistant_${event.taskId}`;
+            setChatMessages((current) =>
+              appendOrUpdateAssistantMessageDelta(current, {
+                messageId,
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                delta: payload.text!,
+                now: event.ts,
+              }),
+            );
+          }
+          if (typeof payload.toolInput === "string" && payload.toolInput) {
+            const toolUseId =
+              typeof payload.toolUseId === "string" && payload.toolUseId
+                ? payload.toolUseId
+                : `pending_${event.taskId}`;
+            setChatMessages((current) =>
+              appendOrUpdateAssistantToolInputDelta(current, {
+                toolUseId,
+                toolName: payload.toolName,
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                delta: payload.toolInput!,
+                now: event.ts,
+              }),
+            );
+          }
+          return;
+        }
+
+        if (event.type === "tool_use_complete") {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          const payload = event.payload as ToolUseCompletePayload;
+          if (!payload.toolUseId || !payload.toolName) {
+            return;
+          }
+          setChatMessages((current) =>
+            completeAssistantToolUseMessage(current, {
+              toolUseId: payload.toolUseId,
+              toolName: payload.toolName,
+              input: payload.input,
+              sessionId: event.sessionId,
+              taskId: event.taskId,
+              now: event.ts,
+            }),
+          );
+          return;
+        }
+
+        if (event.type === "tool_result") {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          const payload = event.payload as ToolResultPayload;
+          if (!payload.toolUseId) {
+            return;
+          }
+          setChatMessages((current) =>
+            appendAssistantToolResultMessage(current, {
+              toolUseId: payload.toolUseId,
+              toolName: payload.toolName,
+              content: payload.content,
+              isError: payload.isError,
+              sessionId: event.sessionId,
+              taskId: event.taskId,
+              now: event.ts,
+            }),
+          );
+          return;
+        }
+
+        if (event.type === "message_complete") {
+          const payload = event.payload as ChatMessageCompletePayload;
+          flushPendingAssistantTokens();
+          setChatMessages((current) =>
+            completeChatCompatMessage(current, {
+              messageId: payload.messageId,
+              sessionId: event.sessionId,
+              taskId: event.taskId,
+              content: payload.content,
+              now: event.ts,
+            }),
+          );
+          return;
+        }
+
+        if (event.type === "status" || event.type === "thinking" || event.type === "permission_request") {
+          return;
+        }
+
         // --- New message lifecycle events (P1.3 / P1.4) ---
         // message.delta: streaming token, routed by messageId
         if (event.type === "message.delta") {
+          if (isChatCompatPayload(event.payload)) {
+            return;
+          }
           if (!isChatVisibleEvent(event)) {
             return;
           }
@@ -217,6 +337,9 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
 
         // --- Legacy assistant.token (kept for backward compat) ---
         if (event.type === "assistant.token") {
+          if (isChatCompatPayload(event.payload)) {
+            return;
+          }
           if (shouldRenderLegacyAssistantToken(event)) {
             queueAssistantToken(event);
           }

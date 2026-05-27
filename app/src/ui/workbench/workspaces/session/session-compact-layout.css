@@ -919,6 +919,27 @@
   white-space: pre-line;
 }
 
+.session-workspace-chat-only .message-tool-block {
+  gap: 7px;
+}
+
+.session-workspace-chat-only .message-tool-block-head {
+  color: var(--session-muted);
+  font-size: 12px;
+}
+
+.session-workspace-chat-only .message-tool-block-head strong {
+  color: var(--session-text);
+}
+
+.session-workspace-chat-only .message-tool-block pre {
+  max-height: 220px;
+  border-color: var(--session-line);
+  border-radius: 10px;
+  background: #f7f8fb;
+  color: var(--session-text);
+}
+
 .session-workspace-chat-only .markdown-content code {
   border: 0;
   border-radius: 6px;

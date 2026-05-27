@@ -138,10 +138,10 @@
 .composer-runtime-child-tasks summary {
   display: grid;
   grid-template-columns: 28px auto 1fr auto auto 16px;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
-  min-height: 38px;
-  padding: 7px 12px;
+  min-height: 34px;
+  padding: 5px 10px;
   color: #1a1410;
   cursor: pointer;
   list-style: none;
@@ -190,6 +190,11 @@
 
 .composer-runtime-child-tasks:not([open]) .composer-task-chevron {
   transform: rotate(-45deg);
+}
+
+.composer-runtime-child-tasks:not([open]) {
+  max-height: 38px;
+  overflow: hidden;
 }
 
 .composer-runtime-child-tasks ol {
@@ -674,7 +679,7 @@
 .composer-queued-prompts {
   grid-area: queue;
   overflow: auto;
-  max-height: 130px;
+  max-height: 78px;
   border: 1px solid rgba(60, 40, 30, 0.08);
   border-radius: 12px;
   background: rgba(250, 249, 247, 0.88);
@@ -691,11 +696,11 @@
 .composer-queued-prompts li {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-  min-height: 34px;
+  min-height: 30px;
   border-bottom: 1px solid rgba(60, 40, 30, 0.06);
-  padding: 5px 8px;
+  padding: 3px 7px;
 }
 
 .composer-queued-prompts li:last-child {
@@ -874,7 +879,10 @@
 }
 
 .composer-run {
-  display: inline-grid;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   place-items: center;
   width: 32px;
   height: 32px;
@@ -895,6 +903,28 @@
 
 .composer-run-icon {
   display: block;
+}
+
+.composer-run[data-mode="supplement"] {
+  width: auto;
+  min-width: 64px;
+  padding: 0 12px;
+  background: #e7f0ea;
+  color: #1f5d3b;
+}
+
+.composer-run[data-mode="supplement"] .composer-run-label {
+  position: static;
+  width: auto;
+  height: auto;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  white-space: nowrap;
+}
+
+.composer-run[data-mode="supplement"] .composer-run-icon {
+  display: none;
 }
 
 .composer-stop {

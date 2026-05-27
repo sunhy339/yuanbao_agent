@@ -320,6 +320,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
         workerName: childTask.workerName,
         summary: childTask.summary,
         attention: childTask.attention,
+        createdAt: childTask.createdAt,
         updatedAt: childTask.updatedAt,
       })),
     [sessionCollaboration.childTasks],

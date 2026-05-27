@@ -373,7 +373,10 @@ export function buildSessionCollaboration(
 
   return {
     workers: workerList.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
-    childTasks: taskList.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
+    childTasks: taskList.sort(
+      (left, right) =>
+        (left.createdAt ?? left.updatedAt ?? 0) - (right.createdAt ?? right.updatedAt ?? 0),
+    ),
     results: resultList.sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0)),
     healthSummary,
   };

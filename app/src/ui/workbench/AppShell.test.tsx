@@ -192,11 +192,13 @@ describe("AppShell", () => {
     expect(handlers.onSubmitPrompt).toHaveBeenCalledOnce();
   });
 
-  it("queues a running conversation supplement for later", async () => {
+  it("shows explicit guide and queue actions during a running conversation", async () => {
     const handlers = renderShell({ sending: true, promptValue: "Send after this finishes" });
     const user = userEvent.setup();
 
     const queueButton = screen.getByRole("button", { name: /暂存/ });
+    expect(screen.getByRole("button", { name: "引导" })).toBeInTheDocument();
+    expect(queueButton).toHaveTextContent("暂存待发");
     expect(queueButton).not.toBeDisabled();
 
     await user.click(queueButton);
@@ -268,6 +270,7 @@ describe("AppShell", () => {
     const checklist = screen.getByLabelText("Runtime child tasks");
     const input = screen.getByLabelText("任务指令");
     expect(checklist).toBeInTheDocument();
+    expect(checklist).not.toHaveAttribute("open");
     expect(within(checklist).getByText("1/2")).toBeInTheDocument();
     expect(within(checklist).getByText("Patch snake rendering")).toBeInTheDocument();
     expect(within(checklist).getByText("Verify gameplay loop")).toBeInTheDocument();

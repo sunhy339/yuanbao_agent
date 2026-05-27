@@ -488,12 +488,6 @@ export function SessionWorkspace({
       collapsedChatItems.filter((item) => !(item.kind === "tool" && item.groupKey && hiddenCommandGroups.has(item.groupKey))),
     );
   }, [messages, runtimeItems]);
-  const latestAssistantMessageContent = useMemo(() => {
-    return [...messages]
-      .reverse()
-      .find((message) => message.role === "assistant" && !message.placeholder && message.content.trim())
-      ?.content;
-  }, [messages]);
   const [workspacePaneCollapsed, setWorkspacePaneCollapsed] = useState(false);
   const [workspacePaneWidthPx, setWorkspacePaneWidthPx] = useState<number | null>(null);
   const [workspacePaneResizing, setWorkspacePaneResizing] = useState(false);
@@ -606,7 +600,6 @@ export function SessionWorkspace({
             <div className="message-stream message-stream-chat-only" aria-label="会话消息">
               <ConversationTaskDigest
                 activeTask={visibleActiveTask}
-                latestAssistantMessage={latestAssistantMessageContent}
                 patches={patches}
                 backgroundJobs={backgroundJobs}
                 composerContext={composerContext}

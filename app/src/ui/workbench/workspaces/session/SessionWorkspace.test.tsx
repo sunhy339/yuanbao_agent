@@ -321,6 +321,36 @@ describe("SessionWorkspace", () => {
     expect(within(screen.getByLabelText("工作摘要")).getByText(/任务已完成/)).toBeInTheDocument();
   });
 
+  it("does not copy long completed task markdown into the work summary", () => {
+    const longSummary = [
+      "# Demo Prompt Please inspect this demo project",
+      "## Project layout",
+      "- README.md",
+      "- src/ledger.py",
+      "- tests/test_ledger.py",
+      "## Verification",
+      "Pytest suite run completed successfully.",
+    ].join("\n");
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_1",
+          status: "completed",
+          goal: "Demo Prompt Please inspect this demo project",
+          resultSummary: longSummary,
+        }}
+        messages={[{ id: "m1", role: "user", content: "Inspect demo", createdAt: 1 }]}
+      />,
+    );
+
+    const digest = screen.getByLabelText("工作摘要");
+    expect(within(digest).getByText(/任务已完成/)).toBeInTheDocument();
+    expect(within(digest).queryByText(/Project layout/)).not.toBeInTheDocument();
+    expect(within(digest).queryByText(/src\/ledger\.py/)).not.toBeInTheDocument();
+  });
+
   it("counts all changed files in the digest and avoids fake review diff stats", async () => {
     const user = userEvent.setup();
     const changedFiles = Array.from({ length: 8 }, (_, index) => ({

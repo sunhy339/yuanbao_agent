@@ -49,6 +49,7 @@ export interface ComposerRuntimeChildTask {
   workerName?: string;
   summary?: string;
   attention?: string;
+  createdAt?: number;
   updatedAt?: number;
 }
 
@@ -56,8 +57,8 @@ const COMMAND_LABEL = "新指令";
 const COMMAND_PLACEHOLDER = "描述下一步要让本地智能体完成的事情...";
 const SUBMIT_LABEL = "发送";
 const SENDING_LABEL = "发送中...";
-const SUPPLEMENT_LABEL = "补充";
-const QUEUE_LABEL = "暂存";
+const SUPPLEMENT_LABEL = "引导";
+const QUEUE_LABEL = "暂存待发";
 
 const permissionOptions = [
   {
@@ -203,15 +204,7 @@ function groupRuntimeChildTasks(tasks: ComposerRuntimeChildTask[]): VisibleRunti
     });
   });
 
-  return cards.sort((left, right) => {
-    const leftState = runtimeChildState(left);
-    const rightState = runtimeChildState(right);
-    if (leftState === "warning" && rightState !== "warning") return -1;
-    if (rightState === "warning" && leftState !== "warning") return 1;
-    if (leftState === "active" && rightState !== "active") return -1;
-    if (rightState === "active" && leftState !== "active") return 1;
-    return 0;
-  });
+  return cards;
 }
 
 export function ComposerDock({
@@ -372,7 +365,6 @@ export function ComposerDock({
         <details
           className="composer-runtime-child-tasks"
           aria-label="Runtime child tasks"
-          open
         >
           <summary>
             <span className="composer-task-icon" aria-hidden="true" />
@@ -670,7 +662,13 @@ export function ComposerDock({
               </button>
             ) : null}
             {sending && onQueuePrompt ? (
-              <button type="button" className="composer-queue" disabled={!canQueue} onClick={() => onQueuePrompt?.()}>
+              <button
+                type="button"
+                className="composer-queue"
+                disabled={!canQueue}
+                onClick={() => onQueuePrompt?.()}
+                title="暂存为待发送消息；暂存后可在上方列表选择引导到当前任务"
+              >
                 {QUEUE_LABEL}
                 {queuedPromptTotal > 0 ? <span>{queuedPromptTotal}</span> : null}
               </button>
@@ -680,6 +678,7 @@ export function ComposerDock({
               className="composer-run"
               aria-label={submitting ? SENDING_LABEL : sending ? SUPPLEMENT_LABEL : SUBMIT_LABEL}
               disabled={submitDisabled}
+              data-mode={sending ? "supplement" : "submit"}
               data-sending={submitting ? "true" : undefined}
             >
               <ArrowUp className="composer-run-icon" size={17} strokeWidth={2.5} aria-hidden="true" />

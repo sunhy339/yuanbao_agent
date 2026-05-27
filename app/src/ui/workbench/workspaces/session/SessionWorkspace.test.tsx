@@ -602,7 +602,7 @@ describe("SessionWorkspace", () => {
             id: "m1",
             role: "assistant",
             content:
-              "##Can do\n- **Read files** and then - Run `npm test`\n---\n---\n1. First\n\n1. Second\n\n1. Third\n| Tool | Use |\n| --- | --- |\n| list_dir | Browse |",
+              "##Can do\n# # 1) Project map\n## # Input handling\n- **Read files** and then - Run `npm test`\n---\n---\n1. First\n\n1. Second\n\n1. Third\n| Tool | Use |\n| --- | --- |\n| list_dir | Browse |",
             createdAt: 1,
           },
         ]}
@@ -610,6 +610,8 @@ describe("SessionWorkspace", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Can do" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "1) Project map" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Input handling" })).toBeInTheDocument();
     expect(screen.getByText("Read files")).toBeInTheDocument();
     expect(screen.getByText("npm test")).toBeInTheDocument();
     const orderedList = screen.getAllByRole("list").find((list) => list.tagName.toLowerCase() === "ol");
@@ -618,6 +620,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getByRole("columnheader", { name: "Tool" })).toBeInTheDocument();
     expect(screen.getByRole("separator", { name: "调整文件列表宽度" })).toBeInTheDocument();
     expect(screen.queryByText(/## Can do/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/# # 1/)).not.toBeInTheDocument();
   });
 
   it("does not render a runtime divider when only chat messages are visible", () => {
@@ -827,7 +830,7 @@ describe("SessionWorkspace", () => {
     expect(within(worklog).getAllByText(/Started the game successfully/).length).toBeGreaterThan(0);
   });
 
-  it("keeps completed background read_file rows out of the main activity stream", () => {
+  it("surfaces completed read_file rows as compact main activity", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -847,12 +850,13 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: /read_file snake_game\/game.py/i })).not.toBeInTheDocument();
-    expect(screen.queryByText(/3749 字节/)).not.toBeInTheDocument();
+    const worklog = screen.getByLabelText("运行摘要");
+    expect(within(worklog).getByRole("button", { name: /read_file snake_game\/game.py/i })).toBeInTheDocument();
+    expect(within(worklog).getByText(/3749 字节/)).toBeInTheDocument();
     expect(screen.queryByText(/"path":"snake_game\/game.py"/)).not.toBeInTheDocument();
   });
 
-  it("keeps repeated successful read_file rows quiet in the main activity stream", () => {
+  it("compacts repeated successful read_file rows in the main activity stream", () => {
     const baseTime = Date.UTC(2026, 4, 6, 6, 0, 0);
     render(
       <SessionWorkspace
@@ -880,8 +884,10 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.queryByRole("heading", { name: "read_file snake_game/game.py" })).not.toBeInTheDocument();
-    expect(screen.queryByText("Read snake_game/game.py")).not.toBeInTheDocument();
+    const worklog = screen.getByLabelText("运行摘要");
+    expect(within(worklog).getByRole("button", { name: /read_file snake_game\/game.py/ })).toBeInTheDocument();
+    expect(within(worklog).getByText(/Read snake_game\/game.py/)).toBeInTheDocument();
+    expect(screen.queryByText("Read snake_game/game.py again")).not.toBeInTheDocument();
   });
 
   it("still surfaces failed background probes because they need attention", () => {
@@ -965,6 +971,7 @@ describe("SessionWorkspace", () => {
     expect(flow[0]).toContain("Check current status");
     expect(flow[1]).toContain("Latest generated answer");
     expect(flow).toHaveLength(2);
+    expect(screen.getByLabelText("运行摘要")).toBeInTheDocument();
   });
 
   it("shows a live elapsed timer for running tool process cards", () => {
@@ -1152,7 +1159,7 @@ describe("SessionWorkspace", () => {
     expect(viewer.textContent).toContain("new copy");
   });
 
-  it("keeps completed list_dir probes quiet and does not expose raw tool JSON", () => {
+  it("surfaces completed list_dir probes without exposing raw tool JSON", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -1174,8 +1181,9 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: /list_dir/ })).not.toBeInTheDocument();
-    expect(screen.queryByText("Found 2 items: app, docs")).not.toBeInTheDocument();
+    const worklog = screen.getByLabelText("运行摘要");
+    expect(within(worklog).getByRole("button", { name: /list_dir/ })).toBeInTheDocument();
+    expect(within(worklog).getByText(/Found 2 items: app, docs/)).toBeInTheDocument();
     // Raw data should not be visible to users
     expect(screen.queryByText("查看原始数据")).not.toBeInTheDocument();
     expect(screen.queryByText(/"items"/)).not.toBeInTheDocument();

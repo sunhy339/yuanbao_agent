@@ -26,6 +26,7 @@ import { permissionModes } from "../ui/workbench/workspaces/settings/settingsTyp
 import { scheduledRecordToWorkspaceTask, scheduledRunToExecutionLog } from "../state/scheduleHelpers";
 import { readEventText, readEventNumber, summarizeValue, countAddedLines, countDeletedLines, parsePatchFiles, riskToLevel } from "../state/traceReaders";
 import { computeToolTimelineItems, computeApprovalCards, computeApprovalByPatchId, computePatchCards } from "../state/viewComputations";
+import type { AgentEventLike } from "../state/viewComputations";
 import { buildSessionContextPreview, buildSessionCollaboration, buildSessionBackgroundJobs, mergeSessionBackgroundJobs } from "../state/sessionDerivedViews";
 import { workspaceNameFromPath } from "../state/providerConfig";
 
@@ -77,9 +78,39 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
   const providerHealthView = getProviderHealthView(activeProviderProfile, providerTestResult);
 
   // Tool/approval/patch cards
+  const runtimeTimelineEvents = useMemo<AgentEventLike[]>(() => {
+    const merged = new Map<string, AgentEventLike>();
+
+    traceEvents.forEach((trace: any) => {
+      if (!trace?.type) return;
+      const eventId = String(trace.id ?? `${trace.type}:${trace.taskId ?? ""}:${trace.sequence ?? trace.createdAt ?? ""}`);
+      merged.set(`trace:${eventId}`, {
+        type: trace.type,
+        payload: trace.payload ?? {},
+        taskId: trace.taskId,
+        sessionId: trace.sessionId,
+        eventId,
+        ts: trace.createdAt ?? 0,
+      });
+    });
+
+    events.forEach((event: any) => {
+      if (!event?.type) return;
+      const eventId = String(event.eventId ?? event.id ?? `${event.type}:${event.taskId ?? ""}:${event.ts ?? event.createdAt ?? ""}`);
+      merged.set(`event:${eventId}`, {
+        ...event,
+        eventId,
+        payload: event.payload ?? {},
+        ts: event.ts ?? event.createdAt ?? 0,
+      });
+    });
+
+    return Array.from(merged.values());
+  }, [events, traceEvents]);
+
   const toolTimelineItems = useMemo<ToolTimelineItem[]>(
-    () => computeToolTimelineItems(events),
-    [events],
+    () => computeToolTimelineItems(runtimeTimelineEvents),
+    [runtimeTimelineEvents],
   );
   const approvalCards = useMemo<ApprovalCardView[]>(
     () => computeApprovalCards(events),

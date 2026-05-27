@@ -1,5 +1,14 @@
 import { type ReactNode } from "react";
 
+function normalizeHeadingMarkerSpacing(line: string) {
+  const heading = line.match(/^(\s*)(#{1,6}(?:\s+#{1,6})*)\s+(.+)$/);
+  if (!heading) {
+    return line;
+  }
+  const level = Math.min(6, heading[2].replace(/[^#]/g, "").length);
+  return `${heading[1]}${"#".repeat(level)} ${heading[3]}`;
+}
+
 function normalizeMarkdownContent(content: string) {
   const lines = content
     .replace(/\r\n/g, "\n")
@@ -11,7 +20,8 @@ function normalizeMarkdownContent(content: string) {
     .split("\n");
 
   const normalized: string[] = [];
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const line = normalizeHeadingMarkerSpacing(rawLine);
     const trimmed = line.trim();
     const previous = normalized.at(-1)?.trim();
     const nextIsDivider = /^[-*_]{3,}$/.test(trimmed);

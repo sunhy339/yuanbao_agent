@@ -36,6 +36,7 @@ import {
   updateAssistantMessageByMessageId,
   reconcileBackendMessage,
   failAssistantMessage,
+  stopStreamingMessagesForTask,
 } from "../state/chatMessages";
 import { isChatVisibleEvent as shouldShowEventInChat } from "../ui/workbench/workspaces/session/visibilityRouting";
 import {
@@ -429,8 +430,23 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           // (message.failed handles the chat bubble now)
           if (event.type === "task.failed" && !isChildWorker) {
             flushPendingAssistantTokens();
+            setChatMessages((current) =>
+              stopStreamingMessagesForTask(current, {
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+              }),
+            );
             // Legacy fallback: only create failure bubble if no message.failed was received
             // (handled by message.failed event now)
+          }
+          if (event.type === "task.cancelled" && !isChildWorker) {
+            flushPendingAssistantTokens();
+            setChatMessages((current) =>
+              stopStreamingMessagesForTask(current, {
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+              }),
+            );
           }
         }
 

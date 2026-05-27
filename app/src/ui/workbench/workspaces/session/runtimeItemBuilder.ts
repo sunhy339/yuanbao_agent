@@ -152,7 +152,7 @@ function classifyToolVisibility(toolCall: SessionWorkspaceToolCall): RuntimeTime
     return "chat";
   }
   if (toolCall.toolName === "list_dir" || toolCall.toolName === "git_status" || toolCall.toolName === "read_file") {
-    return isInFlight || needsAttention ? "chat" : "trace";
+    return "chat";
   }
   return "chat";
 }

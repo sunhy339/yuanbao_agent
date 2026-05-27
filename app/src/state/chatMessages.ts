@@ -731,10 +731,44 @@ export function stopStreamingMessages(
             ...message,
             streaming: false,
             placeholder: false,
+            status: message.status === "failed" ? message.status : undefined,
           }
         : message,
     )
-    .filter((message) => !(message.placeholder && !message.content.trim()));
+    .filter((message) => {
+      const belongsToSession = !sessionId || message.sessionId === sessionId;
+      return !(belongsToSession && message.role === "assistant" && !message.content.trim());
+    });
+}
+
+export function stopStreamingMessagesForTask(
+  current: ChatMessageView[],
+  payload: {
+    sessionId: string;
+    taskId?: string | null;
+  },
+): ChatMessageView[] {
+  return current
+    .map((message) => {
+      const matchesTask =
+        message.sessionId === payload.sessionId &&
+        (!payload.taskId || message.taskId === payload.taskId || (message.streaming && message.taskId === "pending"));
+      if (!matchesTask || message.role !== "assistant" || message.streaming !== true) {
+        return message;
+      }
+      return {
+        ...message,
+        streaming: false,
+        placeholder: false,
+        status: message.status === "failed" ? message.status : undefined,
+      };
+    })
+    .filter((message) => {
+      const matchesTask =
+        message.sessionId === payload.sessionId &&
+        (!payload.taskId || message.taskId === payload.taskId || message.taskId === "pending");
+      return !(matchesTask && message.role === "assistant" && !message.content.trim());
+    });
 }
 
 export function isOperationalAssistantDelta(delta: string): boolean {
@@ -1045,7 +1079,7 @@ export function getVisibleChatMessages(
 function isEmptyStreamingAssistantShell(message: ChatMessageView): boolean {
   return (
     message.role === "assistant" &&
-    message.streaming === true &&
+    (message.streaming === true || message.status === "streaming") &&
     message.placeholder !== true &&
     !message.content.trim()
   );

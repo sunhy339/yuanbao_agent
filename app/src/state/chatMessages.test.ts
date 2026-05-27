@@ -20,6 +20,7 @@ import {
   summarizeOperationalAssistantDelta,
   updateAssistantMessageByMessageId,
   updatePendingMessageTask,
+  stopStreamingMessagesForTask,
 } from "./chatMessages";
 import type { ChatMessageView } from "./chatMessages";
 import type { MessageRecord } from "@shared";
@@ -414,6 +415,81 @@ describe("chatMessages", () => {
       "stored_user",
       "thinking",
     ]);
+  });
+
+  it("hides persisted empty assistant shells that were left streaming", () => {
+    const liveMessages: ChatMessageView[] = [
+      {
+        id: "stored_user",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "user",
+        content: "build the project",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: "empty_persisted_streaming",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "assistant",
+        content: "",
+        createdAt: 2,
+        updatedAt: 2,
+        status: "streaming",
+      },
+    ];
+
+    expect(getVisibleChatMessages(liveMessages, "sess_1").map((message) => message.id)).toEqual([
+      "stored_user",
+    ]);
+  });
+
+  it("removes empty streaming placeholders when a task reaches a terminal state", () => {
+    const next = stopStreamingMessagesForTask(
+      [
+        {
+          id: "stored_user",
+          sessionId: "sess_1",
+          taskId: "task_1",
+          role: "user",
+          content: "build the project",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: "assistant_pending",
+          sessionId: "sess_1",
+          taskId: "task_1",
+          role: "assistant",
+          content: "",
+          createdAt: 2,
+          updatedAt: 2,
+          streaming: true,
+          placeholder: true,
+          status: "streaming",
+        },
+        {
+          id: "other_task",
+          sessionId: "sess_1",
+          taskId: "task_2",
+          role: "assistant",
+          content: "still running",
+          createdAt: 3,
+          updatedAt: 3,
+          streaming: true,
+          placeholder: false,
+          status: "streaming",
+        },
+      ],
+      { sessionId: "sess_1", taskId: "task_1" },
+    );
+
+    expect(next.map((message) => message.id)).toEqual(["stored_user", "other_task"]);
+    expect(next.find((message) => message.id === "other_task")).toMatchObject({
+      streaming: true,
+      status: "streaming",
+    });
   });
 
   it("reconciles a backend assistant message with the pending streaming placeholder", () => {

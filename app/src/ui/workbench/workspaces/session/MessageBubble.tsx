@@ -1,5 +1,6 @@
 import { memo } from "react";
 import { Bot, CheckCircle2, Info, ShieldAlert, TerminalSquare, UserRound, Wrench } from "lucide-react";
+import { Button } from "../../../v2/components/ui";
 import { formatStatusLabel } from "../../../copy";
 import { formatTimestamp } from "../../../../lib/formatUtils";
 import type { SessionWorkspaceMessage } from "./types";
@@ -51,6 +52,11 @@ function getMessageMetadataKind(message: SessionWorkspaceMessage) {
   return typeof kind === "string" ? kind : "";
 }
 
+function getMessageMetadataString(message: SessionWorkspaceMessage, key: string) {
+  const value = message.metadata?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
 function ToolBlockContent({ message }: { message: SessionWorkspaceMessage }) {
   const kind = getMessageMetadataKind(message);
   const isResult = kind === "tool_result";
@@ -71,17 +77,61 @@ function ToolBlockContent({ message }: { message: SessionWorkspaceMessage }) {
   );
 }
 
-function PermissionRequestContent({ message }: { message: SessionWorkspaceMessage }) {
+function PermissionRequestContent({
+  message,
+  onApprove,
+  onReject,
+  busyId,
+}: {
+  message: SessionWorkspaceMessage;
+  onApprove?(approvalId: string): void | Promise<void>;
+  onReject?(approvalId: string): void | Promise<void>;
+  busyId?: string | null;
+}) {
   const content = message.content.trim();
+  const requestId = getMessageMetadataString(message, "requestId");
+  const decision = getMessageMetadataString(message, "decision");
+  const resolved = message.metadata?.resolved === true || Boolean(decision);
+  const isBusy = Boolean(requestId && busyId === requestId);
+  const canResolve = Boolean(requestId && !resolved && (onApprove || onReject));
+  const statusText = resolved ? (decision === "rejected" ? "已拒绝" : "已批准") : "等待确认";
 
   return (
     <section className="message-permission-block">
       <div className="message-permission-block-head">
         <ShieldAlert size={14} strokeWidth={2} aria-hidden="true" />
         <strong>{message.toolName || "权限请求"}</strong>
-        <span>等待确认</span>
+        <span>{statusText}</span>
       </div>
       {content ? <pre>{content}</pre> : null}
+      {canResolve ? (
+        <div className="message-permission-actions">
+          {onApprove ? (
+            <Button
+              size="xs"
+              variant="secondary"
+              loading={isBusy}
+              onClick={() => {
+                void onApprove(requestId);
+              }}
+            >
+              批准
+            </Button>
+          ) : null}
+          {onReject ? (
+            <Button
+              size="xs"
+              variant="secondary"
+              loading={isBusy}
+              onClick={() => {
+                void onReject(requestId);
+              }}
+            >
+              拒绝
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -89,9 +139,15 @@ function PermissionRequestContent({ message }: { message: SessionWorkspaceMessag
 export const MessageBubble = memo(function MessageBubble({
   message,
   activityHint,
+  onApprove,
+  onReject,
+  busyId,
 }: {
   message: SessionWorkspaceMessage;
   activityHint?: string;
+  onApprove?(approvalId: string): void | Promise<void>;
+  onReject?(approvalId: string): void | Promise<void>;
+  busyId?: string | null;
 }) {
   const metadataKind = getMessageMetadataKind(message);
   const isStatusThinking = metadataKind === "assistant_thinking";
@@ -148,7 +204,7 @@ export const MessageBubble = memo(function MessageBubble({
             <small>{thinkingCopy}</small>
           </div>
         ) : isPermissionRequest ? (
-          <PermissionRequestContent message={message} />
+          <PermissionRequestContent message={message} onApprove={onApprove} onReject={onReject} busyId={busyId} />
         ) : isToolBlock ? (
           <ToolBlockContent message={message} />
         ) : message.role === "assistant" ? (

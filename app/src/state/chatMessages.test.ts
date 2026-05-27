@@ -18,6 +18,7 @@ import {
   removeChatMessage,
   removeAssistantThinkingMessage,
   replaceSessionMessages,
+  resolvePermissionRequestMessage,
   sanitizeAssistantStatusContent,
   stripAssistantRuntimeProgress,
   summarizeOperationalAssistantDelta,
@@ -163,6 +164,32 @@ describe("chatMessages", () => {
       role: "assistant",
       toolName: "run_command",
       metadata: { kind: "permission_request", requestId: "approval_1" },
+    });
+  });
+
+  it("marks permission request blocks resolved without keeping action state", () => {
+    const withPermission = appendOrUpdatePermissionRequestMessage(messages, {
+      requestId: "approval_1",
+      toolName: "run_command",
+      input: { command: "npm test" },
+      description: "Need approval",
+      sessionId: "sess_1",
+      taskId: "task_3",
+      now: 4,
+    });
+
+    const resolved = resolvePermissionRequestMessage(withPermission, {
+      requestId: "approval_1",
+      decision: "approved",
+      now: 5,
+    });
+
+    const permission = getVisibleChatMessages(resolved, "sess_1").find(
+      (message) => message.id === "permission_request:approval_1",
+    );
+    expect(permission).toMatchObject({
+      status: "completed",
+      metadata: { kind: "permission_request", requestId: "approval_1", decision: "approved", resolved: true },
     });
   });
 

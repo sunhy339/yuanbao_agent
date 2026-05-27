@@ -432,6 +432,9 @@ export const ConversationActivity = memo(function ConversationActivity({
             <MessageBubble
               message={item.message}
               activityHint={item.message.streaming && item.message.placeholder ? thinkingActivityHint : undefined}
+              onApprove={onApprove}
+              onReject={onReject}
+              busyId={busyId}
             />
           </Fragment>
         ) : item.kind === "worklog" ? (

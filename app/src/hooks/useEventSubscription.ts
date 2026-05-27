@@ -38,6 +38,7 @@ import {
   completeAssistantToolUseMessage,
   completeChatCompatMessage,
   removeAssistantThinkingMessage,
+  resolvePermissionRequestMessage,
   updateAssistantMessageByMessageId,
   reconcileBackendMessage,
   failAssistantMessage,
@@ -332,6 +333,20 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           return;
         }
 
+        if (event.type === "approval.resolved") {
+          const payload = event.payload as { approvalId?: unknown; decision?: unknown };
+          if (typeof payload.approvalId === "string" && payload.approvalId.trim()) {
+            const approvalId = payload.approvalId.trim();
+            setChatMessages((current) =>
+              resolvePermissionRequestMessage(current, {
+                requestId: approvalId,
+                decision: typeof payload.decision === "string" ? payload.decision : "approved",
+                now: event.ts,
+              }),
+            );
+          }
+        }
+
         // --- New message lifecycle events (P1.3 / P1.4) ---
         // message.delta: streaming token, routed by messageId
         if (event.type === "message.delta") {
@@ -534,10 +549,16 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           if (event.type === "task.failed" && !isChildWorker) {
             flushPendingAssistantTokens();
             setChatMessages((current) =>
-              stopStreamingMessagesForTask(current, {
-                sessionId: event.sessionId,
-                taskId: event.taskId,
-              }),
+              removeAssistantThinkingMessage(
+                stopStreamingMessagesForTask(current, {
+                  sessionId: event.sessionId,
+                  taskId: event.taskId,
+                }),
+                {
+                  sessionId: event.sessionId,
+                  taskId: event.taskId,
+                },
+              ),
             );
             // Legacy fallback: only create failure bubble if no message.failed was received
             // (handled by message.failed event now)
@@ -545,10 +566,16 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           if (event.type === "task.cancelled" && !isChildWorker) {
             flushPendingAssistantTokens();
             setChatMessages((current) =>
-              stopStreamingMessagesForTask(current, {
-                sessionId: event.sessionId,
-                taskId: event.taskId,
-              }),
+              removeAssistantThinkingMessage(
+                stopStreamingMessagesForTask(current, {
+                  sessionId: event.sessionId,
+                  taskId: event.taskId,
+                }),
+                {
+                  sessionId: event.sessionId,
+                  taskId: event.taskId,
+                },
+              ),
             );
           }
         }

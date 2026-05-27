@@ -174,6 +174,25 @@ class TestEventCompatAssistantToken:
         assert status_events[0].payload["step"] == 2
         assert status_events[0].payload["_chatCompat"] is True
 
+    def test_approval_resolved_emits_chat_idle_status(self, tmp_path: Any) -> None:
+        """Approval resolution clears chat thinking state for pending permission blocks."""
+        runtime = _make_runtime(tmp_path)
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+
+        task = {"id": "t1", "role": "root", "activeAssistantMessageId": "msg_1"}
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="approval.resolved",
+            payload={"approvalId": "approval_1", "taskId": "t1", "decision": "approved"},
+        )
+
+        status_events = [event for event in collected if event.type == "status"]
+        assert len(status_events) == 1
+        assert status_events[0].payload["state"] == "idle"
+        assert status_events[0].payload["_chatCompat"] is True
+
     def test_chat_compat_events_are_not_trace_mirrored(self, tmp_path: Any) -> None:
         """Chat compatibility events are live UI protocol, not trace timeline noise."""
         runtime = _make_runtime(tmp_path)

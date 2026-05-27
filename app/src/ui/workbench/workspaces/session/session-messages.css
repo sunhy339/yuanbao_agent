@@ -266,6 +266,13 @@
   overflow-wrap: anywhere;
 }
 
+.message-permission-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .markdown-image-frame {
   display: grid;
   justify-items: start;

@@ -712,6 +712,36 @@ export function appendOrUpdatePermissionRequestMessage(
   return [...current, nextMessage];
 }
 
+export function resolvePermissionRequestMessage(
+  current: ChatMessageView[],
+  payload: {
+    requestId: string;
+    decision: "approved" | "rejected" | string;
+    now: number;
+  },
+): ChatMessageView[] {
+  const messageId = `permission_request:${payload.requestId}`;
+  const existingIndex = current.findIndex((message) => message.id === messageId);
+  if (existingIndex < 0) {
+    return current;
+  }
+  const next = [...current];
+  const message = next[existingIndex];
+  next[existingIndex] = {
+    ...message,
+    updatedAt: payload.now,
+    status: payload.decision === "rejected" ? "failed" : "completed",
+    metadata: {
+      ...(message.metadata ?? {}),
+      kind: "permission_request",
+      requestId: payload.requestId,
+      decision: payload.decision,
+      resolved: true,
+    },
+  };
+  return next;
+}
+
 export function completeChatCompatMessage(
   current: ChatMessageView[],
   payload: {

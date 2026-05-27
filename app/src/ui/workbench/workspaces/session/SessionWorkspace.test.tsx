@@ -718,7 +718,10 @@ describe("SessionWorkspace", () => {
     expect(screen.getAllByText("run_command").length).toBeGreaterThanOrEqual(2);
   });
 
-  it("renders chat-compatible status and permission blocks", () => {
+  it("renders chat-compatible status and permission blocks", async () => {
+    const user = userEvent.setup();
+    const onApprove = vi.fn();
+    const onReject = vi.fn();
     const { container } = render(
       <SessionWorkspace
         session={session}
@@ -741,6 +744,8 @@ describe("SessionWorkspace", () => {
             createdAt: 2,
           },
         ]}
+        onApprove={onApprove}
+        onReject={onReject}
       />,
     );
 
@@ -748,6 +753,36 @@ describe("SessionWorkspace", () => {
     expect(container.querySelector(".message-permission-block")).toBeInTheDocument();
     expect(screen.getByText("等待确认")).toBeInTheDocument();
     expect(screen.getAllByText("run_command").length).toBeGreaterThanOrEqual(1);
+    await user.click(screen.getByRole("button", { name: "批准" }));
+    await user.click(screen.getByRole("button", { name: "拒绝" }));
+    expect(onApprove).toHaveBeenCalledWith("approval_1");
+    expect(onReject).toHaveBeenCalledWith("approval_1");
+  });
+
+  it("hides chat permission actions after approval resolution", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          {
+            id: "permission_request:approval_1",
+            role: "assistant",
+            content: 'Need approval\n\n{\n  "command": "npm test"\n}',
+            toolName: "run_command",
+            status: "completed",
+            metadata: { kind: "permission_request", requestId: "approval_1", decision: "approved", resolved: true },
+            createdAt: 2,
+          },
+        ]}
+        onApprove={vi.fn()}
+        onReject={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("已批准")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "批准" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "拒绝" })).not.toBeInTheDocument();
   });
 
   it("renders command runtime cards as compact rows until expanded", async () => {

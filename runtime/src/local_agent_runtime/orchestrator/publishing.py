@@ -275,6 +275,16 @@ class PublishingMixin:
             )
             return
 
+        if event_type == "approval.resolved":
+            self._publish_chat_compat_event(
+                session_id=session_id,
+                task=task,
+                event_type="status",
+                payload={"state": "idle"},
+                visibility=effective_visibility,
+            )
+            return
+
         if event_type == "message.completed":
             self._publish_chat_compat_event(
                 session_id=session_id,

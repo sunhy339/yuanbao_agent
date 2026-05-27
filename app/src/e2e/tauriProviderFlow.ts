@@ -173,6 +173,12 @@ function assertText(text: string) {
   }
 }
 
+function messageIncludesPrompt(messageContent: string | undefined | null, prompt: string) {
+  const normalizedContent = (messageContent ?? "").trim();
+  const normalizedPrompt = prompt.trim();
+  return Boolean(normalizedPrompt) && normalizedContent.includes(normalizedPrompt);
+}
+
 function assertElement(selector: string, description: string) {
   if (!query(selector)) {
     throw new Error(`Expected ${description} not found: ${selector}`);
@@ -731,7 +737,7 @@ async function runSessionRecoverySeedFlow(client: RuntimeClient, fixture: TauriP
     if (!persistedRoles.includes("user")) {
       throw new Error(`Expected seeded user message, got: ${persistedRoles.join(", ") || "none"}.`);
     }
-    if (!persistedMessages.some((message) => message.role === "user" && message.content.includes(prompt))) {
+    if (!persistedMessages.some((message) => message.role === "user" && messageIncludesPrompt(message.content, prompt))) {
       throw new Error("Seeded messages do not include the recovery prompt.");
     }
 
@@ -855,7 +861,7 @@ async function runSessionRecoveryVerifyFlow(client: RuntimeClient, fixture: Taur
 
   const persistedMessages = (await client.listMessages({ sessionId: recoveredSession.id, limit: 20 })).messages;
   const persistedRoles = persistedMessages.map((message) => message.role);
-  const userMessage = persistedMessages.find((message) => message.role === "user" && message.content.includes(prompt));
+  const userMessage = persistedMessages.find((message) => message.role === "user" && messageIncludesPrompt(message.content, prompt));
   if (!userMessage) {
     throw new Error(`Recovered messages are incomplete: ${persistedRoles.join(", ") || "none"}.`);
   }
@@ -1051,7 +1057,7 @@ export async function maybeRunTauriProviderFlowE2e() {
     if (!persistedRoles.includes("user") || !persistedRoles.includes("assistant")) {
       throw new Error(`Expected persisted user and assistant messages, got: ${persistedRoles.join(", ") || "none"}.`);
     }
-    if (!persistedMessages.some((message) => message.role === "user" && message.content.includes(prompt))) {
+    if (!persistedMessages.some((message) => message.role === "user" && messageIncludesPrompt(message.content, prompt))) {
       throw new Error("Persisted messages do not include the submitted prompt.");
     }
     const assistantMessage = persistedMessages.find((message) => message.role === "assistant");

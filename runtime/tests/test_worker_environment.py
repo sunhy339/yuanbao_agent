@@ -83,15 +83,18 @@ def test_build_child_worker_env_honors_extra_env_allowlist_without_empty_values(
     env = build_child_worker_env(
         parent_env={
             "CUSTOM_CA_BUNDLE": "D:\\certs\\ca.pem",
+            "AI_PIXEL_API_KEY": "sk-ai-pixel",
             "EMPTY_VALUE": "",
             "PATH": "ignored-on-non-windows",
         },
         db_path=str(tmp_path / "runtime.sqlite3"),
         runtime_src=str(tmp_path / "src"),
         allowlist=["CUSTOM_CA_BUNDLE", "EMPTY_VALUE", "MISSING_VALUE"],
+        env_allowlist=["AI_PIXEL_API_KEY"],
     )
 
     assert env["CUSTOM_CA_BUNDLE"] == "D:\\certs\\ca.pem"
+    assert env["AI_PIXEL_API_KEY"] == "sk-ai-pixel"
     assert "EMPTY_VALUE" not in env
     assert "MISSING_VALUE" not in env
 

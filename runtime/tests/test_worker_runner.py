@@ -817,6 +817,35 @@ def test_worker_runner_unshareable_database_fails_process_required_without_inlin
         store.close()
 
 
+def test_worker_runner_child_env_includes_configured_provider_key_env(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    event_bus = EventBus()
+    collaboration = CollaborationService(store, event_bus)
+    runner = WorkerRunner(collaboration)
+    monkeypatch.setenv("AI_PIXEL_API_KEY", "sk-ai-pixel")
+    store.update_config({
+        "config": {
+            "provider": {
+                "apiKeyEnvVarName": "AI_PIXEL_API_KEY",
+                "profiles": [
+                    {"id": "local", "apiKeyEnvVarName": "AI_PIXEL_API_KEY"},
+                ],
+                "activeProfileId": "local",
+            },
+        },
+    })
+
+    try:
+        env = runner._worker_process_env()
+
+        assert env["AI_PIXEL_API_KEY"] == "sk-ai-pixel"
+    finally:
+        store.close()
+
+
 def test_worker_runner_bridges_child_tool_events_into_child_collaboration_progress(
     tmp_path: Path,
     monkeypatch: Any,

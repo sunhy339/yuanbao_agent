@@ -1280,22 +1280,50 @@ class MessageExecutionMixin:
     @staticmethod
     def _is_plan_only_goal(goal: str) -> bool:
         lowered = goal.casefold()
-        plan_markers = (
+        execution_markers = (
+            "run:",
+            "run ",
+            "execute ",
+            "read ",
+            "inspect ",
+            "pytest",
+            "npm ",
+            "python ",
+            "powershell",
+            "shell",
+            "command",
+            "\u8fd0\u884c",
+            "\u6267\u884c",
+            "\u8bfb\u53d6",
+            "\u68c0\u67e5",
+        )
+        plan_only_markers = (
             "only output",
             "plan only",
-            "do not implement",
-            "don't implement",
-            "do not modify",
-            "do not create files",
+            "only provide a plan",
+            "only give a plan",
+            "do not execute",
+            "don't execute",
             "do not run commands",
             "\u53ea\u9700\u8981\u8f93\u51fa\u65b9\u6848",
             "\u53ea\u8f93\u51fa\u65b9\u6848",
-            "\u4e0d\u8981\u5b9e\u73b0",
-            "\u4e0d\u8981\u4fee\u6539",
-            "\u4e0d\u8981\u521b\u5efa\u6587\u4ef6",
+            "\u53ea\u7ed9\u65b9\u6848",
+            "\u53ea\u505a\u65b9\u6848",
+            "\u4e0d\u8981\u6267\u884c",
             "\u4e0d\u8981\u8fd0\u884c\u547d\u4ee4",
         )
-        return any(marker in lowered for marker in plan_markers)
+        if any(marker in lowered for marker in plan_only_markers):
+            return True
+        plan_markers = (
+            "do not implement",
+            "don't implement",
+            "do not create files",
+            "\u4e0d\u8981\u5b9e\u73b0",
+            "\u4e0d\u8981\u521b\u5efa\u6587\u4ef6",
+        )
+        if not any(marker in lowered for marker in plan_markers):
+            return False
+        return not any(marker in lowered for marker in execution_markers)
 
     @staticmethod
     def _format_plan_only_summary(*, goal: str, plan: Any) -> str:

@@ -556,9 +556,35 @@ class WorkerRunner:
             parent_env=os.environ,
             runtime_src=self._runtime_src(),
             database_path=database_path,
+            env_allowlist=self._child_env_allowlist_from_provider_config(),
             tool_allowlist=self._child_tool_allowlist_from_request(request),
             child_model=self._child_model_from_request(request),
         )
+
+    def _child_env_allowlist_from_provider_config(self) -> list[str]:
+        names: list[str] = []
+        provider_config = self._provider_config()
+        for source in self._provider_config_sources(provider_config):
+            value = source.get("apiKeyEnvVarName") or source.get("api_key_env_var_name") or source.get("envKey")
+            if isinstance(value, str) and value.strip() and value.strip() not in names:
+                names.append(value.strip())
+        return names
+
+    @staticmethod
+    def _provider_config_sources(provider_config: dict[str, Any]) -> list[dict[str, Any]]:
+        sources: list[dict[str, Any]] = []
+        if provider_config:
+            sources.append(provider_config)
+        active_profile_id = provider_config.get("activeProfileId")
+        profiles = provider_config.get("profiles")
+        if isinstance(profiles, list):
+            for profile in profiles:
+                if not isinstance(profile, dict):
+                    continue
+                if active_profile_id and profile.get("id") != active_profile_id:
+                    continue
+                sources.append(profile)
+        return sources
 
     def _child_tool_allowlist_from_request(self, request: ChildTaskRequest | None) -> Any:
         if request is None or not isinstance(request.budget, dict):

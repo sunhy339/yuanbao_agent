@@ -34,6 +34,31 @@ type DigestDiffEntry = {
   diff: string;
 };
 
+type ChangeTotals = {
+  additions?: number;
+  deletions?: number;
+};
+
+const LOW_SIGNAL_TASK_STEP_PATTERNS = [
+  /理解任务目标/,
+  /分析任务目标/,
+  /整理上下文/,
+  /构建上下文/,
+  /准备上下文/,
+  /准备工具/,
+  /规划任务/,
+  /任务启动/,
+  /等待模型/,
+  /思考中/,
+  /understand(?:ing)? (?:the )?task/i,
+  /analy[sz](?:e|ing) (?:the )?task/i,
+  /build(?:ing)? context/i,
+  /prepar(?:e|ing) context/i,
+  /prepar(?:e|ing) (?:the )?first tool/i,
+  /plan(?:ning)? (?:the )?task/i,
+  /waiting for (?:the )?model/i,
+];
+
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
@@ -44,6 +69,18 @@ function readText(value: unknown): string | null {
 
 function normalizeDigestPath(path: string) {
   return path.replace(/\\/g, "/").trim();
+}
+
+function normalizeTaskStep(value?: string | null) {
+  return compactText(value ?? "", 96).replace(/[。.!！…]+$/g, "").trim();
+}
+
+function isLowSignalTaskStep(value?: string | null) {
+  const normalized = normalizeTaskStep(value);
+  if (!normalized) {
+    return true;
+  }
+  return LOW_SIGNAL_TASK_STEP_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function buildDigestFiles(activeTask?: SessionWorkspaceActiveTask | null, patches?: SessionWorkspacePatch[]) {
@@ -126,6 +163,79 @@ function previewDigestDiff(diff: string, maxLines = 80) {
     lines: lines.slice(0, maxLines),
     truncated: lines.length > maxLines,
   };
+}
+
+function sumDefined(values: Array<number | undefined>) {
+  const known = values.filter((value): value is number => typeof value === "number");
+  return known.length ? known.reduce((total, value) => total + value, 0) : undefined;
+}
+
+function parseDiffStatTotals(diffStat?: string | null): ChangeTotals {
+  if (!diffStat) {
+    return {};
+  }
+  const insertions = diffStat.match(/(\d+)\s+insertion/i);
+  const deletions = diffStat.match(/(\d+)\s+deletion/i);
+  const compact = diffStat.match(/\|\s*\d+\s+([+\-]+)/);
+  return {
+    additions: insertions ? Number(insertions[1]) : compact ? (compact[1].match(/\+/g) ?? []).length : undefined,
+    deletions: deletions ? Number(deletions[1]) : compact ? (compact[1].match(/-/g) ?? []).length : undefined,
+  };
+}
+
+function buildChangeTotals(files: DigestFileRow[], diffEntries: DigestDiffEntry[], worktreeDiffStat?: string | null) {
+  const fromDiffStat = parseDiffStatTotals(worktreeDiffStat);
+  if (fromDiffStat.additions !== undefined || fromDiffStat.deletions !== undefined) {
+    return fromDiffStat;
+  }
+  const fromFiles = {
+    additions: sumDefined(files.map((file) => file.additions)),
+    deletions: sumDefined(files.map((file) => file.deletions)),
+  };
+  if (fromFiles.additions !== undefined || fromFiles.deletions !== undefined) {
+    return fromFiles;
+  }
+  const fromDiffEntries = {
+    additions: sumDefined(diffEntries.map((entry) => entry.additions)),
+    deletions: sumDefined(diffEntries.map((entry) => entry.deletions)),
+  };
+  if (fromDiffEntries.additions !== undefined || fromDiffEntries.deletions !== undefined) {
+    return fromDiffEntries;
+  }
+  return {};
+}
+
+function formatDigestFileStatus(status?: string) {
+  if (!status) {
+    return null;
+  }
+  const normalized = status.toLowerCase();
+  if (["added", "created", "new"].includes(normalized)) {
+    return "新增";
+  }
+  if (["modified", "changed", "updated"].includes(normalized)) {
+    return "修改";
+  }
+  if (["deleted", "removed"].includes(normalized)) {
+    return "删除";
+  }
+  if (["renamed", "moved"].includes(normalized)) {
+    return "重命名";
+  }
+  return status;
+}
+
+function lineTone(line: string) {
+  if (line.startsWith("+") && !line.startsWith("+++")) {
+    return "add";
+  }
+  if (line.startsWith("-") && !line.startsWith("---")) {
+    return "delete";
+  }
+  if (line.startsWith("@@")) {
+    return "hunk";
+  }
+  return "context";
 }
 
 function buildWorktreeReviewSummary(activeTask?: SessionWorkspaceActiveTask | null, worktreeDiffStat?: string | null) {
@@ -251,8 +361,8 @@ function buildDigestSummary(
     if (["completed", "failed", "waiting"].includes(phase)) {
       return buildTaskProgressSummary(activeTask);
     }
-    const currentStep = activeTask.currentStep?.trim();
-    if (currentStep) {
+    const currentStep = normalizeTaskStep(activeTask.currentStep);
+    if (currentStep && !isLowSignalTaskStep(currentStep)) {
       return currentStep;
     }
     if (fileCount || commandCount || verificationCount) {
@@ -295,10 +405,17 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
   const commands = buildDigestCommands(activeTask, backgroundJobs);
   const verifications = buildDigestVerificationRows(activeTask);
   const worktreeDiffStat = readText(worktreeDiff?.diffStat) || readText(activeTask?.activeWorktree?.lastStatus?.diffStat);
+  const changeTotals = buildChangeTotals(files, diffEntries, worktreeDiffStat);
   const worktreeReviewSummary = buildWorktreeReviewSummary(activeTask, worktreeDiffStat);
   const hasConcreteWork = Boolean(files.length || commands.length || verifications.length || diffEntries.length || worktreeReviewSummary);
+  const hasMeaningfulActiveTask = Boolean(
+    activeTask &&
+      (hasConcreteWork ||
+        ["completed", "failed", "waiting"].includes(getTaskPhase(activeTask)) ||
+        !isLowSignalTaskStep(activeTask.currentStep)),
+  );
 
-  if (!activeTask && !hasConcreteWork) {
+  if (!hasMeaningfulActiveTask && !hasConcreteWork) {
     return null;
   }
 
@@ -376,12 +493,6 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
           {filePreview ? (
             <small>
               {filePreview}
-              {files.length > visibleFiles.length ? (
-                <>
-                  {"；"}
-                  <span>另有 {files.length - visibleFiles.length} 个文件可在右侧文件浏览中打开。</span>
-                </>
-              ) : null}
             </small>
           ) : null}
           {verifications.length ? (
@@ -400,11 +511,42 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
       ) : null}
 
       {hasConcreteWork ? (
-        <>
-        {visibleDiffEntries.length ? (
-          <section className="conversation-task-digest-diff" aria-label="代码改动 diff">
+        <section className="conversation-turn-changes" aria-label="本轮代码改动">
+          <header>
+            <div>
+              <strong>{files.length ? `已改动 ${files.length} 个文件` : visibleDiffEntries.length ? `已记录 ${diffEntries.length} 个 diff` : "本轮改动"}</strong>
+              <span>{worktreeDiffStat || (files.length ? "文件改动已进入主聊天记录，右侧只用于浏览文件。" : "等待可展示的 diff。")}</span>
+            </div>
+            {(changeTotals.additions !== undefined || changeTotals.deletions !== undefined) ? (
+              <p className="conversation-turn-changes-stat" aria-label="改动统计">
+                <em data-tone="add">+{changeTotals.additions ?? 0}</em>
+                <em data-tone="delete">-{changeTotals.deletions ?? 0}</em>
+              </p>
+            ) : null}
+          </header>
+
+          {visibleFiles.length ? (
+            <div className="conversation-turn-file-list" aria-label="改动文件">
+              {visibleFiles.map((file) => (
+                <div className="conversation-turn-file-row" key={file.path}>
+                  <code>{file.path}</code>
+                  <span>{compactMeta([
+                    formatDigestFileStatus(file.status),
+                    file.additions !== undefined ? `+${file.additions}` : null,
+                    file.deletions !== undefined ? `-${file.deletions}` : null,
+                  ]).join(" ") || "已记录"}</span>
+                </div>
+              ))}
+              {files.length > visibleFiles.length ? (
+                <small>另有 {files.length - visibleFiles.length} 个文件可在右侧文件浏览中打开。</small>
+              ) : null}
+            </div>
+          ) : null}
+
+          {visibleDiffEntries.length ? (
+          <div className="conversation-task-digest-diff" aria-label="代码改动 diff">
             <header>
-              <strong>代码改动</strong>
+              <strong>Diff 预览</strong>
               <span>
                 {diffEntries.length} 个 diff
                 {diffEntries.length > visibleDiffEntries.length ? `，另有 ${diffEntries.length - visibleDiffEntries.length} 个未展开` : ""}
@@ -413,18 +555,25 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
             {visibleDiffEntries.map((entry) => {
               const preview = previewDigestDiff(entry.diff);
               return (
-                <details key={entry.id} open={visibleDiffEntries.length === 1}>
+                <details className="conversation-turn-diff" key={entry.id} open={visibleDiffEntries.length === 1}>
                   <summary>
                     <code>{entry.path}</code>
                     <small>{compactMeta([entry.additions !== undefined ? `+${entry.additions}` : null, entry.deletions !== undefined ? `-${entry.deletions}` : null]).join(" ")}</small>
                   </summary>
-                  <pre>{`${preview.lines.join("\n")}${preview.truncated ? "\n..." : ""}`}</pre>
+                  <pre>
+                    {preview.lines.map((line, index) => (
+                      <span key={`${index}:${line.slice(0, 16)}`} data-tone={lineTone(line)}>
+                        {line || " "}
+                      </span>
+                    ))}
+                    {preview.truncated ? <span data-tone="context">...</span> : null}
+                  </pre>
                 </details>
               );
             })}
-          </section>
-        ) : null}
-        </>
+          </div>
+          ) : null}
+        </section>
       ) : null}
     </section>
   );

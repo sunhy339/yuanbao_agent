@@ -25,6 +25,40 @@ type RawConversationActivityItem =
   | Extract<ConversationActivityItem, { kind: "message" }>
   | Extract<ConversationActivityItem, { kind: "runtime" }>;
 
+const DEFAULT_THINKING_ACTIVITY_HINT = "正在等待模型或运行时返回第一段内容。";
+
+const LOW_SIGNAL_TASK_STEP_PATTERNS = [
+  /理解任务目标/,
+  /分析任务目标/,
+  /整理上下文/,
+  /构建上下文/,
+  /准备上下文/,
+  /准备工具/,
+  /规划任务/,
+  /任务启动/,
+  /等待模型/,
+  /思考中/,
+  /understand(?:ing)? (?:the )?task/i,
+  /analy[sz](?:e|ing) (?:the )?task/i,
+  /build(?:ing)? context/i,
+  /prepar(?:e|ing) context/i,
+  /prepar(?:e|ing) (?:the )?first tool/i,
+  /plan(?:ning)? (?:the )?task/i,
+  /waiting for (?:the )?model/i,
+];
+
+function normalizeTaskStep(value?: string | null) {
+  return compactText(value ?? "", 96).replace(/[。.!！…]+$/g, "").trim();
+}
+
+function isLowSignalTaskStep(value?: string | null) {
+  const normalized = normalizeTaskStep(value);
+  if (!normalized) {
+    return true;
+  }
+  return LOW_SIGNAL_TASK_STEP_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
 function isCollapsibleWorklogRuntimeItem(item: RuntimeTimelineItem) {
   if (item.kind !== "command" && item.kind !== "tool") {
     return false;
@@ -208,19 +242,14 @@ function buildTaskActivityHint(activeTask?: SessionWorkspaceActiveTask | null) {
   if (!activeTask || !isTaskControllable(activeTask.status)) {
     return "";
   }
-  const currentStep = compactText(activeTask.currentStep, 96);
-  if (currentStep) {
-    return `任务仍在运行：${currentStep}`;
+  const currentStep = normalizeTaskStep(activeTask.currentStep);
+  if (currentStep && !isLowSignalTaskStep(currentStep)) {
+    return `正在处理：${currentStep}`;
   }
-  return `任务仍在运行：${compactText(activeTask.goal || getProcessStatusLabel(activeTask.status), 96)}`;
+  return "";
 }
 
 function buildThinkingActivityHint(items: ConversationActivityItem[], activeTask?: SessionWorkspaceActiveTask | null) {
-  const taskHint = buildTaskActivityHint(activeTask);
-  if (taskHint) {
-    return taskHint;
-  }
-
   const runtimeItems = collectActivityRuntimeItems(items).sort((left, right) => (right.time ?? 0) - (left.time ?? 0));
   const priority =
     runtimeItems.find((item) => isRuntimeInFlight(item.status)) ??
@@ -231,7 +260,12 @@ function buildThinkingActivityHint(items: ConversationActivityItem[], activeTask
     return buildRuntimeActivityHint(priority);
   }
 
-  return "正在等待模型或运行时返回第一段内容。";
+  const taskHint = buildTaskActivityHint(activeTask);
+  if (taskHint) {
+    return taskHint;
+  }
+
+  return DEFAULT_THINKING_ACTIVITY_HINT;
 }
 
 function RuntimeWorklogCard({
@@ -383,6 +417,8 @@ export const ConversationActivity = memo(function ConversationActivity({
   const hasThinkingPlaceholder = messages.some((message) => message.streaming && message.placeholder);
   const thinkingActivityHint = buildThinkingActivityHint(items, activeTask);
   const hasVisibleRuntimeActivity = items.some((item) => item.kind === "runtime" || item.kind === "worklog");
+  const showProgressNote =
+    thinkingActivityHint !== DEFAULT_THINKING_ACTIVITY_HINT && activeTaskIsRunning && !hasVisibleRuntimeActivity;
   const showLivePill = Boolean(
     !hasStreamingAssistantContent &&
       (messages.length || activeTask || messagesLoading || activeTaskIsRunning || hasThinkingPlaceholder),
@@ -422,7 +458,7 @@ export const ConversationActivity = memo(function ConversationActivity({
           />
         ),
       )}
-      {showLivePill && activeTaskIsRunning && !hasVisibleRuntimeActivity ? (
+      {showLivePill && showProgressNote ? (
         <article className="runtime-progress-note" aria-label="运行进展">
           <span className="runtime-progress-note-dot" aria-hidden="true" />
           <div>

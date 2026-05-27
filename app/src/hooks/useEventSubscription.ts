@@ -12,7 +12,7 @@ import type {
 } from "@shared";
 import { RuntimeClient } from "../lib/runtimeClient";
 import {
-  appendAssistantContentDelta,
+  formatAssistantFailureContent,
   isOperationalAssistantDelta,
   summarizeOperationalAssistantDelta,
 } from "../state/chatMessages";
@@ -23,6 +23,8 @@ import {
   messageRecordToChatMessageLocal,
 } from "../state/chatTokenHelpers";
 import {
+  appendOrUpdateAssistantMessageCompletion,
+  appendOrUpdateAssistantMessageDelta,
   updateAssistantMessageByMessageId,
   reconcileBackendMessage,
   failAssistantMessage,
@@ -141,22 +143,13 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           const messageId = payload.messageId;
           if (messageId) {
             setChatMessages((current) =>
-              updateAssistantMessageByMessageId(
-                current,
+              appendOrUpdateAssistantMessageDelta(current, {
                 messageId,
-                (msg) => ({
-                  ...msg,
-                  taskId: event.taskId,
-                  content: msg.placeholder
-                    ? displayDelta.trim()
-                    : appendAssistantContentDelta(msg.content, displayDelta),
-                  updatedAt: event.ts,
-                  streaming: true,
-                  placeholder: false,
-                  status: "streaming",
-                }),
-                { sessionId: event.sessionId, taskId: event.taskId },
-              ),
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                delta: displayDelta,
+                now: event.ts,
+              }),
             );
           } else {
             // Fallback: no messageId, use legacy behavior
@@ -185,25 +178,13 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           flushPendingAssistantTokens();
           if (payload.messageId) {
             setChatMessages((current) =>
-              updateAssistantMessageByMessageId(
-                current,
-                payload.messageId!,
-                (msg) => {
-                  // Prefer existing streaming content if richer
-                  const streamingContent = msg.content || "";
-                  const isPlaceholder = msg.placeholder === true || streamingContent === "\u601d\u8003\u4e2d..." || streamingContent.length < 5;
-                  return {
-                    ...msg,
-                    taskId: event.taskId || msg.taskId,
-                    content: isPlaceholder ? (payload.content || streamingContent) : streamingContent,
-                    updatedAt: event.ts,
-                    streaming: false,
-                    placeholder: false,
-                    status: "completed",
-                  };
-                },
-                { sessionId: event.sessionId, taskId: event.taskId },
-              ),
+              appendOrUpdateAssistantMessageCompletion(current, {
+                messageId: payload.messageId!,
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                content: payload.content,
+                now: event.ts,
+              }),
             );
           } else {
             // Fallback: no messageId, use legacy completion
@@ -223,7 +204,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 messageId: payload.messageId,
                 sessionId: event.sessionId,
                 taskId: event.taskId,
-                content: payload.content || "任务失败，未返回具体错误。",
+                content: formatAssistantFailureContent(payload.content),
                 now: event.ts,
               }),
             );

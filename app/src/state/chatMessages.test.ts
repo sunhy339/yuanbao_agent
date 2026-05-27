@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   appendAssistantContentDelta,
+  appendOrUpdateAssistantMessageCompletion,
+  appendOrUpdateAssistantMessageDelta,
   appendAssistantPlaceholder,
   appendUserMessage,
   failAssistantMessage,
@@ -9,6 +11,7 @@ import {
   reconcileBackendMessage,
   removeChatMessage,
   replaceSessionMessages,
+  sanitizeAssistantStatusContent,
   summarizeOperationalAssistantDelta,
   updateAssistantMessageByMessageId,
   updatePendingMessageTask,
@@ -186,7 +189,7 @@ describe("chatMessages", () => {
   });
 
   it("turns runtime progress into short useful chat updates", () => {
-    expect(summarizeOperationalAssistantDelta("Running tool: list_dir")).toBe("\n\n正在使用目录。");
+    expect(summarizeOperationalAssistantDelta("Running tool: list_dir")).toBe("\n\n我在查看目录。");
     expect(summarizeOperationalAssistantDelta("Building context and preparing the first tool calls...")).toBe(
       "\n\n正在整理上下文，并确定要先查看的文件和工具。",
     );
@@ -206,7 +209,29 @@ describe("chatMessages", () => {
   });
 
   it("does not append the same operational update twice", () => {
-    expect(appendAssistantContentDelta("正在使用目录。", "\n\n正在使用目录。")).toBe("正在使用目录。");
+    expect(appendAssistantContentDelta("我在查看目录。", "\n\n我在查看目录。")).toBe("我在查看目录。");
+  });
+
+  it("sanitizes runtime failure payloads before they become chat text", () => {
+    expect(sanitizeAssistantStatusContent('Task Cancelled {"acceptanceCriteria":["Keep focused"]}')).toBe(
+      "任务已取消，已停止继续执行。",
+    );
+    expect(
+      sanitizeAssistantStatusContent(
+        "Task task_27bbe3b48966 cannot transition from 'cancelled' to 'waiting_approval'.\nAllowed: none (terminal state)",
+      ),
+    ).toBe("这条任务已经结束，不能继续补充；请重新发起一条任务。");
+    expect(sanitizeAssistantStatusContent("Cannot supplement task that is not active: task_065cdf0c450f")).toBe(
+      "这条任务已经结束，不能继续补充；请重新发起一条任务。",
+    );
+    expect(
+      sanitizeAssistantStatusContent(
+        '{"error":"Command is not allowed by command allowlist","failureKind":"permission_denied"}',
+      ),
+    ).toBe("命令没有真正执行：运行时策略拦截了这条命令，需要先审批或使用允许的等价命令。");
+    expect(sanitizeAssistantStatusContent("Provider returned error: Concurrency limit exceeded for account")).toBe(
+      "模型并发额度暂时满了，请稍后重试。",
+    );
   });
 
   it("replaces one session with persisted messages while keeping live streaming placeholders", () => {
@@ -457,6 +482,56 @@ describe("chatMessages", () => {
       placeholder: false,
       streaming: true,
     });
+  });
+
+  it("creates a visible streaming assistant message when a backend delta arrives before message.created", () => {
+    const next = appendOrUpdateAssistantMessageDelta([], {
+      messageId: "msg_backend_assistant",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      delta: "First streamed token",
+      now: 4,
+    });
+
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({
+      id: "msg_backend_assistant",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      role: "assistant",
+      content: "First streamed token",
+      placeholder: false,
+      streaming: true,
+      status: "streaming",
+    });
+    expect(getVisibleChatMessages(next, "sess_1").map((message) => message.content)).toEqual([
+      "First streamed token",
+    ]);
+  });
+
+  it("creates a completed assistant message when message.completed arrives before local state exists", () => {
+    const next = appendOrUpdateAssistantMessageCompletion([], {
+      messageId: "msg_backend_assistant",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      content: "Final answer",
+      now: 5,
+    });
+
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({
+      id: "msg_backend_assistant",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      role: "assistant",
+      content: "Final answer",
+      placeholder: false,
+      streaming: false,
+      status: "completed",
+    });
+    expect(getVisibleChatMessages(next, "sess_1").map((message) => message.content)).toEqual([
+      "Final answer",
+    ]);
   });
 
   it("drops a local pending message once the same persisted message arrives", () => {

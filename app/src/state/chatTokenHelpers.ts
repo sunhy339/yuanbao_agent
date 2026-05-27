@@ -7,6 +7,7 @@ import { getPayloadValue, summarizeValue } from "./traceReaders";
 import {
   appendAssistantContentDelta,
   failAssistantMessage,
+  formatAssistantFailureContent,
   isOperationalAssistantDelta,
   summarizeOperationalAssistantDelta,
 } from "./chatMessages";
@@ -138,16 +139,17 @@ export function completeAssistantMessage(current: ChatMessageView[], event: Agen
 }
 
 export function failAssistantMessageForEvent(current: ChatMessageView[], event: AgentEventEnvelope): ChatMessageView[] {
-  const content =
+  const content = formatAssistantFailureContent(
     summarizeValue(
       getPayloadValue(event.payload, ["detail", "resultSummary", "summary", "error", "message"]),
       "",
       10_000,
-    ) || "任务失败，未返回具体错误。";
+    ),
+  );
   return failAssistantMessage(current, {
     sessionId: event.sessionId,
     taskId: event.taskId,
-    content: `任务失败：${content}`,
+    content,
     now: event.ts,
   });
 }

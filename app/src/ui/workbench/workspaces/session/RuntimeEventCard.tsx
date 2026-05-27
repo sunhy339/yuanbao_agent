@@ -21,7 +21,7 @@ import {
 function looksLikeRuntimeMachineText(value?: string | null) {
   const normalized = (value ?? "").trim();
   if (!normalized) return false;
-  if (/^(Task Cancelled|task\.cancelled|task\.failed|task\.completed)\b/i.test(normalized)) {
+  if (/^(Task Cancelled|task\.[a-z0-9_.-]+|agent\.|command\.|provider\.)\b/i.test(normalized)) {
     return true;
   }
   if (
@@ -49,7 +49,7 @@ function looksLikeRuntimeMachineText(value?: string | null) {
       "cwd",
     ].some((key) => keys.has(key));
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -58,6 +58,12 @@ function sanitizeRuntimeDetail(value?: string | null) {
   if (!raw) return "";
   if (/^(Task Cancelled|task\.cancelled)\b/i.test(raw)) {
     return "任务已取消，已停止继续执行。";
+  }
+  if (/Cannot supplement task that is not active|cannot transition from 'cancelled'|terminal state/i.test(raw)) {
+    return "这条任务已经结束，不能继续补充；请重新发起一条任务。";
+  }
+  if (/concurrency limit exceeded/i.test(raw)) {
+    return "模型并发额度暂时满了，请稍后重试。";
   }
   const lines = raw
     .split("\n")
@@ -71,7 +77,7 @@ function sanitizeRuntimeDetail(value?: string | null) {
   const cleaned = lines.join("\n").trim();
   if (cleaned) return cleaned;
   if (/Command is not allowed by command allowlist|permission_denied/i.test(raw)) {
-    return "命令被当前策略拦截，需要换用受控命令或申请允许。";
+    return "命令没有真正执行：运行时策略拦截了这条命令，需要先审批或使用允许的等价命令。";
   }
   return "";
 }

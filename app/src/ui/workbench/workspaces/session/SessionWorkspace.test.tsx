@@ -140,6 +140,8 @@ describe("SessionWorkspace", () => {
     expect(within(digest).getByText("正在修改")).toBeInTheDocument();
     expect(within(digest).getByText("1 个改动文件")).toBeInTheDocument();
     expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
+    expect(within(digest).getByText("已改动 1 个文件")).toBeInTheDocument();
+    expect(within(digest).getByLabelText("改动文件")).toHaveTextContent("app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx");
     const rightPane = screen.getByLabelText("右侧文件工作区");
     expect(rightPane).toBeInTheDocument();
     expect(within(rightPane).getByText("文件")).toBeInTheDocument();
@@ -286,6 +288,9 @@ describe("SessionWorkspace", () => {
     expect(within(digest).getByText(/审查：reviewer-agent - Looks good/)).toBeInTheDocument();
     expect(within(digest).getByText(/合并：approved - main - passed/)).toBeInTheDocument();
     expect(within(digest).getByText(/Diff：1 file changed, 12 insertions/)).toBeInTheDocument();
+    expect(within(digest).getByText("已改动 1 个文件")).toBeInTheDocument();
+    expect(within(digest).getByLabelText("改动统计")).toHaveTextContent("+12");
+    expect(within(digest).getByLabelText("改动统计")).toHaveTextContent("-4");
     const inlineDiff = within(digest).getByLabelText("代码改动 diff");
     expect(inlineDiff.textContent).toContain("SessionWorkspace.tsx");
     expect(inlineDiff.textContent).toContain("old layout");
@@ -338,6 +343,10 @@ describe("SessionWorkspace", () => {
 
     const digest = screen.getByLabelText("工作摘要");
     expect(within(digest).getByText("8 个改动文件")).toBeInTheDocument();
+    expect(within(digest).getByText("已改动 8 个文件")).toBeInTheDocument();
+    expect(within(digest).getByLabelText("改动文件")).toHaveTextContent("kanban_cli/file_1.py");
+    expect(within(digest).getByLabelText("改动文件")).toHaveTextContent("kanban_cli/file_4.py");
+    expect(within(digest).queryByText("kanban_cli/file_5.py")).not.toBeInTheDocument();
     expect(within(digest).getByText("另有 4 个文件可在右侧文件浏览中打开。")).toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
     expect(screen.queryByText("+0 -0")).not.toBeInTheDocument();
@@ -1101,6 +1110,9 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
     const digest = screen.getByLabelText("工作摘要");
     const viewer = within(digest).getByLabelText("代码改动 diff");
+    expect(within(digest).getByText("已改动 1 个文件")).toBeInTheDocument();
+    expect(within(digest).getByLabelText("改动统计")).toHaveTextContent("+620");
+    expect(within(digest).getByLabelText("改动统计")).toHaveTextContent("-0");
     expect(within(viewer).getByText("Update generated report")).toBeInTheDocument();
     expect(viewer.textContent).toContain("old copy");
     expect(viewer.textContent).toContain("new copy");
@@ -1254,6 +1266,35 @@ describe("SessionWorkspace", () => {
 
     expect(screen.getAllByText(/python tools\/bead_art_generator.py --help/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/CLI help is available|已通过/).length).toBeGreaterThan(0);
+  });
+
+  it("keeps low-signal task setup steps out of the main chat output", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_1",
+          status: "running",
+          goal: "Polish the chat output",
+          createdAt: Date.now() - 12_000,
+          currentStep: "理解任务目标",
+        }}
+        messages={[
+          {
+            id: "assistant_pending",
+            role: "assistant",
+            content: "思考中...",
+            createdAt: 1,
+            streaming: true,
+            placeholder: true,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.queryByText(/任务仍在运行/)).not.toBeInTheDocument();
+    expect(screen.queryByText("理解任务目标")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("工作摘要")).not.toBeInTheDocument();
   });
 
   it("keeps raw agent child-task internals out of the compact session workspace", () => {

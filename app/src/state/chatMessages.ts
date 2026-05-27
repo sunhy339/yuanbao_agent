@@ -366,6 +366,118 @@ export function updateAssistantMessageByMessageId(
   return current;
 }
 
+export function appendOrUpdateAssistantMessageDelta(
+  current: ChatMessageView[],
+  payload: {
+    messageId: string;
+    sessionId: string;
+    taskId?: string | null;
+    delta: string;
+    now: number;
+  },
+): ChatMessageView[] {
+  let updatedExisting = false;
+  const updated = updateAssistantMessageByMessageId(
+    current,
+    payload.messageId,
+    (msg) => {
+      updatedExisting = true;
+      return {
+        ...msg,
+        taskId: payload.taskId ?? msg.taskId,
+        content: msg.placeholder
+          ? payload.delta.trimStart()
+          : appendAssistantContentDelta(msg.content, payload.delta),
+        updatedAt: payload.now,
+        streaming: true,
+        placeholder: false,
+        status: "streaming",
+      };
+    },
+    { sessionId: payload.sessionId, taskId: payload.taskId },
+  );
+
+  if (updatedExisting) {
+    return updated;
+  }
+
+  return [
+    ...current,
+    {
+      id: payload.messageId,
+      sessionId: payload.sessionId,
+      taskId: payload.taskId ?? "pending",
+      role: "assistant",
+      content: payload.delta.trimStart(),
+      createdAt: payload.now,
+      updatedAt: payload.now,
+      streaming: true,
+      placeholder: false,
+      status: "streaming",
+    },
+  ];
+}
+
+export function appendOrUpdateAssistantMessageCompletion(
+  current: ChatMessageView[],
+  payload: {
+    messageId: string;
+    sessionId: string;
+    taskId?: string | null;
+    content?: string | null;
+    now: number;
+  },
+): ChatMessageView[] {
+  const completedContent = payload.content ?? "";
+  let updatedExisting = false;
+  const updated = updateAssistantMessageByMessageId(
+    current,
+    payload.messageId,
+    (msg) => {
+      updatedExisting = true;
+      const streamingContent = msg.content || "";
+      const isPlaceholder =
+        msg.placeholder === true ||
+        streamingContent === "\u601d\u8003\u4e2d..." ||
+        streamingContent.length < 5;
+      return {
+        ...msg,
+        taskId: payload.taskId ?? msg.taskId,
+        content: isPlaceholder ? (completedContent || streamingContent) : (streamingContent || completedContent),
+        updatedAt: payload.now,
+        streaming: false,
+        placeholder: false,
+        status: "completed",
+      };
+    },
+    { sessionId: payload.sessionId, taskId: payload.taskId },
+  );
+
+  if (updatedExisting) {
+    return updated;
+  }
+
+  if (!completedContent.trim()) {
+    return current;
+  }
+
+  return [
+    ...current,
+    {
+      id: payload.messageId,
+      sessionId: payload.sessionId,
+      taskId: payload.taskId ?? "persisted",
+      role: "assistant",
+      content: completedContent,
+      createdAt: payload.now,
+      updatedAt: payload.now,
+      streaming: false,
+      placeholder: false,
+      status: "completed",
+    },
+  ];
+}
+
 function findAttachableAssistantMessageIndex(
   messages: ChatMessageView[],
   options: {
@@ -448,7 +560,7 @@ export function isOperationalAssistantDelta(delta: string): boolean {
 function looksLikeRuntimeMachinePayload(value: string): boolean {
   const normalized = value.trim();
   if (!normalized) return false;
-  if (/^(Task Cancelled|task\.cancelled|task\.failed|task\.completed|command\.|provider\.)/i.test(normalized)) {
+  if (/^(Task Cancelled|task\.[a-z0-9_.-]+|command\.|provider\.|agent\.)/i.test(normalized)) {
     return true;
   }
   if (
@@ -480,6 +592,61 @@ function looksLikeRuntimeMachinePayload(value: string): boolean {
   }
 }
 
+export function sanitizeAssistantStatusContent(
+  content: string | null | undefined,
+  fallback = "任务失败，未返回具体错误。",
+): string {
+  const normalized = (content ?? "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return fallback;
+  }
+
+  if (/Cannot supplement task that is not active|cannot transition from 'cancelled'|terminal state/i.test(normalized)) {
+    return "这条任务已经结束，不能继续补充；请重新发起一条任务。";
+  }
+  if (/^(Task Cancelled|task\.cancelled)/i.test(normalized)) {
+    return "任务已取消，已停止继续执行。";
+  }
+  if (/concurrency limit exceeded/i.test(normalized)) {
+    return "模型并发额度暂时满了，请稍后重试。";
+  }
+  if (/Command is not allowed by command allowlist|permission_denied/i.test(normalized)) {
+    return "命令没有真正执行：运行时策略拦截了这条命令，需要先审批或使用允许的等价命令。";
+  }
+  if (looksLikeRuntimeMachinePayload(normalized)) {
+    return fallback;
+  }
+
+  const lines = normalized
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return true;
+      if (looksLikeRuntimeMachinePayload(trimmed)) return false;
+      if (/^task\.[a-z0-9_.-]+/i.test(trimmed)) return false;
+      return true;
+    });
+  const cleaned = lines.join("\n").trim();
+  if (cleaned) {
+    return cleaned;
+  }
+
+  return fallback;
+}
+
+export function formatAssistantFailureContent(content: string | null | undefined): string {
+  const cleaned = sanitizeAssistantStatusContent(content);
+  if (
+    /^(任务|这条任务|当前任务|命令没有真正执行|模型并发额度|模型调用|发送失败|Provider returned error)/.test(
+      cleaned,
+    )
+  ) {
+    return cleaned;
+  }
+  return `任务失败：${cleaned}`;
+}
+
 function friendlyToolLabel(toolName: string) {
   const normalized = toolName.trim();
   if (!normalized) return "工具";
@@ -488,7 +655,22 @@ function friendlyToolLabel(toolName: string) {
   if (normalized === "run_command") return "命令";
   if (normalized === "apply_patch") return "补丁";
   if (normalized === "write_file") return "写入文件";
+  if (normalized === "git_status") return "Git 状态";
+  if (normalized === "git_diff") return "代码差异";
+  if (normalized === "search_files" || normalized === "code_search") return "代码搜索";
   return normalized;
+}
+
+function friendlyToolProgress(toolName: string) {
+  const normalized = toolName.trim();
+  if (normalized === "list_dir") return "我在查看目录。";
+  if (normalized === "read_file") return "我在读取文件。";
+  if (normalized === "run_command") return "我在运行命令。";
+  if (normalized === "apply_patch" || normalized === "write_file") return "我在准备文件改动。";
+  if (normalized === "git_status") return "我在检查 Git 状态。";
+  if (normalized === "git_diff") return "我在读取代码差异。";
+  if (normalized === "search_files" || normalized === "code_search") return "我在搜索代码。";
+  return `我在使用${friendlyToolLabel(toolName)}。`;
 }
 
 function progressLine(text: string) {
@@ -517,7 +699,7 @@ export function summarizeOperationalAssistantDelta(delta: string): string | null
     return progressLine(`处理完成：${normalized.slice("Finished subtask: ".length).trim()}`);
   }
   if (normalized.startsWith("Subtask running tool: ")) {
-    return progressLine(`正在使用${friendlyToolLabel(normalized.slice("Subtask running tool: ".length))}。`);
+    return progressLine(friendlyToolProgress(normalized.slice("Subtask running tool: ".length)));
   }
   if (normalized.startsWith("Subtask tool completed: ")) {
     return progressLine(`${friendlyToolLabel(normalized.slice("Subtask tool completed: ".length))}已完成。`);
@@ -539,7 +721,7 @@ export function summarizeOperationalAssistantDelta(delta: string): string | null
     return progressLine(`命令状态：${commandStatus}`);
   }
   if (normalized.startsWith("Running tool: ")) {
-    return progressLine(`正在使用${friendlyToolLabel(normalized.slice("Running tool: ".length))}。`);
+    return progressLine(friendlyToolProgress(normalized.slice("Running tool: ".length)));
   }
   if (normalized.startsWith("Running post-task validation command: ")) {
     return progressLine(`正在做收尾验证：${normalized.slice("Running post-task validation command: ".length).trim()}`);

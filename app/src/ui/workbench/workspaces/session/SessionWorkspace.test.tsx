@@ -1297,6 +1297,48 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByLabelText("工作摘要")).not.toBeInTheDocument();
   });
 
+  it("disables the stop task action while a stop request is already running", () => {
+    const onStopTask = vi.fn();
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_1",
+          status: "running",
+          goal: "Stop duplicate cancel",
+          createdAt: Date.now() - 5_000,
+        }}
+        messages={[{ id: "m1", role: "user", content: "stop it", createdAt: 1 }]}
+        onStopTask={onStopTask}
+        taskBusyAction="stop"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "停止任务" })).toBeDisabled();
+  });
+
+  it("keeps runtime progress snippets out of assistant prose", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          {
+            id: "m1",
+            role: "assistant",
+            content: "我在查看目录。\n\n真正的回复会留在正文里。\n\n命令已完成。",
+            createdAt: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.queryByText("我在查看目录。")).not.toBeInTheDocument();
+    expect(screen.queryByText("命令已完成。")).not.toBeInTheDocument();
+    expect(screen.getByText("真正的回复会留在正文里。")).toBeInTheDocument();
+  });
+
   it("keeps raw agent child-task internals out of the compact session workspace", () => {
     render(
       <SessionWorkspace

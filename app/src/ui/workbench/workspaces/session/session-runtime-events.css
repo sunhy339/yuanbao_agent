@@ -128,7 +128,7 @@
 }
 
 .session-workspace-chat-only .markdown-content p {
-  white-space: normal;
+  white-space: pre-line;
   overflow-wrap: break-word;
   word-break: normal;
 }

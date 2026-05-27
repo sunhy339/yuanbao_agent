@@ -418,7 +418,7 @@ export function App() {
   const setActiveTaskForSessionRef = useRef<(taskId: string | null, sessionId?: string | null) => void>(() => {});
   const taskTraceHook = useTaskTrace({
     addToast, toastError, setError,
-    task, setTask, setTaskHistory,
+    task, setTask, taskHistory, setTaskHistory,
     setActiveTaskForSession: (taskId, sessionId) => setActiveTaskForSessionRef.current(taskId, sessionId),
     activeTaskId, setActiveTaskId,
   });

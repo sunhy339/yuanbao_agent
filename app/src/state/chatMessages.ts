@@ -673,6 +673,37 @@ function friendlyToolProgress(toolName: string) {
   return `我在使用${friendlyToolLabel(toolName)}。`;
 }
 
+function isAssistantRuntimeProgressLine(line: string) {
+  const normalized = line.trim();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    /^我在(查看目录|读取文件|运行命令|准备文件改动|检查 Git 状态|读取代码差异|搜索代码|使用.+)。?$/.test(normalized) ||
+    /^正在(整理上下文|做收尾验证|做任务后的收尾检查|运行命令|应用文件改动)/.test(normalized) ||
+    /^工具检查已完成/.test(normalized) ||
+    /^开始处理：/.test(normalized) ||
+    /^处理完成：/.test(normalized) ||
+    /^(命令|工具|目录|文件|补丁|Git 状态|代码差异|代码搜索)已完成。$/.test(normalized) ||
+    /^等待审批：/.test(normalized) ||
+    /^审批状态已更新/.test(normalized) ||
+    /^命令(已开始运行|已完成|失败|状态：)/.test(normalized)
+  );
+}
+
+export function stripAssistantRuntimeProgress(content: string): string {
+  const normalized = content.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (isAssistantRuntimeProgressLine(line)) {
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function progressLine(text: string) {
   return `\n\n${text}`;
 }
@@ -684,6 +715,13 @@ export function summarizeOperationalAssistantDelta(delta: string): string | null
     return progressLine("任务已取消，已停止继续执行。");
   }
   if (looksLikeRuntimeMachinePayload(normalized)) {
+    return null;
+  }
+  if (
+    /^(Building context|Completed the minimal tool loop|Started subtask: |Finished subtask: |Subtask |Running tool: |Running post-task|Approval accepted\.)/i.test(
+      normalized,
+    )
+  ) {
     return null;
   }
   if (normalized === "Building context and preparing the first tool calls...") {
@@ -769,6 +807,7 @@ export function getVisibleChatMessages(
   return messages
     .filter((message) => message.sessionId === sessionId)
     .filter((message) => !isEmptyStreamingAssistantShell(message))
+    .filter((message) => !isRuntimeProgressOnlyAssistantMessage(message))
     .sort((left, right) => sortBySeqAndTime(left, right));
 }
 
@@ -778,5 +817,14 @@ function isEmptyStreamingAssistantShell(message: ChatMessageView): boolean {
     message.streaming === true &&
     message.placeholder !== true &&
     !message.content.trim()
+  );
+}
+
+function isRuntimeProgressOnlyAssistantMessage(message: ChatMessageView): boolean {
+  return (
+    message.role === "assistant" &&
+    message.placeholder !== true &&
+    Boolean(message.content.trim()) &&
+    !stripAssistantRuntimeProgress(message.content).trim()
   );
 }

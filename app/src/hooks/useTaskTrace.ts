@@ -16,6 +16,7 @@ const runtimeClient = new RuntimeClient();
 export interface UseTaskTraceDeps extends HookDeps {
   task: TaskRecord | null;
   setTask: (task: TaskRecord | null) => void;
+  taskHistory: TaskRecord[];
   setTaskHistory: React.Dispatch<React.SetStateAction<TaskRecord[]>>;
   setActiveTaskForSession: (taskId: string | null, sessionId?: string | null) => void;
   activeTaskId: string | null;
@@ -25,7 +26,7 @@ export interface UseTaskTraceDeps extends HookDeps {
 export function useTaskTrace(deps: UseTaskTraceDeps) {
   const {
     toastError, setError,
-    task, setTask, setTaskHistory,
+    task, setTask, taskHistory, setTaskHistory,
     setActiveTaskForSession,
     activeTaskId, setActiveTaskId,
   } = deps;
@@ -112,12 +113,23 @@ export function useTaskTrace(deps: UseTaskTraceDeps) {
     await loadTraceForTask(taskId);
   }
 
-  async function handleTaskControl(action: TaskControlAction) {
-    if (!task) {
+  async function handleTaskControl(action: TaskControlAction, taskIdOverride?: string) {
+    const targetTask = taskIdOverride && task?.id !== taskIdOverride
+      ? taskHistory.find((item) => item.id === taskIdOverride) ?? null
+      : task;
+    if (!targetTask) {
       return;
     }
 
-    const taskId = task.id;
+    if (taskControlBusyAction !== null) {
+      return;
+    }
+
+    if (action === "cancel" && !isTaskControllable(targetTask.status)) {
+      return;
+    }
+
+    const taskId = targetTask.id;
     setTaskControlBusyAction(action);
     setTaskControlError(null);
     setError(null);

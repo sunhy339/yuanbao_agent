@@ -6,9 +6,11 @@ import type { SessionWorkspaceMessage } from "./types";
 import { useTickWhen } from "./useTick";
 import { THINKING_STALLED_MS, formatElapsedTime, getRoleLabel, getMessageDisplayTime } from "./utils";
 import { MarkdownContent } from "./MarkdownContent";
+import { stripAssistantRuntimeProgress } from "../../../../state/chatMessages";
 
 function normalizeAssistantContent(content: string) {
-  const trimmed = content.trim();
+  const cleaned = stripAssistantRuntimeProgress(content);
+  const trimmed = cleaned.trim();
   if (!trimmed) {
     return "";
   }
@@ -23,7 +25,7 @@ function normalizeAssistantContent(content: string) {
       .replace(/([。！？；])(?=\S)/g, "$1\n\n");
   }
 
-  return content;
+  return cleaned;
 }
 
 function MessageAvatar({ role }: { role: SessionWorkspaceMessage["role"] }) {

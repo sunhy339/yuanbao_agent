@@ -12,6 +12,7 @@ import {
   removeChatMessage,
   replaceSessionMessages,
   sanitizeAssistantStatusContent,
+  stripAssistantRuntimeProgress,
   summarizeOperationalAssistantDelta,
   updateAssistantMessageByMessageId,
   updatePendingMessageTask,
@@ -189,19 +190,11 @@ describe("chatMessages", () => {
   });
 
   it("turns runtime progress into short useful chat updates", () => {
-    expect(summarizeOperationalAssistantDelta("Running tool: list_dir")).toBe("\n\n我在查看目录。");
-    expect(summarizeOperationalAssistantDelta("Building context and preparing the first tool calls...")).toBe(
-      "\n\n正在整理上下文，并确定要先查看的文件和工具。",
-    );
-    expect(summarizeOperationalAssistantDelta("Subtask tool completed: run_command")).toBe(
-      "\n\n命令已完成。",
-    );
-    expect(summarizeOperationalAssistantDelta("Subtask waiting for approval: run_command")).toBe(
-      "\n\n等待审批：命令。",
-    );
-    expect(summarizeOperationalAssistantDelta("Subtask tool failed: run_command")).toBe(
-      "\n\n命令失败，正在根据输出定位原因。",
-    );
+    expect(summarizeOperationalAssistantDelta("Running tool: list_dir")).toBeNull();
+    expect(summarizeOperationalAssistantDelta("Building context and preparing the first tool calls...")).toBeNull();
+    expect(summarizeOperationalAssistantDelta("Subtask tool completed: run_command")).toBeNull();
+    expect(summarizeOperationalAssistantDelta("Subtask waiting for approval: run_command")).toBeNull();
+    expect(summarizeOperationalAssistantDelta("Subtask tool failed: run_command")).toBeNull();
     expect(summarizeOperationalAssistantDelta('Task Cancelled {"acceptanceCriteria":["Keep focused"]}')).toBe(
       "\n\n任务已取消，已停止继续执行。",
     );
@@ -210,6 +203,28 @@ describe("chatMessages", () => {
 
   it("does not append the same operational update twice", () => {
     expect(appendAssistantContentDelta("我在查看目录。", "\n\n我在查看目录。")).toBe("我在查看目录。");
+  });
+
+  it("strips runtime progress lines from assistant transcript display", () => {
+    expect(
+      stripAssistantRuntimeProgress("我在查看目录。\n\n最终回答：已经完成。\n\n命令已完成。"),
+    ).toBe("最终回答：已经完成。");
+  });
+
+  it("hides assistant messages that only contain runtime progress", () => {
+    const progressOnly: ChatMessageView[] = [
+      {
+        id: "m_progress",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "assistant",
+        content: "我在查看目录。\n\n命令已完成。",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ];
+
+    expect(getVisibleChatMessages(progressOnly, "sess_1")).toEqual([]);
   });
 
   it("sanitizes runtime failure payloads before they become chat text", () => {

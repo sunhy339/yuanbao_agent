@@ -87,7 +87,7 @@
   margin-bottom: 0;
   color: var(--yb-ink-soft);
   line-height: 1.52;
-  white-space: normal;
+  white-space: pre-line;
   overflow-wrap: break-word;
   word-break: normal;
 }

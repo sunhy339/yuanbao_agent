@@ -80,7 +80,7 @@ export interface UseMessageActionsDeps extends HookDeps {
   persistSearchConfig: () => Promise<any>;
   ensureWorkspace: () => Promise<any>;
   clearPendingAssistantTokens: () => void;
-  handleTaskControl: (action: any) => Promise<void>;
+  handleTaskControl: (action: any, taskId?: string) => Promise<void>;
   handleRefreshMcpTools: () => Promise<void>;
   refreshSkills: () => void;
   sessionTitle: string;
@@ -272,7 +272,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
 
   const composerCanStop = isTaskControllable(task?.status);
   const composerHasStreamingMessage = visibleChatMessages.some((message) => message.streaming);
-  const composerSending = messageBusy || composerCanStop || composerHasStreamingMessage;
+  const composerSending = messageBusy || composerCanStop || (composerHasStreamingMessage && composerCanStop);
 
   async function handleSendMessage() {
     if (!prompt.trim() && promptAttachments.length === 0) {
@@ -367,7 +367,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
     setError(null);
     setTaskControlError(null);
     if (task && isTaskControllable(task.status)) {
-      void handleTaskControl("cancel");
+      void handleTaskControl("cancel", task.id);
     }
   }
 

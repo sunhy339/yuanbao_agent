@@ -569,7 +569,7 @@ export function SessionWorkspace({
                 size="sm"
                 variant="danger"
                 loading={taskBusyAction === "stop"}
-                disabled={!visibleActiveTask || !isTaskControllable(visibleActiveTask.status) || !onStopTask}
+                disabled={!visibleActiveTask || !isTaskControllable(visibleActiveTask.status) || !onStopTask || taskBusyAction === "stop"}
                 onClick={() => {
                   if (visibleActiveTask) {
                     void onStopTask?.(visibleActiveTask.id);

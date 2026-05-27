@@ -150,38 +150,41 @@ class TestTaskTransitionValidation:
             orch._validate_task_transition("cancelled", "running", "t1")
 
 
-# ── integration: cancel_task rejects terminal ──────────────────────────────
+# ── integration: cancel_task is idempotent for terminal states ─────────────
 
 
 class TestCancelTaskStateMachine:
-    """cancel_task should reject tasks in terminal states."""
+    """cancel_task should no-op for terminal states and cancel active work."""
 
-    def test_cancel_completed_task_rejected(self, tmp_path: Any) -> None:
+    def test_cancel_completed_task_returns_current_task(self, tmp_path: Any) -> None:
         runtime = _make_runtime(tmp_path)
         session = _open_session(runtime, tmp_path)
         task = _create_task(runtime.store, session["id"], status="completed")
 
         resp = _rpc(runtime, "task.cancel", {"taskId": task["id"]})
-        assert "error" in resp
-        assert "cannot transition" in resp["error"]["message"]
+        assert "result" in resp
+        assert resp["result"]["task"]["status"] == "completed"
+        assert "task.cancelled" not in [event["type"] for event in runtime.events]
 
-    def test_cancel_failed_task_rejected(self, tmp_path: Any) -> None:
+    def test_cancel_failed_task_returns_current_task(self, tmp_path: Any) -> None:
         runtime = _make_runtime(tmp_path)
         session = _open_session(runtime, tmp_path)
         task = _create_task(runtime.store, session["id"], status="failed")
 
         resp = _rpc(runtime, "task.cancel", {"taskId": task["id"]})
-        assert "error" in resp
-        assert "cannot transition" in resp["error"]["message"]
+        assert "result" in resp
+        assert resp["result"]["task"]["status"] == "failed"
+        assert "task.cancelled" not in [event["type"] for event in runtime.events]
 
-    def test_cancel_cancelled_task_rejected(self, tmp_path: Any) -> None:
+    def test_cancel_cancelled_task_returns_current_task(self, tmp_path: Any) -> None:
         runtime = _make_runtime(tmp_path)
         session = _open_session(runtime, tmp_path)
         task = _create_task(runtime.store, session["id"], status="cancelled")
 
         resp = _rpc(runtime, "task.cancel", {"taskId": task["id"]})
-        assert "error" in resp
-        assert "cannot transition" in resp["error"]["message"]
+        assert "result" in resp
+        assert resp["result"]["task"]["status"] == "cancelled"
+        assert "task.cancelled" not in [event["type"] for event in runtime.events]
 
     def test_cancel_running_task_allowed(self, tmp_path: Any) -> None:
         runtime = _make_runtime(tmp_path)

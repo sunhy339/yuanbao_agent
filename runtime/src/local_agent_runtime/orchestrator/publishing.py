@@ -103,6 +103,8 @@ class PublishingMixin:
 
     def cancel_task(self, params: dict[str, Any]) -> dict[str, Any]:
         task = self._store.get_task({"taskId": params["taskId"]})["task"]
+        if task["status"] in {"completed", "failed", "cancelled"}:
+            return {"task": task}
         self._validate_task_transition(task["status"], "cancelled", task["id"])
         cancel_background_commands(database_path=self._store.database_path, task_id=task["id"])
         task = self._store.update_task(task_id=params["taskId"], status="cancelled")

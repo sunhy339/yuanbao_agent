@@ -914,6 +914,10 @@
   gap: 10px;
 }
 
+.session-workspace-chat-only .markdown-content p {
+  white-space: pre-line;
+}
+
 .session-workspace-chat-only .markdown-content code {
   border: 0;
   border-radius: 6px;

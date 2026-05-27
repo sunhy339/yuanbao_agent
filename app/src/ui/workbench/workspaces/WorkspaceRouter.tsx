@@ -131,7 +131,7 @@ export interface WorkspaceRouterProps {
   handleRefreshCommandJob: (commandId: string) => Promise<void>;
   handleStopCommandJob: (commandId: string) => Promise<void>;
   handleRefreshTask: () => Promise<void>;
-  handleTaskControl: (action: any) => Promise<void>;
+  handleTaskControl: (action: any, taskId?: string) => Promise<void>;
   handleRefreshTrace: () => Promise<void>;
   handleRefreshWorktree: (worktreeId: string) => Promise<void>;
   handleLoadWorktreeDiff: (worktreeId: string, full?: boolean) => Promise<void>;
@@ -344,9 +344,9 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
         onRefreshCommandJob={props.handleRefreshCommandJob}
         onStopCommandJob={props.handleStopCommandJob}
         onRefreshTask={props.handleRefreshTask}
-        onPauseTask={() => props.handleTaskControl("pause")}
-        onResumeTask={() => props.handleTaskControl("resume")}
-        onStopTask={() => props.handleTaskControl("cancel")}
+        onPauseTask={(taskId: string) => props.handleTaskControl("pause", taskId)}
+        onResumeTask={(taskId: string) => props.handleTaskControl("resume", taskId)}
+        onStopTask={(taskId: string) => props.handleTaskControl("cancel", taskId)}
         onRefreshTrace={props.handleRefreshTrace}
         onRefreshWorktree={props.handleRefreshWorktree}
         onLoadWorktreeDiff={props.handleLoadWorktreeDiff}

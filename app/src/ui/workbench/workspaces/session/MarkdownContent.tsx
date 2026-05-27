@@ -126,6 +126,13 @@ function isMarkdownBlockStart(line: string) {
   );
 }
 
+function joinParagraphLines(lines: string[]) {
+  return lines
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function MarkdownContent({ content }: { content: string }) {
   const lines = normalizeMarkdownContent(content).split("\n");
   const blocks: ReactNode[] = [];
@@ -266,7 +273,7 @@ export function MarkdownContent({ content }: { content: string }) {
       paragraphLines.push(lines[index]);
       index += 1;
     }
-    blocks.push(<p key={`p-${index}`}>{renderInlineMarkdown(paragraphLines.join(" "), `p-${index}`)}</p>);
+    blocks.push(<p key={`p-${index}`}>{renderInlineMarkdown(joinParagraphLines(paragraphLines), `p-${index}`)}</p>);
   }
 
   return <div className="markdown-content">{blocks}</div>;

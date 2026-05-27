@@ -149,6 +149,7 @@ function isEphemeralChatBlockMessage(message: ChatMessageView) {
   return (
     message.metadata?.kind === "tool_use" ||
     message.metadata?.kind === "tool_result" ||
+    message.metadata?.kind === "tool_activity" ||
     message.metadata?.kind === "assistant_thinking" ||
     message.metadata?.kind === "permission_request"
   );
@@ -502,10 +503,15 @@ export function completeAssistantToolUseMessage(
   const messageId = `tool_use:${payload.toolUseId}`;
   const inputText = formatChatBlockValue(payload.input);
   const next = [...current];
-  const index = next.findIndex((message) => message.id === messageId);
+  const index = next.findIndex(
+    (message) =>
+      message.id === messageId ||
+      (message.metadata?.kind === "tool_activity" && message.metadata?.toolUseId === payload.toolUseId),
+  );
   const content = inputText || "{}";
   if (index >= 0) {
     const message = next[index];
+    const isActivity = message.metadata?.kind === "tool_activity";
     return next.map((item, itemIndex) =>
       itemIndex === index
         ? {
@@ -519,9 +525,10 @@ export function completeAssistantToolUseMessage(
             toolName: payload.toolName,
             metadata: {
               ...(message.metadata ?? {}),
-              kind: "tool_use",
+              kind: isActivity ? "tool_activity" : "tool_use",
               toolUseId: payload.toolUseId,
               input: payload.input,
+              inputText: content,
             },
           }
         : item,
@@ -546,6 +553,7 @@ export function completeAssistantToolUseMessage(
         kind: "tool_use",
         toolUseId: payload.toolUseId,
         input: payload.input,
+        inputText: content,
       },
     },
   ];
@@ -565,6 +573,41 @@ export function appendAssistantToolResultMessage(
 ): ChatMessageView[] {
   const messageId = `tool_result:${payload.toolUseId}`;
   const content = formatToolResultSummary(payload.content, payload.isError);
+  const toolUseIndex = current.findIndex(
+    (message) =>
+      (message.metadata?.kind === "tool_use" || message.metadata?.kind === "tool_activity") &&
+      message.metadata?.toolUseId === payload.toolUseId,
+  );
+  if (toolUseIndex >= 0) {
+    const next = [...current];
+    const message = next[toolUseIndex];
+    const inputContent =
+      typeof message.metadata?.inputText === "string"
+        ? message.metadata.inputText
+        : message.content;
+    next[toolUseIndex] = {
+      ...message,
+      id: `tool_activity:${payload.toolUseId}`,
+      taskId: payload.taskId ?? message.taskId,
+      content: inputContent || content,
+      updatedAt: payload.now,
+      streaming: false,
+      placeholder: false,
+      status: payload.isError ? "failed" : "completed",
+      toolName: payload.toolName ?? message.toolName,
+      metadata: {
+        ...(message.metadata ?? {}),
+        kind: "tool_activity",
+        toolUseId: payload.toolUseId,
+        inputText: inputContent,
+        resultText: content,
+        input: message.metadata?.input,
+        rawContent: payload.content,
+        isError: Boolean(payload.isError),
+      },
+    };
+    return next.filter((message, index) => index === toolUseIndex || message.id !== messageId);
+  }
   const existingIndex = current.findIndex((message) => message.id === messageId);
   const nextMessage: ChatMessageView = {
     id: messageId,
@@ -1242,6 +1285,7 @@ function isRuntimeProgressOnlyAssistantMessage(message: ChatMessageView): boolea
   if (
     message.metadata?.kind === "tool_use" ||
     message.metadata?.kind === "tool_result" ||
+    message.metadata?.kind === "tool_activity" ||
     message.metadata?.kind === "assistant_thinking" ||
     message.metadata?.kind === "permission_request"
   ) {

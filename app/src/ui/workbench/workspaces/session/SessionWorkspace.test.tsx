@@ -692,20 +692,18 @@ describe("SessionWorkspace", () => {
         activeTask={null}
         messages={[
           {
-            id: "tool_use:tc_1",
+            id: "tool_activity:tc_1",
             role: "assistant",
             content: '{\n  "command": "npm test"\n}',
             toolName: "run_command",
-            metadata: { kind: "tool_use", toolUseId: "tc_1" },
-            createdAt: 1,
-          },
-          {
-            id: "tool_result:tc_1",
-            role: "assistant",
-            content: '{\n  "status": "completed"\n}',
-            toolName: "run_command",
             status: "completed",
-            metadata: { kind: "tool_result", toolUseId: "tc_1", isError: false },
+            metadata: {
+              kind: "tool_activity",
+              toolUseId: "tc_1",
+              inputText: '{\n  "command": "npm test"\n}',
+              resultText: '{\n  "status": "completed"\n}',
+              isError: false,
+            },
             createdAt: 2,
           },
         ]}
@@ -713,15 +711,15 @@ describe("SessionWorkspace", () => {
     );
 
     const blocks = container.querySelectorAll(".message-tool-block");
-    expect(blocks).toHaveLength(2);
-    expect(screen.getByText("工具调用")).toBeInTheDocument();
-    expect(screen.getByText("工具结果")).toBeInTheDocument();
-    expect(screen.getAllByText("run_command").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText(/command: npm test/)).toBeInTheDocument();
-    expect(screen.getByText(/status: completed/)).toBeInTheDocument();
+    expect(blocks).toHaveLength(1);
+    expect(screen.getByText("工具过程")).toBeInTheDocument();
+    expect(screen.getAllByText("run_command").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/command: npm test -> status: completed/)).toBeInTheDocument();
     expect(screen.queryByText(/"command": "npm test"/)).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /工具调用/ }));
+    await user.click(screen.getByRole("button", { name: /工具过程/ }));
+    expect(screen.getByText("输入")).toBeInTheDocument();
+    expect(screen.getByText("结果")).toBeInTheDocument();
     expect(screen.getByText(/"command": "npm test"/)).toBeInTheDocument();
   });
 

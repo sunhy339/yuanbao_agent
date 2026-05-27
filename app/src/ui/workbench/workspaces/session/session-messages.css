@@ -251,6 +251,24 @@
   color: #991b1b;
 }
 
+.message-tool-block-detail {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.message-tool-block-detail section {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.message-tool-block-detail span {
+  color: var(--session-muted);
+  font-size: 11px;
+  font-weight: 760;
+}
+
 .message-permission-block {
   display: grid;
   gap: 8px;

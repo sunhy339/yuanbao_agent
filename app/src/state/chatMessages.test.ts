@@ -715,7 +715,7 @@ describe("chatMessages", () => {
     ]);
   });
 
-  it("builds compact tool-use and tool-result chat blocks", () => {
+  it("merges compact tool-use and tool-result chat blocks by tool id", () => {
     const withInput = appendOrUpdateAssistantToolInputDelta([], {
       toolUseId: "tc_1",
       toolName: "run_command",
@@ -742,17 +742,57 @@ describe("chatMessages", () => {
     });
 
     expect(getVisibleChatMessages(withResult, "sess_1").map((message) => message.id)).toEqual([
-      "tool_use:tc_1",
-      "tool_result:tc_1",
+      "tool_activity:tc_1",
     ]);
     expect(withResult[0]).toMatchObject({
+      id: "tool_activity:tc_1",
       toolName: "run_command",
       streaming: false,
-      metadata: { kind: "tool_use", toolUseId: "tc_1" },
+      metadata: {
+        kind: "tool_activity",
+        toolUseId: "tc_1",
+        inputText: '{\n  "command": "npm test"\n}',
+        resultText: '{\n  "status": "completed",\n  "exitCode": 0\n}',
+        isError: false,
+      },
     });
-    expect(withResult[1]).toMatchObject({
+  });
+
+  it("merges out-of-order tool result and completed input into one activity block", () => {
+    const withResult = appendAssistantToolResultMessage([], {
+      toolUseId: "tc_1",
       toolName: "run_command",
-      metadata: { kind: "tool_result", toolUseId: "tc_1", isError: false },
+      sessionId: "sess_1",
+      taskId: "task_1",
+      content: { status: "completed" },
+      now: 1,
+    });
+    const completed = completeAssistantToolUseMessage(withResult, {
+      toolUseId: "tc_1",
+      toolName: "run_command",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      input: { command: "npm test" },
+      now: 2,
+    });
+    const merged = appendAssistantToolResultMessage(completed, {
+      toolUseId: "tc_1",
+      toolName: "run_command",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      content: { status: "completed" },
+      now: 3,
+    });
+
+    expect(getVisibleChatMessages(merged, "sess_1").map((message) => message.id)).toEqual([
+      "tool_activity:tc_1",
+    ]);
+    expect(merged[0]).toMatchObject({
+      metadata: {
+        kind: "tool_activity",
+        inputText: '{\n  "command": "npm test"\n}',
+        resultText: '{\n  "status": "completed"\n}',
+      },
     });
   });
 

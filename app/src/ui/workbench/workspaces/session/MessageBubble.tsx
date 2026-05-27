@@ -91,11 +91,16 @@ function ToolBlockContent({ message }: { message: SessionWorkspaceMessage }) {
   const [expanded, setExpanded] = useState(false);
   const kind = getMessageMetadataKind(message);
   const isResult = kind === "tool_result";
+  const isActivity = kind === "tool_activity";
   const isError = message.metadata?.isError === true || message.status === "failed";
-  const Icon = isResult ? CheckCircle2 : TerminalSquare;
-  const title = isResult ? "工具结果" : "工具调用";
+  const Icon = isResult || isActivity ? CheckCircle2 : TerminalSquare;
+  const title = isActivity ? "工具过程" : isResult ? "工具结果" : "工具调用";
   const content = message.content.trim();
-  const summary = summarizeToolContent(content, kind);
+  const inputText = typeof message.metadata?.inputText === "string" ? message.metadata.inputText.trim() : content;
+  const resultText = typeof message.metadata?.resultText === "string" ? message.metadata.resultText.trim() : "";
+  const summary = isActivity
+    ? `${summarizeToolContent(inputText, "tool_use")}${resultText ? ` -> ${summarizeToolContent(resultText, "tool_result")}` : ""}`
+    : summarizeToolContent(content, kind);
   const ToggleIcon = expanded ? ChevronDown : ChevronRight;
 
   return (
@@ -112,7 +117,24 @@ function ToolBlockContent({ message }: { message: SessionWorkspaceMessage }) {
         <span>{title}</span>
         <small>{summary}</small>
       </button>
-      {expanded && content ? <pre>{content}</pre> : null}
+      {expanded && isActivity ? (
+        <div className="message-tool-block-detail">
+          {inputText ? (
+            <section>
+              <span>输入</span>
+              <pre>{inputText}</pre>
+            </section>
+          ) : null}
+          {resultText ? (
+            <section>
+              <span>结果</span>
+              <pre>{resultText}</pre>
+            </section>
+          ) : null}
+        </div>
+      ) : expanded && content ? (
+        <pre>{content}</pre>
+      ) : null}
     </section>
   );
 }
@@ -211,7 +233,7 @@ export const MessageBubble = memo(function MessageBubble({
         ? "还没有收到可展示内容；后端可能正在等待模型、工具或审批。"
         : "正在等待模型或运行时返回第一段内容。");
   const displayContent = message.role === "assistant" ? normalizeAssistantContent(message.content) : message.content;
-  const isToolBlock = metadataKind === "tool_use" || metadataKind === "tool_result";
+  const isToolBlock = metadataKind === "tool_use" || metadataKind === "tool_result" || metadataKind === "tool_activity";
   const isPermissionRequest = metadataKind === "permission_request";
 
   return (

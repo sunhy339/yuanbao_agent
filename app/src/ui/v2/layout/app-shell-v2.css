@@ -292,9 +292,9 @@
 }
 
 .yb-app-shell .composer-dock[data-layout="session"] {
-  right: calc(var(--session-composer-side-reserve, clamp(620px, 42vw, 1040px)) + 24px);
-  left: 48px;
-  max-width: 760px;
+  right: calc(var(--session-composer-side-reserve, clamp(620px, 42vw, 1040px)) + var(--composer-session-gutter, 48px));
+  left: var(--composer-session-gutter, 48px);
+  max-width: none;
 }
 
 .yb-app-shell .composer-input span,
@@ -316,6 +316,12 @@
   border-color: var(--yb-line);
   background: rgba(26, 22, 20, 0.96);
   box-shadow: 0 24px 56px rgba(26, 20, 16, 0.42);
+}
+
+.yb-app-shell .composer-permission-menu {
+  border-color: rgba(80, 60, 50, 0.12);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 22px 48px rgba(60, 40, 30, 0.18);
 }
 
 .yb-app-shell .composer-model-option {

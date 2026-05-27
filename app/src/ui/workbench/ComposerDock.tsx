@@ -1,13 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ChevronDown, ChevronUp, Plus, ShieldAlert } from "lucide-react";
+import {
+  ArrowUp,
+  ChevronDown,
+  ChevronUp,
+  CornerDownRight,
+  MoreHorizontal,
+  Plus,
+  ShieldAlert,
+  Trash2,
+} from "lucide-react";
+import type { QueuedPromptSubmission } from "../../state/eventRecordViews";
 import { matchCommands, type SlashCommand } from "../../state/slashCommands";
 
 interface ComposerDockProps {
   promptValue: string;
   onPromptChange: (value: string) => void;
   onSubmitPrompt: () => void;
-  onQueuePrompt?: () => void;
+  onQueuePrompt?: (mode?: "queued" | "supplement") => void;
   onStopPrompt?: () => void;
+  queuedPrompts?: QueuedPromptSubmission[];
+  onGuideQueuedPrompt?: (id: string) => void;
+  onQueuedPromptRemove?: (id: string) => void;
+  onQueuedPromptMove?: (id: string, direction: "up" | "down") => void;
   disabled: boolean;
   sending?: boolean;
   submitting?: boolean;
@@ -15,6 +29,8 @@ interface ComposerDockProps {
   providerLabel: string;
   cwdLabel: string;
   permissionLabel?: string;
+  permissionMode?: string;
+  onPermissionModeChange?: (mode: string) => void;
   attachments?: string[];
   onAttachmentsChange?: (attachments: string[]) => void;
   onAttachmentError?: (message: string) => void;
@@ -42,6 +58,29 @@ const SUBMIT_LABEL = "发送";
 const SENDING_LABEL = "发送中...";
 const SUPPLEMENT_LABEL = "补充";
 const QUEUE_LABEL = "暂存";
+
+const permissionOptions = [
+  {
+    id: "ask",
+    title: "请求审批",
+    text: "命令、文件编辑和高风险操作前先确认。",
+  },
+  {
+    id: "edits",
+    title: "允许工作区编辑",
+    text: "允许直接编辑工作区文件，高风险操作仍会确认。",
+  },
+  {
+    id: "plan",
+    title: "先规划",
+    text: "进入实现前先保持在可审阅的规划模式。",
+  },
+  {
+    id: "skip",
+    title: "完全访问权限",
+    text: "减少审批提示，适合受控本地任务。",
+  },
+];
 
 function compactProviderName(value: string) {
   if (/openai/i.test(value)) {
@@ -181,6 +220,10 @@ export function ComposerDock({
   onSubmitPrompt,
   onQueuePrompt,
   onStopPrompt,
+  queuedPrompts = [],
+  onGuideQueuedPrompt,
+  onQueuedPromptRemove,
+  onQueuedPromptMove,
   disabled,
   sending,
   submitting,
@@ -188,6 +231,8 @@ export function ComposerDock({
   providerLabel,
   cwdLabel,
   permissionLabel,
+  permissionMode,
+  onPermissionModeChange,
   attachments = [],
   onAttachmentsChange,
   onAttachmentError,
@@ -201,8 +246,10 @@ export function ComposerDock({
   const dockRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
+  const permissionPickerRef = useRef<HTMLDivElement>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
 
   const autoResize = useCallback((target: HTMLTextAreaElement) => {
     target.style.height = "auto";
@@ -218,6 +265,8 @@ export function ComposerDock({
   const canStop = Boolean(sending && onStopPrompt);
   const submitDisabled = disabled || Boolean(submitting) || (!promptValue.trim() && attachments.length === 0);
   const canQueue = Boolean(sending && onQueuePrompt && !submitDisabled);
+  const canGuideQueuedPrompt = Boolean(sending && onGuideQueuedPrompt && !disabled && !submitting);
+  const queuedPromptTotal = queuedPrompts.length || queuedPromptCount;
   const selectedModelValue = selectedModelId ?? modelOptions[0]?.id ?? "";
   const selectedModel = modelOptions.find((option) => option.id === selectedModelValue) ?? modelOptions[0];
   const selectedModelSubtitle =
@@ -239,6 +288,10 @@ export function ComposerDock({
     ["active", "pending"].includes(runtimeChildState(childTask)),
   ).length;
   const attentionRuntimeChildCount = visibleRuntimeChildTasks.filter((childTask) => runtimeChildState(childTask) === "warning").length;
+  const currentPermissionOption =
+    permissionOptions.find((option) => option.id === permissionMode) ??
+    permissionOptions.find((option) => option.title === permissionLabel) ??
+    permissionOptions[0];
 
   // reset selection when matches change
   useEffect(() => {
@@ -246,15 +299,18 @@ export function ComposerDock({
   }, [matches.length]);
 
   useEffect(() => {
-    if (!modelMenuOpen) return;
+    if (!modelMenuOpen && !permissionMenuOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
       if (!modelPickerRef.current?.contains(event.target as Node)) {
         setModelMenuOpen(false);
       }
+      if (!permissionPickerRef.current?.contains(event.target as Node)) {
+        setPermissionMenuOpen(false);
+      }
     };
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [modelMenuOpen]);
+  }, [modelMenuOpen, permissionMenuOpen]);
 
   useEffect(() => {
     if (hidden) return undefined;
@@ -274,7 +330,7 @@ export function ComposerDock({
       observer?.disconnect();
       window.removeEventListener("resize", updateReserve);
     };
-  }, [attachments.length, hidden, modelMenuOpen, promptValue, visibleRuntimeChildTasks.length]);
+  }, [attachments.length, hidden, modelMenuOpen, permissionMenuOpen, promptValue, queuedPrompts.length, visibleRuntimeChildTasks.length]);
 
   const applyCommand = useCallback(
     (cmd: SlashCommand) => {
@@ -370,6 +426,60 @@ export function ComposerDock({
           ))}
         </div>
       ) : null}
+      {queuedPrompts.length ? (
+        <section className="composer-queued-prompts" aria-label="待发送消息">
+          <ol>
+            {queuedPrompts.map((item, index) => (
+              <li key={item.id}>
+                <span className="composer-queued-index" aria-hidden="true">{index + 1}</span>
+                <p>{item.content}</p>
+                {item.attachments.length ? <small>{item.attachments.length} 个附件</small> : null}
+                <div className="composer-queued-actions">
+                  <button
+                    type="button"
+                    className="composer-queued-guide"
+                    disabled={!canGuideQueuedPrompt}
+                    onClick={() => onGuideQueuedPrompt?.(item.id)}
+                    title="引导到当前正在处理的任务"
+                  >
+                    <CornerDownRight size={13} strokeWidth={2} aria-hidden="true" />
+                    <span>引导</span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="上移待发送消息"
+                    disabled={index === 0}
+                    onClick={() => onQueuedPromptMove?.(item.id, "up")}
+                    title="上移"
+                  >
+                    <ChevronUp size={13} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="下移待发送消息"
+                    disabled={index === queuedPrompts.length - 1}
+                    onClick={() => onQueuedPromptMove?.(item.id, "down")}
+                    title="下移"
+                  >
+                    <ChevronDown size={13} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="删除待发送消息"
+                    onClick={() => onQueuedPromptRemove?.(item.id)}
+                    title="删除"
+                  >
+                    <Trash2 size={13} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                  <button type="button" aria-label="更多待发送操作" disabled title="更多">
+                    <MoreHorizontal size={13} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
       <label className="composer-input">
         <span>{COMMAND_LABEL}</span>
         <textarea
@@ -449,11 +559,43 @@ export function ComposerDock({
             <strong>添加文件</strong>
           </button>
           {permissionLabel ? (
-            <button type="button" className="composer-permission-button">
-              <ShieldAlert size={14} strokeWidth={2} aria-hidden="true" />
-              <span>{permissionLabel}</span>
-              <ChevronDown size={13} strokeWidth={2} aria-hidden="true" />
-            </button>
+            <div className="composer-permission-picker" ref={permissionPickerRef}>
+              <button
+                type="button"
+                className="composer-permission-button"
+                aria-haspopup="menu"
+                aria-expanded={permissionMenuOpen}
+                onClick={() => setPermissionMenuOpen((current) => !current)}
+              >
+                <ShieldAlert size={14} strokeWidth={2} aria-hidden="true" />
+                <span>{currentPermissionOption?.title ?? permissionLabel}</span>
+                <ChevronDown size={13} strokeWidth={2} aria-hidden="true" />
+              </button>
+              {permissionMenuOpen ? (
+                <div className="composer-permission-menu" role="menu" aria-label="选择权限模式">
+                  {permissionOptions.map((option) => {
+                    const selected = option.id === permissionMode || option.title === permissionLabel;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={selected}
+                        className="composer-permission-option"
+                        onClick={() => {
+                          onPermissionModeChange?.(option.id);
+                          setPermissionMenuOpen(false);
+                        }}
+                      >
+                        <span aria-hidden="true" />
+                        <strong>{option.title}</strong>
+                        <small>{option.text}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
           ) : null}
         </div>
         <div className="composer-toolbar-right">
@@ -530,7 +672,7 @@ export function ComposerDock({
             {sending && onQueuePrompt ? (
               <button type="button" className="composer-queue" disabled={!canQueue} onClick={() => onQueuePrompt?.()}>
                 {QUEUE_LABEL}
-                {queuedPromptCount > 0 ? <span>{queuedPromptCount}</span> : null}
+                {queuedPromptTotal > 0 ? <span>{queuedPromptTotal}</span> : null}
               </button>
             ) : null}
             <button

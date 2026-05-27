@@ -10,6 +10,7 @@ import {
 } from "../v2/theme/ThemeProvider";
 import type { SystemWorkspaceKind, WorkbenchSession, WorkbenchTab } from "./types";
 import type { ComposerRuntimeChildTask } from "./ComposerDock";
+import type { QueuedPromptSubmission } from "../../state/eventRecordViews";
 
 interface AppShellProps {
   tabs: WorkbenchTab[];
@@ -28,8 +29,12 @@ interface AppShellProps {
   onRenameSession: (sessionId: string, newTitle: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onSubmitPrompt: () => void;
-  onQueuePrompt?: () => void;
+  onQueuePrompt?: (mode?: "queued" | "supplement") => void;
   onStopPrompt?: () => void;
+  queuedPrompts?: QueuedPromptSubmission[];
+  onGuideQueuedPrompt?: (id: string) => void;
+  onQueuedPromptRemove?: (id: string) => void;
+  onQueuedPromptMove?: (id: string, direction: "up" | "down") => void;
   disabled: boolean;
   sending?: boolean;
   submitting?: boolean;
@@ -44,6 +49,8 @@ interface AppShellProps {
   providerLabel: string;
   cwdLabel: string;
   permissionLabel?: string;
+  permissionMode?: string;
+  onPermissionModeChange?: (mode: string) => void;
   runtimeLabel?: string;
   mcpLabel?: string;
   approvalLabel?: string;
@@ -82,6 +89,10 @@ export function AppShell({
   onSubmitPrompt,
   onQueuePrompt,
   onStopPrompt,
+  queuedPrompts,
+  onGuideQueuedPrompt,
+  onQueuedPromptRemove,
+  onQueuedPromptMove,
   disabled,
   sending,
   submitting,
@@ -96,6 +107,8 @@ export function AppShell({
   providerLabel,
   cwdLabel,
   permissionLabel,
+  permissionMode,
+  onPermissionModeChange,
   runtimeLabel,
   mcpLabel,
   approvalLabel,
@@ -143,6 +156,10 @@ export function AppShell({
         onSubmitPrompt={onSubmitPrompt}
         onQueuePrompt={onQueuePrompt}
         onStopPrompt={onStopPrompt}
+        queuedPrompts={queuedPrompts}
+        onGuideQueuedPrompt={onGuideQueuedPrompt}
+        onQueuedPromptRemove={onQueuedPromptRemove}
+        onQueuedPromptMove={onQueuedPromptMove}
         disabled={disabled}
         sending={sending}
         submitting={submitting}
@@ -157,6 +174,8 @@ export function AppShell({
         providerLabel={providerLabel}
         cwdLabel={cwdLabel}
         permissionLabel={permissionLabel}
+        permissionMode={permissionMode}
+        onPermissionModeChange={onPermissionModeChange}
         loading={loading}
         runtimeLabel={runtimeLabel}
         mcpLabel={mcpLabel}

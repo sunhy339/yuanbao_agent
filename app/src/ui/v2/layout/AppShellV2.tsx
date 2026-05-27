@@ -6,6 +6,7 @@ import { WorkspaceFrame } from "../../workbench/WorkspaceFrame";
 import { WorkspaceTabs } from "../../workbench/WorkspaceTabs";
 import type { SystemWorkspaceKind, WorkbenchSession, WorkbenchTab } from "../../workbench/types";
 import type { SessionWorkspaceContextPreview } from "../../workbench/workspaces/session/types";
+import type { QueuedPromptSubmission } from "../../../state/eventRecordViews";
 import { Button, StatusBadge } from "../components/ui";
 import "./app-shell-v2.css";
 
@@ -37,8 +38,12 @@ export interface AppShellV2Props {
   onRenameSession: (sessionId: string, newTitle: string) => void;
   onDeleteSession: (sessionId: string) => void;
   onSubmitPrompt: () => void;
-  onQueuePrompt?: () => void;
+  onQueuePrompt?: (mode?: "queued" | "supplement") => void;
   onStopPrompt?: () => void;
+  queuedPrompts?: QueuedPromptSubmission[];
+  onGuideQueuedPrompt?: (id: string) => void;
+  onQueuedPromptRemove?: (id: string) => void;
+  onQueuedPromptMove?: (id: string, direction: "up" | "down") => void;
   disabled: boolean;
   sending?: boolean;
   submitting?: boolean;
@@ -53,6 +58,8 @@ export interface AppShellV2Props {
   providerLabel: string;
   cwdLabel: string;
   permissionLabel?: string;
+  permissionMode?: string;
+  onPermissionModeChange?: (mode: string) => void;
   runtimeLabel?: string;
   mcpLabel?: string;
   approvalLabel?: string;
@@ -84,6 +91,10 @@ export function AppShellV2({
   onSubmitPrompt,
   onQueuePrompt,
   onStopPrompt,
+  queuedPrompts,
+  onGuideQueuedPrompt,
+  onQueuedPromptRemove,
+  onQueuedPromptMove,
   disabled,
   sending,
   submitting,
@@ -98,6 +109,8 @@ export function AppShellV2({
   providerLabel,
   cwdLabel,
   permissionLabel,
+  permissionMode,
+  onPermissionModeChange,
   runtimeLabel,
   approvalLabel,
   contextLabel,
@@ -170,6 +183,10 @@ export function AppShellV2({
             onSubmitPrompt={onSubmitPrompt}
             onQueuePrompt={onQueuePrompt}
             onStopPrompt={onStopPrompt}
+            queuedPrompts={queuedPrompts}
+            onGuideQueuedPrompt={onGuideQueuedPrompt}
+            onQueuedPromptRemove={onQueuedPromptRemove}
+            onQueuedPromptMove={onQueuedPromptMove}
             disabled={disabled}
             sending={sending}
             submitting={submitting}
@@ -184,6 +201,8 @@ export function AppShellV2({
             providerLabel={providerLabel}
             cwdLabel={cwdLabel}
             permissionLabel={permissionLabel}
+            permissionMode={permissionMode}
+            onPermissionModeChange={onPermissionModeChange}
             hidden={!composerVisible}
             layout={activeTabKind === "session" ? "session" : "default"}
           />

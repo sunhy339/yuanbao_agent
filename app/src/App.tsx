@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AgentProfileCreateParams,
   AgentProfilePreviewToolsParams,
@@ -766,8 +766,40 @@ export function App() {
     }
     const [nextSubmission] = queuedPromptSubmissions;
     setQueuedPromptSubmissions((current) => current.slice(1));
-    void sendMessageContent(nextSubmission.content, nextSubmission.attachments, { clearComposer: false, mode: "queued" });
-  }, [composerCanStop, composerHasStreamingMessage, loading, messageBusy, queuedPromptSubmissions, runtimeReady]);
+    void sendMessageContent(nextSubmission.content, nextSubmission.attachments, { clearComposer: false, mode: "new" });
+  }, [composerCanStop, composerHasStreamingMessage, loading, messageBusy, queuedPromptSubmissions, runtimeReady, sendMessageContent]);
+
+  const handleGuideQueuedPrompt = useCallback((id: string) => {
+    const queued = queuedPromptSubmissions.find((item) => item.id === id);
+    if (!queued) {
+      return;
+    }
+    setQueuedPromptSubmissions((current) => current.filter((item) => item.id !== id));
+    void sendMessageContent(queued.content, queued.attachments, {
+      clearComposer: false,
+      mode: "supplement",
+    });
+  }, [queuedPromptSubmissions, sendMessageContent]);
+
+  const handleQueuedPromptRemove = useCallback((id: string) => {
+    setQueuedPromptSubmissions((current) => current.filter((item) => item.id !== id));
+  }, []);
+
+  const handleQueuedPromptMove = useCallback((id: string, direction: "up" | "down") => {
+    setQueuedPromptSubmissions((current) => {
+      const index = current.findIndex((item) => item.id === id);
+      if (index < 0) {
+        return current;
+      }
+      const targetIndex = direction === "up" ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= current.length) {
+        return current;
+      }
+      const next = [...current];
+      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      return next;
+    });
+  }, []);
 
   // ── Derived views hook ──────────────────────────────────────────────
   const views = useDerivedViews({
@@ -806,6 +838,10 @@ export function App() {
       onSubmitPrompt={handleSendMessage}
       onQueuePrompt={handleQueuePrompt}
       onStopPrompt={handleStopPrompt}
+      queuedPrompts={queuedPromptSubmissions}
+      onGuideQueuedPrompt={handleGuideQueuedPrompt}
+      onQueuedPromptRemove={handleQueuedPromptRemove}
+      onQueuedPromptMove={handleQueuedPromptMove}
       disabled={loading || !runtimeReady}
       sending={composerSending}
       submitting={messageBusy}
@@ -825,6 +861,8 @@ export function App() {
       providerLabel={views.providerLabel}
       cwdLabel={views.cwdLabel}
       permissionLabel={views.permissionLabel}
+      permissionMode={views.permissionMode}
+      onPermissionModeChange={handlePermissionModeChange}
       runtimeLabel={views.runtimeStatusLabel}
       mcpLabel={views.mcpStatusLabel}
       approvalLabel={views.approvalStatusLabel}

@@ -293,7 +293,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
     });
   }
 
-  function handleQueuePrompt() {
+  function handleQueuePrompt(mode: "queued" | "supplement" = "queued") {
     if (!prompt.trim() && promptAttachments.length === 0) {
       setError("Enter a task description before queueing.");
       return;
@@ -309,6 +309,8 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
       id: `queued_${Date.now()}`,
       content: prompt.trim() || "Please review the attached file.",
       attachments: promptAttachments,
+      mode,
+      createdAt: Date.now(),
     };
     setQueuedPromptSubmissions((current) => [...current, queued]);
     setPrompt("");

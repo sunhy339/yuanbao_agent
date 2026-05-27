@@ -126,6 +126,8 @@ export interface QueuedPromptSubmission {
   id: string;
   content: string;
   attachments: string[];
+  mode?: "queued" | "supplement";
+  createdAt?: number;
 }
 
 export interface CommandJobTimelineItem {

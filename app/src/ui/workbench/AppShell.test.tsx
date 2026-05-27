@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppShell } from "./AppShell";
 import { getInitialTabs } from "./tabModel";
+import type { QueuedPromptSubmission } from "../../state/eventRecordViews";
 import type { WorkbenchSession, WorkbenchTab } from "./types";
 
 const sessions: WorkbenchSession[] = [
@@ -31,6 +32,9 @@ function renderShell(
     promptValue?: string;
     modelOptions?: Array<{ id: string; label: string; subtitle?: string }>;
     selectedModelId?: string;
+    queuedPrompts?: QueuedPromptSubmission[];
+    permissionLabel?: string;
+    permissionMode?: string;
     runtimeChildTasks?: Array<{ id: string; title: string; status?: string; workerName?: string; summary?: string; attention?: string }>;
   } = {},
 ) {
@@ -49,6 +53,10 @@ function renderShell(
     onStopPrompt: vi.fn(),
     onPromptChange: vi.fn(),
     onSelectModel: vi.fn(),
+    onGuideQueuedPrompt: vi.fn(),
+    onQueuedPromptRemove: vi.fn(),
+    onQueuedPromptMove: vi.fn(),
+    onPermissionModeChange: vi.fn(),
   };
 
   render(
@@ -63,10 +71,13 @@ function renderShell(
       disabled={false}
       sending={options.sending}
       submitting={options.submitting}
-      queuedPromptCount={1}
+      queuedPromptCount={options.queuedPrompts?.length ?? 1}
+      queuedPrompts={options.queuedPrompts}
       runtimeChildTasks={options.runtimeChildTasks}
       providerLabel="MiniMax-M2.7-highspeed"
       cwdLabel="D:/py/yuanbao_agent"
+      permissionLabel={options.permissionLabel}
+      permissionMode={options.permissionMode}
       modelOptions={options.modelOptions ?? [
         { id: "gpt-5-codex", label: "gpt-5-codex" },
         { id: "glm-5.1", label: "GLM-5.1" },
@@ -192,6 +203,58 @@ describe("AppShell", () => {
 
     expect(handlers.onQueuePrompt).toHaveBeenCalledOnce();
     expect(handlers.onSubmitPrompt).not.toHaveBeenCalled();
+  });
+
+  it("opens the permission menu and selects a permission mode", async () => {
+    const handlers = renderShell({
+      permissionLabel: "Allow workspace edits",
+      permissionMode: "edits",
+    });
+    const user = userEvent.setup();
+
+    const permissionButton = document.querySelector<HTMLButtonElement>(".composer-permission-button");
+    expect(permissionButton).toBeInTheDocument();
+
+    await user.click(permissionButton!);
+
+    const menu = document.querySelector<HTMLElement>(".composer-permission-menu");
+    expect(menu).toBeInTheDocument();
+    const options = within(menu!).getAllByRole("menuitemradio");
+    expect(options).toHaveLength(4);
+
+    await user.click(options[3]);
+
+    expect(handlers.onPermissionModeChange).toHaveBeenCalledWith("skip");
+  });
+
+  it("shows queued prompts and lets the user guide, reorder, and delete them", async () => {
+    const handlers = renderShell({
+      sending: true,
+      queuedPrompts: [
+        { id: "queued_one", content: "This output needs one more pass.", attachments: [] },
+        { id: "queued_two", content: "Then inspect the file panel.", attachments: ["shot.png"] },
+      ],
+    });
+    const user = userEvent.setup();
+
+    const queue = document.querySelector<HTMLElement>(".composer-queued-prompts");
+    expect(queue).toBeInTheDocument();
+    expect(within(queue!).getByText("This output needs one more pass.")).toBeInTheDocument();
+    expect(within(queue!).getByText("Then inspect the file panel.")).toBeInTheDocument();
+
+    const guideButton = queue!.querySelector<HTMLButtonElement>(".composer-queued-guide");
+    expect(guideButton).toBeInTheDocument();
+    expect(guideButton).not.toBeDisabled();
+    await user.click(guideButton!);
+    expect(handlers.onGuideQueuedPrompt).toHaveBeenCalledWith("queued_one");
+
+    const moveDownButton = within(queue!).getAllByRole("button", { name: /下移|涓嬬Щ/ })[0];
+    await user.click(moveDownButton);
+    expect(handlers.onQueuedPromptMove).toHaveBeenCalledWith("queued_one", "down");
+
+    const deleteButton = within(queue!).getAllByRole("button", { name: /删除|鍒犻櫎/ })[0];
+    await user.click(deleteButton);
+    expect(handlers.onQueuedPromptRemove).toHaveBeenCalledWith("queued_one");
   });
 
   it("shows real runtime child tasks above the prompt input", () => {

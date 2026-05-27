@@ -404,6 +404,6 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
     sessionCollaboration, composerRuntimeChildTasks, sessionBackgroundJobs,
     workspaceName, providerLabel, hostStatusText, overviewRuntimeStatus,
     runtimeStatusLabel, mcpStatusLabel, approvalStatusLabel, contextStatusLabel,
-    cwdLabel, permissionLabel, runtimeUnavailableReason,
+    cwdLabel, permissionMode, permissionLabel, runtimeUnavailableReason,
   };
 }

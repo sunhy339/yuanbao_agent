@@ -41,7 +41,7 @@ import {
   runtimeSummary,
   statusLabel,
   statusTone,
-  toolLabel,
+  toolActionTitle,
 } from "../shared/text";
 import { transcriptKindForActivity, type CleanTranscriptKind } from "./transcriptModel";
 
@@ -351,12 +351,18 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({ messa
   const input = typeof message.metadata?.inputText === "string" ? message.metadata.inputText : "";
   const result = typeof message.metadata?.resultText === "string" ? message.metadata.resultText : "";
   const details = [input ? `输入\n${input}` : "", result ? `结果\n${result}` : "", message.content].filter(Boolean).join("\n\n");
+  const title = toolActionTitle({
+    toolName: message.toolName,
+    title: readMetadataString(message, ["title", "label", "action"]),
+    input,
+    rawDetail: result || message.content,
+  });
   return (
     <section className="hc-tool-inline" data-tone={failed ? "danger" : statusTone(message.status)}>
       <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <Wrench size={15} />
-        <strong>{toolLabel(message.toolName)}</strong>
+        <strong>{title}</strong>
         <span>{toolInlineSummary(message)}</span>
         <em>{message.streaming ? "运行中" : failed ? "失败" : "完成"}</em>
       </button>
@@ -380,12 +386,20 @@ export const CleanPermissionMessageBlock = memo(function CleanPermissionMessageB
   const resolved = message.metadata?.resolved === true;
   const decision = typeof message.metadata?.decision === "string" ? message.metadata.decision : "";
   const busy = Boolean(requestId && busyId === requestId);
+  const inputText = readMetadataString(message, ["parametersPreview", "inputText", "fullInput", "command"]);
+  const permissionTitle = toolActionTitle({
+    toolName: message.toolName,
+    title: readMetadataString(message, ["title", "label"]),
+    input: inputText,
+    rawDetail: message.content,
+    fallback: "权限请求",
+  });
   return (
     <section className="hc-permission-card" data-resolved={resolved ? "true" : "false"}>
       <header>
         <CircleAlert size={15} />
         <div>
-          <strong>{message.toolName ? `${toolLabel(message.toolName)} 需要确认` : "需要确认后继续"}</strong>
+          <strong>{permissionTitle} 需要确认</strong>
           <span>{resolved ? `已${decision === "rejected" ? "拒绝" : "批准"}` : "等待你的操作"}</span>
         </div>
         <StatusChip status={resolved ? (decision === "rejected" ? "rejected" : "approved") : "waiting_approval"} />

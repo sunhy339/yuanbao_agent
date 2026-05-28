@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runtimeSummary } from "./text";
+import { runtimeLabel, runtimeSummary, toolActionTitle } from "./text";
 import type { RuntimeTimelineItem } from "../../workbench/workspaces/session/types";
 
 describe("haha-clean text helpers", () => {
@@ -21,5 +21,30 @@ describe("haha-clean text helpers", () => {
     };
 
     expect(runtimeSummary(item)).toBe("找到 3 项：snake_game, README.md, tests · 16ms");
+  });
+
+  it("formats tool action titles with concrete targets", () => {
+    expect(toolActionTitle({
+      toolName: "apply_patch",
+      input: JSON.stringify({ path: "snake_game/game.py" }),
+    })).toBe("修改 snake_game/game.py");
+
+    expect(toolActionTitle({
+      toolName: "run_command",
+      input: JSON.stringify({ command: "python -m pytest tests -q" }),
+    })).toBe("运行 python -m pytest tests -q");
+  });
+
+  it("uses action titles for runtime labels", () => {
+    const item: RuntimeTimelineItem = {
+      id: "tool:read",
+      kind: "tool",
+      title: "read_file",
+      status: "completed",
+      toolName: "read_file",
+      code: JSON.stringify({ path: "app/src/main.tsx" }),
+    };
+
+    expect(runtimeLabel(item)).toBe("读取 app/src/main.tsx");
   });
 });

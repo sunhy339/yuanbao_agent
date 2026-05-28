@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
-import { CleanActivityItem, CleanRuntimeBlock } from "./CleanConversation";
+import { CleanActivityItem, CleanPermissionMessageBlock, CleanRuntimeBlock, CleanToolMessageBlock } from "./CleanConversation";
 
 afterEach(() => cleanup());
 
@@ -108,5 +108,45 @@ describe("CleanConversation", () => {
     expect(screen.getByText("需要你确认")).toBeInTheDocument();
     expect(screen.getByText("要继续拆分渲染层吗？")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /继续/ })).toBeDisabled();
+  });
+
+  it("uses readable action titles for inline tool messages", () => {
+    render(
+      <CleanToolMessageBlock
+        message={{
+          id: "tool1",
+          role: "assistant",
+          content: "",
+          toolName: "read_file",
+          status: "completed",
+          metadata: {
+            inputText: JSON.stringify({ path: "snake_game/game.py" }),
+            resultText: "ok",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("读取 snake_game/game.py")).toBeInTheDocument();
+  });
+
+  it("uses readable action titles for permission messages", () => {
+    render(
+      <CleanPermissionMessageBlock
+        message={{
+          id: "permission1",
+          role: "assistant",
+          content: "patch approval request",
+          toolName: "apply_patch",
+          metadata: {
+            requestId: "approval-1",
+            parametersPreview: JSON.stringify({ path: "snake_game/rules.py" }),
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("修改 snake_game/rules.py 需要确认")).toBeInTheDocument();
+    expect(screen.queryByText(/apply_patch 需要确认/)).not.toBeInTheDocument();
   });
 });

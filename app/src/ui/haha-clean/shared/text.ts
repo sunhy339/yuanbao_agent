@@ -106,15 +106,7 @@ export function toolLabel(name?: string | null) {
   return labels[normalized] ?? normalized.replace(/_/g, " ");
 }
 
-export function runtimeLabel(item: RuntimeTimelineItem) {
-  if (item.kind === "approval") return item.title || "审批请求";
-  if (item.kind === "patch") return item.title || "文件改动";
-  if (item.kind === "command") return item.title || "命令";
-  if (item.kind === "tool") return toolLabel(item.toolName) || item.title;
-  return item.title || item.kind;
-}
-
-function parseRuntimeJson(value?: string) {
+function parseJsonRecord(value?: string | null) {
   if (!value) return null;
   try {
     const parsed = JSON.parse(value);
@@ -122,6 +114,88 @@ function parseRuntimeJson(value?: string) {
   } catch {
     return null;
   }
+}
+
+function readRecordText(record: Record<string, unknown> | null, keys: string[]) {
+  if (!record) return "";
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (Array.isArray(value)) {
+      const first = value.find((item) => typeof item === "string" && item.trim());
+      if (typeof first === "string") return first.trim();
+    }
+  }
+  return "";
+}
+
+function firstPathFromText(value?: string | null) {
+  const text = value?.trim();
+  if (!text) return "";
+  const explicit = /(?:path|file|cwd|target|root|路径|文件|工作目录)\s*[:=]\s*["']?([^"',\n\r]+)["']?/i.exec(text)?.[1]?.trim();
+  if (explicit && /[./\\]/.test(explicit)) return explicit;
+  const diffPath = /^(?:---|\+\+\+)\s+[ab]\/(.+)$/m.exec(text)?.[1]?.trim();
+  if (diffPath) return diffPath;
+  const token = text
+    .split(/[\s"',:;|]+/)
+    .find((part) => /[\\/]/.test(part) || /\.[a-z0-9]{1,8}$/i.test(part));
+  return token?.replace(/^[ab]\//, "").trim() ?? "";
+}
+
+export function toolActionTitle({
+  toolName,
+  title,
+  input,
+  rawDetail,
+  fallback = "工具调用",
+}: {
+  toolName?: string | null;
+  title?: string | null;
+  input?: string | null;
+  rawDetail?: string | null;
+  fallback?: string;
+}) {
+  const normalized = toolName?.trim().toLowerCase() ?? "";
+  const label = toolLabel(normalized || title);
+  const inputRecord = parseJsonRecord(input);
+  const detailRecord = parseJsonRecord(rawDetail);
+  const target =
+    readRecordText(inputRecord, ["path", "file", "cwd", "root", "target", "query", "url", "command", "cmd"]) ||
+    readRecordText(detailRecord, ["path", "file", "cwd", "root", "target", "query", "url", "command", "cmd"]) ||
+    firstPathFromText(input) ||
+    firstPathFromText(rawDetail);
+
+  if (normalized === "apply_patch") {
+    return target ? `修改 ${target}` : "应用文件改动";
+  }
+  if (normalized === "write_file") {
+    return target ? `写入 ${target}` : "写入文件";
+  }
+  if (normalized === "read_file") {
+    return target ? `读取 ${target}` : "读取文件";
+  }
+  if (normalized === "list_dir" || normalized === "list_directory") {
+    return target ? `查看 ${target}` : "查看目录";
+  }
+  if (normalized === "search_files" || normalized === "code_search") {
+    return target ? `搜索 ${target}` : label;
+  }
+  if (normalized === "run_command" || normalized === "command" || normalized === "bash" || normalized === "shell_command") {
+    return target ? `运行 ${compactText(target, 72)}` : "运行命令";
+  }
+  if (target && label !== target) return `${label} ${compactText(target, 72)}`;
+  return title && !/^(apply_patch|write_file|run_command|command|request|approval|patch approval request)$/i.test(title.trim())
+    ? title.trim()
+    : label || fallback;
+}
+
+export function runtimeLabel(item: RuntimeTimelineItem) {
+  if (item.kind === "approval") return toolActionTitle({ toolName: item.toolName, title: item.title, input: item.code, rawDetail: item.rawDetail, fallback: "审批请求" });
+  if (item.kind === "patch") return item.title || "文件改动";
+  if (item.kind === "command") return toolActionTitle({ toolName: "run_command", title: item.title, input: item.code, rawDetail: item.rawDetail, fallback: "命令" });
+  if (item.kind === "tool") return toolActionTitle({ toolName: item.toolName, title: item.title, input: item.code, rawDetail: item.rawDetail });
+  return item.title || item.kind;
 }
 
 function findRuntimeText(record: Record<string, unknown> | null, keys: string[]) {
@@ -135,7 +209,7 @@ function findRuntimeText(record: Record<string, unknown> | null, keys: string[])
 }
 
 function summarizeJsonOutput(value?: string) {
-  const record = parseRuntimeJson(value);
+  const record = parseJsonRecord(value);
   if (!record) return "";
   const items = Array.isArray(record.items) ? record.items : Array.isArray(record.entries) ? record.entries : null;
   if (items) {

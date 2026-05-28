@@ -1504,6 +1504,15 @@
   border-bottom: 0;
 }
 
+.hc-change-list button:hover,
+.hc-change-list button[data-selected="true"] {
+  background: rgba(164, 91, 59, 0.06);
+}
+
+.hc-change-list button[data-selected="true"] code {
+  color: var(--hc-primary);
+}
+
 .hc-change-list span {
   color: var(--hc-muted);
 }

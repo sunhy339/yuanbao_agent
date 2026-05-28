@@ -26,6 +26,45 @@ describe("CleanConversation", () => {
     expect(screen.queryByText("Update snake_game/README.md", { selector: "code" })).not.toBeInTheDocument();
   });
 
+  it("opens the matching local diff when a patch file row is clicked", async () => {
+    const user = userEvent.setup();
+    const onLoadPatch = vi.fn();
+    render(
+      <CleanRuntimeBlock
+        onLoadPatch={onLoadPatch}
+        item={{
+          id: "patch:diff",
+          kind: "patch",
+          title: "Update snake_game files",
+          status: "applied",
+          code: "modified snake_game/game.py (+1/-1)\nmodified snake_game/rules.py (+1/-1)",
+          rawDetail: [
+            "diff --git a/snake_game/game.py b/snake_game/game.py",
+            "--- a/snake_game/game.py",
+            "+++ b/snake_game/game.py",
+            "@@ -1 +1 @@",
+            "-old_game",
+            "+new_game",
+            "diff --git a/snake_game/rules.py b/snake_game/rules.py",
+            "--- a/snake_game/rules.py",
+            "+++ b/snake_game/rules.py",
+            "@@ -1 +1 @@",
+            "-old_rules",
+            "+new_rules",
+          ].join("\n"),
+          sourceId: "patch_1",
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /snake_game\/rules\.py/ }));
+
+    expect(onLoadPatch).not.toHaveBeenCalled();
+    expect(screen.getAllByText("snake_game/rules.py").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("new_rules")).toBeInTheDocument();
+    expect(screen.queryByText("new_game")).not.toBeInTheDocument();
+  });
+
   it("exposes lightweight copy and quote actions for normal messages", async () => {
     const user = userEvent.setup();
     const onCopyRuntimeText = vi.fn();

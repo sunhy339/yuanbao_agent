@@ -127,7 +127,7 @@
 | haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
 | --- | --- | --- | --- | --- |
 | 当前轮改动卡 | 显示文件数、增删、每文件行 | 已有 patch card | patches/changedFiles | `部分接入`：标题和文件匹配已修一轮，仍需更多 patch 格式兼容 |
-| 查看文件差异 | 点按钮打开 diff | 有“查看文件差异”按钮和 preview | loadPatch | `部分接入`：右侧 diff/源文件联动还不够像 haha-cc |
+| 查看文件差异 | 点按钮打开 diff | 有“查看文件差异”按钮和 preview；patch 文件行会优先打开本地匹配 diff，并只展示所选文件的差异 | loadPatch / local diff | `部分接入`：右侧 diff/源文件联动还不够像 haha-cc |
 | 文件行点击 | 点击文件打开右侧预览 | 已接入 openFile | FileWorkspacePanel | `部分接入` |
 | diff 语法色 | 增删颜色、hunk header、行号 | 已有基本 diff preview | patch text | `部分接入`：还不是真正完整 diff viewer |
 | 撤销本轮 | change card 上撤销 | 未接入 | 需要 revert API | `后端待补` |

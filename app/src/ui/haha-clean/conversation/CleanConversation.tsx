@@ -240,6 +240,10 @@ function splitDiffText(value: string) {
   return files;
 }
 
+function normalizeDiffPath(path: string) {
+  return path.replace(/\\/g, "/").replace(/^[ab]\//, "").trim();
+}
+
 function normalizePatchSummaryLine(line: string): PatchFileSummary | null {
   const trimmed = line.trim();
   if (
@@ -717,10 +721,23 @@ function StatusChip({ status }: { status?: string }) {
   return <em className="hc-status-chip" data-tone={statusTone(status)}>{statusLabel(status)}</em>;
 }
 
-function DiffPreview({ item }: { item: RuntimeTimelineItem }) {
-  const diffGroups = item.diffLines?.length
-    ? [{ oldPath: "", newPath: "", lines: item.diffLines }]
+function DiffPreview({
+  item,
+  selectedPath,
+}: {
+  item: RuntimeTimelineItem;
+  selectedPath?: string | null;
+}) {
+  const selected = selectedPath ? normalizeDiffPath(selectedPath) : "";
+  const allGroups = item.diffLines?.length
+    ? [{ oldPath: "", newPath: selected || "diff", lines: item.diffLines }]
     : splitDiffText(item.rawDetail || "");
+  const diffGroups = selected
+    ? allGroups.filter((group) => {
+        const paths = [group.newPath, group.oldPath].map(normalizeDiffPath);
+        return paths.includes(selected);
+      })
+    : allGroups;
   if (!diffGroups.length) return null;
   return (
     <div className="hc-diff-preview">
@@ -831,10 +848,18 @@ function PatchRuntimeBlock({
   onLoadPatch?: (patchId: string) => void | Promise<void>;
 }) {
   const files = useMemo(() => patchFileSummaries(item), [item]);
+  const diffGroups = useMemo(() => (
+    item.diffLines?.length
+      ? [{ oldPath: "", newPath: files[0]?.path ?? "diff", lines: item.diffLines }]
+      : splitDiffText(item.rawDetail || "")
+  ), [files, item.diffLines, item.rawDetail]);
+  const diffPaths = useMemo(() => new Set(diffGroups.flatMap((group) => [group.newPath, group.oldPath].map(normalizeDiffPath)).filter(Boolean)), [diffGroups]);
   const totalAdditions = files.reduce((sum, file) => sum + (file.additions ?? 0), 0);
   const totalDeletions = files.reduce((sum, file) => sum + (file.deletions ?? 0), 0);
-  const hasDiff = Boolean(item.diffLines?.length || item.rawDetail?.includes("diff --git"));
+  const hasDiff = diffGroups.length > 0;
   const [expanded, setExpanded] = useState(false);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const selectedDiffPath = selectedPath && diffPaths.has(normalizeDiffPath(selectedPath)) ? selectedPath : null;
 
   return (
     <section className="hc-runtime hc-patch" data-kind={item.kind} data-tone={statusTone(item.status)}>
@@ -856,26 +881,36 @@ function PatchRuntimeBlock({
             <button
               type="button"
               key={file.path}
+              data-selected={selectedDiffPath === file.path ? "true" : "false"}
               onClick={() => {
+                if (diffPaths.has(normalizeDiffPath(file.path))) {
+                  setSelectedPath(file.path);
+                  setExpanded(true);
+                  return;
+                }
                 if (item.sourceId) void onLoadPatch?.(item.sourceId);
               }}
             >
               <code>{file.path}</code>
-              <span>{[file.status || "修改", file.additions !== undefined ? `+${file.additions}` : "", file.deletions !== undefined ? `-${file.deletions}` : ""].filter(Boolean).join(" ")}</span>
+              <span>
+                {[file.status || "修改", file.additions !== undefined ? `+${file.additions}` : "", file.deletions !== undefined ? `-${file.deletions}` : ""].filter(Boolean).join(" ")}
+                {diffPaths.has(normalizeDiffPath(file.path)) ? " · 本地差异" : ""}
+              </span>
             </button>
           ))}
         </div>
       ) : null}
       {hasDiff || item.sourceId ? (
         <button type="button" className="hc-diff-toggle" onClick={() => {
-          if (item.sourceId) void onLoadPatch?.(item.sourceId);
+          if (!hasDiff && item.sourceId) void onLoadPatch?.(item.sourceId);
+          setSelectedPath(null);
           setExpanded((open) => !open);
         }}>
           {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          {expanded ? "收起差异" : "查看差异"}
+          {expanded ? "收起差异" : selectedDiffPath ? "查看所选差异" : "查看全部差异"}
         </button>
       ) : null}
-      {expanded ? <DiffPreview item={item} /> : null}
+      {expanded ? <DiffPreview item={item} selectedPath={selectedDiffPath} /> : null}
     </section>
   );
 }

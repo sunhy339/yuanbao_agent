@@ -71,7 +71,7 @@ describe("FileWorkspacePanel", () => {
         return {
           rootPath: "D:/demo-blog",
           path: "README.md",
-          content: "# Blog Fixture\n\n- Run `pytest` before shipping.",
+          content: "# Blog Fixture\n\n## Usage\n\n- Run `pytest` before shipping.\n\n### Notes\n\nKeep it tidy.",
           bytes: 46,
           truncated: false,
           binary: false,
@@ -110,6 +110,8 @@ describe("FileWorkspacePanel", () => {
 
     expect(await screen.findByRole("heading", { name: "Blog Fixture" })).toBeInTheDocument();
     expect(screen.getByText("pytest")).toBeInTheDocument();
+    expect(screen.getByLabelText("Markdown 大纲")).toHaveTextContent("Blog Fixture");
+    expect(screen.getByLabelText("Markdown 大纲")).toHaveTextContent("Usage");
 
     const tree = screen.getByLabelText("项目文件");
     await user.click(within(tree).getByRole("treeitem", { name: /src/ }));
@@ -140,11 +142,13 @@ describe("FileWorkspacePanel", () => {
     );
 
     expect(await screen.findByRole("heading", { name: "Blog Fixture" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Markdown 大纲")).toHaveTextContent("Usage");
     expect(screen.getByRole("button", { name: "预览" })).toHaveAttribute("aria-pressed", "true");
 
     await user.click(screen.getByRole("button", { name: "源码" }));
     const headingLine = await findCodeLine("# Blog Fixture");
     expect(headingLine).toBeInTheDocument();
+    expect(screen.queryByLabelText("Markdown 大纲")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Blog Fixture" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "预览" }));

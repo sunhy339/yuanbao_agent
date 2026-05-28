@@ -519,7 +519,9 @@
 
 .hc-popover button:hover,
 .hc-slash-panel button:hover,
-.hc-popover button[data-active="true"] {
+.hc-popover button[data-active="true"],
+.hc-slash-panel button[data-active="true"],
+.hc-slash-panel button[aria-selected="true"] {
   background: var(--hc-soft);
 }
 
@@ -1867,6 +1869,68 @@
 
 .hc-file-pane .session-file-syntax-operator {
   color: #6b7280;
+}
+
+.hc-file-pane .session-file-markdown-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 190px);
+  min-height: 0;
+}
+
+.hc-file-pane .session-file-markdown-layout .session-file-markdown {
+  min-width: 0;
+}
+
+.hc-file-pane .session-file-markdown-outline {
+  grid-column: 2;
+  grid-row: 1;
+  position: sticky;
+  top: 0;
+  align-self: start;
+  max-height: calc(100vh - 180px);
+  overflow: auto;
+  border-left: 1px solid var(--hc-line);
+  background: #fff;
+  padding: 10px 8px;
+}
+
+.hc-file-pane .session-file-markdown-outline strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  color: var(--hc-muted);
+  font-size: 12px;
+}
+
+.hc-file-pane .session-file-markdown-outline button {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 5px 7px;
+  color: var(--hc-muted);
+  font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-file-pane .session-file-markdown-outline button:hover {
+  background: var(--hc-soft);
+  color: var(--hc-primary);
+}
+
+.hc-file-pane .session-file-markdown-outline button[data-level="1"] {
+  color: var(--hc-text);
+  font-weight: 700;
+}
+
+.hc-file-pane .session-file-markdown-outline button[data-level="3"],
+.hc-file-pane .session-file-markdown-outline button[data-level="4"] {
+  padding-left: 16px;
 }
 
 /* Markdown and code */

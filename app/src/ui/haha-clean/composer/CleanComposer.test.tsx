@@ -52,6 +52,28 @@ function renderComposer() {
   return handlers;
 }
 
+function renderSlashComposer(promptValue = "/") {
+  const handlers = {
+    onPromptChange: vi.fn(),
+    onSubmitPrompt: vi.fn(),
+  };
+
+  render(
+    <CleanComposer
+      promptValue={promptValue}
+      onPromptChange={handlers.onPromptChange}
+      onSubmitPrompt={handlers.onSubmitPrompt}
+      disabled={false}
+      providerLabel="OpenAI"
+      cwdLabel="D:/py/yuanbao_agent"
+      modelOptions={[{ id: "gpt-5", label: "gpt-5" }]}
+      selectedModelId="gpt-5"
+    />,
+  );
+
+  return handlers;
+}
+
 describe("CleanComposer", () => {
   it("opens context and project detail panels from the compact composer controls", async () => {
     const user = userEvent.setup();
@@ -83,5 +105,21 @@ describe("CleanComposer", () => {
     await user.click(screen.getByRole("button", { name: "添加" }));
     await user.click(screen.getByRole("button", { name: /斜杠命令/ }));
     expect(handlers.onPromptChange).toHaveBeenCalledWith("/");
+  });
+
+  it("lets the slash command panel be selected with the keyboard", async () => {
+    const handlers = renderSlashComposer("/m");
+    const user = userEvent.setup();
+    const textbox = screen.getByRole("textbox");
+    textbox.focus();
+
+    const panel = screen.getByRole("listbox", { name: "斜杠命令" });
+    expect(within(panel).getByRole("option", { name: /\/model/ })).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("{ArrowDown}");
+    expect(within(panel).getByRole("option", { name: /\/mcp/ })).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("{Enter}");
+    expect(handlers.onPromptChange).toHaveBeenCalledWith("/mcp ");
   });
 });

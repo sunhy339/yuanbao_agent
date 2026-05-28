@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   ArrowUp,
   ChevronDown,
@@ -139,6 +139,8 @@ export function CleanComposer({
   const [modelOpen, setModelOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissedFor, setSlashDismissedFor] = useState("");
   const selectedModel = modelOptions.find((option) => option.id === selectedModelId) ?? modelOptions[0];
   const hasPayload = Boolean(promptValue.trim() || attachments.length);
   const canSubmit = !disabled && !submitting && hasPayload;
@@ -149,9 +151,17 @@ export function CleanComposer({
   const droppedSections = contextPreview?.budgetStats?.droppedSections ?? [];
   const cwdName = basename(cwdLabel);
   const slashMatches = useMemo(() => {
+    if (promptValue === slashDismissedFor) return [];
     if (!promptValue.startsWith("/") || promptValue.includes(" ")) return [];
     return matchCommands(promptValue.trim()).slice(0, 6);
-  }, [promptValue]);
+  }, [promptValue, slashDismissedFor]);
+
+  useEffect(() => {
+    setSlashIndex(0);
+    if (slashDismissedFor && slashDismissedFor !== promptValue) {
+      setSlashDismissedFor("");
+    }
+  }, [promptValue, slashDismissedFor]);
 
   useEffect(() => {
     const node = textareaRef.current;
@@ -200,6 +210,58 @@ export function CleanComposer({
     setPlusOpen(false);
     window.requestAnimationFrame(() => textareaRef.current?.focus());
   }, [onPromptChange, promptValue]);
+
+  const applySlashCommand = useCallback(
+    (name: string) => {
+      onPromptChange(`${name} `);
+      setSlashDismissedFor("");
+      window.requestAnimationFrame(() => textareaRef.current?.focus());
+    },
+    [onPromptChange],
+  );
+
+  const handlePromptKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+      if (slashMatches.length) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setSlashIndex((current) => (current + 1) % slashMatches.length);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setSlashIndex((current) => (current - 1 + slashMatches.length) % slashMatches.length);
+          return;
+        }
+        if (event.key === "Home") {
+          event.preventDefault();
+          setSlashIndex(0);
+          return;
+        }
+        if (event.key === "End") {
+          event.preventDefault();
+          setSlashIndex(slashMatches.length - 1);
+          return;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          event.preventDefault();
+          applySlashCommand(slashMatches[slashIndex]?.name ?? slashMatches[0].name);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setSlashDismissedFor(promptValue);
+          return;
+        }
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && canSubmit) {
+        event.preventDefault();
+        onSubmitPrompt();
+      }
+    },
+    [applySlashCommand, canSubmit, onSubmitPrompt, promptValue, slashIndex, slashMatches],
+  );
 
   if (hidden) return null;
 
@@ -251,17 +313,26 @@ export function CleanComposer({
           placeholder={variant === "new" ? "随便问点什么..." : "描述下一步要本地智能体完成的事情..."}
           disabled={disabled}
           onChange={(event) => onPromptChange(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && canSubmit) {
-              event.preventDefault();
-              onSubmitPrompt();
-            }
-          }}
+          onKeyDown={handlePromptKeyDown}
         />
         {slashMatches.length ? (
-          <div className="hc-slash-panel">
-            {slashMatches.map((command) => (
-              <button type="button" key={command.name} onClick={() => onPromptChange(`${command.name} `)}>
+          <div
+            className="hc-slash-panel"
+            role="listbox"
+            aria-label="斜杠命令"
+            aria-activedescendant={`hc-slash-option-${slashIndex}`}
+          >
+            {slashMatches.map((command, index) => (
+              <button
+                type="button"
+                id={`hc-slash-option-${index}`}
+                key={command.name}
+                role="option"
+                aria-selected={index === slashIndex}
+                data-active={index === slashIndex}
+                onMouseEnter={() => setSlashIndex(index)}
+                onClick={() => applySlashCommand(command.name)}
+              >
                 <strong>{command.name}{command.argsHint ? <small> {command.argsHint}</small> : null}</strong>
                 <span>{command.description}</span>
               </button>

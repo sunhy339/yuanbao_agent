@@ -20,6 +20,7 @@ import {
   Folder,
   FolderOpen,
   GripVertical,
+  ListTree,
   Maximize2,
   Minimize2,
   MoreHorizontal,
@@ -44,6 +45,11 @@ const FILE_BROWSER_RESIZER_WIDTH = 7;
 const FILE_TREE_KEYBOARD_STEP = 36;
 
 type FilePreviewMode = "preview" | "source";
+interface MarkdownOutlineItem {
+  id: string;
+  level: number;
+  text: string;
+}
 
 function canUseTauriInvoke() {
   if (typeof window === "undefined") {
@@ -208,6 +214,26 @@ function workspaceAbsolutePath(workspaceRoot?: string, path?: string) {
   }
   const separator = workspaceRoot.includes("\\") ? "\\" : "/";
   return `${workspaceRoot.replace(/[\\/]+$/, "")}${separator}${normalizedPath.replace(/\//g, separator)}`;
+}
+
+function markdownOutline(content: string): MarkdownOutlineItem[] {
+  return content
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line, index) => {
+      const match = line.match(/^\s*(#{1,4})\s+(.+)$/);
+      if (!match) return null;
+      const text = match[2]
+        .replace(/[`*_~#[\]()]/g, "")
+        .trim();
+      if (!text) return null;
+      return {
+        id: `md-outline-${index}`,
+        level: match[1].length,
+        text,
+      };
+    })
+    .filter((item): item is MarkdownOutlineItem => Boolean(item));
 }
 
 function FileIcon({ kind, path, expanded = false }: { kind: WorkspaceFileEntry["kind"]; path?: string; expanded?: boolean }) {
@@ -441,6 +467,10 @@ export function FileWorkspacePanel({
   const previewParent = previewPath ? parentWorkspacePath(previewPath) : ROOT_DIR;
   const currentAbsolutePath = workspaceAbsolutePath(workspaceRoot, previewPath || previewParent);
   const markdownPreviewAvailable = Boolean(filePreview?.path && isMarkdownPath(filePreview.path) && !filePreview.binary);
+  const outlineItems = useMemo(
+    () => (markdownPreviewAvailable && filePreview?.content ? markdownOutline(filePreview.content).slice(0, 12) : []),
+    [filePreview?.content, markdownPreviewAvailable],
+  );
   const topTabs = useMemo(() => {
     const baseTabs = rootEntries.length ? rootEntries.filter((entry) => entry.kind === "file").slice(0, 4) : [];
     return uniquePaths([
@@ -590,6 +620,13 @@ export function FileWorkspacePanel({
     },
     [fileTreeWidthPx],
   );
+
+  const scrollToMarkdownHeading = useCallback((item: MarkdownOutlineItem) => {
+    const viewer = fileBrowserLayoutRef.current?.querySelector(".session-file-viewer") as HTMLElement | null;
+    const headings = Array.from(viewer?.querySelectorAll("h2, h3, h4") ?? []) as HTMLElement[];
+    const target = headings.find((heading) => heading.textContent?.trim() === item.text) ?? headings[outlineItems.indexOf(item)];
+    target?.scrollIntoView({ block: "start" });
+  }, [outlineItems]);
 
   useEffect(() => {
     setChildrenByPath({});
@@ -902,9 +939,26 @@ export function FileWorkspacePanel({
             </div>
           ) : filePreview?.content !== undefined ? (
             isMarkdownPath(filePreview.path) && previewMode !== "source" ? (
-              <article className="session-file-markdown">
-                <MarkdownContent content={filePreview.content} />
-              </article>
+              <div className="session-file-markdown-layout">
+                {outlineItems.length ? (
+                  <nav className="session-file-markdown-outline" aria-label="Markdown 大纲">
+                    <strong><ListTree size={13} strokeWidth={1.9} />文档大纲</strong>
+                    {outlineItems.map((item) => (
+                      <button
+                        type="button"
+                        key={item.id}
+                        data-level={item.level}
+                        onClick={() => scrollToMarkdownHeading(item)}
+                      >
+                        {item.text}
+                      </button>
+                    ))}
+                  </nav>
+                ) : null}
+                <article className="session-file-markdown">
+                  <MarkdownContent content={filePreview.content} />
+                </article>
+              </div>
             ) : (
               <CodePreview content={filePreview.content} path={filePreview.path} wrapLines={wrapLines} />
             )

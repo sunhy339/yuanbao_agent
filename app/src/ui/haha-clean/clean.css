@@ -471,7 +471,8 @@
 }
 
 .hc-popover,
-.hc-slash-panel {
+.hc-slash-panel,
+.hc-file-reference-panel {
   position: absolute;
   bottom: calc(100% + 8px);
   left: 0;
@@ -490,7 +491,8 @@
 }
 
 .hc-popover button,
-.hc-slash-panel button {
+.hc-slash-panel button,
+.hc-file-reference-panel button {
   display: flex;
   width: 100%;
   align-items: center;
@@ -507,7 +509,8 @@
 }
 
 .hc-popover button strong,
-.hc-slash-panel button strong {
+.hc-slash-panel button strong,
+.hc-file-reference-panel button strong {
   color: var(--hc-text);
 }
 
@@ -519,19 +522,25 @@
 
 .hc-popover button:hover,
 .hc-slash-panel button:hover,
+.hc-file-reference-panel button:hover,
 .hc-popover button[data-active="true"],
 .hc-slash-panel button[data-active="true"],
-.hc-slash-panel button[aria-selected="true"] {
+.hc-file-reference-panel button[data-active="true"],
+.hc-slash-panel button[aria-selected="true"],
+.hc-file-reference-panel button[aria-selected="true"] {
   background: var(--hc-soft);
 }
 
 .hc-popover small,
-.hc-slash-panel span {
+.hc-slash-panel span,
+.hc-file-reference-panel span,
+.hc-file-reference-panel p {
   color: var(--hc-muted);
   font-size: 12px;
 }
 
-.hc-slash-panel {
+.hc-slash-panel,
+.hc-file-reference-panel {
   right: 12px;
   bottom: calc(100% + 46px);
   left: 12px;
@@ -540,6 +549,68 @@
 .hc-slash-panel button {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
+}
+
+.hc-file-reference-panel {
+  max-height: 276px;
+  overflow: auto;
+}
+
+.hc-file-reference-panel button {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.7fr) minmax(0, 1.3fr);
+}
+
+.hc-file-reference-panel span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-file-reference-panel p {
+  margin: 0;
+  padding: 12px 13px;
+  line-height: 1.5;
+}
+
+.hc-permission-confirm {
+  display: grid;
+  gap: 7px;
+  border-top: 1px solid var(--hc-line);
+  background: #fffaf7;
+  padding: 11px 13px 12px;
+}
+
+.hc-permission-confirm strong {
+  color: var(--hc-text);
+  font-size: 13px;
+}
+
+.hc-permission-confirm p {
+  margin: 0;
+  color: var(--hc-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.hc-permission-confirm div {
+  display: flex;
+  gap: 8px;
+}
+
+.hc-permission-confirm button {
+  width: auto;
+  border: 1px solid var(--hc-line);
+  border-radius: 7px;
+  background: #fff;
+  padding: 6px 9px;
+}
+
+.hc-permission-confirm button:first-child {
+  border-color: rgba(178, 59, 47, 0.22);
+  background: rgba(178, 59, 47, 0.08);
+  color: var(--hc-red);
 }
 
 .hc-context-popover,

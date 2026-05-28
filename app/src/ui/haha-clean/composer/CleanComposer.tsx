@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   ArrowUp,
+  AtSign,
   ChevronDown,
   CircleHelp,
   Folder,
@@ -19,6 +20,11 @@ import type { ComposerRuntimeChildTask } from "../../workbench/ComposerDock";
 import type { SessionWorkspaceContextPreview } from "../../workbench/workspaces/session/types";
 import { basename } from "../shared/text";
 
+export interface CleanFileReferenceOption {
+  path: string;
+  label?: string;
+}
+
 export interface CleanComposerProps {
   promptValue: string;
   onPromptChange(value: string): void;
@@ -36,6 +42,7 @@ export interface CleanComposerProps {
   attachments?: string[];
   onAttachmentsChange?: (attachments: string[]) => void;
   onAttachmentError?: (message: string) => void;
+  fileReferenceOptions?: CleanFileReferenceOption[];
   modelOptions?: Array<{ id: string; label: string; subtitle?: string }>;
   selectedModelId?: string;
   onSelectModel?: (modelId: string) => void;
@@ -101,6 +108,33 @@ function contextBudgetRows(contextPreview?: SessionWorkspaceContextPreview | nul
   return rows;
 }
 
+function fileReferenceLabel(option: CleanFileReferenceOption) {
+  return option.label || basename(option.path) || option.path;
+}
+
+function normalizeFileReferences(options: CleanFileReferenceOption[]) {
+  const seen = new Set<string>();
+  return options.filter((option) => {
+    const key = option.path.trim();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function getFileReferenceToken(value: string, caretIndex: number) {
+  const index = Math.max(0, Math.min(value.length, caretIndex));
+  const before = value.slice(0, index);
+  const match = before.match(/(?:^|\s)@([^\s@]*)$/);
+  if (!match) return null;
+  const query = match[1] ?? "";
+  return {
+    query,
+    start: before.length - query.length - 1,
+    end: index,
+  };
+}
+
 export function CleanComposer({
   promptValue,
   onPromptChange,
@@ -118,6 +152,7 @@ export function CleanComposer({
   attachments = [],
   onAttachmentsChange,
   onAttachmentError,
+  fileReferenceOptions = [],
   modelOptions = [],
   selectedModelId,
   onSelectModel,
@@ -141,6 +176,10 @@ export function CleanComposer({
   const [projectOpen, setProjectOpen] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissedFor, setSlashDismissedFor] = useState("");
+  const [caretIndex, setCaretIndex] = useState(promptValue.length);
+  const [fileReferenceIndex, setFileReferenceIndex] = useState(0);
+  const [fileReferenceDismissedFor, setFileReferenceDismissedFor] = useState("");
+  const [pendingPermissionMode, setPendingPermissionMode] = useState<string | null>(null);
   const selectedModel = modelOptions.find((option) => option.id === selectedModelId) ?? modelOptions[0];
   const hasPayload = Boolean(promptValue.trim() || attachments.length);
   const canSubmit = !disabled && !submitting && hasPayload;
@@ -155,6 +194,25 @@ export function CleanComposer({
     if (!promptValue.startsWith("/") || promptValue.includes(" ")) return [];
     return matchCommands(promptValue.trim()).slice(0, 6);
   }, [promptValue, slashDismissedFor]);
+  const normalizedFileReferences = useMemo(
+    () => normalizeFileReferences(fileReferenceOptions),
+    [fileReferenceOptions],
+  );
+  const activeFileReference = useMemo(() => {
+    if (promptValue === fileReferenceDismissedFor) return null;
+    return getFileReferenceToken(promptValue, caretIndex);
+  }, [caretIndex, fileReferenceDismissedFor, promptValue]);
+  const fileReferenceMatches = useMemo(() => {
+    if (!activeFileReference) return [];
+    const query = activeFileReference.query.toLowerCase();
+    const candidates = query
+      ? normalizedFileReferences.filter((option) => {
+          const haystack = `${option.path} ${fileReferenceLabel(option)}`.toLowerCase();
+          return haystack.includes(query);
+        })
+      : normalizedFileReferences;
+    return candidates.slice(0, 8);
+  }, [activeFileReference, normalizedFileReferences]);
 
   useEffect(() => {
     setSlashIndex(0);
@@ -162,6 +220,23 @@ export function CleanComposer({
       setSlashDismissedFor("");
     }
   }, [promptValue, slashDismissedFor]);
+
+  useEffect(() => {
+    setFileReferenceIndex(0);
+    if (fileReferenceDismissedFor && fileReferenceDismissedFor !== promptValue) {
+      setFileReferenceDismissedFor("");
+    }
+  }, [fileReferenceDismissedFor, promptValue]);
+
+  useEffect(() => {
+    setCaretIndex((current) => Math.min(current, promptValue.length));
+  }, [promptValue.length]);
+
+  useEffect(() => {
+    if (!permissionOpen) {
+      setPendingPermissionMode(null);
+    }
+  }, [permissionOpen]);
 
   useEffect(() => {
     const node = textareaRef.current;
@@ -211,6 +286,32 @@ export function CleanComposer({
     window.requestAnimationFrame(() => textareaRef.current?.focus());
   }, [onPromptChange, promptValue]);
 
+  const syncCaret = useCallback(() => {
+    const node = textareaRef.current;
+    setCaretIndex(node?.selectionStart ?? promptValue.length);
+  }, [promptValue.length]);
+
+  const insertFileReferenceTrigger = useCallback(() => {
+    const node = textareaRef.current;
+    const start = node?.selectionStart ?? promptValue.length;
+    const end = node?.selectionEnd ?? start;
+    const before = promptValue.slice(0, start);
+    const after = promptValue.slice(end);
+    const prefix = before && !/\s$/.test(before) ? " " : "";
+    const inserted = `${prefix}@`;
+    const next = `${before}${inserted}${after}`;
+    const nextCaret = before.length + inserted.length;
+    onPromptChange(next);
+    setCaretIndex(nextCaret);
+    setFileReferenceDismissedFor("");
+    setPlusOpen(false);
+    window.requestAnimationFrame(() => {
+      const input = textareaRef.current;
+      input?.focus();
+      input?.setSelectionRange(nextCaret, nextCaret);
+    });
+  }, [onPromptChange, promptValue]);
+
   const applySlashCommand = useCallback(
     (name: string) => {
       onPromptChange(`${name} `);
@@ -220,8 +321,72 @@ export function CleanComposer({
     [onPromptChange],
   );
 
+  const applyFileReference = useCallback(
+    (option: CleanFileReferenceOption) => {
+      if (!activeFileReference) return;
+      const reference = `@${option.path} `;
+      const next = `${promptValue.slice(0, activeFileReference.start)}${reference}${promptValue.slice(activeFileReference.end)}`;
+      const nextCaret = activeFileReference.start + reference.length;
+      onPromptChange(next);
+      setFileReferenceDismissedFor("");
+      setCaretIndex(nextCaret);
+      window.requestAnimationFrame(() => {
+        const input = textareaRef.current;
+        input?.focus();
+        input?.setSelectionRange(nextCaret, nextCaret);
+      });
+    },
+    [activeFileReference, onPromptChange, promptValue],
+  );
+
+  const selectPermissionMode = useCallback(
+    (mode: string) => {
+      if (mode === "skip" && permissionMode !== "skip") {
+        setPendingPermissionMode(mode);
+        return;
+      }
+      onPermissionModeChange?.(mode);
+      setPendingPermissionMode(null);
+      setPermissionOpen(false);
+    },
+    [onPermissionModeChange, permissionMode],
+  );
+
   const handlePromptKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+      if (fileReferenceMatches.length) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          setFileReferenceIndex((current) => (current + 1) % fileReferenceMatches.length);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setFileReferenceIndex((current) => (current - 1 + fileReferenceMatches.length) % fileReferenceMatches.length);
+          return;
+        }
+        if (event.key === "Home") {
+          event.preventDefault();
+          setFileReferenceIndex(0);
+          return;
+        }
+        if (event.key === "End") {
+          event.preventDefault();
+          setFileReferenceIndex(fileReferenceMatches.length - 1);
+          return;
+        }
+        if (event.key === "Enter" || event.key === "Tab") {
+          event.preventDefault();
+          applyFileReference(fileReferenceMatches[fileReferenceIndex] ?? fileReferenceMatches[0]);
+          return;
+        }
+      }
+      if (activeFileReference && event.key === "Escape") {
+        event.preventDefault();
+        setFileReferenceDismissedFor(promptValue);
+        return;
+      }
+
       if (slashMatches.length) {
         if (event.key === "ArrowDown") {
           event.preventDefault();
@@ -260,7 +425,18 @@ export function CleanComposer({
         onSubmitPrompt();
       }
     },
-    [applySlashCommand, canSubmit, onSubmitPrompt, promptValue, slashIndex, slashMatches],
+    [
+      activeFileReference,
+      applyFileReference,
+      applySlashCommand,
+      canSubmit,
+      fileReferenceIndex,
+      fileReferenceMatches,
+      onSubmitPrompt,
+      promptValue,
+      slashIndex,
+      slashMatches,
+    ],
   );
 
   if (hidden) return null;
@@ -312,9 +488,43 @@ export function CleanComposer({
           value={promptValue}
           placeholder={variant === "new" ? "随便问点什么..." : "描述下一步要本地智能体完成的事情..."}
           disabled={disabled}
-          onChange={(event) => onPromptChange(event.currentTarget.value)}
+          onChange={(event) => {
+            onPromptChange(event.currentTarget.value);
+            setCaretIndex(event.currentTarget.selectionStart ?? event.currentTarget.value.length);
+          }}
+          onClick={syncCaret}
           onKeyDown={handlePromptKeyDown}
+          onKeyUp={syncCaret}
+          onSelect={syncCaret}
         />
+        {activeFileReference ? (
+          <div
+            className="hc-file-reference-panel"
+            role="listbox"
+            aria-label="文件引用"
+            aria-activedescendant={fileReferenceMatches.length ? `hc-file-reference-option-${fileReferenceIndex}` : undefined}
+          >
+            {fileReferenceMatches.length ? (
+              fileReferenceMatches.map((option, index) => (
+                <button
+                  type="button"
+                  id={`hc-file-reference-option-${index}`}
+                  key={option.path}
+                  role="option"
+                  aria-selected={index === fileReferenceIndex}
+                  data-active={index === fileReferenceIndex}
+                  onMouseEnter={() => setFileReferenceIndex(index)}
+                  onClick={() => applyFileReference(option)}
+                >
+                  <strong>{fileReferenceLabel(option)}</strong>
+                  <span>{option.path}</span>
+                </button>
+              ))
+            ) : (
+              <p>没有匹配文件。继续输入，或先从文件区打开/产生改动后再引用。</p>
+            )}
+          </div>
+        ) : null}
         {slashMatches.length ? (
           <div
             className="hc-slash-panel"
@@ -351,6 +561,10 @@ export function CleanComposer({
                     <ImagePlus size={17} />
                     <span>添加文件或图片</span>
                   </button>
+                  <button type="button" onClick={insertFileReferenceTrigger}>
+                    <AtSign size={17} />
+                    <span>引用项目文件</span>
+                  </button>
                   <button type="button" onClick={insertSlash}>
                     <Slash size={17} />
                     <span>斜杠命令</span>
@@ -371,15 +585,31 @@ export function CleanComposer({
                       type="button"
                       key={option.id}
                       data-active={option.id === permissionMode}
-                      onClick={() => {
-                        onPermissionModeChange?.(option.id);
-                        setPermissionOpen(false);
-                      }}
+                      onClick={() => selectPermissionMode(option.id)}
                     >
                       <strong>{option.label}</strong>
                       <small>{option.description}</small>
                     </button>
                   ))}
+                  {pendingPermissionMode === "skip" ? (
+                    <div className="hc-permission-confirm" role="alert">
+                      <strong>确认完全访问权限？</strong>
+                      <p>这会尽量跳过常规确认，适合你明确希望本地智能体自动执行读写和命令时使用。</p>
+                      <div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onPermissionModeChange?.("skip");
+                            setPendingPermissionMode(null);
+                            setPermissionOpen(false);
+                          }}
+                        >
+                          确认完全访问
+                        </button>
+                        <button type="button" onClick={() => setPendingPermissionMode(null)}>取消</button>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>

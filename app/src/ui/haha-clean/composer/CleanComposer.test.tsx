@@ -2,13 +2,13 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CleanComposer } from "./CleanComposer";
+import { CleanComposer, type CleanComposerProps } from "./CleanComposer";
 
 afterEach(() => {
   cleanup();
 });
 
-function renderComposer() {
+function renderComposer(overrides: Partial<CleanComposerProps> = {}) {
   const handlers = {
     onPromptChange: vi.fn(),
     onSubmitPrompt: vi.fn(),
@@ -46,6 +46,7 @@ function renderComposer() {
         { id: "gpt-5.4-mini", label: "5.4-mini" },
       ]}
       selectedModelId="gpt-5.4-mini"
+      {...overrides}
     />,
   );
 
@@ -100,6 +101,10 @@ describe("CleanComposer", () => {
     const permissionPanel = screen.getByText("写入、命令和高风险操作前先确认。").closest(".hc-popover");
     expect(permissionPanel).toBeInTheDocument();
     await user.click(within(permissionPanel as HTMLElement).getByRole("button", { name: /完全访问权限/ }));
+    expect(handlers.onPermissionModeChange).not.toHaveBeenCalled();
+    expect(within(permissionPanel as HTMLElement).getByText("确认完全访问权限？")).toBeInTheDocument();
+
+    await user.click(within(permissionPanel as HTMLElement).getByRole("button", { name: "确认完全访问" }));
     expect(handlers.onPermissionModeChange).toHaveBeenCalledWith("skip");
 
     await user.click(screen.getByRole("button", { name: "添加" }));
@@ -121,5 +126,25 @@ describe("CleanComposer", () => {
 
     await user.keyboard("{Enter}");
     expect(handlers.onPromptChange).toHaveBeenCalledWith("/mcp ");
+  });
+
+  it("inserts project file references from the @ picker", async () => {
+    const handlers = renderComposer({
+      promptValue: "请看 @",
+      fileReferenceOptions: [
+        { path: "src/app.tsx" },
+        { path: "docs/readme.md" },
+      ],
+    });
+    const user = userEvent.setup();
+    const textbox = screen.getByRole("textbox");
+    textbox.focus();
+    (textbox as HTMLTextAreaElement).setSelectionRange("请看 @".length, "请看 @".length);
+
+    const panel = screen.getByRole("listbox", { name: "文件引用" });
+    expect(within(panel).getByRole("option", { name: /app\.tsx/ })).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(handlers.onPromptChange).toHaveBeenCalledWith("请看 @docs/readme.md ");
   });
 });

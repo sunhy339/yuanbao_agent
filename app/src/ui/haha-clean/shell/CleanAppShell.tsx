@@ -106,6 +106,7 @@ export function CleanAppShell({
   const shellComposerVisible = composerVisible && (activeKind === "session" || activeKind === "new-session");
   const sessionTabs = sessions.slice(0, 10);
   const dirtyCount = worktreeStatus?.dirtyFiles ?? 0;
+  const fileReferenceOptions = (worktreeStatus?.files ?? []).map((path) => ({ path }));
 
   return (
     <div className="hc-app">
@@ -233,6 +234,7 @@ export function CleanAppShell({
               attachments={attachments}
               onAttachmentsChange={onAttachmentsChange}
               onAttachmentError={onAttachmentError}
+              fileReferenceOptions={fileReferenceOptions}
               modelOptions={modelOptions}
               selectedModelId={selectedModelId}
               onSelectModel={onSelectModel}

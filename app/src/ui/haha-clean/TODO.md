@@ -20,6 +20,8 @@
 - Markdown 文件补了预览/源码切换，源码模式保留行号和轻量高亮。
 - Slash 命令补了键盘选择：上下键/Home/End 切换，Enter/Tab 选中，Escape 关闭。
 - Markdown 预览补了轻量文档大纲，方便快速跳到章节。
+- Composer 补了 `@` 文件引用入口：加号菜单可插入 `@`，输入后能从当前已知文件候选里选择并插入引用。
+- 权限菜单补了“完全访问权限”二次确认，避免误点直接切到危险权限模式。
 - 现有后端数据适配：messages、toolCalls、approvals、patches、backgroundJobs、traces、activeTask、contextPreview。
 - clean transcript schema：已覆盖 user_text、assistant_text、assistant_progress、thinking、tool_use、tool_result、tool_group、permission_request、computer_use_permission、ask_user_question、background_task、task_summary、plan_update、goal_event、memory_event、compact_summary、api_retry、error、change_set、command、status、system。
 
@@ -30,12 +32,12 @@
 - 工具事件时间戳需要更稳定，否则前端只能尽量按 messages/runtime 的已有时间推断插入顺序。
 - 分支/撤销/真正绑定上下文的消息引用需要稳定 transcript target id；当前文本引用已能写入 composer。
 - 项目 git 分支、worktree、上下文快照分类明细。
-- 文件/图片引用需要持久化记录和后端读取接口。
+- 文件/图片引用需要持久化记录和后端读取接口；当前 `@` 候选先来自 `worktreeStatus.files`，还不是全项目文件搜索。
 - Computer Use 权限请求、ask_user_question、goal_event、memory_event、compact_summary、api_retry 这些事件前端已能渲染，但后端还需要稳定 emit、真实授权/回答提交接口和补交互字段。
 
 ## 暂时占位
 
 - 代码阅览完整语言服务级语法高亮、Markdown 源码/预览滚动同步和 diff/源码联动。
-- 文件搜索、@文件引用、slash command 详情/结果面板。
+- 全项目文件搜索、`@` 引用持久化、slash command 详情/结果面板。
 - Computer Use 权限弹窗。
 - MCP/Skills/Settings 页面仍先复用旧业务组件，已加 clean shell 样式覆盖，后续可迁移到独立 clean 组件。

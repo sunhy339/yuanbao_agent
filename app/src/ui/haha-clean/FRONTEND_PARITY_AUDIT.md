@@ -28,6 +28,7 @@
 - runtime `approval` 已从通用工具卡拆成专用审批节点：标题、文件列表、批准/拒绝和详情折叠更靠近 haha-cc 的轻量请求块。
 - worklog 展开后改为专用紧凑工具行：读文件、查目录、Git 状态这类低价值步骤不再展开成大卡片，单行仍可继续打开详情和复制。
 - worklog 已经贯通 `toolUseId/parentToolUseId` 到 runtime 渲染层，展开后能按父子工具缩进展示，先补齐 haha-cc 信息流里的工具树基础形态。
+- clean 会话会对已被 runtime/worklog 承接的低价值 inline 工具消息做去重，同一个 read/list/git/search 不再在主线重复出现两遍；失败、运行中、写入和审批仍保留。
 - 聊天正文 Markdown 渲染补了宽松标题、任务列表和表格，模型输出里的 `##1`、todo、表格不再直接按普通文本裸露。
 - 这层是 transcript adapter：能力不足时先把可识别事件接进统一消息流，无法由现有后端真实提供的能力继续记录为后端待补。
 
@@ -82,7 +83,7 @@
 | 过程说明 | 短句插在工具/命令前后 | `assistant_progress` 已预留和渲染 | 依赖 metadata.kind | `后端待补`：后端需要输出阶段性自然语言，不要只输出工具日志 |
 | 工具调用行 | 单行可折叠，显示工具名、目标、状态 | runtime/tool 行已低卡片化，`content_start(tool_use)` 可先显示占位；工具标题会优先转成“读取/修改/运行 + 目标” | runtime items/toolCalls/content_start | `部分接入`：前端已清洗常见工具标题，后端仍需提供结构化 summary 避免前端猜 JSON |
 | 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy，并保存 `parentToolUseId`；主聊天工具消息会把常见 JSON 结果转成单行摘要，展开后看完整输入输出 | runtime output/tool result | `部分接入`：父子 id 已能保存并在 worklog 里缩进展示，但仍需要后端稳定树结构和更完整工具摘要 |
-| 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，展开后使用紧凑工具行和父子缩进；普通 read/list/git/search/状态探针继续压缩 | activity worklog | `部分接入`：视觉已更轻，后续还要接真实阶段解释正文和更完整的父子折叠 |
+| 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，展开后使用紧凑工具行和父子缩进；普通 read/list/git/search/状态探针继续压缩，且会隐藏对应的重复 inline 工具消息 | activity worklog | `部分接入`：视觉已更轻，后续还要接真实阶段解释正文和更完整的父子折叠 |
 | 权限请求 | 内嵌审批卡，带 diff/命令预览 | runtime approval 已拆成专用轻量节点，常见审批会显示“修改/写入/运行 + 目标”，并保留批准/拒绝 | approvals/permission_request | `部分接入`：审批节点已拆出，permission request 内完整 diff/规则类永久批准还未补 |
 | 文件改动卡 | 当前轮改动 summary、查看 diff、撤销 | patch card + diff preview 已接入 | patches/changedFiles | `部分接入`：当前没有 turn 级撤销，diff 文件匹配仍需加强 |
 | 任务摘要 | 完成后显示总结，不在刚开始出现 | 已隐藏运行初期 task summary | activeTask | `部分接入`：结束时机和内容质量依赖后端 |

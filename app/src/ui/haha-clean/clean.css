@@ -1066,6 +1066,17 @@
   color: var(--hc-text);
 }
 
+.hc-worklog-head em {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--hc-muted);
+  font-size: 12px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hc-thinking em,
 .hc-tool-inline span,
 .hc-runtime-head span,
@@ -1576,9 +1587,97 @@
   margin-left: 20px;
 }
 
-.hc-worklog .hc-runtime {
+.hc-worklog-row {
+  display: grid;
+  gap: 5px;
   width: 100%;
-  border-left-width: 1px;
+  border-left: 1px solid var(--hc-line);
+  padding-left: 9px;
+}
+
+.hc-worklog-row[data-tone="success"] {
+  border-left-color: rgba(32, 114, 69, 0.45);
+}
+
+.hc-worklog-row[data-tone="danger"] {
+  border-left-color: rgba(178, 59, 47, 0.5);
+}
+
+.hc-worklog-row > button {
+  display: flex;
+  width: 100%;
+  min-height: 28px;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  padding: 3px 6px;
+  color: var(--hc-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.hc-worklog-row > button:hover {
+  background: rgba(244, 241, 236, 0.56);
+}
+
+.hc-worklog-row strong {
+  color: var(--hc-text);
+  font-size: 13px;
+}
+
+.hc-worklog-row span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--hc-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-worklog-row time {
+  flex: 0 0 auto;
+  color: var(--hc-muted);
+  font-size: 11px;
+}
+
+.hc-worklog-detail {
+  overflow: hidden;
+  margin: 0 0 2px 27px;
+  border: 1px solid var(--hc-line);
+  border-radius: 8px;
+  background: var(--hc-code-bg);
+}
+
+.hc-worklog-detail figcaption {
+  display: flex;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--hc-line);
+  padding: 5px 8px;
+  color: var(--hc-muted);
+  font-size: 12px;
+}
+
+.hc-worklog-detail button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--hc-line);
+  border-radius: 6px;
+  background: #fff;
+  padding: 2px 6px;
+}
+
+.hc-worklog-detail pre {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px 10px;
+  color: #39434d;
+  font: 12px/1.55 "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
 }
 
 .hc-show-more {

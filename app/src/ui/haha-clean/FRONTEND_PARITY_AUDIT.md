@@ -25,6 +25,7 @@
 - “完全访问权限”现在会先二次确认，不再一点击危险权限就直接切换。
 - 工具/审批标题补了业务化动作名：`read_file`、`apply_patch`、`run_command` 等会优先显示为“读取 xxx”“修改 xxx”“运行 xxx”，不再把内部工具名当主标题。
 - runtime `approval` 已从通用工具卡拆成专用审批节点：标题、文件列表、批准/拒绝和详情折叠更靠近 haha-cc 的轻量请求块。
+- worklog 展开后改为专用紧凑工具行：读文件、查目录、Git 状态这类低价值步骤不再展开成大卡片，单行仍可继续打开详情和复制。
 - 这层是 transcript adapter：能力不足时先把可识别事件接进统一消息流，无法由现有后端真实提供的能力继续记录为后端待补。
 
 ## 1. 应用壳层与导航
@@ -78,7 +79,7 @@
 | 过程说明 | 短句插在工具/命令前后 | `assistant_progress` 已预留和渲染 | 依赖 metadata.kind | `后端待补`：后端需要输出阶段性自然语言，不要只输出工具日志 |
 | 工具调用行 | 单行可折叠，显示工具名、目标、状态 | runtime/tool 行已低卡片化，`content_start(tool_use)` 可先显示占位；工具标题会优先转成“读取/修改/运行 + 目标” | runtime items/toolCalls/content_start | `部分接入`：前端已清洗常见工具标题，后端仍需提供结构化 summary 避免前端猜 JSON |
 | 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy，并保存 `parentToolUseId` | runtime output/tool result | `部分接入`：父子 id 已能保存，稳定工具树 UI 还没完成 |
-| 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，普通 read/list/git/search/状态探针继续压缩 | activity worklog | `部分接入`：重要写入、审批、失败工具会留在主线，后续还要更自然地穿插解释正文 |
+| 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，展开后使用紧凑工具行；普通 read/list/git/search/状态探针继续压缩 | activity worklog | `部分接入`：视觉已更轻，后续还要接真实 parent/child 工具树和阶段解释正文 |
 | 权限请求 | 内嵌审批卡，带 diff/命令预览 | runtime approval 已拆成专用轻量节点，常见审批会显示“修改/写入/运行 + 目标”，并保留批准/拒绝 | approvals/permission_request | `部分接入`：审批节点已拆出，permission request 内完整 diff/规则类永久批准还未补 |
 | 文件改动卡 | 当前轮改动 summary、查看 diff、撤销 | patch card + diff preview 已接入 | patches/changedFiles | `部分接入`：当前没有 turn 级撤销，diff 文件匹配仍需加强 |
 | 任务摘要 | 完成后显示总结，不在刚开始出现 | 已隐藏运行初期 task summary | activeTask | `部分接入`：结束时机和内容质量依赖后端 |
@@ -104,7 +105,7 @@
 
 | haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
 | --- | --- | --- | --- | --- |
-| 工具折叠按钮 | 行首 chevron 展开输入/输出 | 已接入 | runtime expanded state | `已接入` |
+| 工具折叠按钮 | 行首 chevron 展开输入/输出 | 已接入；worklog 内用更轻的单行展开 | runtime expanded state | `已接入` |
 | 工具状态 badge | running/completed/failed/skipped | 已接入 | item.status | `部分接入`：状态文案需统一成更少、更稳的集合 |
 | 工具目标摘要 | `read_file path`、`run_command cmd` | 已清洗 read/list/git/search/run/write/apply_patch 的标题和部分 JSON 输出 | runtime input/output | `部分接入`：需要后端提供结构化 summary，前端少猜 JSON |
 | 复制输出 | 复制工具输出 | 已接入 | Clipboard | `已接入` |

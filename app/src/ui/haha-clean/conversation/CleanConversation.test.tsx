@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
-import { CleanActivityItem, CleanPermissionMessageBlock, CleanRuntimeBlock, CleanToolMessageBlock } from "./CleanConversation";
+import { CleanActivityItem, CleanPermissionMessageBlock, CleanRuntimeBlock, CleanToolMessageBlock, CleanWorklogBlock } from "./CleanConversation";
 
 afterEach(() => cleanup());
 
@@ -181,5 +181,46 @@ describe("CleanConversation", () => {
 
     await user.click(screen.getByRole("button", { name: "拒绝" }));
     expect(onReject).toHaveBeenCalledWith("approval-1");
+  });
+
+  it("renders expanded worklogs as compact runtime rows", async () => {
+    const user = userEvent.setup();
+    const onCopyRuntimeText = vi.fn();
+
+    render(
+      <CleanWorklogBlock
+        onCopyRuntimeText={onCopyRuntimeText}
+        items={[
+          {
+            id: "tool:list",
+            kind: "tool",
+            title: "list_dir",
+            status: "completed",
+            toolName: "list_dir",
+            code: JSON.stringify({ path: "snake_game" }),
+            rawDetail: JSON.stringify({ items: [{ name: "game.py" }] }),
+            durationMs: 12,
+          },
+          {
+            id: "tool:read",
+            kind: "tool",
+            title: "read_file",
+            status: "completed",
+            toolName: "read_file",
+            code: JSON.stringify({ path: "snake_game/game.py" }),
+            rawDetail: "class Game: pass",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(/已执行 2 项/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /已执行 2 项/ }));
+    expect(screen.getByText("查看 snake_game")).toBeInTheDocument();
+    expect(screen.getByText("读取 snake_game/game.py")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /读取 snake_game\/game\.py/ }));
+    await user.click(screen.getByRole("button", { name: "复制" }));
+    expect(onCopyRuntimeText).toHaveBeenCalledWith("工具详情", "class Game: pass");
   });
 });

@@ -868,6 +868,42 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
   );
 });
 
+function CleanWorklogRuntimeRow({
+  item,
+  onCopyRuntimeText,
+}: {
+  item: RuntimeTimelineItem;
+  onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const output = item.kind === "command" ? buildCommandOutput(item) : item.rawDetail || item.code || "";
+  const summary = runtimeSummary(item);
+  const detail = output || item.code || item.rawDetail || summary;
+  return (
+    <article className="hc-worklog-row" data-tone={statusTone(item.status)}>
+      <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
+        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+        <RuntimeIcon item={item} />
+        <strong>{runtimeLabel(item)}</strong>
+        {summary ? <span>{summary}</span> : null}
+        <StatusChip status={item.status} />
+        {formatDuration(item.durationMs) ? <time>{formatDuration(item.durationMs)}</time> : null}
+      </button>
+      {expanded && detail ? (
+        <figure className="hc-worklog-detail">
+          <figcaption>
+            <span>{item.kind === "command" ? "Shell" : "详情"}</span>
+            <button type="button" onClick={() => void onCopyRuntimeText?.("工具详情", detail)}>
+              <Copy size={12} />复制
+            </button>
+          </figcaption>
+          <pre>{detail}</pre>
+        </figure>
+      ) : null}
+    </article>
+  );
+}
+
 export function CleanWorklogBlock({
   items,
   onCopyRuntimeText,
@@ -879,15 +915,17 @@ export function CleanWorklogBlock({
   const quietCount = items.filter(isQuietRuntime).length;
   const importantItems = items.filter((item) => !isQuietRuntime(item));
   const visible = expanded ? items : (importantItems.length ? importantItems.slice(0, 3) : items.slice(0, 3));
+  const labels = items.map(runtimeLabel).slice(0, 3);
   return (
     <section className="hc-worklog">
       <button type="button" className="hc-worklog-head" onClick={() => setExpanded((open) => !open)}>
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <span>已执行 {items.length} 项{quietCount ? `，其中 ${quietCount} 项已折叠` : ""}</span>
+        {!expanded && labels.length ? <em>{labels.join("、")}{items.length > labels.length ? "..." : ""}</em> : null}
       </button>
       <div className="hc-worklog-list">
         {visible.map((item) => (
-          <CleanRuntimeBlock key={item.id} item={item} onCopyRuntimeText={onCopyRuntimeText} />
+          <CleanWorklogRuntimeRow key={item.id} item={item} onCopyRuntimeText={onCopyRuntimeText} />
         ))}
       </div>
       {!expanded && items.length > visible.length ? (

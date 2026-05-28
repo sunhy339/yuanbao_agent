@@ -12,7 +12,8 @@
 - transcript adapter：已接入 `content_start` 的 text/tool 占位、`content_delta` 工具输入增量、`tool_use_complete`/`tool_result` 的 `parentToolUseId` 保存。
 - 特殊事件适配：`api_retry`、`system_notification`、`compact_summary`、`goal_event`、`memory_event`、`ask_user_question`、`computer_use_permission_request`、`computer_use_permission` 可直接进入消息流。
 - `ask_user_question` 和 `computer_use_permission` 已有专用轻量节点，不再混进普通系统消息；目前先展示问题/选项、权限详情和复制操作。
-- 工具摘要清洗：目录/文件/Git/搜索类输出不再直接展示原始 JSON，优先显示可读短摘要。
+- 工具摘要清洗：目录/文件/Git/搜索类输出不再直接展示原始 JSON，优先显示可读短摘要；主聊天里的工具消息也会把 `{status, exitCode, stdout}`、`items/files/matches` 等结果转成单行中文摘要。
+- 工具详情折叠：主聊天工具消息展开后使用轻量“工具详情”面板，并支持复制完整输入/输出。
 - 工具/审批标题清洗：常见 `read_file`、`apply_patch`、`write_file`、`run_command` 会显示为“读取/修改/写入/运行 + 目标”，减少内部工具名暴露。
 - runtime `approval` 已拆成专用审批节点，批准/拒绝、文件列表和详情折叠不再混在通用工具卡里。
 - worklog 展开后使用紧凑工具行，低价值 read/list/git/search/status 记录不会再膨胀成大卡片，单行仍可展开复制详情。

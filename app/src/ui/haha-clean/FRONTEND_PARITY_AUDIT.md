@@ -24,6 +24,7 @@
 - Composer 补了 `@` 文件引用入口：加号菜单可插入 `@`，输入 `@` 后能从当前已知文件候选中键盘选择并插入引用。
 - “完全访问权限”现在会先二次确认，不再一点击危险权限就直接切换。
 - 工具/审批标题补了业务化动作名：`read_file`、`apply_patch`、`run_command` 等会优先显示为“读取 xxx”“修改 xxx”“运行 xxx”，不再把内部工具名当主标题。
+- 主聊天工具消息补了结构化结果摘要：`status/exitCode/stdout` 会显示成“已完成 · 退出码 0 · …”，`items/files/matches` 会显示成“找到/涉及文件 N 项”，展开后才看完整输入输出，并支持复制详情。
 - runtime `approval` 已从通用工具卡拆成专用审批节点：标题、文件列表、批准/拒绝和详情折叠更靠近 haha-cc 的轻量请求块。
 - worklog 展开后改为专用紧凑工具行：读文件、查目录、Git 状态这类低价值步骤不再展开成大卡片，单行仍可继续打开详情和复制。
 - worklog 已经贯通 `toolUseId/parentToolUseId` 到 runtime 渲染层，展开后能按父子工具缩进展示，先补齐 haha-cc 信息流里的工具树基础形态。
@@ -80,7 +81,7 @@
 | 模型思考 | thinking 块，随流式更新 | 有 thinking/progress 入口 | metadata/status 推断 | `后端待补`：缺真实 token 级 thinking delta |
 | 过程说明 | 短句插在工具/命令前后 | `assistant_progress` 已预留和渲染 | 依赖 metadata.kind | `后端待补`：后端需要输出阶段性自然语言，不要只输出工具日志 |
 | 工具调用行 | 单行可折叠，显示工具名、目标、状态 | runtime/tool 行已低卡片化，`content_start(tool_use)` 可先显示占位；工具标题会优先转成“读取/修改/运行 + 目标” | runtime items/toolCalls/content_start | `部分接入`：前端已清洗常见工具标题，后端仍需提供结构化 summary 避免前端猜 JSON |
-| 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy，并保存 `parentToolUseId` | runtime output/tool result | `部分接入`：父子 id 已能保存并在 worklog 里缩进展示，但仍需要后端稳定树结构和工具摘要 |
+| 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy，并保存 `parentToolUseId`；主聊天工具消息会把常见 JSON 结果转成单行摘要，展开后看完整输入输出 | runtime output/tool result | `部分接入`：父子 id 已能保存并在 worklog 里缩进展示，但仍需要后端稳定树结构和更完整工具摘要 |
 | 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，展开后使用紧凑工具行和父子缩进；普通 read/list/git/search/状态探针继续压缩 | activity worklog | `部分接入`：视觉已更轻，后续还要接真实阶段解释正文和更完整的父子折叠 |
 | 权限请求 | 内嵌审批卡，带 diff/命令预览 | runtime approval 已拆成专用轻量节点，常见审批会显示“修改/写入/运行 + 目标”，并保留批准/拒绝 | approvals/permission_request | `部分接入`：审批节点已拆出，permission request 内完整 diff/规则类永久批准还未补 |
 | 文件改动卡 | 当前轮改动 summary、查看 diff、撤销 | patch card + diff preview 已接入 | patches/changedFiles | `部分接入`：当前没有 turn 级撤销，diff 文件匹配仍需加强 |
@@ -109,7 +110,7 @@
 | --- | --- | --- | --- | --- |
 | 工具折叠按钮 | 行首 chevron 展开输入/输出 | 已接入；worklog 内用更轻的单行展开 | runtime expanded state | `已接入` |
 | 工具状态 badge | running/completed/failed/skipped | 已接入 | item.status | `部分接入`：状态文案需统一成更少、更稳的集合 |
-| 工具目标摘要 | `read_file path`、`run_command cmd` | 已清洗 read/list/git/search/run/write/apply_patch 的标题和部分 JSON 输出 | runtime input/output | `部分接入`：需要后端提供结构化 summary，前端少猜 JSON |
+| 工具目标摘要 | `read_file path`、`run_command cmd` | 已清洗 read/list/git/search/run/write/apply_patch 的标题和常见 JSON 输出，主聊天工具行支持 status/exitCode/stdout/items/files/matches 摘要 | runtime input/output | `部分接入`：仍需要后端提供稳定结构化 summary，减少前端猜测 |
 | 复制输出 | 复制工具输出 | 已接入 | Clipboard | `已接入` |
 | 刷新命令 | 查看最新命令输出 | 已接入 command refresh | command job id | `已接入` |
 | 停止命令 | 停止运行中的命令 | 已接入 | command job id | `部分接入`：后端 terminal state 需要阻止 cancelled -> cancelled |
@@ -174,7 +175,7 @@
 | `content_start` | 开始 text/tool_use，并给 id | chat-compat 事件 / provider turn | `部分接入`：前端已渲染 text/tool 占位，后端需保证真实顺序和 id 稳定 |
 | `content_delta` | token/工具输入流式增量 | chat-compat 事件 / assistant token | `部分接入`：正文/toolInput 已能进流，真实 thinking delta 仍待补 |
 | `tool_use_complete` | 工具输入完整、parentToolUseId | toolCalls/runtime/chat-compat | `部分接入`：前端已保存 parentToolUseId，工具树 UI 待补 |
-| `tool_result` | 工具结果 | runtime output/tool result | `部分接入`：前端已保存 parentToolUseId，仍需结构化 summary |
+| `tool_result` | 工具结果 | runtime output/tool result | `部分接入`：前端已保存 parentToolUseId，并能清洗常见 JSON 结果；仍需后端提供稳定结构化 summary |
 | `permission_request` | 审批请求 | approvals | `已接入` |
 | `computer_use_permission_request` | computer use 授权 | transcript adapter | `部分接入`：前端已能显示，后端能力/弹窗详情待补 |
 | `message_complete` | 本轮消息结束 | task/session status 推断 | `后端待补` |

@@ -1144,7 +1144,6 @@
 }
 
 .hc-thinking pre,
-.hc-tool-inline pre,
 .hc-permission-card pre,
 .hc-special-event pre,
 .hc-compact-divider pre {
@@ -1154,6 +1153,49 @@
   border: 1px solid var(--hc-line);
   border-radius: 8px;
   background: var(--hc-code-bg);
+  padding: 10px;
+  color: #39434d;
+  white-space: pre-wrap;
+}
+
+.hc-tool-detail {
+  margin: 6px 0 0 28px;
+  overflow: hidden;
+  border: 1px solid var(--hc-line);
+  border-radius: 8px;
+  background: var(--hc-code-bg);
+}
+
+.hc-tool-detail figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--hc-line);
+  padding: 6px 9px;
+  color: var(--hc-muted);
+  font-size: 12px;
+}
+
+.hc-tool-detail button {
+  border: 1px solid var(--hc-line);
+  border-radius: 999px;
+  background: #fff;
+  padding: 3px 8px;
+  color: var(--hc-muted);
+  cursor: pointer;
+}
+
+.hc-tool-detail button:hover {
+  color: var(--hc-primary);
+}
+
+.hc-tool-detail pre {
+  margin: 0;
+  max-height: 300px;
+  overflow: auto;
+  border: 0;
+  background: transparent;
   padding: 10px;
   color: #39434d;
   white-space: pre-wrap;

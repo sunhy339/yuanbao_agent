@@ -83,19 +83,79 @@ function readString(value: unknown) {
   return "";
 }
 
+function readRecordString(record: Record<string, unknown> | null | undefined, keys: string[]) {
+  if (!record) return "";
+  for (const key of keys) {
+    const text = readString(record[key]);
+    if (text) return text;
+  }
+  return "";
+}
+
+function readRecordNumber(record: Record<string, unknown> | null | undefined, keys: string[]) {
+  if (!record) return null;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  }
+  return null;
+}
+
+function summarizeNamedArray(record: Record<string, unknown>, keys: string[], noun: string) {
+  for (const key of keys) {
+    const value = record[key];
+    if (!Array.isArray(value)) continue;
+    const names = value
+      .map((item) => {
+        if (typeof item === "string") return item.trim();
+        if (!item || typeof item !== "object") return "";
+        const entry = item as Record<string, unknown>;
+        return readRecordString(entry, ["path", "file", "name", "title", "label"]);
+      })
+      .filter(Boolean)
+      .slice(0, 3);
+    const suffix = names.length
+      ? `：${names.join("、")}${value.length > names.length ? `，另 ${value.length - names.length} 项` : ""}`
+      : "";
+    return `${noun} ${value.length} 项${suffix}`;
+  }
+  return "";
+}
+
+function summarizeToolResultText(value: string) {
+  const text = value.trim();
+  if (!text) return "";
+  const record = parseJson(text);
+  if (!record) return compactText(text, 150);
+
+  const listSummary =
+    summarizeNamedArray(record, ["items", "entries", "children"], "找到") ||
+    summarizeNamedArray(record, ["files", "changedFiles", "changes"], "涉及文件") ||
+    summarizeNamedArray(record, ["matches", "results"], "返回结果");
+  if (listSummary) return compactText(listSummary, 150);
+
+  const status = readRecordString(record, ["status", "state"]);
+  const exitCode = readRecordNumber(record, ["exitCode", "exit_code", "code"]);
+  const stdout = readRecordString(record, ["stdout", "output"]);
+  const stderr = readRecordString(record, ["stderr", "error"]);
+  const message = readRecordString(record, ["summary", "message", "result"]);
+  const parts: string[] = [];
+  if (status) parts.push(statusLabel(status));
+  if (exitCode !== null) parts.push(`退出码 ${exitCode}`);
+  if (message) parts.push(compactText(message, 92));
+  if (!message && stdout) parts.push(compactText(stdout, 92));
+  if (stderr) parts.push(compactText(stderr, 92));
+  return parts.length ? parts.join(" · ") : "结果已记录";
+}
+
 function toolInlineSummary(message: SessionWorkspaceMessage) {
   const input =
     message.metadata?.input && typeof message.metadata.input === "object"
       ? message.metadata.input as Record<string, unknown>
       : parseJson(typeof message.metadata?.inputText === "string" ? message.metadata.inputText : "");
   const target = readString(input?.path ?? input?.file ?? input?.cwd ?? input?.command ?? input?.query);
-  const resultRecord = parseJson(readString(message.metadata?.resultText));
-  const result =
-    resultRecord && Array.isArray(resultRecord.items)
-      ? `找到 ${resultRecord.items.length} 项`
-      : resultRecord && Array.isArray(resultRecord.entries)
-        ? `找到 ${resultRecord.entries.length} 项`
-        : readString(message.metadata?.resultText);
+  const result = summarizeToolResultText(readString(message.metadata?.resultText));
   return compactText([target, result || message.content].filter(Boolean).join(" · "), 170);
 }
 
@@ -404,7 +464,13 @@ export const CleanThinkingBlock = memo(function CleanThinkingBlock({ message }: 
   );
 });
 
-export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({ message }: { message: SessionWorkspaceMessage }) {
+export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({
+  message,
+  onCopyRuntimeText,
+}: {
+  message: SessionWorkspaceMessage;
+  onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+}) {
   const [expanded, setExpanded] = useState(false);
   const failed = message.status === "failed" || message.metadata?.isError === true;
   const input = typeof message.metadata?.inputText === "string" ? message.metadata.inputText : "";
@@ -425,7 +491,19 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({ messa
         <span>{toolInlineSummary(message)}</span>
         <em>{message.streaming ? "运行中" : failed ? "失败" : "完成"}</em>
       </button>
-      {expanded && details ? <pre>{details}</pre> : null}
+      {expanded && details ? (
+        <figure className="hc-tool-detail">
+          <figcaption>
+            <span>工具详情</span>
+            {onCopyRuntimeText ? (
+              <button type="button" onClick={() => void onCopyRuntimeText("工具详情", details)}>
+                复制
+              </button>
+            ) : null}
+          </figcaption>
+          <pre>{details}</pre>
+        </figure>
+      ) : null}
     </section>
   );
 });
@@ -1058,7 +1136,7 @@ export function CleanActivityItem({
     return wrap(<CleanPermissionMessageBlock message={message} onApprove={onApprove} onReject={onReject} busyId={busyId} />);
   }
   if (kind === "tool_use" || kind === "tool_result" || kind === "tool_activity") {
-    return wrap(<CleanToolMessageBlock message={message} />);
+    return wrap(<CleanToolMessageBlock message={message} onCopyRuntimeText={onCopyRuntimeText} />);
   }
   if (kind === "ask_user_question") {
     return wrap(<CleanAskUserQuestionBlock message={message} onCopyRuntimeText={onCopyRuntimeText} />);

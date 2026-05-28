@@ -130,6 +130,68 @@ describe("CleanConversation", () => {
     expect(screen.getByText("读取 snake_game/game.py")).toBeInTheDocument();
   });
 
+  it("summarizes inline tool JSON results instead of exposing raw details", async () => {
+    const user = userEvent.setup();
+    const onCopyRuntimeText = vi.fn();
+
+    render(
+      <CleanToolMessageBlock
+        onCopyRuntimeText={onCopyRuntimeText}
+        message={{
+          id: "tool-json",
+          role: "assistant",
+          content: "",
+          toolName: "run_command",
+          status: "completed",
+          metadata: {
+            inputText: JSON.stringify({ command: "python -m pytest tests -q" }),
+            resultText: JSON.stringify({
+              status: "completed",
+              exitCode: 0,
+              stdout: "3 passed in 0.01s",
+            }),
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("运行 python -m pytest tests -q")).toBeInTheDocument();
+    expect(screen.getByText(/已完成 · 退出码 0 · 3 passed in 0\.01s/)).toBeInTheDocument();
+    expect(screen.queryByText(/"exitCode"/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /运行 python -m pytest tests -q/ }));
+    expect(screen.getByText("工具详情")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "复制" }));
+    expect(onCopyRuntimeText).toHaveBeenCalledWith("工具详情", expect.stringContaining('"exitCode":0'));
+  });
+
+  it("summarizes inline tool item arrays with useful names", () => {
+    render(
+      <CleanToolMessageBlock
+        message={{
+          id: "tool-list",
+          role: "assistant",
+          content: "",
+          toolName: "list_dir",
+          status: "completed",
+          metadata: {
+            inputText: JSON.stringify({ path: "snake_game" }),
+            resultText: JSON.stringify({
+              items: [
+                { name: "game.py" },
+                { name: "rules.py" },
+                { name: "README.md" },
+                { name: "config.py" },
+              ],
+            }),
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/找到 4 项：game\.py、rules\.py、README\.md，另 1 项/)).toBeInTheDocument();
+  });
+
   it("uses readable action titles for permission messages", () => {
     render(
       <CleanPermissionMessageBlock

@@ -156,7 +156,11 @@ export function toolActionTitle({
   rawDetail?: string | null;
   fallback?: string;
 }) {
-  const normalized = toolName?.trim().toLowerCase() ?? "";
+  const rawTitle = title?.trim() ?? "";
+  const titleAsToolName = /^(apply_patch|write_file|read_file|list_dir|list_directory|search_files|code_search|run_command|command|bash|shell_command)$/i.test(rawTitle)
+    ? rawTitle.toLowerCase()
+    : "";
+  const normalized = toolName?.trim().toLowerCase() || titleAsToolName;
   const label = toolLabel(normalized || title);
   const inputRecord = parseJsonRecord(input);
   const detailRecord = parseJsonRecord(rawDetail);
@@ -185,8 +189,8 @@ export function toolActionTitle({
     return target ? `运行 ${compactText(target, 72)}` : "运行命令";
   }
   if (target && label !== target) return `${label} ${compactText(target, 72)}`;
-  return title && !/^(apply_patch|write_file|run_command|command|request|approval|patch approval request)$/i.test(title.trim())
-    ? title.trim()
+  return title && !/^(apply_patch|write_file|read_file|list_dir|list_directory|search_files|code_search|run_command|command|request|approval|patch approval request)$/i.test(title.trim())
+    ? rawTitle
     : label || fallback;
 }
 

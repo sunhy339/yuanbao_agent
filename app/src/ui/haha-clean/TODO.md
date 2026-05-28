@@ -14,6 +14,7 @@
 - `ask_user_question` 和 `computer_use_permission` 已有专用轻量节点，不再混进普通系统消息；目前先展示问题/选项、权限详情和复制操作。
 - 工具摘要清洗：目录/文件/Git/搜索类输出不再直接展示原始 JSON，优先显示可读短摘要。
 - 工具/审批标题清洗：常见 `read_file`、`apply_patch`、`write_file`、`run_command` 会显示为“读取/修改/写入/运行 + 目标”，减少内部工具名暴露。
+- runtime `approval` 已拆成专用审批节点，批准/拒绝、文件列表和详情折叠不再混在通用工具卡里。
 - 低价值 read/list/git/search/状态探针会压进 worklog，失败、审批、写入、diff 保留在主线，减少“全屏都是工具调用”的噪声。
 - 文件区 clean 样式：右侧文件树、预览区、分隔条和搜索框已脱离旧 session CSS 的重卡片样式。
 - 代码阅览补了轻量语法高亮，常见关键词、字符串、注释、数字会先上色；Markdown 文件继续走预览渲染。
@@ -31,6 +32,7 @@
 - 真实 token 级 thinking/assistant delta 分段，而不是只在最终消息里得到大段总结；前端已能消费分段事件。
 - 稳定的工具 parent/child 树、每个工具的结构化 input/output summary；前端已保存 `parentToolUseId`，但还没有完整树形 UI。
 - 工具事件时间戳需要更稳定，否则前端只能尽量按 messages/runtime 的已有时间推断插入顺序。
+- 审批请求需要稳定提供受影响文件和 diff 字段；当前前端会尽量从 code/rawDetail 里推断文件列表。
 - 分支/撤销/真正绑定上下文的消息引用需要稳定 transcript target id；当前文本引用已能写入 composer。
 - 项目 git 分支、worktree、上下文快照分类明细。
 - 文件/图片引用需要持久化记录和后端读取接口；当前 `@` 候选先来自 `worktreeStatus.files`，还不是全项目文件搜索。

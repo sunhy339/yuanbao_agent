@@ -188,6 +188,15 @@ function patchFileSummaries(item: RuntimeTimelineItem): PatchFileSummary[] {
   return Array.from(byPath.values());
 }
 
+function approvalFileSummaries(item: RuntimeTimelineItem) {
+  const files = patchFileSummaries(item).filter((file) => !file.path.trim().startsWith("{"));
+  if (files.length) return files;
+  const source = [item.code, item.rawDetail].filter(Boolean).join("\n");
+  const found = /"path"\s*:\s*"([^"]+)"/.exec(source)?.[1] ?? /(?:path|file|target)\s*[:=]\s*["']?([^"',\n\r]+)["']?/i.exec(source)?.[1];
+  if (!found) return [];
+  return [{ path: found.replace(/^[ab]\//, "").trim(), status: "修改" }];
+}
+
 function readMetadataString(message: SessionWorkspaceMessage, keys: string[]) {
   for (const key of keys) {
     const value = message.metadata?.[key];
@@ -607,6 +616,85 @@ function DiffPreview({ item }: { item: RuntimeTimelineItem }) {
   );
 }
 
+function ApprovalRuntimeBlock({
+  item,
+  onApprove,
+  onReject,
+  onLoadPatch,
+  onCopyRuntimeText,
+  busyId,
+}: {
+  item: RuntimeTimelineItem;
+  onApprove?: (approvalId: string) => void | Promise<void>;
+  onReject?: (approvalId: string) => void | Promise<void>;
+  onLoadPatch?: (patchId: string) => void | Promise<void>;
+  onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  busyId?: string | null;
+}) {
+  const [expanded, setExpanded] = useState(shouldExpandByDefault(item));
+  const files = useMemo(() => approvalFileSummaries(item), [item]);
+  const output = item.rawDetail || item.code || "";
+  const canApprove = Boolean(
+    item.sourceId &&
+      ["pending", "waiting", "waiting_approval", "queued"].includes(item.status?.toLowerCase() ?? ""),
+  );
+  const busy = Boolean(item.sourceId && busyId === item.sourceId);
+  const hasDiff = Boolean(item.diffLines?.length || item.rawDetail?.includes("diff --git"));
+
+  return (
+    <section className="hc-runtime hc-approval" data-tone={statusTone(item.status)} data-risky={item.riskLevel ?? "medium"}>
+      <header className="hc-approval-head">
+        <div>
+          <span className="hc-runtime-eyebrow">需要确认</span>
+          <strong>{runtimeLabel(item)}</strong>
+          {runtimeSummary(item) ? <small>{runtimeSummary(item)}</small> : null}
+        </div>
+        <StatusChip status={item.status} />
+      </header>
+      {files.length ? (
+        <div className="hc-change-list hc-change-list-compact">
+          {files.slice(0, 6).map((file) => (
+            <button
+              type="button"
+              key={file.path}
+              onClick={() => {
+                if (item.sourceId) void onLoadPatch?.(item.sourceId);
+              }}
+            >
+              <code>{file.path}</code>
+              <span>{[file.status || "修改", file.additions !== undefined ? `+${file.additions}` : "", file.deletions !== undefined ? `-${file.deletions}` : ""].filter(Boolean).join(" ")}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {canApprove ? (
+        <div className="hc-approval-actions">
+          <button type="button" disabled={busy} onClick={() => void onApprove?.(item.sourceId ?? "")}>批准</button>
+          <button type="button" disabled={busy} onClick={() => void onReject?.(item.sourceId ?? "")}>拒绝</button>
+        </div>
+      ) : null}
+      {output || hasDiff ? (
+        <button type="button" className="hc-diff-toggle" onClick={() => setExpanded((open) => !open)}>
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          {expanded ? "收起详情" : hasDiff ? "查看差异" : "查看详情"}
+        </button>
+      ) : null}
+      {expanded && hasDiff ? <DiffPreview item={item} /> : null}
+      {expanded && output && !hasDiff ? (
+        <figure className="hc-runtime-output">
+          <figcaption>
+            <span>审批详情</span>
+            <button type="button" onClick={() => void onCopyRuntimeText?.("审批详情", output)}>
+              <Copy size={13} />复制
+            </button>
+          </figcaption>
+          <pre>{output}</pre>
+        </figure>
+      ) : null}
+    </section>
+  );
+}
+
 function PatchRuntimeBlock({
   item,
   onLoadPatch,
@@ -694,6 +782,19 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
   const canStop = item.kind === "command" && item.sourceId && isInFlight(item.status) && onStopCommandJob;
   const canRefresh = item.kind === "command" && item.sourceId && onRefreshCommandJob;
   const risky = item.kind === "approval" || item.riskLevel === "medium" || item.riskLevel === "high";
+
+  if (item.kind === "approval") {
+    return (
+      <ApprovalRuntimeBlock
+        item={item}
+        onApprove={onApprove}
+        onReject={onReject}
+        onLoadPatch={onLoadPatch}
+        onCopyRuntimeText={onCopyRuntimeText}
+        busyId={busyId}
+      />
+    );
+  }
 
   if (item.kind === "patch") {
     return <PatchRuntimeBlock item={item} onLoadPatch={onLoadPatch} />;

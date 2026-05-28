@@ -149,4 +149,37 @@ describe("CleanConversation", () => {
     expect(screen.getByText("修改 snake_game/rules.py 需要确认")).toBeInTheDocument();
     expect(screen.queryByText(/apply_patch 需要确认/)).not.toBeInTheDocument();
   });
+
+  it("renders approval runtime items as dedicated approval nodes", async () => {
+    const user = userEvent.setup();
+    const onApprove = vi.fn();
+    const onReject = vi.fn();
+
+    render(
+      <CleanRuntimeBlock
+        item={{
+          id: "approval:1",
+          kind: "approval",
+          sourceId: "approval-1",
+          title: "apply_patch",
+          status: "pending",
+          riskLevel: "medium",
+          code: JSON.stringify({ path: "snake_game/rules.py" }),
+          rawDetail: "modified snake_game/rules.py (+2/-1)",
+        }}
+        onApprove={onApprove}
+        onReject={onReject}
+      />,
+    );
+
+    expect(screen.getByText("需要确认")).toBeInTheDocument();
+    expect(screen.getByText("修改 snake_game/rules.py")).toBeInTheDocument();
+    expect(screen.getByText("snake_game/rules.py")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "批准" }));
+    expect(onApprove).toHaveBeenCalledWith("approval-1");
+
+    await user.click(screen.getByRole("button", { name: "拒绝" }));
+    expect(onReject).toHaveBeenCalledWith("approval-1");
+  });
 });

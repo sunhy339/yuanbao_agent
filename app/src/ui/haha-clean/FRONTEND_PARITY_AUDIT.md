@@ -24,6 +24,7 @@
 - Composer 补了 `@` 文件引用入口：加号菜单可插入 `@`，输入 `@` 后能从当前已知文件候选中键盘选择并插入引用。
 - “完全访问权限”现在会先二次确认，不再一点击危险权限就直接切换。
 - 工具/审批标题补了业务化动作名：`read_file`、`apply_patch`、`run_command` 等会优先显示为“读取 xxx”“修改 xxx”“运行 xxx”，不再把内部工具名当主标题。
+- runtime `approval` 已从通用工具卡拆成专用审批节点：标题、文件列表、批准/拒绝和详情折叠更靠近 haha-cc 的轻量请求块。
 - 这层是 transcript adapter：能力不足时先把可识别事件接进统一消息流，无法由现有后端真实提供的能力继续记录为后端待补。
 
 ## 1. 应用壳层与导航
@@ -78,7 +79,7 @@
 | 工具调用行 | 单行可折叠，显示工具名、目标、状态 | runtime/tool 行已低卡片化，`content_start(tool_use)` 可先显示占位；工具标题会优先转成“读取/修改/运行 + 目标” | runtime items/toolCalls/content_start | `部分接入`：前端已清洗常见工具标题，后端仍需提供结构化 summary 避免前端猜 JSON |
 | 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy，并保存 `parentToolUseId` | runtime output/tool result | `部分接入`：父子 id 已能保存，稳定工具树 UI 还没完成 |
 | 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，普通 read/list/git/search/状态探针继续压缩 | activity worklog | `部分接入`：重要写入、审批、失败工具会留在主线，后续还要更自然地穿插解释正文 |
-| 权限请求 | 内嵌审批卡，带 diff/命令预览 | 权限卡已接入批准/拒绝，常见审批会显示“修改/写入/运行 + 目标” | approvals/permission_request | `部分接入`：前端已清洗标题，permission request 内 diff 还未完全内嵌 |
+| 权限请求 | 内嵌审批卡，带 diff/命令预览 | runtime approval 已拆成专用轻量节点，常见审批会显示“修改/写入/运行 + 目标”，并保留批准/拒绝 | approvals/permission_request | `部分接入`：审批节点已拆出，permission request 内完整 diff/规则类永久批准还未补 |
 | 文件改动卡 | 当前轮改动 summary、查看 diff、撤销 | patch card + diff preview 已接入 | patches/changedFiles | `部分接入`：当前没有 turn 级撤销，diff 文件匹配仍需加强 |
 | 任务摘要 | 完成后显示总结，不在刚开始出现 | 已隐藏运行初期 task summary | activeTask | `部分接入`：结束时机和内容质量依赖后端 |
 | 上下文压缩 | “上下文已自动压缩”分割节点 | `compact_summary` 已进入 transcript adapter | 等后端真实事件 | `部分接入`：前端已接，后端待稳定 emit |
@@ -109,10 +110,10 @@
 | 复制输出 | 复制工具输出 | 已接入 | Clipboard | `已接入` |
 | 刷新命令 | 查看最新命令输出 | 已接入 command refresh | command job id | `已接入` |
 | 停止命令 | 停止运行中的命令 | 已接入 | command job id | `部分接入`：后端 terminal state 需要阻止 cancelled -> cancelled |
-| 审批批准 | approve | 已接入 | approvals API | `已接入` |
-| 审批拒绝 | reject | 已接入 | approvals API | `已接入` |
+| 审批批准 | approve | 已接入，并在专用审批节点内展示 | approvals API | `已接入` |
+| 审批拒绝 | reject | 已接入，并在专用审批节点内展示 | approvals API | `已接入` |
 | 永久批准/规则 | haha-cc 有 always/规则类操作 | 未接入 | 需要 permission rule 后端 | `后端待补` |
-| 审批 diff 预览 | write/edit/apply_patch 展示 diff | 有 patch diff preview | patches | `部分接入`：permission request 内 diff 还未完全内嵌 |
+| 审批 diff 预览 | write/edit/apply_patch 展示 diff | 审批节点可展示文件列表和详情折叠，已有 diff 时复用 diff preview | approvals/patches | `部分接入`：真实 permission request diff 字段还需要后端稳定提供 |
 | Computer Use 权限 | 专用弹窗，选择 app/权限项 | 已有专用低卡片节点，可展示 app/action/details 并复制详情 | transcript adapter | `部分接入`：前端展示已接，真实权限弹窗和授权提交仍需后端 |
 | AskUserQuestion | 工具向用户提问，有选项/输入 | 已有专用问题节点，可展示问题/选项并复制问题 | transcript adapter | `部分接入`：前端展示已接，交互式回答提交仍需后端 |
 

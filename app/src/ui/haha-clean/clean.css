@@ -1324,6 +1324,12 @@
   border-left-color: rgba(164, 91, 59, 0.38);
 }
 
+.hc-approval {
+  display: grid;
+  gap: 8px;
+  border-left-color: rgba(148, 99, 15, 0.45);
+}
+
 .hc-patch-head {
   display: flex;
   align-items: flex-start;
@@ -1349,6 +1355,33 @@
 
 .hc-patch-head small {
   color: var(--hc-muted);
+}
+
+.hc-approval-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid rgba(148, 99, 15, 0.22);
+  border-radius: 9px;
+  background: rgba(255, 250, 247, 0.72);
+  padding: 9px 10px;
+}
+
+.hc-approval-head > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.hc-approval-head strong {
+  color: var(--hc-text);
+  font-size: 15px;
+}
+
+.hc-approval-head small {
+  color: var(--hc-muted);
+  line-height: 1.45;
 }
 
 .hc-patch-meta {

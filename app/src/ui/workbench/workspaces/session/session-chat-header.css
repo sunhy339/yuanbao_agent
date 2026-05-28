@@ -52,8 +52,7 @@
   justify-content: flex-end;
 }
 
-.session-task-live-pill,
-.session-conversation-live-pill {
+.session-task-live-pill {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -73,8 +72,7 @@
   white-space: nowrap;
 }
 
-.session-task-live-pill strong,
-.session-conversation-live-pill strong {
+.session-task-live-pill strong {
   overflow: hidden;
   max-width: 150px;
   color: var(--session-ink);
@@ -82,23 +80,13 @@
   text-overflow: ellipsis;
 }
 
-.session-task-live-pill time,
-.session-conversation-live-pill time {
+.session-task-live-pill time {
   color: var(--session-muted);
   font-size: 11px;
   font-weight: 700;
 }
 
-.session-conversation-live-pill[data-state="completed"] {
-  border-color: rgba(34, 197, 94, 0.24);
-  color: #bbf7d0;
-  background:
-    linear-gradient(180deg, rgba(34, 197, 94, 0.1), rgba(34, 197, 94, 0.04)),
-    rgba(3, 7, 18, 0.42);
-}
-
-.session-task-live-spark,
-.session-conversation-live-spark {
+.session-task-live-spark {
   position: relative;
   width: 10px;
   height: 10px;
@@ -106,9 +94,7 @@
 }
 
 .session-task-live-spark::before,
-.session-task-live-spark::after,
-.session-conversation-live-spark::before,
-.session-conversation-live-spark::after {
+.session-task-live-spark::after {
   position: absolute;
   inset: 2px;
   content: "";
@@ -116,8 +102,7 @@
   transform: rotate(45deg);
 }
 
-.session-task-live-spark::after,
-.session-conversation-live-spark::after {
+.session-task-live-spark::after {
   inset: 0;
   border: 1px solid currentColor;
   background: transparent;
@@ -178,11 +163,3 @@
     var(--session-surface);
   box-shadow: var(--yb-shadow-tight);
 }
-
-.conversation-live-row {
-  display: flex;
-  justify-content: center;
-  width: min(86ch, 94%);
-  justify-self: center;
-}
-

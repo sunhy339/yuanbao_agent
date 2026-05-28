@@ -246,6 +246,8 @@ export interface SettingsWorkspaceProps {
   skills?: SettingsSkillConfig[];
   onRefreshSkills?: () => void | Promise<void>;
   onOpenSkillsFolder?: () => void;
+  onOpenMcpManager?: () => void;
+  onOpenSkillsManager?: () => void;
   computerUse?: SettingsComputerUseConfig;
   onComputerUseChange?: (next: SettingsComputerUseConfig) => void;
   onRecheckComputerUse?: () => void | Promise<void>;

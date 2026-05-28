@@ -116,6 +116,8 @@ export function SettingsWorkspace({
   skills = [],
   onRefreshSkills,
   onOpenSkillsFolder,
+  onOpenMcpManager,
+  onOpenSkillsManager,
   computerUse,
   onComputerUseChange,
   onRecheckComputerUse,
@@ -211,6 +213,14 @@ export function SettingsWorkspace({
               <p className="settings-kicker">{activeSection.eyebrow} 管理</p>
               <h2>{activeSection.label}</h2>
               <span>{section === "providers" ? activeProvider?.name ?? "未选择供应商" : "桌面运行时配置"}</span>
+            </div>
+            <div className="settings-manager-actions" aria-label="能力管理入口">
+              <button type="button" className="settings-secondary-action" onClick={onOpenMcpManager} disabled={!onOpenMcpManager}>
+                管理 MCP
+              </button>
+              <button type="button" className="settings-secondary-action" onClick={onOpenSkillsManager} disabled={!onOpenSkillsManager}>
+                管理技能
+              </button>
             </div>
             <dl>
               <div>

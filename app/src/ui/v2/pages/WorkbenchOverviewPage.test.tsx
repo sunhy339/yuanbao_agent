@@ -30,14 +30,11 @@ describe("WorkbenchOverviewPage", () => {
           },
         ]}
         tasks={[]}
-        scheduledTasks={[]}
         mcpServers={[]}
         skills={[]}
         onOpenNewSession={vi.fn()}
         onOpenSession={vi.fn()}
-        onOpenScheduled={vi.fn()}
         onOpenMcp={vi.fn()}
-        onOpenSettings={vi.fn()}
       />,
     );
 

@@ -138,23 +138,6 @@
   box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04);
 }
 
-.session-workspace-chat-only .conversation-live-row {
-  width: 100%;
-}
-
-.session-workspace-chat-only .session-conversation-live-pill {
-  min-height: 30px;
-  border-color: rgba(180, 83, 9, 0.24);
-  padding: 4px 12px;
-  color: #92400e;
-  background: rgba(255, 251, 235, 0.94);
-  box-shadow: none;
-}
-
-.session-workspace-chat-only .session-conversation-live-pill strong {
-  color: #7c2d12;
-}
-
 .session-workspace-chat-only .runtime-event-card,
 .session-workspace-chat-only .runtime-event-v2-card,
 .session-workspace-chat-only .runtime-worklog-card,
@@ -354,7 +337,7 @@
 
 .runtime-file-change-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   gap: 8px;
   align-items: center;
   border-top: 1px solid rgba(15, 23, 42, 0.06);
@@ -386,6 +369,23 @@
 
 .runtime-file-change-row em {
   color: #15803d;
+}
+
+.runtime-file-change-diff-button {
+  min-height: 24px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 999px;
+  padding: 0 8px;
+  background: #fff;
+  color: #8b5e3c;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 740;
+  white-space: nowrap;
+}
+
+.runtime-file-change-diff-button:hover {
+  background: #fff8f1;
 }
 
 .runtime-file-change-row small {

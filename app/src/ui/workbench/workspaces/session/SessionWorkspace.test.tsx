@@ -123,25 +123,17 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText("Check the current failing test.")).toBeInTheDocument();
     expect(screen.getByText("I found the failure in the session renderer.")).toBeInTheDocument();
     expect(screen.getByText("Runtime resumed session state.")).toBeInTheDocument();
-    expect(screen.getByText("shell_command")).toBeInTheDocument();
+    expect(screen.getByText("运行命令")).toBeInTheDocument();
     expect(screen.queryByLabelText("Runtime timeline")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Patch the session workspace").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Patch the session workspace")).not.toBeInTheDocument();
     expect(screen.getAllByText("Allow npm test").length).toBeGreaterThan(0);
     expect(screen.getByText("Updated session layout")).toBeInTheDocument();
     expect(screen.getAllByText(/SessionWorkspace\.tsx/).length).toBeGreaterThan(0);
     expect(screen.queryByText("Provider response")).not.toBeInTheDocument();
-    expect(screen.getByText("apply_patch")).toBeInTheDocument();
+    expect(screen.getAllByText("应用文件改动").length).toBeGreaterThan(0);
     expect(screen.getAllByText("npm run typecheck").length).toBeGreaterThan(0);
     expect(screen.getByLabelText("会话活动")).toBeInTheDocument();
-    const digest = screen.getByLabelText("工作摘要");
-    expect(within(digest).getByText("工作摘要")).toBeInTheDocument();
-    expect(within(digest).getByRole("heading", { name: "Patch the session workspace" })).toBeInTheDocument();
-    expect(within(digest).getByText("正在跟进1 个文件改动、1 条命令。")).toBeInTheDocument();
-    expect(within(digest).getByText("正在修改")).toBeInTheDocument();
-    expect(within(digest).getByText("1 个改动文件")).toBeInTheDocument();
-    expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
-    expect(within(digest).getByText("已改动 1 个文件")).toBeInTheDocument();
-    expect(within(digest).getByLabelText("改动文件")).toHaveTextContent("app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx");
+    expect(screen.queryByLabelText("工作摘要")).not.toBeInTheDocument();
     const rightPane = screen.getByLabelText("右侧文件工作区");
     expect(rightPane).toBeInTheDocument();
     expect(within(rightPane).getByText("文件")).toBeInTheDocument();
@@ -162,6 +154,44 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByRole("heading", { name: "Runtime shelf" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Collaboration" })).not.toBeInTheDocument();
     expect(screen.getAllByText("MiniMax-M2.7-highspeed").length).toBeGreaterThan(0);
+  });
+
+  it("shows the work summary only after the task has settled", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={{
+          id: "task_done",
+          status: "completed",
+          goal: "Patch the session workspace",
+          changedFiles: [
+            {
+              path: "app/src/ui/workbench/workspaces/session/SessionWorkspace.tsx",
+              status: "modified",
+              additions: 18,
+              deletions: 4,
+            },
+          ],
+          commands: [
+            {
+              id: "cmd_1",
+              command: "npm run typecheck",
+              status: "completed",
+              summary: "passed",
+            },
+          ],
+        }}
+        messages={[{ id: "m1", role: "assistant", content: "Done.", createdAt: 1 }]}
+        worktreeDiff={{
+          diffStat: "1 file changed, 12 insertions(+), 4 deletions(-)",
+        }}
+      />,
+    );
+
+    const digest = screen.getByLabelText("工作摘要");
+    expect(within(digest).getByText("工作摘要")).toBeInTheDocument();
+    expect(within(digest).getByRole("heading", { name: "Patch the session workspace" })).toBeInTheDocument();
+    expect(within(digest).getByText("已改动 1 个文件")).toBeInTheDocument();
   });
 
   it("keeps the side pane focused on files and surfaces review details in chat", () => {
@@ -284,17 +314,8 @@ describe("SessionWorkspace", () => {
     expect(within(fileWorkspace).getByText("任务相关文件")).toBeInTheDocument();
     expect(within(fileWorkspace).getAllByText(/SessionWorkspace\.tsx/).length).toBeGreaterThan(0);
 
-    const digest = screen.getByLabelText("工作摘要");
-    expect(within(digest).getByText(/审查：reviewer-agent - Looks good/)).toBeInTheDocument();
-    expect(within(digest).getByText(/合并：approved - main - passed/)).toBeInTheDocument();
-    expect(within(digest).getByText(/Diff：1 file changed, 12 insertions/)).toBeInTheDocument();
-    expect(within(digest).getByText("已改动 1 个文件")).toBeInTheDocument();
-    expect(within(digest).getByLabelText("改动统计")).toHaveTextContent("+12");
-    expect(within(digest).getByLabelText("改动统计")).toHaveTextContent("-4");
-    const inlineDiff = within(digest).getByLabelText("代码改动 diff");
-    expect(inlineDiff.textContent).toContain("SessionWorkspace.tsx");
-    expect(inlineDiff.textContent).toContain("old layout");
-    expect(inlineDiff.textContent).toContain("new layout");
+    expect(screen.queryByLabelText("工作摘要")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("代码改动摘要")).toHaveTextContent("已记录 1 个文件改动");
     expect(onLoadPatch).not.toHaveBeenCalled();
   });
 
@@ -318,7 +339,7 @@ describe("SessionWorkspace", () => {
 
     const messageStream = screen.getByLabelText("会话消息");
     expect(within(messageStream).getAllByText(finalAnswer)).toHaveLength(1);
-    expect(within(screen.getByLabelText("工作摘要")).getByText(/任务已完成/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("工作摘要")).not.toBeInTheDocument();
   });
 
   it("does not copy long completed task markdown into the work summary", () => {
@@ -345,10 +366,9 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    const digest = screen.getByLabelText("工作摘要");
-    expect(within(digest).getByText(/任务已完成/)).toBeInTheDocument();
-    expect(within(digest).queryByText(/Project layout/)).not.toBeInTheDocument();
-    expect(within(digest).queryByText(/src\/ledger\.py/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("工作摘要")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Project layout/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/src\/ledger\.py/)).not.toBeInTheDocument();
   });
 
   it("counts all changed files in the digest and avoids fake review diff stats", async () => {
@@ -371,13 +391,9 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    const digest = screen.getByLabelText("工作摘要");
-    expect(within(digest).getByText("8 个改动文件")).toBeInTheDocument();
-    expect(within(digest).getByText("已改动 8 个文件")).toBeInTheDocument();
-    expect(within(digest).getByLabelText("改动文件")).toHaveTextContent("kanban_cli/file_1.py");
-    expect(within(digest).getByLabelText("改动文件")).toHaveTextContent("kanban_cli/file_4.py");
-    expect(within(digest).queryByText("kanban_cli/file_5.py")).not.toBeInTheDocument();
-    expect(within(digest).getByText("另有 4 个文件可在右侧文件浏览中打开。")).toBeInTheDocument();
+    expect(screen.queryByLabelText("工作摘要")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("代码改动摘要")).toHaveTextContent("已记录 8 个文件改动");
+    expect(screen.getByLabelText("代码改动摘要")).toHaveTextContent("kanban_cli/file_1.py");
     expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
     expect(screen.queryByText("+0 -0")).not.toBeInTheDocument();
   });
@@ -434,6 +450,29 @@ describe("SessionWorkspace", () => {
     expect(paragraph?.textContent).toContain("我就可以正在使用 git_status。当前工作区路径不可访问：");
     expect(paragraph?.textContent).toContain("C:/tmp/workspace");
     expect(paragraph?.textContent).not.toContain("我\n");
+  });
+
+  it("repairs fragmented CJK assistant lines before rendering the transcript", () => {
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          {
+            id: "assistant_fragmented",
+            role: "assistant",
+            content: "你\n好！\n我在\n呢。\n你想\n继续\n看这个\n项目，\n还是\n要我\n帮你\n做点\n别的？",
+            createdAt: 1,
+          },
+        ]}
+      />,
+    );
+
+    const markdown = container.querySelector(".message-bubble[data-role='assistant'] .markdown-content");
+    expect(markdown).toBeInTheDocument();
+    expect(markdown?.textContent).toContain("你好！");
+    expect(markdown?.textContent).toContain("我在呢。");
+    expect(markdown?.textContent).toContain("你想继续看这个项目，还是要我帮你做点别的？");
   });
 
   it("renders a message empty state inside the conversation area", () => {
@@ -497,6 +536,45 @@ describe("SessionWorkspace", () => {
     expect(grid.getAttribute("style")).toContain("--session-workspace-pane-width");
   });
 
+  it("publishes the composer right reserve from the file-pane separator", () => {
+    const { container, unmount } = render(
+      <div className="yb-app-main">
+        <SessionWorkspace
+          session={session}
+          activeTask={null}
+          messages={[{ id: "m1", role: "user", content: "Open workspace.", createdAt: 1 }]}
+        />
+      </div>,
+    );
+
+    const appMain = container.querySelector(".yb-app-main") as HTMLElement;
+    const grid = container.querySelector(".session-workbench-grid") as HTMLElement;
+    const pane = container.querySelector(".session-workspace-pane") as HTMLElement;
+    const resizer = container.querySelector(".session-sidebar-resizer") as HTMLElement;
+    Object.defineProperty(appMain, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ width: 1200, height: 800, top: 0, left: 0, right: 1200, bottom: 800, x: 0, y: 0, toJSON: () => ({}) }),
+    });
+    Object.defineProperty(grid, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ width: 1200, height: 800, top: 0, left: 0, right: 1200, bottom: 800, x: 0, y: 0, toJSON: () => ({}) }),
+    });
+    Object.defineProperty(resizer, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ width: 1, height: 800, top: 0, left: 760, right: 761, bottom: 800, x: 760, y: 0, toJSON: () => ({}) }),
+    });
+    Object.defineProperty(pane, "getBoundingClientRect", {
+      configurable: true,
+      value: () => ({ width: 439, height: 800, top: 0, left: 761, right: 1200, bottom: 800, x: 761, y: 0, toJSON: () => ({}) }),
+    });
+
+    fireEvent(window, new Event("resize"));
+
+    expect(document.documentElement.style.getPropertyValue("--session-composer-side-reserve")).toBe("440px");
+    unmount();
+    expect(document.documentElement.style.getPropertyValue("--session-composer-side-reserve")).toBe("");
+  });
+
   it("shows streaming progress on the assistant bubble without a duplicate live pill", () => {
     const { container } = render(
       <SessionWorkspace
@@ -510,15 +588,13 @@ describe("SessionWorkspace", () => {
     );
 
     expect(screen.queryByLabelText(/本轮对话正在输出/)).not.toBeInTheDocument();
-    const flow = Array.from(container.querySelectorAll(".message-bubble, .conversation-live-row")).map(
-      (item) => item.textContent ?? "",
-    );
+    const flow = Array.from(container.querySelectorAll(".message-bubble")).map((item) => item.textContent ?? "");
     expect(flow[0]).toContain("Keep working");
     expect(flow[1]).toContain("Still checking the flow.");
     expect(flow).toHaveLength(2);
   });
 
-  it("keeps a live status visible while a thinking placeholder is waiting", () => {
+  it("shows thinking status on the assistant bubble without a duplicate live pill", () => {
     const { container } = render(
       <SessionWorkspace
         session={session}
@@ -540,14 +616,12 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    const flow = Array.from(container.querySelectorAll(".message-bubble, .conversation-live-row")).map(
-      (item) => item.textContent ?? "",
-    );
+    const flow = Array.from(container.querySelectorAll(".message-bubble")).map((item) => item.textContent ?? "");
     expect(flow[0]).toContain("Patch the game");
     expect(flow[1]).toContain("正在处理");
     expect(flow[1]).toMatch(/正在等待模型|最近活动|正在执行|等待审批/);
-    expect(flow[2]).toContain("正在输出");
-    expect(flow).toHaveLength(3);
+    expect(screen.queryByLabelText(/本轮对话/)).not.toBeInTheDocument();
+    expect(flow).toHaveLength(2);
   });
 
   it("does not move a streaming assistant message below a later user message when updatedAt changes", () => {
@@ -567,7 +641,128 @@ describe("SessionWorkspace", () => {
     expect(flow[1]).toContain("Follow-up");
   });
 
-  it("keeps the current conversation status visible after the assistant stops", () => {
+  it("keeps assistant progress, tool activity, and final reply in chronological order", () => {
+    const baseTime = Date.UTC(2026, 4, 28, 5, 0, 0);
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          { id: "m1", role: "user", content: "优化3", createdAt: baseTime },
+          {
+            id: "assistant_thinking:task_1",
+            role: "assistant",
+            content: "正在整理上下文，并确定要先查看的文件和工具。",
+            streaming: true,
+            metadata: { kind: "assistant_thinking", state: "thinking" },
+            createdAt: baseTime + 1,
+            updatedAt: baseTime + 1,
+          },
+          {
+            id: "m2",
+            role: "assistant",
+            content: "已完成优化：把碰撞逻辑拆出来了。",
+            createdAt: baseTime + 5,
+            updatedAt: baseTime + 5,
+          },
+        ]}
+        toolCalls={[
+          {
+            id: "tool_run",
+            toolName: "run_command",
+            status: "completed",
+            argsPreview: "python -m py_compile snake_game/*.py",
+            resultSummary: "命令已完成",
+            time: baseTime + 2,
+          },
+        ]}
+      />,
+    );
+
+    const flow = Array.from(container.querySelectorAll(".message-bubble, [data-activity-kind]")).map(
+      (item) => item.textContent ?? "",
+    );
+    expect(flow[0]).toContain("优化3");
+    expect(flow[1]).toContain("正在整理上下文");
+    expect(flow[2]).toContain("运行命令");
+    expect(flow[3]).toContain("已完成优化");
+  });
+
+  it("places a final assistant answer after same-turn runtime events even without task ids", () => {
+    const baseTime = Date.UTC(2026, 4, 28, 6, 0, 0);
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          { id: "m1", role: "user", content: "优化3", createdAt: baseTime },
+          {
+            id: "m2",
+            role: "assistant",
+            content: "已完成优化：拆分 rules.py，并验证通过。",
+            createdAt: baseTime + 5,
+            updatedAt: baseTime + 5,
+          },
+        ]}
+        toolCalls={[
+          {
+            id: "tool_list",
+            toolName: "list_dir",
+            status: "completed",
+            resultSummary: "找到 11 项",
+            rawInput: '{"path":"."}',
+            time: baseTime + 6,
+          },
+          {
+            id: "tool_read",
+            toolName: "read_file",
+            status: "completed",
+            resultSummary: "读取完成",
+            rawInput: '{"path":"snake_game/game.py"}',
+            time: baseTime + 7,
+          },
+        ]}
+      />,
+    );
+
+    const flow = Array.from(container.querySelectorAll(".message-bubble, [data-activity-kind]")).map(
+      (item) => item.textContent ?? "",
+    );
+    expect(flow[0]).toContain("优化3");
+    expect(flow[1]).toContain("已调用 2 个工具");
+    expect(flow[2]).toContain("已完成优化");
+  });
+
+  it("keeps untimestamped runtime events near the latest assistant output", () => {
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          { id: "m1", role: "user", content: "Start", createdAt: Date.UTC(2026, 3, 23, 3, 30) },
+          { id: "m2", role: "assistant", content: "I am checking files.", createdAt: Date.UTC(2026, 3, 23, 3, 31) },
+        ]}
+        approvals={[
+          {
+            id: "approval_1",
+            title: "Allow file edit",
+            status: "approved",
+            kind: "write_file",
+            command: "patch",
+          },
+        ]}
+      />,
+    );
+
+    const flow = Array.from(container.querySelectorAll("[data-activity-kind], .message-bubble")).map(
+      (item) => item.textContent ?? "",
+    );
+    expect(flow[0]).toContain("Start");
+    expect(flow[1]).toContain("I am checking files.");
+    expect(flow[2]).toContain("Allow file edit");
+  });
+
+  it("does not show a standalone completed status after the assistant stops", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -579,7 +774,8 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByLabelText(/本轮对话已完成.*1m 0s/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/本轮对话已完成/)).not.toBeInTheDocument();
+    expect(screen.getByText("Done.")).toBeInTheDocument();
   });
 
   it("explains when a thinking placeholder has not produced output for a while", () => {
@@ -632,7 +828,7 @@ describe("SessionWorkspace", () => {
             id: "m1",
             role: "assistant",
             content:
-              "##Can do\n# # 1) Project map\n## # Input handling\n- **Read files** and then - Run `npm test`\n---\n---\n1. First\n\n1. Second\n\n1. Third\n| Tool | Use |\n| --- | --- |\n| list_dir | Browse |",
+              "##Can do\n# # 1) Project map\n  ### 这次改了哪些文件\n## # Input handling\n> Keep the output readable\n- [x] Read files\n- [ ] Run `npm test`\n---\n---\n1. First\n\n1. Second\n\n1. Third\n| Tool | Use |\n| --- | --- |\n| list_dir | Browse |\n```python\ndef run():\n    return True\n```",
             createdAt: 1,
           },
         ]}
@@ -641,16 +837,24 @@ describe("SessionWorkspace", () => {
 
     expect(screen.getByRole("heading", { name: "Can do" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "1) Project map" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "这次改了哪些文件" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Input handling" })).toBeInTheDocument();
+    expect(screen.getByText("Keep the output readable")).toBeInTheDocument();
     expect(screen.getByText("Read files")).toBeInTheDocument();
     expect(screen.getByText("npm test")).toBeInTheDocument();
+    expect(screen.getByLabelText("已完成任务")).toBeChecked();
+    expect(screen.getByLabelText("未完成任务")).not.toBeChecked();
     const orderedList = screen.getAllByRole("list").find((list) => list.tagName.toLowerCase() === "ol");
     expect(orderedList).toBeTruthy();
     expect(within(orderedList!).getAllByRole("listitem")).toHaveLength(3);
     expect(screen.getByRole("columnheader", { name: "Tool" })).toBeInTheDocument();
+    expect(screen.getByText("python")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "复制" })).toBeInTheDocument();
+    expect(screen.getByText("return")).toBeInTheDocument();
     expect(screen.getByRole("separator", { name: "调整文件列表宽度" })).toBeInTheDocument();
     expect(screen.queryByText(/## Can do/)).not.toBeInTheDocument();
     expect(screen.queryByText(/# # 1/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/### 这次改了哪些文件/)).not.toBeInTheDocument();
   });
 
   it("does not render a runtime divider when only chat messages are visible", () => {
@@ -743,8 +947,8 @@ describe("SessionWorkspace", () => {
     const blocks = container.querySelectorAll(".message-tool-block");
     expect(blocks).toHaveLength(1);
     expect(screen.getByText("工具过程")).toBeInTheDocument();
-    expect(screen.getAllByText("run_command").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText(/command: npm test -> status: completed/)).toBeInTheDocument();
+    expect(screen.getAllByText("运行命令").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/命令：npm test → 状态：已完成/)).toBeInTheDocument();
     expect(screen.queryByText(/"command": "npm test"/)).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /工具过程/ }));
@@ -787,7 +991,7 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText("模型正在思考")).toBeInTheDocument();
     expect(container.querySelector(".message-permission-block")).toBeInTheDocument();
     expect(screen.getByText("等待确认")).toBeInTheDocument();
-    expect(screen.getAllByText("run_command").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("运行命令").length).toBeGreaterThanOrEqual(1);
     await user.click(screen.getByRole("button", { name: "批准" }));
     await user.click(screen.getByRole("button", { name: "拒绝" }));
     expect(onApprove).toHaveBeenCalledWith("approval_1");
@@ -854,7 +1058,7 @@ describe("SessionWorkspace", () => {
     expect(screen.queryByText(/"command":"npm test"/)).not.toBeInTheDocument();
   });
 
-  it("groups completed command and tool activity into a readable worklog", async () => {
+  it("keeps completed commands as separate chronological rows while grouping quiet tools", async () => {
     const user = userEvent.setup();
     render(
       <SessionWorkspace
@@ -892,17 +1096,18 @@ describe("SessionWorkspace", () => {
       />,
     );
 
+    const commandButtons = screen.getAllByRole("button", { name: /命令 python -m/ });
+    expect(commandButtons.length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByRole("heading", { name: "python -m pytest -q" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "python -m py_compile app.py" })).toBeInTheDocument();
     const worklog = screen.getByLabelText("运行摘要");
-    expect(within(worklog).getByText("已运行 2 条命令")).toBeInTheDocument();
-    expect(within(worklog).getAllByText(/python -m pytest -q/).length).toBeGreaterThan(0);
-    expect(within(worklog).getAllByText(/python -m py_compile app.py/).length).toBeGreaterThan(0);
-    expect(screen.queryByRole("heading", { name: "python -m pytest -q" })).not.toBeInTheDocument();
+    expect(within(worklog).getByText("已调用 1 个工具")).toBeInTheDocument();
 
-    await user.click(within(worklog).getByRole("button", { name: /已运行 2 条命令/ }));
-    expect(within(worklog).getAllByText(/Command completed with exit 0/).length).toBeGreaterThan(0);
+    await user.click(commandButtons[0]);
+    expect(screen.getAllByText(/Command completed with exit 0/).length).toBeGreaterThan(0);
   });
 
-  it("keeps a single completed run command visible in the main worklog", async () => {
+  it("keeps a single completed run command visible as a main timeline row", async () => {
     const user = userEvent.setup();
     render(
       <SessionWorkspace
@@ -923,16 +1128,14 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    const worklog = screen.getByLabelText("运行摘要");
-    expect(within(worklog).getByText("已运行 1 条命令")).toBeInTheDocument();
-    expect(within(worklog).getAllByText(/python main.py/).length).toBeGreaterThan(0);
-    expect(screen.queryByRole("heading", { name: "python main.py" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("运行摘要")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "python main.py" })).toBeInTheDocument();
 
-    await user.click(within(worklog).getByRole("button", { name: /已运行 1 条命令/ }));
-    expect(within(worklog).getAllByText(/Started the game successfully/).length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: /命令 python main\.py/ }));
+    expect(screen.getAllByText(/Started the game successfully/).length).toBeGreaterThan(0);
   });
 
-  it("surfaces completed read_file rows as compact main activity", () => {
+  it("keeps completed read_file probes out of the main activity", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -952,13 +1155,12 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    const worklog = screen.getByLabelText("运行摘要");
-    expect(within(worklog).getByRole("button", { name: /read_file snake_game\/game.py/i })).toBeInTheDocument();
-    expect(within(worklog).getByText(/3749 字节/)).toBeInTheDocument();
+    expect(screen.getByLabelText("运行摘要")).toHaveTextContent("已调用 1 个工具");
+    expect(screen.getAllByText("读取文件 snake_game/game.py").length).toBeGreaterThan(0);
     expect(screen.queryByText(/"path":"snake_game\/game.py"/)).not.toBeInTheDocument();
   });
 
-  it("compacts repeated successful read_file rows in the main activity stream", () => {
+  it("keeps repeated successful read_file probes out of the main activity stream", () => {
     const baseTime = Date.UTC(2026, 4, 6, 6, 0, 0);
     render(
       <SessionWorkspace
@@ -986,9 +1188,8 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    const worklog = screen.getByLabelText("运行摘要");
-    expect(within(worklog).getByRole("button", { name: /read_file snake_game\/game.py/ })).toBeInTheDocument();
-    expect(within(worklog).getByText(/Read snake_game\/game.py/)).toBeInTheDocument();
+    expect(screen.getByLabelText("运行摘要")).toHaveTextContent("已调用 1 个工具");
+    expect(screen.getAllByText("读取文件 snake_game/game.py").length).toBeGreaterThan(0);
     expect(screen.queryByText("Read snake_game/game.py again")).not.toBeInTheDocument();
   });
 
@@ -1011,7 +1212,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /read_file snake_game\/game.py/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /读取文件 snake_game\/game.py/i })).toBeInTheDocument();
     expect(screen.getByText(/File not found/)).toBeInTheDocument();
     expect(screen.queryByText(/"path":"snake_game\/game.py"/)).not.toBeInTheDocument();
   });
@@ -1038,7 +1239,7 @@ describe("SessionWorkspace", () => {
     );
   });
 
-  it("keeps assistant output in created order even when updated after tool activity", () => {
+  it("places the completed assistant reply after intervening tool activity when it finishes later", () => {
     const baseTime = Date.UTC(2026, 4, 6, 6, 0, 0);
     const { container } = render(
       <SessionWorkspace
@@ -1054,26 +1255,26 @@ describe("SessionWorkspace", () => {
             updatedAt: baseTime + 5,
           },
         ]}
-        toolCalls={[
+        approvals={[
           {
-            id: "tool_read",
-            toolName: "read_file",
-            status: "completed",
-            resultSummary: "Read snake_game/game.py",
-            rawInput: '{"path":"snake_game/game.py"}',
-            time: baseTime + 3,
+            id: "approval_1",
+            title: "Allow file edit",
+            status: "approved",
+            kind: "write_file",
+            command: "patch",
+            requestedAt: baseTime + 3,
           },
         ]}
       />,
     );
 
-    const flow = Array.from(container.querySelectorAll(".message-bubble")).map(
+    const flow = Array.from(container.querySelectorAll(".message-bubble, [data-activity-kind='runtime']")).map(
       (item) => item.textContent ?? "",
     );
     expect(flow[0]).toContain("Check current status");
-    expect(flow[1]).toContain("Latest generated answer");
-    expect(flow).toHaveLength(2);
-    expect(screen.getByLabelText("运行摘要")).toBeInTheDocument();
+    expect(flow[1]).toContain("Allow file edit");
+    expect(flow[2]).toContain("Latest generated answer");
+    expect(flow).toHaveLength(3);
   });
 
   it("shows a live elapsed timer for running tool process cards", () => {
@@ -1097,7 +1298,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getAllByRole("button", { name: /read_file snake_game\/game.py .*50s/ }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole("button", { name: /读取文件 snake_game\/game.py .*50s/ }).length).toBeGreaterThan(0);
   });
 
   it("shows a fallback elapsed timer when a running tool has no timestamp yet", () => {
@@ -1118,7 +1319,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: /read_file snake_game\/game.py .*0s/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /读取文件 snake_game\/game.py .*0s/ })).not.toBeInTheDocument();
   });
 
   it("copies command output and trace detail through explicit controls", async () => {
@@ -1256,12 +1457,94 @@ describe("SessionWorkspace", () => {
     expect(within(digest).getByText("已改动 1 个文件")).toBeInTheDocument();
     expect(within(digest).getByLabelText("改动统计")).toHaveTextContent("+620");
     expect(within(digest).getByLabelText("改动统计")).toHaveTextContent("-0");
-    expect(within(viewer).getByText("Update generated report")).toBeInTheDocument();
+    expect(within(viewer).getByText("app/src/App.tsx")).toBeInTheDocument();
     expect(viewer.textContent).toContain("old copy");
     expect(viewer.textContent).toContain("new copy");
   });
 
-  it("surfaces completed list_dir probes without exposing raw tool JSON", () => {
+  it("does not render diff metadata lines as changed files", () => {
+    const diff = [
+      "diff --git a/snake_game/README.md b/snake_game/README.md",
+      "---- a/snake_game/README.md",
+      "+++ b/snake_game/README.md",
+      "@@ -1,2 +1,2 @@",
+      "-old note",
+      "+new note",
+      "diff --git a/snake_game/rules.py b/snake_game/rules.py",
+      "--- a/snake_game/rules.py",
+      "+++ b/snake_game/rules.py",
+      "@@ -8,2 +8,0 @@",
+      "-GRID_WIDTH",
+      "-GRID_HEIGHT",
+    ].join("\n");
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Review patch", createdAt: 1 }]}
+        patches={[
+          {
+            id: "patch_1",
+            summary: "Update snake docs and rules",
+            status: "recorded",
+            filesChanged: 2,
+            files: [
+              { path: "---- a/snake_game/README.md", status: "changed", additions: 2, deletions: 4 },
+              { path: "--- a/snake_game/rules.py", status: "changed", additions: 0, deletions: 2 },
+              { path: "Update snake_game/README.md", status: "changed", additions: 2, deletions: 4 },
+              { path: "Update snake_game/rules.py", status: "changed", additions: 0, deletions: 2 },
+            ],
+            diff,
+          },
+        ]}
+      />,
+    );
+
+    const digest = screen.getByLabelText("工作摘要");
+    expect(within(digest).queryByText(/---- a\/snake_game/)).not.toBeInTheDocument();
+    expect(within(digest).queryByText(/--- a\/snake_game/)).not.toBeInTheDocument();
+    expect(within(digest).queryByText(/Update snake_game/)).not.toBeInTheDocument();
+    expect(within(digest).getAllByText("snake_game/README.md").length).toBeGreaterThan(0);
+    expect(within(digest).getAllByText("snake_game/rules.py").length).toBeGreaterThan(0);
+  });
+
+  it("derives patch plan totals from loaded diff text", () => {
+    const diff = [
+      "diff --git a/snake_game/game.py b/snake_game/game.py",
+      "--- a/snake_game/game.py",
+      "+++ b/snake_game/game.py",
+      "@@ -1,2 +1,3 @@",
+      " keep",
+      "-old copy",
+      "+new copy",
+      "+extra copy",
+    ].join("\n");
+
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Review patch", createdAt: 1 }]}
+        patches={[
+          {
+            id: "patch_1",
+            summary: "Update game loop",
+            status: "approved",
+            filesChanged: 1,
+            diff,
+          },
+        ]}
+      />,
+    );
+
+    const patchPlan = screen.getByText("Update game loop").closest(".yb-patch-plan");
+    expect(patchPlan).toBeInTheDocument();
+    expect(within(patchPlan as HTMLElement).getByText("+2")).toBeInTheDocument();
+    expect(within(patchPlan as HTMLElement).getByText("-1")).toBeInTheDocument();
+  });
+
+  it("keeps completed list_dir probes out of the main activity without exposing raw tool JSON", () => {
     render(
       <SessionWorkspace
         session={session}
@@ -1283,9 +1566,8 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    const worklog = screen.getByLabelText("运行摘要");
-    expect(within(worklog).getByRole("button", { name: /list_dir/ })).toBeInTheDocument();
-    expect(within(worklog).getByText(/Found 2 items: app, docs/)).toBeInTheDocument();
+    expect(screen.getByLabelText("运行摘要")).toHaveTextContent("已调用 1 个工具");
+    expect(screen.getAllByText("查看目录 .").length).toBeGreaterThan(0);
     // Raw data should not be visible to users
     expect(screen.queryByText("查看原始数据")).not.toBeInTheDocument();
     expect(screen.queryByText(/"items"/)).not.toBeInTheDocument();
@@ -1391,12 +1673,7 @@ describe("SessionWorkspace", () => {
 
     expect(screen.queryByRole("tab", { name: /诊断/ })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("任务进度")).not.toBeInTheDocument();
-    const digest = screen.getByLabelText("工作摘要");
-    expect(within(digest).getByRole("heading", { name: "Create a pixel-art image tool" })).toBeInTheDocument();
-    expect(within(digest).getByText(/Run the generated CLI against a sample image/)).toBeInTheDocument();
-    expect(within(digest).getByText("1 个改动文件")).toBeInTheDocument();
-    expect(within(digest).getByText("1 条最近命令")).toBeInTheDocument();
-    expect(within(digest).getByText("1 项验证")).toBeInTheDocument();
+    expect(screen.queryByLabelText("工作摘要")).not.toBeInTheDocument();
     expect(screen.queryByText("Inspect workspace")).not.toBeInTheDocument();
     expect(screen.queryByText("Implement the generator")).not.toBeInTheDocument();
     expect(screen.queryByText("Verify the CLI")).not.toBeInTheDocument();
@@ -1779,7 +2056,7 @@ describe("SessionWorkspace", () => {
       />,
     );
 
-    expect(screen.getAllByText("apply_patch").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("文件修改审批").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/approved|已批准|通过/i).length).toBeGreaterThan(0);
     expect(screen.getByText("Updated the session runtime panel.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "批准" })).not.toBeInTheDocument();
@@ -2165,10 +2442,7 @@ describe("SessionWorkspace", () => {
 
     expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
-    const digest = screen.getByLabelText("工作摘要");
-    expect(within(digest).getByText(/审查：reviewer-agent - Looks good/)).toBeInTheDocument();
-    expect(within(digest).getByText(/合并：approved - main - passed/)).toBeInTheDocument();
-    expect(within(digest).getByText(/Diff：app\/src\/App\.tsx \| 12/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("工作摘要")).not.toBeInTheDocument();
     expect(screen.getAllByText("App.tsx").length).toBeGreaterThan(0);
 
     expect(onLoadWorktreeDiff).not.toHaveBeenCalled();
@@ -2206,8 +2480,7 @@ describe("SessionWorkspace", () => {
 
     expect(screen.queryByRole("tab", { name: /Git/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /审查/ })).not.toBeInTheDocument();
-    const digest = screen.getByLabelText("工作摘要");
-    expect(within(digest).getByText(/Diff：app\/src\/App\.tsx \| 12/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("工作摘要")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "合并申请" })).not.toBeInTheDocument();
 
     expect(onMergeWorktree).not.toHaveBeenCalled();

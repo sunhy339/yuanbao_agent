@@ -161,6 +161,7 @@ function isEphemeralChatBlockMessage(message: ChatMessageView) {
     message.metadata?.kind === "tool_use" ||
     message.metadata?.kind === "tool_result" ||
     message.metadata?.kind === "tool_activity" ||
+    message.metadata?.kind === "assistant_progress" ||
     message.metadata?.kind === "assistant_thinking" ||
     message.metadata?.kind === "permission_request"
   );
@@ -706,6 +707,62 @@ export function appendOrUpdateAssistantThinkingMessage(
   return [...current, nextMessage];
 }
 
+export function appendAssistantProgressMessage(
+  current: ChatMessageView[],
+  payload: {
+    sessionId: string;
+    taskId?: string | null;
+    content: string;
+    now: number;
+    eventId?: string | null;
+  },
+): ChatMessageView[] {
+  const content = payload.content.trim();
+  if (!content) {
+    return current;
+  }
+
+  const taskId = payload.taskId ?? "pending";
+  const existingProgress = current
+    .filter(
+      (message) =>
+        message.sessionId === payload.sessionId &&
+        message.taskId === taskId &&
+        message.metadata?.kind === "assistant_progress",
+    );
+  const latestProgress = existingProgress.at(-1);
+  if (latestProgress?.content.trim() === content) {
+    return current;
+  }
+
+  const messageId =
+    payload.eventId && payload.eventId.trim()
+      ? `assistant_progress:${payload.eventId.trim()}`
+      : `assistant_progress:${taskId}:${payload.now}:${existingProgress.length}`;
+  if (current.some((message) => message.id === messageId)) {
+    return current;
+  }
+
+  return [
+    ...current,
+    {
+      id: messageId,
+      sessionId: payload.sessionId,
+      taskId,
+      role: "assistant",
+      content,
+      createdAt: payload.now,
+      updatedAt: payload.now,
+      streaming: false,
+      placeholder: false,
+      status: "completed",
+      metadata: {
+        kind: "assistant_progress",
+      },
+    },
+  ];
+}
+
 export function removeAssistantThinkingMessage(
   current: ChatMessageView[],
   payload: {
@@ -1235,13 +1292,6 @@ export function summarizeOperationalAssistantDelta(delta: string): string | null
   if (looksLikeRuntimeMachinePayload(normalized)) {
     return null;
   }
-  if (
-    /^(Building context|Completed the minimal tool loop|Started subtask: |Finished subtask: |Subtask |Running tool: |Running post-task|Approval accepted\.)/i.test(
-      normalized,
-    )
-  ) {
-    return null;
-  }
   if (normalized === "Building context and preparing the first tool calls...") {
     return progressLine("正在整理上下文，并确定要先查看的文件和工具。");
   }
@@ -1343,6 +1393,7 @@ function isRuntimeProgressOnlyAssistantMessage(message: ChatMessageView): boolea
     message.metadata?.kind === "tool_use" ||
     message.metadata?.kind === "tool_result" ||
     message.metadata?.kind === "tool_activity" ||
+    message.metadata?.kind === "assistant_progress" ||
     message.metadata?.kind === "assistant_thinking" ||
     message.metadata?.kind === "permission_request"
   ) {

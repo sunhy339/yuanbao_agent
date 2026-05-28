@@ -14,7 +14,8 @@
     "attachments"
     "queue"
     "input"
-    "toolbar";
+    "toolbar"
+    "context";
   gap: 6px;
   border: 1px solid rgba(60, 40, 30, 0.12);
   border-radius: 22px;
@@ -28,18 +29,57 @@
 }
 
 .composer-dock[data-layout="session"] {
-  --composer-session-gutter: max(48px, calc((100% - var(--session-composer-side-reserve, clamp(620px, 42vw, 1040px)) - 760px) / 2));
-  right: calc(var(--session-composer-side-reserve, clamp(620px, 42vw, 1040px)) + var(--composer-session-gutter));
-  bottom: 10px;
+  position: fixed;
+  --composer-session-gutter: clamp(16px, 2vw, 30px);
+  --composer-session-side-gap: clamp(12px, 1.4vw, 22px);
+  right: calc(var(--session-composer-side-reserve, clamp(620px, 42vw, 1040px)) + var(--composer-session-side-gap));
+  bottom: 14px;
   left: var(--composer-session-gutter);
+  z-index: 220;
   width: auto;
   max-width: none;
   min-width: 0;
   justify-self: start;
+  grid-template-areas:
+    "tasks"
+    "attachments"
+    "queue"
+    "input"
+    "toolbar";
+  border-radius: 18px;
+  padding: 0;
+}
+
+.composer-dock[data-layout="session"]::before {
+  content: "";
+  position: absolute;
+  left: calc(-1 * var(--composer-session-gutter));
+  right: calc(-1 * var(--composer-session-side-gap));
+  top: -18px;
+  height: 1px;
+  border-top: 1px solid rgba(227, 216, 207, 0.96);
+  box-shadow: 0 -1px 0 rgba(255, 255, 255, 0.76);
+  pointer-events: none;
+}
+
+.composer-dock[data-layout="session"]::after {
+  content: none;
 }
 
 .composer-dock[data-layout="session"] .composer-meta {
   display: none;
+}
+
+.composer-dock[data-layout="session"] .composer-input textarea {
+  min-height: 78px;
+  max-height: min(190px, 30vh);
+  padding: 18px 18px 10px;
+}
+
+.composer-dock[data-layout="session"] .composer-toolbar {
+  min-height: 58px;
+  border-top: 1px solid #eee5dc;
+  padding: 12px 14px;
 }
 
 .composer-dock-hidden {
@@ -310,6 +350,63 @@
   min-height: 30px;
 }
 
+.composer-context-strip {
+  grid-area: context;
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  align-items: center;
+  border-top: 1px solid #eee5dc;
+  padding-top: 9px;
+}
+
+.composer-dock[data-layout="session"] .composer-context-strip {
+  position: absolute;
+  right: auto;
+  bottom: -38px;
+  left: 0;
+  min-height: 28px;
+  border-top: 0;
+  padding-top: 0;
+  background: transparent;
+  z-index: 2;
+}
+
+.composer-dock[data-layout="session"] .composer-context-chip {
+  border: 1px solid #dce3ea;
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.98);
+  color: #29313d;
+  box-shadow: 0 8px 20px rgba(60, 40, 30, 0.08);
+}
+
+.composer-context-chip {
+  display: inline-flex;
+  min-width: 0;
+  max-width: min(260px, 48%);
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 8px;
+  padding: 4px 8px;
+  color: #59606b;
+  background: transparent;
+  font: 600 12px/1.25 var(--wb-font-ui);
+  cursor: default;
+}
+
+.composer-context-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-context-chip:hover {
+  background: #f4f2ef;
+}
+
 .composer-toolbar-left,
 .composer-toolbar-right {
   display: flex;
@@ -341,6 +438,51 @@
   align-items: center;
   gap: 5px;
   cursor: pointer;
+}
+
+.composer-tool-menu-root {
+  position: relative;
+  display: inline-flex;
+}
+
+.composer-tool-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  z-index: 270;
+  overflow: hidden;
+  width: 240px;
+  border: 1px solid rgba(60, 40, 30, 0.12);
+  border-radius: 12px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 20px 44px rgba(60, 40, 30, 0.16);
+  backdrop-filter: blur(16px) saturate(1.08);
+}
+
+.composer-tool-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 10px;
+  color: #2f2924;
+  background: transparent;
+  cursor: pointer;
+  font: 600 13px/1 var(--wb-font-ui);
+  text-align: left;
+}
+
+.composer-tool-menu button:hover:not(:disabled) {
+  background: #f4f2ef;
+}
+
+.composer-tool-menu button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
 }
 
 .composer-tool-button strong {
@@ -790,16 +932,16 @@
 
 .composer-input textarea {
   width: 100%;
-  min-height: 52px;
-  max-height: min(180px, 26vh);
+  min-height: 72px;
+  max-height: min(168px, 28vh);
   resize: none;
   border: 0;
   border-radius: 0;
-  padding: 3px 0 7px;
+  padding: 4px 0 6px;
   background: transparent;
   color: #1f1d1a;
   font-size: 14px;
-  line-height: 1.55;
+  line-height: 1.48;
   outline: 0;
 }
 
@@ -1030,6 +1172,7 @@
   .composer-dock[data-layout="session"] {
     right: 12px;
     left: 12px;
+    width: auto;
     max-width: none;
     min-width: 0;
   }

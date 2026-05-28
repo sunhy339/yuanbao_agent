@@ -39,7 +39,7 @@ function renderShell(
   } = {},
 ) {
   const tabs = getInitialTabs();
-  const activeTabId = options.activeTab ?? "system:overview";
+  const activeTabId = options.activeTab ?? "system:new-session";
   const handlers = {
     onOpenSystemTab: vi.fn(),
     onOpenSessionTab: vi.fn(),
@@ -93,20 +93,20 @@ function renderShell(
 }
 
 describe("AppShell", () => {
-  it("renders sidebar, tabs, focused content, and composer for overview", () => {
+  it("renders sidebar, tabs, focused content, and composer for the new session entry", () => {
     renderShell();
 
-    expect(screen.getByRole("button", { name: "总览" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "总览" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "新建会话" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "定时任务" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "智能体技能" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "外观" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "组件预览" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "设置" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开 MCP 中心" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开智能体技能" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开设置" })).toBeInTheDocument();
     expect(screen.getByLabelText("桌面标题栏")).toHaveTextContent("Yuanbao Agent");
-    expect(screen.getByRole("tab", { name: "总览" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "新建会话" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByLabelText("workspace content")).toBeInTheDocument();
     expect(screen.getByLabelText("任务指令")).toBeInTheDocument();
+    expect(document.querySelector(".sidebar-footer")).not.toBeInTheDocument();
   });
 
   it("hides composer when composerVisible is false", () => {
@@ -140,6 +140,41 @@ describe("AppShell", () => {
 
     const form = document.querySelector("form.composer-dock-hidden");
     expect(form).toBeTruthy();
+  });
+
+  it("uses the session composer layout from the active tab kind", () => {
+    const tabs: WorkbenchTab[] = [
+      { id: "system:new-session", kind: "new-session", title: "New Session", closable: true },
+      { id: "session:sess_1", kind: "session", title: "Repair failing tests", sessionId: "sess_1", closable: true },
+    ];
+
+    render(
+      <AppShell
+        tabs={tabs}
+        activeTabId="session:sess_1"
+        sessions={sessions}
+        activeSessionId="sess_1"
+        workspaceName="yuanbao_agent"
+        composerVisible={true}
+        promptValue=""
+        onPromptChange={vi.fn()}
+        onOpenSystemTab={vi.fn()}
+        onOpenSessionTab={vi.fn()}
+        onActivateTab={vi.fn()}
+        onCloseTab={vi.fn()}
+        onCloseOtherTabs={vi.fn()}
+        onRenameSession={vi.fn()}
+        onDeleteSession={vi.fn()}
+        onSubmitPrompt={vi.fn()}
+        disabled={false}
+        providerLabel="MiniMax-M2.7-highspeed"
+        cwdLabel="D:/py/yuanbao_agent"
+      >
+        <section>Session</section>
+      </AppShell>,
+    );
+
+    expect(document.querySelector("form.composer-dock")).toHaveAttribute("data-layout", "session");
   });
 
   it("opens the composer model menu and switches model", async () => {
@@ -362,19 +397,14 @@ describe("AppShell", () => {
     const handlers = renderShell();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "总览" }));
-    await user.click(screen.getByRole("button", { name: "定时任务" }));
-    await user.click(screen.getByRole("button", { name: "智能体技能" }));
-    await user.click(screen.getByRole("button", { name: "外观" }));
-    await user.click(screen.getByRole("button", { name: "组件预览" }));
+    await user.click(screen.getByRole("button", { name: "新建会话" }));
     await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("button", { name: "打开智能体技能" }));
+    await user.click(screen.getByRole("button", { name: "打开设置" }));
     await user.click(screen.getByRole("button", { name: /Repair failing tests/ }));
 
-    expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("overview");
-    expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("scheduled");
+    expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("new-session");
     expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("skills");
-    expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("appearance");
-    expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("playground");
     expect(handlers.onOpenSystemTab).toHaveBeenCalledWith("settings");
     expect(handlers.onOpenSessionTab).toHaveBeenCalledWith(sessions[0]);
   });
@@ -383,8 +413,8 @@ describe("AppShell", () => {
     const handlers = renderShell();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: "关闭 总览" }));
+    await user.click(screen.getByRole("button", { name: "关闭 新建会话" }));
 
-    expect(handlers.onCloseTab).toHaveBeenCalledWith("system:overview");
+    expect(handlers.onCloseTab).toHaveBeenCalledWith("system:new-session");
   });
 });

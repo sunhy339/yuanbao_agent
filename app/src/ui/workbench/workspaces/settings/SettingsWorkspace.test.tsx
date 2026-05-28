@@ -402,7 +402,7 @@ describe("SettingsWorkspace", () => {
     await openSettingsSection(container, "技能库");
     expect(container.querySelector(".settings-empty-state")).toBeInTheDocument();
 
-    await user.click(container.querySelector(".settings-secondary-action") as HTMLElement);
+    await user.click(screen.getByRole("button", { name: "打开目录" }));
     expect(onOpenSkillsFolder).toHaveBeenCalled();
   });
 

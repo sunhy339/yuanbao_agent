@@ -14,12 +14,12 @@ import {
   getMessageActivitySortTime,
   getProcessStatusLabel,
   getStatusTone,
+  isUsableTimelineTimestamp,
   isRuntimeInFlight,
   isTaskControllable,
 } from "./utils";
 import { MessageBubble } from "./MessageBubble";
 import { RuntimeEventCard } from "./RuntimeEventCard";
-import { ConversationLivePill } from "./ConversationLivePill";
 
 type RawConversationActivityItem =
   | Extract<ConversationActivityItem, { kind: "message" }>
@@ -47,6 +47,10 @@ const LOW_SIGNAL_TASK_STEP_PATTERNS = [
   /waiting for (?:the )?model/i,
 ];
 
+function isUsableActivityTime(value?: number): value is number {
+  return isUsableTimelineTimestamp(value);
+}
+
 function normalizeTaskStep(value?: string | null) {
   return compactText(value ?? "", 96).replace(/[。.!！…]+$/g, "").trim();
 }
@@ -60,10 +64,13 @@ function isLowSignalTaskStep(value?: string | null) {
 }
 
 function isCollapsibleWorklogRuntimeItem(item: RuntimeTimelineItem) {
-  if (item.kind !== "command" && item.kind !== "tool") {
+  if (item.kind !== "tool") {
     return false;
   }
   if (isRuntimeInFlight(item.status)) {
+    return false;
+  }
+  if (["run_command", "apply_patch", "write_file"].includes(item.toolName ?? "")) {
     return false;
   }
   return !["failed", "error", "rejected", "cancelled"].includes(item.status?.toLowerCase() ?? "");
@@ -117,19 +124,156 @@ function collapseRuntimeWorklogItems(items: RawConversationActivityItem[]): Conv
   return collapsed;
 }
 
+function attachRuntimeTimesToMessages(
+  messages: SessionWorkspaceMessage[],
+  runtimeItems: RuntimeTimelineItem[],
+) {
+  if (!messages.length) {
+    return runtimeItems;
+  }
+  const sortedMessageTimes = messages
+    .map(getMessageActivitySortTime)
+    .filter(isUsableActivityTime)
+    .sort((left, right) => left - right);
+  const needsSyntheticTime = runtimeItems.some((item) => !isUsableTimelineTimestamp(item.time));
+  if (!sortedMessageTimes.length) {
+    return needsSyntheticTime ? runtimeItems.map((runtime) => (isUsableTimelineTimestamp(runtime.time) ? runtime : { ...runtime, time: undefined })) : runtimeItems;
+  }
+  if (!needsSyntheticTime) {
+    return runtimeItems;
+  }
+  const assistantTimes = messages
+    .filter((message) => message.role === "assistant")
+    .map(getMessageActivitySortTime)
+    .filter(isUsableActivityTime)
+    .sort((left, right) => left - right);
+  const anchorTime = assistantTimes.at(-1) ?? sortedMessageTimes.at(-1);
+  if (anchorTime === undefined) {
+    return runtimeItems;
+  }
+  return runtimeItems.map((runtime, index) =>
+    isUsableTimelineTimestamp(runtime.time) ? runtime : { ...runtime, time: anchorTime + 0.001 * (index + 1) },
+  );
+}
+
+function shouldPlaceAssistantAfterRuntime(message: SessionWorkspaceMessage) {
+  return (
+    message.role === "assistant" &&
+    message.streaming !== true &&
+    message.placeholder !== true &&
+    message.kind !== "thinking" &&
+    message.kind !== "status" &&
+    !message.metadata?.kind
+  );
+}
+
+function buildRuntimeEndTimesByTask(runtimeItems: RuntimeTimelineItem[]) {
+  const endTimes = new Map<string, number>();
+  runtimeItems.forEach((item) => {
+    const itemTime = item.time;
+    if (!item.taskId || typeof itemTime !== "number" || !isUsableTimelineTimestamp(itemTime)) {
+      return;
+    }
+    const current = endTimes.get(item.taskId) ?? Number.NEGATIVE_INFINITY;
+    if (itemTime > current) {
+      endTimes.set(item.taskId, itemTime);
+    }
+  });
+  return endTimes;
+}
+
+function findSurroundingUserTimes(message: SessionWorkspaceMessage, messages: SessionWorkspaceMessage[]) {
+  const baseTime = getMessageActivitySortTime(message);
+  const usableUserTimes = messages
+    .filter((candidate) => candidate.role === "user")
+    .map(getMessageActivitySortTime)
+    .filter(isUsableActivityTime)
+    .sort((left, right) => left - right);
+  const previousUserTime = usableUserTimes.filter((time) => !isUsableActivityTime(baseTime) || time <= baseTime).at(-1);
+  const nextUserTime = usableUserTimes.find((time) => isUsableActivityTime(baseTime) && time > baseTime);
+  return { previousUserTime, nextUserTime };
+}
+
+function getRuntimeEndTimeForMessageTurn(
+  message: SessionWorkspaceMessage,
+  messages: SessionWorkspaceMessage[],
+  runtimeItems: RuntimeTimelineItem[],
+) {
+  if (message.taskId) {
+    return undefined;
+  }
+  const { previousUserTime, nextUserTime } = findSurroundingUserTimes(message, messages);
+  let endTime: number | undefined;
+  runtimeItems.forEach((item) => {
+    const itemTime = item.time;
+    if (!isUsableActivityTime(itemTime)) {
+      return;
+    }
+    if (previousUserTime !== undefined && itemTime < previousUserTime) {
+      return;
+    }
+    if (nextUserTime !== undefined && itemTime >= nextUserTime) {
+      return;
+    }
+    if (endTime === undefined || itemTime > endTime) {
+      endTime = itemTime;
+    }
+  });
+  return endTime;
+}
+
+function getActivityMessageTime(message: SessionWorkspaceMessage, runtimeEndTimesByTask: Map<string, number>) {
+  const baseTime = getMessageActivitySortTime(message);
+  if (!shouldPlaceAssistantAfterRuntime(message)) {
+    return baseTime;
+  }
+  const runtimeEndTime = message.taskId ? runtimeEndTimesByTask.get(message.taskId) : undefined;
+  if (!isUsableActivityTime(baseTime)) {
+    return runtimeEndTime !== undefined ? runtimeEndTime + 0.001 : baseTime;
+  }
+  if (runtimeEndTime !== undefined && runtimeEndTime >= baseTime) {
+    return runtimeEndTime + 0.001;
+  }
+  return baseTime;
+}
+
+function getActivityMessageTimeWithRuntime(
+  message: SessionWorkspaceMessage,
+  messages: SessionWorkspaceMessage[],
+  runtimeItems: RuntimeTimelineItem[],
+  runtimeEndTimesByTask: Map<string, number>,
+) {
+  const baseTime = getActivityMessageTime(message, runtimeEndTimesByTask);
+  if (!shouldPlaceAssistantAfterRuntime(message)) {
+    return baseTime;
+  }
+  const runtimeEndTime =
+    (message.taskId ? runtimeEndTimesByTask.get(message.taskId) : undefined) ??
+    getRuntimeEndTimeForMessageTurn(message, messages, runtimeItems);
+  if (runtimeEndTime === undefined) {
+    return baseTime;
+  }
+  if (!isUsableActivityTime(baseTime) || runtimeEndTime >= baseTime) {
+    return runtimeEndTime + 0.001;
+  }
+  return baseTime;
+}
+
 export function buildConversationActivity(
   messages: SessionWorkspaceMessage[],
   runtimeItems: RuntimeTimelineItem[],
 ): ConversationActivityItem[] {
+  const timedRuntimeItems = attachRuntimeTimesToMessages(messages, runtimeItems);
+  const runtimeEndTimesByTask = buildRuntimeEndTimesByTask(timedRuntimeItems);
   const activity: RawConversationActivityItem[] = [
     ...messages.map((message, index) => ({
       id: `message:${message.id}`,
       kind: "message" as const,
       order: index,
-      time: getMessageActivitySortTime(message),
+      time: getActivityMessageTimeWithRuntime(message, messages, timedRuntimeItems, runtimeEndTimesByTask),
       message,
     })),
-    ...runtimeItems.map((runtime, index) => ({
+    ...timedRuntimeItems.map((runtime, index) => ({
       id: `runtime:${runtime.id}`,
       kind: "runtime" as const,
       order: messages.length + index,
@@ -407,22 +551,17 @@ export const ConversationActivity = memo(function ConversationActivity({
   onStopCommandJob?(commandId: string): void | Promise<void>;
   busyId?: string | null;
 }) {
-  const livePill = (
-    <div className="conversation-live-row">
-      <ConversationLivePill messages={messages} activeTask={activeTask} messagesLoading={messagesLoading} />
-    </div>
-  );
   const activeTaskIsRunning = isTaskControllable(activeTask?.status);
   const hasStreamingAssistantContent = messages.some((message) => message.streaming && !message.placeholder);
   const hasThinkingPlaceholder = messages.some((message) => message.streaming && message.placeholder);
   const thinkingActivityHint = buildThinkingActivityHint(items, activeTask);
   const hasVisibleRuntimeActivity = items.some((item) => item.kind === "runtime" || item.kind === "worklog");
   const showProgressNote =
-    thinkingActivityHint !== DEFAULT_THINKING_ACTIVITY_HINT && activeTaskIsRunning && !hasVisibleRuntimeActivity;
-  const showLivePill = Boolean(
+    thinkingActivityHint !== DEFAULT_THINKING_ACTIVITY_HINT &&
+    activeTaskIsRunning &&
+    !hasVisibleRuntimeActivity &&
     !hasStreamingAssistantContent &&
-      (messages.length || activeTask || messagesLoading || activeTaskIsRunning || hasThinkingPlaceholder),
-  );
+    (messagesLoading || hasThinkingPlaceholder || Boolean(activeTask));
 
   return (
     <div className="conversation-activity" aria-label="会话活动">
@@ -461,7 +600,7 @@ export const ConversationActivity = memo(function ConversationActivity({
           />
         ),
       )}
-      {showLivePill && showProgressNote ? (
+      {showProgressNote ? (
         <article className="runtime-progress-note" aria-label="运行进展">
           <span className="runtime-progress-note-dot" aria-hidden="true" />
           <div>
@@ -470,7 +609,6 @@ export const ConversationActivity = memo(function ConversationActivity({
           </div>
         </article>
       ) : null}
-      {showLivePill ? livePill : null}
     </div>
   );
 });

@@ -16,6 +16,7 @@ import {
   parsePatchFileSummaries,
   buildCommandOutput,
   buildCommandPathDetail,
+  summarizeApprovalAction,
 } from "./utils";
 
 function looksLikeRuntimeMachineText(value?: string | null) {
@@ -230,6 +231,43 @@ function PatchDiffDetail({
   );
 }
 
+function countDiffLineTotals(diffLines?: DiffLine[]): { additions?: number; deletions?: number } {
+  if (!diffLines?.length) {
+    return {};
+  }
+  let additions = 0;
+  let deletions = 0;
+  let sawChange = false;
+  for (const line of diffLines) {
+    if (line.type === "add") {
+      additions += 1;
+      sawChange = true;
+    } else if (line.type === "remove") {
+      deletions += 1;
+      sawChange = true;
+    }
+  }
+  return sawChange ? { additions, deletions } : {};
+}
+
+function sumPatchFileTotals(
+  files: ReturnType<typeof parsePatchFileSummaries>,
+  field: "additions" | "deletions",
+) {
+  const known = files
+    .map((file) => file[field])
+    .filter((value): value is number => typeof value === "number");
+  return known.length ? known.reduce((total, value) => total + value, 0) : undefined;
+}
+
+function readPatchMetaTotals(meta?: string[]) {
+  const text = meta?.join(" ") ?? "";
+  return {
+    additions: /\+(\d+)/.exec(text)?.[1] ? Number(/\+(\d+)/.exec(text)?.[1]) : undefined,
+    deletions: /-(\d+)/.exec(text)?.[1] ? Number(/-(\d+)/.exec(text)?.[1]) : undefined,
+  };
+}
+
 interface RuntimeFileChangeRow {
   path: string;
   status?: string;
@@ -238,21 +276,43 @@ interface RuntimeFileChangeRow {
   reason?: string;
 }
 
+function normalizeRuntimeFileChangePath(path: string) {
+  const normalized = path
+    .replace(/^[-+]\s*/, "")
+    .replace(/^---\s+[ab]\//, "")
+    .replace(/^\+\+\+\s+[ab]\//, "")
+    .replace(/^[ab]\//, "")
+    .trim();
+
+  if (
+    !normalized ||
+    normalized === "/dev/null" ||
+    normalized.startsWith("@@") ||
+    normalized.startsWith("diff --git") ||
+    /^(update|updated|create|created|delete|deleted|modify|modified)\s+/i.test(normalized) ||
+    /\s/.test(normalized)
+  ) {
+    return "";
+  }
+
+  return normalized;
+}
+
 function parseRuntimeFileChangeRows(code?: string): RuntimeFileChangeRow[] {
   if (!code) {
     return [];
   }
 
-  return code
+  const rows = code
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const statusMatch = /^(added|modified|deleted|changed)\s+/i.exec(line);
+      const statusMatch = /^(added|modified|deleted|changed|新增|删除|修改|变更|已修改)\s+/i.exec(line);
       const status = statusMatch?.[1]?.toLowerCase();
       const rest = statusMatch ? line.slice(statusMatch[0].length).trim() : line;
       const parts = rest.split(/\s+-\s+/);
-      const path = parts.shift()?.trim() ?? rest;
+      const path = normalizeRuntimeFileChangePath(parts.shift()?.trim() ?? rest);
       const detail = parts.join(" - ");
       const additions = /\+(\d+)/.exec(detail)?.[1];
       const deletions = /-(\d+)/.exec(detail)?.[1];
@@ -270,6 +330,21 @@ function parseRuntimeFileChangeRows(code?: string): RuntimeFileChangeRow[] {
       };
     })
     .filter((row) => Boolean(row.path));
+
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = `${row.path}:${row.status ?? ""}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function readPatchIdFromTaskFileItem(item: RuntimeTimelineItem) {
+  const metaPatchId = item.meta?.find((entry) => /^patch[_:-]/i.test(entry) || /^patch_[\w-]+$/i.test(entry));
+  return item.sourceId || metaPatchId;
 }
 
 function formatFileChangeStatus(status?: string) {
@@ -289,15 +364,18 @@ function RuntimeFileChangeCard({
   item,
   expanded,
   onToggleExpanded,
+  onLoadPatch,
 }: {
   item: RuntimeTimelineItem;
   expanded: boolean;
   onToggleExpanded(): void;
+  onLoadPatch?: (patchId: string) => void | Promise<void>;
 }) {
   const rows = parseRuntimeFileChangeRows(item.code);
   const visibleRows = expanded ? rows : rows.slice(0, 5);
   const fileCount = rows.length || item.meta?.find((entry) => /个文件/.test(entry)) || "若干";
   const title = typeof fileCount === "number" ? `已记录 ${fileCount} 个文件改动` : `已记录 ${fileCount}改动`;
+  const patchId = readPatchIdFromTaskFileItem(item);
 
   return (
     <article
@@ -334,6 +412,19 @@ function RuntimeFileChangeCard({
                     row.deletions !== undefined ? `-${row.deletions}` : undefined,
                   ]).join(" ")}
                 </em>
+              ) : null}
+              {patchId && onLoadPatch ? (
+                <button
+                  type="button"
+                  className="runtime-file-change-diff-button"
+                  aria-label="查看文件差异"
+                  onClick={() => {
+                    void onLoadPatch(patchId);
+                    onToggleExpanded();
+                  }}
+                >
+                  查看文件差异
+                </button>
               ) : null}
               {expanded && row.reason ? <small>{row.reason}</small> : null}
             </div>
@@ -394,18 +485,20 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
         item={item}
         expanded={expanded}
         onToggleExpanded={() => setExpanded((current) => !current)}
+        onLoadPatch={onLoadPatch}
       />
     );
   }
 
   if (item.kind === "approval" && item.sourceId) {
+    const actionSummary = item.meta?.[0] && item.meta[0] !== item.title ? item.meta[0] : undefined;
     return (
       <div className="runtime-event-card runtime-event-v2-card" data-activity-kind="runtime" data-kind={item.kind}>
         <ApprovalCard
           approval={{
             id: item.sourceId,
-            title: item.title,
-            kind: item.meta?.[0],
+            title: actionSummary ?? summarizeApprovalAction({ title: item.title, kind: item.meta?.[1], command: item.code, parametersPreview: item.rawDetail }),
+            kind: item.title,
             status: item.status ?? "pending",
             summary: item.summary,
             risk: item.riskLevel ?? "low",
@@ -427,6 +520,11 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
   }
 
   if (item.kind === "patch" && item.sourceId) {
+    const changedFiles = parsePatchFileSummaries(item.code);
+    const diffTotals = countDiffLineTotals(item.diffLines);
+    const metaTotals = readPatchMetaTotals(item.meta);
+    const additions = sumPatchFileTotals(changedFiles, "additions") ?? metaTotals.additions ?? diffTotals.additions;
+    const deletions = sumPatchFileTotals(changedFiles, "deletions") ?? metaTotals.deletions ?? diffTotals.deletions;
     return (
       <div className="runtime-event-card runtime-event-v2-card" data-activity-kind="runtime" data-kind={item.kind}>
         <PatchPlanCard
@@ -434,9 +532,11 @@ export const RuntimeEventCard = memo(function RuntimeEventCard({
             id: item.sourceId,
             summary: item.title,
             status: item.status ?? "recorded",
-            filesChanged: parsePatchFileSummaries(item.code).length || undefined,
+            filesChanged: changedFiles.length || undefined,
+            additions,
+            deletions,
           }}
-          changedFiles={parsePatchFileSummaries(item.code)}
+          changedFiles={changedFiles}
           onOpenDiff={(patchId) => {
             void onLoadPatch?.(patchId);
             setExpanded(true);

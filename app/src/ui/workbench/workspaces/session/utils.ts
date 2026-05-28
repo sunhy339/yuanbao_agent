@@ -243,6 +243,36 @@ export function readRuntimeString(record: Record<string, unknown> | null, keys: 
   return undefined;
 }
 
+function collectRuntimeStrings(value: unknown, output: string[] = [], depth = 0) {
+  if (depth > 3 || output.length > 20) {
+    return output;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) {
+      output.push(trimmed);
+    }
+    return output;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectRuntimeStrings(item, output, depth + 1));
+    return output;
+  }
+  if (value && typeof value === "object") {
+    Object.values(value as Record<string, unknown>).forEach((item) => collectRuntimeStrings(item, output, depth + 1));
+  }
+  return output;
+}
+
+export function readRuntimeStringList(record: Record<string, unknown> | null, keys: string[]) {
+  if (!record) {
+    return [];
+  }
+  const values: string[] = [];
+  keys.forEach((key) => collectRuntimeStrings(record[key], values));
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
 export function normalizeRuntimeComparableString(value: string | undefined) {
   return value?.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
@@ -309,6 +339,139 @@ export function summarizeRuntimeOutput(value?: string) {
 }
 
 // ── Status & Label Helpers ─────────────────────────────────────────
+const TOOL_ACTION_LABELS: Record<string, string> = {
+  apply_patch: "应用文件改动",
+  write_file: "写入文件",
+  run_command: "运行命令",
+  shell_command: "运行命令",
+  command: "运行命令",
+  shell: "运行命令",
+  list_dir: "查看目录",
+  list_directory: "查看目录",
+  read_file: "读取文件",
+  search_files: "搜索文件",
+  code_search: "搜索代码",
+  web_fetch: "读取网页",
+  browser: "浏览器操作",
+  notebook: "Notebook 操作",
+  git_status: "查看 Git 状态",
+  git_diff: "查看代码差异",
+  task: "处理子任务",
+};
+
+export function formatToolNameLabel(toolName?: string | null) {
+  const raw = toolName?.trim();
+  if (!raw) {
+    return "";
+  }
+  return TOOL_ACTION_LABELS[raw.toLowerCase()] ?? raw.replace(/_/g, " ");
+}
+
+export function formatToolActionTitle(toolName?: string | null, target?: string | null) {
+  const label = formatToolNameLabel(toolName) || "工具调用";
+  const normalizedTool = toolName?.trim().toLowerCase();
+  const cleanTarget = target?.trim();
+  if (!cleanTarget || normalizedTool === "apply_patch") {
+    return label;
+  }
+  return `${label} ${cleanTarget}`;
+}
+
+export function isRawToolTitle(value?: string | null) {
+  const raw = value?.trim();
+  if (!raw) {
+    return true;
+  }
+  const normalized = raw.toLowerCase();
+  return (
+    normalized in TOOL_ACTION_LABELS ||
+    [
+      "tool",
+      "approval",
+      "request",
+      "approval request",
+      "permission request",
+      "patch approval request",
+      "tool request",
+    ].includes(normalized)
+  );
+}
+
+export function formatApprovalKindLabel(kind?: string | null, command?: string | null) {
+  const haystack = `${kind ?? ""} ${command ?? ""}`.toLowerCase();
+  if (/(apply_patch|patch)/.test(haystack)) {
+    return "文件修改审批";
+  }
+  if (/write_file/.test(haystack)) {
+    return "文件写入审批";
+  }
+  if (/(run_command|shell_command|\bshell\b|\bcommand\b)/.test(haystack)) {
+    return "命令审批";
+  }
+  if (/merge/.test(haystack)) {
+    return "合并审批";
+  }
+  if (/completion|finish|complete/.test(haystack)) {
+    return "完成确认";
+  }
+  return "审批请求";
+}
+
+export function formatApprovalDisplayTitle({
+  title,
+  kind,
+  command,
+}: {
+  title?: string | null;
+  kind?: string | null;
+  command?: string | null;
+}) {
+  const rawTitle = title?.trim();
+  if (rawTitle && !isRawToolTitle(rawTitle)) {
+    return rawTitle;
+  }
+  return formatApprovalKindLabel(kind, command);
+}
+
+export function summarizeApprovalAction({
+  title,
+  kind,
+  command,
+  parametersPreview,
+  fullInput,
+}: {
+  title?: string | null;
+  kind?: string | null;
+  command?: string | null;
+  parametersPreview?: string | null;
+  fullInput?: string | null;
+}) {
+  const rawTitle = title?.trim();
+  if (rawTitle && !isRawToolTitle(rawTitle)) {
+    return rawTitle;
+  }
+  const previewRecord = parseRuntimeJsonRecord(parametersPreview ?? undefined);
+  const fullRecord = parseRuntimeJsonRecord(fullInput ?? undefined);
+  const paths = [
+    ...readRuntimeStringList(previewRecord, ["path", "paths", "file", "files", "target", "targets", "patches", "changes"]),
+    ...readRuntimeStringList(fullRecord, ["path", "paths", "file", "files", "target", "targets", "patches", "changes"]),
+  ].filter((value) => !/^(approval|command|apply_patch)$/i.test(value));
+  const firstPath = paths.find((value) => /[\\/]|\.([a-z0-9]+)$/i.test(value));
+  const commandLabel = normalizeCommandLabel(command ?? undefined);
+  const haystack = `${kind ?? ""} ${command ?? ""} ${parametersPreview ?? ""} ${fullInput ?? ""}`.toLowerCase();
+
+  if (/(apply_patch|patch|write_file)/.test(haystack)) {
+    return firstPath ? `申请修改文件：${firstPath}` : "申请应用文件改动";
+  }
+  if (/(run_command|shell_command|\bshell\b|\bcommand\b)/.test(haystack)) {
+    return commandLabel ? `申请运行命令：${commandLabel}` : "申请运行命令";
+  }
+  if (/merge/.test(haystack)) {
+    return "申请合并改动";
+  }
+  return formatApprovalDisplayTitle({ title, kind, command });
+}
+
 export function getRuntimeKindLabel(kind: RuntimeTimelineItem["kind"]) {
   if (kind === "command") {
     return "命令";
@@ -476,6 +639,15 @@ export function getConversationFinishedAt(
 }
 
 export function getMessageTimelineTime(message: SessionWorkspaceMessage) {
+  if (
+    message.role === "assistant" &&
+    message.streaming !== true &&
+    message.placeholder !== true &&
+    !message.metadata?.kind &&
+    isUsableTimelineTimestamp(message.updatedAt)
+  ) {
+    return message.updatedAt;
+  }
   return message.createdAt;
 }
 
@@ -484,6 +656,15 @@ export function getMessageDisplayTime(message: SessionWorkspaceMessage) {
 }
 
 export function getMessageActivitySortTime(message: SessionWorkspaceMessage) {
+  if (
+    message.role === "assistant" &&
+    message.streaming !== true &&
+    message.placeholder !== true &&
+    !message.metadata?.kind &&
+    isUsableTimelineTimestamp(message.updatedAt)
+  ) {
+    return message.updatedAt;
+  }
   return message.createdAt;
 }
 

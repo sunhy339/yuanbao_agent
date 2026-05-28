@@ -13,7 +13,7 @@ const SYSTEM_TITLES: Record<SystemWorkspaceKind, string> = {
 };
 
 export function getInitialTabs(): WorkbenchTab[] {
-  return [{ id: "system:overview", kind: "overview", title: SYSTEM_TITLES.overview, closable: true }];
+  return [{ id: "system:new-session", kind: "new-session", title: SYSTEM_TITLES["new-session"], closable: true }];
 }
 
 export function openSystemTab(tabs: WorkbenchTab[], kind: SystemWorkspaceKind): WorkbenchTabResult {

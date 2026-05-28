@@ -40,14 +40,14 @@ import type {
 import type { WorkbenchTab, SystemWorkspaceKind } from "../types";
 
 import { approvalModeToSettingsMode } from "../../../state/providerPayloadParsing";
-import { NewSessionWorkspace } from "./NewSessionWorkspace";
+import { CleanNewSessionWorkspace } from "../../haha-clean/pages/CleanNewSessionWorkspace";
 import { ScheduledWorkspace } from "./scheduled/ScheduledWorkspace";
 import { McpWorkspace } from "./mcp/McpWorkspace";
 import { AppearanceWorkspace } from "./appearance/AppearanceWorkspace";
 import { ComponentPlaygroundWorkspace } from "./playground/ComponentPlaygroundWorkspace";
 import { SkillsWorkspace } from "./skills/SkillsWorkspace";
 import { WorkbenchOverviewPage } from "../../v2/pages/WorkbenchOverviewPage";
-import { SessionWorkspace } from "./session/SessionWorkspace";
+import { CleanSessionWorkspace } from "../../haha-clean/conversation/CleanSessionWorkspace";
 import { SettingsWorkspace } from "./settings/SettingsWorkspace";
 
 function RuntimeUnavailableWorkspace({ errorMessage }: { errorMessage: string }) {
@@ -250,21 +250,18 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
         runtimeStatus={props.overviewRuntimeStatus}
         sessions={props.sessions}
         tasks={props.taskHistory}
-        scheduledTasks={props.scheduledRecords}
         mcpServers={props.mcpServers}
         skills={props.skills}
         onOpenNewSession={() => props.onOpenSystemTab("new-session")}
         onOpenSession={props.onOpenSessionTab}
-        onOpenScheduled={() => props.onOpenSystemTab("scheduled")}
         onOpenMcp={() => props.onOpenSystemTab("mcp")}
-        onOpenSettings={() => props.onOpenSystemTab("settings")}
       />
     );
   }
 
   if (activeTab.kind === "new-session") {
     return (
-      <NewSessionWorkspace
+      <CleanNewSessionWorkspace
         workspacePath={props.workspacePath}
         hostStatusText={props.hostStatusText}
         sessionTitle={props.sessionTitle}
@@ -288,7 +285,7 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
 
   if (activeTab.kind === "session") {
     return (
-      <SessionWorkspace
+      <CleanSessionWorkspace
         session={props.activeSessionRecord}
         activeTask={
           props.task
@@ -493,6 +490,8 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
       skills={props.settingsSkills}
       onRefreshSkills={props.refreshSkills}
       onOpenSkillsFolder={props.localPathActionsAvailable ? () => void props.handleOpenAppPath("skills") : undefined}
+      onOpenMcpManager={() => props.onOpenSystemTab("mcp")}
+      onOpenSkillsManager={() => props.onOpenSystemTab("skills")}
       computerUse={props.computerUseSettings}
       onComputerUseChange={props.setComputerUseSettings}
       onRecheckComputerUse={props.handleRecheckComputerUse}

@@ -37,8 +37,8 @@
   --wb-shadow-tight: 0 12px 28px rgba(15, 23, 42, 0.07);
   --wb-focus-outline: rgba(37, 99, 235, 0.78);
   --wb-focus-ring: 0 0 0 3px rgba(37, 99, 235, 0.16);
-  --wb-composer-reserve: 156px;
-  --wb-composer-reserve-mobile: 220px;
+  --wb-composer-reserve: 118px;
+  --wb-composer-reserve-mobile: 168px;
   --wb-composer-live-height: var(--wb-composer-reserve);
   --wb-paper: var(--wb-bg);
   --wb-paper-strong: var(--wb-surface);

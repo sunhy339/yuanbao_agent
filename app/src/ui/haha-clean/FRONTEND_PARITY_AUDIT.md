@@ -1,0 +1,177 @@
+# haha-cc 前端能力对照审计
+
+本表按 haha-cc 的前端能力拆分到按钮、信息流节点和后端事件。状态含义：
+
+- `已接入`：当前 clean 前端已有可用实现，并已接到现有数据。
+- `部分接入`：前端入口或视觉形态已做，但行为、细节或数据仍不完整。
+- `前端待补`：现有后端数据够用，主要缺前端实现。
+- `后端待补`：前端可预留，但缺事件、字段或接口。
+- `暂不做`：不是当前 Yuanbao Agent 主线。
+
+## 1. 应用壳层与导航
+
+| haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
+| --- | --- | --- | --- | --- |
+| 顶部/侧边导航 | 会话列表、设置、项目入口、运行状态 | `CleanAppShell` 已提供侧边会话、标签栏、新建会话、设置、MCP、Skills | 使用现有 session/tab/store | `部分接入`：样式已转 clean，但侧栏信息密度和状态分组还没完全按 haha-cc 打磨 |
+| 新建会话标签 | 点击新建会话进入空态页 | 已接入 `new-session` 标签 | 复用现有创建会话接口 | `部分接入`：空态 UI 已简化，项目/分支/工作树选择还不完整 |
+| 设置入口 | 设置页里管理模型、权限、MCP、Skills 等 | 设置入口已加回，MCP/Skills 独立入口已暴露 | 复用旧设置/MCP/Skills 后端 | `部分接入`：页面内部仍是旧组件加 clean 覆盖，后续要重做成低卡片列表 |
+| 总览页 | haha-cc 没有重型“总览”作为主路径 | 我们已淡化总览，主路径切到会话/新建会话 | 无新增后端需求 | `已接入` |
+| 标签关闭按钮 | 每个标签有 `x` 关闭 | 已接入 | 复用 tabModel | `已接入` |
+| 活动会话状态 | 当前会话运行、等待审批、完成等状态 | 已有浮动状态和会话列表状态点 | activeTask/session status | `部分接入`：状态文案仍需和消息流的真实阶段统一 |
+
+## 2. 新建会话页
+
+| haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
+| --- | --- | --- | --- | --- |
+| 简洁空态 | logo、标题、新会话说明、底部 composer | `CleanNewSessionWorkspace` 已做简洁空态 | 无 | `部分接入`：视觉方向接近，但 logo/品牌图形仍是占位 |
+| 项目目录按钮 | 底部显示当前目录，可展开/切换 | composer 下方显示 cwd/context | workspace root store | `部分接入`：没有完整目录选择弹层、最近项目、分支信息 |
+| 模型选择 | 模型按钮/下拉 | `CleanComposer` 支持模型下拉 | modelOptions/selectedModelId | `已接入` |
+| 权限模式 | 跳过/询问/自动接受等权限模式 | `CleanComposer` 有权限下拉 | permissionMode callback | `部分接入`：缺 haha-cc 那种高风险确认弹窗和说明 |
+| 上下文按钮 | 上下文占用按钮，弹出详细 breakdown | 显示上下文百分比/标签 | contextPreview | `部分接入`：详细弹层、分类 token breakdown 还没做 |
+| 加号菜单 | 添加文件/图片、斜杠命令 | 加号菜单有“添加文件或图片”“斜杠命令” | file dialog/输入框本地状态 | `部分接入`：缺拖拽覆盖层、真实图片预览、文件引用持久化 |
+| 运行按钮 | 发送/运行，运行中切停止 | 已接入发送、停止 | submit/stop callbacks | `已接入` |
+
+## 3. Composer 输入框与按钮
+
+| haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
+| --- | --- | --- | --- | --- |
+| 多行输入框 | 大输入区，底部工具栏，宽度贴近聊天区 | clean composer 已全局接入 session/new-session | prompt state | `部分接入`：用户仍反馈会话页尺寸/贴边不稳定，后续要以 shell 容器统一约束宽度 |
+| `+` 按钮 | 打开工具菜单 | 已接入 | 前端状态 | `已接入` |
+| 添加文件或图片 | 文件选择、图片缩略图、移除 | 已有附件列表和移除按钮 | attachments array | `部分接入`：图片预览/文件读取后端能力未完全对齐 |
+| 斜杠命令 | `/` 面板、命令描述、键盘选择 | 仅插入 `/` 和基础命令入口 | slash 命令接口缺失/未接 | `后端待补 + 前端待补` |
+| `@` 文件搜索 | 输入 `@` 搜索项目文件 | 未接入 clean composer | 可复用文件树/搜索接口，但缺稳定接口 | `后端待补 + 前端待补` |
+| 权限按钮 | 下拉权限模式，危险模式二次确认 | 有权限下拉 | permissionMode | `部分接入`：确认弹窗、模式解释和持久化状态需补 |
+| 上下文按钮 | 百分比/状态，点击看详情 | 有百分比短显示 | contextPreview | `部分接入`：缺详情浮层和分类视图 |
+| 模型按钮 | provider/model 下拉 | 已接入 | modelOptions | `已接入` |
+| 停止按钮 | 运行中停止生成 | 已接入 | stopPrompt / task cancel | `部分接入`：后端需避免 terminal task 重复 cancel 报错 |
+| 暂存/排队 | 运行中把下一条加入队列，可引导/调整顺序/删除 | 已有队列项、引导、上移、下移、删除 | queuedPrompts callbacks | `部分接入`：交互已存在，视觉还需更像 haha-cc 的轻量 pending bar |
+| 引导按钮 | 把暂存内容注入当前会话上下文 | 已有 `onGuideQueuedPrompt` | 依赖现有队列实现 | `部分接入`：需要后端明确“引导注入”事件，避免只是本地队列状态 |
+| 发送按钮 | 不可发送时 disabled，运行中 stop | 已接入 | submit/stop | `已接入` |
+| 项目目录 chip | 显示当前 repo/目录/分支 | 目前显示目录与上下文 | workspace root/context | `部分接入`：分支、工作树、dirty 状态还没统一展示 |
+
+## 4. 主聊天信息流
+
+| haha-cc 信息节点 | haha-cc 行为 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
+| --- | --- | --- | --- | --- |
+| 用户消息 | 右侧简洁气泡，可复制/引用/分支 | 用户消息已渲染 | messages.role=user | `部分接入`：消息操作栏未做 |
+| 助手正文 | 普通文本/Markdown，插在工具调用之间 | 助手正文已渲染 | messages.role=assistant | `部分接入`：后端目前常把最终总结集中到一个消息，缺真正分段 delta |
+| 模型思考 | thinking 块，随流式更新 | 有 thinking/progress 入口 | metadata/status 推断 | `后端待补`：缺真实 token 级 thinking delta |
+| 过程说明 | 短句插在工具/命令前后 | `assistant_progress` 已预留和渲染 | 依赖 metadata.kind | `后端待补`：后端需要输出阶段性自然语言，不要只输出工具日志 |
+| 工具调用行 | 单行可折叠，显示工具名、目标、状态 | runtime/tool 行已低卡片化 | runtime items/toolCalls | `部分接入`：工具名解释和摘要还不够精确 |
+| 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy | runtime output/tool result | `部分接入`：缺 parentToolUseId，无法稳定组成树 |
+| 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做 | activity worklog | `部分接入`：read/list/git/search 已尽量压缩，重要工具仍需更自然地穿插 |
+| 权限请求 | 内嵌审批卡，带 diff/命令预览 | 权限卡已接入批准/拒绝 | approvals/permission_request | `部分接入`：标题还需业务化，例如“写入 game.py”而不是 `apply_patch` |
+| 文件改动卡 | 当前轮改动 summary、查看 diff、撤销 | patch card + diff preview 已接入 | patches/changedFiles | `部分接入`：当前没有 turn 级撤销，diff 文件匹配仍需加强 |
+| 任务摘要 | 完成后显示总结，不在刚开始出现 | 已隐藏运行初期 task summary | activeTask | `部分接入`：结束时机和内容质量依赖后端 |
+| 上下文压缩 | “上下文已自动压缩”分割节点 | 有 `compact_summary` 渲染入口 | 暂缺事件 | `后端待补` |
+| Goal/Memory 事件 | 轻量系统节点 | 有前端类型和占位渲染 | 暂缺事件 | `后端待补` |
+| API retry | 重试提示 | 有前端类型和占位渲染 | 暂缺事件 | `后端待补` |
+| 错误节点 | 失败工具/请求明显但不巨大 | 已有错误态 | failed trace/runtime/message | `部分接入`：需要统一错误摘要和展开详情 |
+| 置底按钮 | 用户离开底部时显示向下按钮 | clean session 已有置底按钮 | 前端滚动状态 | `部分接入`：和 composer/右侧分隔布局还需联动打磨 |
+| 自动滚动 | 流式时跟随底部，用户滚动时暂停 | 有基本实现 | 前端状态 | `部分接入`：没有 haha-cc 的虚拟列表和滚动快照 |
+
+## 5. 消息操作栏
+
+| haha-cc 按钮 | haha-cc 行为 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
+| --- | --- | --- | --- | --- |
+| 复制 | 复制消息/工具输出 | runtime 输出有复制，消息正文未统一 | Clipboard | `前端待补` |
+| 引用 | 把该消息作为后续输入引用 | 队列引导已有，但消息引用未做 | 需要 transcript id | `后端待补 + 前端待补` |
+| 删除/撤回 | 删除本地消息或撤销当前轮 | 未完整接入 | 需要 session transcript mutation | `后端待补` |
+| 更多 `...` | 展开更多操作 | 未统一 | 需要动作定义 | `前端待补` |
+| 从这里分支 | 基于某条消息创建分支会话 | 未接入 clean 流 | 需要 branchSession/transcript id | `后端待补 + 前端待补` |
+| 撤销本轮改动 | 当前轮 change card 撤销 | 未接入 | 需要后端 revert turn | `后端待补` |
+
+## 6. 工具/命令/审批渲染
+
+| haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
+| --- | --- | --- | --- | --- |
+| 工具折叠按钮 | 行首 chevron 展开输入/输出 | 已接入 | runtime expanded state | `已接入` |
+| 工具状态 badge | running/completed/failed/skipped | 已接入 | item.status | `部分接入`：状态文案需统一成更少、更稳的集合 |
+| 工具目标摘要 | `read_file path`、`run_command cmd` | 已清洗部分 read/list/git/search JSON | runtime input/output | `部分接入`：需要后端提供结构化 summary，前端少猜 JSON |
+| 复制输出 | 复制工具输出 | 已接入 | Clipboard | `已接入` |
+| 刷新命令 | 查看最新命令输出 | 已接入 command refresh | command job id | `已接入` |
+| 停止命令 | 停止运行中的命令 | 已接入 | command job id | `部分接入`：后端 terminal state 需要阻止 cancelled -> cancelled |
+| 审批批准 | approve | 已接入 | approvals API | `已接入` |
+| 审批拒绝 | reject | 已接入 | approvals API | `已接入` |
+| 永久批准/规则 | haha-cc 有 always/规则类操作 | 未接入 | 需要 permission rule 后端 | `后端待补` |
+| 审批 diff 预览 | write/edit/apply_patch 展示 diff | 有 patch diff preview | patches | `部分接入`：permission request 内 diff 还未完全内嵌 |
+| Computer Use 权限 | 专用弹窗，选择 app/权限项 | 仅类型占位 | 无后端事件 | `后端待补` |
+| AskUserQuestion | 工具向用户提问，有选项/输入 | 仅类型占位 | 无后端事件 | `后端待补` |
+
+## 7. 文件改动与 diff
+
+| haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
+| --- | --- | --- | --- | --- |
+| 当前轮改动卡 | 显示文件数、增删、每文件行 | 已有 patch card | patches/changedFiles | `部分接入`：标题和文件匹配已修一轮，仍需更多 patch 格式兼容 |
+| 查看文件差异 | 点按钮打开 diff | 有“查看文件差异”按钮和 preview | loadPatch | `部分接入`：右侧 diff/源文件联动还不够像 haha-cc |
+| 文件行点击 | 点击文件打开右侧预览 | 已接入 openFile | FileWorkspacePanel | `部分接入` |
+| diff 语法色 | 增删颜色、hunk header、行号 | 已有基本 diff preview | patch text | `部分接入`：还不是真正完整 diff viewer |
+| 撤销本轮 | change card 上撤销 | 未接入 | 需要 revert API | `后端待补` |
+| 审核/提交入口 | 在当前改动上进入审查 | 旧 app 有审查相关，clean 未完整统一 | existing review route | `前端待补` |
+
+## 8. 代码阅览与文件区
+
+| haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
+| --- | --- | --- | --- | --- |
+| 文件树 | 搜索、目录折叠、打开文件 | 复用 `FileWorkspacePanel` 并加 clean CSS | workspace file APIs | `部分接入`：样式接近，交互和图标还需精简 |
+| 分隔条 | 拖拽左右宽度 | clean session 有 paneWidth 分隔 | 前端状态 | `已接入` |
+| 代码阅览 | 行号、语法高亮、横向滚动 | 当前主要是纯文本/有限样式 | file content | `前端待补`：需要引入轻量高亮或复用编辑器能力 |
+| Markdown 阅览 | md 渲染预览/源码切换 | 未完整接入右侧文件区 | file content | `前端待补` |
+| 文件搜索框 | 筛选文件 | 复用旧 file panel | workspace files | `已接入` |
+| 更多菜单 | 复制路径、自动换行、在编辑器打开 | 旧 panel 部分有，clean 样式覆盖 | existing actions | `部分接入`：菜单项和按钮位置需统一 |
+| 在编辑器打开 | 打开外部编辑器 | 旧 panel 部分能力 | shell open API | `部分接入` |
+
+## 9. Markdown/正文渲染
+
+| haha-cc 能力 | haha-cc 行为 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
+| --- | --- | --- | --- | --- |
+| 标题 | `#` 变标题，不显示原始 `##` | `CleanMarkdown` 已处理标题 | assistant content | `已接入` |
+| 列表 | 有序/无序列表缩进自然 | 已处理基础列表 | assistant content | `部分接入`：嵌套列表仍简单 |
+| inline code | 背景 chip | 已接入 | assistant content | `已接入` |
+| fenced code | 代码块、语言、复制、高亮 | 有代码块和简单高亮 | assistant content | `部分接入`：复制按钮、完整语法高亮待补 |
+| Mermaid | 图表渲染 | 未接入 | assistant content | `前端待补` |
+| 图片内联 | 用户/助手图片画廊 | 附件有基础列表 | attachments/content refs | `后端待补 + 前端待补` |
+
+## 10. 设置 / MCP / Skills
+
+| haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
+| --- | --- | --- | --- | --- |
+| 设置总页 | 模型、权限、通知、外观、适配器 | 设置页已保留 | existing settings | `部分接入`：视觉仍旧，需要拆成简洁分组列表 |
+| 模型供应商 | 添加/编辑 provider、模型 | 旧设置能力保留 | settings store/API | `部分接入` |
+| 权限设置 | 默认权限模式、危险模式确认 | composer 有当前权限，设置页保留 | settings store | `部分接入` |
+| MCP 管理 | MCP 服务器列表、启停、配置 | 入口已加回，旧页面复用 | existing MCP APIs | `部分接入`：需 clean 化列表和详情页 |
+| Skills 管理 | skills 列表、启用/禁用、详情 | 入口已加回，旧页面复用 | existing skills APIs | `部分接入`：需 clean 化 |
+| 外观设置 | 主题/密度 | 旧设置保留 | settings | `部分接入` |
+
+## 11. 后端事件/协议差异
+
+| haha-cc ServerMessage | 用途 | 我们当前来源 | 状态 |
+| --- | --- | --- | --- |
+| `connected` | websocket/session ready | app connection state | `部分接入` |
+| `content_start` | 开始 text/tool_use，并给 id | messages/runtime 推断 | `后端待补` |
+| `content_delta` | token/工具输入流式增量 | 缺真实 delta | `后端待补` |
+| `tool_use_complete` | 工具输入完整、parentToolUseId | toolCalls/runtime | `部分接入`，缺 parent |
+| `tool_result` | 工具结果 | runtime output/tool result | `部分接入` |
+| `permission_request` | 审批请求 | approvals | `已接入` |
+| `computer_use_permission_request` | computer use 授权 | 无 | `后端待补` |
+| `message_complete` | 本轮消息结束 | task/session status 推断 | `后端待补` |
+| `thinking` | 思考内容 | status/thinking metadata 推断 | `后端待补` |
+| `status` | 当前运行状态 | traces/activeTask | `部分接入` |
+| `api_retry` | API 重试提示 | 无 | `后端待补` |
+| `error` | 错误 | failed runtime/message | `部分接入` |
+| `system_notification` | 系统通知 | traces/system | `部分接入` |
+| `task_update` | 子任务/团队任务状态 | activeTask/backgroundJobs | `部分接入` |
+| `session_title_updated` | 自动标题 | session title | `部分接入` |
+
+## 12. 当前优先整改顺序
+
+1. `后端事件流`：让 assistant 正文/thinking/tool/status 按时间进入 transcript，而不是最后汇成一大段。
+2. `工具摘要`：后端给 read/list/git/search/run/write/apply_patch 的结构化 summary、target、parentToolUseId。
+3. `Composer`：固定会话页宽度与右侧分隔区关系，补 `@文件`、slash 面板、上下文详情、权限危险确认。
+4. `消息操作栏`：复制、引用、更多、分支、撤销当前轮。
+5. `Diff/File Viewer`：完整 diff viewer、右侧代码高亮、Markdown 预览。
+6. `Settings/MCP/Skills`：保留能力但重做成 haha-cc 式低卡片列表。
+
+## 13. 当前结论
+
+这次 clean 前端已经把主聊天、composer、文件区、权限、diff、worklog 和设置入口接回来了，但它还不是完整 haha-cc parity。最大差异不是单个样式按钮，而是后端 transcript 粒度：haha-cc 的前端依赖 `content_delta/tool_use_complete/tool_result/thinking/task_update` 这些细粒度事件，所以能自然呈现“思考 -> 工具 -> 解释 -> 再工具 -> 最终结论”。我们当前还有不少内容是从最终 messages、runtime 和 task 状态反推，因此会出现用户指出的“工具堆在一起、解释滞后、总结出现时机不对”的问题。

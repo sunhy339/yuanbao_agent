@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { ComposerDock, type ComposerRuntimeChildTask } from "../../workbench/ComposerDock";
+import type { ComposerRuntimeChildTask } from "../../workbench/ComposerDock";
+import { HahaComposer } from "../../haha/HahaComposer";
 import { DesktopTitlebar } from "../../workbench/DesktopTitlebar";
 import { GlobalSidebar } from "../../workbench/GlobalSidebar";
 import { WorkspaceFrame } from "../../workbench/WorkspaceFrame";
@@ -121,8 +122,14 @@ export function AppShellV2({
   loading,
   children,
 }: AppShellV2Props) {
-  const activeSystemTab = activeTabId.startsWith("system:") ? activeTabId.slice("system:".length) : "session";
-  const activeTabKind = activeTabId.startsWith("session:") ? "session" : activeSystemTab;
+  const activeTab = tabs.find((tab) => tab.id === activeTabId);
+  const activeTabKind =
+    activeTab?.kind ??
+    (activeTabId.startsWith("session:")
+      ? "session"
+      : activeTabId.startsWith("system:")
+        ? activeTabId.slice("system:".length)
+        : "session");
   const activeTaskSessions = sessions.filter((session) => session.status === "active").length;
   const showApprovalPill = Boolean(approvalLabel && !/^0\s*个?审批/.test(approvalLabel));
 
@@ -158,7 +165,6 @@ export function AppShellV2({
             <div className="yb-topbar-actions">
               <Button variant="ghost" size="sm" aria-label="打开 MCP 中心" onClick={() => onOpenSystemTab("mcp")}>MCP</Button>
               <Button variant="ghost" size="sm" aria-label="打开智能体技能" onClick={() => onOpenSystemTab("skills")}>技能</Button>
-              <Button variant="ghost" size="sm" aria-label="打开外观" onClick={() => onOpenSystemTab("appearance")}>外观</Button>
               <Button variant="ghost" size="sm" aria-label="打开设置" onClick={() => onOpenSystemTab("settings")}>设置</Button>
             </div>
           </header>
@@ -177,7 +183,7 @@ export function AppShellV2({
             </WorkspaceFrame>
           </div>
 
-          <ComposerDock
+          <HahaComposer
             promptValue={promptValue}
             onPromptChange={onPromptChange}
             onSubmitPrompt={onSubmitPrompt}
@@ -200,6 +206,8 @@ export function AppShellV2({
             runtimeChildTasks={runtimeChildTasks}
             providerLabel={providerLabel}
             cwdLabel={cwdLabel}
+            contextLabel={contextLabel}
+            contextPreview={contextPreview}
             permissionLabel={permissionLabel}
             permissionMode={permissionMode}
             onPermissionModeChange={onPermissionModeChange}

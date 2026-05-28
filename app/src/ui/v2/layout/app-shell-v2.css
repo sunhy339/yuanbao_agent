@@ -197,7 +197,6 @@
 }
 
 .yb-app-shell .sidebar-primary button,
-.yb-app-shell .sidebar-footer button,
 .yb-app-shell .sidebar-session-section,
 .yb-app-shell .sidebar-search input,
 .yb-app-shell .session-rail-item[data-active="true"],
@@ -208,21 +207,18 @@
   box-shadow: none;
 }
 
-.yb-app-shell .sidebar-primary button,
-.yb-app-shell .sidebar-footer button {
+.yb-app-shell .sidebar-primary button {
   min-height: 42px;
   border-radius: 8px;
   padding-block: 7px;
 }
 
-.yb-app-shell .sidebar-primary button:hover,
-.yb-app-shell .sidebar-footer button:hover {
+.yb-app-shell .sidebar-primary button:hover {
   border-color: rgba(196, 122, 74, 0.5);
   background: linear-gradient(90deg, rgba(168, 100, 56, 0.28), rgba(26, 22, 22, 0.62));
 }
 
 .yb-app-shell .sidebar-primary button small,
-.yb-app-shell .sidebar-footer button small,
 .yb-app-shell .sidebar-search input::placeholder {
   color: var(--yb-muted);
 }
@@ -283,8 +279,9 @@
   right: 10px;
   bottom: 10px;
   left: 10px;
+  padding: 10px 14px 10px;
   border-color: rgba(196, 122, 74, 0.22);
-  border-radius: 22px;
+  border-radius: 18px;
   background: rgba(255, 255, 255, 0.97);
   color: #1f1d1a;
   box-shadow: 0 10px 30px rgba(60, 40, 30, 0.12), var(--wb-border-inset);
@@ -292,8 +289,14 @@
 }
 
 .yb-app-shell .composer-dock[data-layout="session"] {
-  right: calc(var(--session-composer-side-reserve, clamp(620px, 42vw, 1040px)) + var(--composer-session-gutter, 48px));
-  left: var(--composer-session-gutter, 48px);
+  position: fixed;
+  --composer-session-gutter: clamp(16px, 2vw, 30px);
+  --composer-session-side-gap: clamp(12px, 1.4vw, 22px);
+  right: calc(var(--session-composer-side-reserve, clamp(620px, 42vw, 1040px)) + var(--composer-session-side-gap));
+  left: var(--composer-session-gutter);
+  bottom: 14px;
+  z-index: 220;
+  width: auto;
   max-width: none;
 }
 
@@ -310,6 +313,35 @@
   border-color: transparent;
   background: transparent;
   color: #1f1d1a;
+}
+
+.yb-app-shell .composer-runtime-child-tasks {
+  max-height: 116px;
+}
+
+.yb-app-shell .composer-runtime-child-tasks summary {
+  min-height: 30px;
+  padding-block: 4px;
+}
+
+.yb-app-shell .composer-queued-prompts {
+  max-height: 68px;
+}
+
+.yb-app-shell .composer-input textarea {
+  min-height: 72px;
+  max-height: 168px;
+  padding: 4px 0 6px;
+}
+
+.yb-app-shell .composer-toolbar {
+  min-height: 26px;
+}
+
+.yb-app-shell .composer-tool-button,
+.yb-app-shell .composer-permission-button,
+.yb-app-shell .composer-model-trigger {
+  min-height: 26px;
 }
 
 .yb-app-shell .composer-model-menu {
@@ -425,7 +457,6 @@
 }
 
 .yb-v2[data-theme="light"] .yb-app-shell .sidebar-primary button,
-.yb-v2[data-theme="light"] .yb-app-shell .sidebar-footer button,
 .yb-v2[data-theme="light"] .yb-app-shell .sidebar-session-section,
 .yb-v2[data-theme="light"] .yb-app-shell .sidebar-search input,
 .yb-v2[data-theme="light"] .yb-app-shell .session-rail-item[data-active="true"],
@@ -434,8 +465,7 @@
   background: rgba(255, 255, 255, 0.72);
 }
 
-.yb-v2[data-theme="light"] .yb-app-shell .sidebar-primary button:hover,
-.yb-v2[data-theme="light"] .yb-app-shell .sidebar-footer button:hover {
+.yb-v2[data-theme="light"] .yb-app-shell .sidebar-primary button:hover {
   background: linear-gradient(90deg, rgba(196, 122, 74, 0.14), rgba(255, 255, 255, 0.78));
 }
 
@@ -481,8 +511,7 @@
   font-size: 13px;
 }
 
-.yb-v2[data-density="compact"] .yb-app-shell .sidebar-primary button,
-.yb-v2[data-density="compact"] .yb-app-shell .sidebar-footer button {
+.yb-v2[data-density="compact"] .yb-app-shell .sidebar-primary button {
   min-height: 36px;
   padding-block: 5px;
 }

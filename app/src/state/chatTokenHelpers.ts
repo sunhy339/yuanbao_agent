@@ -6,6 +6,7 @@ import type { ChatMessageView } from "./chatMessages";
 import { getPayloadValue, summarizeValue } from "./traceReaders";
 import {
   appendAssistantContentDelta,
+  appendOrUpdateAssistantThinkingMessage,
   failAssistantMessage,
   formatAssistantFailureContent,
   isOperationalAssistantDelta,
@@ -16,7 +17,21 @@ import {
 export function appendAssistantToken(current: ChatMessageView[], event: AgentEventEnvelope): ChatMessageView[] {
   const payload = event.payload as AssistantTokenPayload;
   const delta = payload.delta ?? "";
-  const displayDelta = isOperationalAssistantDelta(delta) ? summarizeOperationalAssistantDelta(delta) : delta;
+  if (isOperationalAssistantDelta(delta)) {
+    const progressText = summarizeOperationalAssistantDelta(delta)?.trim();
+    if (!progressText) {
+      return current;
+    }
+    return appendOrUpdateAssistantThinkingMessage(current, {
+      sessionId: event.sessionId,
+      taskId: event.taskId,
+      state: "thinking",
+      text: progressText,
+      now: event.ts,
+    });
+  }
+
+  const displayDelta = delta;
   if (!displayDelta) {
     return current;
   }
@@ -25,9 +40,11 @@ export function appendAssistantToken(current: ChatMessageView[], event: AgentEve
   const lastAssistantIndex = (() => {
     for (let index = next.length - 1; index >= 0; index -= 1) {
       const item = next[index];
+      const metadataKind = typeof item.metadata?.kind === "string" ? item.metadata.kind : "";
       if (
         item.role === "assistant" &&
         item.streaming &&
+        !metadataKind &&
         (item.taskId === event.taskId || (item.taskId === "pending" && item.sessionId === event.sessionId))
       ) {
         return index;
@@ -91,8 +108,10 @@ export function completeAssistantMessage(current: ChatMessageView[], event: Agen
   const lastAssistantIndex = (() => {
     for (let index = next.length - 1; index >= 0; index -= 1) {
       const item = next[index];
+      const metadataKind = typeof item.metadata?.kind === "string" ? item.metadata.kind : "";
       if (
         item.role === "assistant" &&
+        !metadataKind &&
         (item.taskId === event.taskId || (item.streaming && item.taskId === "pending" && item.sessionId === event.sessionId))
       ) {
         return index;

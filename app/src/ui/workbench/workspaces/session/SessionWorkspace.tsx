@@ -4,9 +4,10 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
-import { Files, GripVertical, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { ArrowDown, Files, GripVertical, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { Button, StatusBadge } from "../../../v2/components/ui";
 import { formatStatusLabel } from "../../../copy";
 import type { SessionWorkspaceProps, RuntimeTimelineItem } from "./types";
@@ -89,6 +90,45 @@ function readObject(value: unknown): Record<string, unknown> | null {
 function readText(record: Record<string, unknown> | null, key: string): string {
   const value = record?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function getMessageMetadataKind(message: { metadata?: Record<string, unknown> }) {
+  const kind = message.metadata?.kind;
+  return typeof kind === "string" ? kind : "";
+}
+
+const LOW_VALUE_TOOL_ACTIVITY_NAMES = new Set([
+  "read_file",
+  "list_dir",
+  "list_directory",
+  "git_status",
+  "git_diff",
+  "search_files",
+  "code_search",
+]);
+
+function isFinishedLowValueToolActivity(message: SessionWorkspaceProps["messages"][number]) {
+  if (getMessageMetadataKind(message) !== "tool_activity") {
+    return false;
+  }
+  // Keep chat-compatible process blocks visible; users need to see the model's
+  // cadence of thinking/tool usage in the main transcript.
+  return false;
+}
+
+function isFinishedQuietProbeMessage(message: SessionWorkspaceProps["messages"][number]) {
+  if (getMessageMetadataKind(message) !== "tool_activity") {
+    return false;
+  }
+  const toolName = message.toolName?.toLowerCase() ?? "";
+  if (!LOW_VALUE_TOOL_ACTIVITY_NAMES.has(toolName)) {
+    return false;
+  }
+  if (message.metadata?.isError === true) {
+    return false;
+  }
+  const status = message.status?.toLowerCase() ?? "";
+  return !["running", "started", "pending", "queued", "waiting_approval"].includes(status);
 }
 
 function isImportantTraceForChat(item: RuntimeTimelineItem) {
@@ -334,6 +374,10 @@ export function SessionWorkspace({
     ...(worktreeStatus?.files ?? []),
   ]).map(normalizeWorkspaceRelativePath);
   const normalizedRelatedFiles = uniqueNonEmptyStrings(relatedFiles);
+  const conversationMessages = useMemo(
+    () => messages.filter((message) => !isFinishedLowValueToolActivity(message)),
+    [messages],
+  );
   const runtimeItems = useMemo(
     () =>
       buildRuntimeItems({
@@ -350,9 +394,7 @@ export function SessionWorkspace({
   );
   const activityItems = useMemo(() => {
     const chatVisibleItems = runtimeItems.filter(isRuntimeItemVisibleInChat);
-    const visibleChatItems = chatVisibleItems.filter(
-      (item) => !(isSuccessfulRuntimeStatus(item.status) && isBackgroundProbeCommand(item.title)),
-    );
+    const visibleChatItems = chatVisibleItems;
     const promotedVerificationByGroup = new Map<string, RuntimeTimelineItem>();
     runtimeItems.forEach((item) => {
       if (item.kind !== "command" || !item.groupKey || item.superseded) {
@@ -484,14 +526,36 @@ export function SessionWorkspace({
     );
 
     return buildConversationActivity(
-      messages,
+      conversationMessages,
       collapsedChatItems.filter((item) => !(item.kind === "tool" && item.groupKey && hiddenCommandGroups.has(item.groupKey))),
     );
-  }, [messages, runtimeItems]);
+  }, [conversationMessages, runtimeItems]);
   const [workspacePaneCollapsed, setWorkspacePaneCollapsed] = useState(false);
   const [workspacePaneWidthPx, setWorkspacePaneWidthPx] = useState<number | null>(null);
   const [workspacePaneResizing, setWorkspacePaneResizing] = useState(false);
+  const workspaceRootRef = useRef<HTMLElement | null>(null);
+  const conversationColumnRef = useRef<HTMLElement | null>(null);
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   const isWorkspacePaneVisible = !workspacePaneCollapsed;
+  const updateJumpToBottomState = useCallback(() => {
+    const column = conversationColumnRef.current;
+    if (!column) {
+      setShowJumpToBottom(false);
+      return;
+    }
+    const rect = column.getBoundingClientRect();
+    document.documentElement.style.setProperty("--session-scroll-bottom-left", `${Math.round(rect.left + rect.width / 2)}px`);
+    const distanceToBottom = column.scrollHeight - column.scrollTop - column.clientHeight;
+    setShowJumpToBottom(distanceToBottom > 220);
+  }, []);
+  const scrollConversationToBottom = useCallback(() => {
+    const column = conversationColumnRef.current;
+    if (!column) {
+      return;
+    }
+    column.scrollTo({ top: column.scrollHeight, behavior: "smooth" });
+    setShowJumpToBottom(false);
+  }, []);
   const startWorkspacePaneResize = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
       if (workspacePaneCollapsed) {
@@ -525,13 +589,43 @@ export function SessionWorkspace({
       : undefined;
 
   useEffect(() => {
-    const reserve = workspacePaneCollapsed
-      ? "0px"
-      : workspacePaneWidthPx
-        ? `${workspacePaneWidthPx}px`
-        : "clamp(620px, 42vw, 1040px)";
-    document.documentElement.style.setProperty("--session-composer-side-reserve", reserve);
+    const updateComposerReserve = () => {
+      if (workspacePaneCollapsed) {
+        document.documentElement.style.setProperty("--session-composer-side-reserve", "0px");
+        return;
+      }
+
+      const root = workspaceRootRef.current;
+      const pane = root?.querySelector<HTMLElement>(".session-workspace-pane");
+      const grid = root?.querySelector<HTMLElement>(".session-workbench-grid");
+      const appMain = root?.closest<HTMLElement>(".yb-app-main, .workbench-main");
+      const resizer = root?.querySelector<HTMLElement>(".session-sidebar-resizer");
+      const appMainRect = appMain?.getBoundingClientRect();
+      const gridRect = grid?.getBoundingClientRect();
+      const paneRect = pane?.getBoundingClientRect();
+      const resizerRect = resizer?.getBoundingClientRect();
+
+      if (gridRect && paneRect) {
+        const rightEdge = appMainRect?.right ?? gridRect.right;
+        const splitLeft = resizerRect?.left ?? paneRect.left;
+        const reserve = Math.max(0, rightEdge - splitLeft);
+        document.documentElement.style.setProperty("--session-composer-side-reserve", `${Math.ceil(reserve)}px`);
+        return;
+      }
+
+      const fallback = workspacePaneWidthPx ? `${workspacePaneWidthPx}px` : "clamp(620px, 42vw, 1040px)";
+      document.documentElement.style.setProperty("--session-composer-side-reserve", fallback);
+    };
+
+    updateComposerReserve();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateComposerReserve) : null;
+    if (workspaceRootRef.current) {
+      observer?.observe(workspaceRootRef.current);
+    }
+    window.addEventListener("resize", updateComposerReserve);
     return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateComposerReserve);
       document.documentElement.style.removeProperty("--session-composer-side-reserve");
     };
   }, [workspacePaneCollapsed, workspacePaneWidthPx]);
@@ -544,11 +638,87 @@ export function SessionWorkspace({
   ]
     .filter(Boolean)
     .join(" ");
+  const taskStatus = visibleActiveTask?.status?.toLowerCase();
+  const hasSettledPatchOrReview = Boolean(
+    (patches ?? []).some((patch) => !isTaskControllable(patch.status)) ||
+      visibleActiveTask?.activeWorktree?.lastStatus?.review ||
+      visibleActiveTask?.activeWorktree?.lastStatus?.mergeApproval ||
+      worktreeDiff?.diffStat ||
+      worktreeDiff?.diff ||
+      worktreeDiff?.preview,
+  );
+  const taskHasDigestEvidence = Boolean(
+    (visibleActiveTask?.changedFiles?.length ?? 0) > 0 ||
+      (visibleActiveTask?.commands?.length ?? 0) > 0 ||
+      (visibleActiveTask?.verification?.length ?? 0) > 0,
+  );
+  const isTerminalTaskStatus = ["completed", "succeeded", "failed", "error", "cancelled", "rejected"].includes(taskStatus ?? "");
+  const isPausedWithHandoff = Boolean(
+    taskStatus === "paused" &&
+      visibleActiveTask?.mainWorkflow &&
+      ("automation" in visibleActiveTask.mainWorkflow ||
+        "convergence" in visibleActiveTask.mainWorkflow ||
+        "userTakeover" in visibleActiveTask.mainWorkflow),
+  );
+  const hasStandaloneDigestEvidence = Boolean(!visibleActiveTask && ((patches?.length ?? 0) > 0 || worktreeDiff?.diffStat || worktreeDiff?.diff || worktreeDiff?.preview));
+  const hasReviewOrDiffEvidence = Boolean(
+    visibleActiveTask?.activeWorktree?.lastStatus?.review ||
+      visibleActiveTask?.activeWorktree?.lastStatus?.mergeApproval ||
+      worktreeDiff?.diffStat ||
+      worktreeDiff?.diff ||
+      worktreeDiff?.preview,
+  );
+  const taskCanShowDigest = Boolean(
+    visibleActiveTask &&
+      (isTerminalTaskStatus ||
+        isPausedWithHandoff ||
+        (!isTaskControllable(visibleActiveTask.status) && (taskHasDigestEvidence || hasSettledPatchOrReview))),
+  );
+  const taskDigestReady = Boolean(
+    hasStandaloneDigestEvidence ||
+      isPausedWithHandoff ||
+      (taskCanShowDigest && hasReviewOrDiffEvidence) ||
+      (taskCanShowDigest && (taskHasDigestEvidence || hasSettledPatchOrReview)),
+  );
+  const taskDigest = (
+    <ConversationTaskDigest
+      activeTask={visibleActiveTask}
+      patches={patches}
+      backgroundJobs={backgroundJobs}
+      composerContext={composerContext}
+      worktreeDiff={worktreeDiff}
+      onLoadPatch={onLoadPatch}
+    />
+  );
+  const visibleTaskDigest = taskDigestReady ? taskDigest : null;
+
+  useEffect(() => {
+    const column = conversationColumnRef.current;
+    if (!column) {
+      return;
+    }
+    updateJumpToBottomState();
+    column.addEventListener("scroll", updateJumpToBottomState, { passive: true });
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updateJumpToBottomState) : null;
+    observer?.observe(column);
+    window.addEventListener("resize", updateJumpToBottomState);
+    return () => {
+      column.removeEventListener("scroll", updateJumpToBottomState);
+      observer?.disconnect();
+      window.removeEventListener("resize", updateJumpToBottomState);
+      document.documentElement.style.removeProperty("--session-scroll-bottom-left");
+    };
+  }, [updateJumpToBottomState]);
+
+  useEffect(() => {
+    const frameId = window.requestAnimationFrame(updateJumpToBottomState);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [activityItems.length, messagesLoading, taskDigestReady, updateJumpToBottomState]);
 
   return (
-    <main className={workspaceClassName} aria-label="Session">
+    <main className={workspaceClassName} aria-label="Session" ref={workspaceRootRef}>
       <section className="session-workbench-grid" style={workspaceGridStyle}>
-        <section className="session-conversation-column">
+        <section className="session-conversation-column" ref={conversationColumnRef}>
           <header className="session-chat-header">
             <div className="session-chat-title-block">
               <p className="session-kicker">会话</p>
@@ -598,41 +768,54 @@ export function SessionWorkspace({
               <span>{activityItems.length} 个事件</span>
             </header>
             <div className="message-stream message-stream-chat-only" aria-label="会话消息">
-              <ConversationTaskDigest
-                activeTask={visibleActiveTask}
-                patches={patches}
-                backgroundJobs={backgroundJobs}
-                composerContext={composerContext}
-                worktreeDiff={worktreeDiff}
-              />
               {messagesLoading && activityItems.length === 0 ? (
-                <div className="message-stream-loading" aria-label="加载消息">
-                  <div className="message-stream-loading-bar" />
-                </div>
+                <>
+                  <div className="message-stream-loading" aria-label="加载消息">
+                    <div className="message-stream-loading-bar" />
+                  </div>
+                  {visibleTaskDigest}
+                </>
               ) : activityItems.length === 0 ? (
-                <div className="message-stream-empty">
-                  <p className="session-kicker">空白会话</p>
-                  <h2>还没有消息</h2>
-                  <p>从下方输入区发送第一条消息。</p>
-                </div>
+                <>
+                  <div className="message-stream-empty">
+                    <p className="session-kicker">空白会话</p>
+                    <h2>还没有消息</h2>
+                    <p>从下方输入区发送第一条消息。</p>
+                  </div>
+                  {visibleTaskDigest}
+                </>
               ) : (
-                <ConversationActivity
-                  items={activityItems}
-                  messages={messages}
-                  activeTask={visibleActiveTask}
-                  messagesLoading={messagesLoading}
-                  onApprove={onApprove}
-                  onReject={onReject}
-                  onLoadPatch={onLoadPatch}
-                  onCopyPatchPath={onCopyPatchPath}
-                  onCopyRuntimeText={onCopyRuntimeText}
-                  onRefreshCommandJob={onRefreshCommandJob}
-                  onStopCommandJob={onStopCommandJob}
-                  busyId={busyId}
-                />
+                <>
+                  <ConversationActivity
+                    items={activityItems}
+                    messages={conversationMessages}
+                    activeTask={visibleActiveTask}
+                    messagesLoading={messagesLoading}
+                    onApprove={onApprove}
+                    onReject={onReject}
+                    onLoadPatch={onLoadPatch}
+                    onCopyPatchPath={onCopyPatchPath}
+                    onCopyRuntimeText={onCopyRuntimeText}
+                    onRefreshCommandJob={onRefreshCommandJob}
+                    onStopCommandJob={onStopCommandJob}
+                    busyId={busyId}
+                  />
+                  {visibleTaskDigest}
+                </>
               )}
             </div>
           </section>
+          {showJumpToBottom ? (
+            <button
+              aria-label="回到底部"
+              className="session-scroll-bottom-button"
+              onClick={scrollConversationToBottom}
+              type="button"
+            >
+              <ArrowDown size={18} strokeWidth={2.1} aria-hidden="true" />
+              <span>置底</span>
+            </button>
+          ) : null}
         </section>
 
         {isWorkspacePaneVisible ? (

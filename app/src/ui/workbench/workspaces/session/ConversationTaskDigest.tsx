@@ -24,6 +24,7 @@ type DigestFileRow = {
   additions?: number;
   deletions?: number;
   reason?: string;
+  patchId?: string | null;
 };
 
 type DigestDiffEntry = {
@@ -71,6 +72,104 @@ function normalizeDigestPath(path: string) {
   return path.replace(/\\/g, "/").trim();
 }
 
+function isDiffMetadataPath(path?: string | null) {
+  if (!path) {
+    return true;
+  }
+  const normalized = normalizeDigestPath(path);
+  if (!normalized) {
+    return true;
+  }
+  return /^(?:---+|\+\+\+)\s+/.test(normalized) || /^diff --git\s+/.test(normalized) || /^@@\s/.test(normalized);
+}
+
+function cleanDiffPath(path: string) {
+  const normalized = normalizeDigestPath(path)
+    .replace(/^(?:---+|\+\+\+)\s+/, "")
+    .replace(/^[ab]\//, "")
+    .trim();
+  return normalized === "/dev/null" ? "" : normalized;
+}
+
+function isUsableDigestPath(path?: string | null) {
+  const cleaned = path ? cleanDiffPath(path) : "";
+  if (!cleaned || isDiffMetadataPath(path)) {
+    return false;
+  }
+  if (/^(?:workspace diff|\d+\s+files?\s+changed)/i.test(cleaned)) {
+    return false;
+  }
+  if (/^(?:update|updated|create|created|delete|deleted|modify|modified)\s+/i.test(cleaned)) {
+    return false;
+  }
+  return true;
+}
+
+function parseDiffEntriesFromText(idPrefix: string, diff: string, fallbackPath: string, totals?: ChangeTotals) {
+  const entries: DigestDiffEntry[] = [];
+  const lines = diff.replace(/\r\n/g, "\n").split("\n");
+  let current: { oldPath?: string; newPath?: string; startIndex: number } | null = null;
+
+  const flush = (endIndex: number) => {
+    if (!current) {
+      return;
+    }
+    const path = cleanDiffPath(current.newPath || current.oldPath || fallbackPath || "workspace diff");
+    if (path && path !== "/dev/null") {
+      entries.push({
+        id: `${idPrefix}:${entries.length}:${path}`,
+        path,
+        additions: entries.length === 0 ? totals?.additions : undefined,
+        deletions: entries.length === 0 ? totals?.deletions : undefined,
+        diff: lines.slice(current.startIndex, endIndex).join("\n"),
+      });
+    }
+    current = null;
+  };
+
+  lines.forEach((line, index) => {
+    const diffGitMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (diffGitMatch) {
+      flush(index);
+      current = { oldPath: diffGitMatch[1], newPath: diffGitMatch[2], startIndex: index };
+      return;
+    }
+    if (line.startsWith("--- ") && current) {
+      current.oldPath = line.slice(4).trim();
+      return;
+    }
+    if (line.startsWith("+++ ") && current) {
+      current.newPath = line.slice(4).trim();
+    }
+  });
+  flush(lines.length);
+
+  if (entries.length) {
+    return entries;
+  }
+
+  return [
+    {
+      id: idPrefix,
+      path: isUsableDigestPath(fallbackPath) ? cleanDiffPath(fallbackPath) : "workspace diff",
+      additions: totals?.additions,
+      deletions: totals?.deletions,
+      diff,
+    },
+  ];
+}
+
+function isDiffPreviewMetadataLine(line: string) {
+  return (
+    /^diff --git\s+/.test(line) ||
+    /^(?:---+|\+\+\+)\s+/.test(line) ||
+    /^index\s+/.test(line) ||
+    /^(?:new|deleted) file mode\s+/.test(line) ||
+    /^similarity index\s+/.test(line) ||
+    /^rename (?:from|to)\s+/.test(line)
+  );
+}
+
 function normalizeTaskStep(value?: string | null) {
   return compactText(value ?? "", 96).replace(/[。.!！…]+$/g, "").trim();
 }
@@ -88,12 +187,17 @@ function buildDigestFiles(activeTask?: SessionWorkspaceActiveTask | null, patche
   const files: DigestFileRow[] = [];
 
   const pushFile = (file: DigestFileRow) => {
-    const key = normalizeDigestPath(file.path).toLowerCase();
+    if (!isUsableDigestPath(file.path)) {
+      return false;
+    }
+    const normalizedPath = cleanDiffPath(file.path);
+    const key = normalizedPath.toLowerCase();
     if (!key || seen.has(key)) {
-      return;
+      return false;
     }
     seen.add(key);
-    files.push(file);
+    files.push({ ...file, path: normalizedPath });
+    return true;
   };
 
   for (const file of activeTask?.changedFiles ?? []) {
@@ -103,18 +207,32 @@ function buildDigestFiles(activeTask?: SessionWorkspaceActiveTask | null, patche
       additions: file.additions,
       deletions: file.deletions,
       reason: file.reason,
+      patchId: file.patchId,
     });
   }
 
   for (const patch of patches ?? []) {
+    let pushedPatchFile = false;
     for (const file of patch.files ?? []) {
-      pushFile({
+      pushedPatchFile = pushFile({
         path: file.path,
         status: file.status,
         additions: file.additions,
         deletions: file.deletions,
         reason: undefined,
-      });
+        patchId: patch.id,
+      }) || pushedPatchFile;
+    }
+    if (!pushedPatchFile && patch.diff?.trim()) {
+      for (const entry of parseDiffEntriesFromText(patch.id, patch.diff, patch.summary || "")) {
+        pushFile({
+          path: entry.path,
+          status: "modified",
+          additions: entry.additions,
+          deletions: entry.deletions,
+          patchId: patch.id,
+        });
+      }
     }
   }
 
@@ -128,40 +246,37 @@ function buildDigestDiffEntries(patches?: SessionWorkspacePatch[], worktreeDiff?
       if (!file.diff?.trim()) {
         continue;
       }
+      if (!isUsableDigestPath(file.path)) {
+        continue;
+      }
       entries.push({
         id: `${patch.id}:${file.path}`,
-        path: file.path,
+        path: cleanDiffPath(file.path),
         additions: file.additions,
         deletions: file.deletions,
         diff: file.diff,
       });
     }
     if (!patch.files?.some((file) => file.diff?.trim()) && patch.diff?.trim()) {
-      entries.push({
-        id: patch.id,
-        path: patch.summary || "workspace diff",
+      entries.push(...parseDiffEntriesFromText(patch.id, patch.diff, patch.summary || "workspace diff", {
         additions: patch.additions,
         deletions: patch.deletions,
-        diff: patch.diff,
-      });
+      }));
     }
   }
   const worktreeDiffText = readText(worktreeDiff?.diff) || readText(worktreeDiff?.preview);
   if (worktreeDiffText && !entries.some((entry) => entry.diff === worktreeDiffText)) {
-    entries.push({
-      id: "worktree-diff",
-      path: worktreeDiff?.diffStat || "workspace diff",
-      diff: worktreeDiffText,
-    });
+    entries.push(...parseDiffEntriesFromText("worktree-diff", worktreeDiffText, worktreeDiff?.diffStat || "workspace diff"));
   }
   return entries;
 }
 
 function previewDigestDiff(diff: string, maxLines = 80) {
-  const lines = diff.replace(/\r\n/g, "\n").split("\n");
+  const rawLines = diff.replace(/\r\n/g, "\n").split("\n");
+  const lines = rawLines.filter((line) => !isDiffPreviewMetadataLine(line));
   return {
     lines: lines.slice(0, maxLines),
-    truncated: lines.length > maxLines,
+    truncated: rawLines.length > maxLines || lines.length > maxLines,
   };
 }
 
@@ -382,23 +497,33 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
   backgroundJobs,
   composerContext,
   worktreeDiff,
+  onLoadPatch,
 }: {
   activeTask?: SessionWorkspaceActiveTask | null;
   patches?: SessionWorkspacePatch[];
   backgroundJobs?: SessionWorkspaceBackgroundJob[];
   composerContext?: SessionWorkspaceComposerContext;
   worktreeDiff?: SessionWorkspaceWorktreeDiff | null;
+  onLoadPatch?: (patchId: string) => void | Promise<void>;
 }) {
-  const files = buildDigestFiles(activeTask, patches);
-  const visibleFiles = files.slice(0, 4);
   const diffEntries = buildDigestDiffEntries(patches, worktreeDiff);
+  const files = buildDigestFiles(activeTask, patches);
+  const fileRows: DigestFileRow[] = files.length
+    ? files
+    : diffEntries.map((entry) => ({
+        path: entry.path,
+        status: "modified",
+        additions: entry.additions,
+        deletions: entry.deletions,
+      }));
+  const visibleFiles = fileRows.slice(0, 4);
   const visibleDiffEntries = diffEntries.slice(0, 2);
   const commands = buildDigestCommands(activeTask, backgroundJobs);
   const verifications = buildDigestVerificationRows(activeTask);
   const worktreeDiffStat = readText(worktreeDiff?.diffStat) || readText(activeTask?.activeWorktree?.lastStatus?.diffStat);
-  const changeTotals = buildChangeTotals(files, diffEntries, worktreeDiffStat);
+  const changeTotals = buildChangeTotals(fileRows, diffEntries, worktreeDiffStat);
   const worktreeReviewSummary = buildWorktreeReviewSummary(activeTask, worktreeDiffStat);
-  const hasConcreteWork = Boolean(files.length || commands.length || verifications.length || diffEntries.length || worktreeReviewSummary);
+  const hasConcreteWork = Boolean(fileRows.length || commands.length || verifications.length || diffEntries.length || worktreeReviewSummary);
   const hasMeaningfulActiveTask = Boolean(
     activeTask &&
       (hasConcreteWork ||
@@ -411,7 +536,7 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
   }
 
   const phase = getTaskPhase(activeTask);
-  const summary = buildDigestSummary(activeTask, files.length, commands.length, verifications.length);
+  const summary = buildDigestSummary(activeTask, fileRows.length, commands.length, verifications.length);
   const title = activeTask?.goal || "最近工作";
   const contextBits = compactMeta([
     composerContext?.cwd || activeTask?.activeWorktree?.worktreePath || null,
@@ -420,7 +545,7 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
     composerContext?.permissionMode ? `审批：${composerContext.permissionMode}` : null,
   ]);
   const activityBits = compactMeta([
-    files.length ? `${files.length} 个改动文件` : null,
+    fileRows.length ? `${fileRows.length} 个改动文件` : null,
     commands.length ? `${commands.length} 条最近命令` : null,
     verifications.length ? `${verifications.length} 项验证` : null,
     diffEntries.length ? `${diffEntries.length} 个 diff` : null,
@@ -434,6 +559,15 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
       ]).join(" "),
     )
     .join("；");
+  const patchIdByPath = new Map<string, string>();
+  for (const patch of patches ?? []) {
+    for (const file of patch.files ?? []) {
+      patchIdByPath.set(cleanDiffPath(file.path).toLowerCase(), patch.id);
+    }
+    if (patch.files?.length === 1) {
+      patchIdByPath.set(cleanDiffPath(patch.files[0].path).toLowerCase(), patch.id);
+    }
+  }
 
   return (
     <section className="conversation-task-digest" aria-label="工作摘要">
@@ -492,12 +626,12 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
         </div>
       ) : null}
 
-      {hasConcreteWork ? (
+      {hasConcreteWork && fileRows.length ? (
         <section className="conversation-turn-changes" aria-label="本轮代码改动">
           <header>
             <div>
-              <strong>{files.length ? `已改动 ${files.length} 个文件` : visibleDiffEntries.length ? `已记录 ${diffEntries.length} 个 diff` : "本轮改动"}</strong>
-              <span>{worktreeDiffStat || (files.length ? "文件改动已进入主聊天记录，右侧只用于浏览文件。" : "等待可展示的 diff。")}</span>
+              <strong>{fileRows.length ? `已改动 ${fileRows.length} 个文件` : visibleDiffEntries.length ? `已记录 ${diffEntries.length} 个 diff` : "本轮改动"}</strong>
+              <span>{worktreeDiffStat || (fileRows.length ? "点击文件可查看差异，右侧继续用于浏览源码。" : "等待可展示的 diff。")}</span>
             </div>
             {(changeTotals.additions !== undefined || changeTotals.deletions !== undefined) ? (
               <p className="conversation-turn-changes-stat" aria-label="改动统计">
@@ -517,10 +651,25 @@ export const ConversationTaskDigest = memo(function ConversationTaskDigest({
                     file.additions !== undefined ? `+${file.additions}` : null,
                     file.deletions !== undefined ? `-${file.deletions}` : null,
                   ]).join(" ") || "已记录"}</span>
+                  {(() => {
+                    const patchId = file.patchId || patchIdByPath.get(cleanDiffPath(file.path).toLowerCase());
+                    return patchId && onLoadPatch ? (
+                      <button
+                        type="button"
+                        className="conversation-turn-diff-button"
+                        aria-label="查看文件差异"
+                        onClick={() => {
+                          void onLoadPatch(patchId);
+                        }}
+                      >
+                        查看文件差异
+                      </button>
+                    ) : null;
+                  })()}
                 </div>
               ))}
-              {files.length > visibleFiles.length ? (
-                <small>另有 {files.length - visibleFiles.length} 个文件可在右侧文件浏览中打开。</small>
+              {fileRows.length > visibleFiles.length ? (
+                <small>另有 {fileRows.length - visibleFiles.length} 个文件可在右侧文件浏览中打开。</small>
               ) : null}
             </div>
           ) : null}

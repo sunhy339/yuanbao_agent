@@ -435,3 +435,106 @@
   color: #1a1410;
   background: rgba(248, 250, 252, 0.92);
 }
+
+/* Compact event mode: tool, approval, patch, and command records should read as transcript rows. */
+.yb-tool-trace,
+.yb-approval-card,
+.yb-patch-plan,
+.yb-command-output {
+  overflow: visible;
+  border-color: rgba(60, 40, 30, 0.12);
+  border-radius: 8px;
+  background: rgba(18, 16, 16, 0.2);
+  box-shadow: none;
+}
+
+.yb-tool-trace::before,
+.yb-approval-card::before,
+.yb-patch-plan::before,
+.yb-command-output::before {
+  display: none;
+}
+
+.yb-approval-card,
+.yb-patch-plan,
+.yb-command-output {
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.yb-tool-trace-head {
+  min-height: 36px;
+  padding: 7px 10px;
+}
+
+.yb-tool-trace > p,
+.yb-tool-trace-detail {
+  padding-inline: 10px;
+}
+
+.yb-tool-trace-detail {
+  padding-bottom: 10px;
+}
+
+.yb-routing-card h3,
+.yb-approval-card h3,
+.yb-patch-plan h3,
+.yb-command-output h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.28;
+}
+
+.yb-approval-card dl,
+.yb-patch-plan dl {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.yb-approval-card dl div,
+.yb-patch-plan dl div,
+.yb-patch-plan li,
+.yb-approval-evidence {
+  border-color: rgba(60, 40, 30, 0.1);
+  border-radius: 6px;
+  background: rgba(18, 16, 16, 0.18);
+  box-shadow: none;
+}
+
+.yb-approval-card dl div,
+.yb-patch-plan dl div,
+.yb-patch-plan li {
+  padding: 7px 8px;
+}
+
+.yb-approval-evidence {
+  padding: 8px 9px;
+}
+
+.yb-approval-evidence-head span,
+.yb-approval-evidence-metrics div {
+  border-color: rgba(60, 40, 30, 0.12);
+  background: rgba(18, 16, 16, 0.2);
+}
+
+.yb-tool-trace-detail pre,
+.yb-command-output pre {
+  border-radius: 6px;
+  padding: 8px 9px;
+  background: rgba(18, 16, 16, 0.58);
+}
+
+.yb-v2[data-theme="light"] .yb-tool-trace,
+.yb-v2[data-theme="light"] .yb-approval-card,
+.yb-v2[data-theme="light"] .yb-patch-plan,
+.yb-v2[data-theme="light"] .yb-command-output {
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: none;
+}
+
+.yb-v2[data-theme="light"] .yb-approval-card dl div,
+.yb-v2[data-theme="light"] .yb-patch-plan dl div,
+.yb-v2[data-theme="light"] .yb-patch-plan li,
+.yb-v2[data-theme="light"] .yb-approval-evidence {
+  background: rgba(247, 244, 240, 0.78);
+}

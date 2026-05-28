@@ -293,6 +293,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
           id: toolCall.id,
           toolName: toolCall.toolName,
           status: toolCall.status,
+          taskId: toolCall.taskId,
           time: toolCall.finishedAt ?? toolCall.updatedAt ?? toolCall.startedAt,
           resultSummary: toolCall.errorSummary ?? toolCall.resultSummary,
           durationMs: toolCall.durationMs,

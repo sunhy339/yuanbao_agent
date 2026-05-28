@@ -18,7 +18,7 @@ afterEach(() => {
 });
 
 describe("NewSessionWorkspace", () => {
-  it("renders a V2 session launch desk", () => {
+  it("renders a compact new-session empty state", () => {
     const html = renderToStaticMarkup(
       <NewSessionWorkspace
         workspacePath={"D:\\py\\yuanbao_agent"}
@@ -29,15 +29,17 @@ describe("NewSessionWorkspace", () => {
       />,
     );
 
-    assert.match(html, /工作区启动器/);
-    assert.match(html, /选择工作区，确认运行时配置/);
+    assert.match(html, /新建会话/);
+    assert.match(html, /开始一个新的编码会话/);
     assert.match(html, /D:\\py\\yuanbao_agent/);
     assert.match(html, /Runtime host online/);
     assert.match(html, /MiniMax-M2\.7-highspeed/);
     assert.match(html, /创建会话/);
     assert.match(html, /应用工作区/);
-    assert.match(html, /启动检查/);
-    assert.match(html, /会话模板/);
+    assert.match(html, /会话设置/);
+    assert.doesNotMatch(html, /工作区启动器/);
+    assert.doesNotMatch(html, /启动检查/);
+    assert.doesNotMatch(html, /会话模板/);
     assert.doesNotMatch(html, /Runtime preview/);
     assert.doesNotMatch(html, /Command readiness/);
   });
@@ -82,6 +84,7 @@ describe("NewSessionWorkspace", () => {
 
     render(<Harness />);
 
+    await user.click(screen.getByText("会话设置"));
     await user.selectOptions(screen.getByLabelText("选择模型"), "kimi");
     await user.clear(screen.getByLabelText("会话标题"));
     await user.type(screen.getByLabelText("会话标题"), "Plan frontend V2");
@@ -110,6 +113,7 @@ describe("NewSessionWorkspace", () => {
       />,
     );
 
+    await user.click(screen.getByText("会话设置"));
     await user.click(screen.getByRole("button", { name: "浏览" }));
 
     expect(open).toHaveBeenCalledWith({
@@ -132,6 +136,7 @@ describe("NewSessionWorkspace", () => {
       />,
     );
 
+    await user.click(screen.getByText("会话设置"));
     await user.click(screen.getByRole("button", { name: "浏览" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent("无法打开系统文件夹选择器");

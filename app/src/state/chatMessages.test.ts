@@ -8,6 +8,7 @@ import {
   appendOrUpdatePermissionRequestMessage,
   appendAssistantToolResultMessage,
   appendAssistantPlaceholder,
+  appendAssistantProgressMessage,
   appendUserMessage,
   completeAssistantToolUseMessage,
   completeChatCompatMessage,
@@ -28,6 +29,7 @@ import {
 } from "./chatMessages";
 import type { ChatMessageView } from "./chatMessages";
 import type { MessageRecord } from "@shared";
+import { appendAssistantToken } from "./chatTokenHelpers";
 
 const messages: ChatMessageView[] = [
   {
@@ -281,15 +283,84 @@ describe("chatMessages", () => {
   });
 
   it("turns runtime progress into short useful chat updates", () => {
-    expect(summarizeOperationalAssistantDelta("Running tool: list_dir")).toBeNull();
-    expect(summarizeOperationalAssistantDelta("Building context and preparing the first tool calls...")).toBeNull();
-    expect(summarizeOperationalAssistantDelta("Subtask tool completed: run_command")).toBeNull();
-    expect(summarizeOperationalAssistantDelta("Subtask waiting for approval: run_command")).toBeNull();
-    expect(summarizeOperationalAssistantDelta("Subtask tool failed: run_command")).toBeNull();
+    expect(summarizeOperationalAssistantDelta("Running tool: list_dir")).toContain("我在查看目录。");
+    expect(summarizeOperationalAssistantDelta("Building context and preparing the first tool calls...")).toContain("正在整理上下文");
+    expect(summarizeOperationalAssistantDelta("Subtask tool completed: run_command")).toContain("命令已完成。");
+    expect(summarizeOperationalAssistantDelta("Subtask waiting for approval: run_command")).toContain("等待审批：命令。");
+    expect(summarizeOperationalAssistantDelta("Subtask tool failed: run_command")).toContain("命令失败");
     expect(summarizeOperationalAssistantDelta('Task Cancelled {"acceptanceCriteria":["Keep focused"]}')).toBe(
       "\n\n任务已取消，已停止继续执行。",
     );
     expect(summarizeOperationalAssistantDelta('{"cwd":"D:\\\\py\\\\test_pro","sessionId":"sess_1","taskId":"task_1"}')).toBeNull();
+  });
+
+  it("routes operational assistant tokens into a thinking status message", () => {
+    const next = appendAssistantToken([], {
+      eventId: "evt_1",
+      type: "assistant.token",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      ts: 10,
+      payload: {
+        delta: "Running tool: list_dir",
+      },
+    } as any);
+
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({
+      id: "assistant_thinking:task_1",
+      role: "assistant",
+      content: "我在查看目录。",
+      metadata: {
+        kind: "assistant_thinking",
+      },
+    });
+  });
+
+  it("keeps operational progress as a visible lightweight transcript item", () => {
+    const next = appendAssistantProgressMessage([], {
+      sessionId: "sess_1",
+      taskId: "task_1",
+      content: "我在查看目录。",
+      now: 10,
+      eventId: "evt_progress",
+    });
+
+    expect(getVisibleChatMessages(next, "sess_1")).toEqual([
+      expect.objectContaining({
+        id: "assistant_progress:evt_progress",
+        content: "我在查看目录。",
+        metadata: { kind: "assistant_progress" },
+      }),
+    ]);
+  });
+
+  it("does not append real assistant tokens into the thinking status bubble", () => {
+    const withProgress = appendAssistantToken([], {
+      eventId: "evt_1",
+      type: "assistant.token",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      ts: 10,
+      payload: { delta: "Building context and preparing the first tool calls..." },
+    } as any);
+    const next = appendAssistantToken(withProgress, {
+      eventId: "evt_2",
+      type: "assistant.token",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      ts: 11,
+      payload: { delta: "这里是实际回复。" },
+    } as any);
+
+    expect(next).toHaveLength(2);
+    expect(next[0].metadata?.kind).toBe("assistant_thinking");
+    expect(next[0].content).toContain("正在整理上下文");
+    expect(next[1]).toMatchObject({
+      role: "assistant",
+      content: "这里是实际回复。",
+      streaming: true,
+    });
   });
 
   it("does not append the same operational update twice", () => {

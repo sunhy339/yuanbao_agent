@@ -167,6 +167,7 @@ export interface SessionWorkspaceMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   taskId?: string;
+  kind?: string;
   streaming?: boolean;
   placeholder?: boolean;
   createdAt?: number;
@@ -284,6 +285,7 @@ export interface SessionWorkspaceTrace {
   stderr?: string;
   visibility?: "chat" | "panel" | "trace";
   taskId?: string;
+  toolName?: string;
   agentType?: string;
 }
 
@@ -291,6 +293,7 @@ export interface SessionWorkspaceToolCall {
   id: string;
   toolName: string;
   status: string;
+  taskId?: string;
   time?: number;
   resultSummary?: string;
   durationMs?: number;
@@ -422,6 +425,7 @@ export interface RuntimeTimelineItem {
   diffLines?: DiffLine[];
   visibility?: "chat" | "panel" | "trace";
   taskId?: string;
+  toolName?: string;
   agentType?: string;
   groupKey?: string;
   superseded?: boolean;

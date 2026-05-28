@@ -33,6 +33,27 @@ function clampRatio(value: number) {
   return Math.min(1, Math.max(0, value));
 }
 
+function formatToolNameLabel(toolName?: string) {
+  if (!toolName) return "工具调用";
+  const normalized = toolName.trim().toLowerCase();
+  const labels: Record<string, string> = {
+    apply_patch: "应用文件改动",
+    write_file: "写入文件",
+    run_command: "运行命令",
+    shell_command: "运行命令",
+    list_dir: "查看目录",
+    list_directory: "查看目录",
+    read_file: "读取文件",
+    search_files: "搜索文件",
+    code_search: "搜索代码",
+    web_fetch: "读取网页",
+    browser: "浏览器操作",
+    git_status: "查看 Git 状态",
+    git_diff: "查看代码差异",
+  };
+  return labels[normalized] ?? toolName.replace(/_/g, " ");
+}
+
 export interface RuntimeSignalCardProps {
   title: string;
   value: string | number;
@@ -203,7 +224,9 @@ export function ToolTraceCard({
       setLocalExpanded((current) => !current);
     }
   };
-  const title = toolCall.serverName ? `${toolCall.serverName}.${toolCall.toolName ?? "tool"}` : toolCall.toolName ?? "tool";
+  const title = toolCall.serverName
+    ? `${toolCall.serverName}.${formatToolNameLabel(toolCall.toolName)}`
+    : formatToolNameLabel(toolCall.toolName);
 
   return (
     <article className="yb-tool-trace" data-status={toolCall.status}>
@@ -311,7 +334,7 @@ export function ApprovalCard({ approval, busy = false, onApprove, onReject, onVi
           <StatusBadge label={formatStatusLabel(approval.risk ? `${approval.risk} risk` : "low risk")} tone={riskTone} compact />
         </div>
       </header>
-      {approval.summary ? <p>{approval.summary}</p> : null}
+      {approval.summary ? <p className="yb-approval-summary">{approval.summary}</p> : null}
       {approval.completionEvidence ? <CompletionEvidencePanel evidence={approval.completionEvidence} /> : null}
       <dl>
         {approval.command ? (
@@ -427,11 +450,12 @@ export interface PatchPlanCardProps {
 }
 
 export function PatchPlanCard({ patch, changedFiles = [], onOpenDiff, onApply, onReject }: PatchPlanCardProps) {
+  const visibleFiles = changedFiles.slice(0, 5);
   return (
     <article className="yb-patch-plan">
       <header>
         <div>
-          <p className="yb-runtime-kicker">改动计划</p>
+          <p className="yb-runtime-kicker">文件改动</p>
           <h3>{patch.summary}</h3>
         </div>
         <StatusBadge label={formatStatusLabel(patch.status)} tone={toneFromStatus(patch.status)} compact />
@@ -441,23 +465,33 @@ export function PatchPlanCard({ patch, changedFiles = [], onOpenDiff, onApply, o
           <dt>文件</dt>
           <dd>{patch.filesChanged ?? changedFiles.length}</dd>
         </div>
-        <div>
-          <dt>新增</dt>
-          <dd>+{patch.additions ?? 0}</dd>
-        </div>
-        <div>
-          <dt>删除</dt>
-          <dd>-{patch.deletions ?? 0}</dd>
-        </div>
+        {patch.additions !== undefined ? (
+          <div>
+            <dt>新增</dt>
+            <dd>+{patch.additions}</dd>
+          </div>
+        ) : null}
+        {patch.deletions !== undefined ? (
+          <div>
+            <dt>删除</dt>
+            <dd>-{patch.deletions}</dd>
+          </div>
+        ) : null}
       </dl>
       {changedFiles.length ? (
         <ul>
-          {changedFiles.slice(0, 4).map((file) => (
+          {visibleFiles.map((file) => (
             <li key={file.path}>
               <span>{file.path}</span>
               <small>{formatStatusLabel(file.status ?? "changed")} {file.additions !== undefined ? `+${file.additions}` : ""} {file.deletions !== undefined ? `-${file.deletions}` : ""}</small>
             </li>
           ))}
+          {changedFiles.length > visibleFiles.length ? (
+            <li>
+              <span>另有 {changedFiles.length - visibleFiles.length} 个文件</span>
+              <small>可在右侧文件区查看</small>
+            </li>
+          ) : null}
         </ul>
       ) : null}
       <footer>

@@ -4,13 +4,18 @@ import {
   ChevronDown,
   ChevronUp,
   CornerDownRight,
+  CircleGauge,
+  FolderOpen,
   MoreHorizontal,
+  Paperclip,
   Plus,
   ShieldAlert,
+  Slash,
   Trash2,
 } from "lucide-react";
 import type { QueuedPromptSubmission } from "../../state/eventRecordViews";
 import { matchCommands, type SlashCommand } from "../../state/slashCommands";
+import type { SessionWorkspaceContextPreview } from "./workspaces/session/types";
 
 interface ComposerDockProps {
   promptValue: string;
@@ -28,6 +33,8 @@ interface ComposerDockProps {
   queuedPromptCount?: number;
   providerLabel: string;
   cwdLabel: string;
+  contextLabel?: string;
+  contextPreview?: SessionWorkspaceContextPreview | null;
   permissionLabel?: string;
   permissionMode?: string;
   onPermissionModeChange?: (mode: string) => void;
@@ -59,6 +66,20 @@ const SUBMIT_LABEL = "发送";
 const SENDING_LABEL = "发送中...";
 const SUPPLEMENT_LABEL = "引导";
 const QUEUE_LABEL = "暂存待发";
+const COMPOSER_INPUT_BASE_HEIGHT = 72;
+const COMPOSER_INPUT_MAX_HEIGHT = 168;
+const SESSION_COMPOSER_LEFT = "clamp(16px, 2vw, 30px)";
+const SESSION_COMPOSER_RIGHT_GAP = "clamp(12px, 1.4vw, 22px)";
+
+function getSessionComposerGutterPx() {
+  if (typeof window === "undefined") return 24;
+  return Math.max(16, Math.min(window.innerWidth * 0.02, 30));
+}
+
+function getSessionComposerRightGapPx() {
+  if (typeof window === "undefined") return 18;
+  return Math.max(12, Math.min(window.innerWidth * 0.014, 22));
+}
 
 const permissionOptions = [
   {
@@ -99,6 +120,30 @@ function compactModelName(value?: string) {
     return match[1].replace(/\s+/g, " ").trim();
   }
   return value.replace(/^gpt[-_\s]*/i, "").trim() || value;
+}
+
+function compactPathName(value?: string) {
+  if (!value?.trim()) {
+    return "未选择项目目录";
+  }
+  const normalized = value.replace(/\\/g, "/").replace(/\/+$/, "");
+  return normalized.split("/").filter(Boolean).pop() ?? normalized;
+}
+
+function formatContextChipLabel(contextLabel?: string, contextPreview?: SessionWorkspaceContextPreview | null) {
+  const estimated = contextPreview?.budgetStats?.estimatedInputTokens ?? contextPreview?.budgetStats?.estimatedTokens;
+  const max = contextPreview?.budgetStats?.maxContextTokens;
+  if (typeof estimated === "number" && typeof max === "number" && max > 0) {
+    const percent = Math.max(0, Math.min(99, Math.round((estimated / max) * 100)));
+    return `上下文 ${percent}%`;
+  }
+  if (contextPreview?.toolCount) {
+    return `上下文 ${contextPreview.toolCount} 工具`;
+  }
+  if (contextLabel?.trim()) {
+    return "上下文";
+  }
+  return "上下文 --";
 }
 
 function normalizeRuntimeChildStatus(status?: string) {
@@ -223,6 +268,8 @@ export function ComposerDock({
   queuedPromptCount = 0,
   providerLabel,
   cwdLabel,
+  contextLabel,
+  contextPreview,
   permissionLabel,
   permissionMode,
   onPermissionModeChange,
@@ -236,17 +283,26 @@ export function ComposerDock({
   hidden,
   layout = "default",
 }: ComposerDockProps) {
+  const isSessionLayout = layout === "session";
+  const [sessionLayoutLeft, setSessionLayoutLeft] = useState(SESSION_COMPOSER_LEFT);
+  const [sessionLayoutRight, setSessionLayoutRight] = useState(SESSION_COMPOSER_RIGHT_GAP);
+  const [sessionLayoutWidth, setSessionLayoutWidth] = useState<string | undefined>(undefined);
   const dockRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const permissionPickerRef = useRef<HTMLDivElement>(null);
+  const toolMenuRef = useRef<HTMLDivElement>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
+  const [toolMenuOpen, setToolMenuOpen] = useState(false);
 
   const autoResize = useCallback((target: HTMLTextAreaElement) => {
     target.style.height = "auto";
-    target.style.height = `${Math.min(target.scrollHeight, 200)}px`;
+    target.style.height = `${Math.max(
+      COMPOSER_INPUT_BASE_HEIGHT,
+      Math.min(target.scrollHeight, COMPOSER_INPUT_MAX_HEIGHT),
+    )}px`;
   }, []);
 
   const matches = useMemo(() => {
@@ -292,7 +348,7 @@ export function ComposerDock({
   }, [matches.length]);
 
   useEffect(() => {
-    if (!modelMenuOpen && !permissionMenuOpen) return;
+    if (!modelMenuOpen && !permissionMenuOpen && !toolMenuOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
       if (!modelPickerRef.current?.contains(event.target as Node)) {
         setModelMenuOpen(false);
@@ -300,10 +356,13 @@ export function ComposerDock({
       if (!permissionPickerRef.current?.contains(event.target as Node)) {
         setPermissionMenuOpen(false);
       }
+      if (!toolMenuRef.current?.contains(event.target as Node)) {
+        setToolMenuOpen(false);
+      }
     };
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [modelMenuOpen, permissionMenuOpen]);
+  }, [modelMenuOpen, permissionMenuOpen, toolMenuOpen]);
 
   useEffect(() => {
     if (hidden) return undefined;
@@ -325,6 +384,117 @@ export function ComposerDock({
     };
   }, [attachments.length, hidden, modelMenuOpen, permissionMenuOpen, promptValue, queuedPrompts.length, visibleRuntimeChildTasks.length]);
 
+  useEffect(() => {
+    if (!isSessionLayout) {
+      setSessionLayoutLeft(SESSION_COMPOSER_LEFT);
+      setSessionLayoutRight(SESSION_COMPOSER_RIGHT_GAP);
+      setSessionLayoutWidth(undefined);
+      return undefined;
+    }
+
+    let frameId: number | undefined;
+    let retryId: number | undefined;
+
+    const setNextInsets = (nextLeft: string, nextRight: string, nextWidth?: string, reserve?: number) => {
+      setSessionLayoutLeft((current) => (current === nextLeft ? current : nextLeft));
+      setSessionLayoutRight((current) => (current === nextRight ? current : nextRight));
+      setSessionLayoutWidth((current) => (current === nextWidth ? current : nextWidth));
+      if (reserve !== undefined) {
+        document.documentElement.style.setProperty("--session-composer-side-reserve", `${Math.ceil(reserve)}px`);
+      }
+    };
+
+    const updateSessionRight = () => {
+      const dock = dockRef.current;
+      const parent =
+        (dock?.closest(".yb-app-main, .workbench-main") as HTMLElement | null) ??
+        (dock?.offsetParent instanceof HTMLElement ? dock.offsetParent : null);
+      const splitHandle = document.querySelector<HTMLElement>(".session-workspace-chat-only .session-sidebar-resizer");
+      const filePane = document.querySelector<HTMLElement>(".session-workspace-chat-only .session-workspace-pane");
+      const chatColumn = document.querySelector<HTMLElement>(".session-workspace-chat-only .session-conversation-column");
+      const parentRect = parent?.getBoundingClientRect();
+      const splitRect = splitHandle?.getBoundingClientRect();
+      const paneRect = filePane?.getBoundingClientRect();
+      const chatRect = chatColumn?.getBoundingClientRect();
+      const viewportRight = typeof window === "undefined" ? parentRect?.right : window.innerWidth;
+      const gutterPx = getSessionComposerGutterPx();
+      const rightGapPx = getSessionComposerRightGapPx();
+      const leftPx = parentRect ? parentRect.left + gutterPx : gutterPx;
+      const leftInset = `${Math.ceil(leftPx)}px`;
+      const splitLeft =
+        paneRect && paneRect.height > 0 && paneRect.width > 0
+          ? paneRect.left
+          : splitRect && splitRect.height > 0 && splitRect.width >= 0
+            ? splitRect.left
+            : chatRect && chatRect.height > 0 && chatRect.width > 0
+              ? chatRect.right
+              : null;
+
+      if (
+        parentRect &&
+        viewportRight &&
+        splitLeft !== null &&
+        splitLeft > leftPx + 360 &&
+        splitLeft < viewportRight - 240
+      ) {
+        const reserve = Math.max(0, viewportRight - splitLeft);
+        const rightInset = `${Math.ceil(reserve + rightGapPx)}px`;
+        const measuredWidth = Math.max(360, Math.floor(splitLeft - leftPx - rightGapPx));
+        const viewportWidth = Math.max(360, Math.floor(viewportRight - leftPx - rightGapPx));
+        const widthInset = `${Math.min(measuredWidth, viewportWidth)}px`;
+        setNextInsets(leftInset, rightInset, widthInset, reserve);
+        return;
+      }
+
+      setNextInsets(leftInset, SESSION_COMPOSER_RIGHT_GAP, undefined);
+    };
+
+    const scheduleUpdate = () => {
+      if (frameId !== undefined) {
+        window.cancelAnimationFrame(frameId);
+      }
+      frameId = window.requestAnimationFrame(updateSessionRight);
+    };
+
+    scheduleUpdate();
+    retryId = window.setTimeout(scheduleUpdate, 120);
+
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(scheduleUpdate) : null;
+    observer?.observe(dockRef.current as Element);
+    const splitHandle = document.querySelector<HTMLElement>(".session-workspace-chat-only .session-sidebar-resizer");
+    const filePane = document.querySelector<HTMLElement>(".session-workspace-chat-only .session-workspace-pane");
+    const chatColumn = document.querySelector<HTMLElement>(".session-workspace-chat-only .session-conversation-column");
+    const parent =
+      (dockRef.current?.closest(".yb-app-main, .workbench-main") as HTMLElement | null) ??
+      (dockRef.current?.offsetParent instanceof HTMLElement ? dockRef.current.offsetParent : null);
+    if (parent) observer?.observe(parent);
+    if (splitHandle) observer?.observe(splitHandle);
+    if (filePane) observer?.observe(filePane);
+    if (chatColumn) observer?.observe(chatColumn);
+    window.addEventListener("resize", scheduleUpdate);
+
+    return () => {
+      if (frameId !== undefined) {
+        window.cancelAnimationFrame(frameId);
+      }
+      if (retryId !== undefined) {
+        window.clearTimeout(retryId);
+      }
+      observer?.disconnect();
+      window.removeEventListener("resize", scheduleUpdate);
+    };
+  }, [isSessionLayout]);
+
+  useEffect(() => {
+    const node = textareaRef.current;
+    if (!node) return;
+    if (!promptValue.trim()) {
+      node.style.height = `${COMPOSER_INPUT_BASE_HEIGHT}px`;
+      return;
+    }
+    autoResize(node);
+  }, [autoResize, promptValue]);
+
   const applyCommand = useCallback(
     (cmd: SlashCommand) => {
       onPromptChange(cmd.name + " ");
@@ -345,10 +515,40 @@ export function ComposerDock({
     }
   }, [attachments, onAttachmentError, onAttachmentsChange]);
 
+  const handleInsertSlashCommand = useCallback(() => {
+    const node = textareaRef.current;
+    const start = node?.selectionStart ?? promptValue.length;
+    const end = node?.selectionEnd ?? start;
+    const prefix = promptValue.slice(0, start);
+    const suffix = promptValue.slice(end);
+    const spacer = prefix && !/\s$/.test(prefix) ? " " : "";
+    const nextValue = `${prefix}${spacer}/${suffix}`;
+    const nextCursor = prefix.length + spacer.length + 1;
+    onPromptChange(nextValue);
+    setToolMenuOpen(false);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
+  }, [onPromptChange, promptValue]);
+
   return (
     <form
       ref={dockRef}
       className={hidden ? "composer-dock composer-dock-hidden" : "composer-dock"}
+      style={
+        isSessionLayout
+          ? {
+              position: "fixed",
+              left: sessionLayoutLeft,
+              right: sessionLayoutWidth ? "auto" : sessionLayoutRight,
+              bottom: "14px",
+              maxWidth: "none",
+              width: sessionLayoutWidth ?? "auto",
+              zIndex: 220,
+            }
+          : undefined
+      }
       data-layout={layout}
       onSubmit={(event) => {
         event.preventDefault();
@@ -537,19 +737,41 @@ export function ComposerDock({
       </label>
       <div className="composer-toolbar" aria-label="输入工具">
         <div className="composer-toolbar-left">
-          <button
-            type="button"
-            className="composer-tool-button"
-            disabled={disabled || Boolean(submitting) || !onAttachmentsChange}
-            aria-label="添加文件"
-            title="添加文件"
-            onClick={() => {
-              void handleAddFiles();
-            }}
-          >
-            <Plus size={17} strokeWidth={1.9} aria-hidden="true" />
-            <strong>添加文件</strong>
-          </button>
+          <div className="composer-tool-menu-root" ref={toolMenuRef}>
+            <button
+              type="button"
+              className="composer-tool-button composer-plus-button"
+              disabled={disabled || Boolean(submitting)}
+              aria-label="打开输入工具"
+              aria-haspopup="menu"
+              aria-expanded={toolMenuOpen}
+              title="输入工具"
+              onClick={() => setToolMenuOpen((current) => !current)}
+            >
+              <Plus size={17} strokeWidth={1.9} aria-hidden="true" />
+              <strong>输入工具</strong>
+            </button>
+            {toolMenuOpen ? (
+              <div className="composer-tool-menu" role="menu" aria-label="输入工具菜单">
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={!onAttachmentsChange}
+                  onClick={() => {
+                    setToolMenuOpen(false);
+                    void handleAddFiles();
+                  }}
+                >
+                  <Paperclip size={17} strokeWidth={1.9} aria-hidden="true" />
+                  <span>添加文件或图片</span>
+                </button>
+                <button type="button" role="menuitem" onClick={handleInsertSlashCommand}>
+                  <Slash size={17} strokeWidth={2.2} aria-hidden="true" />
+                  <span>斜杠命令</span>
+                </button>
+              </div>
+            ) : null}
+          </div>
           {permissionLabel ? (
             <div className="composer-permission-picker" ref={permissionPickerRef}>
               <button
@@ -686,6 +908,16 @@ export function ComposerDock({
             </button>
           </div>
         </div>
+      </div>
+      <div className="composer-context-strip" aria-label="项目与上下文">
+        <button type="button" className="composer-context-chip" title={cwdLabel || "项目目录"}>
+          <FolderOpen size={14} strokeWidth={1.9} aria-hidden="true" />
+          <span>{compactPathName(cwdLabel)}</span>
+        </button>
+        <button type="button" className="composer-context-chip" title={contextLabel || "上下文"}>
+          <CircleGauge size={14} strokeWidth={1.9} aria-hidden="true" />
+          <span>{formatContextChipLabel(contextLabel, contextPreview)}</span>
+        </button>
       </div>
     </form>
   );

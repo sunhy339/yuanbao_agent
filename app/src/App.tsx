@@ -66,6 +66,23 @@ import { useDerivedViews } from "./hooks/useDerivedViews";
 
 const runtimeClient = new RuntimeClient();
 
+function resolveActiveTabKind(tab: unknown): string | undefined {
+  const candidate = tab as { id?: unknown; kind?: unknown };
+  if (typeof candidate.kind === "string" && candidate.kind.length > 0) {
+    return candidate.kind;
+  }
+  if (typeof candidate.id !== "string") {
+    return undefined;
+  }
+  if (candidate.id.startsWith("session:")) {
+    return "session";
+  }
+  if (candidate.id.startsWith("system:")) {
+    return candidate.id.slice("system:".length);
+  }
+  return undefined;
+}
+
 export function App() {
   const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
@@ -92,7 +109,7 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [messageBusy, setMessageBusy] = useState(false);
   const [openTabs, setOpenTabs] = useState<WorkbenchTab[]>(() => getInitialTabs());
-  const [activeTabId, setActiveTabId] = useState<WorkbenchTab["id"]>("system:overview");
+  const [activeTabId, setActiveTabId] = useState<WorkbenchTab["id"]>("system:new-session");
 
   // ── Toast / error helpers ──────────────────────────────────────────
   function addToast(kind: ToastEntry["kind"], message: string) {
@@ -879,7 +896,8 @@ export function App() {
 
   // ── Remaining inline computations ───────────────────────────────────
   const localPathActionsAvailable = runtimeClient.canOpenLocalAppPaths();
-  const composerVisible = runtimeReady && (activeTab.kind === "new-session" || activeTab.kind === "session");
+  const activeTabKind = resolveActiveTabKind(activeTab);
+  const composerVisible = activeTabKind === "new-session" || activeTabKind === "session";
   const queuedPromptCount = queuedPromptSubmissions.length;
 
   // ── Render ──────────────────────────────────────────────────────────

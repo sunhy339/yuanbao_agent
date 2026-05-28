@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 function normalizeHeadingMarkerSpacing(line: string) {
   const heading = line.match(/^(\s*)(#{1,6}(?:\s+#{1,6})*)\s+(.+)$/);
@@ -53,7 +53,8 @@ function normalizeImageUrl(url: string) {
 
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /(!\[[^\]]*\]\([^)]+\)|\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
+  const pattern =
+    /(!\[[^\]]*\]\([^)]+\)|\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\[[^\]]+\]\([^)]+\)|\*[^*\n]+\*|_[^_\n]+_|https?:\/\/[^\s<)]+)/g;
   let cursor = 0;
   let match: RegExpExecArray | null;
 
@@ -66,8 +67,12 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
     const key = `${keyPrefix}-${match.index}`;
     if (token.startsWith("**") && token.endsWith("**")) {
       nodes.push(<strong key={key}>{renderInlineMarkdown(token.slice(2, -2), `${key}-strong`)}</strong>);
+    } else if (token.startsWith("~~") && token.endsWith("~~")) {
+      nodes.push(<del key={key}>{renderInlineMarkdown(token.slice(2, -2), `${key}-del`)}</del>);
     } else if (token.startsWith("`") && token.endsWith("`")) {
       nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else if ((token.startsWith("*") && token.endsWith("*")) || (token.startsWith("_") && token.endsWith("_"))) {
+      nodes.push(<em key={key}>{renderInlineMarkdown(token.slice(1, -1), `${key}-em`)}</em>);
     } else if (token.startsWith("![")) {
       const imageMatch = token.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
       if (imageMatch && isSafeImageUrl(imageMatch[2])) {
@@ -84,6 +89,12 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
       } else {
         nodes.push(token);
       }
+    } else if (token.startsWith("http://") || token.startsWith("https://")) {
+      nodes.push(
+        <a href={token} key={key} rel="noreferrer" target="_blank">
+          {token}
+        </a>,
+      );
     } else {
       const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
       if (linkMatch && isSafeLink(linkMatch[2])) {
@@ -115,6 +126,173 @@ function isHorizontalRule(line: string) {
   return /^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line);
 }
 
+function normalizeCodeLanguage(language: string | undefined) {
+  const normalized = language?.trim().split(/\s+/)[0]?.toLowerCase();
+  if (!normalized) return undefined;
+  const aliases: Record<string, string> = {
+    js: "javascript",
+    jsx: "jsx",
+    ts: "typescript",
+    tsx: "tsx",
+    py: "python",
+    sh: "bash",
+    shell: "bash",
+    ps1: "powershell",
+    pwsh: "powershell",
+    yml: "yaml",
+    md: "markdown",
+  };
+  return aliases[normalized] ?? normalized;
+}
+
+const KEYWORDS = new Set([
+  "and",
+  "as",
+  "async",
+  "await",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "def",
+  "default",
+  "elif",
+  "else",
+  "enum",
+  "except",
+  "export",
+  "extends",
+  "finally",
+  "for",
+  "from",
+  "function",
+  "if",
+  "import",
+  "in",
+  "interface",
+  "let",
+  "new",
+  "not",
+  "or",
+  "pass",
+  "return",
+  "static",
+  "switch",
+  "throw",
+  "try",
+  "type",
+  "while",
+]);
+
+const BUILTINS = new Set([
+  "False",
+  "None",
+  "True",
+  "bool",
+  "dict",
+  "int",
+  "list",
+  "str",
+  "false",
+  "null",
+  "number",
+  "string",
+  "true",
+  "undefined",
+]);
+
+function highlightLine(line: string, keyPrefix: string): ReactNode[] {
+  if (line.startsWith("@@")) {
+    return [<span className="syntax-hunk" key={`${keyPrefix}-hunk`}>{line}</span>];
+  }
+  if (line.startsWith("+") && !line.startsWith("+++")) {
+    return [<span className="syntax-added" key={`${keyPrefix}-add`}>{line}</span>];
+  }
+  if (line.startsWith("-") && !line.startsWith("---")) {
+    return [<span className="syntax-deleted" key={`${keyPrefix}-del`}>{line}</span>];
+  }
+
+  const nodes: ReactNode[] = [];
+  const pattern =
+    /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\/.*|#.*|\/\*.*?\*\/|\b\d+(?:\.\d+)?\b|\b[A-Za-z_$][\w$]*\b|[{}[\]().,:;+\-*/%=<>!|&]+)/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(line)) !== null) {
+    if (match.index > cursor) nodes.push(line.slice(cursor, match.index));
+    const token = match[0];
+    const key = `${keyPrefix}-${match.index}`;
+    if (/^(\/\/|#|\/\*)/.test(token)) {
+      nodes.push(<span className="syntax-comment" key={key}>{token}</span>);
+    } else if (/^["'`]/.test(token)) {
+      const nextNonSpace = line.slice(match.index + token.length).match(/^\s*:/);
+      nodes.push(
+        <span className={nextNonSpace ? "syntax-property" : "syntax-string"} key={key}>
+          {token}
+        </span>,
+      );
+    } else if (/^\d/.test(token)) {
+      nodes.push(<span className="syntax-number" key={key}>{token}</span>);
+    } else if (KEYWORDS.has(token)) {
+      nodes.push(<span className="syntax-keyword" key={key}>{token}</span>);
+    } else if (BUILTINS.has(token)) {
+      nodes.push(<span className="syntax-builtin" key={key}>{token}</span>);
+    } else if (/^[{}[\]().,:;+\-*/%=<>!|&]+$/.test(token)) {
+      nodes.push(<span className="syntax-operator" key={key}>{token}</span>);
+    } else {
+      nodes.push(token);
+    }
+    cursor = match.index + token.length;
+  }
+  if (cursor < line.length) nodes.push(line.slice(cursor));
+  return nodes;
+}
+
+function HighlightedCode({ code }: { code: string }) {
+  const lines = code.split("\n");
+  return (
+    <>
+      {lines.map((line, index) => (
+        <span className="markdown-code-line" key={`${index}-${line.slice(0, 16)}`}>
+          {highlightLine(line, `code-${index}`)}
+          {index < lines.length - 1 ? "\n" : null}
+        </span>
+      ))}
+    </>
+  );
+}
+
+function CodeBlock({ code, language }: { code: string; language?: string }) {
+  const [copied, setCopied] = useState(false);
+  const label = normalizeCodeLanguage(language) ?? "text";
+
+  return (
+    <figure className="markdown-code-shell" data-language={label}>
+      <figcaption className="markdown-code-header">
+        <span>{label}</span>
+        <button
+          type="button"
+          className="markdown-copy-button"
+          onClick={() => {
+            void navigator.clipboard?.writeText(code).then(() => {
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1200);
+            });
+          }}
+        >
+          {copied ? "已复制" : "复制"}
+        </button>
+      </figcaption>
+      <pre className="markdown-code-block">
+        <code>
+          <HighlightedCode code={code} />
+        </code>
+      </pre>
+    </figure>
+  );
+}
+
 function parseTableRow(line: string) {
   return line
     .trim()
@@ -126,12 +304,13 @@ function parseTableRow(line: string) {
 
 function isMarkdownBlockStart(line: string) {
   return (
-    /^#{1,6}\s+/.test(line) ||
+    /^\s*#{1,6}\s+/.test(line) ||
     isHorizontalRule(line) ||
-    /^!\[[^\]]*\]\([^)]+\)\s*$/.test(line) ||
-    /^[-*]\s+/.test(line) ||
-    /^\d+\.\s+/.test(line) ||
-    /^```/.test(line) ||
+    /^\s*>\s?/.test(line) ||
+    /^\s*!\[[^\]]*\]\([^)]+\)\s*$/.test(line) ||
+    /^\s*[-*]\s+/.test(line) ||
+    /^\s*\d+\.\s+/.test(line) ||
+    /^\s*```/.test(line) ||
     (line.includes("|") && isTableDivider(line))
   );
 }
@@ -161,26 +340,22 @@ export function MarkdownContent({ content }: { content: string }) {
       continue;
     }
 
-    const fence = line.match(/^```\s*([\w-]+)?\s*$/);
+    const fence = line.match(/^\s*```\s*([\w-]+)?\s*$/);
     if (fence) {
       const codeLines: string[] = [];
       index += 1;
-      while (index < lines.length && !/^```\s*$/.test(lines[index])) {
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
         codeLines.push(lines[index]);
         index += 1;
       }
       if (index < lines.length) {
         index += 1;
       }
-      blocks.push(
-        <pre className="markdown-code-block" key={`code-${index}`}>
-          <code>{codeLines.join("\n")}</code>
-        </pre>,
-      );
+      blocks.push(<CodeBlock code={codeLines.join("\n")} key={`code-${index}`} language={fence[1]} />);
       continue;
     }
 
-    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    const heading = line.match(/^\s*(#{1,6})\s+(.+)$/);
     if (heading) {
       const level = heading[1].length;
       const children = renderInlineMarkdown(heading[2], `heading-${index}`);
@@ -197,7 +372,7 @@ export function MarkdownContent({ content }: { content: string }) {
       continue;
     }
 
-    const image = line.match(/^!\[([^\]]*)\]\(([^)]+)\)\s*$/);
+    const image = line.match(/^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$/);
     if (image && isSafeImageUrl(image[2])) {
       blocks.push(
         <figure className="markdown-image-frame" key={`image-${index}`}>
@@ -205,6 +380,20 @@ export function MarkdownContent({ content }: { content: string }) {
         </figure>,
       );
       index += 1;
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      const quoteLines: string[] = [];
+      while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^\s*>\s?/, ""));
+        index += 1;
+      }
+      blocks.push(
+        <blockquote className="markdown-blockquote" key={`quote-${index}`}>
+          {renderInlineMarkdown(joinParagraphLines(quoteLines), `quote-${index}`)}
+        </blockquote>,
+      );
       continue;
     }
 
@@ -243,14 +432,20 @@ export function MarkdownContent({ content }: { content: string }) {
       continue;
     }
 
-    if (/^[-*]\s+/.test(line) || /^\d+\.\s+/.test(line)) {
-      const ordered = /^\d+\.\s+/.test(line);
-      const items: string[] = [];
+    if (/^\s*[-*]\s+/.test(line) || /^\s*\d+\.\s+/.test(line)) {
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      const items: Array<{ text: string; checked?: boolean }> = [];
       while (index < lines.length) {
         const currentLine = lines[index];
-        const itemPattern = ordered ? /^\d+\.\s+/ : /^[-*]\s+/;
+        const itemPattern = ordered ? /^\s*\d+\.\s+/ : /^\s*[-*]\s+/;
         if (itemPattern.test(currentLine)) {
-          items.push(currentLine.replace(itemPattern, ""));
+          const rawItem = currentLine.replace(itemPattern, "");
+          const taskMatch = rawItem.match(/^\[( |x|X)\]\s+(.+)$/);
+          items.push(
+            taskMatch
+              ? { text: taskMatch[2], checked: taskMatch[1].toLowerCase() === "x" }
+              : { text: rawItem },
+          );
           index += 1;
           continue;
         }
@@ -268,9 +463,21 @@ export function MarkdownContent({ content }: { content: string }) {
       }
       const ListTag = ordered ? "ol" : "ul";
       blocks.push(
-        <ListTag key={`list-${index}`}>
+        <ListTag className={items.some((item) => item.checked !== undefined) ? "markdown-task-list" : undefined} key={`list-${index}`}>
           {items.map((item, itemIndex) => (
-            <li key={`${itemIndex}-${item.slice(0, 12)}`}>{renderInlineMarkdown(item, `li-${index}-${itemIndex}`)}</li>
+            <li className={item.checked !== undefined ? "markdown-task-item" : undefined} key={`${itemIndex}-${item.text.slice(0, 12)}`}>
+              {item.checked !== undefined ? (
+                <input
+                  aria-label={item.checked ? "已完成任务" : "未完成任务"}
+                  checked={item.checked}
+                  className="markdown-task-checkbox"
+                  disabled
+                  readOnly
+                  type="checkbox"
+                />
+              ) : null}
+              <span>{renderInlineMarkdown(item.text, `li-${index}-${itemIndex}`)}</span>
+            </li>
           ))}
         </ListTag>,
       );

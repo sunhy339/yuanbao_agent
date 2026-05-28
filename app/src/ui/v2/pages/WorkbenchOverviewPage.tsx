@@ -1,6 +1,5 @@
 import type {
   McpServerRecord,
-  ScheduledTaskRecord,
   SessionRecord,
   SkillPresetRecord,
   TaskRecord,
@@ -19,24 +18,14 @@ export interface WorkbenchOverviewPageProps {
   runtimeStatus: RuntimeStatus;
   sessions: SessionRecord[];
   tasks: TaskRecord[];
-  scheduledTasks: ScheduledTaskRecord[];
   mcpServers: McpServerRecord[];
   skills: SkillPresetRecord[];
   onOpenNewSession: () => void;
   onOpenSession: (session: SessionRecord) => void;
-  onOpenScheduled: () => void;
   onOpenMcp: () => void;
-  onOpenSettings: () => void;
 }
 
-const ACTIVE_TASK_STATUSES = new Set<TaskRecord["status"]>([
-  "queued",
-  "planning",
-  "running",
-  "waiting_approval",
-  "verifying",
-  "paused",
-]);
+const ACTIVE_TASK_STATUSES = new Set<TaskRecord["status"]>(["queued", "planning", "running", "waiting_approval", "verifying", "paused"]);
 
 function formatTimestamp(value?: number | null) {
   if (!value) {
@@ -90,13 +79,6 @@ function taskProgressSummary(task: TaskRecord) {
   return task.goal || "任务正在执行";
 }
 
-function scheduleLabel(task?: ScheduledTaskRecord) {
-  if (!task) {
-    return "暂无启用计划";
-  }
-  return task.name;
-}
-
 function sessionBadge(session: SessionRecord, index: number) {
   if (session.status === "failed") {
     return { label: "失败", tone: "danger" as const };
@@ -117,38 +99,31 @@ export function WorkbenchOverviewPage({
   runtimeStatus,
   sessions,
   tasks,
-  scheduledTasks,
   mcpServers,
   skills,
   onOpenNewSession,
   onOpenSession,
-  onOpenScheduled,
   onOpenMcp,
-  onOpenSettings,
 }: WorkbenchOverviewPageProps) {
   const activeTasks = tasks.filter((task) => ACTIVE_TASK_STATUSES.has(task.status));
   const pendingApprovals = tasks.filter((task) => task.status === "waiting_approval");
   const enabledMcpServers = mcpServers.filter((server) => server.enabled);
   const recentSessions = [...sessions].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 5);
   const recentTasks = [...tasks].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 5);
-  const nextScheduled = [...scheduledTasks]
-    .filter((task) => task.enabled)
-    .sort((left, right) => (left.nextRunAt ?? Number.MAX_SAFE_INTEGER) - (right.nextRunAt ?? Number.MAX_SAFE_INTEGER))[0];
 
   return (
     <main className="overview-page" aria-labelledby="overview-title">
-      <section className="overview-command-strip">
+  <section className="overview-command-strip">
         <div>
           <p className="yb-kicker">运行时总览</p>
           <h1 id="overview-title">工作台总览</h1>
           <p>
-            集中查看工作区上下文、运行时健康度、MCP 能力、审批队列和正在进行的智能体任务。
+            集中查看工作区上下文、运行时健康度、MCP 能力和正在进行的智能体任务。
           </p>
         </div>
         <div className="overview-command-actions">
           <Button variant="primary" onClick={onOpenNewSession}>新建会话</Button>
           <Button variant="secondary" onClick={onOpenMcp}>MCP 中心</Button>
-          <Button variant="ghost" onClick={onOpenSettings}>设置</Button>
         </div>
       </section>
 
@@ -169,7 +144,7 @@ export function WorkbenchOverviewPage({
             </Panel>
           </section>
 
-          <Panel eyebrow="当前工作区" title={workspace?.name ?? "未打开工作区"} action={<Button size="sm" variant="ghost" onClick={onOpenSettings}>聚焦</Button>}>
+          <Panel eyebrow="当前工作区" title={workspace?.name ?? "未打开工作区"}>
             <div className="overview-workspace-card">
               <dl className="overview-definition-list">
                 <div>
@@ -253,11 +228,6 @@ export function WorkbenchOverviewPage({
                 <span>上下文预算</span>
                 <strong>{sessions.length ? "会话驱动" : "待命"}</strong>
                 <small>会话激活后会显示预算详情。</small>
-              </div>
-              <div className="overview-signal-card">
-                <span>计划</span>
-                <strong>{scheduleLabel(nextScheduled)}</strong>
-                <small>下次：{formatTimestamp(nextScheduled?.nextRunAt)}</small>
               </div>
             </div>
           </Panel>

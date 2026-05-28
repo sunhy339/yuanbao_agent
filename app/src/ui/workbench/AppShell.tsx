@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { AppShellV2 } from "../v2/layout/AppShellV2";
+import { CleanAppShell } from "../haha-clean/shell/CleanAppShell";
 import {
   ThemeProvider,
   type AccentColor,
@@ -137,7 +137,7 @@ export function AppShell({
       transparency={transparency}
       fontScale={fontScale}
     >
-      <AppShellV2
+      <CleanAppShell
         tabs={tabs}
         activeTabId={activeTabId}
         sessions={sessions}
@@ -187,7 +187,7 @@ export function AppShell({
         activeTaskCurrentStep={activeTaskCurrentStep}
       >
         {children}
-      </AppShellV2>
+      </CleanAppShell>
     </ThemeProvider>
   );
 }

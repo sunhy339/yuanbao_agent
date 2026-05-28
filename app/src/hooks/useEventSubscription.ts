@@ -33,6 +33,7 @@ import {
   appendOrUpdateAssistantMessageDelta,
   appendOrUpdateAssistantToolInputDelta,
   appendAssistantToolResultMessage,
+  appendAssistantProgressMessage,
   appendOrUpdateAssistantThinkingMessage,
   appendOrUpdatePermissionRequestMessage,
   completeAssistantToolUseMessage,
@@ -137,6 +138,23 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     return Boolean(payload && typeof payload === "object" && (payload as { _chatCompat?: unknown })._chatCompat === true);
   }
 
+  function appendOperationalAssistantProgress(event: AgentEventEnvelope, delta: string): boolean {
+    const text = summarizeOperationalAssistantDelta(delta)?.trim();
+    if (!text) {
+      return false;
+    }
+    setChatMessages((current) =>
+      appendAssistantProgressMessage(current, {
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        content: text,
+        now: event.ts,
+        eventId: event.eventId,
+      }),
+    );
+    return true;
+  }
+
   useEffect(() => {
     let active = true;
     let dispose: (() => void) | undefined;
@@ -158,14 +176,9 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           const payload = event.payload as ContentDeltaPayload;
           if (typeof payload.text === "string" && payload.text) {
             const text = payload.text;
-            const displayDelta = isOperationalAssistantDelta(text) ? summarizeOperationalAssistantDelta(text) : text;
-            if (displayDelta) {
-              setChatMessages((current) =>
-                removeAssistantThinkingMessage(current, {
-                  sessionId: event.sessionId,
-                  taskId: event.taskId,
-                }),
-              );
+            if (isOperationalAssistantDelta(text)) {
+              appendOperationalAssistantProgress(event, text);
+            } else if (text) {
               const messageId =
                 typeof payload.messageId === "string" && payload.messageId
                   ? payload.messageId
@@ -175,7 +188,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                   messageId,
                   sessionId: event.sessionId,
                   taskId: event.taskId,
-                  delta: displayDelta,
+                  delta: text,
                   now: event.ts,
                 }),
               );
@@ -362,7 +375,11 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           }
           const payload = event.payload as MessageDeltaPayload;
           const delta = payload.delta ?? "";
-          const displayDelta = isOperationalAssistantDelta(delta) ? summarizeOperationalAssistantDelta(delta) : delta;
+          if (isOperationalAssistantDelta(delta)) {
+            appendOperationalAssistantProgress(event, delta);
+            return;
+          }
+          const displayDelta = delta;
           if (!displayDelta) {
             return;
           }
@@ -370,10 +387,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           if (messageId) {
             setChatMessages((current) =>
               appendOrUpdateAssistantMessageDelta(
-                removeAssistantThinkingMessage(current, {
-                  sessionId: event.sessionId,
-                  taskId: event.taskId,
-                }),
+                current,
                 {
                   messageId,
                   sessionId: event.sessionId,

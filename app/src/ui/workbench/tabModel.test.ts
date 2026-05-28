@@ -6,7 +6,7 @@ describe("tabModel", () => {
   it("deduplicates system tabs and activates the requested tab", () => {
     const initial = getInitialTabs();
 
-    expect(initial[0]?.id).toBe("system:overview");
+    expect(initial[0]?.id).toBe("system:new-session");
 
     const result = openSystemTab(initial, "settings");
     const duplicate = openSystemTab(result.tabs, "settings");

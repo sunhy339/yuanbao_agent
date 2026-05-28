@@ -74,7 +74,7 @@
 
 .workspace-frame[data-composer-visible="true"]:has(.session-workspace-chat-only) .session-conversation-column {
   padding-bottom: max(var(--wb-composer-live-height, 0px), var(--wb-composer-reserve, 0px));
-  scroll-padding-bottom: calc(max(var(--wb-composer-live-height, 0px), var(--wb-composer-reserve, 0px)) + 24px);
+  scroll-padding-bottom: calc(max(var(--wb-composer-live-height, 0px), var(--wb-composer-reserve, 0px)) + 16px);
 }
 
 .session-workspace-chat-only .session-chat-header,
@@ -101,7 +101,7 @@
   width: min(1040px, calc(100% - 72px));
   min-height: 0;
   margin: 0 auto;
-  padding: 28px 0 calc(144px + env(safe-area-inset-bottom, 0px));
+  padding: 28px 0 calc(112px + env(safe-area-inset-bottom, 0px));
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -228,8 +228,8 @@
 
 .session-workspace-chat-only .markdown-content pre,
 .session-workspace-chat-only .markdown-content code {
-  border-color: var(--session-line);
-  background: #f7f8fa;
+  border-color: rgba(143, 72, 47, 0.14);
+  background: rgba(255, 249, 245, 0.98);
 }
 
 .session-workspace-chat-only .markdown-content pre {
@@ -294,20 +294,6 @@
 @keyframes thinking-dot-pulse {
   0%, 80%, 100% { opacity: 0.34; transform: translateY(0); }
   35% { opacity: 1; transform: translateY(-2px); }
-}
-
-.session-workspace-chat-only .conversation-live-row {
-  width: min(760px, 100%);
-  justify-self: start;
-}
-
-.session-workspace-chat-only .session-conversation-live-pill {
-  border: 0;
-  border-left: 2px solid #f59e0b;
-  border-radius: 0;
-  padding: 8px 0 8px 12px;
-  background: transparent;
-  box-shadow: none;
 }
 
 .runtime-progress-note {
@@ -541,7 +527,7 @@
 
 .conversation-turn-file-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 12px;
   align-items: center;
   min-height: 38px;
@@ -563,6 +549,25 @@
   color: #667085;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.conversation-turn-diff-button,
+.runtime-file-change-diff-button {
+  min-height: 24px;
+  border: 1px solid var(--session-soft-line);
+  border-radius: 999px;
+  padding: 0 8px;
+  background: #fff;
+  color: var(--session-primary);
+  cursor: pointer;
+  font: 700 12px/1 var(--session-ui);
+  white-space: nowrap;
+}
+
+.conversation-turn-diff-button:hover,
+.runtime-file-change-diff-button:hover {
+  border-color: rgba(196, 122, 74, 0.28);
+  background: #fff8f1;
 }
 
 .conversation-turn-file-list > small {
@@ -656,7 +661,7 @@
 .runtime-file-change-head,
 .runtime-process-head {
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   width: 100%;
@@ -823,7 +828,7 @@
 /* Main chat output: align the stream with the newer haha-cc desktop screenshots. */
 .session-workspace-chat-only .message-stream,
 .session-workspace-chat-only .message-stream.message-stream-chat-only {
-  width: min(1080px, calc(100% - 72px));
+  width: min(1240px, calc(100% - 28px));
 }
 
 .session-workspace-chat-only .conversation-activity {
@@ -831,8 +836,8 @@
 }
 
 .session-workspace-chat-only .message-bubble {
-  width: min(880px, 100%);
-  max-width: min(880px, 100%);
+  width: min(1160px, 100%);
+  max-width: min(1160px, 100%);
 }
 
 .session-workspace-chat-only .message-bubble[data-role="assistant"],
@@ -856,10 +861,10 @@
 .session-workspace-chat-only .message-bubble[data-role="system"] .message-bubble-body {
   min-width: 0;
   border: 1px solid var(--session-line);
-  border-radius: 16px;
-  padding: 14px 16px;
+  border-radius: 12px;
+  padding: 13px 16px;
   background: var(--session-card);
-  box-shadow: 0 2px 7px rgba(67, 49, 39, 0.08);
+  box-shadow: 0 1px 4px rgba(67, 49, 39, 0.06);
 }
 
 .session-workspace-chat-only .message-bubble[data-role="assistant"]:not(.message-bubble-thinking) .message-bubble-head,
@@ -951,15 +956,18 @@
 
 .session-workspace-chat-only .message-tool-block pre {
   max-height: 220px;
-  border-color: var(--session-line);
+  border-color: rgba(143, 72, 47, 0.12);
   border-radius: 10px;
-  background: #f7f8fb;
+  background: rgba(255, 249, 245, 0.96);
   color: var(--session-text);
 }
 
 .session-workspace-chat-only .message-permission-block pre {
   max-height: 220px;
+  border-color: rgba(249, 115, 22, 0.16);
   border-radius: 10px;
+  background: rgba(255, 247, 237, 0.94);
+  color: #6f3416;
 }
 
 .session-workspace-chat-only .markdown-content code {
@@ -971,14 +979,52 @@
 }
 
 .session-workspace-chat-only .markdown-code-block {
-  border: 1px solid var(--session-line);
+  border: 1px solid rgba(143, 72, 47, 0.14);
   border-radius: 12px;
-  background: #f4f4f0;
-  color: #1b1c1a;
+  background: linear-gradient(180deg, rgba(255, 249, 245, 0.98), rgba(247, 242, 238, 0.98));
+  color: #2f2723;
 }
 
 .session-workspace-chat-only .message-bubble-thinking .message-bubble-body {
-  border-color: rgba(143, 72, 47, 0.22);
+  border-color: rgba(143, 72, 47, 0.14);
+  border-radius: 999px;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 1px 3px rgba(67, 49, 39, 0.05);
+}
+
+.session-workspace-chat-only .message-bubble-thinking {
+  width: min(680px, 84%);
+  max-width: min(680px, 84%);
+}
+
+.session-workspace-chat-only .message-bubble-thinking .message-bubble-head {
+  display: none;
+}
+
+.session-workspace-chat-only .message-bubble-thinking .thinking-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.session-workspace-chat-only .message-bubble-thinking .thinking-status p {
+  min-width: 0;
+}
+
+.session-workspace-chat-only .message-bubble-thinking .thinking-status strong {
+  color: #2f2723;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.session-workspace-chat-only .message-bubble-thinking .thinking-status time {
+  color: var(--session-muted);
+  font-size: 11px;
+}
+
+.session-workspace-chat-only .message-bubble-thinking .thinking-status small {
+  display: none;
 }
 
 .session-workspace-chat-only .thinking-dots span {
@@ -986,13 +1032,14 @@
 }
 
 .session-workspace-chat-only .conversation-task-digest {
-  width: min(1000px, 100%);
+  width: min(1160px, 100%);
   justify-self: start;
-  border: 1px solid var(--session-line);
-  border-radius: 16px;
-  padding: 16px;
-  background: var(--session-card);
-  box-shadow: 0 2px 8px rgba(67, 49, 39, 0.08);
+  border: 0;
+  border-left: 2px solid #eadbd1;
+  border-radius: 0;
+  padding: 2px 0 4px 12px;
+  background: transparent;
+  box-shadow: none;
 }
 
 .session-workspace-chat-only .conversation-task-digest-header h2 {
@@ -1005,17 +1052,46 @@
 
 .session-workspace-chat-only .conversation-turn-changes {
   max-width: 100%;
-  border-color: var(--session-line);
-  border-radius: 14px;
-  box-shadow: 0 1px 4px rgba(67, 49, 39, 0.06);
+  border: 0;
+  border-left: 2px solid #eadbd1;
+  border-radius: 0;
+  padding-left: 12px;
+  background: transparent;
+  box-shadow: none;
 }
 
 .session-workspace-chat-only .conversation-turn-changes > header {
-  background: #efeeea;
+  border-bottom: 1px solid var(--session-soft-line);
+  padding: 6px 0 8px;
+  background: transparent;
 }
 
 .session-workspace-chat-only .conversation-turn-file-row code {
   color: var(--session-text);
+}
+
+.session-workspace-chat-only .conversation-turn-file-row {
+  min-height: 34px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding: 7px 0;
+}
+
+.session-workspace-chat-only .conversation-turn-diff-button,
+.session-workspace-chat-only .runtime-file-change-diff-button {
+  border-color: rgba(143, 72, 47, 0.18);
+  background: transparent;
+  color: #8f482f;
+}
+
+.session-workspace-chat-only .conversation-task-digest-diff .conversation-turn-diff {
+  background: transparent;
+}
+
+.session-workspace-chat-only .conversation-task-digest-diff pre {
+  max-height: 260px;
+  border: 1px solid rgba(143, 72, 47, 0.12);
+  border-radius: 10px;
+  background: #fffdf9;
 }
 
 .session-workspace-chat-only .runtime-event-card,
@@ -1023,19 +1099,20 @@
 .session-workspace-chat-only .runtime-file-change-card,
 .session-workspace-chat-only .runtime-process-card,
 .session-workspace-chat-only .runtime-trace-row {
-  width: min(1000px, 100%);
-  max-width: min(1000px, 100%);
-  border: 1px solid var(--session-line) !important;
-  border-radius: 14px;
-  padding: 0;
-  overflow: hidden;
-  background: var(--session-card) !important;
-  box-shadow: 0 2px 8px rgba(67, 49, 39, 0.08) !important;
+  width: min(1160px, 100%);
+  max-width: min(1160px, 100%);
+  border: 0 !important;
+  border-left: 2px solid #eadbd1 !important;
+  border-radius: 0;
+  padding: 2px 0 4px 12px;
+  overflow: visible;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 .session-workspace-chat-only .runtime-event-v2-card {
-  width: min(1000px, 100%);
-  max-width: min(1000px, 100%);
+  width: min(1160px, 100%);
+  max-width: min(1160px, 100%);
   border: 0 !important;
   border-radius: 0;
   padding: 0;
@@ -1048,10 +1125,176 @@
 .session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan,
 .session-workspace-chat-only .runtime-event-v2-card .yb-command-output,
 .session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace {
-  border-color: var(--session-line);
-  border-radius: 14px;
-  background: var(--session-card);
-  box-shadow: 0 2px 8px rgba(67, 49, 39, 0.08);
+  display: grid;
+  gap: 7px;
+  border: 0 !important;
+  border-left: 2px solid #eadbd1 !important;
+  border-radius: 0;
+  padding: 2px 0 4px 12px;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card header,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan header,
+.session-workspace-chat-only .runtime-event-v2-card .yb-command-output header,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace-head {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 28px;
+  padding: 0;
+  background: transparent;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card header::before,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan header::before,
+.session-workspace-chat-only .runtime-event-v2-card .yb-command-output header::before,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace-head::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--session-success);
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card[data-risk="medium"] header::before {
+  background: #c98b20;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card[data-risk="high"] header::before {
+  background: var(--session-danger);
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-runtime-kicker {
+  margin: 0 0 2px;
+  color: var(--session-primary);
+  font-size: 11px;
+  font-weight: 720;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card h3,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan h3,
+.session-workspace-chat-only .runtime-event-v2-card .yb-command-output h3,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace-head span {
+  margin: 0;
+  overflow: hidden;
+  color: var(--session-text);
+  font-size: 14px;
+  font-weight: 730;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-runtime-status-stack {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 5px;
+  justify-self: end;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-summary,
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card > p,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace > p {
+  margin: 0 0 0 20px;
+  color: var(--session-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card dl,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  margin: 0 0 0 20px;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card dl div,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan dl div {
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card dt,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan dt {
+  color: var(--session-muted);
+  font-size: 11px;
+  font-weight: 640;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card dd,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan dd {
+  margin: 0;
+  color: var(--session-text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan ul {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 0 20px;
+  padding: 0;
+  list-style: none;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 24px;
+  align-items: center;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan li span {
+  overflow: hidden;
+  color: #6f3a27;
+  font-family: var(--session-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan li small {
+  color: var(--session-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card footer,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan footer,
+.session-workspace-chat-only .runtime-event-v2-card .yb-command-output footer {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 0 20px;
+  padding: 0;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan footer .yb-button,
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card footer .yb-button {
+  min-height: 24px;
+  border-radius: 999px;
+  padding-inline: 9px;
 }
 
 .session-workspace-chat-only .runtime-process-head,
@@ -1060,8 +1303,8 @@
 .session-workspace-chat-only .runtime-trace-row-summary {
   grid-template-columns: 34px minmax(0, 1fr) auto auto;
   gap: 12px;
-  min-height: 54px;
-  padding: 11px 14px;
+  min-height: 34px;
+  padding: 4px 0;
 }
 
 .session-workspace-chat-only .runtime-process-head:hover,
@@ -1077,32 +1320,28 @@
 .session-workspace-chat-only .runtime-trace-dot {
   display: inline-grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--session-line);
-  border-radius: 10px;
-  background: #efeeea;
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--session-success);
   box-shadow: none !important;
 }
 
 .session-workspace-chat-only .runtime-process-spark::before,
 .session-workspace-chat-only .runtime-worklog-head .runtime-worklog-dot::before,
 .session-workspace-chat-only .runtime-trace-dot::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--session-success);
+  display: none;
 }
 
-.session-workspace-chat-only .runtime-process-card[data-active="true"] .runtime-process-spark::before,
-.session-workspace-chat-only .runtime-worklog-card[data-status="running"] .runtime-worklog-head .runtime-worklog-dot::before {
+.session-workspace-chat-only .runtime-process-card[data-active="true"] .runtime-process-spark,
+.session-workspace-chat-only .runtime-worklog-card[data-status="running"] .runtime-worklog-head .runtime-worklog-dot {
   background: #c98b20;
 }
 
-.session-workspace-chat-only .runtime-process-card[data-status="failed"] .runtime-process-spark::before,
-.session-workspace-chat-only .runtime-worklog-card[data-status="failed"] .runtime-worklog-head .runtime-worklog-dot::before,
-.session-workspace-chat-only .runtime-trace-row[data-status="failed"] .runtime-trace-dot::before {
+.session-workspace-chat-only .runtime-process-card[data-status="failed"] .runtime-process-spark,
+.session-workspace-chat-only .runtime-worklog-card[data-status="failed"] .runtime-worklog-head .runtime-worklog-dot,
+.session-workspace-chat-only .runtime-trace-row[data-status="failed"] .runtime-trace-dot {
   background: var(--session-danger);
 }
 
@@ -1123,14 +1362,14 @@
 .session-workspace-chat-only .runtime-process-summary,
 .session-workspace-chat-only .runtime-trace-row-copy small {
   margin: 0;
-  padding: 0 14px 12px 60px;
+  padding: 0 0 4px 46px;
   color: var(--session-muted);
 }
 
 .session-workspace-chat-only .runtime-process-meta,
 .session-workspace-chat-only .runtime-trace-row-meta {
   margin: 0;
-  padding: 0 14px 12px 60px;
+  padding: 0 0 4px 46px;
 }
 
 .session-workspace-chat-only .runtime-process-meta span,
@@ -1144,7 +1383,7 @@
 .session-workspace-chat-only .runtime-file-change-list {
   margin: 0;
   border-top: 1px solid var(--session-soft-line);
-  padding: 0 14px 12px 60px;
+  padding: 0 0 4px 46px;
 }
 
 .session-workspace-chat-only .runtime-worklog-row,
@@ -1163,7 +1402,7 @@
 .session-workspace-chat-only .runtime-trace-row-detail pre,
 .session-workspace-chat-only .runtime-event-detail pre,
 .session-workspace-chat-only .runtime-event-code-summary {
-  margin: 0 14px 14px 60px;
+  margin: 6px 0 4px 46px;
   border-color: var(--session-line);
   border-radius: 12px;
   background: #f4f4f0;
@@ -1171,7 +1410,7 @@
 }
 
 .session-workspace-chat-only .runtime-event-actions {
-  padding: 0 14px 14px 60px;
+  padding: 0 0 4px 46px;
 }
 
 .session-workspace-chat-only .diff-view {
@@ -1754,6 +1993,307 @@
   line-height: 1.7;
 }
 
+/* Compact runtime transcript: keep tools, approvals, and diffs as chat events instead of report panels. */
+.session-workspace-chat-only .runtime-event-card,
+.session-workspace-chat-only .runtime-worklog-card,
+.session-workspace-chat-only .runtime-file-change-card,
+.session-workspace-chat-only .runtime-process-card,
+.session-workspace-chat-only .runtime-trace-row {
+  width: min(1160px, 100%);
+  max-width: min(1160px, 100%);
+  overflow: visible;
+  border: 0 !important;
+  border-left: 2px solid #eadbd1 !important;
+  border-radius: 0;
+  padding: 2px 0 4px 12px;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card {
+  border-left: 0 !important;
+  padding-left: 0;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan,
+.session-workspace-chat-only .runtime-event-v2-card .yb-command-output,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace {
+  display: grid;
+  gap: 7px;
+  overflow: visible;
+  border: 0 !important;
+  border-left: 2px solid #eadbd1 !important;
+  border-radius: 0;
+  padding: 2px 0 4px 12px;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card::before,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan::before,
+.session-workspace-chat-only .runtime-event-v2-card .yb-command-output::before,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace::before {
+  display: none;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card header,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan header,
+.session-workspace-chat-only .runtime-event-v2-card .yb-command-output header,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace-head,
+.session-workspace-chat-only .runtime-process-head,
+.session-workspace-chat-only .runtime-worklog-head,
+.session-workspace-chat-only .runtime-file-change-head,
+.session-workspace-chat-only .runtime-trace-row-summary {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 28px;
+  padding: 0;
+  background: transparent;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card header::before,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan header::before,
+.session-workspace-chat-only .runtime-event-v2-card .yb-command-output header::before,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace-head::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--session-success);
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card[data-risk="medium"] header::before {
+  background: #c98b20;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card[data-risk="high"] header::before {
+  background: var(--session-danger);
+}
+
+.session-workspace-chat-only .runtime-process-head:hover,
+.session-workspace-chat-only .runtime-worklog-head:hover,
+.session-workspace-chat-only .runtime-file-change-head:hover,
+.session-workspace-chat-only .runtime-trace-row-summary:hover,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace-head:hover {
+  background: transparent;
+}
+
+.session-workspace-chat-only .runtime-process-spark,
+.session-workspace-chat-only .runtime-worklog-head .runtime-worklog-dot,
+.session-workspace-chat-only .runtime-file-change-icon,
+.session-workspace-chat-only .runtime-trace-dot {
+  width: 7px;
+  height: 7px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--session-success);
+}
+
+.session-workspace-chat-only .runtime-process-spark::before,
+.session-workspace-chat-only .runtime-worklog-head .runtime-worklog-dot::before,
+.session-workspace-chat-only .runtime-trace-dot::before {
+  display: none;
+}
+
+.session-workspace-chat-only .runtime-process-card[data-active="true"] .runtime-process-spark,
+.session-workspace-chat-only .runtime-worklog-card[data-status="running"] .runtime-worklog-head .runtime-worklog-dot {
+  background: #c98b20;
+}
+
+.session-workspace-chat-only .runtime-process-card[data-status="failed"] .runtime-process-spark,
+.session-workspace-chat-only .runtime-worklog-card[data-status="failed"] .runtime-worklog-head .runtime-worklog-dot,
+.session-workspace-chat-only .runtime-trace-row[data-status="failed"] .runtime-trace-dot {
+  background: var(--session-danger);
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-runtime-kicker,
+.session-workspace-chat-only .runtime-process-head h3,
+.session-workspace-chat-only .runtime-worklog-copy strong,
+.session-workspace-chat-only .runtime-file-change-head strong,
+.session-workspace-chat-only .runtime-trace-row-copy strong,
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card h3,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan h3,
+.session-workspace-chat-only .runtime-event-v2-card .yb-command-output h3,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace-head span {
+  margin: 0;
+  color: var(--session-text);
+  font-size: 13px;
+  font-weight: 730;
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-runtime-kicker {
+  margin: 0 0 2px;
+  color: var(--session-primary);
+  font-size: 11px;
+  font-weight: 720;
+  line-height: 1.2;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-summary,
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card > p,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace p,
+.session-workspace-chat-only .runtime-worklog-copy small,
+.session-workspace-chat-only .runtime-process-summary,
+.session-workspace-chat-only .runtime-trace-row-copy small,
+.session-workspace-chat-only .runtime-file-change-head small {
+  margin: 0 0 0 20px;
+  padding: 0;
+  color: var(--session-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card dl,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  margin: 0 0 0 20px;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card dl div,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan dl div {
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card dt,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan dt {
+  color: var(--session-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card dd,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan dd {
+  margin: 0;
+  color: var(--session-text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan ul {
+  display: grid;
+  gap: 2px;
+  margin: 0 0 0 20px;
+  padding: 0;
+  list-style: none;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 24px;
+  align-items: center;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan li span {
+  overflow: hidden;
+  color: #6f3a27;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--session-mono);
+  font-size: 12px;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan li small {
+  color: var(--session-muted);
+  font-size: 11px;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan footer,
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card footer,
+.session-workspace-chat-only .runtime-event-v2-card .yb-command-output footer {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 0 20px;
+  padding: 0;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-runtime-status-stack {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  gap: 5px;
+  justify-self: end;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan footer .yb-button,
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card footer .yb-button {
+  min-height: 24px;
+  border-radius: 999px;
+  padding-inline: 9px;
+}
+
+.session-workspace-chat-only .runtime-worklog-list,
+.session-workspace-chat-only .runtime-file-change-list,
+.session-workspace-chat-only .runtime-process-meta,
+.session-workspace-chat-only .runtime-trace-row-meta {
+  margin: 0;
+  border-top: 0;
+  padding: 3px 0 0 18px;
+}
+
+.session-workspace-chat-only .runtime-worklog-row,
+.session-workspace-chat-only .runtime-file-change-row {
+  grid-template-columns: 7px minmax(0, 1fr) auto auto;
+  gap: 8px;
+  border-bottom: 0;
+  border-top: 1px solid var(--session-soft-line);
+  padding: 6px 0 0;
+}
+
+.session-workspace-chat-only .runtime-worklog-row-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 8px;
+}
+
+.session-workspace-chat-only .runtime-process-detail,
+.session-workspace-chat-only .runtime-process-subdetail,
+.session-workspace-chat-only .runtime-worklog-row-main pre,
+.session-workspace-chat-only .runtime-trace-row-detail pre,
+.session-workspace-chat-only .runtime-event-detail pre,
+.session-workspace-chat-only .runtime-event-code-summary {
+  margin: 8px 0 0 18px;
+  border-color: rgba(143, 72, 47, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 249, 245, 0.96);
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .runtime-event-actions {
+  padding: 3px 0 0 18px;
+}
+
+.session-workspace-chat-only .runtime-event-detail {
+  margin-top: 8px;
+}
+
+.session-workspace-chat-only .diff-view {
+  border-color: rgba(143, 72, 47, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 253, 249, 0.96);
+}
+
 .session-tool-error {
   margin: 8px 12px 0;
   border: 1px solid #fecaca;
@@ -1805,6 +2345,306 @@
   background-clip: padding-box;
 }
 
+/* Chronological progress notes: small, inline updates between model text and tool cards. */
+.session-workspace-chat-only .message-bubble.message-bubble-progress {
+  width: min(860px, 88%);
+  max-width: min(860px, 88%);
+  border: 0;
+  border-left: 2px solid #eadbd1;
+  border-radius: 0;
+  padding: 1px 0 1px 12px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .message-bubble.message-bubble-progress .message-avatar,
+.session-workspace-chat-only .message-bubble.message-bubble-progress .message-bubble-head {
+  display: none;
+}
+
+.session-workspace-chat-only .message-bubble.message-bubble-progress .message-bubble-body {
+  min-height: 0;
+}
+
+.session-workspace-chat-only .message-progress-note {
+  position: relative;
+  margin: 0;
+  padding: 2px 0 2px 20px;
+  color: #586174;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.session-workspace-chat-only .message-progress-note::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 11px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #c98b20;
+}
+
+/* haha-cc style transcript pass: text first, tool rows second, cards only when detail is needed. */
+.session-workspace-chat-only .message-stream,
+.session-workspace-chat-only .message-stream.message-stream-chat-only {
+  width: min(1060px, calc(100% - 64px));
+  padding-bottom: calc(142px + env(safe-area-inset-bottom, 0px));
+}
+
+.session-workspace-chat-only .conversation-activity {
+  gap: 14px;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] {
+  width: min(900px, 100%);
+  max-width: min(900px, 100%);
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"]:not(.message-bubble-thinking):not(.message-bubble-progress) .message-avatar,
+.session-workspace-chat-only .message-bubble[data-role="assistant"]:not(.message-bubble-thinking):not(.message-bubble-progress) .message-bubble-head {
+  display: none;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"]:not(.message-bubble-thinking):not(.message-bubble-progress) .message-bubble-body {
+  padding: 0;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content {
+  gap: 10px;
+  color: #22272f;
+  font-size: 15px;
+  line-height: 1.76;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content p {
+  margin: 0;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="user"] {
+  width: min(620px, 76%);
+  max-width: min(620px, 76%);
+  border: 1px solid #e7e2dc !important;
+  border-radius: 12px;
+  padding: 11px 14px !important;
+  background: #efeeea !important;
+  color: #2d2a26;
+  box-shadow: none !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="user"] .message-bubble-head {
+  display: none;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="user"] p {
+  margin: 0;
+  color: #2d2a26;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.session-workspace-chat-only .message-bubble.message-bubble-progress,
+.session-workspace-chat-only .runtime-progress-note {
+  width: min(920px, 100%);
+  max-width: min(920px, 100%);
+  border: 0 !important;
+  border-left: 0 !important;
+  padding: 0;
+  background: transparent !important;
+  color: #8a8f98;
+}
+
+.session-workspace-chat-only .message-progress-note,
+.session-workspace-chat-only .runtime-progress-note strong,
+.session-workspace-chat-only .runtime-progress-note small {
+  color: #8a8f98;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.session-workspace-chat-only .message-progress-note {
+  padding: 0 0 0 22px;
+}
+
+.session-workspace-chat-only .message-progress-note::before,
+.session-workspace-chat-only .runtime-progress-note-dot {
+  top: 8px;
+  width: 10px;
+  height: 10px;
+  border: 1px solid #cfd3d8;
+  background: transparent;
+}
+
+.session-workspace-chat-only .runtime-worklog-card,
+.session-workspace-chat-only .runtime-event-card,
+.session-workspace-chat-only .runtime-event-v2-card,
+.session-workspace-chat-only .runtime-process-card,
+.session-workspace-chat-only .runtime-trace-row,
+.session-workspace-chat-only .runtime-file-change-card {
+  width: min(920px, 100%) !important;
+  max-width: min(920px, 100%) !important;
+  border: 0 !important;
+  border-left: 0 !important;
+  border-radius: 0;
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.session-workspace-chat-only .runtime-worklog-head,
+.session-workspace-chat-only .runtime-process-head,
+.session-workspace-chat-only .runtime-file-change-head,
+.session-workspace-chat-only .runtime-trace-row-summary {
+  grid-template-columns: 16px minmax(0, 1fr) auto auto;
+  min-height: 26px;
+  gap: 8px;
+  border: 0;
+  padding: 1px 0;
+  color: #8a8f98;
+  background: transparent;
+}
+
+.session-workspace-chat-only .runtime-worklog-dot,
+.session-workspace-chat-only .runtime-worklog-row-dot,
+.session-workspace-chat-only .runtime-process-spark,
+.session-workspace-chat-only .runtime-file-change-icon,
+.session-workspace-chat-only .runtime-trace-dot {
+  width: 10px;
+  height: 10px;
+  border: 1px solid #cfd3d8;
+  background: transparent;
+  border-radius: 999px;
+}
+
+.session-workspace-chat-only .runtime-worklog-copy strong,
+.session-workspace-chat-only .runtime-process-head h3,
+.session-workspace-chat-only .runtime-file-change-head strong,
+.session-workspace-chat-only .runtime-trace-row-copy strong {
+  color: #717780;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.session-workspace-chat-only .runtime-worklog-copy small,
+.session-workspace-chat-only .runtime-process-summary,
+.session-workspace-chat-only .runtime-file-change-head small,
+.session-workspace-chat-only .runtime-trace-row-copy small {
+  margin: 0;
+  color: #9aa0a8;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.session-workspace-chat-only .runtime-worklog-list,
+.session-workspace-chat-only .runtime-file-change-list {
+  gap: 0;
+  margin: 0 0 0 24px;
+  padding: 0;
+}
+
+.session-workspace-chat-only .runtime-worklog-row,
+.session-workspace-chat-only .runtime-file-change-row {
+  grid-template-columns: 13px minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 24px;
+  border: 0;
+  padding: 1px 0;
+  color: #8a8f98;
+}
+
+.session-workspace-chat-only .runtime-worklog-row-main strong,
+.session-workspace-chat-only .runtime-file-change-row strong {
+  color: #6f7681;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.session-workspace-chat-only .runtime-worklog-row-main small,
+.session-workspace-chat-only .runtime-file-change-row span,
+.session-workspace-chat-only .runtime-file-change-row em {
+  color: #9aa0a8;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.session-workspace-chat-only .runtime-worklog-more,
+.session-workspace-chat-only .runtime-file-change-more {
+  margin-left: 24px;
+  border: 0;
+  padding: 2px 0;
+  background: transparent;
+  color: #8a8f98;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan,
+.session-workspace-chat-only .runtime-event-v2-card .yb-command-output,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace {
+  border: 1px solid #eadbd1 !important;
+  border-radius: 8px;
+  padding: 10px 12px !important;
+  background: #fffdf9 !important;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan,
+.session-workspace-chat-only .runtime-file-change-card:has(.runtime-file-change-list) {
+  margin-top: 4px;
+}
+
+.session-workspace-chat-only .runtime-process-detail,
+.session-workspace-chat-only .runtime-process-subdetail,
+.session-workspace-chat-only .runtime-worklog-row-main pre,
+.session-workspace-chat-only .runtime-trace-row-detail pre,
+.session-workspace-chat-only .runtime-event-detail pre,
+.session-workspace-chat-only .runtime-event-code-summary,
+.session-workspace-chat-only .diff-view {
+  max-height: 360px;
+  border: 1px solid #eadbd1;
+  border-radius: 8px;
+  background: #fffaf4;
+  color: #2f3640;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.session-scroll-bottom-button {
+  position: fixed;
+  left: var(--session-scroll-bottom-left, 50%);
+  bottom: calc(var(--wb-composer-live-height, 150px) + 18px);
+  z-index: 240;
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  transform: translateX(-50%);
+  border: 1px solid #e3ded8;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #555b63;
+  box-shadow: 0 8px 24px rgba(25, 20, 16, 0.12);
+  backdrop-filter: blur(12px);
+  cursor: pointer;
+}
+
+.session-scroll-bottom-button:hover {
+  border-color: #d7c8bd;
+  background: #fff;
+  color: var(--session-primary);
+}
+
+.session-scroll-bottom-button span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
 @media (max-width: 1180px) {
   .session-workspace-chat-only .session-workbench-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -1838,5 +2678,646 @@
   .session-workspace-chat-only .conversation-task-digest {
     width: 100%;
     max-width: 100%;
+  }
+}
+
+/* Final haha-cc-like transcript layer: quiet prose, thin tool rows, no avatar rail. */
+.session-workspace-chat-only .session-console .message-stream,
+.session-workspace-chat-only .message-stream,
+.session-workspace-chat-only .message-stream.message-stream-chat-only {
+  width: min(1120px, calc(100% - 56px)) !important;
+  padding-top: 10px !important;
+  padding-bottom: calc(var(--wb-composer-live-height, 150px) + 42px + env(safe-area-inset-bottom, 0px)) !important;
+}
+
+.session-workspace-chat-only .conversation-activity {
+  gap: 13px !important;
+}
+
+.session-workspace-chat-only .message-avatar {
+  display: none !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"]:not(.message-bubble-thinking):not(.message-bubble-progress) {
+  display: block !important;
+  justify-self: start !important;
+  width: min(920px, 100%) !important;
+  min-width: min(520px, 100%) !important;
+  max-width: min(920px, 100%) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"]:not(.message-bubble-thinking):not(.message-bubble-progress) .message-bubble-body {
+  padding: 0 !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"]:not(.message-bubble-thinking):not(.message-bubble-progress) .message-bubble-head {
+  display: none !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content {
+  color: #252a32 !important;
+  font-size: 15px !important;
+  line-height: 1.72 !important;
+  white-space: normal !important;
+  word-break: normal !important;
+  overflow-wrap: anywhere !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content p {
+  white-space: normal !important;
+  word-break: normal !important;
+  overflow-wrap: anywhere !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content h1,
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content h2,
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content h3 {
+  margin: 12px 0 5px !important;
+  color: #1f2329 !important;
+  font-size: 15px !important;
+  line-height: 1.5 !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content ul,
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content ol {
+  margin: 4px 0 6px !important;
+  padding-left: 22px !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content li {
+  margin: 2px 0 !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content code {
+  border: 1px solid #eee5dc;
+  border-radius: 5px;
+  padding: 0 4px;
+  background: #f6f1ec;
+  color: #8b4b2f;
+  font-size: 0.92em;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content .markdown-code-shell {
+  max-width: 100%;
+  margin: 8px 0 10px !important;
+  overflow: hidden;
+  border: 1px solid #eee5dc;
+  border-radius: 8px;
+  background: #fffdf9;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content .markdown-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 32px;
+  border-bottom: 1px solid #eee5dc;
+  padding: 0 10px;
+  background: #f8f4ef;
+  color: #746b63;
+  font: 700 11px/1 var(--session-mono);
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content .markdown-copy-button {
+  border: 0;
+  border-radius: 6px;
+  padding: 4px 7px;
+  color: #8f482f;
+  background: transparent;
+  cursor: pointer;
+  font: 700 11px/1 var(--session-ui);
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content .markdown-copy-button:hover {
+  background: #fff5ec;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content .markdown-code-block {
+  max-height: 420px !important;
+  margin: 0 !important;
+  overflow: auto !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 12px 14px !important;
+  background: #fbfcfe !important;
+  color: #2d3745 !important;
+  font: 12px/1.58 var(--session-mono) !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content .markdown-code-block code {
+  border: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  color: inherit !important;
+  font: inherit !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content .markdown-code-line {
+  white-space: pre;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content .markdown-blockquote {
+  margin: 6px 0 8px !important;
+  border-left: 3px solid #e0cabc;
+  padding: 3px 0 3px 12px;
+  color: #59606b;
+  background: transparent;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content .markdown-task-list {
+  padding-left: 0 !important;
+  list-style: none;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content .markdown-task-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content .markdown-task-checkbox {
+  width: 14px;
+  height: 14px;
+  margin-top: 6px;
+  accent-color: #8f482f;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content del {
+  color: #8a8f98;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="assistant"] .markdown-content em {
+  color: #4f5966;
+}
+
+.syntax-keyword {
+  color: #b42318;
+}
+
+.syntax-string {
+  color: #087443;
+}
+
+.syntax-property {
+  color: #7a4f12;
+}
+
+.syntax-comment {
+  color: #8a8f98;
+}
+
+.syntax-number {
+  color: #8f482f;
+}
+
+.syntax-builtin {
+  color: #7552b3;
+}
+
+.syntax-operator {
+  color: #6b7280;
+}
+
+.syntax-added {
+  display: inline-block;
+  min-width: 100%;
+  background: #eaf8ef;
+  color: #067647;
+}
+
+.syntax-deleted {
+  display: inline-block;
+  min-width: 100%;
+  background: #fff1f3;
+  color: #b42318;
+}
+
+.syntax-hunk {
+  display: inline-block;
+  min-width: 100%;
+  background: #f1f4f8;
+  color: #57606a;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="user"] {
+  justify-self: end !important;
+  width: min(760px, 72%) !important;
+  max-width: min(760px, 72%) !important;
+  border: 1px solid #e6dfd8 !important;
+  border-radius: 12px !important;
+  padding: 12px 16px !important;
+  background: #efeeea !important;
+  color: #2f2b27 !important;
+  box-shadow: none !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-role="user"] .message-bubble-body {
+  padding: 0 !important;
+}
+
+.session-workspace-chat-only .message-bubble.message-bubble-document {
+  justify-self: start !important;
+  width: min(920px, 100%) !important;
+  max-width: min(920px, 100%) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.session-workspace-chat-only .message-bubble.message-bubble-document .message-bubble-body {
+  padding: 0 !important;
+}
+
+.session-workspace-chat-only .message-bubble.message-bubble-document .markdown-content {
+  width: 100%;
+  max-width: 100%;
+}
+
+.session-workspace-chat-only .message-bubble.message-bubble-thinking {
+  width: min(920px, 100%) !important;
+  max-width: min(920px, 100%) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.session-workspace-chat-only .message-bubble.message-bubble-thinking .message-bubble-body {
+  padding: 0 !important;
+}
+
+.session-workspace-chat-only .message-bubble.message-bubble-thinking .message-bubble-head {
+  display: none !important;
+}
+
+.session-workspace-chat-only .message-bubble.message-bubble-thinking .thinking-status {
+  border: 1px solid #eee5dc;
+  border-radius: 10px;
+  padding: 8px 11px;
+  background: #fffdf9;
+  color: #747b85;
+}
+
+.session-workspace-chat-only .message-thinking-inline {
+  width: min(920px, 100%);
+  color: #7a7f87;
+  font-size: 12px;
+}
+
+.session-workspace-chat-only .message-thinking-inline button {
+  display: grid;
+  grid-template-columns: 14px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 26px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.session-workspace-chat-only .message-thinking-inline button:disabled {
+  cursor: default;
+}
+
+.session-workspace-chat-only .message-thinking-inline[data-active="true"] button span::after {
+  content: "...";
+}
+
+.session-workspace-chat-only .message-thinking-inline .message-thinking-chevron {
+  color: #a59a92;
+  transition: transform 120ms ease;
+}
+
+.session-workspace-chat-only .message-thinking-inline button[aria-expanded="true"] .message-thinking-chevron {
+  transform: rotate(90deg);
+}
+
+.session-workspace-chat-only .message-thinking-inline span {
+  color: #746b64;
+  font-style: italic;
+  font-weight: 650;
+}
+
+.session-workspace-chat-only .message-thinking-inline small {
+  min-width: 0;
+  overflow: hidden;
+  color: #8b929c;
+  font-family: var(--session-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-workspace-chat-only .message-thinking-inline time {
+  color: #9a928b;
+  font: 700 11px/1 var(--session-mono);
+}
+
+.session-workspace-chat-only .message-thinking-inline pre {
+  max-height: 260px;
+  margin: 6px 0 0 21px;
+  overflow: auto;
+  border: 1px solid #eee5dc;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #fffdf9;
+  color: #4b5563;
+  font: 12px/1.5 var(--session-mono);
+  white-space: pre-wrap;
+}
+
+.session-workspace-chat-only .message-bubble.message-bubble-progress,
+.session-workspace-chat-only .runtime-progress-note {
+  justify-self: start !important;
+  width: min(920px, 100%) !important;
+  max-width: min(920px, 100%) !important;
+}
+
+.session-workspace-chat-only .message-progress-note {
+  padding-left: 18px !important;
+  color: #8a8f98 !important;
+  font-size: 12px !important;
+}
+
+.session-workspace-chat-only .message-progress-note::before {
+  top: 8px !important;
+  width: 7px !important;
+  height: 7px !important;
+  border: 1px solid #d5c4b8 !important;
+  background: transparent !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-message-kind="tool_use"],
+.session-workspace-chat-only .message-bubble[data-message-kind="tool_result"],
+.session-workspace-chat-only .message-bubble[data-message-kind="tool_activity"],
+.session-workspace-chat-only .message-bubble[data-message-kind="permission_request"] {
+  justify-self: start !important;
+  width: min(920px, 100%) !important;
+  max-width: min(920px, 100%) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-message-kind="tool_use"] .message-bubble-body,
+.session-workspace-chat-only .message-bubble[data-message-kind="tool_result"] .message-bubble-body,
+.session-workspace-chat-only .message-bubble[data-message-kind="tool_activity"] .message-bubble-body,
+.session-workspace-chat-only .message-bubble[data-message-kind="permission_request"] .message-bubble-body {
+  padding: 0 !important;
+}
+
+.session-workspace-chat-only .message-bubble[data-message-kind="tool_use"] .message-bubble-head,
+.session-workspace-chat-only .message-bubble[data-message-kind="tool_result"] .message-bubble-head,
+.session-workspace-chat-only .message-bubble[data-message-kind="tool_activity"] .message-bubble-head,
+.session-workspace-chat-only .message-bubble[data-message-kind="permission_request"] .message-bubble-head {
+  display: none !important;
+}
+
+.session-workspace-chat-only .message-tool-block {
+  width: 100%;
+}
+
+.session-workspace-chat-only .message-tool-block-head {
+  display: grid !important;
+  grid-template-columns: 14px 14px auto minmax(0, 1fr) auto !important;
+  gap: 7px !important;
+  min-height: 31px;
+  border: 1px solid #eee5dc !important;
+  border-radius: 10px !important;
+  padding: 5px 10px !important;
+  background: rgba(255, 253, 249, 0.84) !important;
+  color: #6f7680 !important;
+}
+
+.session-workspace-chat-only .message-tool-block-head:hover {
+  border-color: #e3d4ca !important;
+  background: #fffaf4 !important;
+}
+
+.session-workspace-chat-only .message-tool-block-toggle {
+  color: #a59a92 !important;
+}
+
+.session-workspace-chat-only .message-tool-block-head > svg:not(.message-tool-block-toggle) {
+  color: #9a4e2e !important;
+}
+
+.session-workspace-chat-only .message-tool-block[data-error="true"] .message-tool-block-head > svg:not(.message-tool-block-toggle) {
+  color: #b42318 !important;
+}
+
+.session-workspace-chat-only .message-tool-block-head strong {
+  min-width: 0;
+  color: #30343b !important;
+  font-family: var(--session-mono);
+  font-size: 12px !important;
+  font-weight: 740 !important;
+}
+
+.session-workspace-chat-only .message-tool-block-head span,
+.session-workspace-chat-only .message-tool-block-head small {
+  min-width: 0;
+  overflow: hidden;
+  color: #8a8f98 !important;
+  font-size: 12px !important;
+  line-height: 1.45 !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-workspace-chat-only .message-tool-block-head em {
+  justify-self: end;
+  border: 1px solid #e8ded5;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: #fffdf9;
+  color: #746b64;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 720;
+}
+
+.session-workspace-chat-only .message-tool-block pre {
+  max-height: 240px;
+  margin: 8px 0 0 28px;
+  border: 1px solid #eee5dc;
+  border-radius: 8px;
+  background: #fffdf9;
+  color: #4b5563;
+  box-shadow: none;
+}
+
+.session-workspace-chat-only .message-permission-block {
+  border: 1px solid #eee5dc;
+  border-radius: 10px;
+  padding: 9px 10px;
+  background: rgba(255, 253, 249, 0.9);
+}
+
+.session-workspace-chat-only .message-permission-block-head {
+  color: #30343b;
+}
+
+.session-workspace-chat-only .runtime-worklog-card,
+.session-workspace-chat-only .runtime-event-card,
+.session-workspace-chat-only .runtime-event-v2-card,
+.session-workspace-chat-only .runtime-process-card,
+.session-workspace-chat-only .runtime-file-change-card,
+.session-workspace-chat-only .runtime-trace-row {
+  justify-self: start !important;
+  width: min(920px, 100%) !important;
+  max-width: min(920px, 100%) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.session-workspace-chat-only .runtime-process-head,
+.session-workspace-chat-only .runtime-worklog-head,
+.session-workspace-chat-only .runtime-file-change-head,
+.session-workspace-chat-only .runtime-trace-row-summary {
+  min-height: 30px !important;
+  border: 1px solid #eee5dc !important;
+  border-radius: 10px !important;
+  padding: 5px 10px !important;
+  background: rgba(255, 253, 249, 0.84) !important;
+  color: #6f7680 !important;
+}
+
+.session-workspace-chat-only .runtime-process-head:hover,
+.session-workspace-chat-only .runtime-worklog-head:hover,
+.session-workspace-chat-only .runtime-file-change-head:hover,
+.session-workspace-chat-only .runtime-trace-row-summary:hover {
+  border-color: #e3d4ca !important;
+  background: #fffaf4 !important;
+}
+
+.session-workspace-chat-only .runtime-process-spark,
+.session-workspace-chat-only .runtime-worklog-dot,
+.session-workspace-chat-only .runtime-worklog-row-dot,
+.session-workspace-chat-only .runtime-file-change-icon,
+.session-workspace-chat-only .runtime-trace-dot {
+  width: 8px !important;
+  height: 8px !important;
+  border: 1px solid #cbb9ad !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+}
+
+.session-workspace-chat-only .runtime-process-card[data-active="true"] .runtime-process-spark,
+.session-workspace-chat-only .runtime-worklog-card[data-status="running"] .runtime-worklog-dot {
+  background: #c58a5f !important;
+}
+
+.session-workspace-chat-only .runtime-process-head h3,
+.session-workspace-chat-only .runtime-worklog-copy strong,
+.session-workspace-chat-only .runtime-file-change-head strong,
+.session-workspace-chat-only .runtime-trace-row-copy strong {
+  color: #30343b !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+}
+
+.session-workspace-chat-only .runtime-process-summary,
+.session-workspace-chat-only .runtime-worklog-copy small,
+.session-workspace-chat-only .runtime-file-change-head small,
+.session-workspace-chat-only .runtime-trace-row-copy small,
+.session-workspace-chat-only .runtime-process-meta span {
+  color: #8a8f98 !important;
+  font-size: 12px !important;
+  line-height: 1.45 !important;
+}
+
+.session-workspace-chat-only .runtime-process-summary {
+  margin: 3px 0 0 28px !important;
+}
+
+.session-workspace-chat-only .runtime-worklog-list,
+.session-workspace-chat-only .runtime-file-change-list {
+  margin-left: 30px !important;
+  padding: 2px 0 0 !important;
+}
+
+.session-workspace-chat-only .runtime-worklog-row,
+.session-workspace-chat-only .runtime-file-change-row {
+  min-height: 27px !important;
+  border-top: 1px solid #f0e8e0 !important;
+  padding: 5px 0 !important;
+}
+
+.session-workspace-chat-only .runtime-file-change-row {
+  grid-template-columns: minmax(0, 1fr) auto auto !important;
+}
+
+.session-workspace-chat-only .runtime-file-change-diff-button {
+  border-color: #eadbd1 !important;
+  background: transparent !important;
+  color: #9a4e2e !important;
+}
+
+.session-workspace-chat-only .runtime-file-change-diff-button:hover {
+  background: #fff5ec !important;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan,
+.session-workspace-chat-only .runtime-event-v2-card .yb-command-output,
+.session-workspace-chat-only .runtime-event-v2-card .yb-tool-trace {
+  border: 1px solid #eee5dc !important;
+  border-radius: 10px !important;
+  padding: 11px 12px !important;
+  background: #fffdf9 !important;
+  box-shadow: none !important;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card dl,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan dl {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+}
+
+.session-workspace-chat-only .runtime-event-v2-card .yb-approval-card dl div,
+.session-workspace-chat-only .runtime-event-v2-card .yb-patch-plan dl div {
+  border-color: #eee5dc !important;
+  border-radius: 8px !important;
+  background: #f8f4ef !important;
+}
+
+.session-workspace-chat-only .conversation-task-digest {
+  width: min(920px, 100%) !important;
+  max-width: min(920px, 100%) !important;
+  border: 1px solid #eee5dc !important;
+  border-radius: 10px !important;
+  background: #fffdf9 !important;
+  box-shadow: none !important;
+}
+
+@media (max-width: 760px) {
+  .session-workspace-chat-only .message-bubble[data-role="user"],
+  .session-workspace-chat-only .message-bubble[data-role="assistant"]:not(.message-bubble-thinking):not(.message-bubble-progress),
+  .session-workspace-chat-only .message-bubble.message-bubble-thinking,
+  .session-workspace-chat-only .runtime-worklog-card,
+  .session-workspace-chat-only .runtime-event-card,
+  .session-workspace-chat-only .runtime-event-v2-card,
+  .session-workspace-chat-only .runtime-process-card,
+  .session-workspace-chat-only .runtime-file-change-card,
+  .session-workspace-chat-only .conversation-task-digest {
+    width: 100% !important;
+    max-width: 100% !important;
   }
 }

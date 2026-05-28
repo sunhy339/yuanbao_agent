@@ -154,11 +154,11 @@
 }
 
 .markdown-content code {
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 5px;
-  padding: 1px 5px;
-  background: #f8fafc;
-  color: var(--yb-ink);
+  border: 1px solid rgba(143, 72, 47, 0.12);
+  border-radius: 6px;
+  padding: 1px 6px;
+  background: rgba(255, 245, 239, 0.92);
+  color: #7a3f28;
   font-family: var(--session-mono);
   font-size: 0.92em;
 }
@@ -235,11 +235,11 @@
   min-width: 0;
   overflow: auto;
   margin: 0;
-  border: 1px solid var(--session-border);
-  border-radius: 8px;
-  padding: 9px 10px;
-  background: rgba(248, 250, 252, 0.92);
-  color: var(--session-ink);
+  border: 1px solid rgba(143, 72, 47, 0.12);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 249, 245, 0.95);
+  color: var(--session-text);
   font: 12px/1.55 var(--session-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -303,11 +303,11 @@
   min-width: 0;
   overflow: auto;
   margin: 0;
-  border: 1px solid rgba(249, 115, 22, 0.18);
-  border-radius: 8px;
-  padding: 9px 10px;
-  background: rgba(255, 247, 237, 0.88);
-  color: #7c2d12;
+  border: 1px solid rgba(249, 115, 22, 0.16);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: rgba(255, 247, 237, 0.94);
+  color: #6f3416;
   font: 12px/1.55 var(--session-mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -347,12 +347,13 @@
   max-height: 320px;
   overflow: auto;
   margin: 0;
-  border: 1px solid rgba(15, 23, 42, 0.1);
-  border-radius: 8px;
-  padding: 10px 11px;
-  background: #2b1a0f;
-  color: #e5e7eb;
-  font: 12px/1.55 var(--session-mono);
+  border: 1px solid rgba(143, 72, 47, 0.14);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: linear-gradient(180deg, rgba(255, 249, 245, 0.98), rgba(247, 242, 238, 0.98));
+  color: #2f2723;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  font: 12.5px/1.62 var(--session-mono);
   white-space: pre;
 }
 

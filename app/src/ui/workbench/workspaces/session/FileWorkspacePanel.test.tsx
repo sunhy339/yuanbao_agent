@@ -129,6 +129,28 @@ describe("FileWorkspacePanel", () => {
     expect(onToggleFocus).toHaveBeenCalledTimes(1);
   });
 
+  it("switches markdown files between rendered preview and source code", async () => {
+    const user = userEvent.setup();
+    render(
+      <FileWorkspacePanel
+        workspaceRoot="D:/demo-blog"
+        workspaceLabel="demo-blog"
+        relatedFiles={["README.md"]}
+      />,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Blog Fixture" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "预览" })).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(screen.getByRole("button", { name: "源码" }));
+    const headingLine = await findCodeLine("# Blog Fixture");
+    expect(headingLine).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Blog Fixture" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "预览" }));
+    expect(await screen.findByRole("heading", { name: "Blog Fixture" })).toBeInTheDocument();
+  });
+
   it("copies the current path and toggles code wrapping from the lightweight file menu", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);

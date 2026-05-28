@@ -502,6 +502,21 @@
   cursor: pointer;
 }
 
+.hc-popover button {
+  flex-wrap: wrap;
+}
+
+.hc-popover button strong,
+.hc-slash-panel button strong {
+  color: var(--hc-text);
+}
+
+.hc-popover button small,
+.hc-slash-panel button small {
+  color: var(--hc-muted);
+  font-weight: 500;
+}
+
 .hc-popover button:hover,
 .hc-slash-panel button:hover,
 .hc-popover button[data-active="true"] {
@@ -520,6 +535,77 @@
   left: 12px;
 }
 
+.hc-slash-panel button {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+}
+
+.hc-context-popover,
+.hc-project-popover {
+  left: auto;
+  right: 0;
+  width: min(360px, calc(100vw - 48px));
+  padding: 12px;
+}
+
+.hc-project-popover {
+  right: auto;
+  left: 0;
+}
+
+.hc-context-popover header,
+.hc-project-popover header {
+  display: grid;
+  gap: 2px;
+  padding-bottom: 10px;
+}
+
+.hc-context-popover header strong,
+.hc-project-popover header strong {
+  color: var(--hc-text);
+}
+
+.hc-context-popover header small,
+.hc-project-popover header small,
+.hc-context-popover p,
+.hc-project-popover p {
+  margin: 0;
+  color: var(--hc-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.hc-context-popover dl {
+  display: grid;
+  gap: 0;
+  margin: 0 0 10px;
+  overflow: hidden;
+  border: 1px solid var(--hc-line);
+  border-radius: 9px;
+}
+
+.hc-context-popover dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--hc-line);
+  padding: 7px 9px;
+}
+
+.hc-context-popover dl div:last-child {
+  border-bottom: 0;
+}
+
+.hc-context-popover dt {
+  color: var(--hc-muted);
+}
+
+.hc-context-popover dd {
+  margin: 0;
+  color: var(--hc-text);
+  font-weight: 700;
+}
+
 .hc-context-strip {
   display: flex;
   min-height: 36px;
@@ -531,10 +617,42 @@
   font-size: 13px;
 }
 
-.hc-context-strip span {
+.hc-context-strip span,
+.hc-context-strip-button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+.hc-context-strip-button {
+  max-width: 260px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  padding: 4px 6px;
+  color: var(--hc-muted);
+  cursor: pointer;
+}
+
+.hc-context-strip-button:hover {
+  background: var(--hc-soft);
+  color: var(--hc-text);
+}
+
+.hc-context-strip-button:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.hc-context-strip-button:disabled:hover {
+  background: transparent;
+  color: var(--hc-muted);
+}
+
+.hc-context-strip-button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hc-queue {
@@ -1540,7 +1658,8 @@
 }
 
 .hc-file-pane .session-file-toolbar-actions,
-.hc-file-pane .session-file-open-tabs {
+.hc-file-pane .session-file-open-tabs,
+.hc-file-pane .session-file-view-mode {
   display: flex;
   align-items: center;
   gap: 5px;
@@ -1548,7 +1667,8 @@
 
 .hc-file-pane .session-file-toolbar-actions button,
 .hc-file-pane .session-file-more summary,
-.hc-file-pane .session-file-open-tab {
+.hc-file-pane .session-file-open-tab,
+.hc-file-pane .session-file-view-mode button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1563,6 +1683,25 @@
   min-height: 34px;
   border-bottom: 1px solid var(--hc-line);
   padding: 4px 8px;
+}
+
+.hc-file-pane .session-file-view-mode {
+  justify-content: flex-end;
+  border-bottom: 1px solid var(--hc-line);
+  padding: 5px 8px;
+}
+
+.hc-file-pane .session-file-view-mode button {
+  min-width: 46px;
+  padding: 5px 10px;
+  color: var(--hc-muted);
+  font-size: 12px;
+}
+
+.hc-file-pane .session-file-view-mode button[aria-pressed="true"] {
+  background: var(--hc-soft);
+  color: var(--hc-primary);
+  font-weight: 700;
 }
 
 .hc-file-pane .session-file-open-tab {

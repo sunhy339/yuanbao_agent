@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
   ChevronDown,
+  CircleHelp,
   Folder,
   Gauge,
   ImagePlus,
@@ -51,10 +52,10 @@ export interface CleanComposerProps {
 }
 
 const permissionOptions = [
-  { id: "ask", label: "询问权限" },
-  { id: "edits", label: "允许工作区编辑" },
-  { id: "plan", label: "计划模式" },
-  { id: "skip", label: "完全访问权限" },
+  { id: "ask", label: "询问权限", description: "写入、命令和高风险操作前先确认。" },
+  { id: "edits", label: "允许工作区编辑", description: "允许修改工作区文件，危险命令仍会走确认。" },
+  { id: "plan", label: "计划模式", description: "只做分析和计划，不主动改动文件。" },
+  { id: "skip", label: "完全访问权限", description: "尽量自动执行，适合你已确认目标时使用。" },
 ];
 
 function contextUsage(context?: SessionWorkspaceContextPreview | null) {
@@ -68,6 +69,36 @@ function contextUsage(context?: SessionWorkspaceContextPreview | null) {
 
 function attachmentName(path: string) {
   return basename(path);
+}
+
+function formatTokenCount(value?: number | null) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "未知";
+  }
+  return value.toLocaleString("zh-CN");
+}
+
+function contextBudgetRows(contextPreview?: SessionWorkspaceContextPreview | null) {
+  const stats = contextPreview?.budgetStats;
+  const rows: Array<{ label: string; value: string }> = [];
+  const used = stats?.estimatedInputTokens ?? stats?.estimatedTokens;
+  const max = stats?.maxContextTokens;
+  if (typeof used === "number" || typeof max === "number") {
+    rows.push({ label: "预算", value: `${formatTokenCount(used)} / ${formatTokenCount(max)}` });
+  }
+  if (typeof stats?.messageTokens === "number") {
+    rows.push({ label: "消息", value: formatTokenCount(stats.messageTokens) });
+  }
+  if (typeof stats?.toolSchemaTokens === "number") {
+    rows.push({ label: "工具", value: formatTokenCount(stats.toolSchemaTokens) });
+  }
+  if (typeof stats?.stablePrefixTokens === "number") {
+    rows.push({ label: "稳定前缀", value: formatTokenCount(stats.stablePrefixTokens) });
+  }
+  if (contextPreview?.toolCount) {
+    rows.push({ label: "可用工具", value: `${contextPreview.toolCount} 个` });
+  }
+  return rows;
 }
 
 export function CleanComposer({
@@ -106,11 +137,17 @@ export function CleanComposer({
   const [plusOpen, setPlusOpen] = useState(false);
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
+  const [projectOpen, setProjectOpen] = useState(false);
   const selectedModel = modelOptions.find((option) => option.id === selectedModelId) ?? modelOptions[0];
   const hasPayload = Boolean(promptValue.trim() || attachments.length);
   const canSubmit = !disabled && !submitting && hasPayload;
   const canQueue = Boolean(sending && canSubmit && onQueuePrompt);
   const context = contextUsage(contextPreview);
+  const contextRows = contextBudgetRows(contextPreview);
+  const trimmedSections = contextPreview?.budgetStats?.trimmedSections ?? [];
+  const droppedSections = contextPreview?.budgetStats?.droppedSections ?? [];
+  const cwdName = basename(cwdLabel);
   const slashMatches = useMemo(() => {
     if (!promptValue.startsWith("/") || promptValue.includes(" ")) return [];
     return matchCommands(promptValue.trim()).slice(0, 6);
@@ -225,7 +262,7 @@ export function CleanComposer({
           <div className="hc-slash-panel">
             {slashMatches.map((command) => (
               <button type="button" key={command.name} onClick={() => onPromptChange(`${command.name} `)}>
-                <strong>{command.name}</strong>
+                <strong>{command.name}{command.argsHint ? <small> {command.argsHint}</small> : null}</strong>
                 <span>{command.description}</span>
               </button>
             ))}
@@ -268,7 +305,8 @@ export function CleanComposer({
                         setPermissionOpen(false);
                       }}
                     >
-                      {option.label}
+                      <strong>{option.label}</strong>
+                      <small>{option.description}</small>
                     </button>
                   ))}
                 </div>
@@ -276,10 +314,48 @@ export function CleanComposer({
             </div>
           </div>
           <div className="hc-toolbar-right">
-            <button type="button" className="hc-pill hc-context" title="上下文">
-              <Gauge size={14} />
-              <span>{context}</span>
-            </button>
+            <div className="hc-menu">
+              <button
+                type="button"
+                className="hc-pill hc-context"
+                aria-expanded={contextOpen}
+                aria-label={`上下文 ${context}`}
+                onClick={() => {
+                  setContextOpen((open) => !open);
+                  setModelOpen(false);
+                  setProjectOpen(false);
+                }}
+                title="上下文"
+              >
+                <Gauge size={14} />
+                <span>{context}</span>
+              </button>
+              {contextOpen ? (
+                <div className="hc-popover hc-context-popover" aria-label="上下文详情">
+                  <header>
+                    <strong>上下文</strong>
+                    <small>{contextLabel || `当前占用 ${context}`}</small>
+                  </header>
+                  {contextRows.length ? (
+                    <dl>
+                      {contextRows.map((row) => (
+                        <div key={row.label}>
+                          <dt>{row.label}</dt>
+                          <dd>{row.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  ) : (
+                    <p>暂无上下文统计。</p>
+                  )}
+                  {contextPreview?.taskFocus?.currentStep ? <p>当前步骤：{contextPreview.taskFocus.currentStep}</p> : null}
+                  {contextPreview?.projectFocus ? <p>项目焦点：{contextPreview.projectFocus}</p> : null}
+                  {trimmedSections.length || droppedSections.length ? (
+                    <p>已压缩：{[...trimmedSections, ...droppedSections].slice(0, 4).join("、")}</p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
             <div className="hc-menu">
               <button type="button" className="hc-model" onClick={() => setModelOpen((open) => !open)}>
                 <span>{selectedModel?.label ?? providerLabel}</span>
@@ -321,8 +397,44 @@ export function CleanComposer({
           </div>
         </div>
         <div className="hc-context-strip">
-          <span><Folder size={16} />{basename(cwdLabel)}</span>
-          <span><Gauge size={14} />{contextLabel || `上下文 ${context}`}</span>
+          <div className="hc-menu hc-strip-menu">
+            <button
+              type="button"
+              className="hc-context-strip-button"
+              aria-expanded={projectOpen}
+              onClick={() => {
+                setProjectOpen((open) => !open);
+                setContextOpen(false);
+                setModelOpen(false);
+              }}
+            >
+              <Folder size={16} />{cwdName}
+            </button>
+            {projectOpen ? (
+              <div className="hc-popover hc-project-popover" aria-label="项目目录">
+                <header>
+                  <strong>项目目录</strong>
+                  <small>{cwdName}</small>
+                </header>
+                <p title={cwdLabel}>{cwdLabel || "未选择工作区"}</p>
+                <p>后续会在这里补最近项目、分支和工作树切换。</p>
+              </div>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            className="hc-context-strip-button"
+            onClick={() => {
+              setContextOpen((open) => !open);
+              setProjectOpen(false);
+              setModelOpen(false);
+            }}
+          >
+            <Gauge size={14} />{contextLabel || `上下文 ${context}`}
+          </button>
+          <button type="button" className="hc-context-strip-button" disabled title="上下文能力说明">
+            <CircleHelp size={14} />权限与上下文会随会话更新
+          </button>
           {runtimeChildTasks?.length ? <span>{runtimeChildTasks.length} 个子任务</span> : null}
         </div>
       </div>

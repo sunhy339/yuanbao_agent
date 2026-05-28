@@ -16,6 +16,8 @@
 - 低价值 read/list/git/search/状态探针会压进 worklog，失败、审批、写入、diff 保留在主线，减少“全屏都是工具调用”的噪声。
 - 文件区 clean 样式：右侧文件树、预览区、分隔条和搜索框已脱离旧 session CSS 的重卡片样式。
 - 代码阅览补了轻量语法高亮，常见关键词、字符串、注释、数字会先上色；Markdown 文件继续走预览渲染。
+- Composer 补了项目目录/上下文轻量详情、权限模式说明和 Slash 参数提示。
+- Markdown 文件补了预览/源码切换，源码模式保留行号和轻量高亮。
 - 现有后端数据适配：messages、toolCalls、approvals、patches、backgroundJobs、traces、activeTask、contextPreview。
 - clean transcript schema：已覆盖 user_text、assistant_text、assistant_progress、thinking、tool_use、tool_result、tool_group、permission_request、computer_use_permission、ask_user_question、background_task、task_summary、plan_update、goal_event、memory_event、compact_summary、api_retry、error、change_set、command、status、system。
 
@@ -31,7 +33,7 @@
 
 ## 暂时占位
 
-- 代码阅览完整语言服务级语法高亮、Markdown 源码/预览切换和 diff/源码联动。
+- 代码阅览完整语言服务级语法高亮、Markdown 目录锚点/滚动同步和 diff/源码联动。
 - 文件搜索、@文件引用、slash command 详情面板。
 - Computer Use 权限弹窗。
 - MCP/Skills/Settings 页面仍先复用旧业务组件，已加 clean shell 样式覆盖，后续可迁移到独立 clean 组件。

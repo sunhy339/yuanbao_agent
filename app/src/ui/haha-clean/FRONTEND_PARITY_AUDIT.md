@@ -17,6 +17,8 @@
 - `ask_user_question` 和 `computer_use_permission` 已从普通系统行拆成专用信息节点，先展示问题/选项、应用/权限详情；真正提交回答和权限弹窗仍等后端协议补齐。
 - 低价值 read/list/git/search/状态探针会继续压进 worklog，不再把主聊天刷成一串工具日志；失败、审批、写入、diff 仍保留为主线节点。
 - 右侧文件阅览补了轻量语法高亮，代码关键词、字符串、注释和数字会先按常见语言上色，Markdown 仍保留渲染预览。
+- Composer 底部项目目录、上下文、权限不再只是静态按钮：项目/上下文可展开轻量详情，权限选项会显示模式说明，Slash 面板补充参数提示。
+- Markdown 文件阅览补了“预览/源码”切换，源码模式复用右侧代码阅览的行号与轻量高亮。
 - 这层是 transcript adapter：能力不足时先把可识别事件接进统一消息流，无法由现有后端真实提供的能力继续记录为后端待补。
 
 ## 1. 应用壳层与导航
@@ -35,10 +37,10 @@
 | haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
 | --- | --- | --- | --- | --- |
 | 简洁空态 | logo、标题、新会话说明、底部 composer | `CleanNewSessionWorkspace` 已做简洁空态 | 无 | `部分接入`：视觉方向接近，但 logo/品牌图形仍是占位 |
-| 项目目录按钮 | 底部显示当前目录，可展开/切换 | composer 下方显示 cwd/context | workspace root store | `部分接入`：没有完整目录选择弹层、最近项目、分支信息 |
+| 项目目录按钮 | 底部显示当前目录，可展开/切换 | composer 下方显示 cwd/context，项目 chip 可展开当前目录详情 | workspace root store | `部分接入`：没有完整目录选择弹层、最近项目、分支信息 |
 | 模型选择 | 模型按钮/下拉 | `CleanComposer` 支持模型下拉 | modelOptions/selectedModelId | `已接入` |
 | 权限模式 | 跳过/询问/自动接受等权限模式 | `CleanComposer` 有权限下拉 | permissionMode callback | `部分接入`：缺 haha-cc 那种高风险确认弹窗和说明 |
-| 上下文按钮 | 上下文占用按钮，弹出详细 breakdown | 显示上下文百分比/标签 | contextPreview | `部分接入`：详细弹层、分类 token breakdown 还没做 |
+| 上下文按钮 | 上下文占用按钮，弹出详细 breakdown | 显示上下文百分比/标签，已补 token 预算、工具数、当前步骤、压缩节段轻量面板 | contextPreview | `部分接入`：还缺更完整的分类 token breakdown 和持久快照 |
 | 加号菜单 | 添加文件/图片、斜杠命令 | 加号菜单有“添加文件或图片”“斜杠命令” | file dialog/输入框本地状态 | `部分接入`：缺拖拽覆盖层、真实图片预览、文件引用持久化 |
 | 运行按钮 | 发送/运行，运行中切停止 | 已接入发送、停止 | submit/stop callbacks | `已接入` |
 
@@ -49,10 +51,10 @@
 | 多行输入框 | 大输入区，底部工具栏，宽度贴近聊天区 | clean composer 已全局接入 session/new-session | prompt state | `部分接入`：用户仍反馈会话页尺寸/贴边不稳定，后续要以 shell 容器统一约束宽度 |
 | `+` 按钮 | 打开工具菜单 | 已接入 | 前端状态 | `已接入` |
 | 添加文件或图片 | 文件选择、图片缩略图、移除 | 已有附件列表和移除按钮 | attachments array | `部分接入`：图片预览/文件读取后端能力未完全对齐 |
-| 斜杠命令 | `/` 面板、命令描述、键盘选择 | 仅插入 `/` 和基础命令入口 | slash 命令接口缺失/未接 | `后端待补 + 前端待补` |
+| 斜杠命令 | `/` 面板、命令描述、键盘选择 | 已有 `/` 自动补全、命令描述和参数提示 | slash 命令 registry | `部分接入`：键盘选择、后端扩展命令和命令结果面板还没完整 |
 | `@` 文件搜索 | 输入 `@` 搜索项目文件 | 未接入 clean composer | 可复用文件树/搜索接口，但缺稳定接口 | `后端待补 + 前端待补` |
-| 权限按钮 | 下拉权限模式，危险模式二次确认 | 有权限下拉 | permissionMode | `部分接入`：确认弹窗、模式解释和持久化状态需补 |
-| 上下文按钮 | 百分比/状态，点击看详情 | 有百分比短显示 | contextPreview | `部分接入`：缺详情浮层和分类视图 |
+| 权限按钮 | 下拉权限模式，危险模式二次确认 | 有权限下拉和每种模式说明 | permissionMode | `部分接入`：确认弹窗和持久化状态需补 |
+| 上下文按钮 | 百分比/状态，点击看详情 | 有百分比短显示和轻量详情浮层 | contextPreview | `部分接入`：缺完整分类视图 |
 | 模型按钮 | provider/model 下拉 | 已接入 | modelOptions | `已接入` |
 | 停止按钮 | 运行中停止生成 | 已接入 | stopPrompt / task cancel | `部分接入`：后端需避免 terminal task 重复 cancel 报错 |
 | 暂存/排队 | 运行中把下一条加入队列，可引导/调整顺序/删除 | 已有队列项、引导、上移、下移、删除 | queuedPrompts callbacks | `部分接入`：交互已存在，视觉还需更像 haha-cc 的轻量 pending bar |
@@ -127,7 +129,7 @@
 | 文件树 | 搜索、目录折叠、打开文件 | 复用 `FileWorkspacePanel` 并加 clean CSS | workspace file APIs | `部分接入`：样式接近，交互和图标还需精简 |
 | 分隔条 | 拖拽左右宽度 | clean session 有 paneWidth 分隔 | 前端状态 | `已接入` |
 | 代码阅览 | 行号、语法高亮、横向滚动 | 已有行号、横向滚动和轻量关键词/字符串/注释/数字高亮 | file content | `部分接入`：还不是完整语言服务级高亮，后续可复用编辑器能力 |
-| Markdown 阅览 | md 渲染预览/源码切换 | 已有 Markdown 预览 | file content | `部分接入`：源码/预览切换和目录锚点还没做 |
+| Markdown 阅览 | md 渲染预览/源码切换 | 已有 Markdown 预览和源码切换 | file content | `部分接入`：目录锚点和源码/预览滚动同步还没做 |
 | 文件搜索框 | 筛选文件 | 复用旧 file panel | workspace files | `已接入` |
 | 更多菜单 | 复制路径、自动换行、在编辑器打开 | 旧 panel 部分有，clean 样式覆盖 | existing actions | `部分接入`：菜单项和按钮位置需统一 |
 | 在编辑器打开 | 打开外部编辑器 | 旧 panel 部分能力 | shell open API | `部分接入` |
@@ -181,9 +183,9 @@
 
 1. `后端事件流`：让 assistant 正文/thinking/tool/status 按时间进入 transcript，而不是最后汇成一大段。前端已加 adapter，可先吃部分 haha-cc 风格事件。
 2. `工具摘要`：后端给 read/list/git/search/run/write/apply_patch 的结构化 summary、target、parentToolUseId；前端已保存 parentToolUseId。
-3. `Composer`：固定会话页宽度与右侧分隔区关系，补 `@文件`、slash 面板、上下文详情、权限危险确认。
+3. `Composer`：项目/上下文/权限详情和 Slash 参数提示已补一层；下一步固定会话页宽度与右侧分隔区关系，补 `@文件`、键盘选择、权限危险确认。
 4. `消息操作栏`：复制、引用、更多已接入；下一步补分支、删除/撤回、撤销当前轮所需的后端 target id 和 mutation。
-5. `Diff/File Viewer`：右侧文件区已补轻量高亮和 Markdown 预览；下一步补完整 diff viewer、源码/预览切换、右侧 diff/源码联动。
+5. `Diff/File Viewer`：右侧文件区已补轻量高亮、Markdown 预览和源码切换；下一步补完整 diff viewer、目录锚点、右侧 diff/源码联动。
 6. `Settings/MCP/Skills`：保留能力但重做成 haha-cc 式低卡片列表。
 
 ## 13. 当前结论

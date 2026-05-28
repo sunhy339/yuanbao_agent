@@ -26,6 +26,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  TextCursorInput,
   WrapText,
 } from "lucide-react";
 import type { WorkspaceFileEntry, WorkspaceFileReadResult } from "@shared";
@@ -41,6 +42,8 @@ const FILE_TREE_MIN_WIDTH = 280;
 const FILE_VIEWER_MIN_WIDTH = 240;
 const FILE_BROWSER_RESIZER_WIDTH = 7;
 const FILE_TREE_KEYBOARD_STEP = 36;
+
+type FilePreviewMode = "preview" | "source";
 
 function canUseTauriInvoke() {
   if (typeof window === "undefined") {
@@ -426,6 +429,7 @@ export function FileWorkspacePanel({
   const [readingPath, setReadingPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [wrapLines, setWrapLines] = useState(false);
+  const [previewMode, setPreviewMode] = useState<FilePreviewMode>("preview");
   const [copiedPath, setCopiedPath] = useState(false);
   const [fileTreeWidthPx, setFileTreeWidthPx] = useState<number | null>(() => readStoredFileTreeWidth());
   const [fileTreeResizing, setFileTreeResizing] = useState(false);
@@ -436,6 +440,7 @@ export function FileWorkspacePanel({
   const previewPath = selectedFile ?? filePreview?.path ?? "";
   const previewParent = previewPath ? parentWorkspacePath(previewPath) : ROOT_DIR;
   const currentAbsolutePath = workspaceAbsolutePath(workspaceRoot, previewPath || previewParent);
+  const markdownPreviewAvailable = Boolean(filePreview?.path && isMarkdownPath(filePreview.path) && !filePreview.binary);
   const topTabs = useMemo(() => {
     const baseTabs = rootEntries.length ? rootEntries.filter((entry) => entry.kind === "file").slice(0, 4) : [];
     return uniquePaths([
@@ -697,6 +702,18 @@ export function FileWorkspacePanel({
                 <WrapText size={14} strokeWidth={1.9} aria-hidden="true" />
                 <span>{wrapLines ? "关闭自动换行" : "启用自动换行"}</span>
               </button>
+              <button
+                aria-checked={previewMode === "source"}
+                disabled={!markdownPreviewAvailable}
+                role="menuitemcheckbox"
+                type="button"
+                onClick={() => {
+                  setPreviewMode((current) => (current === "preview" ? "source" : "preview"));
+                }}
+              >
+                <TextCursorInput size={14} strokeWidth={1.9} aria-hidden="true" />
+                <span>{previewMode === "source" ? "显示 Markdown 预览" : "查看 Markdown 源码"}</span>
+              </button>
             </div>
           </details>
           <IconButton
@@ -838,6 +855,24 @@ export function FileWorkspacePanel({
               </span>
             ) : null}
           </header>
+          {markdownPreviewAvailable ? (
+            <div className="session-file-view-mode" aria-label="Markdown 查看模式">
+              <button
+                type="button"
+                aria-pressed={previewMode === "preview"}
+                onClick={() => setPreviewMode("preview")}
+              >
+                预览
+              </button>
+              <button
+                type="button"
+                aria-pressed={previewMode === "source"}
+                onClick={() => setPreviewMode("source")}
+              >
+                源码
+              </button>
+            </div>
+          ) : null}
           {topTabs.length ? (
             <div className="session-file-inline-tabs" aria-label="文件标签">
               {topTabs.map((path) => (
@@ -866,7 +901,7 @@ export function FileWorkspacePanel({
               <span>已跳过文本预览。</span>
             </div>
           ) : filePreview?.content !== undefined ? (
-            isMarkdownPath(filePreview.path) ? (
+            isMarkdownPath(filePreview.path) && previewMode !== "source" ? (
               <article className="session-file-markdown">
                 <MarkdownContent content={filePreview.content} />
               </article>

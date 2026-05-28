@@ -3,6 +3,7 @@ import type {
   AgentEventEnvelope,
   ChatMessageCompletePayload,
   ChatStatusPayload,
+  ContentStartPayload,
   ContentDeltaPayload,
   MessageDeltaPayload,
   MessageCreatedPayload,
@@ -34,8 +35,10 @@ import {
   appendOrUpdateAssistantToolInputDelta,
   appendAssistantToolResultMessage,
   appendAssistantProgressMessage,
+  appendSpecialEventMessage,
   appendOrUpdateAssistantThinkingMessage,
   appendOrUpdatePermissionRequestMessage,
+  appendOrUpdateAssistantToolStartMessage,
   completeAssistantToolUseMessage,
   completeChatCompatMessage,
   removeAssistantThinkingMessage,
@@ -155,6 +158,45 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     return true;
   }
 
+  function readPayloadText(payload: unknown, keys: string[]): string {
+    if (!payload || typeof payload !== "object") {
+      return "";
+    }
+    const record = payload as Record<string, unknown>;
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+      if (typeof value === "number" || typeof value === "boolean") {
+        return String(value);
+      }
+    }
+    return "";
+  }
+
+  function appendSpecialEventFromEnvelope(event: AgentEventEnvelope, kind: string) {
+    const payload = event.payload as Record<string, unknown> | null | undefined;
+    const title = readPayloadText(payload, ["title", "label", "phase", "state", "type"]);
+    const summary = readPayloadText(payload, ["summary", "description", "message", "detail", "reason"]);
+    const content = readPayloadText(payload, ["content", "text", "body", "error"]);
+    const status = readPayloadText(payload, ["status"]);
+    setChatMessages((current) =>
+      appendSpecialEventMessage(current, {
+        kind,
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        content,
+        title,
+        summary,
+        status,
+        eventId: event.eventId,
+        metadata: payload && typeof payload === "object" ? payload : null,
+        now: event.ts,
+      }),
+    );
+  }
+
   useEffect(() => {
     let active = true;
     let dispose: (() => void) | undefined;
@@ -166,6 +208,32 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         }
 
         if (event.type === "content_start") {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          const payload = event.payload as ContentStartPayload;
+          if (payload.blockType === "tool_use" && payload.toolUseId) {
+            setChatMessages((current) =>
+              appendOrUpdateAssistantToolStartMessage(current, {
+                toolUseId: payload.toolUseId!,
+                toolName: payload.toolName,
+                parentToolUseId: payload.parentToolUseId,
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                now: event.ts,
+              }),
+            );
+          } else if (payload.blockType === "text") {
+            setChatMessages((current) =>
+              appendOrUpdateAssistantThinkingMessage(current, {
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                state: "streaming",
+                text: "正在输出回复",
+                now: event.ts,
+              }),
+            );
+          }
           return;
         }
 
@@ -203,6 +271,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               appendOrUpdateAssistantToolInputDelta(current, {
                 toolUseId,
                 toolName: payload.toolName,
+                parentToolUseId: payload.parentToolUseId,
                 sessionId: event.sessionId,
                 taskId: event.taskId,
                 delta: payload.toolInput!,
@@ -226,6 +295,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               toolUseId: payload.toolUseId,
               toolName: payload.toolName,
               input: payload.input,
+              parentToolUseId: payload.parentToolUseId,
               sessionId: event.sessionId,
               taskId: event.taskId,
               now: event.ts,
@@ -246,6 +316,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             appendAssistantToolResultMessage(current, {
               toolUseId: payload.toolUseId,
               toolName: payload.toolName,
+              parentToolUseId: payload.parentToolUseId,
               content: payload.content,
               isError: payload.isError,
               sessionId: event.sessionId,
@@ -347,6 +418,31 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               },
             ),
           );
+          return;
+        }
+
+        if (
+          [
+            "api_retry",
+            "system_notification",
+            "compact_summary",
+            "goal_event",
+            "memory_event",
+            "ask_user_question",
+            "computer_use_permission_request",
+            "computer_use_permission",
+          ].includes(event.type)
+        ) {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          const kind =
+            event.type === "system_notification"
+              ? "system"
+              : event.type === "computer_use_permission_request"
+                ? "computer_use_permission"
+                : event.type;
+          appendSpecialEventFromEnvelope(event, kind);
           return;
         }
 

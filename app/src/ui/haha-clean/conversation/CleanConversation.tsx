@@ -361,7 +361,7 @@ export const CleanSpecialEventBlock = memo(function CleanSpecialEventBlock({
         {icon}
         <strong>{title}</strong>
         {summary ? <span>{summary}</span> : null}
-        <StatusChip status={message.status ?? readMetadataString(message, ["status", "phase"])} />
+        <StatusChip status={readMetadataString(message, ["status", "phase"]) || message.status} />
       </button>
       {expanded && details ? <pre>{details}</pre> : null}
     </section>

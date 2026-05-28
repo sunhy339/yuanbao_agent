@@ -47,6 +47,14 @@ export type AgentEventType =
   | "permission_request"
   | "message_complete"
   | "status"
+  | "api_retry"
+  | "system_notification"
+  | "compact_summary"
+  | "goal_event"
+  | "memory_event"
+  | "ask_user_question"
+  | "computer_use_permission_request"
+  | "computer_use_permission"
   | "message.created"
   | "message.delta"
   | "message.completed"
@@ -164,6 +172,7 @@ export interface ContentDeltaPayload {
   toolInput?: string;
   toolUseId?: Identifier;
   toolName?: string;
+  parentToolUseId?: Identifier;
   step?: number;
 }
 

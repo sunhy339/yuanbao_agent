@@ -4,11 +4,13 @@ import {
   appendOrUpdateAssistantMessageCompletion,
   appendOrUpdateAssistantMessageDelta,
   appendOrUpdateAssistantToolInputDelta,
+  appendOrUpdateAssistantToolStartMessage,
   appendOrUpdateAssistantThinkingMessage,
   appendOrUpdatePermissionRequestMessage,
   appendAssistantToolResultMessage,
   appendAssistantPlaceholder,
   appendAssistantProgressMessage,
+  appendSpecialEventMessage,
   appendUserMessage,
   completeAssistantToolUseMessage,
   completeChatCompatMessage,
@@ -865,6 +867,79 @@ describe("chatMessages", () => {
         isError: false,
       },
     });
+  });
+
+  it("shows a content_start tool block before input deltas arrive", () => {
+    const started = appendOrUpdateAssistantToolStartMessage([], {
+      toolUseId: "tc_1",
+      toolName: "read_file",
+      parentToolUseId: "parent_1",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      now: 1,
+    });
+
+    expect(getVisibleChatMessages(started, "sess_1")).toEqual([
+      expect.objectContaining({
+        id: "tool_use:tc_1",
+        streaming: true,
+        toolName: "read_file",
+        metadata: {
+          kind: "tool_use",
+          toolUseId: "tc_1",
+          parentToolUseId: "parent_1",
+        },
+      }),
+    ]);
+
+    const completed = completeAssistantToolUseMessage(started, {
+      toolUseId: "tc_1",
+      toolName: "read_file",
+      parentToolUseId: "parent_1",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      input: { path: "src/index.ts" },
+      now: 2,
+    });
+
+    expect(completed[0]).toMatchObject({
+      streaming: false,
+      status: "completed",
+      metadata: {
+        parentToolUseId: "parent_1",
+        inputText: '{\n  "path": "src/index.ts"\n}',
+      },
+    });
+  });
+
+  it("records haha-style special transcript events", () => {
+    const next = appendSpecialEventMessage([], {
+      kind: "api_retry",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      title: "API 重试",
+      summary: "模型请求失败，正在重试。",
+      status: "warning",
+      eventId: "evt_retry",
+      metadata: { attempt: 2 },
+      now: 1,
+    });
+
+    expect(getVisibleChatMessages(next, "sess_1")).toEqual([
+      expect.objectContaining({
+        id: "api_retry:evt_retry",
+        role: "assistant",
+        content: "模型请求失败，正在重试。",
+        status: "completed",
+        metadata: {
+          kind: "api_retry",
+          title: "API 重试",
+          summary: "模型请求失败，正在重试。",
+          status: "warning",
+          attempt: 2,
+        },
+      }),
+    ]);
   });
 
   it("merges out-of-order tool result and completed input into one activity block", () => {

@@ -8,6 +8,13 @@
 - `后端待补`：前端可预留，但缺事件、字段或接口。
 - `暂不做`：不是当前 Yuanbao Agent 主线。
 
+## 本轮新增适配
+
+- 前端事件订阅现在会消费 `content_start`：`tool_use` 会先生成可见的工具占位行，`text` 会生成“正在输出回复”的流式提示，避免工具输入到齐前页面完全没反应。
+- `content_delta`、`tool_use_complete`、`tool_result` 已透传并保存 `parentToolUseId`，为后续工具树/父子折叠做准备。
+- 新增 haha-cc 风格特殊事件适配：`api_retry`、`system_notification`、`compact_summary`、`goal_event`、`memory_event`、`ask_user_question`、`computer_use_permission_request`、`computer_use_permission`。后端即使暂时只补部分事件，前端也能先渲染为低卡片信息流。
+- 这层是 transcript adapter：能力不足时先把可识别事件接进统一消息流，无法由现有后端真实提供的能力继续记录为后端待补。
+
 ## 1. 应用壳层与导航
 
 | haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
@@ -54,18 +61,18 @@
 | haha-cc 信息节点 | haha-cc 行为 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
 | --- | --- | --- | --- | --- |
 | 用户消息 | 右侧简洁气泡，可复制/引用/分支 | 用户消息已渲染 | messages.role=user | `部分接入`：消息操作栏未做 |
-| 助手正文 | 普通文本/Markdown，插在工具调用之间 | 助手正文已渲染 | messages.role=assistant | `部分接入`：后端目前常把最终总结集中到一个消息，缺真正分段 delta |
+| 助手正文 | 普通文本/Markdown，插在工具调用之间 | 助手正文已渲染，`content_start(text)` 可显示流式提示 | messages.role=assistant / content_start | `部分接入`：前端可接分段事件，但后端目前仍常把最终总结集中到一个消息，缺真正分段 delta |
 | 模型思考 | thinking 块，随流式更新 | 有 thinking/progress 入口 | metadata/status 推断 | `后端待补`：缺真实 token 级 thinking delta |
 | 过程说明 | 短句插在工具/命令前后 | `assistant_progress` 已预留和渲染 | 依赖 metadata.kind | `后端待补`：后端需要输出阶段性自然语言，不要只输出工具日志 |
-| 工具调用行 | 单行可折叠，显示工具名、目标、状态 | runtime/tool 行已低卡片化 | runtime items/toolCalls | `部分接入`：工具名解释和摘要还不够精确 |
-| 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy | runtime output/tool result | `部分接入`：缺 parentToolUseId，无法稳定组成树 |
-| 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做 | activity worklog | `部分接入`：read/list/git/search 已尽量压缩，重要工具仍需更自然地穿插 |
+| 工具调用行 | 单行可折叠，显示工具名、目标、状态 | runtime/tool 行已低卡片化，`content_start(tool_use)` 可先显示占位 | runtime items/toolCalls/content_start | `部分接入`：工具名解释和摘要还不够精确 |
+| 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy，并保存 `parentToolUseId` | runtime output/tool result | `部分接入`：父子 id 已能保存，稳定工具树 UI 还没完成 |
+| 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，普通 read/list/git/search 继续压缩 | activity worklog | `部分接入`：重要写入、审批、失败工具需要更自然地穿插在正文之间 |
 | 权限请求 | 内嵌审批卡，带 diff/命令预览 | 权限卡已接入批准/拒绝 | approvals/permission_request | `部分接入`：标题还需业务化，例如“写入 game.py”而不是 `apply_patch` |
 | 文件改动卡 | 当前轮改动 summary、查看 diff、撤销 | patch card + diff preview 已接入 | patches/changedFiles | `部分接入`：当前没有 turn 级撤销，diff 文件匹配仍需加强 |
 | 任务摘要 | 完成后显示总结，不在刚开始出现 | 已隐藏运行初期 task summary | activeTask | `部分接入`：结束时机和内容质量依赖后端 |
-| 上下文压缩 | “上下文已自动压缩”分割节点 | 有 `compact_summary` 渲染入口 | 暂缺事件 | `后端待补` |
-| Goal/Memory 事件 | 轻量系统节点 | 有前端类型和占位渲染 | 暂缺事件 | `后端待补` |
-| API retry | 重试提示 | 有前端类型和占位渲染 | 暂缺事件 | `后端待补` |
+| 上下文压缩 | “上下文已自动压缩”分割节点 | `compact_summary` 已进入 transcript adapter | 等后端真实事件 | `部分接入`：前端已接，后端待稳定 emit |
+| Goal/Memory 事件 | 轻量系统节点 | `goal_event`/`memory_event` 已进入 transcript adapter | 等后端真实事件 | `部分接入`：前端已接，后端待稳定 emit |
+| API retry | 重试提示 | `api_retry` 已进入 transcript adapter | 等后端真实事件 | `部分接入`：前端已接，后端待稳定 emit |
 | 错误节点 | 失败工具/请求明显但不巨大 | 已有错误态 | failed trace/runtime/message | `部分接入`：需要统一错误摘要和展开详情 |
 | 置底按钮 | 用户离开底部时显示向下按钮 | clean session 已有置底按钮 | 前端滚动状态 | `部分接入`：和 composer/右侧分隔布局还需联动打磨 |
 | 自动滚动 | 流式时跟随底部，用户滚动时暂停 | 有基本实现 | 前端状态 | `部分接入`：没有 haha-cc 的虚拟列表和滚动快照 |
@@ -148,25 +155,28 @@
 | haha-cc ServerMessage | 用途 | 我们当前来源 | 状态 |
 | --- | --- | --- | --- |
 | `connected` | websocket/session ready | app connection state | `部分接入` |
-| `content_start` | 开始 text/tool_use，并给 id | messages/runtime 推断 | `后端待补` |
-| `content_delta` | token/工具输入流式增量 | 缺真实 delta | `后端待补` |
-| `tool_use_complete` | 工具输入完整、parentToolUseId | toolCalls/runtime | `部分接入`，缺 parent |
-| `tool_result` | 工具结果 | runtime output/tool result | `部分接入` |
+| `content_start` | 开始 text/tool_use，并给 id | chat-compat 事件 / provider turn | `部分接入`：前端已渲染 text/tool 占位，后端需保证真实顺序和 id 稳定 |
+| `content_delta` | token/工具输入流式增量 | chat-compat 事件 / assistant token | `部分接入`：正文/toolInput 已能进流，真实 thinking delta 仍待补 |
+| `tool_use_complete` | 工具输入完整、parentToolUseId | toolCalls/runtime/chat-compat | `部分接入`：前端已保存 parentToolUseId，工具树 UI 待补 |
+| `tool_result` | 工具结果 | runtime output/tool result | `部分接入`：前端已保存 parentToolUseId，仍需结构化 summary |
 | `permission_request` | 审批请求 | approvals | `已接入` |
-| `computer_use_permission_request` | computer use 授权 | 无 | `后端待补` |
+| `computer_use_permission_request` | computer use 授权 | transcript adapter | `部分接入`：前端已能显示，后端能力/弹窗详情待补 |
 | `message_complete` | 本轮消息结束 | task/session status 推断 | `后端待补` |
 | `thinking` | 思考内容 | status/thinking metadata 推断 | `后端待补` |
 | `status` | 当前运行状态 | traces/activeTask | `部分接入` |
-| `api_retry` | API 重试提示 | 无 | `后端待补` |
+| `api_retry` | API 重试提示 | transcript adapter | `部分接入`：前端已能显示，后端待 emit |
 | `error` | 错误 | failed runtime/message | `部分接入` |
-| `system_notification` | 系统通知 | traces/system | `部分接入` |
+| `system_notification` | 系统通知 | traces/system/transcript adapter | `部分接入` |
+| `compact_summary` | 上下文压缩节点 | transcript adapter | `部分接入`：前端已能显示，后端待 emit |
+| `goal_event` / `memory_event` | 目标/记忆节点 | transcript adapter | `部分接入`：前端已能显示，后端待 emit |
+| `ask_user_question` | 工具向用户提问 | transcript adapter | `部分接入`：前端已能显示，交互式回答后端待补 |
 | `task_update` | 子任务/团队任务状态 | activeTask/backgroundJobs | `部分接入` |
 | `session_title_updated` | 自动标题 | session title | `部分接入` |
 
 ## 12. 当前优先整改顺序
 
-1. `后端事件流`：让 assistant 正文/thinking/tool/status 按时间进入 transcript，而不是最后汇成一大段。
-2. `工具摘要`：后端给 read/list/git/search/run/write/apply_patch 的结构化 summary、target、parentToolUseId。
+1. `后端事件流`：让 assistant 正文/thinking/tool/status 按时间进入 transcript，而不是最后汇成一大段。前端已加 adapter，可先吃部分 haha-cc 风格事件。
+2. `工具摘要`：后端给 read/list/git/search/run/write/apply_patch 的结构化 summary、target、parentToolUseId；前端已保存 parentToolUseId。
 3. `Composer`：固定会话页宽度与右侧分隔区关系，补 `@文件`、slash 面板、上下文详情、权限危险确认。
 4. `消息操作栏`：复制、引用、更多、分支、撤销当前轮。
 5. `Diff/File Viewer`：完整 diff viewer、右侧代码高亮、Markdown 预览。
@@ -174,4 +184,4 @@
 
 ## 13. 当前结论
 
-这次 clean 前端已经把主聊天、composer、文件区、权限、diff、worklog 和设置入口接回来了，但它还不是完整 haha-cc parity。最大差异不是单个样式按钮，而是后端 transcript 粒度：haha-cc 的前端依赖 `content_delta/tool_use_complete/tool_result/thinking/task_update` 这些细粒度事件，所以能自然呈现“思考 -> 工具 -> 解释 -> 再工具 -> 最终结论”。我们当前还有不少内容是从最终 messages、runtime 和 task 状态反推，因此会出现用户指出的“工具堆在一起、解释滞后、总结出现时机不对”的问题。
+这次 clean 前端已经把主聊天、composer、文件区、权限、diff、worklog 和设置入口接回来了，并新增了一层 transcript adapter：能接 `content_start/content_delta/tool_use_complete/tool_result`，也能预先渲染 `api_retry/compact_summary/goal_event/memory_event/ask_user_question/computer_use_permission` 等 haha-cc 风格事件。它还不是完整 haha-cc parity。最大差异不是单个样式按钮，而是后端 transcript 粒度：haha-cc 的前端依赖细粒度事件，所以能自然呈现“思考 -> 工具 -> 解释 -> 再工具 -> 最终结论”。我们当前还有不少内容是从最终 messages、runtime 和 task 状态反推，因此仍要继续补真实事件流、结构化工具摘要和工具树 UI。

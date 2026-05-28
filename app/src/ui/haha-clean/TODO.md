@@ -16,6 +16,7 @@
 - 工具/审批标题清洗：常见 `read_file`、`apply_patch`、`write_file`、`run_command` 会显示为“读取/修改/写入/运行 + 目标”，减少内部工具名暴露。
 - runtime `approval` 已拆成专用审批节点，批准/拒绝、文件列表和详情折叠不再混在通用工具卡里。
 - worklog 展开后使用紧凑工具行，低价值 read/list/git/search/status 记录不会再膨胀成大卡片，单行仍可展开复制详情。
+- worklog 已能读取 `parentToolUseId` 并渲染轻量父子缩进，先支持工具树的前端形态。
 - 低价值 read/list/git/search/状态探针会压进 worklog，失败、审批、写入、diff 保留在主线，减少“全屏都是工具调用”的噪声。
 - 文件区 clean 样式：右侧文件树、预览区、分隔条和搜索框已脱离旧 session CSS 的重卡片样式。
 - 代码阅览补了轻量语法高亮，常见关键词、字符串、注释、数字会先上色；Markdown 文件继续走预览渲染。
@@ -23,6 +24,7 @@
 - Markdown 文件补了预览/源码切换，源码模式保留行号和轻量高亮。
 - Slash 命令补了键盘选择：上下键/Home/End 切换，Enter/Tab 选中，Escape 关闭。
 - Markdown 预览补了轻量文档大纲，方便快速跳到章节。
+- 聊天正文 Markdown 补了宽松标题、任务列表和表格渲染，减少模型输出里 `##1`、表格、todo 直接裸露的情况。
 - Composer 补了 `@` 文件引用入口：加号菜单可插入 `@`，输入后能从当前已知文件候选里选择并插入引用。
 - 权限菜单补了“完全访问权限”二次确认，避免误点直接切到危险权限模式。
 - 现有后端数据适配：messages、toolCalls、approvals、patches、backgroundJobs、traces、activeTask、contextPreview。
@@ -31,7 +33,7 @@
 ## 需要后端补字段
 
 - 真实 token 级 thinking/assistant delta 分段，而不是只在最终消息里得到大段总结；前端已能消费分段事件。
-- 稳定的工具 parent/child 树、每个工具的结构化 input/output summary；前端已保存 `parentToolUseId`，但还没有完整树形 UI。
+- 稳定的工具 parent/child 树、每个工具的结构化 input/output summary；前端已保存 `parentToolUseId` 并支持 worklog 缩进展示，但仍需要后端稳定提供 parent id、阶段说明和结构化摘要。
 - 工具事件时间戳需要更稳定，否则前端只能尽量按 messages/runtime 的已有时间推断插入顺序。
 - 审批请求需要稳定提供受影响文件和 diff 字段；当前前端会尽量从 code/rawDetail 里推断文件列表。
 - 分支/撤销/真正绑定上下文的消息引用需要稳定 transcript target id；当前文本引用已能写入 composer。
@@ -42,6 +44,7 @@
 ## 暂时占位
 
 - 代码阅览完整语言服务级语法高亮、Markdown 源码/预览滚动同步和 diff/源码联动。
+- 聊天正文 Mermaid、图片内联、代码块更完整语法高亮。
 - 全项目文件搜索、`@` 引用持久化、slash command 详情/结果面板。
 - Computer Use 权限弹窗。
 - MCP/Skills/Settings 页面仍先复用旧业务组件，已加 clean shell 样式覆盖，后续可迁移到独立 clean 组件。

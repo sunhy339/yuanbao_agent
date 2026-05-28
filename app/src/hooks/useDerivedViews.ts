@@ -291,6 +291,8 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
         .filter((toolCall) => !activeTaskId || toolCall.taskId === activeTaskId)
         .map((toolCall) => ({
           id: toolCall.id,
+          toolUseId: toolCall.toolCallId,
+          parentToolUseId: toolCall.parentToolUseId,
           toolName: toolCall.toolName,
           status: toolCall.status,
           taskId: toolCall.taskId,

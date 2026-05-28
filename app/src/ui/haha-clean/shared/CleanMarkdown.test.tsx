@@ -1,0 +1,35 @@
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+import { CleanMarkdown } from "./CleanMarkdown";
+
+afterEach(() => cleanup());
+
+describe("CleanMarkdown", () => {
+  it("renders loose markdown headings without exposing raw hashes", () => {
+    render(<CleanMarkdown content={"##1 项目结构\n\n### 这次改了哪些文件"} />);
+
+    expect(screen.getByRole("heading", { name: "1 项目结构" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "这次改了哪些文件" })).toBeTruthy();
+    expect(screen.queryByText("##1 项目结构")).toBeNull();
+  });
+
+  it("renders task lists and simple markdown tables", () => {
+    render(
+      <CleanMarkdown
+        content={[
+          "- [x] 读取文件",
+          "- [ ] 运行测试",
+          "",
+          "| 文件 | 状态 |",
+          "| --- | --- |",
+          "| `game.py` | 修改 |",
+        ].join("\n")}
+      />,
+    );
+
+    expect(screen.getByText("读取文件")).toBeTruthy();
+    expect(screen.getByRole("checkbox", { checked: true })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "文件" })).toBeTruthy();
+    expect(screen.getByText("game.py")).toBeTruthy();
+  });
+});

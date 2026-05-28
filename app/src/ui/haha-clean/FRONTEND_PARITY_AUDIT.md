@@ -26,6 +26,8 @@
 - 工具/审批标题补了业务化动作名：`read_file`、`apply_patch`、`run_command` 等会优先显示为“读取 xxx”“修改 xxx”“运行 xxx”，不再把内部工具名当主标题。
 - runtime `approval` 已从通用工具卡拆成专用审批节点：标题、文件列表、批准/拒绝和详情折叠更靠近 haha-cc 的轻量请求块。
 - worklog 展开后改为专用紧凑工具行：读文件、查目录、Git 状态这类低价值步骤不再展开成大卡片，单行仍可继续打开详情和复制。
+- worklog 已经贯通 `toolUseId/parentToolUseId` 到 runtime 渲染层，展开后能按父子工具缩进展示，先补齐 haha-cc 信息流里的工具树基础形态。
+- 聊天正文 Markdown 渲染补了宽松标题、任务列表和表格，模型输出里的 `##1`、todo、表格不再直接按普通文本裸露。
 - 这层是 transcript adapter：能力不足时先把可识别事件接进统一消息流，无法由现有后端真实提供的能力继续记录为后端待补。
 
 ## 1. 应用壳层与导航
@@ -78,8 +80,8 @@
 | 模型思考 | thinking 块，随流式更新 | 有 thinking/progress 入口 | metadata/status 推断 | `后端待补`：缺真实 token 级 thinking delta |
 | 过程说明 | 短句插在工具/命令前后 | `assistant_progress` 已预留和渲染 | 依赖 metadata.kind | `后端待补`：后端需要输出阶段性自然语言，不要只输出工具日志 |
 | 工具调用行 | 单行可折叠，显示工具名、目标、状态 | runtime/tool 行已低卡片化，`content_start(tool_use)` 可先显示占位；工具标题会优先转成“读取/修改/运行 + 目标” | runtime items/toolCalls/content_start | `部分接入`：前端已清洗常见工具标题，后端仍需提供结构化 summary 避免前端猜 JSON |
-| 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy，并保存 `parentToolUseId` | runtime output/tool result | `部分接入`：父子 id 已能保存，稳定工具树 UI 还没完成 |
-| 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，展开后使用紧凑工具行；普通 read/list/git/search/状态探针继续压缩 | activity worklog | `部分接入`：视觉已更轻，后续还要接真实 parent/child 工具树和阶段解释正文 |
+| 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy，并保存 `parentToolUseId` | runtime output/tool result | `部分接入`：父子 id 已能保存并在 worklog 里缩进展示，但仍需要后端稳定树结构和工具摘要 |
+| 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，展开后使用紧凑工具行和父子缩进；普通 read/list/git/search/状态探针继续压缩 | activity worklog | `部分接入`：视觉已更轻，后续还要接真实阶段解释正文和更完整的父子折叠 |
 | 权限请求 | 内嵌审批卡，带 diff/命令预览 | runtime approval 已拆成专用轻量节点，常见审批会显示“修改/写入/运行 + 目标”，并保留批准/拒绝 | approvals/permission_request | `部分接入`：审批节点已拆出，permission request 内完整 diff/规则类永久批准还未补 |
 | 文件改动卡 | 当前轮改动 summary、查看 diff、撤销 | patch card + diff preview 已接入 | patches/changedFiles | `部分接入`：当前没有 turn 级撤销，diff 文件匹配仍需加强 |
 | 任务摘要 | 完成后显示总结，不在刚开始出现 | 已隐藏运行初期 task summary | activeTask | `部分接入`：结束时机和内容质量依赖后端 |
@@ -146,9 +148,10 @@
 | haha-cc 能力 | haha-cc 行为 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
 | --- | --- | --- | --- | --- |
 | 标题 | `#` 变标题，不显示原始 `##` | `CleanMarkdown` 已处理标题 | assistant content | `已接入` |
-| 列表 | 有序/无序列表缩进自然 | 已处理基础列表 | assistant content | `部分接入`：嵌套列表仍简单 |
+| 列表 | 有序/无序列表缩进自然 | 已处理基础列表和任务列表 | assistant content | `部分接入`：嵌套列表仍简单 |
 | inline code | 背景 chip | 已接入 | assistant content | `已接入` |
-| fenced code | 代码块、语言、复制、高亮 | 有代码块和简单高亮 | assistant content | `部分接入`：复制按钮、完整语法高亮待补 |
+| fenced code | 代码块、语言、复制、高亮 | 有代码块、语言栏、复制按钮和简单高亮 | assistant content | `部分接入`：完整语法高亮待补 |
+| 表格 | Markdown 表格转表格 UI | 已接入简单表格渲染 | assistant content | `部分接入`：复杂对齐/嵌套内容待补 |
 | Mermaid | 图表渲染 | 未接入 | assistant content | `前端待补` |
 | 图片内联 | 用户/助手图片画廊 | 附件有基础列表 | attachments/content refs | `后端待补 + 前端待补` |
 
@@ -189,7 +192,7 @@
 ## 12. 当前优先整改顺序
 
 1. `后端事件流`：让 assistant 正文/thinking/tool/status 按时间进入 transcript，而不是最后汇成一大段。前端已加 adapter，可先吃部分 haha-cc 风格事件。
-2. `工具摘要`：后端给 read/list/git/search/run/write/apply_patch 的结构化 summary、target、parentToolUseId；前端已保存 parentToolUseId。
+2. `工具摘要`：后端给 read/list/git/search/run/write/apply_patch 的结构化 summary、target、parentToolUseId；前端已保存 parentToolUseId 并能在 worklog 做父子缩进。
 3. `Composer`：项目/上下文/权限详情、Slash 参数提示和键盘选择已补一层；下一步固定会话页宽度与右侧分隔区关系，补 `@文件`、权限危险确认。
 4. `消息操作栏`：复制、引用、更多已接入；下一步补分支、删除/撤回、撤销当前轮所需的后端 target id 和 mutation。
 5. `Diff/File Viewer`：右侧文件区已补轻量高亮、Markdown 预览/源码切换和文档大纲；下一步补完整 diff viewer、源码/预览滚动同步、右侧 diff/源码联动。

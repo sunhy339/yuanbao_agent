@@ -108,6 +108,7 @@ export interface ToolTimelineItem {
   id: string;
   taskId: string;
   toolCallId: string;
+  parentToolUseId?: string;
   toolName: string;
   status: "started" | "completed" | "failed";
   argsSummary: string;

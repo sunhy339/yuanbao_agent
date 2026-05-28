@@ -16,6 +16,10 @@ function languageFromFence(info: string) {
   return info.trim().split(/\s+/)[0] || "text";
 }
 
+function normalizeHeadingText(value: string) {
+  return value.replace(/^#+\s*/, "").replace(/\s*#+$/, "").trim();
+}
+
 const keywordPattern =
   /\b(import|from|class|def|return|if|elif|else|for|while|try|except|finally|with|as|const|let|var|function|type|interface|export|async|await|new|public|private|protected|static|true|false|null|None|and|or|not)\b/g;
 
@@ -68,6 +72,33 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
   );
 }
 
+function TableBlock({ rows }: { rows: string[][] }) {
+  if (!rows.length) return null;
+  const [head, ...body] = rows;
+  return (
+    <div className="hc-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            {head.map((cell, index) => (
+              <th key={`${index}:${cell}`} dangerouslySetInnerHTML={{ __html: inlineHtml(cell.trim()) }} />
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {body.map((row, rowIndex) => (
+            <tr key={`${rowIndex}:${row.join("|")}`}>
+              {row.map((cell, index) => (
+                <td key={`${index}:${cell}`} dangerouslySetInnerHTML={{ __html: inlineHtml(cell.trim()) }} />
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function flushParagraph(lines: string[], nodes: JSX.Element[]) {
   if (!lines.length) return;
   const text = lines.join("\n");
@@ -98,12 +129,25 @@ export const CleanMarkdown = memo(function CleanMarkdown({ content }: { content:
       continue;
     }
 
-    const heading = /^(#{1,4})\s+(.+)$/.exec(line.trim());
+    const heading = /^(#{1,6})\s*(.+?)\s*$/.exec(line.trim());
     if (heading) {
       flushParagraph(paragraph, nodes);
       const Tag = `h${Math.min(heading[1].length + 1, 4)}` as keyof JSX.IntrinsicElements;
-      nodes.push(<Tag key={`h-${nodes.length}`} dangerouslySetInnerHTML={{ __html: inlineHtml(heading[2]) }} />);
+      nodes.push(<Tag key={`h-${nodes.length}`} dangerouslySetInnerHTML={{ __html: inlineHtml(normalizeHeadingText(heading[2])) }} />);
       index += 1;
+      continue;
+    }
+
+    if (/^\s*\|.+\|\s*$/.test(line) && /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(lines[index + 1] ?? "")) {
+      flushParagraph(paragraph, nodes);
+      const rows: string[][] = [];
+      rows.push(line.trim().replace(/^\||\|$/g, "").split("|"));
+      index += 2;
+      while (index < lines.length && /^\s*\|.+\|\s*$/.test(lines[index] ?? "")) {
+        rows.push((lines[index] ?? "").trim().replace(/^\||\|$/g, "").split("|"));
+        index += 1;
+      }
+      nodes.push(<TableBlock key={`table-${nodes.length}`} rows={rows} />);
       continue;
     }
 
@@ -121,20 +165,23 @@ export const CleanMarkdown = memo(function CleanMarkdown({ content }: { content:
       continue;
     }
 
-    const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
+    const bullet = /^\s*[-*]\s+(?:\[( |x|X)\]\s+)?(.+)$/.exec(line);
     if (bullet) {
       flushParagraph(paragraph, nodes);
-      const items: string[] = [];
+      const items: Array<{ checked?: boolean; text: string }> = [];
       while (index < lines.length) {
-        const item = /^\s*[-*]\s+(.+)$/.exec(lines[index] ?? "");
+        const item = /^\s*[-*]\s+(?:\[( |x|X)\]\s+)?(.+)$/.exec(lines[index] ?? "");
         if (!item) break;
-        items.push(item[1]);
+        items.push({ checked: item[1] ? item[1].toLowerCase() === "x" : undefined, text: item[2] });
         index += 1;
       }
       nodes.push(
         <ul key={`ul-${nodes.length}`}>
           {items.map((item, itemIndex) => (
-            <li key={`${itemIndex}:${item}`} dangerouslySetInnerHTML={{ __html: inlineHtml(item) }} />
+            <li key={`${itemIndex}:${item.text}`} className={item.checked !== undefined ? "hc-task-item" : undefined}>
+              {item.checked !== undefined ? <input type="checkbox" checked={item.checked} readOnly /> : null}
+              <span dangerouslySetInnerHTML={{ __html: inlineHtml(item.text) }} />
+            </li>
           ))}
         </ul>,
       );
@@ -154,7 +201,9 @@ export const CleanMarkdown = memo(function CleanMarkdown({ content }: { content:
       nodes.push(
         <ol key={`ol-${nodes.length}`}>
           {items.map((item, itemIndex) => (
-            <li key={`${itemIndex}:${item}`} dangerouslySetInnerHTML={{ __html: inlineHtml(item) }} />
+            <li key={`${itemIndex}:${item}`}>
+              <span dangerouslySetInnerHTML={{ __html: inlineHtml(item) }} />
+            </li>
           ))}
         </ol>,
       );

@@ -223,4 +223,38 @@ describe("CleanConversation", () => {
     await user.click(screen.getByRole("button", { name: "复制" }));
     expect(onCopyRuntimeText).toHaveBeenCalledWith("工具详情", "class Game: pass");
   });
+
+  it("indents parented worklog tools as a compact tree", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "tool:parent",
+            kind: "tool",
+            title: "task",
+            status: "completed",
+            toolName: "task",
+            toolUseId: "parent_1",
+            summary: "拆分渲染任务",
+          },
+          {
+            id: "tool:child",
+            kind: "tool",
+            title: "read_file",
+            status: "completed",
+            toolName: "read_file",
+            toolUseId: "child_1",
+            parentToolUseId: "parent_1",
+            code: JSON.stringify({ path: "app/src/ui.tsx" }),
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /已执行 2 项/ }));
+    expect(screen.getByText("1 个子步骤")).toBeInTheDocument();
+    expect(screen.getByText("读取 app/src/ui.tsx").closest(".hc-worklog-row")).toHaveAttribute("data-depth", "1");
+  });
 });

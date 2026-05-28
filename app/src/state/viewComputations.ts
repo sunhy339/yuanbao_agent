@@ -74,6 +74,7 @@ export function computeToolTimelineItems(events: AgentEventLike[]): ToolTimeline
       id: toolCallId,
       taskId: event.taskId ?? "",
       toolCallId,
+      parentToolUseId: readEventText(event.payload, "parentToolUseId") ?? current?.parentToolUseId,
       toolName,
       status,
       argsSummary: summarizeToolArguments(toolName, argumentValue, current?.argsSummary ?? "未记录参数"),

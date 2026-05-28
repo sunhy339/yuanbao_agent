@@ -115,6 +115,56 @@ function isQuietRuntime(item: RuntimeTimelineItem) {
   return ["read_file", "list_dir", "list_directory", "git_status", "git_diff", "search_files", "code_search"].includes(name);
 }
 
+type WorklogTreeNode = {
+  item: RuntimeTimelineItem;
+  children: WorklogTreeNode[];
+  depth: number;
+};
+
+function runtimeTreeId(item: RuntimeTimelineItem) {
+  return item.toolUseId || item.sourceId || item.id.replace(/^(tool|command|runtime):/, "");
+}
+
+function buildWorklogTree(items: RuntimeTimelineItem[]): WorklogTreeNode[] {
+  const byId = new Map<string, WorklogTreeNode>();
+  const roots: WorklogTreeNode[] = [];
+
+  items.forEach((item) => {
+    byId.set(runtimeTreeId(item), { item, children: [], depth: 0 });
+  });
+
+  items.forEach((item) => {
+    const node = byId.get(runtimeTreeId(item));
+    if (!node) return;
+    const parentId = item.parentToolUseId;
+    const parent = parentId ? byId.get(parentId) : undefined;
+    if (!parent || parent === node) {
+      roots.push(node);
+      return;
+    }
+    parent.children.push(node);
+  });
+
+  const assignDepth = (nodes: WorklogTreeNode[], depth: number): WorklogTreeNode[] =>
+    nodes.map((node) => ({
+      ...node,
+      depth,
+      children: assignDepth(node.children, Math.min(depth + 1, 4)),
+    }));
+
+  return assignDepth(roots, 0);
+}
+
+function flattenWorklogTree(nodes: WorklogTreeNode[]): WorklogTreeNode[] {
+  const flat: WorklogTreeNode[] = [];
+  const visit = (node: WorklogTreeNode) => {
+    flat.push(node);
+    node.children.forEach(visit);
+  };
+  nodes.forEach(visit);
+  return flat;
+}
+
 function splitDiffText(value: string) {
   const files: Array<{ oldPath: string; newPath: string; lines: ReturnType<typeof parseUnifiedDiff> }> = [];
   const sections = value.split(/\ndiff --git /g);
@@ -870,9 +920,13 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
 
 function CleanWorklogRuntimeRow({
   item,
+  depth = 0,
+  childCount = 0,
   onCopyRuntimeText,
 }: {
   item: RuntimeTimelineItem;
+  depth?: number;
+  childCount?: number;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -880,12 +934,13 @@ function CleanWorklogRuntimeRow({
   const summary = runtimeSummary(item);
   const detail = output || item.code || item.rawDetail || summary;
   return (
-    <article className="hc-worklog-row" data-tone={statusTone(item.status)}>
+    <article className="hc-worklog-row" data-tone={statusTone(item.status)} data-depth={depth}>
       <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
         {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <RuntimeIcon item={item} />
         <strong>{runtimeLabel(item)}</strong>
         {summary ? <span>{summary}</span> : null}
+        {childCount ? <small>{childCount} 个子步骤</small> : null}
         <StatusChip status={item.status} />
         {formatDuration(item.durationMs) ? <time>{formatDuration(item.durationMs)}</time> : null}
       </button>
@@ -914,7 +969,11 @@ export function CleanWorklogBlock({
   const [expanded, setExpanded] = useState(false);
   const quietCount = items.filter(isQuietRuntime).length;
   const importantItems = items.filter((item) => !isQuietRuntime(item));
-  const visible = expanded ? items : (importantItems.length ? importantItems.slice(0, 3) : items.slice(0, 3));
+  const tree = useMemo(() => buildWorklogTree(items), [items]);
+  const flatTree = useMemo(() => flattenWorklogTree(tree), [tree]);
+  const visible = expanded
+    ? flatTree
+    : (importantItems.length ? flatTree.filter((node) => !isQuietRuntime(node.item)).slice(0, 3) : flatTree.slice(0, 3));
   const labels = items.map(runtimeLabel).slice(0, 3);
   return (
     <section className="hc-worklog">
@@ -924,13 +983,19 @@ export function CleanWorklogBlock({
         {!expanded && labels.length ? <em>{labels.join("、")}{items.length > labels.length ? "..." : ""}</em> : null}
       </button>
       <div className="hc-worklog-list">
-        {visible.map((item) => (
-          <CleanWorklogRuntimeRow key={item.id} item={item} onCopyRuntimeText={onCopyRuntimeText} />
+        {visible.map((node) => (
+          <CleanWorklogRuntimeRow
+            key={node.item.id}
+            item={node.item}
+            depth={node.depth}
+            childCount={node.children.length}
+            onCopyRuntimeText={onCopyRuntimeText}
+          />
         ))}
       </div>
-      {!expanded && items.length > visible.length ? (
+      {!expanded && flatTree.length > visible.length ? (
         <button type="button" className="hc-show-more" onClick={() => setExpanded(true)}>
-          展开另外 {items.length - visible.length} 项
+          展开另外 {flatTree.length - visible.length} 项
         </button>
       ) : null}
     </section>

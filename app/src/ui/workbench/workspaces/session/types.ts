@@ -291,6 +291,8 @@ export interface SessionWorkspaceTrace {
 
 export interface SessionWorkspaceToolCall {
   id: string;
+  toolUseId?: string;
+  parentToolUseId?: string;
   toolName: string;
   status: string;
   taskId?: string;
@@ -413,6 +415,8 @@ export interface RuntimeTimelineItem {
   id: string;
   kind: "approval" | "patch" | "trace" | "tool" | "command" | "task" | "memory";
   sourceId?: string;
+  toolUseId?: string;
+  parentToolUseId?: string;
   title: string;
   status?: string;
   summary?: string;

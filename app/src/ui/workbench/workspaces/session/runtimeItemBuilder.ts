@@ -703,6 +703,8 @@ export function buildRuntimeItems({
     items.push({
       id: `tool:${toolCall.id}`,
       kind: presentation.kind,
+      toolUseId: toolCall.toolUseId ?? toolCall.id,
+      parentToolUseId: toolCall.parentToolUseId,
       title: presentation.title,
       status: toolCall.status,
       summary: presentation.summary,

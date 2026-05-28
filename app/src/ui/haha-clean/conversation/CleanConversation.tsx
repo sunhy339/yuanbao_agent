@@ -7,11 +7,14 @@ import {
   Circle,
   CircleAlert,
   Copy,
+  CornerDownRight,
   FileDiff,
   Files,
   HelpCircle,
   History,
   ListChecks,
+  MoreHorizontal,
+  MousePointerClick,
   RotateCcw,
   TerminalSquare,
   Target,
@@ -214,7 +217,80 @@ function messageTitleForKind(kind: CleanTranscriptKind | string, message: Sessio
   return labels[kind] ?? "运行事件";
 }
 
-export const CleanAssistantMessage = memo(function CleanAssistantMessage({ message }: { message: SessionWorkspaceMessage }) {
+function quoteMessageText(message: SessionWorkspaceMessage) {
+  const content = message.content.trim();
+  if (!content) return "";
+  const speaker = message.role === "user" ? "用户" : "助手";
+  return [`> ${speaker}：`, ...content.split(/\r?\n/).map((line) => `> ${line}`)].join("\n");
+}
+
+function MessageActions({
+  message,
+  align = "left",
+  onCopyRuntimeText,
+  onQuoteMessage,
+}: {
+  message: SessionWorkspaceMessage;
+  align?: "left" | "right";
+  onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onQuoteMessage?: (text: string) => void;
+}) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const content = message.content.trim();
+  if (!content || !onCopyRuntimeText) return null;
+  const quote = quoteMessageText(message);
+  return (
+    <div className="hc-message-actions" data-align={align}>
+      <button type="button" title="复制消息" onClick={() => void onCopyRuntimeText("消息内容", content)}>
+        <Copy size={13} />
+        <span>复制</span>
+      </button>
+      <button
+        type="button"
+        title={onQuoteMessage ? "引用到输入框" : "复制为引用"}
+        onClick={() => {
+          if (onQuoteMessage) {
+            onQuoteMessage(quote);
+            return;
+          }
+          void onCopyRuntimeText("引用消息", quote);
+        }}
+      >
+        <CornerDownRight size={13} />
+        <span>引用</span>
+      </button>
+      <div>
+        <button type="button" title="更多" aria-expanded={moreOpen} onClick={() => setMoreOpen((open) => !open)}>
+          <MoreHorizontal size={14} />
+        </button>
+        {moreOpen ? (
+          <menu>
+            <li>
+              <button type="button" onClick={() => void onCopyRuntimeText("消息 ID", message.id)}>
+                复制消息 ID
+              </button>
+            </li>
+            <li>
+              <button type="button" disabled>
+                从这里分支需要后端
+              </button>
+            </li>
+          </menu>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+export const CleanAssistantMessage = memo(function CleanAssistantMessage({
+  message,
+  onCopyRuntimeText,
+  onQuoteMessage,
+}: {
+  message: SessionWorkspaceMessage;
+  onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onQuoteMessage?: (text: string) => void;
+}) {
   const content = stripAssistantRuntimeProgress(message.content).trim();
   if (!content) return null;
   if (message.metadata?.kind === "assistant_progress") {
@@ -225,17 +301,31 @@ export const CleanAssistantMessage = memo(function CleanAssistantMessage({ messa
     );
   }
   return (
-    <article className="hc-message hc-assistant" data-layout={isDocumentMessage(content) ? "document" : "bubble"}>
-      <CleanMarkdown content={content} />
-    </article>
+    <div className="hc-message-stack" data-role="assistant">
+      <article className="hc-message hc-assistant" data-layout={isDocumentMessage(content) ? "document" : "bubble"}>
+        <CleanMarkdown content={content} />
+      </article>
+      <MessageActions message={message} onCopyRuntimeText={onCopyRuntimeText} onQuoteMessage={onQuoteMessage} />
+    </div>
   );
 });
 
-export const CleanUserMessage = memo(function CleanUserMessage({ message }: { message: SessionWorkspaceMessage }) {
+export const CleanUserMessage = memo(function CleanUserMessage({
+  message,
+  onCopyRuntimeText,
+  onQuoteMessage,
+}: {
+  message: SessionWorkspaceMessage;
+  onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onQuoteMessage?: (text: string) => void;
+}) {
   return (
-    <article className="hc-message hc-user">
-      <p>{message.content}</p>
-    </article>
+    <div className="hc-message-stack" data-role="user">
+      <article className="hc-message hc-user">
+        <p>{message.content}</p>
+      </article>
+      <MessageActions message={message} align="right" onCopyRuntimeText={onCopyRuntimeText} onQuoteMessage={onQuoteMessage} />
+    </div>
   );
 });
 
@@ -368,6 +458,93 @@ export const CleanSpecialEventBlock = memo(function CleanSpecialEventBlock({
   );
 });
 
+function readMetadataList(message: SessionWorkspaceMessage, keys: string[]) {
+  for (const key of keys) {
+    const value = message.metadata?.[key];
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+export const CleanAskUserQuestionBlock = memo(function CleanAskUserQuestionBlock({
+  message,
+  onCopyRuntimeText,
+}: {
+  message: SessionWorkspaceMessage;
+  onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+}) {
+  const question =
+    readMetadataString(message, ["question", "prompt", "summary", "message", "description"]) ||
+    message.content.trim() ||
+    "需要你补充信息";
+  const options = readMetadataList(message, ["options", "choices"]);
+  return (
+    <section className="hc-question-event">
+      <header>
+        <HelpCircle size={16} />
+        <div>
+          <strong>需要你确认</strong>
+          <span>{question}</span>
+        </div>
+        <StatusChip status={readMetadataString(message, ["status"]) || message.status || "waiting"} />
+      </header>
+      {options.length ? (
+        <div className="hc-question-options">
+          {options.slice(0, 4).map((option, index) => {
+            const record = option && typeof option === "object" ? option as Record<string, unknown> : null;
+            const label = record ? readString(record.label ?? record.value ?? record.title) : readString(option);
+            const description = record ? readString(record.description ?? record.detail) : "";
+            return (
+              <button type="button" key={`${label}:${index}`} disabled>
+                <strong>{label || `选项 ${index + 1}`}</strong>
+                {description ? <span>{description}</span> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      <footer>
+        <button type="button" onClick={() => void onCopyRuntimeText?.("待确认问题", question)}>
+          <Copy size={13} />复制问题
+        </button>
+      </footer>
+    </section>
+  );
+});
+
+export const CleanComputerUsePermissionBlock = memo(function CleanComputerUsePermissionBlock({
+  message,
+  onCopyRuntimeText,
+}: {
+  message: SessionWorkspaceMessage;
+  onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+}) {
+  const appName = readMetadataString(message, ["app", "application", "target", "windowTitle"]);
+  const permission = readMetadataString(message, ["permission", "action", "summary", "description"]) || message.content.trim();
+  const details = Object.entries(message.metadata ?? {})
+    .filter(([key, value]) => key !== "kind" && value !== undefined && value !== null && typeof value !== "object")
+    .map(([key, value]) => `${key}: ${String(value)}`)
+    .join("\n");
+  return (
+    <section className="hc-computer-event">
+      <header>
+        <MousePointerClick size={16} />
+        <div>
+          <strong>Computer Use 权限</strong>
+          <span>{[appName, permission].filter(Boolean).join(" · ") || "等待授权详情"}</span>
+        </div>
+        <StatusChip status={readMetadataString(message, ["status"]) || message.status || "waiting"} />
+      </header>
+      {details ? <pre>{details}</pre> : null}
+      <footer>
+        <button type="button" onClick={() => void onCopyRuntimeText?.("Computer Use 权限", [permission, details].filter(Boolean).join("\n\n"))}>
+          <Copy size={13} />复制详情
+        </button>
+      </footer>
+    </section>
+  );
+});
+
 function RuntimeIcon({ item }: { item: RuntimeTimelineItem }) {
   if (item.kind === "patch") return <FileDiff size={15} />;
   if (item.kind === "command") return <TerminalSquare size={15} />;
@@ -479,6 +656,7 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
   onReject,
   onLoadPatch,
   onCopyRuntimeText,
+  onQuoteMessage,
   onRefreshCommandJob,
   onStopCommandJob,
   busyId,
@@ -488,6 +666,7 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
   onReject?: (approvalId: string) => void | Promise<void>;
   onLoadPatch?: (patchId: string) => void | Promise<void>;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onQuoteMessage?: (text: string) => void;
   onRefreshCommandJob?: (commandId: string) => void | Promise<void>;
   onStopCommandJob?: (commandId: string) => void | Promise<void>;
   busyId?: string | null;
@@ -611,6 +790,7 @@ export function CleanActivityItem({
   onReject,
   onLoadPatch,
   onCopyRuntimeText,
+  onQuoteMessage,
   onRefreshCommandJob,
   onStopCommandJob,
   busyId,
@@ -620,6 +800,7 @@ export function CleanActivityItem({
   onReject?: (approvalId: string) => void | Promise<void>;
   onLoadPatch?: (patchId: string) => void | Promise<void>;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onQuoteMessage?: (text: string) => void;
   onRefreshCommandJob?: (commandId: string) => void | Promise<void>;
   onStopCommandJob?: (commandId: string) => void | Promise<void>;
   busyId?: string | null;
@@ -649,7 +830,7 @@ export function CleanActivityItem({
     );
   }
 
-      const message = item.message;
+  const message = item.message;
   const kind = messageKind(message);
   const wrap = (node: JSX.Element | null) => (node ? <div className="hc-activity" data-transcript-kind={transcriptKind}>{node}</div> : null);
   if (kind === "assistant_thinking" || kind === "thinking" || (message.streaming && message.placeholder)) {
@@ -661,14 +842,17 @@ export function CleanActivityItem({
   if (kind === "tool_use" || kind === "tool_result" || kind === "tool_activity") {
     return wrap(<CleanToolMessageBlock message={message} />);
   }
+  if (kind === "ask_user_question") {
+    return wrap(<CleanAskUserQuestionBlock message={message} onCopyRuntimeText={onCopyRuntimeText} />);
+  }
+  if (kind === "computer_use_permission" || kind === "computer_use_permission_request") {
+    return wrap(<CleanComputerUsePermissionBlock message={message} onCopyRuntimeText={onCopyRuntimeText} />);
+  }
   if (
     [
       "api_retry",
-      "ask_user_question",
       "background_task",
       "compact_summary",
-      "computer_use_permission",
-      "computer_use_permission_request",
       "goal_event",
       "memory_event",
       "plan_update",
@@ -682,7 +866,15 @@ export function CleanActivityItem({
   ) {
     return wrap(<CleanSpecialEventBlock message={message} transcriptKind={transcriptKind} />);
   }
-  if (message.role === "user") return wrap(<CleanUserMessage message={message} />);
-  if (message.role === "assistant") return wrap(<CleanAssistantMessage message={message} />);
+  if (message.role === "user") {
+    return wrap(
+      <CleanUserMessage message={message} onCopyRuntimeText={onCopyRuntimeText} onQuoteMessage={onQuoteMessage} />,
+    );
+  }
+  if (message.role === "assistant") {
+    return wrap(
+      <CleanAssistantMessage message={message} onCopyRuntimeText={onCopyRuntimeText} onQuoteMessage={onQuoteMessage} />,
+    );
+  }
   return null;
 }

@@ -318,6 +318,16 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
     setError(null);
   }
 
+  function handleQuoteMessage(text: string) {
+    const quote = text.trim();
+    if (!quote) return;
+    setPrompt((current) => {
+      const prefix = current.trim() ? `${current.trimEnd()}\n\n` : "";
+      return `${prefix}${quote}\n\n`;
+    });
+    setError(null);
+  }
+
   function formatMcpSummary(servers: McpServerRecord[]): string {
     if (servers.length === 0) {
       return "暂无 MCP 服务器。可以在侧边栏的 **MCP** 页签中添加。";
@@ -504,6 +514,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
     sendMessageContent,
     handleSendMessage,
     handleQueuePrompt,
+    handleQuoteMessage,
     handleSlashCommand,
     handleStopPrompt,
     addSystemMessage,

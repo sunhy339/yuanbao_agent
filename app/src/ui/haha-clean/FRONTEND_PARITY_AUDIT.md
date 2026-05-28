@@ -13,6 +13,10 @@
 - 前端事件订阅现在会消费 `content_start`：`tool_use` 会先生成可见的工具占位行，`text` 会生成“正在输出回复”的流式提示，避免工具输入到齐前页面完全没反应。
 - `content_delta`、`tool_use_complete`、`tool_result` 已透传并保存 `parentToolUseId`，为后续工具树/父子折叠做准备。
 - 新增 haha-cc 风格特殊事件适配：`api_retry`、`system_notification`、`compact_summary`、`goal_event`、`memory_event`、`ask_user_question`、`computer_use_permission_request`、`computer_use_permission`。后端即使暂时只补部分事件，前端也能先渲染为低卡片信息流。
+- 普通用户/助手消息已补轻量操作栏：复制、引用、更多。引用会优先写入底部 composer；没有 composer 桥接时退回为复制引用文本。
+- `ask_user_question` 和 `computer_use_permission` 已从普通系统行拆成专用信息节点，先展示问题/选项、应用/权限详情；真正提交回答和权限弹窗仍等后端协议补齐。
+- 低价值 read/list/git/search/状态探针会继续压进 worklog，不再把主聊天刷成一串工具日志；失败、审批、写入、diff 仍保留为主线节点。
+- 右侧文件阅览补了轻量语法高亮，代码关键词、字符串、注释和数字会先按常见语言上色，Markdown 仍保留渲染预览。
 - 这层是 transcript adapter：能力不足时先把可识别事件接进统一消息流，无法由现有后端真实提供的能力继续记录为后端待补。
 
 ## 1. 应用壳层与导航
@@ -60,13 +64,13 @@
 
 | haha-cc 信息节点 | haha-cc 行为 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
 | --- | --- | --- | --- | --- |
-| 用户消息 | 右侧简洁气泡，可复制/引用/分支 | 用户消息已渲染 | messages.role=user | `部分接入`：消息操作栏未做 |
-| 助手正文 | 普通文本/Markdown，插在工具调用之间 | 助手正文已渲染，`content_start(text)` 可显示流式提示 | messages.role=assistant / content_start | `部分接入`：前端可接分段事件，但后端目前仍常把最终总结集中到一个消息，缺真正分段 delta |
+| 用户消息 | 右侧简洁气泡，可复制/引用/分支 | 用户消息已渲染，带复制/引用/更多操作 | messages.role=user | `部分接入`：复制/引用已接入，分支/撤回仍需稳定 transcript target id |
+| 助手正文 | 普通文本/Markdown，插在工具调用之间 | 助手正文已渲染，带复制/引用/更多操作，`content_start(text)` 可显示流式提示 | messages.role=assistant / content_start | `部分接入`：前端可接分段事件，但后端目前仍常把最终总结集中到一个消息，缺真正分段 delta |
 | 模型思考 | thinking 块，随流式更新 | 有 thinking/progress 入口 | metadata/status 推断 | `后端待补`：缺真实 token 级 thinking delta |
 | 过程说明 | 短句插在工具/命令前后 | `assistant_progress` 已预留和渲染 | 依赖 metadata.kind | `后端待补`：后端需要输出阶段性自然语言，不要只输出工具日志 |
 | 工具调用行 | 单行可折叠，显示工具名、目标、状态 | runtime/tool 行已低卡片化，`content_start(tool_use)` 可先显示占位 | runtime items/toolCalls/content_start | `部分接入`：工具名解释和摘要还不够精确 |
 | 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy，并保存 `parentToolUseId` | runtime output/tool result | `部分接入`：父子 id 已能保存，稳定工具树 UI 还没完成 |
-| 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，普通 read/list/git/search 继续压缩 | activity worklog | `部分接入`：重要写入、审批、失败工具需要更自然地穿插在正文之间 |
+| 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，普通 read/list/git/search/状态探针继续压缩 | activity worklog | `部分接入`：重要写入、审批、失败工具会留在主线，后续还要更自然地穿插解释正文 |
 | 权限请求 | 内嵌审批卡，带 diff/命令预览 | 权限卡已接入批准/拒绝 | approvals/permission_request | `部分接入`：标题还需业务化，例如“写入 game.py”而不是 `apply_patch` |
 | 文件改动卡 | 当前轮改动 summary、查看 diff、撤销 | patch card + diff preview 已接入 | patches/changedFiles | `部分接入`：当前没有 turn 级撤销，diff 文件匹配仍需加强 |
 | 任务摘要 | 完成后显示总结，不在刚开始出现 | 已隐藏运行初期 task summary | activeTask | `部分接入`：结束时机和内容质量依赖后端 |
@@ -81,10 +85,10 @@
 
 | haha-cc 按钮 | haha-cc 行为 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
 | --- | --- | --- | --- | --- |
-| 复制 | 复制消息/工具输出 | runtime 输出有复制，消息正文未统一 | Clipboard | `前端待补` |
-| 引用 | 把该消息作为后续输入引用 | 队列引导已有，但消息引用未做 | 需要 transcript id | `后端待补 + 前端待补` |
+| 复制 | 复制消息/工具输出 | runtime 输出和普通消息正文均已接入复制 | Clipboard | `已接入` |
+| 引用 | 把该消息作为后续输入引用 | 普通消息可引用到 composer；没有桥接时复制 Markdown 引用 | composer prompt / transcript id | `部分接入`：文本引用已可用，真正绑定某条 transcript 的上下文引用仍需后端 id |
 | 删除/撤回 | 删除本地消息或撤销当前轮 | 未完整接入 | 需要 session transcript mutation | `后端待补` |
-| 更多 `...` | 展开更多操作 | 未统一 | 需要动作定义 | `前端待补` |
+| 更多 `...` | 展开更多操作 | 普通消息已有轻量菜单，支持复制消息 ID，分支入口置灰 | 需要动作定义 | `部分接入`：菜单形态已接入，分支/撤销等动作还缺后端 |
 | 从这里分支 | 基于某条消息创建分支会话 | 未接入 clean 流 | 需要 branchSession/transcript id | `后端待补 + 前端待补` |
 | 撤销本轮改动 | 当前轮 change card 撤销 | 未接入 | 需要后端 revert turn | `后端待补` |
 
@@ -102,8 +106,8 @@
 | 审批拒绝 | reject | 已接入 | approvals API | `已接入` |
 | 永久批准/规则 | haha-cc 有 always/规则类操作 | 未接入 | 需要 permission rule 后端 | `后端待补` |
 | 审批 diff 预览 | write/edit/apply_patch 展示 diff | 有 patch diff preview | patches | `部分接入`：permission request 内 diff 还未完全内嵌 |
-| Computer Use 权限 | 专用弹窗，选择 app/权限项 | 仅类型占位 | 无后端事件 | `后端待补` |
-| AskUserQuestion | 工具向用户提问，有选项/输入 | 仅类型占位 | 无后端事件 | `后端待补` |
+| Computer Use 权限 | 专用弹窗，选择 app/权限项 | 已有专用低卡片节点，可展示 app/action/details 并复制详情 | transcript adapter | `部分接入`：前端展示已接，真实权限弹窗和授权提交仍需后端 |
+| AskUserQuestion | 工具向用户提问，有选项/输入 | 已有专用问题节点，可展示问题/选项并复制问题 | transcript adapter | `部分接入`：前端展示已接，交互式回答提交仍需后端 |
 
 ## 7. 文件改动与 diff
 
@@ -122,8 +126,8 @@
 | --- | --- | --- | --- | --- |
 | 文件树 | 搜索、目录折叠、打开文件 | 复用 `FileWorkspacePanel` 并加 clean CSS | workspace file APIs | `部分接入`：样式接近，交互和图标还需精简 |
 | 分隔条 | 拖拽左右宽度 | clean session 有 paneWidth 分隔 | 前端状态 | `已接入` |
-| 代码阅览 | 行号、语法高亮、横向滚动 | 当前主要是纯文本/有限样式 | file content | `前端待补`：需要引入轻量高亮或复用编辑器能力 |
-| Markdown 阅览 | md 渲染预览/源码切换 | 未完整接入右侧文件区 | file content | `前端待补` |
+| 代码阅览 | 行号、语法高亮、横向滚动 | 已有行号、横向滚动和轻量关键词/字符串/注释/数字高亮 | file content | `部分接入`：还不是完整语言服务级高亮，后续可复用编辑器能力 |
+| Markdown 阅览 | md 渲染预览/源码切换 | 已有 Markdown 预览 | file content | `部分接入`：源码/预览切换和目录锚点还没做 |
 | 文件搜索框 | 筛选文件 | 复用旧 file panel | workspace files | `已接入` |
 | 更多菜单 | 复制路径、自动换行、在编辑器打开 | 旧 panel 部分有，clean 样式覆盖 | existing actions | `部分接入`：菜单项和按钮位置需统一 |
 | 在编辑器打开 | 打开外部编辑器 | 旧 panel 部分能力 | shell open API | `部分接入` |
@@ -178,10 +182,10 @@
 1. `后端事件流`：让 assistant 正文/thinking/tool/status 按时间进入 transcript，而不是最后汇成一大段。前端已加 adapter，可先吃部分 haha-cc 风格事件。
 2. `工具摘要`：后端给 read/list/git/search/run/write/apply_patch 的结构化 summary、target、parentToolUseId；前端已保存 parentToolUseId。
 3. `Composer`：固定会话页宽度与右侧分隔区关系，补 `@文件`、slash 面板、上下文详情、权限危险确认。
-4. `消息操作栏`：复制、引用、更多、分支、撤销当前轮。
-5. `Diff/File Viewer`：完整 diff viewer、右侧代码高亮、Markdown 预览。
+4. `消息操作栏`：复制、引用、更多已接入；下一步补分支、删除/撤回、撤销当前轮所需的后端 target id 和 mutation。
+5. `Diff/File Viewer`：右侧文件区已补轻量高亮和 Markdown 预览；下一步补完整 diff viewer、源码/预览切换、右侧 diff/源码联动。
 6. `Settings/MCP/Skills`：保留能力但重做成 haha-cc 式低卡片列表。
 
 ## 13. 当前结论
 
-这次 clean 前端已经把主聊天、composer、文件区、权限、diff、worklog 和设置入口接回来了，并新增了一层 transcript adapter：能接 `content_start/content_delta/tool_use_complete/tool_result`，也能预先渲染 `api_retry/compact_summary/goal_event/memory_event/ask_user_question/computer_use_permission` 等 haha-cc 风格事件。它还不是完整 haha-cc parity。最大差异不是单个样式按钮，而是后端 transcript 粒度：haha-cc 的前端依赖细粒度事件，所以能自然呈现“思考 -> 工具 -> 解释 -> 再工具 -> 最终结论”。我们当前还有不少内容是从最终 messages、runtime 和 task 状态反推，因此仍要继续补真实事件流、结构化工具摘要和工具树 UI。
+这次 clean 前端已经把主聊天、composer、文件区、权限、diff、worklog 和设置入口接回来了，并新增了一层 transcript adapter：能接 `content_start/content_delta/tool_use_complete/tool_result`，也能预先渲染 `api_retry/compact_summary/goal_event/memory_event/ask_user_question/computer_use_permission` 等 haha-cc 风格事件。普通消息的复制/引用/更多也已接入，引用能写回 composer。它还不是完整 haha-cc parity。最大差异不是单个样式按钮，而是后端 transcript 粒度：haha-cc 的前端依赖细粒度事件，所以能自然呈现“思考 -> 工具 -> 解释 -> 再工具 -> 最终结论”。我们当前还有不少内容是从最终 messages、runtime 和 task 状态反推，因此仍要继续补真实事件流、结构化工具摘要和工具树 UI。

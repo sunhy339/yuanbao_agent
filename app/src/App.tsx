@@ -644,6 +644,7 @@ export function App() {
     sendMessageContent,
     handleSendMessage,
     handleQueuePrompt,
+    handleQuoteMessage,
     handleSlashCommand,
     handleStopPrompt,
     addSystemMessage,
@@ -1012,6 +1013,7 @@ export function App() {
         handleApprovalSubmit={handleApprovalSubmit}
         handleLoadPatchDiff={handleLoadPatchDiff}
         handleCopyRuntimeText={handleCopyRuntimeText}
+        handleQuoteMessage={handleQuoteMessage}
         handleRefreshCommandJob={handleRefreshCommandJob}
         handleStopCommandJob={handleStopCommandJob}
         handleRefreshTask={handleRefreshTask}

@@ -702,6 +702,16 @@
   color: #273444;
 }
 
+.hc-message-stack {
+  display: grid;
+  gap: 5px;
+  width: min(1040px, 100%);
+}
+
+.hc-message-stack[data-role="user"] {
+  justify-items: end;
+}
+
 .hc-activity[data-transcript-kind="assistant_progress"] {
   width: min(980px, 100%);
 }
@@ -740,6 +750,74 @@
   margin: 0;
 }
 
+.hc-message-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  color: var(--hc-muted);
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+.hc-message-stack:hover .hc-message-actions,
+.hc-message-actions:focus-within {
+  opacity: 1;
+}
+
+.hc-message-actions[data-align="right"] {
+  justify-content: flex-end;
+}
+
+.hc-message-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 5px;
+  color: inherit;
+  cursor: pointer;
+}
+
+.hc-message-actions button:hover {
+  background: rgba(244, 241, 236, 0.8);
+  color: var(--hc-text);
+}
+
+.hc-message-actions menu {
+  position: absolute;
+  right: 0;
+  bottom: 24px;
+  z-index: 12;
+  min-width: 148px;
+  margin: 0;
+  border: 1px solid var(--hc-line);
+  border-radius: 9px;
+  background: #fff;
+  padding: 5px;
+  box-shadow: var(--hc-soft-shadow);
+  list-style: none;
+}
+
+.hc-message-actions[data-align="left"] menu {
+  right: auto;
+  left: 0;
+}
+
+.hc-message-actions menu button {
+  width: 100%;
+  justify-content: flex-start;
+  padding: 7px 8px;
+}
+
+.hc-message-actions button:disabled {
+  color: var(--hc-faint);
+  cursor: not-allowed;
+}
+
 .hc-empty-note {
   border-top: 1px solid var(--hc-line);
   padding: 26px 0;
@@ -753,7 +831,9 @@
 .hc-worklog,
 .hc-runtime-inline,
 .hc-permission-card,
-.hc-special-event {
+.hc-special-event,
+.hc-question-event,
+.hc-computer-event {
   width: min(1040px, 100%);
   border-left: 1px solid var(--hc-line-strong);
   padding-left: 12px;
@@ -868,6 +948,102 @@
 .hc-compact-divider pre {
   margin: 6px 0 0 28px;
   max-height: 300px;
+  overflow: auto;
+  border: 1px solid var(--hc-line);
+  border-radius: 8px;
+  background: var(--hc-code-bg);
+  padding: 10px;
+  color: #39434d;
+  white-space: pre-wrap;
+}
+
+.hc-question-event,
+.hc-computer-event {
+  display: grid;
+  gap: 9px;
+}
+
+.hc-question-event {
+  border-left-color: rgba(71, 101, 127, 0.45);
+}
+
+.hc-computer-event {
+  border-left-color: rgba(148, 99, 15, 0.45);
+}
+
+.hc-question-event header,
+.hc-computer-event header {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-height: 34px;
+}
+
+.hc-question-event header > div,
+.hc-computer-event header > div {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+.hc-question-event header strong,
+.hc-computer-event header strong {
+  color: var(--hc-text);
+  font-size: 14px;
+}
+
+.hc-question-event header span,
+.hc-computer-event header span {
+  color: var(--hc-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.hc-question-options {
+  display: grid;
+  gap: 6px;
+  margin-left: 28px;
+}
+
+.hc-question-options button {
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--hc-line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px 10px;
+  color: var(--hc-text);
+  text-align: left;
+}
+
+.hc-question-options button span {
+  color: var(--hc-muted);
+  font-size: 12px;
+}
+
+.hc-question-event footer,
+.hc-computer-event footer {
+  display: flex;
+  gap: 8px;
+  margin-left: 28px;
+}
+
+.hc-question-event footer button,
+.hc-computer-event footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--hc-line);
+  border-radius: 7px;
+  background: #fff;
+  padding: 5px 8px;
+  color: var(--hc-muted);
+}
+
+.hc-computer-event pre {
+  margin: 0 0 0 28px;
+  max-height: 240px;
   overflow: auto;
   border: 1px solid var(--hc-line);
   border-radius: 8px;
@@ -1532,6 +1708,26 @@
   overflow: visible;
   color: #25303d;
   white-space: pre;
+}
+
+.hc-file-pane .session-file-syntax-keyword {
+  color: #b42318;
+}
+
+.hc-file-pane .session-file-syntax-string {
+  color: #087443;
+}
+
+.hc-file-pane .session-file-syntax-comment {
+  color: #7d8794;
+}
+
+.hc-file-pane .session-file-syntax-number {
+  color: #8f482f;
+}
+
+.hc-file-pane .session-file-syntax-operator {
+  color: #6b7280;
 }
 
 /* Markdown and code */

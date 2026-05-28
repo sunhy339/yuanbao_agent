@@ -128,6 +128,7 @@ export interface WorkspaceRouterProps {
   handleApprovalSubmit: (approvalId: string, decision: "approved" | "rejected") => Promise<void>;
   handleLoadPatchDiff: (patchId: string) => Promise<void>;
   handleCopyRuntimeText: (label: string, text: string) => Promise<void>;
+  handleQuoteMessage: (text: string) => void;
   handleRefreshCommandJob: (commandId: string) => Promise<void>;
   handleStopCommandJob: (commandId: string) => Promise<void>;
   handleRefreshTask: () => Promise<void>;
@@ -338,6 +339,7 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
           void props.handleCopyRuntimeText("补丁路径", path);
         }}
         onCopyRuntimeText={props.handleCopyRuntimeText}
+        onQuoteMessage={props.handleQuoteMessage}
         onRefreshCommandJob={props.handleRefreshCommandJob}
         onStopCommandJob={props.handleStopCommandJob}
         onRefreshTask={props.handleRefreshTask}

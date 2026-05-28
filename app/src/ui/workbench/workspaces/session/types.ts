@@ -383,6 +383,7 @@ export interface SessionWorkspaceProps {
   onLoadPatch?(patchId: string): void | Promise<void>;
   onCopyPatchPath?(patchId: string, path: string): void | Promise<void>;
   onCopyRuntimeText?(label: string, text: string): void | Promise<void>;
+  onQuoteMessage?(text: string): void;
   onRefreshCommandJob?(commandId: string): void | Promise<void>;
   onStopCommandJob?(commandId: string): void | Promise<void>;
   onRefreshTask?(): void | Promise<void>;
@@ -429,6 +430,7 @@ export interface RuntimeTimelineItem {
   agentType?: string;
   groupKey?: string;
   superseded?: boolean;
+  syntheticTime?: boolean;
 }
 
 export interface ToolRuntimePresentation {

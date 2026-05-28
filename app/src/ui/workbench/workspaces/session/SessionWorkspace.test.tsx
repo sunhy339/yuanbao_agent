@@ -946,12 +946,11 @@ describe("SessionWorkspace", () => {
 
     const blocks = container.querySelectorAll(".message-tool-block");
     expect(blocks).toHaveLength(1);
-    expect(screen.getByText("工具过程")).toBeInTheDocument();
     expect(screen.getAllByText("运行命令").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/命令：npm test → 状态：已完成/)).toBeInTheDocument();
     expect(screen.queryByText(/"command": "npm test"/)).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /工具过程/ }));
+    await user.click(screen.getByRole("button", { name: /运行命令/ }));
     expect(screen.getByText("输入")).toBeInTheDocument();
     expect(screen.getByText("结果")).toBeInTheDocument();
     expect(screen.getByText(/"command": "npm test"/)).toBeInTheDocument();
@@ -1158,6 +1157,31 @@ describe("SessionWorkspace", () => {
     expect(screen.getByLabelText("运行摘要")).toHaveTextContent("已调用 1 个工具");
     expect(screen.getAllByText("读取文件 snake_game/game.py").length).toBeGreaterThan(0);
     expect(screen.queryByText(/"path":"snake_game\/game.py"/)).not.toBeInTheDocument();
+  });
+
+  it("folds successful git probes into the worklog instead of the main timeline", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[{ id: "m1", role: "user", content: "Check status", createdAt: 1 }]}
+        toolCalls={[
+          {
+            id: "tool_status",
+            toolName: "run_command",
+            status: "completed",
+            resultSummary: "Workspace clean.",
+            rawInput: '{"command":"git status","cwd":"."}',
+            durationMs: 30,
+            time: 2,
+          },
+        ]}
+      />,
+    );
+
+    const worklog = screen.getByLabelText("运行摘要");
+    expect(worklog).toHaveTextContent("已运行 1 条命令");
+    expect(screen.queryByRole("heading", { name: "git status" })).not.toBeInTheDocument();
   });
 
   it("keeps repeated successful read_file probes out of the main activity stream", () => {

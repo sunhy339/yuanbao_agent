@@ -64,16 +64,25 @@ function isLowSignalTaskStep(value?: string | null) {
 }
 
 function isCollapsibleWorklogRuntimeItem(item: RuntimeTimelineItem) {
-  if (item.kind !== "tool") {
+  if (!["tool", "command"].includes(item.kind)) {
     return false;
   }
   if (isRuntimeInFlight(item.status)) {
     return false;
   }
-  if (["run_command", "apply_patch", "write_file"].includes(item.toolName ?? "")) {
+  if (["apply_patch", "write_file"].includes(item.toolName ?? "")) {
     return false;
   }
-  return !["failed", "error", "rejected", "cancelled"].includes(item.status?.toLowerCase() ?? "");
+  if (["failed", "error", "rejected", "cancelled"].includes(item.status?.toLowerCase() ?? "")) {
+    return false;
+  }
+  if (item.kind === "command") {
+    const title = item.title.toLowerCase();
+    const code = item.code?.toLowerCase() ?? "";
+    return /^(git status|git diff|pwd|ls|dir|get-childitem|get-location)\b/.test(title) ||
+      /^(git status|git diff|pwd|ls|dir|get-childitem|get-location)\b/.test(code);
+  }
+  return !["run_command"].includes(item.toolName ?? "");
 }
 
 function sortActivityItems(items: RawConversationActivityItem[]) {
@@ -137,7 +146,11 @@ function attachRuntimeTimesToMessages(
     .sort((left, right) => left - right);
   const needsSyntheticTime = runtimeItems.some((item) => !isUsableTimelineTimestamp(item.time));
   if (!sortedMessageTimes.length) {
-    return needsSyntheticTime ? runtimeItems.map((runtime) => (isUsableTimelineTimestamp(runtime.time) ? runtime : { ...runtime, time: undefined })) : runtimeItems;
+    return needsSyntheticTime
+      ? runtimeItems.map((runtime) =>
+          isUsableTimelineTimestamp(runtime.time) ? runtime : { ...runtime, time: undefined, syntheticTime: true },
+        )
+      : runtimeItems;
   }
   if (!needsSyntheticTime) {
     return runtimeItems;
@@ -152,7 +165,9 @@ function attachRuntimeTimesToMessages(
     return runtimeItems;
   }
   return runtimeItems.map((runtime, index) =>
-    isUsableTimelineTimestamp(runtime.time) ? runtime : { ...runtime, time: anchorTime + 0.001 * (index + 1) },
+    isUsableTimelineTimestamp(runtime.time)
+      ? runtime
+      : { ...runtime, time: anchorTime + 0.001 * (index + 1), syntheticTime: true },
   );
 }
 
@@ -205,6 +220,9 @@ function getRuntimeEndTimeForMessageTurn(
   const { previousUserTime, nextUserTime } = findSurroundingUserTimes(message, messages);
   let endTime: number | undefined;
   runtimeItems.forEach((item) => {
+    if (item.syntheticTime) {
+      return;
+    }
     const itemTime = item.time;
     if (!isUsableActivityTime(itemTime)) {
       return;

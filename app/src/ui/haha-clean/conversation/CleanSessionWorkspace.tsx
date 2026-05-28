@@ -37,6 +37,7 @@ export function CleanSessionWorkspace({
   onReject,
   onLoadPatch,
   onCopyRuntimeText,
+  onQuoteMessage,
   onRefreshCommandJob,
   onStopCommandJob,
   worktreeStatus,
@@ -117,6 +118,7 @@ export function CleanSessionWorkspace({
                 onReject={onReject}
                 onLoadPatch={onLoadPatch}
                 onCopyRuntimeText={onCopyRuntimeText}
+                onQuoteMessage={onQuoteMessage}
                 onRefreshCommandJob={onRefreshCommandJob}
                 onStopCommandJob={onStopCommandJob}
                 busyId={busyId}

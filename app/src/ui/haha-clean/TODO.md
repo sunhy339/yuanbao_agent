@@ -7,11 +7,15 @@
 - 全局 Shell、左侧会话导航、标签栏、底部输入框。
 - 新建会话空态、项目目录/模型/权限/上下文入口。
 - 会话流：用户消息、助手正文、思考块、工具块、命令、审批、文件改动、worklog 折叠、置底。
+- 普通消息操作栏：用户/助手消息支持复制、引用、更多；引用会写入 composer，缺桥接时退回复制 Markdown 引用文本。
 - haha-cc 式低卡片消息流：过程说明、工具行、文件改动、上下文压缩/Goal/Memory/API retry 等事件均有前端渲染入口。
 - transcript adapter：已接入 `content_start` 的 text/tool 占位、`content_delta` 工具输入增量、`tool_use_complete`/`tool_result` 的 `parentToolUseId` 保存。
 - 特殊事件适配：`api_retry`、`system_notification`、`compact_summary`、`goal_event`、`memory_event`、`ask_user_question`、`computer_use_permission_request`、`computer_use_permission` 可直接进入消息流。
+- `ask_user_question` 和 `computer_use_permission` 已有专用轻量节点，不再混进普通系统消息；目前先展示问题/选项、权限详情和复制操作。
 - 工具摘要清洗：目录/文件/Git/搜索类输出不再直接展示原始 JSON，优先显示可读短摘要。
+- 低价值 read/list/git/search/状态探针会压进 worklog，失败、审批、写入、diff 保留在主线，减少“全屏都是工具调用”的噪声。
 - 文件区 clean 样式：右侧文件树、预览区、分隔条和搜索框已脱离旧 session CSS 的重卡片样式。
+- 代码阅览补了轻量语法高亮，常见关键词、字符串、注释、数字会先上色；Markdown 文件继续走预览渲染。
 - 现有后端数据适配：messages、toolCalls、approvals、patches、backgroundJobs、traces、activeTask、contextPreview。
 - clean transcript schema：已覆盖 user_text、assistant_text、assistant_progress、thinking、tool_use、tool_result、tool_group、permission_request、computer_use_permission、ask_user_question、background_task、task_summary、plan_update、goal_event、memory_event、compact_summary、api_retry、error、change_set、command、status、system。
 
@@ -20,14 +24,14 @@
 - 真实 token 级 thinking/assistant delta 分段，而不是只在最终消息里得到大段总结；前端已能消费分段事件。
 - 稳定的工具 parent/child 树、每个工具的结构化 input/output summary；前端已保存 `parentToolUseId`，但还没有完整树形 UI。
 - 工具事件时间戳需要更稳定，否则前端只能尽量按 messages/runtime 的已有时间推断插入顺序。
-- 分支/撤销/引用消息需要稳定 transcript target id。
+- 分支/撤销/真正绑定上下文的消息引用需要稳定 transcript target id；当前文本引用已能写入 composer。
 - 项目 git 分支、worktree、上下文快照分类明细。
 - 文件/图片引用需要持久化记录和后端读取接口。
-- Computer Use 权限请求、ask_user_question、goal_event、memory_event、compact_summary、api_retry 这些事件前端已能渲染，但后端还需要稳定 emit 和补交互字段。
+- Computer Use 权限请求、ask_user_question、goal_event、memory_event、compact_summary、api_retry 这些事件前端已能渲染，但后端还需要稳定 emit、真实授权/回答提交接口和补交互字段。
 
 ## 暂时占位
 
-- 代码阅览完整语法高亮和 Markdown 专用预览。
+- 代码阅览完整语言服务级语法高亮、Markdown 源码/预览切换和 diff/源码联动。
 - 文件搜索、@文件引用、slash command 详情面板。
 - Computer Use 权限弹窗。
 - MCP/Skills/Settings 页面仍先复用旧业务组件，已加 clean shell 样式覆盖，后续可迁移到独立 clean 组件。

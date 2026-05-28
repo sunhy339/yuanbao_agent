@@ -233,14 +233,79 @@ function FileIcon({ kind, path, expanded = false }: { kind: WorkspaceFileEntry["
   );
 }
 
-function CodePreview({ content, wrapLines = false }: { content: string; wrapLines?: boolean }) {
+const FILE_CODE_KEYWORDS = new Set([
+  "and",
+  "as",
+  "async",
+  "await",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "def",
+  "elif",
+  "else",
+  "enum",
+  "except",
+  "export",
+  "finally",
+  "for",
+  "from",
+  "function",
+  "if",
+  "import",
+  "in",
+  "interface",
+  "let",
+  "not",
+  "or",
+  "return",
+  "switch",
+  "try",
+  "type",
+  "while",
+]);
+
+function highlightCodeLine(line: string, keyPrefix: string) {
+  const tokens: Array<string | JSX.Element> = [];
+  const pattern =
+    /(#.*$|\/\/.*$|\/\*.*?\*\/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b\d+(?:\.\d+)?\b|\b[A-Za-z_][\w]*\b|[{}[\]().,:;+\-*/%=<>!|&]+)/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(line)) !== null) {
+    if (match.index > cursor) tokens.push(line.slice(cursor, match.index));
+    const token = match[0];
+    const key = `${keyPrefix}-${match.index}`;
+    if (/^(#|\/\/|\/\*)/.test(token)) {
+      tokens.push(<span className="session-file-syntax-comment" key={key}>{token}</span>);
+    } else if (/^["'`]/.test(token)) {
+      tokens.push(<span className="session-file-syntax-string" key={key}>{token}</span>);
+    } else if (/^\d/.test(token)) {
+      tokens.push(<span className="session-file-syntax-number" key={key}>{token}</span>);
+    } else if (FILE_CODE_KEYWORDS.has(token)) {
+      tokens.push(<span className="session-file-syntax-keyword" key={key}>{token}</span>);
+    } else if (/^[{}[\]().,:;+\-*/%=<>!|&]+$/.test(token)) {
+      tokens.push(<span className="session-file-syntax-operator" key={key}>{token}</span>);
+    } else {
+      tokens.push(token);
+    }
+    cursor = match.index + token.length;
+  }
+  if (cursor < line.length) tokens.push(line.slice(cursor));
+  return tokens.length ? tokens : " ";
+}
+
+function CodePreview({ content, path, wrapLines = false }: { content: string; path: string; wrapLines?: boolean }) {
   const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const language = languageFromPath(path);
   return (
-    <ol className="session-file-code-lines" data-wrap={wrapLines}>
+    <ol className="session-file-code-lines" data-language={language} data-wrap={wrapLines}>
       {lines.map((line, index) => (
         <li key={`${index}-${line.slice(0, 16)}`}>
           <span className="session-file-line-number">{index + 1}</span>
-          <span className="session-file-line-text">{line || " "}</span>
+          <span className="session-file-line-text">{highlightCodeLine(line, `${language}-${index}`)}</span>
         </li>
       ))}
     </ol>
@@ -806,7 +871,7 @@ export function FileWorkspacePanel({
                 <MarkdownContent content={filePreview.content} />
               </article>
             ) : (
-              <CodePreview content={filePreview.content} wrapLines={wrapLines} />
+              <CodePreview content={filePreview.content} path={filePreview.path} wrapLines={wrapLines} />
             )
           ) : (
             <div className="session-file-viewer-empty">

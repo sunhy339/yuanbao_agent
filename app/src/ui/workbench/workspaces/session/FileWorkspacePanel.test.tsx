@@ -30,6 +30,13 @@ function removeDesktopBridge() {
   delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 }
 
+function findCodeLine(text: string) {
+  return screen.findByText((_, element) =>
+    element?.classList.contains("session-file-line-text") === true &&
+    element.textContent?.trim() === text.trim(),
+  );
+}
+
 describe("FileWorkspacePanel", () => {
   beforeEach(() => {
     installDesktopBridge();
@@ -111,8 +118,12 @@ describe("FileWorkspacePanel", () => {
     );
 
     await user.click(await within(tree).findByRole("treeitem", { name: /app\.py/ }));
-    expect(await screen.findByText("def hello():")).toBeInTheDocument();
-    expect(screen.getByText("return 'world'")).toBeInTheDocument();
+    const functionLine = await findCodeLine("def hello():");
+    const returnLine = await findCodeLine("return 'world'");
+    expect(functionLine).toBeInTheDocument();
+    expect(returnLine).toBeInTheDocument();
+    expect(within(functionLine).getByText("def")).toHaveClass("session-file-syntax-keyword");
+    expect(within(returnLine).getByText("'world'")).toHaveClass("session-file-syntax-string");
 
     await user.click(screen.getByRole("button", { name: "专注文件" }));
     expect(onToggleFocus).toHaveBeenCalledTimes(1);
@@ -137,7 +148,7 @@ describe("FileWorkspacePanel", () => {
     const tree = await screen.findByLabelText("项目文件");
     await user.click(within(tree).getByRole("treeitem", { name: /src/ }));
     await user.click(await within(tree).findByRole("treeitem", { name: /app\.py/ }));
-    const code = await screen.findByText("def hello():");
+    const code = await findCodeLine("def hello():");
     const codeLines = code.closest(".session-file-code-lines");
     expect(codeLines).toHaveAttribute("data-wrap", "false");
 
@@ -159,7 +170,7 @@ describe("FileWorkspacePanel", () => {
       />,
     );
 
-    await screen.findByText("def hello():");
+    await findCodeLine("def hello():");
     const layout = document.querySelector(".session-file-browser-layout") as HTMLElement;
     const treePane = document.querySelector(".session-file-tree-pane") as HTMLElement;
     Object.defineProperty(layout, "getBoundingClientRect", {

@@ -225,6 +225,20 @@ function flattenWorklogTree(nodes: WorklogTreeNode[]): WorklogTreeNode[] {
   return flat;
 }
 
+function worklogSummaryText(items: RuntimeTimelineItem[]) {
+  const lines = items.map((item, index) => {
+    const parts = [
+      `#${index + 1}`,
+      runtimeLabel(item),
+      item.status ? statusLabel(item.status) : "",
+      runtimeSummary(item),
+      formatDuration(item.durationMs),
+    ].filter(Boolean);
+    return parts.join(" · ");
+  });
+  return [`已执行 ${items.length} 项`, ...lines].join("\n");
+}
+
 function splitDiffText(value: string) {
   const files: Array<{ oldPath: string; newPath: string; lines: ReturnType<typeof parseUnifiedDiff> }> = [];
   const sections = value.split(/\ndiff --git /g);
@@ -1180,6 +1194,7 @@ export function CleanWorklogBlock({
     ? flatTree
     : (importantItems.length ? flatTree.filter((node) => !isQuietRuntime(node.item)).slice(0, 3) : flatTree.slice(0, 3));
   const labels = items.map(runtimeLabel).slice(0, 3);
+  const summaryText = worklogSummaryText(items);
   return (
     <section className="hc-worklog">
       <button type="button" className="hc-worklog-head" onClick={() => setExpanded((open) => !open)}>
@@ -1187,6 +1202,16 @@ export function CleanWorklogBlock({
         <span>已执行 {items.length} 项{quietCount ? `，其中 ${quietCount} 项已折叠` : ""}</span>
         {!expanded && labels.length ? <em>{labels.join("、")}{items.length > labels.length ? "..." : ""}</em> : null}
       </button>
+      <div className="hc-worklog-actions">
+        <button
+          type="button"
+          disabled={!onCopyRuntimeText}
+          onClick={() => void onCopyRuntimeText?.("工作日志摘要", summaryText)}
+        >
+          <Copy size={12} />
+          复制摘要
+        </button>
+      </div>
       <div className="hc-worklog-list">
         {visible.map((node) => (
           <CleanWorklogRuntimeRow

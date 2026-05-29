@@ -1021,8 +1021,10 @@
 
 .hc-progress-line {
   margin: 0;
+  border-left: 1px solid var(--hc-line-strong);
+  padding-left: 11px;
   color: #3f4650;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.65;
 }
 
@@ -1410,6 +1412,7 @@
 .hc-tool-inline[data-kind="list-dir"] > button,
 .hc-tool-inline[data-kind="git-status"] > button,
 .hc-tool-inline[data-kind="git-diff"] > button,
+.hc-thinking button,
 .hc-worklog-head {
   min-height: 28px;
   border-color: transparent;

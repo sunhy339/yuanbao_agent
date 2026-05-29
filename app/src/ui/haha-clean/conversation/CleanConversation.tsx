@@ -627,11 +627,12 @@ export const CleanThinkingBlock = memo(function CleanThinkingBlock({ message }: 
   const [expanded, setExpanded] = useState(false);
   const text = message.content.trim() || "正在思考";
   const preview = compactText(text.split(/\r?\n/).find((line) => line.trim()) ?? text, 120);
+  const title = message.streaming ? "正在思考" : "思考";
   return (
     <section className="hc-thinking">
       <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <span>正在思考{message.streaming ? "..." : ""}</span>
+        <span>{title}</span>
         <em>{preview}</em>
       </button>
       {expanded ? <pre>{text}</pre> : null}

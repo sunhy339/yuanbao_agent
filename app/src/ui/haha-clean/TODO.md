@@ -57,6 +57,7 @@
 - clean transcript schema：已覆盖 user_text、assistant_text、assistant_progress、thinking、tool_use、tool_result、tool_group、permission_request、computer_use_permission、ask_user_question、background_task、task_summary、plan_update、goal_event、memory_event、compact_summary、api_retry、error、change_set、command、status、system。`task_summary/plan_update/status` 已加低价值过滤，避免刚开任务就显示“工作摘要”。
 - 本地 haha 风格过程节点现在会在持久消息刷新时保留，`api_retry`、`compact_summary`、`goal_event`、`ask_user_question`、`computer_use_permission` 等不会因为后端 messages 刷新突然消失。
 - 会话时序现在只把同一轮最后一条普通助手正文放到 runtime 后面，前面的过程说明会按真实时间插在工具调用之间，避免“全是一串工具，最后一大段总结”。
+- 思考/过程说明进一步轻量化：`assistant_thinking` 默认渲染为细线过程行，展开才看完整文本，避免模型思考像大卡片挤占主聊天。
 - MCP/Skills/Settings 页面补了一层更统一的 haha-clean 低卡片覆盖：顶部概览、操作条、列表行、启用态和按钮统一为浅色细线风格。
 
 ## 需要后端补字段

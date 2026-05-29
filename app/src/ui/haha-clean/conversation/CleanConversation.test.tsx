@@ -3,11 +3,28 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
-import { CleanActivityItem, CleanPermissionMessageBlock, CleanRuntimeBlock, CleanToolMessageBlock, CleanWorklogBlock } from "./CleanConversation";
+import { CleanActivityItem, CleanPermissionMessageBlock, CleanRuntimeBlock, CleanThinkingBlock, CleanToolMessageBlock, CleanWorklogBlock } from "./CleanConversation";
 
 afterEach(() => cleanup());
 
 describe("CleanConversation", () => {
+  it("renders thinking as a lightweight progress row", () => {
+    render(
+      <CleanThinkingBlock
+        message={{
+          id: "thinking1",
+          role: "assistant",
+          content: "我在检查相关文件。",
+          streaming: true,
+          metadata: { kind: "assistant_thinking" },
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /正在思考/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("我在检查相关文件。")).toBeInTheDocument();
+  });
+
   it("does not treat patch titles as changed file paths", () => {
     render(
       <CleanRuntimeBlock

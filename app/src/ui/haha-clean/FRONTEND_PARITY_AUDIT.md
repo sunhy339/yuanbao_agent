@@ -31,6 +31,7 @@
 - worklog 展开后改为专用紧凑工具行：读文件、查目录、Git 状态这类低价值步骤不再展开成大卡片，单行仍可继续打开详情和复制。
 - worklog 折叠和展开都补了类别信息：折叠头会按“读取上下文/Git 检查/命令/文件改动”等汇总，展开行用轻量类别 chip 区分动作类型，避免一屏全是相似工具名。
 - worklog 顶部新增前端过渡态过程说明：当后端还没给真实的中间 assistant_progress/thinking delta 时，先用已发生的 runtime 类型解释“正在读取上下文/运行命令/处理改动/等待审批”，避免主线直接跳到工具列表。
+- 思考和过程说明进一步压成细线轻量行：`assistant_thinking` 默认只显示“正在思考/思考 + 摘要”，展开才看完整文本，避免模型思考节点像普通卡片挤占主聊天。
 - worklog 已经贯通 `toolUseId/parentToolUseId` 到 runtime 渲染层，展开后能按父子工具缩进展示，先补齐 haha-cc 信息流里的工具树基础形态。
 - clean 会话会对已被 runtime/worklog 承接的低价值 inline 工具消息做去重，同一个 read/list/git/search 不再在主线重复出现两遍；失败、运行中、写入和审批仍保留。
 - 本地过程节点刷新保留已补齐：`api_retry`、`compact_summary`、`goal_event`、`ask_user_question`、`computer_use_permission` 等 haha 风格节点不会在后端 messages 刷新时被清掉，减少“过程信息突然消失，只剩最终总结”的问题。
@@ -92,8 +93,8 @@
 | 用户消息 | 右侧简洁气泡，可复制/引用/分支 | 用户消息已渲染，带复制/引用/更多操作；更多菜单列出继续、分支、删除的禁用占位 | messages.role=user | `部分接入`：复制/引用/复制 Markdown/复制 ID 已接入，分支/撤回仍需稳定 transcript target id |
 | 助手正文 | 普通文本/Markdown，插在工具调用之间 | 助手正文已渲染，带复制/引用/更多操作；`content_start(text)` 可显示流式提示；本地过程节点会跨持久消息刷新保留 | messages.role=assistant / content_start | `部分接入`：前端可接分段事件，但后端目前仍常把最终总结集中到一个消息，缺真正分段 delta |
 | 助手正文排序 | 中间说明保留在工具之间，最后结论在尾部 | 同一轮只把最后一条普通助手正文挪到 runtime 后；前面的正文按时间插入 | buildConversationActivity | `已接入`：仍依赖后端提供足够细的中间 assistant 消息 |
-| 模型思考 | thinking 块，随流式更新 | 有 thinking/progress 入口 | metadata/status 推断 | `后端待补`：缺真实 token 级 thinking delta |
-| 过程说明 | 短句插在工具/命令前后 | `assistant_progress` 已预留和渲染 | 依赖 metadata.kind | `后端待补`：后端需要输出阶段性自然语言，不要只输出工具日志 |
+| 模型思考 | thinking 块，随流式更新 | 有 thinking/progress 入口，默认渲染为轻量细线行 | metadata/status 推断 | `部分接入`：缺真实 token 级 thinking delta |
+| 过程说明 | 短句插在工具/命令前后 | `assistant_progress` 已预留并渲染为轻量过程文本 | 依赖 metadata.kind | `部分接入`：后端需要输出更多阶段性自然语言，不要只输出工具日志 |
 | 工具调用行 | 单行可折叠，显示工具名、目标、状态 | runtime/tool 行已低卡片化，`content_start(tool_use)` 可先显示占位；工具标题会优先转成“读取/修改/运行 + 目标” | runtime items/toolCalls/content_start | `部分接入`：前端已清洗常见工具标题，后端仍需提供结构化 summary 避免前端猜 JSON |
 | 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy，并保存 `parentToolUseId`；主聊天工具消息会把常见 JSON 结果转成单行摘要，展开后看完整输入输出 | runtime output/tool result | `部分接入`：父子 id 已能保存并在 worklog 里缩进展示，但仍需要后端稳定树结构和更完整工具摘要 |
 | 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，展开后使用紧凑工具行和父子缩进；普通 read/list/git/search/状态探针继续压缩，且会隐藏对应的重复 inline 工具消息；展开后可复制摘要，折叠态不再额外显示操作条 | activity worklog | `部分接入`：视觉已更轻，后续还要接真实阶段解释正文和更完整的父子折叠 |

@@ -33,6 +33,7 @@
 - Markdown 预览补了轻量文档大纲，方便快速跳到章节。
 - 聊天正文 Markdown 补了宽松标题、嵌套列表、任务列表和表格渲染，减少模型输出里 `##1`、表格、todo 直接裸露或层级打平的情况。
 - Markdown 代码块复制按钮带语言名，可在多代码块消息里明确区分。
+- 聊天正文 Markdown 补了安全图片块渲染，截图/本地图片链接不会再裸露成普通文本。
 - Composer 补了 `@` 文件引用入口：加号菜单可插入 `@`，输入后能从当前已知文件候选里选择并插入引用。
 - 权限菜单补了“完全访问权限”二次确认，避免误点直接切到危险权限模式。
 - 现有后端数据适配：messages、toolCalls、approvals、patches、backgroundJobs、traces、activeTask、contextPreview。
@@ -52,7 +53,7 @@
 ## 暂时占位
 
 - 代码阅览完整语言服务级语法高亮、Markdown 源码/预览滚动同步和 diff/源码联动。
-- 聊天正文 Mermaid、图片内联、代码块更完整语法高亮。
+- 聊天正文 Mermaid、复杂图片画廊、代码块更完整语法高亮。
 - 全项目文件搜索、`@` 引用持久化、slash command 详情/结果面板。
 - Computer Use 权限弹窗。
 - MCP/Skills/Settings 页面仍先复用旧业务组件，已加 clean shell 样式覆盖，后续可迁移到独立 clean 组件。

@@ -155,7 +155,7 @@
 | fenced code | 代码块、语言、复制、高亮 | 有代码块、语言栏、复制按钮和简单高亮；复制按钮带语言名 | assistant content | `部分接入`：完整语法高亮待补 |
 | 表格 | Markdown 表格转表格 UI | 已接入简单表格渲染 | assistant content | `部分接入`：复杂对齐/嵌套内容待补 |
 | Mermaid | 图表渲染 | 未接入 | assistant content | `前端待补` |
-| 图片内联 | 用户/助手图片画廊 | 附件有基础列表 | attachments/content refs | `后端待补 + 前端待补` |
+| 图片内联 | 用户/助手图片画廊 | Markdown 独立图片块已可渲染，附件仍是基础列表 | attachments/content refs | `部分接入`：复杂图片画廊、附件持久化和图片消息结构仍需补齐 |
 
 ## 10. 设置 / MCP / Skills
 

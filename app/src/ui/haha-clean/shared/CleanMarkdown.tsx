@@ -12,6 +12,14 @@ function inlineHtml(value: string) {
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
 }
 
+function isSafeImageUrl(url: string) {
+  return /^(https?:|data:image\/|blob:|file:)/i.test(url) || url.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(url);
+}
+
+function normalizeImageUrl(url: string) {
+  return url.replace(/\\/g, "/");
+}
+
 function languageFromFence(info: string) {
   return info.trim().split(/\s+/)[0] || "text";
 }
@@ -103,6 +111,15 @@ function TableBlock({ rows }: { rows: string[][] }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function ImageBlock({ alt, src }: { alt: string; src: string }) {
+  return (
+    <figure className="hc-markdown-image">
+      <img alt={alt || "image"} loading="lazy" src={normalizeImageUrl(src)} />
+      {alt ? <figcaption>{alt}</figcaption> : null}
+    </figure>
   );
 }
 
@@ -220,6 +237,14 @@ export const CleanMarkdown = memo(function CleanMarkdown({ content }: { content:
       }
       if (index < lines.length) index += 1;
       nodes.push(<CodeBlock key={`code-${nodes.length}`} code={codeLines.join("\n")} language={language} />);
+      continue;
+    }
+
+    const image = /^\s*!\[([^\]]*)\]\(([^)]+)\)\s*$/.exec(line);
+    if (image && isSafeImageUrl(image[2])) {
+      flushParagraph(paragraph, nodes);
+      nodes.push(<ImageBlock key={`img-${nodes.length}`} alt={image[1]} src={image[2]} />);
+      index += 1;
       continue;
     }
 

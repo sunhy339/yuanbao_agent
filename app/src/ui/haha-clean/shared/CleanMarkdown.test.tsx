@@ -60,4 +60,11 @@ describe("CleanMarkdown", () => {
     expect(screen.getByText("python")).toBeTruthy();
     expect(screen.getByRole("button", { name: "复制 python 代码块" })).toBeTruthy();
   });
+
+  it("renders safe markdown images as bounded image blocks", () => {
+    render(<CleanMarkdown content={"![UI screenshot](D:\\tmp\\preview.png)"} />);
+
+    expect(screen.getByRole("img", { name: "UI screenshot" }).getAttribute("src")).toBe("D:/tmp/preview.png");
+    expect(screen.getByText("UI screenshot")).toBeTruthy();
+  });
 });

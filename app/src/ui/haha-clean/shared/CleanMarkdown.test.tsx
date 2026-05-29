@@ -53,4 +53,11 @@ describe("CleanMarkdown", () => {
     expect(screen.getByRole("checkbox", { checked: false })).toBeTruthy();
     expect(container.querySelector("li li li")).toBeTruthy();
   });
+
+  it("labels fenced code copy actions by language", () => {
+    render(<CleanMarkdown content={"```python\nprint('hi')\n```"} />);
+
+    expect(screen.getByText("python")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "复制 python 代码块" })).toBeTruthy();
+  });
 });

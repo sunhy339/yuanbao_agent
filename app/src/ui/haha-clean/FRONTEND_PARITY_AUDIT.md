@@ -152,7 +152,7 @@
 | 标题 | `#` 变标题，不显示原始 `##` | `CleanMarkdown` 已处理标题 | assistant content | `已接入` |
 | 列表 | 有序/无序列表缩进自然 | 已处理嵌套无序/有序列表和任务列表 | assistant content | `已接入` |
 | inline code | 背景 chip | 已接入 | assistant content | `已接入` |
-| fenced code | 代码块、语言、复制、高亮 | 有代码块、语言栏、复制按钮和简单高亮 | assistant content | `部分接入`：完整语法高亮待补 |
+| fenced code | 代码块、语言、复制、高亮 | 有代码块、语言栏、复制按钮和简单高亮；复制按钮带语言名 | assistant content | `部分接入`：完整语法高亮待补 |
 | 表格 | Markdown 表格转表格 UI | 已接入简单表格渲染 | assistant content | `部分接入`：复杂对齐/嵌套内容待补 |
 | Mermaid | 图表渲染 | 未接入 | assistant content | `前端待补` |
 | 图片内联 | 用户/助手图片画廊 | 附件有基础列表 | attachments/content refs | `后端待补 + 前端待补` |

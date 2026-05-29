@@ -54,11 +54,18 @@ function highlightLine(line: string) {
 
 function CodeBlock({ code, language }: { code: string; language: string }) {
   const lines = code.replace(/\r\n/g, "\n").split("\n");
+  const label = language === "text" ? "代码" : language;
   return (
     <figure className="hc-code">
       <figcaption>
-        <span>{language}</span>
-        <button type="button" onClick={() => void navigator.clipboard?.writeText(code)}>复制</button>
+        <span>{label}</span>
+        <button
+          type="button"
+          aria-label={`复制 ${label} 代码块`}
+          onClick={() => void navigator.clipboard?.writeText(code)}
+        >
+          复制
+        </button>
       </figcaption>
       <ol>
         {lines.map((line, index) => (

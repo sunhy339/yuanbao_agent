@@ -71,7 +71,7 @@
 | 暂存/排队 | 运行中把下一条加入队列，可引导/调整顺序/删除 | 已有队列项、引导、上移、下移、删除 | queuedPrompts callbacks | `部分接入`：交互已存在，视觉还需更像 haha-cc 的轻量 pending bar |
 | 引导按钮 | 把暂存内容注入当前会话上下文 | 已有 `onGuideQueuedPrompt` | 依赖现有队列实现 | `部分接入`：需要后端明确“引导注入”事件，避免只是本地队列状态 |
 | 发送按钮 | 不可发送时 disabled，运行中 stop | 已接入 | submit/stop | `已接入` |
-| 项目目录 chip | 显示当前 repo/目录/分支 | 目前显示目录与上下文 | workspace root/context | `部分接入`：分支、工作树、dirty 状态还没统一展示 |
+| 项目目录 chip | 显示当前 repo/目录/分支 | 目前显示目录与上下文，项目弹层可复制路径 | workspace root/context | `部分接入`：分支、工作树、dirty 状态还没统一展示 |
 
 ## 4. 主聊天信息流
 

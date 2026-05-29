@@ -78,7 +78,8 @@ function renderSlashComposer(promptValue = "/") {
 describe("CleanComposer", () => {
   it("opens context and project detail panels from the compact composer controls", async () => {
     const user = userEvent.setup();
-    renderComposer();
+    const copyText = vi.fn();
+    renderComposer({ onCopyText: copyText });
 
     await user.click(screen.getByRole("button", { name: "上下文 25%", expanded: false }));
     const contextPanel = screen.getByLabelText("上下文详情");
@@ -90,6 +91,8 @@ describe("CleanComposer", () => {
     await user.click(screen.getByRole("button", { name: "yuanbao_agent" }));
     const projectPanel = screen.getByLabelText("项目目录");
     expect(projectPanel).toHaveTextContent("D:/py/yuanbao_agent");
+    await user.click(within(projectPanel).getByRole("button", { name: /复制路径/ }));
+    expect(copyText).toHaveBeenCalledWith("D:/py/yuanbao_agent");
     expect(screen.queryByLabelText("上下文详情")).not.toBeInTheDocument();
   });
 

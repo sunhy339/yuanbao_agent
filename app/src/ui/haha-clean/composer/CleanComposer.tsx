@@ -4,6 +4,7 @@ import {
   AtSign,
   ChevronDown,
   CircleHelp,
+  Copy,
   Folder,
   Gauge,
   ImagePlus,
@@ -52,6 +53,7 @@ export interface CleanComposerProps {
   permissionLabel?: string;
   permissionMode?: string;
   onPermissionModeChange?: (mode: string) => void;
+  onCopyText?: (text: string) => void | Promise<void>;
   contextLabel?: string;
   contextPreview?: SessionWorkspaceContextPreview | null;
   hidden?: boolean;
@@ -162,6 +164,7 @@ export function CleanComposer({
   permissionLabel,
   permissionMode,
   onPermissionModeChange,
+  onCopyText,
   contextLabel,
   contextPreview,
   hidden,
@@ -350,6 +353,18 @@ export function CleanComposer({
       setPermissionOpen(false);
     },
     [onPermissionModeChange, permissionMode],
+  );
+
+  const copyText = useCallback(
+    (text: string) => {
+      if (!text) return;
+      if (onCopyText) {
+        void onCopyText(text);
+        return;
+      }
+      void window.navigator.clipboard?.writeText(text);
+    },
+    [onCopyText],
   );
 
   const handlePromptKeyDown = useCallback(
@@ -718,6 +733,16 @@ export function CleanComposer({
                   <small>{cwdName}</small>
                 </header>
                 <p title={cwdLabel}>{cwdLabel || "未选择工作区"}</p>
+                <div className="hc-project-actions">
+                  <button
+                    type="button"
+                    disabled={!cwdLabel}
+                    onClick={() => copyText(cwdLabel)}
+                  >
+                    <Copy size={13} />
+                    复制路径
+                  </button>
+                </div>
                 <p>后续会在这里补最近项目、分支和工作树切换。</p>
               </div>
             ) : null}

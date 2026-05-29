@@ -77,8 +77,8 @@
 
 | haha-cc 信息节点 | haha-cc 行为 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
 | --- | --- | --- | --- | --- |
-| 用户消息 | 右侧简洁气泡，可复制/引用/分支 | 用户消息已渲染，带复制/引用/更多操作 | messages.role=user | `部分接入`：复制/引用已接入，分支/撤回仍需稳定 transcript target id |
-| 助手正文 | 普通文本/Markdown，插在工具调用之间 | 助手正文已渲染，带复制/引用/更多操作，`content_start(text)` 可显示流式提示 | messages.role=assistant / content_start | `部分接入`：前端可接分段事件，但后端目前仍常把最终总结集中到一个消息，缺真正分段 delta |
+| 用户消息 | 右侧简洁气泡，可复制/引用/分支 | 用户消息已渲染，带复制/引用/更多操作；更多菜单列出继续、分支、删除的禁用占位 | messages.role=user | `部分接入`：复制/引用/复制 Markdown/复制 ID 已接入，分支/撤回仍需稳定 transcript target id |
+| 助手正文 | 普通文本/Markdown，插在工具调用之间 | 助手正文已渲染，带复制/引用/更多操作；`content_start(text)` 可显示流式提示 | messages.role=assistant / content_start | `部分接入`：前端可接分段事件，但后端目前仍常把最终总结集中到一个消息，缺真正分段 delta |
 | 模型思考 | thinking 块，随流式更新 | 有 thinking/progress 入口 | metadata/status 推断 | `后端待补`：缺真实 token 级 thinking delta |
 | 过程说明 | 短句插在工具/命令前后 | `assistant_progress` 已预留和渲染 | 依赖 metadata.kind | `后端待补`：后端需要输出阶段性自然语言，不要只输出工具日志 |
 | 工具调用行 | 单行可折叠，显示工具名、目标、状态 | runtime/tool 行已低卡片化，`content_start(tool_use)` 可先显示占位；工具标题会优先转成“读取/修改/运行 + 目标” | runtime items/toolCalls/content_start | `部分接入`：前端已清洗常见工具标题，后端仍需提供结构化 summary 避免前端猜 JSON |
@@ -100,9 +100,9 @@
 | --- | --- | --- | --- | --- |
 | 复制 | 复制消息/工具输出 | runtime 输出和普通消息正文均已接入复制 | Clipboard | `已接入` |
 | 引用 | 把该消息作为后续输入引用 | 普通消息可引用到 composer；没有桥接时复制 Markdown 引用 | composer prompt / transcript id | `部分接入`：文本引用已可用，真正绑定某条 transcript 的上下文引用仍需后端 id |
-| 删除/撤回 | 删除本地消息或撤销当前轮 | 未完整接入 | 需要 session transcript mutation | `后端待补` |
-| 更多 `...` | 展开更多操作 | 普通消息已有轻量菜单，支持复制消息 ID，分支入口置灰 | 需要动作定义 | `部分接入`：菜单形态已接入，分支/撤销等动作还缺后端 |
-| 从这里分支 | 基于某条消息创建分支会话 | 未接入 clean 流 | 需要 branchSession/transcript id | `后端待补 + 前端待补` |
+| 删除/撤回 | 删除本地消息或撤销当前轮 | 更多菜单已有禁用入口和说明 | 需要 session transcript mutation | `后端待补`：前端入口已占位，等待 mutation 接口 |
+| 更多 `...` | 展开更多操作 | 普通消息已有轻量菜单，支持复制 Markdown、复制消息 ID，并列出继续/分支/删除占位 | 需要动作定义 | `部分接入`：可用复制动作已接入，分支/继续/删除还缺后端 |
+| 从这里分支 | 基于某条消息创建分支会话 | 更多菜单已有禁用入口和说明 | 需要 branchSession/transcript id | `后端待补`：前端入口已占位，等待 branchSession |
 | 撤销本轮改动 | 当前轮 change card 撤销 | 未接入 | 需要后端 revert turn | `后端待补` |
 
 ## 6. 工具/命令/审批渲染

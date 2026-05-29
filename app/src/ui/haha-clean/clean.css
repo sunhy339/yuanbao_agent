@@ -983,12 +983,12 @@
   right: 0;
   bottom: 24px;
   z-index: 12;
-  min-width: 148px;
+  min-width: 192px;
   margin: 0;
   border: 1px solid var(--hc-line);
   border-radius: 9px;
   background: #fff;
-  padding: 5px;
+  padding: 6px;
   box-shadow: var(--hc-soft-shadow);
   list-style: none;
 }
@@ -1000,13 +1000,33 @@
 
 .hc-message-actions menu button {
   width: 100%;
+  display: grid;
   justify-content: flex-start;
+  gap: 2px;
   padding: 7px 8px;
+  text-align: left;
+}
+
+.hc-message-actions menu button span {
+  color: var(--hc-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.hc-message-actions menu button small {
+  color: var(--hc-muted);
+  font-size: 11px;
+  line-height: 1.25;
 }
 
 .hc-message-actions button:disabled {
   color: var(--hc-faint);
   cursor: not-allowed;
+}
+
+.hc-message-actions menu button:disabled span,
+.hc-message-actions menu button:disabled small {
+  color: var(--hc-faint);
 }
 
 .hc-empty-note {

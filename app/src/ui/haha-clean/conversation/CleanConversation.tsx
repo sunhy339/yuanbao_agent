@@ -362,6 +362,7 @@ function MessageActions({
   const content = message.content.trim();
   if (!content || !onCopyRuntimeText) return null;
   const quote = quoteMessageText(message);
+  const closeMore = () => setMoreOpen(false);
   return (
     <div className="hc-message-actions" data-align={align}>
       <button type="button" title="复制消息" onClick={() => void onCopyRuntimeText("消息内容", content)}>
@@ -383,19 +384,57 @@ function MessageActions({
         <span>引用</span>
       </button>
       <div>
-        <button type="button" title="更多" aria-expanded={moreOpen} onClick={() => setMoreOpen((open) => !open)}>
+        <button
+          type="button"
+          title="更多"
+          aria-label="更多"
+          aria-expanded={moreOpen}
+          onClick={() => setMoreOpen((open) => !open)}
+        >
           <MoreHorizontal size={14} />
         </button>
         {moreOpen ? (
-          <menu>
+          <menu aria-label="消息更多操作">
             <li>
-              <button type="button" onClick={() => void onCopyRuntimeText("消息 ID", message.id)}>
-                复制消息 ID
+              <button
+                type="button"
+                onClick={() => {
+                  closeMore();
+                  void onCopyRuntimeText("Markdown 引用", quote);
+                }}
+              >
+                <span>复制为 Markdown</span>
+                <small>保留发言人和引用格式</small>
               </button>
             </li>
             <li>
-              <button type="button" disabled>
-                从这里分支需要后端
+              <button
+                type="button"
+                onClick={() => {
+                  closeMore();
+                  void onCopyRuntimeText("消息 ID", message.id);
+                }}
+              >
+                <span>复制消息 ID</span>
+                <small>用于定位 transcript 记录</small>
+              </button>
+            </li>
+            <li>
+              <button type="button" disabled title="需要后端支持从指定 transcript target 继续">
+                <span>从这里继续</span>
+                <small>等待上下文截断接口</small>
+              </button>
+            </li>
+            <li>
+              <button type="button" disabled title="需要后端 branchSession 接口">
+                <span>从这里分支</span>
+                <small>等待会话分支接口</small>
+              </button>
+            </li>
+            <li>
+              <button type="button" disabled title="需要后端 transcript mutation 接口">
+                <span>删除消息</span>
+                <small>等待会话记录变更接口</small>
               </button>
             </li>
           </menu>

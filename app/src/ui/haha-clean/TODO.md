@@ -7,7 +7,7 @@
 - 全局 Shell、左侧会话导航、标签栏、底部输入框。
 - 新建会话空态、项目目录/模型/权限/上下文入口。
 - 会话流：用户消息、助手正文、思考块、工具块、命令、审批、文件改动、worklog 折叠、置底。
-- 普通消息操作栏：用户/助手消息支持复制、引用、更多；引用会写入 composer，缺桥接时退回复制 Markdown 引用文本。
+- 普通消息操作栏：用户/助手消息支持复制、引用、更多；更多菜单已补“复制为 Markdown / 复制消息 ID / 从这里继续 / 从这里分支 / 删除消息”，其中分支、继续、删除先以明确禁用入口等待后端 transcript mutation/branch 接口。
 - haha-cc 式低卡片消息流：过程说明、工具行、文件改动、上下文压缩/Goal/Memory/API retry 等事件均有前端渲染入口。
 - transcript adapter：已接入 `content_start` 的 text/tool 占位、`content_delta` 工具输入增量、`tool_use_complete`/`tool_result` 的 `parentToolUseId` 保存。
 - 特殊事件适配：`api_retry`、`system_notification`、`compact_summary`、`goal_event`、`memory_event`、`ask_user_question`、`computer_use_permission_request`、`computer_use_permission` 可直接进入消息流。

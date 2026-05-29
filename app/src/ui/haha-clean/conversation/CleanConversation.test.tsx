@@ -120,6 +120,37 @@ describe("CleanConversation", () => {
     expect(onCopyRuntimeText).toHaveBeenCalledWith("引用消息", expect.stringContaining("> 用户："));
   });
 
+  it("shows clear overflow actions and disabled backend placeholders", async () => {
+    const user = userEvent.setup();
+    const onCopyRuntimeText = vi.fn();
+
+    render(
+      <CleanActivityItem
+        item={{
+          id: "message:overflow",
+          kind: "message",
+          order: 1,
+          message: {
+            id: "m-overflow",
+            role: "assistant",
+            content: "下一步可以拆出 rules.py。",
+          },
+        }}
+        onCopyRuntimeText={onCopyRuntimeText}
+        onQuoteMessage={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "更多" }));
+
+    expect(screen.getByRole("button", { name: /从这里继续/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /从这里分支/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /删除消息/ })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /复制为 Markdown/ }));
+    expect(onCopyRuntimeText).toHaveBeenCalledWith("Markdown 引用", expect.stringContaining("> 助手："));
+  });
+
   it("renders ask-user events as a dedicated decision node", () => {
     render(
       <CleanActivityItem

@@ -205,6 +205,12 @@ export function CleanComposer({
   const dirtyFiles = worktreeStatus?.dirtyFiles ?? 0;
   const worktreeFiles = worktreeStatus?.files ?? [];
   const worktreeFileCopyText = worktreeFiles.join("\n");
+  const branchLabel = worktreeStatus?.branch || "未检测";
+  const upstreamLabel = worktreeStatus?.upstream || "无上游";
+  const syncLabel = [
+    worktreeStatus?.ahead ? `领先 ${worktreeStatus.ahead}` : "",
+    worktreeStatus?.behind ? `落后 ${worktreeStatus.behind}` : "",
+  ].filter(Boolean).join(" · ") || (worktreeStatus?.upstream ? "已同步" : "本地分支");
   const contextSummary = [
     "上下文",
     contextLabel || `当前占用 ${context}`,
@@ -768,8 +774,20 @@ export function CleanComposer({
                 <p title={cwdLabel}>{cwdLabel || "未选择工作区"}</p>
                 <dl className="hc-project-status">
                   <div>
+                    <dt>分支</dt>
+                    <dd>{branchLabel}</dd>
+                  </div>
+                  <div>
+                    <dt>上游</dt>
+                    <dd>{upstreamLabel}</dd>
+                  </div>
+                  <div>
+                    <dt>同步</dt>
+                    <dd>{syncLabel}</dd>
+                  </div>
+                  <div>
                     <dt>改动</dt>
-                    <dd>{dirtyFiles ? `${dirtyFiles} 个文件` : "工作区干净"}</dd>
+                    <dd>{worktreeStatus?.error || (dirtyFiles ? `${dirtyFiles} 个文件` : "工作区干净")}</dd>
                   </div>
                   <div>
                     <dt>最近文件</dt>
@@ -794,7 +812,7 @@ export function CleanComposer({
                     复制改动文件
                   </button>
                 </div>
-                <p>后续会在这里补最近项目、分支和工作树切换。</p>
+                <p>后续会在这里补最近项目和工作树切换。</p>
               </div>
             ) : null}
           </div>

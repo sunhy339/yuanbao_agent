@@ -43,6 +43,12 @@ export interface SessionWorkspaceWorktree {
 export interface SessionWorkspaceWorktreeStatus {
   dirtyFiles?: number;
   files?: string[];
+  branch?: string | null;
+  upstream?: string | null;
+  ahead?: number;
+  behind?: number;
+  clean?: boolean;
+  rawStatus?: string;
   error?: string;
 }
 

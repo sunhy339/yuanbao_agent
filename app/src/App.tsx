@@ -17,7 +17,6 @@ import type {
   TaskRecord,
   TraceEventRecord,
   WorktreeDiffResult,
-  WorktreeStatusResult,
 } from "@shared";
 import { RuntimeClient, type HostStatus, type RuntimeConfig } from "./lib/runtimeClient";
 import {
@@ -27,6 +26,7 @@ import {
   type ChatMessageView,
 } from "./state/chatMessages";
 import { DEFAULT_PROMPT, DEFAULT_WORKSPACE_PATH } from "./state/constants";
+import { normalizeSessionWorktreeStatus } from "./state/worktreeStatus";
 import { AppShell } from "./ui/workbench/AppShell";
 import { getSidebarActiveSessionId, resolveSessionForTab } from "./ui/workbench/sessionRouting";
 import { getInitialTabs } from "./ui/workbench/tabModel";
@@ -122,20 +122,6 @@ export function App() {
     addToast("error", getErrorMessage(reason));
   }
 
-  function normalizeWorktreeStatus(value: WorktreeStatusResult["gitStatus"] | null | undefined): SessionWorkspaceWorktreeStatus | null {
-    if (!value) return null;
-    if ("dirtyFiles" in value || "error" in value) {
-      return value as SessionWorkspaceWorktreeStatus;
-    }
-    const changes = Array.isArray((value as any).changes) ? (value as any).changes : [];
-    return {
-      dirtyFiles: changes.length,
-      files: changes
-        .map((change: any) => [change.status, change.path].filter(Boolean).join(" ").trim())
-        .filter(Boolean),
-    };
-  }
-
   async function runWorktreeAction<T>(
     action: "status" | "diff" | "requestMergeApproval" | "merge" | "cleanup",
     operation: () => Promise<T>,
@@ -156,7 +142,7 @@ export function App() {
 
   async function handleRefreshWorktree(worktreeId: string) {
     const result = await runWorktreeAction("status", () => runtimeClient.worktreeStatus({ worktreeId }));
-    if (result) setWorktreeStatus(normalizeWorktreeStatus(result.gitStatus));
+    if (result) setWorktreeStatus(normalizeSessionWorktreeStatus(result.gitStatus));
   }
 
   async function handleLoadWorktreeDiff(worktreeId: string, full = false) {
@@ -182,7 +168,7 @@ export function App() {
       verificationTimeoutMs: config?.worktree?.mergeVerificationTimeoutMs,
     }));
     if (result?.approval) {
-      setWorktreeStatus(normalizeWorktreeStatus(result.gitStatus));
+      setWorktreeStatus(normalizeSessionWorktreeStatus(result.gitStatus));
       setWorktreeDiff(result.diff ?? worktreeDiff);
       const passedVerification = result.verification?.length ? ` after ${result.verification.length} verification check${result.verification.length === 1 ? "" : "s"}` : "";
       addToast("info", `Worktree merge approval requested${passedVerification}.`);

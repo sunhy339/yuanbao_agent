@@ -30,6 +30,7 @@
 - Composer 项目目录弹层补了复制路径动作。
 - Composer 项目目录弹层补了当前改动数和最近改动文件展示。
 - Composer 项目目录弹层补了复制当前改动文件列表动作。
+- Composer 项目目录弹层补了 git 分支、上游和 ahead/behind 同步状态，并修正本地 git status 文件对象的显示。
 - Composer 上下文弹层补了复制上下文摘要动作。
 - Composer 图片附件改为缩略图显示，普通文件继续保持轻量 chip。
 - Markdown 文件补了预览/源码切换，源码模式保留行号和轻量高亮。
@@ -50,7 +51,7 @@
 - 工具事件时间戳需要更稳定，否则前端只能尽量按 messages/runtime 的已有时间推断插入顺序。
 - 审批请求需要稳定提供受影响文件和 diff 字段；当前前端会尽量从 code/rawDetail 里推断文件列表。
 - 分支/撤销/真正绑定上下文的消息引用需要稳定 transcript target id；当前文本引用已能写入 composer。
-- 项目 git 分支、worktree、上下文快照分类明细。
+- 项目 worktree 切换、上下文快照分类明细。
 - 文件/图片引用需要持久化记录和后端读取接口；当前 `@` 候选先来自 `worktreeStatus.files`，还不是全项目文件搜索。
 - Computer Use 权限请求、ask_user_question、goal_event、memory_event、compact_summary、api_retry 这些事件前端已能渲染，但后端还需要稳定 emit、真实授权/回答提交接口和补交互字段。
 

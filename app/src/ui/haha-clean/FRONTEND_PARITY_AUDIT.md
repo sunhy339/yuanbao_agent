@@ -17,7 +17,7 @@
 - `ask_user_question` 和 `computer_use_permission` 已从普通系统行拆成专用信息节点，先展示问题/选项、应用/权限详情和禁用占位按钮；真正提交回答和权限弹窗仍等后端协议补齐。
 - 低价值 read/list/git/search/状态探针会继续压进 worklog，不再把主聊天刷成一串工具日志；失败、审批、写入、diff 仍保留为主线节点。
 - 右侧文件阅览补了轻量语法高亮，代码关键词、字符串、注释和数字会先按常见语言上色，Markdown 仍保留渲染预览。
-- Composer 底部项目目录、上下文、权限不再只是静态按钮：项目/上下文可展开轻量详情，权限选项会显示模式说明，Slash 面板补充参数提示。
+- Composer 底部项目目录、上下文、权限不再只是静态按钮：项目/上下文可展开轻量详情，项目详情会显示分支、同步状态和改动文件，权限选项会显示模式说明，Slash 面板补充参数提示。
 - Markdown 文件阅览补了“预览/源码”切换，源码模式复用右侧代码阅览的行号与轻量高亮。
 - Slash 命令面板补了键盘选择：上下键/Home/End 切换选项，Enter/Tab 选中，Escape 关闭当前建议。
 - Markdown 预览补了轻量文档大纲，能从右侧大纲快速跳到标题。
@@ -48,7 +48,7 @@
 | haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
 | --- | --- | --- | --- | --- |
 | 简洁空态 | logo、标题、新会话说明、底部 composer | `CleanNewSessionWorkspace` 已做简洁空态 | 无 | `部分接入`：视觉方向接近，但 logo/品牌图形仍是占位 |
-| 项目目录按钮 | 底部显示当前目录，可展开/切换 | composer 下方显示 cwd/context，项目 chip 可展开当前目录、改动数和最近文件，并可复制路径/改动文件列表 | workspace root/worktree status | `部分接入`：没有完整目录选择弹层、最近项目、分支信息 |
+| 项目目录按钮 | 底部显示当前目录，可展开/切换 | composer 下方显示 cwd/context，项目 chip 可展开当前目录、分支、同步状态、改动数和最近文件，并可复制路径/改动文件列表 | workspace root/worktree status | `部分接入`：没有完整目录选择弹层、最近项目、工作树切换 |
 | 模型选择 | 模型按钮/下拉 | `CleanComposer` 支持模型下拉 | modelOptions/selectedModelId | `已接入` |
 | 权限模式 | 跳过/询问/自动接受等权限模式 | `CleanComposer` 有权限下拉，高风险“完全访问权限”会二次确认 | permissionMode callback | `部分接入`：确认已补，仍缺全局默认权限策略和持久化规则 |
 | 上下文按钮 | 上下文占用按钮，弹出详细 breakdown | 显示上下文百分比/标签，已补 token 预算、工具数、当前步骤、压缩节段轻量面板，并可复制上下文摘要 | contextPreview | `部分接入`：还缺更完整的分类 token breakdown 和持久快照 |
@@ -71,7 +71,7 @@
 | 暂存/排队 | 运行中把下一条加入队列，可引导/调整顺序/删除 | 已有队列项、引导、上移、下移、删除 | queuedPrompts callbacks | `部分接入`：交互已存在，视觉还需更像 haha-cc 的轻量 pending bar |
 | 引导按钮 | 把暂存内容注入当前会话上下文 | 已有 `onGuideQueuedPrompt` | 依赖现有队列实现 | `部分接入`：需要后端明确“引导注入”事件，避免只是本地队列状态 |
 | 发送按钮 | 不可发送时 disabled，运行中 stop | 已接入 | submit/stop | `已接入` |
-| 项目目录 chip | 显示当前 repo/目录/分支 | 目前显示目录、改动数、最近文件并可复制路径/改动文件列表 | workspace root/context/worktree status | `部分接入`：分支、工作树状态还没统一展示 |
+| 项目目录 chip | 显示当前 repo/目录/分支 | 目前显示目录、分支、上游、ahead/behind、改动数、最近文件并可复制路径/改动文件列表 | workspace root/context/worktree status | `部分接入`：工作树切换还没统一展示 |
 
 ## 4. 主聊天信息流
 
@@ -195,7 +195,7 @@
 
 1. `后端事件流`：让 assistant 正文/thinking/tool/status 按时间进入 transcript，而不是最后汇成一大段。前端已加 adapter，可先吃部分 haha-cc 风格事件。
 2. `工具摘要`：后端给 read/list/git/search/run/write/apply_patch 的结构化 summary、target、parentToolUseId；前端已保存 parentToolUseId 并能在 worklog 做父子缩进。
-3. `Composer`：项目/上下文/权限详情、Slash 参数提示和键盘选择已补一层；下一步固定会话页宽度与右侧分隔区关系，补 `@文件`、权限危险确认。
+3. `Composer`：项目/上下文/权限详情、Slash 参数提示、键盘选择、`@文件`、权限危险确认和项目 git 状态已补一层；下一步固定会话页宽度与右侧分隔区关系，补工作树切换。
 4. `消息操作栏`：复制、引用、更多已接入；下一步补分支、删除/撤回、撤销当前轮所需的后端 target id 和 mutation。
 5. `Diff/File Viewer`：右侧文件区已补轻量高亮、Markdown 预览/源码切换和文档大纲；下一步补完整 diff viewer、源码/预览滚动同步、右侧 diff/源码联动。
 6. `Settings/MCP/Skills`：保留能力但重做成 haha-cc 式低卡片列表。

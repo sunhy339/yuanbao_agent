@@ -1053,6 +1053,152 @@
   margin: 0;
 }
 
+.hc-message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.hc-message-image {
+  position: relative;
+  overflow: hidden;
+  width: min(220px, 48%);
+  min-width: 138px;
+  border: 1px solid var(--hc-line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 0;
+  text-align: left;
+  cursor: zoom-in;
+}
+
+.hc-message-image img {
+  display: block;
+  width: 100%;
+  max-height: 180px;
+  object-fit: cover;
+  background: var(--hc-code-bg);
+}
+
+.hc-message-image span {
+  display: block;
+  overflow: hidden;
+  border-top: 1px solid var(--hc-line);
+  padding: 5px 7px;
+  color: var(--hc-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-message-file {
+  display: inline-flex;
+  max-width: min(340px, 100%);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--hc-line);
+  border-radius: 999px;
+  background: #fff;
+  padding: 6px 9px;
+  color: var(--hc-muted);
+  cursor: pointer;
+}
+
+.hc-message-file span {
+  display: grid;
+  min-width: 0;
+}
+
+.hc-message-file strong {
+  overflow: hidden;
+  color: var(--hc-text);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-message-file small {
+  overflow: hidden;
+  color: var(--hc-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-image-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 72;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(38, 32, 28, 0.35);
+  padding: 28px;
+}
+
+.hc-image-modal figure {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-width: min(1120px, 96vw);
+  max-height: 88vh;
+  overflow: hidden;
+  border: 1px solid var(--hc-line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 20px 70px rgba(65, 43, 28, 0.22);
+}
+
+.hc-image-modal header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--hc-line);
+  padding: 9px 11px;
+}
+
+.hc-image-modal header span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  color: var(--hc-text);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-image-modal header button {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hc-line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--hc-muted);
+}
+
+.hc-image-modal img {
+  max-width: 100%;
+  max-height: 74vh;
+  object-fit: contain;
+  background: var(--hc-code-bg);
+}
+
+.hc-image-modal figcaption {
+  overflow: hidden;
+  border-top: 1px solid var(--hc-line);
+  padding: 7px 10px;
+  color: var(--hc-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hc-message-actions {
   position: relative;
   display: flex;

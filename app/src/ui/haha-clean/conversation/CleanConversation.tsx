@@ -32,6 +32,7 @@ import {
   parsePatchFileSummaries,
 } from "../../workbench/workspaces/session/utils";
 import { stripAssistantRuntimeProgress } from "../../../state/chatMessages";
+import { attachmentsFromMetadata, CleanAttachmentGallery, imageAttachmentsFromText, uniqueAttachments } from "../shared/CleanAttachmentGallery";
 import { CleanMarkdown } from "../shared/CleanMarkdown";
 import {
   compactText,
@@ -405,6 +406,13 @@ function quoteMessageText(message: SessionWorkspaceMessage) {
   return [`> ${speaker}：`, ...content.split(/\r?\n/).map((line) => `> ${line}`)].join("\n");
 }
 
+function messageAttachments(message: SessionWorkspaceMessage) {
+  return uniqueAttachments([
+    ...attachmentsFromMetadata(message.metadata),
+    ...imageAttachmentsFromText(message.content),
+  ]);
+}
+
 function MessageActions({
   message,
   align = "left",
@@ -512,7 +520,8 @@ export const CleanAssistantMessage = memo(function CleanAssistantMessage({
   onQuoteMessage?: (text: string) => void;
 }) {
   const content = stripAssistantRuntimeProgress(message.content).trim();
-  if (!content) return null;
+  const attachments = messageAttachments(message);
+  if (!content && !attachments.length) return null;
   if (message.metadata?.kind === "assistant_progress") {
     return (
       <p className="hc-progress-line">
@@ -523,7 +532,8 @@ export const CleanAssistantMessage = memo(function CleanAssistantMessage({
   return (
     <div className="hc-message-stack" data-role="assistant">
       <article className="hc-message hc-assistant" data-layout={isDocumentMessage(content) ? "document" : "bubble"}>
-        <CleanMarkdown content={content} />
+        {content ? <CleanMarkdown content={content} /> : null}
+        <CleanAttachmentGallery attachments={attachments} onCopy={onCopyRuntimeText} />
       </article>
       <MessageActions message={message} onCopyRuntimeText={onCopyRuntimeText} onQuoteMessage={onQuoteMessage} />
     </div>
@@ -539,10 +549,12 @@ export const CleanUserMessage = memo(function CleanUserMessage({
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
   onQuoteMessage?: (text: string) => void;
 }) {
+  const attachments = messageAttachments(message);
   return (
     <div className="hc-message-stack" data-role="user">
       <article className="hc-message hc-user">
         <p>{message.content}</p>
+        <CleanAttachmentGallery attachments={attachments} onCopy={onCopyRuntimeText} />
       </article>
       <MessageActions message={message} align="right" onCopyRuntimeText={onCopyRuntimeText} onQuoteMessage={onQuoteMessage} />
     </div>

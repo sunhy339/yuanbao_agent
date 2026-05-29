@@ -153,6 +153,77 @@ describe("CleanConversation", () => {
     );
   });
 
+  it("renders message metadata attachments as lightweight chips", async () => {
+    const user = userEvent.setup();
+    const onCopyRuntimeText = vi.fn();
+
+    render(
+      <CleanActivityItem
+        item={{
+          id: "message:user:attachments",
+          kind: "message",
+          order: 1,
+          message: {
+            id: "user:attachments",
+            role: "user",
+            content: "参考这些文件",
+            metadata: {
+              attachments: [
+                "D:/notes/design.md",
+                { path: "D:/screenshots/layout.png", type: "image", name: "layout.png" },
+              ],
+            },
+          },
+        }}
+        onCopyRuntimeText={onCopyRuntimeText}
+      />,
+    );
+
+    expect(screen.getByText("design.md")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "layout.png" })).toHaveAttribute("src", "D:/screenshots/layout.png");
+
+    await user.click(screen.getByRole("button", { name: /design\.md/ }));
+    expect(onCopyRuntimeText).toHaveBeenCalledWith("附件路径", "D:/notes/design.md");
+  });
+
+  it("extracts inline image paths from assistant text into a gallery", () => {
+    render(
+      <CleanActivityItem
+        item={{
+          id: "message:assistant:image-path",
+          kind: "message",
+          order: 1,
+          message: {
+            id: "assistant:image-path",
+            role: "assistant",
+            content: "截图已生成：D:\\tmp\\result.png",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("img", { name: "result.png" })).toHaveAttribute("src", "D:/tmp/result.png");
+  });
+
+  it("does not duplicate markdown image blocks as attachment thumbnails", () => {
+    render(
+      <CleanActivityItem
+        item={{
+          id: "message:assistant:markdown-image",
+          kind: "message",
+          order: 1,
+          message: {
+            id: "assistant:markdown-image",
+            role: "assistant",
+            content: "![Preview](D:\\tmp\\preview.png)",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getAllByRole("img", { name: "Preview" })).toHaveLength(1);
+  });
+
   it("falls back to copying a quote when the composer quote bridge is absent", async () => {
     const user = userEvent.setup();
     const onCopyRuntimeText = vi.fn();

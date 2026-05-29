@@ -43,6 +43,7 @@
 - 权限菜单补了“完全访问权限”二次确认，避免误点直接切到危险权限模式。
 - 现有后端数据适配：messages、toolCalls、approvals、patches、backgroundJobs、traces、activeTask、contextPreview。
 - clean transcript schema：已覆盖 user_text、assistant_text、assistant_progress、thinking、tool_use、tool_result、tool_group、permission_request、computer_use_permission、ask_user_question、background_task、task_summary、plan_update、goal_event、memory_event、compact_summary、api_retry、error、change_set、command、status、system。
+- MCP/Skills/Settings 页面补了一层更统一的 haha-clean 低卡片覆盖：顶部概览、操作条、列表行、启用态和按钮统一为浅色细线风格。
 
 ## 需要后端补字段
 
@@ -61,4 +62,4 @@
 - 聊天正文 Mermaid、复杂图片画廊、代码块更完整语法高亮。
 - 全项目文件搜索、`@` 引用持久化、slash command 详情/结果面板。
 - Computer Use 权限弹窗。
-- MCP/Skills/Settings 页面仍先复用旧业务组件，已加 clean shell 样式覆盖，后续可迁移到独立 clean 组件。
+- MCP/Skills/Settings 页面仍先复用旧业务组件，已加 clean shell/低卡片样式覆盖，后续可迁移到独立 clean 组件。

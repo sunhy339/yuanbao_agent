@@ -11,6 +11,7 @@
 - haha-cc 式低卡片消息流：过程说明、工具行、文件改动、上下文压缩/Goal/Memory/API retry 等事件均有前端渲染入口。
 - transcript adapter：已接入 `content_start` 的 text/tool 占位、`content_delta` 工具输入增量、`tool_use_complete`/`tool_result` 的 `parentToolUseId` 保存。
 - 特殊事件适配：`api_retry`、`system_notification`、`compact_summary`、`goal_event`、`memory_event`、`ask_user_question`、`computer_use_permission_request`、`computer_use_permission` 可直接进入消息流。
+- 特殊事件适配继续补齐：`background_task`、`task_summary`、`plan_update` 已进入 shared 事件类型和订阅白名单；clean 会话会过滤“理解任务目标/准备上下文/普通运行状态”这类启动期噪音，只保留完成、失败、等待审批、可执行计划等有价值节点。
 - `ask_user_question` 和 `computer_use_permission` 已有专用轻量节点，不再混进普通系统消息；目前先展示问题/选项、权限详情、复制操作，以及等待后端的回答/授权按钮占位。
 - 工具摘要清洗：目录/文件/Git/搜索类输出不再直接展示原始 JSON，优先显示可读短摘要；主聊天里的工具消息也会把 `{status, exitCode, stdout}`、`items/files/matches` 等结果转成单行中文摘要。
 - 工具详情折叠：主聊天工具消息展开后使用轻量“工具详情”面板，并支持复制完整输入/输出。
@@ -42,7 +43,7 @@
 - Composer 补了 `@` 文件引用入口：加号菜单可插入 `@`，输入后能从当前已知文件候选里选择并插入引用。
 - 权限菜单补了“完全访问权限”二次确认，避免误点直接切到危险权限模式。
 - 现有后端数据适配：messages、toolCalls、approvals、patches、backgroundJobs、traces、activeTask、contextPreview。
-- clean transcript schema：已覆盖 user_text、assistant_text、assistant_progress、thinking、tool_use、tool_result、tool_group、permission_request、computer_use_permission、ask_user_question、background_task、task_summary、plan_update、goal_event、memory_event、compact_summary、api_retry、error、change_set、command、status、system。
+- clean transcript schema：已覆盖 user_text、assistant_text、assistant_progress、thinking、tool_use、tool_result、tool_group、permission_request、computer_use_permission、ask_user_question、background_task、task_summary、plan_update、goal_event、memory_event、compact_summary、api_retry、error、change_set、command、status、system。`task_summary/plan_update/status` 已加低价值过滤，避免刚开任务就显示“工作摘要”。
 - 本地 haha 风格过程节点现在会在持久消息刷新时保留，`api_retry`、`compact_summary`、`goal_event`、`ask_user_question`、`computer_use_permission` 等不会因为后端 messages 刷新突然消失。
 - MCP/Skills/Settings 页面补了一层更统一的 haha-clean 低卡片覆盖：顶部概览、操作条、列表行、启用态和按钮统一为浅色细线风格。
 

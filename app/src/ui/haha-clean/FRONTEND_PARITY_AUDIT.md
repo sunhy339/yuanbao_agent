@@ -12,7 +12,7 @@
 
 - 前端事件订阅现在会消费 `content_start`：`tool_use` 会先生成可见的工具占位行，`text` 会生成“正在输出回复”的流式提示，避免工具输入到齐前页面完全没反应。
 - `content_delta`、`tool_use_complete`、`tool_result` 已透传并保存 `parentToolUseId`，为后续工具树/父子折叠做准备。
-- 新增 haha-cc 风格特殊事件适配：`api_retry`、`system_notification`、`compact_summary`、`goal_event`、`memory_event`、`ask_user_question`、`computer_use_permission_request`、`computer_use_permission`。后端即使暂时只补部分事件，前端也能先渲染为低卡片信息流。
+- 新增 haha-cc 风格特殊事件适配：`api_retry`、`system_notification`、`compact_summary`、`goal_event`、`memory_event`、`background_task`、`task_summary`、`plan_update`、`ask_user_question`、`computer_use_permission_request`、`computer_use_permission`。后端即使暂时只补部分事件，前端也能先渲染为低卡片信息流；`task_summary/plan_update/status` 会过滤启动期低价值事件，避免任务刚开始就出现“工作摘要”。
 - 普通用户/助手消息已补轻量操作栏：复制、引用、更多。引用会优先写入底部 composer；没有 composer 桥接时退回为复制引用文本。
 - `ask_user_question` 和 `computer_use_permission` 已从普通系统行拆成专用信息节点，先展示问题/选项、应用/权限详情和禁用占位按钮；真正提交回答和权限弹窗仍等后端协议补齐。
 - 低价值 read/list/git/search/状态探针会继续压进 worklog，不再把主聊天刷成一串工具日志；失败、审批、写入、diff 仍保留为主线节点。
@@ -182,7 +182,10 @@
 | `computer_use_permission_request` | computer use 授权 | transcript adapter | `部分接入`：前端已能显示，后端能力/弹窗详情待补 |
 | `message_complete` | 本轮消息结束 | task/session status 推断 | `后端待补` |
 | `thinking` | 思考内容 | status/thinking metadata 推断 | `后端待补` |
-| `status` | 当前运行状态 | traces/activeTask | `部分接入` |
+| `status` | 当前运行状态 | status event + traces/activeTask | `部分接入`：普通 thinking/streaming 仍走思考块，只有失败/阻塞等需要注意的状态进入主流 |
+| `background_task` | 后台/子任务进展 | transcript adapter | `部分接入` |
+| `task_summary` | 本轮任务摘要 | transcript adapter + activeTask summary | `部分接入`：已限制到完成/失败/等待审批等有价值阶段 |
+| `plan_update` | 计划/步骤更新 | transcript adapter + activeTask.plan | `部分接入`：只保留可执行计划或终态更新，低价值启动计划隐藏 |
 | `api_retry` | API 重试提示 | transcript adapter | `部分接入`：前端已能显示，后端待 emit |
 | `error` | 错误 | failed runtime/message | `部分接入` |
 | `system_notification` | 系统通知 | traces/system/transcript adapter | `部分接入` |

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConversationActivityItem } from "../../workbench/workspaces/session/types";
-import { filterCleanDuplicateToolMessages } from "./CleanSessionWorkspace";
+import { filterCleanDuplicateToolMessages, filterCleanLowSignalSpecialEvents } from "./CleanSessionWorkspace";
 
 describe("CleanSessionWorkspace", () => {
   it("hides quiet inline tool messages when the same runtime item is already visible", () => {
@@ -104,6 +104,93 @@ describe("CleanSessionWorkspace", () => {
       "message:tool_activity:write_1",
       "runtime:tool:write_1",
       "message:tool_activity:read_failed",
+    ]);
+  });
+
+  it("hides early task summaries and routine status events from the main transcript", () => {
+    const items: ConversationActivityItem[] = [
+      {
+        id: "message:task_summary:start",
+        kind: "message",
+        order: 1,
+        message: {
+          id: "task_summary:start",
+          role: "assistant",
+          content: "理解任务目标",
+          metadata: { kind: "task_summary", status: "running", summary: "理解任务目标" },
+        },
+      },
+      {
+        id: "message:status:thinking",
+        kind: "message",
+        order: 2,
+        message: {
+          id: "status:thinking",
+          role: "assistant",
+          content: "正在处理：准备上下文",
+          metadata: { kind: "status", state: "thinking" },
+        },
+      },
+      {
+        id: "message:assistant",
+        kind: "message",
+        order: 3,
+        message: {
+          id: "assistant",
+          role: "assistant",
+          content: "我会先看相关文件。",
+        },
+      },
+    ];
+
+    const filtered = filterCleanLowSignalSpecialEvents(items);
+
+    expect(filtered.map((item) => item.id)).toEqual(["message:assistant"]);
+  });
+
+  it("keeps final summaries, actionable plans, and attention states visible", () => {
+    const items: ConversationActivityItem[] = [
+      {
+        id: "message:task_summary:done",
+        kind: "message",
+        order: 1,
+        message: {
+          id: "task_summary:done",
+          role: "assistant",
+          content: "任务已完成，验证通过。",
+          metadata: { kind: "task_summary", status: "completed", summary: "验证通过" },
+        },
+      },
+      {
+        id: "message:plan_update:action",
+        kind: "message",
+        order: 2,
+        message: {
+          id: "plan_update:action",
+          role: "assistant",
+          content: "下一步运行测试并查看 diff。",
+          metadata: { kind: "plan_update", status: "running" },
+        },
+      },
+      {
+        id: "message:status:blocked",
+        kind: "message",
+        order: 3,
+        message: {
+          id: "status:blocked",
+          role: "assistant",
+          content: "等待审批后继续。",
+          metadata: { kind: "status", status: "waiting_approval" },
+        },
+      },
+    ];
+
+    const filtered = filterCleanLowSignalSpecialEvents(items);
+
+    expect(filtered.map((item) => item.id)).toEqual([
+      "message:task_summary:done",
+      "message:plan_update:action",
+      "message:status:blocked",
     ]);
   });
 });

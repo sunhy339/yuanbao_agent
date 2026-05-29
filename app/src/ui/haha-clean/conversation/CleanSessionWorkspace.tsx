@@ -38,6 +38,26 @@ const QUIET_INLINE_TOOL_NAMES = new Set([
   "code_search",
 ]);
 
+const LOW_SIGNAL_TASK_STEP_PATTERNS = [
+  /理解任务目标/,
+  /分析任务目标/,
+  /整理上下文/,
+  /构建上下文/,
+  /准备上下文/,
+  /准备工具/,
+  /规划任务/,
+  /任务启动/,
+  /等待模型/,
+  /思考中/,
+  /understand(?:ing)? (?:the )?task/i,
+  /analy[sz](?:e|ing) (?:the )?task/i,
+  /build(?:ing)? context/i,
+  /prepar(?:e|ing) context/i,
+  /prepar(?:e|ing) (?:the )?first tool/i,
+  /plan(?:ning)? (?:the )?task/i,
+  /waiting for (?:the )?model/i,
+];
+
 function normalizeToolName(value?: string | null) {
   return String(value ?? "").trim().toLowerCase().replace(/\s+/g, "_");
 }
@@ -145,6 +165,104 @@ function shouldHideDuplicateInlineToolMessage(
   return Boolean(fingerprint && runtimeFingerprints.has(fingerprint));
 }
 
+const LOW_SIGNAL_SPECIAL_EVENT_KINDS = new Set(["task_summary", "plan_update", "status"]);
+const TERMINAL_EVENT_STATUSES = new Set([
+  "completed",
+  "complete",
+  "done",
+  "finished",
+  "succeeded",
+  "success",
+  "failed",
+  "failure",
+  "error",
+  "cancelled",
+  "canceled",
+  "rejected",
+]);
+const ATTENTION_EVENT_STATUSES = new Set([
+  "blocked",
+  "blocking",
+  "waiting",
+  "waiting_approval",
+  "needs_input",
+  "paused",
+  "requires_action",
+]);
+const ACTIONABLE_PLAN_RE =
+  /\b(apply|patch|edit|write|implement|modify|command|shell|run|verify|test|git|commit|diff|build|fix)\b|应用|补丁|编辑|写入|实现|修改|运行|执行|验证|测试|构建|修复|文件|改动|差异|审批|命令/i;
+const TERMINAL_TEXT_RE =
+  /\b(completed|complete|done|finished|succeeded|success|failed|failure|error|cancelled|canceled|rejected)\b|已完成|完成|成功|失败|出错|取消|拒绝|阻塞|等待审批|需要确认/i;
+
+function messageMetadataKind(message: SessionWorkspaceMessage) {
+  const kind = message.metadata?.kind;
+  return typeof kind === "string" ? kind : "";
+}
+
+function messageLifecycleStatus(message: SessionWorkspaceMessage) {
+  for (const key of ["status", "phase", "state"]) {
+    const value = message.metadata?.[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim().toLowerCase();
+    }
+  }
+  return message.status === "failed" ? "failed" : "";
+}
+
+function messageSummaryText(message: SessionWorkspaceMessage) {
+  return [
+    message.content,
+    metadataText(message, "title"),
+    metadataText(message, "summary"),
+    metadataText(message, "description"),
+    metadataText(message, "message"),
+    metadataText(message, "detail"),
+    metadataText(message, "reason"),
+  ].filter(Boolean).join("\n");
+}
+
+function isLowSignalSpecialText(value: string) {
+  const normalized = value.trim();
+  if (!normalized) return true;
+  return LOW_SIGNAL_TASK_STEP_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function shouldHideLowSignalSpecialMessage(message: SessionWorkspaceMessage) {
+  const kind = messageMetadataKind(message);
+  if (!LOW_SIGNAL_SPECIAL_EVENT_KINDS.has(kind)) {
+    return false;
+  }
+
+  const status = messageLifecycleStatus(message);
+  const text = messageSummaryText(message);
+  const hasTerminalStatus = TERMINAL_EVENT_STATUSES.has(status) || TERMINAL_TEXT_RE.test(text);
+  const needsAttention = ATTENTION_EVENT_STATUSES.has(status);
+  if (needsAttention) {
+    return false;
+  }
+
+  if (kind === "status") {
+    return !["failed", "failure", "error", "blocked", "blocking"].includes(status);
+  }
+
+  if (kind === "task_summary") {
+    return !hasTerminalStatus;
+  }
+
+  if (kind === "plan_update") {
+    return !hasTerminalStatus && (!ACTIONABLE_PLAN_RE.test(text) || isLowSignalSpecialText(text));
+  }
+
+  return false;
+}
+
+export function filterCleanLowSignalSpecialEvents(items: ConversationActivityItem[]) {
+  return items.filter((item) => (
+    item.kind !== "message" ||
+    !shouldHideLowSignalSpecialMessage(item.message)
+  ));
+}
+
 export function filterCleanDuplicateToolMessages(items: ConversationActivityItem[]) {
   const quietRuntimes = activityRuntimeItems(items).filter(isQuietCompletedRuntime);
   if (!quietRuntimes.length) return items;
@@ -191,7 +309,7 @@ export function CleanSessionWorkspace({
     [runtimeItems, running],
   );
   const activityItems = useMemo(
-    () => filterCleanDuplicateToolMessages(buildConversationActivity(messages, visibleRuntimeItems)),
+    () => filterCleanDuplicateToolMessages(filterCleanLowSignalSpecialEvents(buildConversationActivity(messages, visibleRuntimeItems))),
     [messages, visibleRuntimeItems],
   );
   const workspaceRoot = composerContext?.cwd || activeTask?.activeWorktree?.worktreePath || "";

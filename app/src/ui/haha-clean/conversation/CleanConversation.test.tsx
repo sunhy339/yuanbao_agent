@@ -65,6 +65,31 @@ describe("CleanConversation", () => {
     expect(screen.queryByText("new_game")).not.toBeInTheDocument();
   });
 
+  it("exposes patch file list copy and revert placeholder actions", async () => {
+    const user = userEvent.setup();
+    const onCopyRuntimeText = vi.fn();
+
+    render(
+      <CleanRuntimeBlock
+        onCopyRuntimeText={onCopyRuntimeText}
+        item={{
+          id: "patch:actions",
+          kind: "patch",
+          title: "Update snake_game files",
+          status: "applied",
+          code: "modified snake_game/game.py (+2/-4)\nmodified snake_game/rules.py (+0/-2)",
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /复制文件列表/ }));
+    expect(onCopyRuntimeText).toHaveBeenCalledWith(
+      "改动文件列表",
+      expect.stringContaining("snake_game/game.py  修改 +2 -4"),
+    );
+    expect(screen.getByRole("button", { name: /撤销本轮/ })).toBeDisabled();
+  });
+
   it("exposes lightweight copy and quote actions for normal messages", async () => {
     const user = userEvent.setup();
     const onCopyRuntimeText = vi.fn();

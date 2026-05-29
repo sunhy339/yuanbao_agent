@@ -20,7 +20,7 @@
 - worklog 已能读取 `parentToolUseId` 并渲染轻量父子缩进，先支持工具树的前端形态。
 - 低价值 read/list/git/search/状态探针会压进 worklog，失败、审批、写入、diff 保留在主线，减少“全屏都是工具调用”的噪声。
 - clean 会话会隐藏已被 runtime/worklog 承接的低价值 inline 工具消息，避免同一次 read/list/git/search 同时在主线出现两遍；失败、运行中、写入和审批仍保留在主线。
-- patch 文件行现在会优先打开本地匹配 diff，并只展示所选文件的差异；没有本地 diff 时再走后端 `onLoadPatch`。
+- patch 文件行现在会优先打开本地匹配 diff，并只展示所选文件的差异；没有本地 diff 时再走后端 `onLoadPatch`；改动卡补了复制文件列表和“撤销本轮”的禁用占位入口。
 - 文件区 clean 样式：右侧文件树、预览区、分隔条和搜索框已脱离旧 session CSS 的重卡片样式。
 - 代码阅览补了轻量语法高亮，常见关键词、字符串、注释、数字会先上色；Markdown 文件继续走预览渲染。
 - Composer 补了项目目录/上下文轻量详情、权限模式说明和 Slash 参数提示。

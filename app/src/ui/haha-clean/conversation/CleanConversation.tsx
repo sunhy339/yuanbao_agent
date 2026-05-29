@@ -302,6 +302,26 @@ function patchFileSummaries(item: RuntimeTimelineItem): PatchFileSummary[] {
   return Array.from(byPath.values());
 }
 
+function patchStatusLabel(status?: string) {
+  const normalized = status?.toLowerCase();
+  if (["added", "created", "create", "new"].includes(normalized ?? "")) return "新增";
+  if (["deleted", "removed", "remove"].includes(normalized ?? "")) return "删除";
+  return "修改";
+}
+
+function patchFileListText(files: PatchFileSummary[]) {
+  return files
+    .map((file) => {
+      const meta = [
+        patchStatusLabel(file.status),
+        file.additions !== undefined ? `+${file.additions}` : "",
+        file.deletions !== undefined ? `-${file.deletions}` : "",
+      ].filter(Boolean).join(" ");
+      return meta ? `${file.path}  ${meta}` : file.path;
+    })
+    .join("\n");
+}
+
 function approvalFileSummaries(item: RuntimeTimelineItem) {
   const files = patchFileSummaries(item).filter((file) => !file.path.trim().startsWith("{"));
   if (files.length) return files;
@@ -846,7 +866,7 @@ function ApprovalRuntimeBlock({
               }}
             >
               <code>{file.path}</code>
-              <span>{[file.status || "修改", file.additions !== undefined ? `+${file.additions}` : "", file.deletions !== undefined ? `-${file.deletions}` : ""].filter(Boolean).join(" ")}</span>
+              <span>{[patchStatusLabel(file.status), file.additions !== undefined ? `+${file.additions}` : "", file.deletions !== undefined ? `-${file.deletions}` : ""].filter(Boolean).join(" ")}</span>
             </button>
           ))}
         </div>
@@ -882,9 +902,11 @@ function ApprovalRuntimeBlock({
 function PatchRuntimeBlock({
   item,
   onLoadPatch,
+  onCopyRuntimeText,
 }: {
   item: RuntimeTimelineItem;
   onLoadPatch?: (patchId: string) => void | Promise<void>;
+  onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
 }) {
   const files = useMemo(() => patchFileSummaries(item), [item]);
   const diffGroups = useMemo(() => (
@@ -899,6 +921,7 @@ function PatchRuntimeBlock({
   const [expanded, setExpanded] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const selectedDiffPath = selectedPath && diffPaths.has(normalizeDiffPath(selectedPath)) ? selectedPath : null;
+  const fileListText = patchFileListText(files);
 
   return (
     <section className="hc-runtime hc-patch" data-kind={item.kind} data-tone={statusTone(item.status)}>
@@ -908,10 +931,26 @@ function PatchRuntimeBlock({
           <strong>{item.title || "文件改动"}</strong>
           {runtimeSummary(item) ? <small>{runtimeSummary(item)}</small> : null}
         </div>
-        <div className="hc-patch-meta">
-          {files.length ? <span>{files.length} 个文件</span> : null}
-          {totalAdditions || totalDeletions ? <span><b>+{totalAdditions}</b> <i>-{totalDeletions}</i></span> : null}
-          <StatusChip status={item.status} />
+        <div className="hc-patch-side">
+          <div className="hc-patch-meta">
+            {files.length ? <span>{files.length} 个文件</span> : null}
+            {totalAdditions || totalDeletions ? <span><b>+{totalAdditions}</b> <i>-{totalDeletions}</i></span> : null}
+            <StatusChip status={item.status} />
+          </div>
+          <div className="hc-patch-actions" aria-label="改动操作">
+            <button
+              type="button"
+              disabled={!files.length || !onCopyRuntimeText}
+              onClick={() => void onCopyRuntimeText?.("改动文件列表", fileListText)}
+            >
+              <Copy size={13} />
+              复制文件列表
+            </button>
+            <button type="button" disabled title="需要后端提供 revert turn 接口">
+              <RotateCcw size={13} />
+              撤销本轮
+            </button>
+          </div>
         </div>
       </header>
       {files.length ? (
@@ -932,7 +971,7 @@ function PatchRuntimeBlock({
             >
               <code>{file.path}</code>
               <span>
-                {[file.status || "修改", file.additions !== undefined ? `+${file.additions}` : "", file.deletions !== undefined ? `-${file.deletions}` : ""].filter(Boolean).join(" ")}
+                {[patchStatusLabel(file.status), file.additions !== undefined ? `+${file.additions}` : "", file.deletions !== undefined ? `-${file.deletions}` : ""].filter(Boolean).join(" ")}
                 {diffPaths.has(normalizeDiffPath(file.path)) ? " · 本地差异" : ""}
               </span>
             </button>
@@ -999,7 +1038,7 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
   }
 
   if (item.kind === "patch") {
-    return <PatchRuntimeBlock item={item} onLoadPatch={onLoadPatch} />;
+    return <PatchRuntimeBlock item={item} onLoadPatch={onLoadPatch} onCopyRuntimeText={onCopyRuntimeText} />;
   }
 
   if (isQuietRuntime(item)) {

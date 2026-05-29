@@ -85,7 +85,7 @@
 | 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy，并保存 `parentToolUseId`；主聊天工具消息会把常见 JSON 结果转成单行摘要，展开后看完整输入输出 | runtime output/tool result | `部分接入`：父子 id 已能保存并在 worklog 里缩进展示，但仍需要后端稳定树结构和更完整工具摘要 |
 | 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，展开后使用紧凑工具行和父子缩进；普通 read/list/git/search/状态探针继续压缩，且会隐藏对应的重复 inline 工具消息 | activity worklog | `部分接入`：视觉已更轻，后续还要接真实阶段解释正文和更完整的父子折叠 |
 | 权限请求 | 内嵌审批卡，带 diff/命令预览 | runtime approval 已拆成专用轻量节点，常见审批会显示“修改/写入/运行 + 目标”，并保留批准/拒绝 | approvals/permission_request | `部分接入`：审批节点已拆出，permission request 内完整 diff/规则类永久批准还未补 |
-| 文件改动卡 | 当前轮改动 summary、查看 diff、撤销 | patch card + diff preview 已接入 | patches/changedFiles | `部分接入`：当前没有 turn 级撤销，diff 文件匹配仍需加强 |
+| 文件改动卡 | 当前轮改动 summary、查看 diff、撤销 | patch card + diff preview 已接入，并补了复制文件列表、撤销本轮禁用入口 | patches/changedFiles | `部分接入`：撤销仍等 turn revert 后端，diff 文件匹配仍需加强 |
 | 任务摘要 | 完成后显示总结，不在刚开始出现 | 已隐藏运行初期 task summary | activeTask | `部分接入`：结束时机和内容质量依赖后端 |
 | 上下文压缩 | “上下文已自动压缩”分割节点 | `compact_summary` 已进入 transcript adapter | 等后端真实事件 | `部分接入`：前端已接，后端待稳定 emit |
 | Goal/Memory 事件 | 轻量系统节点 | `goal_event`/`memory_event` 已进入 transcript adapter | 等后端真实事件 | `部分接入`：前端已接，后端待稳定 emit |
@@ -103,7 +103,7 @@
 | 删除/撤回 | 删除本地消息或撤销当前轮 | 更多菜单已有禁用入口和说明 | 需要 session transcript mutation | `后端待补`：前端入口已占位，等待 mutation 接口 |
 | 更多 `...` | 展开更多操作 | 普通消息已有轻量菜单，支持复制 Markdown、复制消息 ID，并列出继续/分支/删除占位 | 需要动作定义 | `部分接入`：可用复制动作已接入，分支/继续/删除还缺后端 |
 | 从这里分支 | 基于某条消息创建分支会话 | 更多菜单已有禁用入口和说明 | 需要 branchSession/transcript id | `后端待补`：前端入口已占位，等待 branchSession |
-| 撤销本轮改动 | 当前轮 change card 撤销 | 未接入 | 需要后端 revert turn | `后端待补` |
+| 撤销本轮改动 | 当前轮 change card 撤销 | 改动卡已有禁用入口和原因 | 需要后端 revert turn | `后端待补` |
 
 ## 6. 工具/命令/审批渲染
 
@@ -126,11 +126,11 @@
 
 | haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
 | --- | --- | --- | --- | --- |
-| 当前轮改动卡 | 显示文件数、增删、每文件行 | 已有 patch card | patches/changedFiles | `部分接入`：标题和文件匹配已修一轮，仍需更多 patch 格式兼容 |
+| 当前轮改动卡 | 显示文件数、增删、每文件行 | 已有 patch card，支持复制改动文件列表 | patches/changedFiles | `部分接入`：标题和文件匹配已修一轮，仍需更多 patch 格式兼容 |
 | 查看文件差异 | 点按钮打开 diff | 有“查看文件差异”按钮和 preview；patch 文件行会优先打开本地匹配 diff，并只展示所选文件的差异 | loadPatch / local diff | `部分接入`：右侧 diff/源文件联动还不够像 haha-cc |
 | 文件行点击 | 点击文件打开右侧预览 | 已接入 openFile | FileWorkspacePanel | `部分接入` |
 | diff 语法色 | 增删颜色、hunk header、行号 | 已有基本 diff preview | patch text | `部分接入`：还不是真正完整 diff viewer |
-| 撤销本轮 | change card 上撤销 | 未接入 | 需要 revert API | `后端待补` |
+| 撤销本轮 | change card 上撤销 | 前端入口已占位禁用 | 需要 revert API | `后端待补` |
 | 审核/提交入口 | 在当前改动上进入审查 | 旧 app 有审查相关，clean 未完整统一 | existing review route | `前端待补` |
 
 ## 8. 代码阅览与文件区

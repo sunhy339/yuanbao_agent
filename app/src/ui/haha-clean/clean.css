@@ -1430,6 +1430,12 @@
   color: var(--hc-muted);
 }
 
+.hc-patch-side {
+  display: grid;
+  justify-items: end;
+  gap: 7px;
+}
+
 .hc-approval-head {
   display: flex;
   align-items: flex-start;
@@ -1473,6 +1479,35 @@
 .hc-patch-meta i {
   color: var(--hc-red);
   font-style: normal;
+}
+
+.hc-patch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.hc-patch-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--hc-line);
+  border-radius: 999px;
+  background: #fff;
+  padding: 5px 9px;
+  color: var(--hc-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.hc-patch-actions button:hover:not(:disabled) {
+  background: rgba(164, 91, 59, 0.06);
+}
+
+.hc-patch-actions button:disabled {
+  color: var(--hc-faint);
+  cursor: not-allowed;
 }
 
 .hc-approval-actions,

@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import { CleanMermaid, shouldRenderMermaid } from "./CleanMermaid";
 
 function escapeHtml(value: string) {
@@ -29,12 +29,81 @@ function normalizeHeadingText(value: string) {
   return value.replace(/^#+\s*/, "").replace(/\s*#+$/, "").trim();
 }
 
-const keywordPattern =
-  /\b(import|from|class|def|return|if|elif|else|for|while|try|except|finally|with|as|const|let|var|function|type|interface|export|async|await|new|public|private|protected|static|true|false|null|None|and|or|not)\b/g;
+const keywords = new Set([
+  "as",
+  "async",
+  "await",
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "def",
+  "elif",
+  "else",
+  "except",
+  "export",
+  "finally",
+  "for",
+  "from",
+  "function",
+  "if",
+  "import",
+  "in",
+  "interface",
+  "let",
+  "new",
+  "not",
+  "or",
+  "private",
+  "protected",
+  "public",
+  "return",
+  "static",
+  "switch",
+  "try",
+  "type",
+  "var",
+  "while",
+  "with",
+]);
 
-function highlightLine(line: string) {
-  const tokens: JSX.Element[] = [];
-  const pattern = /(#.*$|\/\/.*$|"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|\b\d+(?:\.\d+)?\b|\b(?:import|from|class|def|return|if|elif|else|for|while|try|except|finally|with|as|const|let|var|function|type|interface|export|async|await|new|public|private|protected|static|true|false|null|None|and|or|not)\b)/g;
+const builtins = new Set([
+  "Any",
+  "False",
+  "None",
+  "True",
+  "bool",
+  "dict",
+  "false",
+  "int",
+  "list",
+  "null",
+  "number",
+  "str",
+  "string",
+  "true",
+  "undefined",
+]);
+
+function codeLineClass(line: string) {
+  const value = line.trimStart();
+  if (value.startsWith("@@")) return "hc-code-line-hunk";
+  if (value.startsWith("+") && !value.startsWith("+++")) return "hc-code-line-added";
+  if (value.startsWith("-") && !value.startsWith("---")) return "hc-code-line-deleted";
+  if (/^(diff --git|index |--- |\+\+\+ )/.test(value)) return "hc-code-line-meta";
+  return undefined;
+}
+
+function highlightLine(line: string, keyPrefix: string): ReactNode {
+  if (line.trimStart().startsWith("@@")) {
+    return <span className="hc-code-hunk">{line}</span>;
+  }
+
+  const tokens: ReactNode[] = [];
+  const pattern =
+    /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\/.*|#.*|\/\*.*?\*\/|\b\d+(?:\.\d+)?\b|\b[A-Za-z_$][\w$]*\b|[{}[\]().,:;+\-*/%=<>!|&]+)/g;
   let last = 0;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(line))) {
@@ -42,17 +111,23 @@ function highlightLine(line: string) {
       tokens.push(<span key={`t-${last}`}>{line.slice(last, match.index)}</span>);
     }
     const value = match[0];
-    const cls = value.startsWith("#") || value.startsWith("//")
-      ? "hc-code-comment"
-      : value.startsWith("'") || value.startsWith('"')
-        ? "hc-code-string"
-        : /^\d/.test(value)
-          ? "hc-code-number"
-          : keywordPattern.test(value)
-            ? "hc-code-keyword"
-            : "hc-code-keyword";
-    keywordPattern.lastIndex = 0;
-    tokens.push(<span className={cls} key={`m-${match.index}`}>{value}</span>);
+    const key = `${keyPrefix}-${match.index}`;
+    if (/^(\/\/|#|\/\*)/.test(value)) {
+      tokens.push(<span className="hc-code-comment" key={key}>{value}</span>);
+    } else if (/^["'`]/.test(value)) {
+      const nextNonSpace = line.slice(match.index + value.length).match(/^\s*:/);
+      tokens.push(<span className={nextNonSpace ? "hc-code-property" : "hc-code-string"} key={key}>{value}</span>);
+    } else if (/^\d/.test(value)) {
+      tokens.push(<span className="hc-code-number" key={key}>{value}</span>);
+    } else if (keywords.has(value)) {
+      tokens.push(<span className="hc-code-keyword" key={key}>{value}</span>);
+    } else if (builtins.has(value)) {
+      tokens.push(<span className="hc-code-builtin" key={key}>{value}</span>);
+    } else if (/^[{}[\]().,:;+\-*/%=<>!|&]+$/.test(value)) {
+      tokens.push(<span className="hc-code-operator" key={key}>{value}</span>);
+    } else {
+      tokens.push(value);
+    }
     last = match.index + value.length;
   }
   if (last < line.length) {
@@ -82,9 +157,9 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
       </figcaption>
       <ol>
         {lines.map((line, index) => (
-          <li key={`${index}:${line.slice(0, 24)}`}>
+          <li className={codeLineClass(line)} key={`${index}:${line.slice(0, 24)}`}>
             <span className="hc-code-line-no">{index + 1}</span>
-            <code>{highlightLine(line)}</code>
+            <code>{highlightLine(line, `${language}-${index}`)}</code>
           </li>
         ))}
       </ol>

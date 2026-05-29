@@ -2772,6 +2772,19 @@
   font: 12px/1.65 "Cascadia Mono", Consolas, monospace;
 }
 
+.hc-code li.hc-code-line-added {
+  background: rgba(32, 114, 69, 0.1);
+}
+
+.hc-code li.hc-code-line-deleted {
+  background: rgba(178, 59, 47, 0.11);
+}
+
+.hc-code li.hc-code-line-hunk,
+.hc-code li.hc-code-line-meta {
+  background: rgba(71, 101, 127, 0.08);
+}
+
 .hc-code li:last-child {
   border-bottom: 0;
 }
@@ -2794,15 +2807,37 @@
 
 .hc-code-keyword {
   color: #c0342b;
+  font-weight: 600;
 }
 
-.hc-code-string,
-.hc-code-comment {
+.hc-code-string {
   color: #147a45;
+}
+
+.hc-code-comment {
+  color: #6b7280;
+  font-style: italic;
+}
+
+.hc-code-property {
+  color: #8b4b2e;
+}
+
+.hc-code-builtin {
+  color: #6e56cf;
 }
 
 .hc-code-number {
   color: #7a54d8;
+}
+
+.hc-code-operator {
+  color: #8a6f5b;
+}
+
+.hc-code-hunk {
+  color: #47657f;
+  font-weight: 700;
 }
 
 .hc-table-wrap {

@@ -90,6 +90,31 @@ describe("CleanMarkdown", () => {
     expect(screen.getByRole("button", { name: "复制 python 代码块" })).toBeTruthy();
   });
 
+  it("highlights diff and json code blocks with semantic token classes", () => {
+    const { container } = render(
+      <CleanMarkdown
+        content={[
+          "```diff",
+          "@@ -1,2 +1,2 @@",
+          "-old_value",
+          "+new_value",
+          "```",
+          "",
+          "```json",
+          "{\"status\": \"ok\", \"count\": 2, \"enabled\": true}",
+          "```",
+        ].join("\n")}
+      />,
+    );
+
+    expect(container.querySelector(".hc-code-line-hunk")).toBeTruthy();
+    expect(container.querySelector(".hc-code-line-deleted")).toBeTruthy();
+    expect(container.querySelector(".hc-code-line-added")).toBeTruthy();
+    expect(container.querySelector(".hc-code-property")?.textContent).toBe('"status"');
+    expect(container.querySelector(".hc-code-number")?.textContent).toBe("2");
+    expect(container.querySelector(".hc-code-builtin")?.textContent).toBe("true");
+  });
+
   it("renders mermaid fenced blocks as diagrams", async () => {
     render(<CleanMarkdown content={"```mermaid\ngraph TB\nA-->B\n```"} />);
 

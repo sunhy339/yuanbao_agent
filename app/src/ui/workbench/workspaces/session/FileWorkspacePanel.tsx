@@ -24,6 +24,7 @@ import {
   Maximize2,
   Minimize2,
   MoreHorizontal,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -434,6 +435,7 @@ interface FileWorkspacePanelProps {
   relatedFiles?: string[];
   focused?: boolean;
   onToggleFocus?: () => void;
+  onOpenExternalFile?: (absolutePath: string) => void | Promise<void>;
 }
 
 export function FileWorkspacePanel({
@@ -442,6 +444,7 @@ export function FileWorkspacePanel({
   relatedFiles = [],
   focused = false,
   onToggleFocus,
+  onOpenExternalFile,
 }: FileWorkspacePanelProps) {
   const canBrowseFiles = canUseTauriInvoke();
   const normalizedRelatedFiles = useMemo(() => uniquePaths(relatedFiles), [relatedFiles]);
@@ -564,6 +567,11 @@ export function FileWorkspacePanel({
     await navigator.clipboard.writeText(currentAbsolutePath);
     setCopiedPath(true);
   }, [currentAbsolutePath]);
+
+  const openExternalFile = useCallback(() => {
+    if (!currentAbsolutePath || !onOpenExternalFile) return;
+    void onOpenExternalFile(currentAbsolutePath);
+  }, [currentAbsolutePath, onOpenExternalFile]);
 
   const startFileTreeResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -750,6 +758,16 @@ export function FileWorkspacePanel({
               >
                 <TextCursorInput size={14} strokeWidth={1.9} aria-hidden="true" />
                 <span>{previewMode === "source" ? "显示 Markdown 预览" : "查看 Markdown 源码"}</span>
+              </button>
+              <button
+                disabled={!currentAbsolutePath || !onOpenExternalFile}
+                role="menuitem"
+                title={onOpenExternalFile ? "在外部编辑器中打开" : "等待宿主接入打开编辑器能力"}
+                type="button"
+                onClick={openExternalFile}
+              >
+                <Pencil size={14} strokeWidth={1.9} aria-hidden="true" />
+                <span>{onOpenExternalFile ? "在编辑器中打开" : "编辑器打开待接入"}</span>
               </button>
             </div>
           </details>

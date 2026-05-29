@@ -158,6 +158,7 @@ describe("FileWorkspacePanel", () => {
   it("copies the current path and toggles code wrapping from the lightweight file menu", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
+    const onOpenExternalFile = vi.fn();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { writeText },
@@ -168,6 +169,7 @@ describe("FileWorkspacePanel", () => {
         workspaceRoot="D:/demo-blog"
         workspaceLabel="demo-blog"
         relatedFiles={["src/app.py"]}
+        onOpenExternalFile={onOpenExternalFile}
       />,
     );
 
@@ -185,6 +187,9 @@ describe("FileWorkspacePanel", () => {
 
     await user.click(screen.getByRole("menuitemcheckbox", { name: "启用自动换行" }));
     expect(codeLines).toHaveAttribute("data-wrap", "true");
+
+    await user.click(screen.getByRole("menuitem", { name: "在编辑器中打开" }));
+    expect(onOpenExternalFile).toHaveBeenCalledWith("D:/demo-blog/src/app.py");
   });
 
   it("resizes the file tree pane with the lightweight separator", async () => {

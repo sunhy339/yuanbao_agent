@@ -1286,9 +1286,16 @@
   font-size: 12px;
 }
 
+.hc-question-options button em {
+  color: var(--hc-faint);
+  font-size: 11px;
+  font-style: normal;
+}
+
 .hc-question-event footer,
 .hc-computer-event footer {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-left: 28px;
 }
@@ -1303,6 +1310,12 @@
   background: #fff;
   padding: 5px 8px;
   color: var(--hc-muted);
+}
+
+.hc-question-event footer button:disabled,
+.hc-computer-event footer button:disabled,
+.hc-question-options button:disabled {
+  cursor: not-allowed;
 }
 
 .hc-computer-event pre {

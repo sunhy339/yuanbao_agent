@@ -721,6 +721,7 @@ export const CleanAskUserQuestionBlock = memo(function CleanAskUserQuestionBlock
               <button type="button" key={`${label}:${index}`} disabled>
                 <strong>{label || `选项 ${index + 1}`}</strong>
                 {description ? <span>{description}</span> : null}
+                <em>待接入回答提交</em>
               </button>
             );
           })}
@@ -763,6 +764,8 @@ export const CleanComputerUsePermissionBlock = memo(function CleanComputerUsePer
         <button type="button" onClick={() => void onCopyRuntimeText?.("Computer Use 权限", [permission, details].filter(Boolean).join("\n\n"))}>
           <Copy size={13} />复制详情
         </button>
+        <button type="button" disabled title="需要后端 Computer Use 授权接口">允许</button>
+        <button type="button" disabled title="需要后端 Computer Use 授权接口">拒绝</button>
       </footer>
     </section>
   );

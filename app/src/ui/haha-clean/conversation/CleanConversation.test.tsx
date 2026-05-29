@@ -203,6 +203,33 @@ describe("CleanConversation", () => {
     expect(screen.getByText("需要你确认")).toBeInTheDocument();
     expect(screen.getByText("要继续拆分渲染层吗？")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /继续/ })).toBeDisabled();
+    expect(screen.getAllByText("待接入回答提交").length).toBe(2);
+  });
+
+  it("renders computer-use permission placeholders", () => {
+    render(
+      <CleanActivityItem
+        item={{
+          id: "message:computer",
+          kind: "message",
+          order: 1,
+          message: {
+            id: "computer1",
+            role: "assistant",
+            content: "",
+            metadata: {
+              kind: "computer_use_permission",
+              app: "VS Code",
+              action: "读取当前窗口",
+            },
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Computer Use 权限")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "允许" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "拒绝" })).toBeDisabled();
   });
 
   it("uses readable action titles for inline tool messages", () => {

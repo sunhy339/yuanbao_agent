@@ -14,7 +14,7 @@
 - `content_delta`、`tool_use_complete`、`tool_result` 已透传并保存 `parentToolUseId`，为后续工具树/父子折叠做准备。
 - 新增 haha-cc 风格特殊事件适配：`api_retry`、`system_notification`、`compact_summary`、`goal_event`、`memory_event`、`ask_user_question`、`computer_use_permission_request`、`computer_use_permission`。后端即使暂时只补部分事件，前端也能先渲染为低卡片信息流。
 - 普通用户/助手消息已补轻量操作栏：复制、引用、更多。引用会优先写入底部 composer；没有 composer 桥接时退回为复制引用文本。
-- `ask_user_question` 和 `computer_use_permission` 已从普通系统行拆成专用信息节点，先展示问题/选项、应用/权限详情；真正提交回答和权限弹窗仍等后端协议补齐。
+- `ask_user_question` 和 `computer_use_permission` 已从普通系统行拆成专用信息节点，先展示问题/选项、应用/权限详情和禁用占位按钮；真正提交回答和权限弹窗仍等后端协议补齐。
 - 低价值 read/list/git/search/状态探针会继续压进 worklog，不再把主聊天刷成一串工具日志；失败、审批、写入、diff 仍保留为主线节点。
 - 右侧文件阅览补了轻量语法高亮，代码关键词、字符串、注释和数字会先按常见语言上色，Markdown 仍保留渲染预览。
 - Composer 底部项目目录、上下文、权限不再只是静态按钮：项目/上下文可展开轻量详情，权限选项会显示模式说明，Slash 面板补充参数提示。
@@ -119,8 +119,8 @@
 | 审批拒绝 | reject | 已接入，并在专用审批节点内展示 | approvals API | `已接入` |
 | 永久批准/规则 | haha-cc 有 always/规则类操作 | 已有禁用占位入口和原因 | 需要 permission rule 后端 | `后端待补` |
 | 审批 diff 预览 | write/edit/apply_patch 展示 diff | 审批节点可展示文件列表和详情折叠，已有 diff 时复用 diff preview | approvals/patches | `部分接入`：真实 permission request diff 字段还需要后端稳定提供 |
-| Computer Use 权限 | 专用弹窗，选择 app/权限项 | 已有专用低卡片节点，可展示 app/action/details 并复制详情 | transcript adapter | `部分接入`：前端展示已接，真实权限弹窗和授权提交仍需后端 |
-| AskUserQuestion | 工具向用户提问，有选项/输入 | 已有专用问题节点，可展示问题/选项并复制问题 | transcript adapter | `部分接入`：前端展示已接，交互式回答提交仍需后端 |
+| Computer Use 权限 | 专用弹窗，选择 app/权限项 | 已有专用低卡片节点，可展示 app/action/details、复制详情、允许/拒绝占位 | transcript adapter | `部分接入`：前端展示已接，真实权限弹窗和授权提交仍需后端 |
+| AskUserQuestion | 工具向用户提问，有选项/输入 | 已有专用问题节点，可展示问题/选项、复制问题和回答提交占位 | transcript adapter | `部分接入`：前端展示已接，交互式回答提交仍需后端 |
 
 ## 7. 文件改动与 diff
 

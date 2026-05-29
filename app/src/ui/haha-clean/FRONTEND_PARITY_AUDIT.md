@@ -51,7 +51,7 @@
 | 项目目录按钮 | 底部显示当前目录，可展开/切换 | composer 下方显示 cwd/context，项目 chip 可展开当前目录详情 | workspace root store | `部分接入`：没有完整目录选择弹层、最近项目、分支信息 |
 | 模型选择 | 模型按钮/下拉 | `CleanComposer` 支持模型下拉 | modelOptions/selectedModelId | `已接入` |
 | 权限模式 | 跳过/询问/自动接受等权限模式 | `CleanComposer` 有权限下拉，高风险“完全访问权限”会二次确认 | permissionMode callback | `部分接入`：确认已补，仍缺全局默认权限策略和持久化规则 |
-| 上下文按钮 | 上下文占用按钮，弹出详细 breakdown | 显示上下文百分比/标签，已补 token 预算、工具数、当前步骤、压缩节段轻量面板 | contextPreview | `部分接入`：还缺更完整的分类 token breakdown 和持久快照 |
+| 上下文按钮 | 上下文占用按钮，弹出详细 breakdown | 显示上下文百分比/标签，已补 token 预算、工具数、当前步骤、压缩节段轻量面板，并可复制上下文摘要 | contextPreview | `部分接入`：还缺更完整的分类 token breakdown 和持久快照 |
 | 加号菜单 | 添加文件/图片、斜杠命令 | 加号菜单有“添加文件或图片”“斜杠命令” | file dialog/输入框本地状态 | `部分接入`：缺拖拽覆盖层、真实图片预览、文件引用持久化 |
 | 运行按钮 | 发送/运行，运行中切停止 | 已接入发送、停止 | submit/stop callbacks | `已接入` |
 
@@ -65,7 +65,7 @@
 | 斜杠命令 | `/` 面板、命令描述、键盘选择 | 已有 `/` 自动补全、命令描述、参数提示和键盘选择 | slash 命令 registry | `部分接入`：后端扩展命令和命令结果面板还没完整 |
 | `@` 文件搜索 | 输入 `@` 搜索项目文件 | Composer 已有 `@` 面板、加号菜单入口和键盘选择，候选先来自 `worktreeStatus.files` | worktreeStatus.files / 后续文件搜索接口 | `部分接入`：当前不是全项目搜索，后端需补 workspace-wide fuzzy search 和文件引用持久化 |
 | 权限按钮 | 下拉权限模式，危险模式二次确认 | 有权限下拉、每种模式说明和“完全访问权限”确认 | permissionMode | `部分接入`：确认已补，设置页默认权限和规则持久化还需后端/前端继续补 |
-| 上下文按钮 | 百分比/状态，点击看详情 | 有百分比短显示和轻量详情浮层 | contextPreview | `部分接入`：缺完整分类视图 |
+| 上下文按钮 | 百分比/状态，点击看详情 | 有百分比短显示、轻量详情浮层和复制上下文摘要 | contextPreview | `部分接入`：缺完整分类视图 |
 | 模型按钮 | provider/model 下拉 | 已接入 | modelOptions | `已接入` |
 | 停止按钮 | 运行中停止生成 | 已接入 | stopPrompt / task cancel | `部分接入`：后端需避免 terminal task 重复 cancel 报错 |
 | 暂存/排队 | 运行中把下一条加入队列，可引导/调整顺序/删除 | 已有队列项、引导、上移、下移、删除 | queuedPrompts callbacks | `部分接入`：交互已存在，视觉还需更像 haha-cc 的轻量 pending bar |

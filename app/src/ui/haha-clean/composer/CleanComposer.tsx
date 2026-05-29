@@ -192,6 +192,16 @@ export function CleanComposer({
   const trimmedSections = contextPreview?.budgetStats?.trimmedSections ?? [];
   const droppedSections = contextPreview?.budgetStats?.droppedSections ?? [];
   const cwdName = basename(cwdLabel);
+  const contextSummary = [
+    "上下文",
+    contextLabel || `当前占用 ${context}`,
+    ...contextRows.map((row) => `${row.label}: ${row.value}`),
+    contextPreview?.taskFocus?.currentStep ? `当前步骤: ${contextPreview.taskFocus.currentStep}` : "",
+    contextPreview?.projectFocus ? `项目焦点: ${contextPreview.projectFocus}` : "",
+    trimmedSections.length || droppedSections.length
+      ? `已压缩: ${[...trimmedSections, ...droppedSections].slice(0, 4).join("、")}`
+      : "",
+  ].filter(Boolean).join("\n");
   const slashMatches = useMemo(() => {
     if (promptValue === slashDismissedFor) return [];
     if (!promptValue.startsWith("/") || promptValue.includes(" ")) return [];
@@ -669,6 +679,12 @@ export function CleanComposer({
                   {trimmedSections.length || droppedSections.length ? (
                     <p>已压缩：{[...trimmedSections, ...droppedSections].slice(0, 4).join("、")}</p>
                   ) : null}
+                  <div className="hc-popover-actions">
+                    <button type="button" onClick={() => copyText(contextSummary)}>
+                      <Copy size={13} />
+                      复制上下文
+                    </button>
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -733,7 +749,7 @@ export function CleanComposer({
                   <small>{cwdName}</small>
                 </header>
                 <p title={cwdLabel}>{cwdLabel || "未选择工作区"}</p>
-                <div className="hc-project-actions">
+                <div className="hc-popover-actions">
                   <button
                     type="button"
                     disabled={!cwdLabel}

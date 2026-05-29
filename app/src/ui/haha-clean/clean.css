@@ -679,12 +679,12 @@
   font-weight: 700;
 }
 
-.hc-project-actions {
+.hc-popover-actions {
   display: flex;
   margin: 8px 0;
 }
 
-.hc-project-actions button {
+.hc-popover-actions button {
   display: inline-flex;
   width: auto;
   align-items: center;
@@ -698,7 +698,7 @@
   cursor: pointer;
 }
 
-.hc-project-actions button:disabled {
+.hc-popover-actions button:disabled {
   color: var(--hc-faint);
   cursor: not-allowed;
 }

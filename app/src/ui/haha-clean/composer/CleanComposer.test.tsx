@@ -87,6 +87,9 @@ describe("CleanComposer", () => {
     expect(contextPanel).toHaveTextContent("2,500 / 10,000");
     expect(contextPanel).toHaveTextContent("可用工具");
     expect(contextPanel).toHaveTextContent("补齐 composer 面板");
+    await user.click(within(contextPanel).getByRole("button", { name: /复制上下文/ }));
+    expect(copyText).toHaveBeenCalledWith(expect.stringContaining("当前步骤: 补齐 composer 面板"));
+    expect(copyText).toHaveBeenCalledWith(expect.stringContaining("项目焦点: Keep the UI close to haha-cc."));
 
     await user.click(screen.getByRole("button", { name: "yuanbao_agent" }));
     const projectPanel = screen.getByLabelText("项目目录");

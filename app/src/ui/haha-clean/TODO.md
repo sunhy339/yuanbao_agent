@@ -23,6 +23,7 @@
 - runtime `approval` 已拆成专用审批节点，允许一次/拒绝/始终允许占位、文件列表和详情折叠不再混在通用工具卡里；泛化的 `patch approval request` 文案会被过滤。
 - worklog 展开后使用紧凑工具行，低价值 read/list/git/search/status 记录不会再膨胀成大卡片，单行仍可展开复制详情，工具组也可复制一份简洁执行摘要。
 - worklog 折叠态继续减噪：默认只显示工具组摘要和可展开的紧凑行，复制摘要入口移到展开态。
+- worklog 继续贴近 haha-cc 信息流：折叠头按“读取上下文/Git 检查/命令/文件改动”等类别汇总，展开行显示类别 chip、动作标题、结果摘要和状态，低价值项进一步压低高度。
 - worklog 已能读取 `parentToolUseId` 并渲染轻量父子缩进，先支持工具树的前端形态。
 - 低价值 read/list/git/search/状态探针会压进 worklog，失败、审批、写入、diff 保留在主线，减少“全屏都是工具调用”的噪声。
 - clean 会话会隐藏已被 runtime/worklog 承接的低价值 inline 工具消息，避免同一次 read/list/git/search 同时在主线出现两遍；失败、运行中、写入和审批仍保留在主线。

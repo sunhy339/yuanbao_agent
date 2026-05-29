@@ -104,6 +104,12 @@ function readRecordNumber(record: Record<string, unknown> | null | undefined, ke
   return null;
 }
 
+function readToolInputRecord(message: SessionWorkspaceMessage) {
+  return message.metadata?.input && typeof message.metadata.input === "object"
+    ? message.metadata.input as Record<string, unknown>
+    : parseJson(typeof message.metadata?.inputText === "string" ? message.metadata.inputText : "");
+}
+
 function summarizeNamedArray(record: Record<string, unknown>, keys: string[], noun: string) {
   for (const key of keys) {
     const value = record[key];
@@ -152,13 +158,13 @@ function summarizeToolResultText(value: string) {
 }
 
 function toolInlineSummary(message: SessionWorkspaceMessage) {
-  const input =
-    message.metadata?.input && typeof message.metadata.input === "object"
-      ? message.metadata.input as Record<string, unknown>
-      : parseJson(typeof message.metadata?.inputText === "string" ? message.metadata.inputText : "");
-  const target = readString(input?.path ?? input?.file ?? input?.cwd ?? input?.command ?? input?.query);
   const result = summarizeToolResultText(readString(message.metadata?.resultText));
-  return compactText([target, result || message.content].filter(Boolean).join(" · "), 170);
+  return compactText(result || message.content || "等待工具返回结果", 170);
+}
+
+function toolInlineTarget(message: SessionWorkspaceMessage) {
+  const input = readToolInputRecord(message);
+  return compactText(readString(input?.path ?? input?.file ?? input?.cwd ?? input?.command ?? input?.query), 92);
 }
 
 function normalizeRuntimeToolName(item: RuntimeTimelineItem) {
@@ -175,6 +181,39 @@ function isQuietRuntime(item: RuntimeTimelineItem) {
     return false;
   }
   return ["read_file", "list_dir", "list_directory", "git_status", "git_diff", "search_files", "code_search"].includes(name);
+}
+
+function runtimeKindName(item: RuntimeTimelineItem) {
+  if (item.kind === "command") return "command";
+  if (item.kind === "patch") return "patch";
+  if (item.kind === "approval") return "approval";
+  return normalizeRuntimeToolName(item).replace(/_/g, "-") || item.kind;
+}
+
+function runtimeGroupLabel(item: RuntimeTimelineItem) {
+  const name = normalizeRuntimeToolName(item);
+  if (item.kind === "command" || ["run_command", "command", "bash", "shell_command"].includes(name)) return "命令";
+  if (item.kind === "patch" || name === "apply_patch" || name === "write_file") return "文件改动";
+  if (item.kind === "approval") return "审批";
+  if (["read_file", "list_dir", "list_directory"].includes(name)) return "读取上下文";
+  if (["git_status", "git_diff"].includes(name)) return "Git 检查";
+  if (["search_files", "code_search"].includes(name)) return "搜索";
+  if (item.kind === "task") return "子任务";
+  if (item.kind === "memory") return "记忆";
+  return "工具";
+}
+
+function worklogDigest(items: RuntimeTimelineItem[], quietCount: number) {
+  const groups = new Map<string, number>();
+  items.forEach((item) => {
+    const group = runtimeGroupLabel(item);
+    groups.set(group, (groups.get(group) ?? 0) + 1);
+  });
+  const labels = Array.from(groups.entries())
+    .slice(0, 4)
+    .map(([label, count]) => `${label} ${count}`);
+  const suffix = quietCount && quietCount === items.length ? "，均已收起为轻量日志" : quietCount ? `，${quietCount} 项低噪声` : "";
+  return `${labels.join("、")}${suffix}`;
 }
 
 type WorklogTreeNode = {
@@ -595,12 +634,15 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({
     input,
     rawDetail: result || message.content,
   });
+  const target = toolInlineTarget(message);
+  const showTarget = Boolean(target && !title.includes(target));
   return (
-    <section className="hc-tool-inline" data-tone={failed ? "danger" : statusTone(message.status)}>
+    <section className="hc-tool-inline" data-tone={failed ? "danger" : statusTone(message.status)} data-kind={(message.toolName ?? "tool").replace(/_/g, "-")}>
       <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <Wrench size={15} />
         <strong>{title}</strong>
+        {showTarget ? <code>{target}</code> : null}
         <span>{toolInlineSummary(message)}</span>
         <em>{message.streaming ? "运行中" : failed ? "失败" : "完成"}</em>
       </button>
@@ -1193,11 +1235,13 @@ function CleanWorklogRuntimeRow({
   const output = item.kind === "command" ? buildCommandOutput(item) : item.rawDetail || item.code || "";
   const summary = runtimeSummary(item);
   const detail = output || item.code || item.rawDetail || summary;
+  const kindName = runtimeKindName(item);
   return (
-    <article className="hc-worklog-row" data-tone={statusTone(item.status)} data-depth={depth}>
+    <article className="hc-worklog-row" data-tone={statusTone(item.status)} data-kind={kindName} data-quiet={isQuietRuntime(item) ? "true" : "false"} data-depth={depth}>
       <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
         {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <RuntimeIcon item={item} />
+        <em className="hc-worklog-kind">{runtimeGroupLabel(item)}</em>
         <strong>{runtimeLabel(item)}</strong>
         {summary ? <span>{summary}</span> : null}
         {childCount ? <small>{childCount} 个子步骤</small> : null}
@@ -1234,14 +1278,14 @@ export function CleanWorklogBlock({
   const visible = expanded
     ? flatTree
     : (importantItems.length ? flatTree.filter((node) => !isQuietRuntime(node.item)).slice(0, 3) : flatTree.slice(0, 3));
-  const labels = items.map(runtimeLabel).slice(0, 3);
+  const digest = worklogDigest(items, quietCount);
   const summaryText = worklogSummaryText(items);
   return (
     <section className="hc-worklog">
       <button type="button" className="hc-worklog-head" onClick={() => setExpanded((open) => !open)}>
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <span>已执行 {items.length} 项{quietCount ? `，其中 ${quietCount} 项已折叠` : ""}</span>
-        {!expanded && labels.length ? <em>{labels.join("、")}{items.length > labels.length ? "..." : ""}</em> : null}
+        <span>已处理 {items.length} 项操作</span>
+        {!expanded && digest ? <em>{digest}</em> : null}
       </button>
       {expanded ? (
         <div className="hc-worklog-actions">

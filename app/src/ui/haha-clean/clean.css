@@ -1406,6 +1406,17 @@
   box-shadow: none;
 }
 
+.hc-tool-inline[data-kind="read-file"] > button,
+.hc-tool-inline[data-kind="list-dir"] > button,
+.hc-tool-inline[data-kind="git-status"] > button,
+.hc-tool-inline[data-kind="git-diff"] > button,
+.hc-worklog-head {
+  min-height: 28px;
+  border-color: transparent;
+  background: transparent;
+  padding-inline: 4px 6px;
+}
+
 .hc-thinking button:hover,
 .hc-tool-inline > button:hover,
 .hc-runtime-head:hover,
@@ -1413,6 +1424,20 @@
 .hc-special-event > button:hover {
   border-color: var(--hc-line);
   background: rgba(244, 241, 236, 0.38);
+}
+
+.hc-tool-inline code {
+  flex: 0 1 auto;
+  max-width: 240px;
+  overflow: hidden;
+  border: 1px solid var(--hc-line);
+  border-radius: 6px;
+  background: rgba(244, 241, 236, 0.72);
+  padding: 1px 5px;
+  color: var(--hc-primary);
+  font: 12px/1.35 "Cascadia Mono", Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hc-thinking strong,
@@ -1431,6 +1456,11 @@
   font-style: normal;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.hc-worklog-head span {
+  flex: 0 0 auto;
+  font-weight: 700;
 }
 
 .hc-worklog-actions {
@@ -2133,8 +2163,24 @@
   cursor: pointer;
 }
 
+.hc-worklog-row[data-quiet="true"] > button {
+  min-height: 24px;
+  padding-block: 1px;
+}
+
 .hc-worklog-row > button:hover {
   background: rgba(244, 241, 236, 0.56);
+}
+
+.hc-worklog-kind {
+  flex: 0 0 auto;
+  border: 1px solid var(--hc-line);
+  border-radius: 999px;
+  background: #fff;
+  padding: 1px 6px;
+  color: var(--hc-muted);
+  font-size: 11px;
+  font-style: normal;
 }
 
 .hc-worklog-row strong {

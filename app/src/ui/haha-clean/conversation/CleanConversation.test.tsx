@@ -544,15 +544,17 @@ describe("CleanConversation", () => {
       />,
     );
 
-    expect(screen.getByText(/已执行 2 项/)).toBeInTheDocument();
+    expect(screen.getByText(/已处理 2 项操作/)).toBeInTheDocument();
+    expect(screen.getByText(/读取上下文 2，均已收起为轻量日志/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /复制摘要/ })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /已执行 2 项/ }));
+    await user.click(screen.getByRole("button", { name: /已处理 2 项操作/ }));
     await user.click(screen.getByRole("button", { name: /复制摘要/ }));
     expect(onCopyRuntimeText).toHaveBeenCalledWith("工作日志摘要", expect.stringContaining("#1 · 查看 snake_game · 已完成"));
 
     expect(screen.getByText("查看 snake_game")).toBeInTheDocument();
     expect(screen.getByText("读取 snake_game/game.py")).toBeInTheDocument();
+    expect(screen.getAllByText("读取上下文")).toHaveLength(2);
 
     await user.click(screen.getByRole("button", { name: /读取 snake_game\/game\.py/ }));
     await user.click(screen.getByRole("button", { name: "复制" }));
@@ -588,7 +590,7 @@ describe("CleanConversation", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /已执行 2 项/ }));
+    await user.click(screen.getByRole("button", { name: /已处理 2 项操作/ }));
     expect(screen.getByText("1 个子步骤")).toBeInTheDocument();
     expect(screen.getByText("读取 app/src/ui.tsx").closest(".hc-worklog-row")).toHaveAttribute("data-depth", "1");
   });

@@ -171,6 +171,31 @@ function firstPathFromText(value?: string | null) {
   return token?.replace(/^[ab]\//, "").trim() ?? "";
 }
 
+function diffPathsFromText(value?: string | null) {
+  const text = value?.trim();
+  if (!text) return [];
+  const paths = new Set<string>();
+  const add = (path?: string | null) => {
+    const normalized = path
+      ?.trim()
+      .replace(/^["'`]+|["'`,;:]+$/g, "")
+      .replace(/^[ab]\//, "");
+    if (!normalized || normalized === "/dev/null") return;
+    if (!/[./\\]/.test(normalized)) return;
+    paths.add(normalized);
+  };
+  const gitPattern = /^diff --git\s+a\/(.+?)\s+b\/(.+)$/gm;
+  let match: RegExpExecArray | null;
+  while ((match = gitPattern.exec(text)) !== null) {
+    add(match[2] || match[1]);
+  }
+  const headerPattern = /^(?:---|\+\+\+)\s+([^\r\n]+)$/gm;
+  while ((match = headerPattern.exec(text)) !== null) {
+    add(match[1]);
+  }
+  return Array.from(paths);
+}
+
 export function toolActionTitle({
   toolName,
   title,
@@ -196,10 +221,14 @@ export function toolActionTitle({
     readRecordText(inputRecord, ["path", "file", "cwd", "root", "target", "query", "url", "command", "cmd"]) ||
     readRecordText(detailRecord, ["path", "file", "cwd", "root", "target", "query", "url", "command", "cmd"]) ||
     firstPathFromText(input) ||
-    firstPathFromText(rawDetail);
+    firstPathFromText(rawDetail) ||
+    firstPathFromText(rawTitle);
   const fileTargets = [
     ...readRecordTextList(inputRecord, ["path", "paths", "file", "files", "target", "targets", "changes", "patches"]),
     ...readRecordTextList(detailRecord, ["path", "paths", "file", "files", "target", "targets", "changes", "patches"]),
+    ...diffPathsFromText(input),
+    ...diffPathsFromText(rawDetail),
+    ...diffPathsFromText(rawTitle),
   ].filter((value) => /[\\/]|\.([a-z0-9]+)$/i.test(value) && !/^(approval|command|apply_patch|patch approval request)$/i.test(value));
   const uniqueFileTargets = Array.from(new Set(fileTargets));
 
@@ -232,7 +261,7 @@ export function toolActionTitle({
 
 export function runtimeLabel(item: RuntimeTimelineItem) {
   if (item.kind === "approval") return toolActionTitle({ toolName: item.toolName, title: item.title, input: item.code, rawDetail: item.rawDetail, fallback: "审批请求" });
-  if (item.kind === "patch") return item.title || "文件改动";
+  if (item.kind === "patch") return toolActionTitle({ toolName: "apply_patch", title: item.title, input: item.code, rawDetail: item.rawDetail, fallback: "文件改动" });
   if (item.kind === "command") return toolActionTitle({ toolName: "run_command", title: item.title, input: item.code, rawDetail: item.rawDetail, fallback: "命令" });
   if (item.kind === "tool") return toolActionTitle({ toolName: item.toolName, title: item.title, input: item.code, rawDetail: item.rawDetail });
   return item.title || item.kind;

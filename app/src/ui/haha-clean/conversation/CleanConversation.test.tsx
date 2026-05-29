@@ -434,10 +434,12 @@ describe("CleanConversation", () => {
     );
 
     expect(screen.getByText(/已执行 2 项/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /复制摘要/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /已执行 2 项/ }));
     await user.click(screen.getByRole("button", { name: /复制摘要/ }));
     expect(onCopyRuntimeText).toHaveBeenCalledWith("工作日志摘要", expect.stringContaining("#1 · 查看 snake_game · 已完成"));
 
-    await user.click(screen.getByRole("button", { name: /已执行 2 项/ }));
     expect(screen.getByText("查看 snake_game")).toBeInTheDocument();
     expect(screen.getByText("读取 snake_game/game.py")).toBeInTheDocument();
 

@@ -18,8 +18,10 @@
 - runtime 详情的复制标签按 Shell 输出/工具详情区分，文件行状态统一成中文修改/新增/删除。
 - 工具/审批标题清洗：常见 `read_file`、`apply_patch`、`write_file`、`run_command` 会显示为“读取/修改/写入/运行 + 目标”，减少内部工具名暴露。
 - 工具/审批标题继续补齐：审批 runtime 会保留原始工具类型；多文件 `apply_patch` 会显示“修改 N 个文件”，不再退回 `patch approval request` 或只拿第一条文件名。
+- patch/runtime 标题会继续从 raw diff 里提取真实文件路径，单文件显示“修改 path”，多文件显示“修改 N 个文件”，避免 `Update xxx` 或 diff 头变成可见文件项。
 - runtime `approval` 已拆成专用审批节点，允许一次/拒绝/始终允许占位、文件列表和详情折叠不再混在通用工具卡里；泛化的 `patch approval request` 文案会被过滤。
 - worklog 展开后使用紧凑工具行，低价值 read/list/git/search/status 记录不会再膨胀成大卡片，单行仍可展开复制详情，工具组也可复制一份简洁执行摘要。
+- worklog 折叠态继续减噪：默认只显示工具组摘要和可展开的紧凑行，复制摘要入口移到展开态。
 - worklog 已能读取 `parentToolUseId` 并渲染轻量父子缩进，先支持工具树的前端形态。
 - 低价值 read/list/git/search/状态探针会压进 worklog，失败、审批、写入、diff 保留在主线，减少“全屏都是工具调用”的噪声。
 - clean 会话会隐藏已被 runtime/worklog 承接的低价值 inline 工具消息，避免同一次 read/list/git/search 同时在主线出现两遍；失败、运行中、写入和审批仍保留在主线。

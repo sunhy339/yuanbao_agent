@@ -1030,10 +1030,10 @@
   width: fit-content;
   max-width: min(880px, 96%);
   border: 1px solid var(--hc-line);
-  border-radius: 10px;
+  border-radius: 12px;
   background: #fff;
   padding: 13px 15px;
-  box-shadow: var(--hc-soft-shadow);
+  box-shadow: 0 4px 14px rgba(65, 43, 28, 0.035);
 }
 
 .hc-message[data-layout="document"] {
@@ -1159,7 +1159,7 @@
 .hc-computer-event {
   width: min(1040px, 100%);
   border-left: 1px solid var(--hc-line-strong);
-  padding-left: 12px;
+  padding-left: 11px;
 }
 
 .hc-thinking button,
@@ -1173,13 +1173,13 @@
   align-items: center;
   gap: 8px;
   border: 1px solid var(--hc-line);
-  border-radius: 9px;
-  background: #fff;
-  padding: 5px 9px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.86);
+  padding: 4px 8px;
   color: var(--hc-muted);
   text-align: left;
   cursor: pointer;
-  box-shadow: 0 3px 12px rgba(65, 43, 28, 0.025);
+  box-shadow: none;
 }
 
 .hc-thinking button:hover,
@@ -1212,7 +1212,7 @@
 .hc-worklog-actions {
   display: flex;
   justify-content: flex-end;
-  margin: 5px 0 3px 28px;
+  margin: 0 0 2px 28px;
 }
 
 .hc-worklog-actions button {
@@ -1520,7 +1520,7 @@
 .hc-runtime-body {
   display: grid;
   gap: 8px;
-  padding: 6px 0 2px 28px;
+  padding: 5px 0 2px 26px;
 }
 
 .hc-runtime-inline {
@@ -1546,13 +1546,13 @@
 
 .hc-patch {
   display: grid;
-  gap: 8px;
+  gap: 7px;
   border-left-color: rgba(164, 91, 59, 0.38);
 }
 
 .hc-approval {
   display: grid;
-  gap: 8px;
+  gap: 7px;
   border-left-color: rgba(148, 99, 15, 0.45);
 }
 
@@ -1561,7 +1561,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
-  padding: 1px 0 0;
+  padding: 1px 0 1px;
 }
 
 .hc-patch-head > div:first-child {
@@ -1594,10 +1594,10 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
-  border: 1px solid rgba(148, 99, 15, 0.22);
-  border-radius: 9px;
-  background: rgba(255, 250, 247, 0.72);
-  padding: 9px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 1px 0 2px;
 }
 
 .hc-approval-head > div {
@@ -1646,9 +1646,9 @@
   align-items: center;
   gap: 5px;
   border: 1px solid var(--hc-line);
-  border-radius: 999px;
+  border-radius: 7px;
   background: #fff;
-  padding: 5px 9px;
+  padding: 4px 8px;
   color: var(--hc-primary);
   font-size: 12px;
   cursor: pointer;
@@ -1673,9 +1673,9 @@
 .hc-approval-actions button,
 .hc-runtime-actions button {
   border: 1px solid var(--hc-line);
-  border-radius: 8px;
+  border-radius: 7px;
   background: #fff;
-  padding: 7px 11px;
+  padding: 6px 10px;
   cursor: pointer;
 }
 
@@ -1702,7 +1702,7 @@
 .hc-change-list {
   overflow: hidden;
   border: 1px solid var(--hc-line);
-  border-radius: 7px;
+  border-radius: 6px;
 }
 
 .hc-change-list-compact {
@@ -1718,7 +1718,7 @@
   border: 0;
   border-bottom: 1px solid var(--hc-line);
   background: #fff;
-  padding: 8px 11px;
+  padding: 7px 10px;
   text-align: left;
   cursor: pointer;
 }
@@ -1746,9 +1746,9 @@
   align-items: center;
   gap: 5px;
   border: 1px solid var(--hc-line);
-  border-radius: 999px;
+  border-radius: 7px;
   background: #fff;
-  padding: 5px 10px;
+  padding: 4px 8px;
   color: var(--hc-primary);
   cursor: pointer;
 }
@@ -1821,7 +1821,7 @@
   overflow: hidden;
   margin: 0;
   border: 1px solid var(--hc-line);
-  border-radius: 9px;
+  border-radius: 7px;
   background: var(--hc-code-bg);
 }
 
@@ -1857,17 +1857,17 @@
 
 .hc-worklog-list {
   display: grid;
-  gap: 5px;
-  margin-left: 20px;
+  gap: 4px;
+  margin-left: 19px;
 }
 
 .hc-worklog-row {
   display: grid;
-  gap: 5px;
+  gap: 4px;
   width: 100%;
   border-left: 1px solid var(--hc-line);
   margin-left: calc(var(--worklog-depth, 0) * 18px);
-  padding-left: 9px;
+  padding-left: 8px;
 }
 
 .hc-worklog-row[data-depth="1"] {
@@ -1897,13 +1897,13 @@
 .hc-worklog-row > button {
   display: flex;
   width: 100%;
-  min-height: 28px;
+  min-height: 26px;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   border: 0;
-  border-radius: 7px;
+  border-radius: 6px;
   background: transparent;
-  padding: 3px 6px;
+  padding: 2px 5px;
   color: var(--hc-muted);
   text-align: left;
   cursor: pointer;
@@ -1944,7 +1944,7 @@
   overflow: hidden;
   margin: 0 0 2px 27px;
   border: 1px solid var(--hc-line);
-  border-radius: 8px;
+  border-radius: 7px;
   background: var(--hc-code-bg);
 }
 

@@ -36,6 +36,19 @@ describe("haha-clean text helpers", () => {
     })).toBe("修改 2 个文件");
 
     expect(toolActionTitle({
+      toolName: "apply_patch",
+      rawDetail: [
+        "diff --git a/snake_game/README.md b/snake_game/README.md",
+        "--- a/snake_game/README.md",
+        "+++ b/snake_game/README.md",
+        "@@ -1 +1 @@",
+        "diff --git a/snake_game/rules.py b/snake_game/rules.py",
+        "--- a/snake_game/rules.py",
+        "+++ b/snake_game/rules.py",
+      ].join("\n"),
+    })).toBe("修改 2 个文件");
+
+    expect(toolActionTitle({
       toolName: "run_command",
       input: JSON.stringify({ command: "python -m pytest tests -q" }),
     })).toBe("运行 python -m pytest tests -q");
@@ -52,5 +65,22 @@ describe("haha-clean text helpers", () => {
     };
 
     expect(runtimeLabel(item)).toBe("读取 app/src/main.tsx");
+  });
+
+  it("formats patch runtime labels from raw diff text", () => {
+    const item: RuntimeTimelineItem = {
+      id: "patch:1",
+      kind: "patch",
+      title: "Update snake_game/rules.py",
+      status: "completed",
+      rawDetail: [
+        "diff --git a/snake_game/rules.py b/snake_game/rules.py",
+        "--- a/snake_game/rules.py",
+        "+++ b/snake_game/rules.py",
+        "@@ -1 +1 @@",
+      ].join("\n"),
+    };
+
+    expect(runtimeLabel(item)).toBe("修改 snake_game/rules.py");
   });
 });

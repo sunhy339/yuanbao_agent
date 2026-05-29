@@ -974,7 +974,7 @@ function PatchRuntimeBlock({
       <header className="hc-patch-head">
         <div>
           <span className="hc-runtime-eyebrow">改动</span>
-          <strong>{item.title || "文件改动"}</strong>
+          <strong>{runtimeLabel(item)}</strong>
           {runtimeSummary(item) ? <small>{runtimeSummary(item)}</small> : null}
         </div>
         <div className="hc-patch-side">
@@ -1231,16 +1231,18 @@ export function CleanWorklogBlock({
         <span>已执行 {items.length} 项{quietCount ? `，其中 ${quietCount} 项已折叠` : ""}</span>
         {!expanded && labels.length ? <em>{labels.join("、")}{items.length > labels.length ? "..." : ""}</em> : null}
       </button>
-      <div className="hc-worklog-actions">
-        <button
-          type="button"
-          disabled={!onCopyRuntimeText}
-          onClick={() => void onCopyRuntimeText?.("工作日志摘要", summaryText)}
-        >
-          <Copy size={12} />
-          复制摘要
-        </button>
-      </div>
+      {expanded ? (
+        <div className="hc-worklog-actions">
+          <button
+            type="button"
+            disabled={!onCopyRuntimeText}
+            onClick={() => void onCopyRuntimeText?.("工作日志摘要", summaryText)}
+          >
+            <Copy size={12} />
+            复制摘要
+          </button>
+        </div>
+      ) : null}
       <div className="hc-worklog-list">
         {visible.map((node) => (
           <CleanWorklogRuntimeRow

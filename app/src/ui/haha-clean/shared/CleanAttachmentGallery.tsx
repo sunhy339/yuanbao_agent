@@ -1,5 +1,5 @@
-import { memo, useMemo, useState } from "react";
-import { Copy, FileText, Image as ImageIcon, X } from "lucide-react";
+import { memo, useEffect, useMemo, useState } from "react";
+import { ChevronLeft, ChevronRight, Copy, FileText, Image as ImageIcon, X } from "lucide-react";
 
 const imageExtensionPattern = /\.(png|jpe?g|gif|webp|svg|bmp|avif|ico)$/i;
 
@@ -119,9 +119,53 @@ export const CleanAttachmentGallery = memo(function CleanAttachmentGallery({
   attachments: CleanAttachment[];
   onCopy?: (label: string, text: string) => void | Promise<void>;
 }) {
-  const [activeImage, setActiveImage] = useState<CleanAttachment | null>(null);
+  const [activeImageIndex, setActiveImageIndex] = useState<number | null>(null);
   const visible = useMemo(() => uniqueAttachments(attachments), [attachments]);
+  const images = useMemo(() => visible.filter((attachment) => attachment.type === "image" && attachment.src), [visible]);
+  const activeImage = activeImageIndex === null ? null : images[activeImageIndex] ?? null;
+
+  useEffect(() => {
+    if (activeImageIndex !== null && activeImageIndex >= images.length) {
+      setActiveImageIndex(null);
+    }
+  }, [activeImageIndex, images.length]);
+
+  useEffect(() => {
+    if (activeImageIndex === null) return undefined;
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setActiveImageIndex(null);
+        return;
+      }
+      if (images.length < 2) return;
+      if (event.key === "ArrowLeft") {
+        setActiveImageIndex((current) => (current === null ? current : (current - 1 + images.length) % images.length));
+      } else if (event.key === "ArrowRight") {
+        setActiveImageIndex((current) => (current === null ? current : (current + 1) % images.length));
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [activeImageIndex, images.length]);
+
   if (!visible.length) return null;
+
+  function openImage(attachment: CleanAttachment) {
+    const index = images.findIndex((image) => image.path === attachment.path);
+    setActiveImageIndex(index >= 0 ? index : 0);
+  }
+
+  function showPreviousImage() {
+    if (!images.length) return;
+    setActiveImageIndex((current) => (current === null ? 0 : (current - 1 + images.length) % images.length));
+  }
+
+  function showNextImage() {
+    if (!images.length) return;
+    setActiveImageIndex((current) => (current === null ? 0 : (current + 1) % images.length));
+  }
 
   return (
     <>
@@ -132,7 +176,7 @@ export const CleanAttachmentGallery = memo(function CleanAttachmentGallery({
               type="button"
               className="hc-message-image"
               key={attachment.id}
-              onClick={() => setActiveImage(attachment)}
+              onClick={() => openImage(attachment)}
             >
               <img src={attachment.src} alt={attachment.name} loading="lazy" />
               <span>{attachment.name}</span>
@@ -161,12 +205,41 @@ export const CleanAttachmentGallery = memo(function CleanAttachmentGallery({
           <figure>
             <header>
               <span><ImageIcon size={15} />{activeImage.name}</span>
-              <button type="button" aria-label="关闭图片预览" onClick={() => setActiveImage(null)}>
+              {images.length > 1 ? <em>{(activeImageIndex ?? 0) + 1}/{images.length}</em> : null}
+              <button type="button" aria-label="关闭图片预览" onClick={() => setActiveImageIndex(null)}>
                 <X size={15} />
               </button>
             </header>
-            <img src={activeImage.src} alt={activeImage.name} />
+            <div className="hc-image-modal-body">
+              {images.length > 1 ? (
+                <button type="button" className="hc-image-nav" aria-label="上一张图片" onClick={showPreviousImage}>
+                  <ChevronLeft size={20} />
+                </button>
+              ) : null}
+              <img src={activeImage.src} alt={activeImage.name} />
+              {images.length > 1 ? (
+                <button type="button" className="hc-image-nav" aria-label="下一张图片" onClick={showNextImage}>
+                  <ChevronRight size={20} />
+                </button>
+              ) : null}
+            </div>
             <figcaption>{activeImage.path}</figcaption>
+            {images.length > 1 ? (
+              <div className="hc-image-modal-thumbs" aria-label="图片列表">
+                {images.map((image, index) => (
+                  <button
+                    type="button"
+                    key={image.id}
+                    aria-label={`查看 ${image.name}`}
+                    aria-current={index === activeImageIndex ? "true" : undefined}
+                    onClick={() => setActiveImageIndex(index)}
+                  >
+                    <img src={image.src} alt="" />
+                    <span>{image.name}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </figure>
         </div>
       ) : null}

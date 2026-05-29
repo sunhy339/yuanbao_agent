@@ -1139,7 +1139,7 @@
 
 .hc-image-modal figure {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   max-width: min(1120px, 96vw);
   max-height: 88vh;
   overflow: hidden;
@@ -1170,6 +1170,13 @@
   white-space: nowrap;
 }
 
+.hc-image-modal header em {
+  margin-left: auto;
+  color: var(--hc-muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
 .hc-image-modal header button {
   display: inline-flex;
   width: 30px;
@@ -1182,11 +1189,41 @@
   color: var(--hc-muted);
 }
 
-.hc-image-modal img {
+.hc-image-modal-body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 0;
+  background: var(--hc-code-bg);
+  padding: 10px;
+}
+
+.hc-image-modal-body img {
+  justify-self: center;
   max-width: 100%;
   max-height: 74vh;
   object-fit: contain;
-  background: var(--hc-code-bg);
+}
+
+.hc-image-nav {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hc-line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--hc-muted);
+  box-shadow: var(--hc-soft-shadow);
+}
+
+.hc-image-nav:hover,
+.hc-image-modal header button:hover,
+.hc-image-modal-thumbs button:hover {
+  border-color: var(--hc-line-strong);
+  color: var(--hc-text);
 }
 
 .hc-image-modal figcaption {
@@ -1195,6 +1232,47 @@
   padding: 7px 10px;
   color: var(--hc-muted);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hc-image-modal-thumbs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  border-top: 1px solid var(--hc-line);
+  padding: 8px 10px 10px;
+}
+
+.hc-image-modal-thumbs button {
+  display: grid;
+  width: 94px;
+  flex: 0 0 auto;
+  gap: 4px;
+  border: 1px solid var(--hc-line);
+  border-radius: 7px;
+  background: #fff;
+  padding: 4px;
+  color: var(--hc-muted);
+  text-align: left;
+}
+
+.hc-image-modal-thumbs button[aria-current="true"] {
+  border-color: var(--hc-primary);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hc-primary) 50%, transparent);
+}
+
+.hc-image-modal-thumbs img {
+  width: 100%;
+  height: 46px;
+  border-radius: 4px;
+  background: var(--hc-code-bg);
+  object-fit: cover;
+}
+
+.hc-image-modal-thumbs span {
+  overflow: hidden;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

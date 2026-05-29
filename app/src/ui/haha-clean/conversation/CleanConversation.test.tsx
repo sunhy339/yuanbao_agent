@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
@@ -184,6 +184,46 @@ describe("CleanConversation", () => {
 
     await user.click(screen.getByRole("button", { name: /design\.md/ }));
     expect(onCopyRuntimeText).toHaveBeenCalledWith("附件路径", "D:/notes/design.md");
+  });
+
+  it("supports multi-image attachment preview navigation", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanActivityItem
+        item={{
+          id: "message:user:image-gallery",
+          kind: "message",
+          order: 1,
+          message: {
+            id: "user:image-gallery",
+            role: "user",
+            content: "两张参考图",
+            metadata: {
+              attachments: [
+                { path: "D:/screenshots/one.png", type: "image", name: "one.png" },
+                { path: "D:/screenshots/two.png", type: "image", name: "two.png" },
+              ],
+            },
+          },
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("img", { name: "one.png" }));
+
+    expect(screen.getByRole("dialog", { name: "图片预览" })).toBeInTheDocument();
+    expect(screen.getByText("1/2")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "下一张图片" }));
+    expect(screen.getByText("2/2")).toBeInTheDocument();
+    expect(screen.getAllByRole("img", { name: "two.png" }).at(-1)).toHaveAttribute("src", "D:/screenshots/two.png");
+
+    fireEvent.keyDown(document, { key: "ArrowLeft" });
+    expect(screen.getByText("1/2")).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "图片预览" })).not.toBeInTheDocument();
   });
 
   it("extracts inline image paths from assistant text into a gallery", () => {

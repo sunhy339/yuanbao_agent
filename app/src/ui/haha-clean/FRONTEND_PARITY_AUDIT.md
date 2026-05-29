@@ -37,7 +37,7 @@
 - 工具、审批、改动、diff 和 worklog 的 CSS 继续压低卡片感：去掉多余阴影、减小圆角和 padding，让它们更像 haha-cc 的轻量过程行。
 - 聊天正文 Markdown 渲染补了宽松标题、嵌套列表、任务列表和表格，模型输出里的 `##1`、todo、表格和多层要点不再直接按普通文本裸露或打平。
 - 聊天正文补了 Mermaid 图表块：显式 `mermaid` 代码围栏和无语言但首行像 `graph/flowchart/sequenceDiagram` 的代码块都会渲染为图表，并带复制源码和放大预览。
-- 普通消息补了附件/图片画廊：会从 metadata 的 `attachments/images/files/artifacts` 以及正文里的本地/URL 图片路径提取附件，图片显示为缩略图并可放大预览，普通文件显示为可复制路径的轻量 chip。
+- 普通消息补了附件/图片画廊：会从 metadata 的 `attachments/images/files/artifacts` 以及正文里的本地/URL 图片路径提取附件，图片显示为缩略图并可放大预览，支持多图左右切换、缩略图跳转和 Esc 关闭，普通文件显示为可复制路径的轻量 chip。
 - 这层是 transcript adapter：能力不足时先把可识别事件接进统一消息流，无法由现有后端真实提供的能力继续记录为后端待补。
 
 ## 1. 应用壳层与导航
@@ -164,7 +164,7 @@
 | fenced code | 代码块、语言、复制、高亮 | 有代码块、语言栏、复制按钮和简单高亮；复制按钮带语言名 | assistant content | `部分接入`：完整语法高亮待补 |
 | 表格 | Markdown 表格转表格 UI | 已接入简单表格渲染 | assistant content | `部分接入`：复杂对齐/嵌套内容待补 |
 | Mermaid | 图表渲染 | 已接基础 Mermaid 渲染，支持显式 `mermaid` 围栏、无语言图表检测、复制源码和放大预览 | assistant content | `部分接入`：复杂主题、拖拽缩放细节和失败恢复还可继续打磨 |
-| 图片内联 | 用户/助手图片画廊 | Markdown 独立图片块可渲染；普通消息会从 metadata 和正文路径提取图片缩略图，支持放大预览；普通附件显示为可复制路径 chip | attachments/content refs | `部分接入`：复杂图片画廊、附件持久化和图片消息结构仍需补齐 |
+| 图片内联 | 用户/助手图片画廊 | Markdown 独立图片块可渲染；普通消息会从 metadata 和正文路径提取图片缩略图，支持放大预览、多图切换、缩略图跳转和键盘关闭；普通附件显示为可复制路径 chip | attachments/content refs | `部分接入`：附件持久化和图片消息结构仍需补齐 |
 
 ## 10. 设置 / MCP / Skills
 

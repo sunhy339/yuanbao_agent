@@ -46,7 +46,7 @@
 - Markdown 代码块复制按钮带语言名，可在多代码块消息里明确区分。
 - 聊天正文 Markdown 补了安全图片块渲染，截图/本地图片链接不会再裸露成普通文本。
 - 聊天正文 Markdown 补了 Mermaid 图表渲染：显式 `mermaid` 围栏和无语言但像图表的代码块会渲染为图表，并支持复制源码和放大预览。
-- 普通消息补了附件/图片画廊：从 metadata 的 `attachments/images/files/artifacts` 和正文里的本地/URL 图片路径提取附件，图片可放大预览，普通文件可一键复制路径。
+- 普通消息补了附件/图片画廊：从 metadata 的 `attachments/images/files/artifacts` 和正文里的本地/URL 图片路径提取附件，图片可放大预览，支持多图左右切换、缩略图跳转和 Esc 关闭，普通文件可一键复制路径。
 - Composer 补了 `@` 文件引用入口：加号菜单可插入 `@`，输入后能从当前已知文件候选里选择并插入引用。
 - 权限菜单补了“完全访问权限”二次确认，避免误点直接切到危险权限模式。
 - 现有后端数据适配：messages、toolCalls、approvals、patches、backgroundJobs、traces、activeTask、contextPreview。
@@ -69,7 +69,7 @@
 ## 暂时占位
 
 - 代码阅览完整语言服务级语法高亮、Markdown 源码/预览滚动同步和 diff/源码联动。
-- 复杂图片画廊多图切换、附件持久化、Mermaid 更完整的拖拽缩放交互、代码块更完整语法高亮。
+- 附件持久化、Mermaid 更完整的拖拽缩放交互、代码块更完整语法高亮。
 - 全项目文件搜索、`@` 引用持久化、slash command 详情/结果面板。
 - Computer Use 权限弹窗。
 - MCP/Skills/Settings 页面仍先复用旧业务组件，已加 clean shell/低卡片样式覆盖，后续可迁移到独立 clean 组件。

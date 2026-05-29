@@ -2635,6 +2635,164 @@
   font-size: 12px;
 }
 
+.hc-mermaid {
+  overflow: hidden;
+  border: 1px solid var(--hc-line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.hc-mermaid figcaption {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--hc-line);
+  background: rgba(244, 241, 236, 0.42);
+  padding: 6px 9px;
+  color: var(--hc-muted);
+  font-size: 12px;
+}
+
+.hc-mermaid figcaption span {
+  color: var(--hc-text);
+  font-weight: 700;
+}
+
+.hc-mermaid figcaption em {
+  font-style: normal;
+}
+
+.hc-mermaid figcaption div {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.hc-mermaid button {
+  border: 0;
+  background: transparent;
+  color: var(--hc-muted);
+}
+
+.hc-mermaid figcaption button,
+.hc-mermaid-modal header button {
+  display: inline-flex;
+  min-width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--hc-line);
+  border-radius: 7px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.hc-mermaid figcaption button:hover,
+.hc-mermaid-modal header button:hover {
+  color: var(--hc-primary);
+}
+
+.hc-mermaid-canvas {
+  display: flex;
+  width: 100%;
+  max-height: 420px;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 18px;
+  cursor: zoom-in;
+}
+
+.hc-mermaid-canvas svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.hc-mermaid-placeholder {
+  height: 132px;
+  background:
+    linear-gradient(90deg, transparent 0 28%, rgba(229, 221, 213, 0.34) 45%, transparent 64%),
+    var(--hc-code-bg);
+  background-size: 220% 100%, 100% 100%;
+  animation: hc-shimmer 1.2s ease-in-out infinite;
+}
+
+.hc-mermaid[data-state="error"] pre {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  background: rgba(178, 59, 47, 0.06);
+  padding: 12px;
+  color: var(--hc-red);
+  white-space: pre-wrap;
+}
+
+.hc-mermaid-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(38, 32, 28, 0.28);
+  padding: 28px;
+}
+
+.hc-mermaid-modal-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1100px, 96vw);
+  max-height: 86vh;
+  overflow: hidden;
+  border: 1px solid var(--hc-line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 20px 70px rgba(65, 43, 28, 0.22);
+}
+
+.hc-mermaid-modal header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--hc-line);
+  padding: 10px 12px;
+}
+
+.hc-mermaid-modal header div {
+  display: flex;
+  gap: 6px;
+}
+
+.hc-mermaid-modal header button[aria-label$="%"] {
+  min-width: 58px;
+  padding: 0 9px;
+  color: var(--hc-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.hc-mermaid-modal-body {
+  overflow: auto;
+  background: #fff;
+  padding: 28px;
+}
+
+.hc-mermaid-modal-body > div {
+  width: fit-content;
+  min-width: 100%;
+  transform-origin: top left;
+}
+
+@keyframes hc-shimmer {
+  from {
+    background-position: 160% 0, 0 0;
+  }
+  to {
+    background-position: -60% 0, 0 0;
+  }
+}
+
 .hc-capability-notes {
   width: min(900px, 100%);
   margin: 28px auto;

@@ -36,6 +36,7 @@
 - worklog 常态进一步减噪：复制摘要入口只在展开后出现，默认折叠时只保留一条工具组摘要和紧凑行，避免主聊天被辅助操作按钮撑高。
 - 工具、审批、改动、diff 和 worklog 的 CSS 继续压低卡片感：去掉多余阴影、减小圆角和 padding，让它们更像 haha-cc 的轻量过程行。
 - 聊天正文 Markdown 渲染补了宽松标题、嵌套列表、任务列表和表格，模型输出里的 `##1`、todo、表格和多层要点不再直接按普通文本裸露或打平。
+- 聊天正文补了 Mermaid 图表块：显式 `mermaid` 代码围栏和无语言但首行像 `graph/flowchart/sequenceDiagram` 的代码块都会渲染为图表，并带复制源码和放大预览。
 - 这层是 transcript adapter：能力不足时先把可识别事件接进统一消息流，无法由现有后端真实提供的能力继续记录为后端待补。
 
 ## 1. 应用壳层与导航
@@ -161,7 +162,7 @@
 | inline code | 背景 chip | 已接入 | assistant content | `已接入` |
 | fenced code | 代码块、语言、复制、高亮 | 有代码块、语言栏、复制按钮和简单高亮；复制按钮带语言名 | assistant content | `部分接入`：完整语法高亮待补 |
 | 表格 | Markdown 表格转表格 UI | 已接入简单表格渲染 | assistant content | `部分接入`：复杂对齐/嵌套内容待补 |
-| Mermaid | 图表渲染 | 未接入 | assistant content | `前端待补` |
+| Mermaid | 图表渲染 | 已接基础 Mermaid 渲染，支持显式 `mermaid` 围栏、无语言图表检测、复制源码和放大预览 | assistant content | `部分接入`：复杂主题、拖拽缩放细节和失败恢复还可继续打磨 |
 | 图片内联 | 用户/助手图片画廊 | Markdown 独立图片块已可渲染，附件仍是基础列表 | attachments/content refs | `部分接入`：复杂图片画廊、附件持久化和图片消息结构仍需补齐 |
 
 ## 10. 设置 / MCP / Skills

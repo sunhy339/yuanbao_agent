@@ -1,10 +1,39 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { initializeMock, renderMock, sanitizeMock } = vi.hoisted(() => ({
+  initializeMock: vi.fn(),
+  renderMock: vi.fn(),
+  sanitizeMock: vi.fn((value: string) => value),
+}));
+
+vi.mock("mermaid", () => ({
+  default: {
+    initialize: initializeMock,
+    render: renderMock,
+  },
+}));
+
+vi.mock("dompurify", () => ({
+  default: {
+    sanitize: sanitizeMock,
+  },
+}));
+
 import { CleanMarkdown } from "./CleanMarkdown";
 
 afterEach(() => cleanup());
 
 describe("CleanMarkdown", () => {
+  beforeEach(() => {
+    initializeMock.mockClear();
+    sanitizeMock.mockClear();
+    renderMock.mockReset();
+    renderMock.mockResolvedValue({
+      svg: '<svg viewBox="0 0 120 60"><text>diagram</text></svg>',
+    });
+  });
+
   it("renders loose markdown headings without exposing raw hashes", () => {
     render(<CleanMarkdown content={"##1 项目结构\n\n### 这次改了哪些文件"} />);
 
@@ -59,6 +88,26 @@ describe("CleanMarkdown", () => {
 
     expect(screen.getByText("python")).toBeTruthy();
     expect(screen.getByRole("button", { name: "复制 python 代码块" })).toBeTruthy();
+  });
+
+  it("renders mermaid fenced blocks as diagrams", async () => {
+    render(<CleanMarkdown content={"```mermaid\ngraph TB\nA-->B\n```"} />);
+
+    await screen.findByLabelText("打开 Mermaid 图表预览");
+    await waitFor(() => {
+      expect(renderMock).toHaveBeenCalledWith(expect.stringMatching(/^hc-mermaid-/), "graph TB\nA-->B");
+    });
+    expect(screen.getByText("Mermaid")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "复制 mermaid 代码块" })).toBeNull();
+  });
+
+  it("detects unlabeled mermaid diagrams from the first meaningful line", async () => {
+    render(<CleanMarkdown content={"```\nflowchart LR\nA-->B\n```"} />);
+
+    await waitFor(() => {
+      expect(renderMock).toHaveBeenCalledWith(expect.stringMatching(/^hc-mermaid-/), "flowchart LR\nA-->B");
+    });
+    expect(screen.getByLabelText("打开 Mermaid 图表预览")).toBeTruthy();
   });
 
   it("renders safe markdown images as bounded image blocks", () => {

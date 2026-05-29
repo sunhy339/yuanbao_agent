@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { CleanMermaid, shouldRenderMermaid } from "./CleanMermaid";
 
 function escapeHtml(value: string) {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -61,6 +62,10 @@ function highlightLine(line: string) {
 }
 
 function CodeBlock({ code, language }: { code: string; language: string }) {
+  if (shouldRenderMermaid(language, code)) {
+    return <CleanMermaid code={code} />;
+  }
+
   const lines = code.replace(/\r\n/g, "\n").split("\n");
   const label = language === "text" ? "代码" : language;
   return (

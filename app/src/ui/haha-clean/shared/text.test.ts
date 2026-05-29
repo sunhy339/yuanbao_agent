@@ -30,6 +30,12 @@ describe("haha-clean text helpers", () => {
     })).toBe("修改 snake_game/game.py");
 
     expect(toolActionTitle({
+      toolName: "apply_patch",
+      title: "patch approval request",
+      input: JSON.stringify({ files: ["snake_game/game.py", "snake_game/rules.py"] }),
+    })).toBe("修改 2 个文件");
+
+    expect(toolActionTitle({
       toolName: "run_command",
       input: JSON.stringify({ command: "python -m pytest tests -q" }),
     })).toBe("运行 python -m pytest tests -q");

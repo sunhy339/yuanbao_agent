@@ -130,6 +130,34 @@ function readRecordText(record: Record<string, unknown> | null, keys: string[]) 
   return "";
 }
 
+function readRecordTextList(record: Record<string, unknown> | null, keys: string[]) {
+  if (!record) return [];
+  const values: string[] = [];
+  const visit = (value: unknown, depth = 0) => {
+    if (depth > 3 || values.length > 12) return;
+    if (typeof value === "string" && value.trim()) {
+      values.push(value.trim());
+      return;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      values.push(String(value));
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, depth + 1));
+      return;
+    }
+    if (value && typeof value === "object") {
+      const entry = value as Record<string, unknown>;
+      const direct = readRecordText(entry, ["path", "file", "name", "target"]);
+      if (direct) values.push(direct);
+      Object.values(entry).forEach((item) => visit(item, depth + 1));
+    }
+  };
+  keys.forEach((key) => visit(record[key]));
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
 function firstPathFromText(value?: string | null) {
   const text = value?.trim();
   if (!text) return "";
@@ -169,9 +197,17 @@ export function toolActionTitle({
     readRecordText(detailRecord, ["path", "file", "cwd", "root", "target", "query", "url", "command", "cmd"]) ||
     firstPathFromText(input) ||
     firstPathFromText(rawDetail);
+  const fileTargets = [
+    ...readRecordTextList(inputRecord, ["path", "paths", "file", "files", "target", "targets", "changes", "patches"]),
+    ...readRecordTextList(detailRecord, ["path", "paths", "file", "files", "target", "targets", "changes", "patches"]),
+  ].filter((value) => /[\\/]|\.([a-z0-9]+)$/i.test(value) && !/^(approval|command|apply_patch|patch approval request)$/i.test(value));
+  const uniqueFileTargets = Array.from(new Set(fileTargets));
 
   if (normalized === "apply_patch") {
-    return target ? `修改 ${target}` : "应用文件改动";
+    if (uniqueFileTargets.length === 1) return `修改 ${uniqueFileTargets[0]}`;
+    if (uniqueFileTargets.length > 1) return `修改 ${uniqueFileTargets.length} 个文件`;
+    if (target && /[\\/]|\.([a-z0-9]+)$/i.test(target)) return `修改 ${target}`;
+    return "应用文件改动";
   }
   if (normalized === "write_file") {
     return target ? `写入 ${target}` : "写入文件";

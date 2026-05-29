@@ -669,10 +669,30 @@ export function getMessageActivitySortTime(message: SessionWorkspaceMessage) {
 }
 
 export function parsePatchPath(line: string) {
-  return line
-    .replace(/\s+\(\+\d+\/-\d+\).*$/, "")
-    .replace(/^(added|modified|deleted|changed)\s+/i, "")
+  const trimmed = line.trim();
+  if (
+    !trimmed ||
+    /^diff --git\b/i.test(trimmed) ||
+    /^@@/.test(trimmed) ||
+    /^(index|new file mode|deleted file mode|similarity index|rename from|rename to)\b/i.test(trimmed) ||
+    /^[+-]{3,}\s+/.test(trimmed) ||
+    /^(update|apply|patch|approval|request)\b/i.test(trimmed)
+  ) {
+    return "";
+  }
+  const withoutStats = trimmed.replace(/\s+\(\+\d+\/-\d+\).*$/, "");
+  const statusMatch = /^(added|modified|deleted|changed|updated?|created?)\s+(.+)$/i.exec(withoutStats);
+  const path = (statusMatch?.[2] ?? withoutStats)
+    .replace(/^["']|["']$/g, "")
+    .replace(/^[ab]\//, "")
     .trim();
+  if (!path || /^(update|apply|patch|approval|request)\b/i.test(path)) {
+    return "";
+  }
+  if (/\s/.test(path) && !/[./\\]/.test(path)) {
+    return "";
+  }
+  return path;
 }
 
 export function parsePatchFileSummary(line: string) {

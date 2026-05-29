@@ -171,7 +171,7 @@ function attachRuntimeTimesToMessages(
   );
 }
 
-function shouldPlaceAssistantAfterRuntime(message: SessionWorkspaceMessage) {
+function isPlainAssistantReply(message: SessionWorkspaceMessage) {
   return (
     message.role === "assistant" &&
     message.streaming !== true &&
@@ -180,6 +180,21 @@ function shouldPlaceAssistantAfterRuntime(message: SessionWorkspaceMessage) {
     message.kind !== "status" &&
     !message.metadata?.kind
   );
+}
+
+function shouldPlaceAssistantAfterRuntime(message: SessionWorkspaceMessage, messages: SessionWorkspaceMessage[]) {
+  if (!isPlainAssistantReply(message)) {
+    return false;
+  }
+  const index = messages.findIndex((candidate) => candidate.id === message.id);
+  if (index === -1) {
+    return true;
+  }
+  const nextUserIndex = messages.findIndex((candidate, candidateIndex) => (
+    candidateIndex > index && candidate.role === "user"
+  ));
+  const turnTail = messages.slice(index + 1, nextUserIndex === -1 ? undefined : nextUserIndex);
+  return !turnTail.some(isPlainAssistantReply);
 }
 
 function buildRuntimeEndTimesByTask(runtimeItems: RuntimeTimelineItem[]) {
@@ -240,9 +255,13 @@ function getRuntimeEndTimeForMessageTurn(
   return endTime;
 }
 
-function getActivityMessageTime(message: SessionWorkspaceMessage, runtimeEndTimesByTask: Map<string, number>) {
+function getActivityMessageTime(
+  message: SessionWorkspaceMessage,
+  messages: SessionWorkspaceMessage[],
+  runtimeEndTimesByTask: Map<string, number>,
+) {
   const baseTime = getMessageActivitySortTime(message);
-  if (!shouldPlaceAssistantAfterRuntime(message)) {
+  if (!shouldPlaceAssistantAfterRuntime(message, messages)) {
     return baseTime;
   }
   const runtimeEndTime = message.taskId ? runtimeEndTimesByTask.get(message.taskId) : undefined;
@@ -261,8 +280,8 @@ function getActivityMessageTimeWithRuntime(
   runtimeItems: RuntimeTimelineItem[],
   runtimeEndTimesByTask: Map<string, number>,
 ) {
-  const baseTime = getActivityMessageTime(message, runtimeEndTimesByTask);
-  if (!shouldPlaceAssistantAfterRuntime(message)) {
+  const baseTime = getActivityMessageTime(message, messages, runtimeEndTimesByTask);
+  if (!shouldPlaceAssistantAfterRuntime(message, messages)) {
     return baseTime;
   }
   const runtimeEndTime =

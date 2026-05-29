@@ -17,13 +17,16 @@
 - 工具详情折叠：主聊天工具消息展开后使用轻量“工具详情”面板，并支持复制完整输入/输出。
 - runtime 详情的复制标签按 Shell 输出/工具详情区分，文件行状态统一成中文修改/新增/删除。
 - 工具/审批标题清洗：常见 `read_file`、`apply_patch`、`write_file`、`run_command` 会显示为“读取/修改/写入/运行 + 目标”，减少内部工具名暴露。
+- 工具/审批标题继续补齐：审批 runtime 会保留原始工具类型；多文件 `apply_patch` 会显示“修改 N 个文件”，不再退回 `patch approval request` 或只拿第一条文件名。
 - runtime `approval` 已拆成专用审批节点，允许一次/拒绝/始终允许占位、文件列表和详情折叠不再混在通用工具卡里；泛化的 `patch approval request` 文案会被过滤。
 - worklog 展开后使用紧凑工具行，低价值 read/list/git/search/status 记录不会再膨胀成大卡片，单行仍可展开复制详情，工具组也可复制一份简洁执行摘要。
 - worklog 已能读取 `parentToolUseId` 并渲染轻量父子缩进，先支持工具树的前端形态。
 - 低价值 read/list/git/search/状态探针会压进 worklog，失败、审批、写入、diff 保留在主线，减少“全屏都是工具调用”的噪声。
 - clean 会话会隐藏已被 runtime/worklog 承接的低价值 inline 工具消息，避免同一次 read/list/git/search 同时在主线出现两遍；失败、运行中、写入和审批仍保留在主线。
 - patch 文件行现在会优先打开本地匹配 diff，并只展示所选文件的差异；没有本地 diff 时再走后端 `onLoadPatch`；改动卡补了复制文件列表和“撤销本轮”的禁用占位入口。
+- patch runtime 现在保留完整 diff 文本，文件列表会过滤 `Update xxx`、`diff --git`、`--- a/...` 这类伪文件行，减少“查看文件差异”对应错位。
 - 改动卡补了“审查改动”入口：先把审查提示和改动文件写入 composer，独立审查/提交接口后续再接。
+- 主聊天里的 runtime 改动卡已经接通 composer 引用桥，“审查改动”在真实会话流里也能写回输入框。
 - 文件区 clean 样式：右侧文件树、预览区、分隔条和搜索框已脱离旧 session CSS 的重卡片样式。
 - 代码阅览补了轻量语法高亮，常见关键词、字符串、注释、数字会先上色；Markdown 文件继续走预览渲染。
 - 文件区更多菜单补了“在编辑器中打开”的前端入口，当前先通过可注入回调等待宿主/后端接入。
@@ -45,6 +48,7 @@
 - 现有后端数据适配：messages、toolCalls、approvals、patches、backgroundJobs、traces、activeTask、contextPreview。
 - clean transcript schema：已覆盖 user_text、assistant_text、assistant_progress、thinking、tool_use、tool_result、tool_group、permission_request、computer_use_permission、ask_user_question、background_task、task_summary、plan_update、goal_event、memory_event、compact_summary、api_retry、error、change_set、command、status、system。`task_summary/plan_update/status` 已加低价值过滤，避免刚开任务就显示“工作摘要”。
 - 本地 haha 风格过程节点现在会在持久消息刷新时保留，`api_retry`、`compact_summary`、`goal_event`、`ask_user_question`、`computer_use_permission` 等不会因为后端 messages 刷新突然消失。
+- 会话时序现在只把同一轮最后一条普通助手正文放到 runtime 后面，前面的过程说明会按真实时间插在工具调用之间，避免“全是一串工具，最后一大段总结”。
 - MCP/Skills/Settings 页面补了一层更统一的 haha-clean 低卡片覆盖：顶部概览、操作条、列表行、启用态和按钮统一为浅色细线风格。
 
 ## 需要后端补字段

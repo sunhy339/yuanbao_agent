@@ -1292,6 +1292,7 @@ export function CleanActivityItem({
           onReject={onReject}
           onLoadPatch={onLoadPatch}
           onCopyRuntimeText={onCopyRuntimeText}
+          onQuoteMessage={onQuoteMessage}
           onRefreshCommandJob={onRefreshCommandJob}
           onStopCommandJob={onStopCommandJob}
           busyId={busyId}

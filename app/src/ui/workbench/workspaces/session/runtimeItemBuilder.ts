@@ -629,6 +629,7 @@ export function buildRuntimeItems({
         ...changeStats,
       ]),
       code: fileSummaries?.join("\n"),
+      rawDetail: patch.diff,
       diffLines,
       time: patch.updatedAt,
       visibility: "chat",
@@ -692,6 +693,7 @@ export function buildRuntimeItems({
       completionEvidence: approval.completionEvidence,
       time: approval.requestedAt,
       visibility: "chat",
+      toolName: approval.kind,
     });
   });
 

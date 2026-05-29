@@ -733,6 +733,59 @@ describe("SessionWorkspace", () => {
     expect(flow[2]).toContain("已完成优化");
   });
 
+  it("keeps intermediate assistant replies between same-turn runtime events", () => {
+    const baseTime = Date.UTC(2026, 4, 28, 6, 20, 0);
+    const { container } = render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          { id: "m1", role: "user", content: "优化3", createdAt: baseTime },
+          {
+            id: "m2",
+            role: "assistant",
+            content: "我先查看目录，确认要动哪些文件。",
+            createdAt: baseTime + 2,
+            updatedAt: baseTime + 2,
+          },
+          {
+            id: "m3",
+            role: "assistant",
+            content: "已完成优化：拆分 rules.py，并验证通过。",
+            createdAt: baseTime + 8,
+            updatedAt: baseTime + 8,
+          },
+        ]}
+        toolCalls={[
+          {
+            id: "tool_list",
+            toolName: "list_dir",
+            status: "completed",
+            resultSummary: "找到 11 项",
+            rawInput: '{"path":"."}',
+            time: baseTime + 4,
+          },
+          {
+            id: "tool_read",
+            toolName: "read_file",
+            status: "completed",
+            resultSummary: "读取完成",
+            rawInput: '{"path":"snake_game/game.py"}',
+            time: baseTime + 10,
+          },
+        ]}
+      />,
+    );
+
+    const flow = Array.from(container.querySelectorAll(".message-bubble, [data-activity-kind]")).map(
+      (item) => item.textContent ?? "",
+    );
+    expect(flow[0]).toContain("优化3");
+    expect(flow[1]).toContain("我先查看目录");
+    expect(flow[2]).toContain("已调用 2 个工具");
+    expect(flow[3]).toContain("已完成优化");
+  });
+
   it("keeps untimestamped runtime events near the latest assistant output", () => {
     const { container } = render(
       <SessionWorkspace

@@ -96,6 +96,32 @@ describe("CleanConversation", () => {
     expect(onQuoteMessage).toHaveBeenCalledWith(expect.stringContaining("snake_game/rules.py"));
   });
 
+  it("passes patch review actions through activity runtime items", async () => {
+    const user = userEvent.setup();
+    const onQuoteMessage = vi.fn();
+
+    render(
+      <CleanActivityItem
+        item={{
+          id: "runtime:patch:activity",
+          kind: "runtime",
+          order: 1,
+          runtime: {
+            id: "patch:activity",
+            kind: "patch",
+            title: "Update snake_game files",
+            status: "applied",
+            code: "modified snake_game/game.py (+2/-4)",
+          },
+        }}
+        onQuoteMessage={onQuoteMessage}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /审查改动/ }));
+    expect(onQuoteMessage).toHaveBeenCalledWith(expect.stringContaining("请审查这轮改动：Update snake_game files"));
+  });
+
   it("exposes lightweight copy and quote actions for normal messages", async () => {
     const user = userEvent.setup();
     const onCopyRuntimeText = vi.fn();

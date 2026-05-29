@@ -24,6 +24,7 @@
 - worklog 展开后使用紧凑工具行，低价值 read/list/git/search/status 记录不会再膨胀成大卡片，单行仍可展开复制详情，工具组也可复制一份简洁执行摘要。
 - worklog 折叠态继续减噪：默认只显示工具组摘要和可展开的紧凑行，复制摘要入口移到展开态。
 - worklog 继续贴近 haha-cc 信息流：折叠头按“读取上下文/Git 检查/命令/文件改动”等类别汇总，展开行显示类别 chip、动作标题、结果摘要和状态，低价值项进一步压低高度。
+- worklog 顶部补了轻量过程说明，在后端还没有稳定输出中间 assistant_progress 时，先解释这组工具是在读取上下文/运行命令/处理改动/等待审批，而不是让页面突然只出现工具列表。
 - worklog 已能读取 `parentToolUseId` 并渲染轻量父子缩进，先支持工具树的前端形态。
 - 低价值 read/list/git/search/状态探针会压进 worklog，失败、审批、写入、diff 保留在主线，减少“全屏都是工具调用”的噪声。
 - clean 会话会隐藏已被 runtime/worklog 承接的低价值 inline 工具消息，避免同一次 read/list/git/search 同时在主线出现两遍；失败、运行中、写入和审批仍保留在主线。

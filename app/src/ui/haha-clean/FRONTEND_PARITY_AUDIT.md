@@ -30,6 +30,7 @@
 - runtime `approval` 会保留工具类型，`apply_patch` 多文件审批优先显示“修改 N 个文件”，避免继续暴露 `patch approval request`。
 - worklog 展开后改为专用紧凑工具行：读文件、查目录、Git 状态这类低价值步骤不再展开成大卡片，单行仍可继续打开详情和复制。
 - worklog 折叠和展开都补了类别信息：折叠头会按“读取上下文/Git 检查/命令/文件改动”等汇总，展开行用轻量类别 chip 区分动作类型，避免一屏全是相似工具名。
+- worklog 顶部新增前端过渡态过程说明：当后端还没给真实的中间 assistant_progress/thinking delta 时，先用已发生的 runtime 类型解释“正在读取上下文/运行命令/处理改动/等待审批”，避免主线直接跳到工具列表。
 - worklog 已经贯通 `toolUseId/parentToolUseId` 到 runtime 渲染层，展开后能按父子工具缩进展示，先补齐 haha-cc 信息流里的工具树基础形态。
 - clean 会话会对已被 runtime/worklog 承接的低价值 inline 工具消息做去重，同一个 read/list/git/search 不再在主线重复出现两遍；失败、运行中、写入和审批仍保留。
 - 本地过程节点刷新保留已补齐：`api_retry`、`compact_summary`、`goal_event`、`ask_user_question`、`computer_use_permission` 等 haha 风格节点不会在后端 messages 刷新时被清掉，减少“过程信息突然消失，只剩最终总结”的问题。

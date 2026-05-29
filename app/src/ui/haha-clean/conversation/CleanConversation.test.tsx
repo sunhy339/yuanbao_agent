@@ -546,6 +546,7 @@ describe("CleanConversation", () => {
 
     expect(screen.getByText(/已处理 2 项操作/)).toBeInTheDocument();
     expect(screen.getByText(/读取上下文 2，均已收起为轻量日志/)).toBeInTheDocument();
+    expect(screen.getByText("我在读取项目上下文，低价值的读文件和目录检查已折叠收纳。")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /复制摘要/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /已处理 2 项操作/ }));

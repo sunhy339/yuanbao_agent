@@ -1491,6 +1491,13 @@
   opacity: 0.62;
 }
 
+.hc-worklog-narrative {
+  margin: 0 0 3px 2px;
+  color: #3f4650;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .hc-thinking em,
 .hc-tool-inline span,
 .hc-runtime-head span,

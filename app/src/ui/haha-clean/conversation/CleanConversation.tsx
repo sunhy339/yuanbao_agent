@@ -216,6 +216,29 @@ function worklogDigest(items: RuntimeTimelineItem[], quietCount: number) {
   return `${labels.join("、")}${suffix}`;
 }
 
+function worklogNarrative(items: RuntimeTimelineItem[]) {
+  const groups = new Set(items.map(runtimeGroupLabel));
+  if (groups.has("文件改动")) {
+    return "我在处理文件改动，并把相关读写、检查和验证记录合并到下面。";
+  }
+  if (groups.has("审批")) {
+    return "这里需要你确认权限或改动请求，相关上下文已收在下面。";
+  }
+  if (groups.has("命令")) {
+    return "我在运行命令并记录结果，必要时可以展开查看完整输出。";
+  }
+  if (groups.has("Git 检查")) {
+    return "我在核对 Git 状态和差异，结果已压缩成可展开的轻量日志。";
+  }
+  if (groups.has("搜索")) {
+    return "我在搜索相关文件或内容，命中结果已合并到这组日志里。";
+  }
+  if (groups.has("读取上下文")) {
+    return "我在读取项目上下文，低价值的读文件和目录检查已折叠收纳。";
+  }
+  return "我把这组工具和运行结果整理在下面，展开可以查看细节。";
+}
+
 type WorklogTreeNode = {
   item: RuntimeTimelineItem;
   children: WorklogTreeNode[];
@@ -1279,9 +1302,11 @@ export function CleanWorklogBlock({
     ? flatTree
     : (importantItems.length ? flatTree.filter((node) => !isQuietRuntime(node.item)).slice(0, 3) : flatTree.slice(0, 3));
   const digest = worklogDigest(items, quietCount);
+  const narrative = worklogNarrative(items);
   const summaryText = worklogSummaryText(items);
   return (
     <section className="hc-worklog">
+      <p className="hc-worklog-narrative">{narrative}</p>
       <button type="button" className="hc-worklog-head" onClick={() => setExpanded((open) => !open)}>
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <span>已处理 {items.length} 项操作</span>

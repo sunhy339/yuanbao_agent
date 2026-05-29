@@ -1513,6 +1513,7 @@
 .hc-approval-actions,
 .hc-runtime-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -1529,6 +1530,20 @@
   border-color: rgba(32, 114, 69, 0.35);
   background: rgba(32, 114, 69, 0.08);
   color: var(--hc-green);
+}
+
+.hc-approval-actions button[data-variant="deny"] {
+  border-color: rgba(178, 59, 47, 0.28);
+  color: var(--hc-red);
+}
+
+.hc-approval-actions button[data-variant="always"] {
+  color: var(--hc-muted);
+}
+
+.hc-approval-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .hc-change-list {

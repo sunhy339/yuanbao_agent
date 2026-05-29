@@ -309,6 +309,13 @@ function patchStatusLabel(status?: string) {
   return "修改";
 }
 
+function isGenericApprovalText(value?: string | null) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return true;
+  return /^(patch |tool |command |permission )?approval request$/.test(normalized) ||
+    /^(patch |tool |command )?permission request$/.test(normalized);
+}
+
 function patchFileListText(files: PatchFileSummary[]) {
   return files
     .map((file) => {
@@ -587,6 +594,7 @@ export const CleanPermissionMessageBlock = memo(function CleanPermissionMessageB
   const decision = typeof message.metadata?.decision === "string" ? message.metadata.decision : "";
   const busy = Boolean(requestId && busyId === requestId);
   const inputText = readMetadataString(message, ["parametersPreview", "inputText", "fullInput", "command"]);
+  const detailText = isGenericApprovalText(message.content) ? "" : message.content.trim();
   const permissionTitle = toolActionTitle({
     toolName: message.toolName,
     title: readMetadataString(message, ["title", "label"]),
@@ -604,11 +612,12 @@ export const CleanPermissionMessageBlock = memo(function CleanPermissionMessageB
         </div>
         <StatusChip status={resolved ? (decision === "rejected" ? "rejected" : "approved") : "waiting_approval"} />
       </header>
-      {message.content ? <pre>{message.content}</pre> : null}
+      {detailText ? <pre>{detailText}</pre> : null}
       {!resolved && requestId ? (
         <div className="hc-approval-actions">
-          <button type="button" disabled={busy} onClick={() => void onApprove?.(requestId)}>批准</button>
-          <button type="button" disabled={busy} onClick={() => void onReject?.(requestId)}>拒绝</button>
+          <button type="button" data-variant="allow" disabled={busy} onClick={() => void onApprove?.(requestId)}>允许一次</button>
+          <button type="button" data-variant="deny" disabled={busy} onClick={() => void onReject?.(requestId)}>拒绝</button>
+          <button type="button" data-variant="always" disabled title="需要后端提供权限规则接口">始终允许</button>
         </div>
       ) : null}
     </section>
@@ -873,8 +882,9 @@ function ApprovalRuntimeBlock({
       ) : null}
       {canApprove ? (
         <div className="hc-approval-actions">
-          <button type="button" disabled={busy} onClick={() => void onApprove?.(item.sourceId ?? "")}>批准</button>
-          <button type="button" disabled={busy} onClick={() => void onReject?.(item.sourceId ?? "")}>拒绝</button>
+          <button type="button" data-variant="allow" disabled={busy} onClick={() => void onApprove?.(item.sourceId ?? "")}>允许一次</button>
+          <button type="button" data-variant="deny" disabled={busy} onClick={() => void onReject?.(item.sourceId ?? "")}>拒绝</button>
+          <button type="button" data-variant="always" disabled title="需要后端提供权限规则接口">始终允许</button>
         </div>
       ) : null}
       {output || hasDiff ? (
@@ -1066,8 +1076,9 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
         <div className="hc-runtime-body">
           {canApprove ? (
             <div className="hc-approval-actions">
-              <button type="button" disabled={busy} onClick={() => void onApprove?.(item.sourceId ?? "")}>批准</button>
-              <button type="button" disabled={busy} onClick={() => void onReject?.(item.sourceId ?? "")}>拒绝</button>
+              <button type="button" data-variant="allow" disabled={busy} onClick={() => void onApprove?.(item.sourceId ?? "")}>允许一次</button>
+              <button type="button" data-variant="deny" disabled={busy} onClick={() => void onReject?.(item.sourceId ?? "")}>拒绝</button>
+              <button type="button" data-variant="always" disabled title="需要后端提供权限规则接口">始终允许</button>
             </div>
           ) : null}
           {files.length ? (

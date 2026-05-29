@@ -304,6 +304,8 @@ describe("CleanConversation", () => {
     );
 
     expect(screen.getByText("修改 snake_game/rules.py 需要确认")).toBeInTheDocument();
+    expect(screen.queryByText("patch approval request")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "始终允许" })).toBeDisabled();
     expect(screen.queryByText(/apply_patch 需要确认/)).not.toBeInTheDocument();
   });
 
@@ -333,11 +335,12 @@ describe("CleanConversation", () => {
     expect(screen.getByText("修改 snake_game/rules.py")).toBeInTheDocument();
     expect(screen.getByText("snake_game/rules.py")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "批准" }));
+    await user.click(screen.getByRole("button", { name: "允许一次" }));
     expect(onApprove).toHaveBeenCalledWith("approval-1");
 
     await user.click(screen.getByRole("button", { name: "拒绝" }));
     expect(onReject).toHaveBeenCalledWith("approval-1");
+    expect(screen.getByRole("button", { name: "始终允许" })).toBeDisabled();
   });
 
   it("renders expanded worklogs as compact runtime rows", async () => {

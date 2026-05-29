@@ -25,7 +25,7 @@
 - “完全访问权限”现在会先二次确认，不再一点击危险权限就直接切换。
 - 工具/审批标题补了业务化动作名：`read_file`、`apply_patch`、`run_command` 等会优先显示为“读取 xxx”“修改 xxx”“运行 xxx”，不再把内部工具名当主标题。
 - 主聊天工具消息补了结构化结果摘要：`status/exitCode/stdout` 会显示成“已完成 · 退出码 0 · …”，`items/files/matches` 会显示成“找到/涉及文件 N 项”，展开后才看完整输入输出，并支持复制详情。
-- runtime `approval` 已从通用工具卡拆成专用审批节点：标题、文件列表、批准/拒绝和详情折叠更靠近 haha-cc 的轻量请求块。
+- runtime `approval` 已从通用工具卡拆成专用审批节点：标题、文件列表、允许一次/拒绝/始终允许占位和详情折叠更靠近 haha-cc 的轻量请求块。
 - worklog 展开后改为专用紧凑工具行：读文件、查目录、Git 状态这类低价值步骤不再展开成大卡片，单行仍可继续打开详情和复制。
 - worklog 已经贯通 `toolUseId/parentToolUseId` 到 runtime 渲染层，展开后能按父子工具缩进展示，先补齐 haha-cc 信息流里的工具树基础形态。
 - clean 会话会对已被 runtime/worklog 承接的低价值 inline 工具消息做去重，同一个 read/list/git/search 不再在主线重复出现两遍；失败、运行中、写入和审批仍保留。
@@ -84,7 +84,7 @@
 | 工具调用行 | 单行可折叠，显示工具名、目标、状态 | runtime/tool 行已低卡片化，`content_start(tool_use)` 可先显示占位；工具标题会优先转成“读取/修改/运行 + 目标” | runtime items/toolCalls/content_start | `部分接入`：前端已清洗常见工具标题，后端仍需提供结构化 summary 避免前端猜 JSON |
 | 工具结果 | 和调用合并/紧跟，错误高亮 | 有结果/输出折叠和 copy，并保存 `parentToolUseId`；主聊天工具消息会把常见 JSON 结果转成单行摘要，展开后看完整输入输出 | runtime output/tool result | `部分接入`：父子 id 已能保存并在 worklog 里缩进展示，但仍需要后端稳定树结构和更完整工具摘要 |
 | 工具组 | 连续工具折叠为“执行了 N 条命令” | worklog 折叠已做，展开后使用紧凑工具行和父子缩进；普通 read/list/git/search/状态探针继续压缩，且会隐藏对应的重复 inline 工具消息 | activity worklog | `部分接入`：视觉已更轻，后续还要接真实阶段解释正文和更完整的父子折叠 |
-| 权限请求 | 内嵌审批卡，带 diff/命令预览 | runtime approval 已拆成专用轻量节点，常见审批会显示“修改/写入/运行 + 目标”，并保留批准/拒绝 | approvals/permission_request | `部分接入`：审批节点已拆出，permission request 内完整 diff/规则类永久批准还未补 |
+| 权限请求 | 内嵌审批卡，带 diff/命令预览 | runtime approval 已拆成专用轻量节点，常见审批会显示“修改/写入/运行 + 目标”，并保留允许一次/拒绝/始终允许占位 | approvals/permission_request | `部分接入`：审批节点已拆出，permission request 内完整 diff/规则类永久批准还未补 |
 | 文件改动卡 | 当前轮改动 summary、查看 diff、撤销 | patch card + diff preview 已接入，并补了复制文件列表、撤销本轮禁用入口 | patches/changedFiles | `部分接入`：撤销仍等 turn revert 后端，diff 文件匹配仍需加强 |
 | 任务摘要 | 完成后显示总结，不在刚开始出现 | 已隐藏运行初期 task summary | activeTask | `部分接入`：结束时机和内容质量依赖后端 |
 | 上下文压缩 | “上下文已自动压缩”分割节点 | `compact_summary` 已进入 transcript adapter | 等后端真实事件 | `部分接入`：前端已接，后端待稳定 emit |
@@ -115,9 +115,9 @@
 | 复制输出 | 复制工具输出 | 已接入 | Clipboard | `已接入` |
 | 刷新命令 | 查看最新命令输出 | 已接入 command refresh | command job id | `已接入` |
 | 停止命令 | 停止运行中的命令 | 已接入 | command job id | `部分接入`：后端 terminal state 需要阻止 cancelled -> cancelled |
-| 审批批准 | approve | 已接入，并在专用审批节点内展示 | approvals API | `已接入` |
+| 审批批准 | approve | 已接入，并在专用审批节点内显示为“允许一次” | approvals API | `已接入` |
 | 审批拒绝 | reject | 已接入，并在专用审批节点内展示 | approvals API | `已接入` |
-| 永久批准/规则 | haha-cc 有 always/规则类操作 | 未接入 | 需要 permission rule 后端 | `后端待补` |
+| 永久批准/规则 | haha-cc 有 always/规则类操作 | 已有禁用占位入口和原因 | 需要 permission rule 后端 | `后端待补` |
 | 审批 diff 预览 | write/edit/apply_patch 展示 diff | 审批节点可展示文件列表和详情折叠，已有 diff 时复用 diff preview | approvals/patches | `部分接入`：真实 permission request diff 字段还需要后端稳定提供 |
 | Computer Use 权限 | 专用弹窗，选择 app/权限项 | 已有专用低卡片节点，可展示 app/action/details 并复制详情 | transcript adapter | `部分接入`：前端展示已接，真实权限弹窗和授权提交仍需后端 |
 | AskUserQuestion | 工具向用户提问，有选项/输入 | 已有专用问题节点，可展示问题/选项并复制问题 | transcript adapter | `部分接入`：前端展示已接，交互式回答提交仍需后端 |

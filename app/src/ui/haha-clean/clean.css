@@ -320,6 +320,8 @@
 
 .hc-composer-card {
   position: relative;
+  display: grid;
+  grid-auto-rows: auto;
   overflow: visible;
   border: 1px solid #d8c9bf;
   border-radius: 14px;
@@ -330,13 +332,13 @@
 .hc-composer textarea {
   display: block;
   width: 100%;
-  min-height: 96px;
-  max-height: 180px;
+  min-height: 92px;
+  max-height: 172px;
   margin: 0;
   border: 0;
   border-radius: 14px 14px 0 0;
   background: transparent;
-  padding: 22px 22px 14px;
+  padding: 22px 20px 14px;
   color: var(--hc-text);
   line-height: 1.55;
   resize: none;
@@ -437,9 +439,12 @@
 }
 
 .hc-composer-toolbar {
+  position: relative;
+  z-index: 2;
   justify-content: space-between;
   gap: 10px;
   border-top: 1px solid var(--hc-line);
+  background: #fff;
   padding: 10px 12px;
 }
 
@@ -792,14 +797,22 @@
 }
 
 .hc-context-strip {
+  position: relative;
+  z-index: 1;
   display: flex;
-  min-height: 36px;
+  min-height: 42px;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
+  gap: 8px 14px;
   border-top: 1px solid var(--hc-line);
-  padding: 8px 15px 12px;
+  background: linear-gradient(180deg, #fff 0%, #fffdfb 100%);
+  padding: 8px 14px 11px;
   color: var(--hc-muted);
   font-size: 13px;
+}
+
+.hc-context-strip > * {
+  min-width: 0;
 }
 
 .hc-context-strip span,
@@ -810,7 +823,7 @@
 }
 
 .hc-context-strip-button {
-  max-width: 260px;
+  max-width: min(260px, 34vw);
   border: 0;
   border-radius: 999px;
   background: transparent;

@@ -1050,6 +1050,7 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
   const canStop = item.kind === "command" && item.sourceId && isInFlight(item.status) && onStopCommandJob;
   const canRefresh = item.kind === "command" && item.sourceId && onRefreshCommandJob;
   const risky = item.kind === "approval" || item.riskLevel === "medium" || item.riskLevel === "high";
+  const outputLabel = item.kind === "command" ? "Shell 输出" : "工具详情";
 
   if (item.kind === "approval") {
     return (
@@ -1109,7 +1110,7 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
                   }}
                 >
                   <code>{file.path}</code>
-                  <span>{[file.additions !== undefined ? `+${file.additions}` : "", file.deletions !== undefined ? `-${file.deletions}` : ""].filter(Boolean).join(" ") || "修改"}</span>
+                  <span>{[patchStatusLabel(file.status), file.additions !== undefined ? `+${file.additions}` : "", file.deletions !== undefined ? `-${file.deletions}` : ""].filter(Boolean).join(" ")}</span>
                 </button>
               ))}
             </div>
@@ -1117,8 +1118,8 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
           {output ? (
             <figure className="hc-runtime-output">
               <figcaption>
-                <span>{item.kind === "command" ? "Shell" : "详情"}</span>
-                <button type="button" onClick={() => void onCopyRuntimeText?.("运行输出", output)}>
+                <span>{outputLabel}</span>
+                <button type="button" onClick={() => void onCopyRuntimeText?.(outputLabel, output)}>
                   <Copy size={13} />复制
                 </button>
               </figcaption>

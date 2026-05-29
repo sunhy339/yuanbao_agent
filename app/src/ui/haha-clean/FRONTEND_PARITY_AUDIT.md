@@ -112,7 +112,7 @@
 | 工具折叠按钮 | 行首 chevron 展开输入/输出 | 已接入；worklog 内用更轻的单行展开 | runtime expanded state | `已接入` |
 | 工具状态 badge | running/completed/failed/skipped | 已接入 | item.status | `部分接入`：状态文案需统一成更少、更稳的集合 |
 | 工具目标摘要 | `read_file path`、`run_command cmd` | 已清洗 read/list/git/search/run/write/apply_patch 的标题和常见 JSON 输出，主聊天工具行支持 status/exitCode/stdout/items/files/matches 摘要 | runtime input/output | `部分接入`：仍需要后端提供稳定结构化 summary，减少前端猜测 |
-| 复制输出 | 复制工具输出 | 已接入 | Clipboard | `已接入` |
+| 复制输出 | 复制工具输出 | 已接入，复制标签会区分 Shell 输出/工具详情 | Clipboard | `已接入` |
 | 刷新命令 | 查看最新命令输出 | 已接入 command refresh | command job id | `已接入` |
 | 停止命令 | 停止运行中的命令 | 已接入 | command job id | `部分接入`：后端 terminal state 需要阻止 cancelled -> cancelled |
 | 审批批准 | approve | 已接入，并在专用审批节点内显示为“允许一次” | approvals API | `已接入` |

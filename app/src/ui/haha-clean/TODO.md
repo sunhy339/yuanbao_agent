@@ -14,6 +14,7 @@
 - `ask_user_question` 和 `computer_use_permission` 已有专用轻量节点，不再混进普通系统消息；目前先展示问题/选项、权限详情、复制操作，以及等待后端的回答/授权按钮占位。
 - 工具摘要清洗：目录/文件/Git/搜索类输出不再直接展示原始 JSON，优先显示可读短摘要；主聊天里的工具消息也会把 `{status, exitCode, stdout}`、`items/files/matches` 等结果转成单行中文摘要。
 - 工具详情折叠：主聊天工具消息展开后使用轻量“工具详情”面板，并支持复制完整输入/输出。
+- runtime 详情的复制标签按 Shell 输出/工具详情区分，文件行状态统一成中文修改/新增/删除。
 - 工具/审批标题清洗：常见 `read_file`、`apply_patch`、`write_file`、`run_command` 会显示为“读取/修改/写入/运行 + 目标”，减少内部工具名暴露。
 - runtime `approval` 已拆成专用审批节点，允许一次/拒绝/始终允许占位、文件列表和详情折叠不再混在通用工具卡里；泛化的 `patch approval request` 文案会被过滤。
 - worklog 展开后使用紧凑工具行，低价值 read/list/git/search/status 记录不会再膨胀成大卡片，单行仍可展开复制详情，工具组也可复制一份简洁执行摘要。

@@ -447,4 +447,29 @@ describe("CleanConversation", () => {
     expect(screen.getByText("1 个子步骤")).toBeInTheDocument();
     expect(screen.getByText("读取 app/src/ui.tsx").closest(".hc-worklog-row")).toHaveAttribute("data-depth", "1");
   });
+
+  it("uses Chinese file status and accurate copy labels in runtime details", async () => {
+    const user = userEvent.setup();
+    const onCopyRuntimeText = vi.fn();
+
+    render(
+      <CleanRuntimeBlock
+        onCopyRuntimeText={onCopyRuntimeText}
+        item={{
+          id: "tool:write",
+          kind: "tool",
+          title: "write_file",
+          status: "completed",
+          toolName: "write_file",
+          code: "modified snake_game/rules.py (+2/-1)",
+          rawDetail: "updated content",
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /写入 snake_game\/rules\.py/ }));
+    expect(screen.getByText("修改 +2 -1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "复制" }));
+    expect(onCopyRuntimeText).toHaveBeenCalledWith("工具详情", "updated content");
+  });
 });

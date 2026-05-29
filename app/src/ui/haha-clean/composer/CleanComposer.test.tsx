@@ -13,6 +13,7 @@ function renderComposer(overrides: Partial<CleanComposerProps> = {}) {
     onPromptChange: vi.fn(),
     onSubmitPrompt: vi.fn(),
     onPermissionModeChange: vi.fn(),
+    onAttachmentsChange: vi.fn(),
   };
 
   render(
@@ -26,6 +27,7 @@ function renderComposer(overrides: Partial<CleanComposerProps> = {}) {
       permissionLabel="询问权限"
       permissionMode="ask"
       onPermissionModeChange={handlers.onPermissionModeChange}
+      onAttachmentsChange={handlers.onAttachmentsChange}
       contextLabel="上下文 25%"
       contextPreview={{
         projectFocus: "Keep the UI close to haha-cc.",
@@ -116,6 +118,17 @@ describe("CleanComposer", () => {
     await user.click(screen.getByRole("button", { name: "添加" }));
     await user.click(screen.getByRole("button", { name: /斜杠命令/ }));
     expect(handlers.onPromptChange).toHaveBeenCalledWith("/");
+  });
+
+  it("renders image attachments as thumbnails with removable labels", () => {
+    const handlers = renderComposer({
+      attachments: ["D:/screenshots/ui.png", "D:/notes/readme.txt"],
+    });
+
+    expect(screen.getByRole("img", { name: "ui.png" })).toHaveAttribute("src", "D:/screenshots/ui.png");
+    expect(screen.getByText("readme.txt")).toBeInTheDocument();
+    screen.getByRole("button", { name: "移除 ui.png" }).click();
+    expect(handlers.onAttachmentsChange).toHaveBeenCalledWith(["D:/notes/readme.txt"]);
   });
 
   it("lets the slash command panel be selected with the keyboard", async () => {

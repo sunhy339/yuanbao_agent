@@ -29,6 +29,7 @@
 - Composer 补了项目目录/上下文轻量详情、权限模式说明和 Slash 参数提示。
 - Composer 项目目录弹层补了复制路径动作。
 - Composer 上下文弹层补了复制上下文摘要动作。
+- Composer 图片附件改为缩略图显示，普通文件继续保持轻量 chip。
 - Markdown 文件补了预览/源码切换，源码模式保留行号和轻量高亮。
 - Slash 命令补了键盘选择：上下键/Home/End 切换，Enter/Tab 选中，Escape 关闭。
 - Markdown 预览补了轻量文档大纲，方便快速跳到章节。

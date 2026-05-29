@@ -80,6 +80,14 @@ function attachmentName(path: string) {
   return basename(path);
 }
 
+function isImageAttachment(path: string) {
+  return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(path);
+}
+
+function attachmentUrl(path: string) {
+  return path.replace(/\\/g, "/");
+}
+
 function formatTokenCount(value?: number | null) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return "未知";
@@ -494,9 +502,13 @@ export function CleanComposer({
         {attachments.length ? (
           <div className="hc-attachments">
             {attachments.map((path) => (
-              <span key={path}>
-                <Paperclip size={13} />
-                {attachmentName(path)}
+              <span key={path} data-kind={isImageAttachment(path) ? "image" : "file"}>
+                {isImageAttachment(path) ? (
+                  <img alt={attachmentName(path)} loading="lazy" src={attachmentUrl(path)} />
+                ) : (
+                  <Paperclip size={13} />
+                )}
+                <em title={path}>{attachmentName(path)}</em>
                 <button
                   type="button"
                   aria-label={`移除 ${attachmentName(path)}`}

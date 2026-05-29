@@ -48,7 +48,7 @@
 | haha-cc 功能点 | haha-cc 行为/按钮 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
 | --- | --- | --- | --- | --- |
 | 简洁空态 | logo、标题、新会话说明、底部 composer | `CleanNewSessionWorkspace` 已做简洁空态 | 无 | `部分接入`：视觉方向接近，但 logo/品牌图形仍是占位 |
-| 项目目录按钮 | 底部显示当前目录，可展开/切换 | composer 下方显示 cwd/context，项目 chip 可展开当前目录详情 | workspace root store | `部分接入`：没有完整目录选择弹层、最近项目、分支信息 |
+| 项目目录按钮 | 底部显示当前目录，可展开/切换 | composer 下方显示 cwd/context，项目 chip 可展开当前目录、改动数和最近文件 | workspace root/worktree status | `部分接入`：没有完整目录选择弹层、最近项目、分支信息 |
 | 模型选择 | 模型按钮/下拉 | `CleanComposer` 支持模型下拉 | modelOptions/selectedModelId | `已接入` |
 | 权限模式 | 跳过/询问/自动接受等权限模式 | `CleanComposer` 有权限下拉，高风险“完全访问权限”会二次确认 | permissionMode callback | `部分接入`：确认已补，仍缺全局默认权限策略和持久化规则 |
 | 上下文按钮 | 上下文占用按钮，弹出详细 breakdown | 显示上下文百分比/标签，已补 token 预算、工具数、当前步骤、压缩节段轻量面板，并可复制上下文摘要 | contextPreview | `部分接入`：还缺更完整的分类 token breakdown 和持久快照 |
@@ -71,7 +71,7 @@
 | 暂存/排队 | 运行中把下一条加入队列，可引导/调整顺序/删除 | 已有队列项、引导、上移、下移、删除 | queuedPrompts callbacks | `部分接入`：交互已存在，视觉还需更像 haha-cc 的轻量 pending bar |
 | 引导按钮 | 把暂存内容注入当前会话上下文 | 已有 `onGuideQueuedPrompt` | 依赖现有队列实现 | `部分接入`：需要后端明确“引导注入”事件，避免只是本地队列状态 |
 | 发送按钮 | 不可发送时 disabled，运行中 stop | 已接入 | submit/stop | `已接入` |
-| 项目目录 chip | 显示当前 repo/目录/分支 | 目前显示目录与上下文，项目弹层可复制路径 | workspace root/context | `部分接入`：分支、工作树、dirty 状态还没统一展示 |
+| 项目目录 chip | 显示当前 repo/目录/分支 | 目前显示目录、改动数、最近文件并可复制路径 | workspace root/context/worktree status | `部分接入`：分支、工作树状态还没统一展示 |
 
 ## 4. 主聊天信息流
 

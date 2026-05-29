@@ -732,6 +732,41 @@
   font-weight: 700;
 }
 
+.hc-project-status {
+  display: grid;
+  gap: 0;
+  margin: 9px 0;
+  overflow: hidden;
+  border: 1px solid var(--hc-line);
+  border-radius: 9px;
+}
+
+.hc-project-status div {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  gap: 8px;
+  border-bottom: 1px solid var(--hc-line);
+  padding: 7px 9px;
+}
+
+.hc-project-status div:last-child {
+  border-bottom: 0;
+}
+
+.hc-project-status dt {
+  color: var(--hc-muted);
+}
+
+.hc-project-status dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--hc-text);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hc-popover-actions {
   display: flex;
   margin: 8px 0;

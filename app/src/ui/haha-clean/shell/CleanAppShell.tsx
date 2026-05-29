@@ -246,6 +246,7 @@ export function CleanAppShell({
               onPermissionModeChange={onPermissionModeChange}
               contextLabel={contextLabel}
               contextPreview={contextPreview}
+              worktreeStatus={worktreeStatus}
               variant={activeKind === "new-session" ? "new" : "session"}
             />
           ) : null}

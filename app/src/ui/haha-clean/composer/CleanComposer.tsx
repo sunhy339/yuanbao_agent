@@ -18,7 +18,7 @@ import {
 import type { QueuedPromptSubmission } from "../../../state/eventRecordViews";
 import { matchCommands } from "../../../state/slashCommands";
 import type { ComposerRuntimeChildTask } from "../../workbench/ComposerDock";
-import type { SessionWorkspaceContextPreview } from "../../workbench/workspaces/session/types";
+import type { SessionWorkspaceContextPreview, SessionWorkspaceWorktreeStatus } from "../../workbench/workspaces/session/types";
 import { basename } from "../shared/text";
 
 export interface CleanFileReferenceOption {
@@ -56,6 +56,7 @@ export interface CleanComposerProps {
   onCopyText?: (text: string) => void | Promise<void>;
   contextLabel?: string;
   contextPreview?: SessionWorkspaceContextPreview | null;
+  worktreeStatus?: SessionWorkspaceWorktreeStatus | null;
   hidden?: boolean;
   variant?: "session" | "new";
 }
@@ -175,6 +176,7 @@ export function CleanComposer({
   onCopyText,
   contextLabel,
   contextPreview,
+  worktreeStatus,
   hidden,
   variant = "session",
 }: CleanComposerProps) {
@@ -200,6 +202,8 @@ export function CleanComposer({
   const trimmedSections = contextPreview?.budgetStats?.trimmedSections ?? [];
   const droppedSections = contextPreview?.budgetStats?.droppedSections ?? [];
   const cwdName = basename(cwdLabel);
+  const dirtyFiles = worktreeStatus?.dirtyFiles ?? 0;
+  const worktreeFiles = worktreeStatus?.files ?? [];
   const contextSummary = [
     "上下文",
     contextLabel || `当前占用 ${context}`,
@@ -761,6 +765,16 @@ export function CleanComposer({
                   <small>{cwdName}</small>
                 </header>
                 <p title={cwdLabel}>{cwdLabel || "未选择工作区"}</p>
+                <dl className="hc-project-status">
+                  <div>
+                    <dt>改动</dt>
+                    <dd>{dirtyFiles ? `${dirtyFiles} 个文件` : "工作区干净"}</dd>
+                  </div>
+                  <div>
+                    <dt>最近文件</dt>
+                    <dd>{worktreeFiles.slice(0, 3).join("、") || "暂无"}</dd>
+                  </div>
+                </dl>
                 <div className="hc-popover-actions">
                   <button
                     type="button"

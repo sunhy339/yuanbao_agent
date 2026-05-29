@@ -43,6 +43,10 @@ function renderComposer(overrides: Partial<CleanComposerProps> = {}) {
           currentStep: "补齐 composer 面板",
         },
       }}
+      worktreeStatus={{
+        dirtyFiles: 2,
+        files: ["app/src/App.tsx", "app/src/ui/clean.css"],
+      }}
       modelOptions={[
         { id: "gpt-5", label: "gpt-5" },
         { id: "gpt-5.4-mini", label: "5.4-mini" },
@@ -96,6 +100,8 @@ describe("CleanComposer", () => {
     await user.click(screen.getByRole("button", { name: "yuanbao_agent" }));
     const projectPanel = screen.getByLabelText("项目目录");
     expect(projectPanel).toHaveTextContent("D:/py/yuanbao_agent");
+    expect(projectPanel).toHaveTextContent("2 个文件");
+    expect(projectPanel).toHaveTextContent("app/src/App.tsx");
     await user.click(within(projectPanel).getByRole("button", { name: /复制路径/ }));
     expect(copyText).toHaveBeenCalledWith("D:/py/yuanbao_agent");
     expect(screen.queryByLabelText("上下文详情")).not.toBeInTheDocument();

@@ -25,6 +25,7 @@
 - “完全访问权限”现在会先二次确认，不再一点击危险权限就直接切换。
 - 工具/审批标题补了业务化动作名：`read_file`、`apply_patch`、`run_command` 等会优先显示为“读取 xxx”“修改 xxx”“运行 xxx”，不再把内部工具名当主标题。
 - 主聊天工具消息补了结构化结果摘要：`status/exitCode/stdout` 会显示成“已完成 · 退出码 0 · …”，`items/files/matches` 会显示成“找到/涉及文件 N 项”，展开后才看完整输入输出，并支持复制详情。
+- runtime/worklog 摘要继续清洗：命令 JSON 会显示“已完成 · 退出码 0 · stdout 摘要”，文件读取会显示读取字符数，搜索/匹配结果会显示命中文件名和剩余数量，进一步减少主线里的原始 JSON 噪声。
 - runtime `approval` 已从通用工具卡拆成专用审批节点：标题、文件列表、允许一次/拒绝/始终允许占位和详情折叠更靠近 haha-cc 的轻量请求块。
 - runtime `approval` 会保留工具类型，`apply_patch` 多文件审批优先显示“修改 N 个文件”，避免继续暴露 `patch approval request`。
 - worklog 展开后改为专用紧凑工具行：读文件、查目录、Git 状态这类低价值步骤不再展开成大卡片，单行仍可继续打开详情和复制。

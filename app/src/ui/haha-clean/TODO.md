@@ -14,6 +14,7 @@
 - 特殊事件适配继续补齐：`background_task`、`task_summary`、`plan_update` 已进入 shared 事件类型和订阅白名单；clean 会话会过滤“理解任务目标/准备上下文/普通运行状态”这类启动期噪音，只保留完成、失败、等待审批、可执行计划等有价值节点。
 - `ask_user_question` 和 `computer_use_permission` 已有专用轻量节点，不再混进普通系统消息；目前先展示问题/选项、权限详情、复制操作，以及等待后端的回答/授权按钮占位。
 - 工具摘要清洗：目录/文件/Git/搜索类输出不再直接展示原始 JSON，优先显示可读短摘要；主聊天里的工具消息也会把 `{status, exitCode, stdout}`、`items/files/matches` 等结果转成单行中文摘要。
+- runtime/worklog 摘要继续清洗：命令 JSON 会显示“已完成 · 退出码 0 · stdout 摘要”，文件读取会显示读取字符数，搜索结果会显示命中文件名和剩余数量。
 - 工具详情折叠：主聊天工具消息展开后使用轻量“工具详情”面板，并支持复制完整输入/输出。
 - runtime 详情的复制标签按 Shell 输出/工具详情区分，文件行状态统一成中文修改/新增/删除。
 - 工具/审批标题清洗：常见 `read_file`、`apply_patch`、`write_file`、`run_command` 会显示为“读取/修改/写入/运行 + 目标”，减少内部工具名暴露。

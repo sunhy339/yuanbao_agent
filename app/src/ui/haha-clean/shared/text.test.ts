@@ -23,6 +23,50 @@ describe("haha-clean text helpers", () => {
     expect(runtimeSummary(item)).toBe("找到 3 项：snake_game, README.md, tests · 16ms");
   });
 
+  it("summarizes command and file JSON outputs into readable runtime text", () => {
+    const command: RuntimeTimelineItem = {
+      id: "cmd:pytest",
+      kind: "command",
+      title: "python -m pytest tests -q",
+      status: "completed",
+      rawDetail: JSON.stringify({
+        status: "completed",
+        exitCode: 0,
+        stdout: "3 passed in 0.01s",
+      }),
+    };
+    const readFile: RuntimeTimelineItem = {
+      id: "tool:read",
+      kind: "tool",
+      title: "read_file",
+      status: "completed",
+      toolName: "read_file",
+      rawDetail: JSON.stringify({
+        content: "class Game:\n    pass",
+      }),
+    };
+    const matches: RuntimeTimelineItem = {
+      id: "tool:search",
+      kind: "tool",
+      title: "search_files",
+      status: "completed",
+      toolName: "search_files",
+      rawDetail: JSON.stringify({
+        matches: [
+          { path: "snake_game/game.py" },
+          { path: "snake_game/rules.py" },
+          { path: "README.md" },
+          { path: "tests/test_game.py" },
+          { path: "config.py" },
+        ],
+      }),
+    };
+
+    expect(runtimeSummary(command)).toBe("已完成 · 退出码 0 · 3 passed in 0.01s");
+    expect(runtimeSummary(readFile)).toBe("读取完成，20 字符");
+    expect(runtimeSummary(matches)).toBe("返回结果 5 项：snake_game/game.py, snake_game/rules.py, README.md, tests/test_game.py，另有 1 项");
+  });
+
   it("formats tool action titles with concrete targets", () => {
     expect(toolActionTitle({
       toolName: "apply_patch",

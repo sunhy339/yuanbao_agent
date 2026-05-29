@@ -280,20 +280,43 @@ function findRuntimeText(record: Record<string, unknown> | null, keys: string[])
 function summarizeJsonOutput(value?: string) {
   const record = parseJsonRecord(value);
   if (!record) return "";
-  const items = Array.isArray(record.items) ? record.items : Array.isArray(record.entries) ? record.entries : null;
-  if (items) {
+  const namedArrays: Array<{ keys: string[]; noun: string }> = [
+    { keys: ["items", "entries", "children"], noun: "找到" },
+    { keys: ["files", "changedFiles", "changes"], noun: "涉及文件" },
+    { keys: ["matches", "results"], noun: "返回结果" },
+  ];
+  for (const group of namedArrays) {
+    const key = group.keys.find((entry) => Array.isArray(record[entry]));
+    const items = key ? record[key] as unknown[] : null;
+    if (!items) continue;
     const names = items
-      .map((item) => item && typeof item === "object" ? findRuntimeText(item as Record<string, unknown>, ["path", "name"]) : "")
+      .map((item) => {
+        if (typeof item === "string") return item.trim();
+        return item && typeof item === "object" ? findRuntimeText(item as Record<string, unknown>, ["path", "file", "name", "title", "label"]) : "";
+      })
       .filter(Boolean)
       .slice(0, 4);
-    return `找到 ${items.length} 项${names.length ? `：${names.join(", ")}${items.length > names.length ? `，另有 ${items.length - names.length} 项` : ""}` : ""}`;
+    return `${group.noun} ${items.length} 项${names.length ? `：${names.join(", ")}${items.length > names.length ? `，另有 ${items.length - names.length} 项` : ""}` : ""}`;
   }
-  const changes = record.changes;
-  if (Array.isArray(changes)) {
-    return `${changes.length} 个改动`;
+
+  const status = findRuntimeText(record, ["status", "state"]);
+  const exitCode = findRuntimeText(record, ["exitCode", "exit_code", "code"]);
+  const message = findRuntimeText(record, ["summary", "message", "result"]);
+  const stdout = findRuntimeText(record, ["stdout", "output"]);
+  const stderr = findRuntimeText(record, ["stderr", "error"]);
+  const content = findRuntimeText(record, ["content", "text"]);
+  const byteCount = findRuntimeText(record, ["bytes", "byteLength", "size"]);
+  const parts: string[] = [];
+  if (status) parts.push(statusLabel(status));
+  if (exitCode) parts.push(`退出码 ${exitCode}`);
+  if (message) parts.push(compactText(message, 92));
+  if (!message && stdout) parts.push(compactText(stdout, 92));
+  if (stderr) parts.push(compactText(stderr, 92));
+  if (!parts.length && content) {
+    parts.push(`读取完成，${content.length} 字符`);
   }
-  const summary = findRuntimeText(record, ["summary", "message", "status", "result"]);
-  return summary ? compactText(summary, 150) : "";
+  if (!parts.length && byteCount) parts.push(`${byteCount} 字节`);
+  return parts.length ? parts.join(" · ") : "";
 }
 
 export function runtimeSummary(item: RuntimeTimelineItem) {

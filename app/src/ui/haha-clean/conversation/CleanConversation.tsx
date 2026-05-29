@@ -16,6 +16,7 @@ import {
   MoreHorizontal,
   MousePointerClick,
   RotateCcw,
+  ScanSearch,
   TerminalSquare,
   Target,
   Wrench,
@@ -341,6 +342,22 @@ function patchFileListText(files: PatchFileSummary[]) {
       return meta ? `${file.path}  ${meta}` : file.path;
     })
     .join("\n");
+}
+
+function patchReviewPrompt(item: RuntimeTimelineItem, files: PatchFileSummary[]) {
+  const title = item.title || "本轮改动";
+  const fileText = files.length ? patchFileListText(files) : "暂无结构化文件列表，请结合当前改动 diff 审查。";
+  return [
+    `请审查这轮改动：${title}`,
+    "",
+    "重点检查：",
+    "- 行为是否符合需求",
+    "- 是否有明显回归、边界问题或遗漏测试",
+    "- diff 是否有不必要的改动",
+    "",
+    "改动文件：",
+    fileText,
+  ].join("\n");
 }
 
 function approvalFileSummaries(item: RuntimeTimelineItem) {
@@ -930,10 +947,12 @@ function PatchRuntimeBlock({
   item,
   onLoadPatch,
   onCopyRuntimeText,
+  onQuoteMessage,
 }: {
   item: RuntimeTimelineItem;
   onLoadPatch?: (patchId: string) => void | Promise<void>;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onQuoteMessage?: (text: string) => void;
 }) {
   const files = useMemo(() => patchFileSummaries(item), [item]);
   const diffGroups = useMemo(() => (
@@ -976,6 +995,15 @@ function PatchRuntimeBlock({
             <button type="button" disabled title="需要后端提供 revert turn 接口">
               <RotateCcw size={13} />
               撤销本轮
+            </button>
+            <button
+              type="button"
+              disabled={!onQuoteMessage}
+              title={onQuoteMessage ? "写入输入框，继续审查这轮改动" : "需要先接入 composer 引用桥接"}
+              onClick={() => onQuoteMessage?.(patchReviewPrompt(item, files))}
+            >
+              <ScanSearch size={13} />
+              审查改动
             </button>
           </div>
         </div>
@@ -1066,7 +1094,7 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
   }
 
   if (item.kind === "patch") {
-    return <PatchRuntimeBlock item={item} onLoadPatch={onLoadPatch} onCopyRuntimeText={onCopyRuntimeText} />;
+    return <PatchRuntimeBlock item={item} onLoadPatch={onLoadPatch} onCopyRuntimeText={onCopyRuntimeText} onQuoteMessage={onQuoteMessage} />;
   }
 
   if (isQuietRuntime(item)) {

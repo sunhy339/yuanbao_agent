@@ -131,7 +131,7 @@
 | 文件行点击 | 点击文件打开右侧预览 | 已接入 openFile | FileWorkspacePanel | `部分接入` |
 | diff 语法色 | 增删颜色、hunk header、行号 | 已有基本 diff preview | patch text | `部分接入`：还不是真正完整 diff viewer |
 | 撤销本轮 | change card 上撤销 | 前端入口已占位禁用 | 需要 revert API | `后端待补` |
-| 审核/提交入口 | 在当前改动上进入审查 | 旧 app 有审查相关，clean 未完整统一 | existing review route | `前端待补` |
+| 审核/提交入口 | 在当前改动上进入审查 | 改动卡已补“审查改动”，先把审查提示写回 composer | composer quote bridge / 后续 review API | `部分接入`：独立审查/提交接口仍需后端或路由补齐 |
 
 ## 8. 代码阅览与文件区
 

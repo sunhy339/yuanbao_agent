@@ -68,10 +68,12 @@ describe("CleanConversation", () => {
   it("exposes patch file list copy and revert placeholder actions", async () => {
     const user = userEvent.setup();
     const onCopyRuntimeText = vi.fn();
+    const onQuoteMessage = vi.fn();
 
     render(
       <CleanRuntimeBlock
         onCopyRuntimeText={onCopyRuntimeText}
+        onQuoteMessage={onQuoteMessage}
         item={{
           id: "patch:actions",
           kind: "patch",
@@ -88,6 +90,10 @@ describe("CleanConversation", () => {
       expect.stringContaining("snake_game/game.py  修改 +2 -4"),
     );
     expect(screen.getByRole("button", { name: /撤销本轮/ })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /审查改动/ }));
+    expect(onQuoteMessage).toHaveBeenCalledWith(expect.stringContaining("请审查这轮改动：Update snake_game files"));
+    expect(onQuoteMessage).toHaveBeenCalledWith(expect.stringContaining("snake_game/rules.py"));
   });
 
   it("exposes lightweight copy and quote actions for normal messages", async () => {

@@ -32,4 +32,25 @@ describe("CleanMarkdown", () => {
     expect(screen.getByRole("columnheader", { name: "文件" })).toBeTruthy();
     expect(screen.getByText("game.py")).toBeTruthy();
   });
+
+  it("renders nested mixed markdown lists without flattening structure", () => {
+    const { container } = render(
+      <CleanMarkdown
+        content={[
+          "- `game.py`",
+          "  - 主循环",
+          "  - 碰撞处理",
+          "    1. 越界",
+          "    2. 自碰撞",
+          "- [ ] 补测试",
+        ].join("\n")}
+      />,
+    );
+
+    expect(screen.getByText("game.py")).toBeTruthy();
+    expect(screen.getByText("主循环")).toBeTruthy();
+    expect(screen.getByText("越界")).toBeTruthy();
+    expect(screen.getByRole("checkbox", { checked: false })).toBeTruthy();
+    expect(container.querySelector("li li li")).toBeTruthy();
+  });
 });

@@ -2245,6 +2245,19 @@
   margin: 2px 0;
 }
 
+.hc-markdown li > ul,
+.hc-markdown li > ol,
+.hc-list-item-body > ul,
+.hc-list-item-body > ol {
+  margin-top: 4px;
+}
+
+.hc-list-item-body {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
 .hc-task-item {
   display: flex;
   align-items: flex-start;

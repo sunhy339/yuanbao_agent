@@ -27,7 +27,7 @@
 - Markdown 文件补了预览/源码切换，源码模式保留行号和轻量高亮。
 - Slash 命令补了键盘选择：上下键/Home/End 切换，Enter/Tab 选中，Escape 关闭。
 - Markdown 预览补了轻量文档大纲，方便快速跳到章节。
-- 聊天正文 Markdown 补了宽松标题、任务列表和表格渲染，减少模型输出里 `##1`、表格、todo 直接裸露的情况。
+- 聊天正文 Markdown 补了宽松标题、嵌套列表、任务列表和表格渲染，减少模型输出里 `##1`、表格、todo 直接裸露或层级打平的情况。
 - Composer 补了 `@` 文件引用入口：加号菜单可插入 `@`，输入后能从当前已知文件候选里选择并插入引用。
 - 权限菜单补了“完全访问权限”二次确认，避免误点直接切到危险权限模式。
 - 现有后端数据适配：messages、toolCalls、approvals、patches、backgroundJobs、traces、activeTask、contextPreview。

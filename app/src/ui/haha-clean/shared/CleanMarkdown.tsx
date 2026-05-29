@@ -106,6 +106,93 @@ function flushParagraph(lines: string[], nodes: JSX.Element[]) {
   lines.length = 0;
 }
 
+type MarkdownListItem = {
+  id: number;
+  indent: number;
+  ordered: boolean;
+  checked?: boolean;
+  text: string;
+  children: MarkdownListItem[];
+};
+
+function parseListItem(line: string) {
+  const bullet = /^(\s*)[-*]\s+(?:\[( |x|X)\]\s+)?(.+)$/.exec(line);
+  if (bullet) {
+    return {
+      indent: bullet[1].replace(/\t/g, "  ").length,
+      ordered: false,
+      checked: bullet[2] ? bullet[2].toLowerCase() === "x" : undefined,
+      text: bullet[3],
+    };
+  }
+  const ordered = /^(\s*)\d+\.\s+(.+)$/.exec(line);
+  if (ordered) {
+    return {
+      indent: ordered[1].replace(/\t/g, "  ").length,
+      ordered: true,
+      text: ordered[2],
+    };
+  }
+  return null;
+}
+
+function collectList(lines: string[], startIndex: number) {
+  const root: MarkdownListItem = { id: -1, indent: -1, ordered: false, text: "", children: [] };
+  const stack: MarkdownListItem[] = [root];
+  let index = startIndex;
+  let id = 0;
+
+  while (index < lines.length) {
+    const parsed = parseListItem(lines[index] ?? "");
+    if (!parsed) break;
+    const item: MarkdownListItem = { ...parsed, id, children: [] };
+    id += 1;
+    while (stack.length > 1 && item.indent <= stack[stack.length - 1].indent) {
+      stack.pop();
+    }
+    stack[stack.length - 1].children.push(item);
+    stack.push(item);
+    index += 1;
+  }
+
+  return { items: root.children, nextIndex: index };
+}
+
+function groupListItems(items: MarkdownListItem[]) {
+  const groups: Array<{ ordered: boolean; items: MarkdownListItem[] }> = [];
+  items.forEach((item) => {
+    const last = groups.at(-1);
+    if (last && last.ordered === item.ordered) {
+      last.items.push(item);
+      return;
+    }
+    groups.push({ ordered: item.ordered, items: [item] });
+  });
+  return groups;
+}
+
+function renderListGroups(items: MarkdownListItem[], keyPrefix: string): JSX.Element[] {
+  return groupListItems(items).map((group, groupIndex) => {
+    const Tag = group.ordered ? "ol" : "ul";
+    return (
+      <Tag key={`${keyPrefix}-g-${groupIndex}`}>
+        {group.items.map((item) => (
+          <li
+            key={`${keyPrefix}-i-${item.id}`}
+            className={item.checked !== undefined ? "hc-task-item" : undefined}
+          >
+            {item.checked !== undefined ? <input type="checkbox" checked={item.checked} readOnly /> : null}
+            <div className="hc-list-item-body">
+              <span dangerouslySetInnerHTML={{ __html: inlineHtml(item.text) }} />
+              {item.children.length ? renderListGroups(item.children, `${keyPrefix}-${item.id}`) : null}
+            </div>
+          </li>
+        ))}
+      </Tag>
+    );
+  });
+}
+
 export const CleanMarkdown = memo(function CleanMarkdown({ content }: { content: string }) {
   const nodes: JSX.Element[] = [];
   const paragraph: string[] = [];
@@ -165,48 +252,11 @@ export const CleanMarkdown = memo(function CleanMarkdown({ content }: { content:
       continue;
     }
 
-    const bullet = /^\s*[-*]\s+(?:\[( |x|X)\]\s+)?(.+)$/.exec(line);
-    if (bullet) {
+    if (parseListItem(line)) {
       flushParagraph(paragraph, nodes);
-      const items: Array<{ checked?: boolean; text: string }> = [];
-      while (index < lines.length) {
-        const item = /^\s*[-*]\s+(?:\[( |x|X)\]\s+)?(.+)$/.exec(lines[index] ?? "");
-        if (!item) break;
-        items.push({ checked: item[1] ? item[1].toLowerCase() === "x" : undefined, text: item[2] });
-        index += 1;
-      }
-      nodes.push(
-        <ul key={`ul-${nodes.length}`}>
-          {items.map((item, itemIndex) => (
-            <li key={`${itemIndex}:${item.text}`} className={item.checked !== undefined ? "hc-task-item" : undefined}>
-              {item.checked !== undefined ? <input type="checkbox" checked={item.checked} readOnly /> : null}
-              <span dangerouslySetInnerHTML={{ __html: inlineHtml(item.text) }} />
-            </li>
-          ))}
-        </ul>,
-      );
-      continue;
-    }
-
-    const ordered = /^\s*\d+\.\s+(.+)$/.exec(line);
-    if (ordered) {
-      flushParagraph(paragraph, nodes);
-      const items: string[] = [];
-      while (index < lines.length) {
-        const item = /^\s*\d+\.\s+(.+)$/.exec(lines[index] ?? "");
-        if (!item) break;
-        items.push(item[1]);
-        index += 1;
-      }
-      nodes.push(
-        <ol key={`ol-${nodes.length}`}>
-          {items.map((item, itemIndex) => (
-            <li key={`${itemIndex}:${item}`}>
-              <span dangerouslySetInnerHTML={{ __html: inlineHtml(item) }} />
-            </li>
-          ))}
-        </ol>,
-      );
+      const list = collectList(lines, index);
+      nodes.push(...renderListGroups(list.items, `list-${nodes.length}`));
+      index = list.nextIndex;
       continue;
     }
 

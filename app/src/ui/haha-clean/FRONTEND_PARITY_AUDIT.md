@@ -29,7 +29,7 @@
 - worklog 展开后改为专用紧凑工具行：读文件、查目录、Git 状态这类低价值步骤不再展开成大卡片，单行仍可继续打开详情和复制。
 - worklog 已经贯通 `toolUseId/parentToolUseId` 到 runtime 渲染层，展开后能按父子工具缩进展示，先补齐 haha-cc 信息流里的工具树基础形态。
 - clean 会话会对已被 runtime/worklog 承接的低价值 inline 工具消息做去重，同一个 read/list/git/search 不再在主线重复出现两遍；失败、运行中、写入和审批仍保留。
-- 聊天正文 Markdown 渲染补了宽松标题、任务列表和表格，模型输出里的 `##1`、todo、表格不再直接按普通文本裸露。
+- 聊天正文 Markdown 渲染补了宽松标题、嵌套列表、任务列表和表格，模型输出里的 `##1`、todo、表格和多层要点不再直接按普通文本裸露或打平。
 - 这层是 transcript adapter：能力不足时先把可识别事件接进统一消息流，无法由现有后端真实提供的能力继续记录为后端待补。
 
 ## 1. 应用壳层与导航
@@ -150,7 +150,7 @@
 | haha-cc 能力 | haha-cc 行为 | 我们当前实现 | 后端/状态对接 | 差异与下一步 |
 | --- | --- | --- | --- | --- |
 | 标题 | `#` 变标题，不显示原始 `##` | `CleanMarkdown` 已处理标题 | assistant content | `已接入` |
-| 列表 | 有序/无序列表缩进自然 | 已处理基础列表和任务列表 | assistant content | `部分接入`：嵌套列表仍简单 |
+| 列表 | 有序/无序列表缩进自然 | 已处理嵌套无序/有序列表和任务列表 | assistant content | `已接入` |
 | inline code | 背景 chip | 已接入 | assistant content | `已接入` |
 | fenced code | 代码块、语言、复制、高亮 | 有代码块、语言栏、复制按钮和简单高亮 | assistant content | `部分接入`：完整语法高亮待补 |
 | 表格 | Markdown 表格转表格 UI | 已接入简单表格渲染 | assistant content | `部分接入`：复杂对齐/嵌套内容待补 |

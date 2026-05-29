@@ -204,6 +204,7 @@ export function CleanComposer({
   const cwdName = basename(cwdLabel);
   const dirtyFiles = worktreeStatus?.dirtyFiles ?? 0;
   const worktreeFiles = worktreeStatus?.files ?? [];
+  const worktreeFileCopyText = worktreeFiles.join("\n");
   const contextSummary = [
     "上下文",
     contextLabel || `当前占用 ${context}`,
@@ -783,6 +784,14 @@ export function CleanComposer({
                   >
                     <Copy size={13} />
                     复制路径
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!worktreeFiles.length}
+                    onClick={() => copyText(worktreeFileCopyText)}
+                  >
+                    <Copy size={13} />
+                    复制改动文件
                   </button>
                 </div>
                 <p>后续会在这里补最近项目、分支和工作树切换。</p>

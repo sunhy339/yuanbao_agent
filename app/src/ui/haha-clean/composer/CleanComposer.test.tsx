@@ -104,6 +104,8 @@ describe("CleanComposer", () => {
     expect(projectPanel).toHaveTextContent("app/src/App.tsx");
     await user.click(within(projectPanel).getByRole("button", { name: /复制路径/ }));
     expect(copyText).toHaveBeenCalledWith("D:/py/yuanbao_agent");
+    await user.click(within(projectPanel).getByRole("button", { name: /复制改动文件/ }));
+    expect(copyText).toHaveBeenCalledWith("app/src/App.tsx\napp/src/ui/clean.css");
     expect(screen.queryByLabelText("上下文详情")).not.toBeInTheDocument();
   });
 

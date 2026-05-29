@@ -942,6 +942,34 @@ describe("chatMessages", () => {
     ]);
   });
 
+  it("keeps haha-style special transcript events across persisted message refreshes", () => {
+    const localEvents = appendSpecialEventMessage([], {
+      kind: "compact_summary",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      title: "上下文已压缩",
+      summary: "旧工具日志已自动折叠。",
+      eventId: "evt_compact",
+      now: 10,
+    });
+
+    const refreshed = replaceSessionMessages(localEvents, "sess_1", [
+      {
+        id: "assistant_final",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "assistant",
+        content: "最终结论。",
+        createdAt: 20,
+      },
+    ]);
+
+    expect(getVisibleChatMessages(refreshed, "sess_1").map((message) => message.id)).toEqual([
+      "compact_summary:evt_compact",
+      "assistant_final",
+    ]);
+  });
+
   it("merges out-of-order tool result and completed input into one activity block", () => {
     const withResult = appendAssistantToolResultMessage([], {
       toolUseId: "tc_1",

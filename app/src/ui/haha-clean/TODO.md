@@ -43,6 +43,7 @@
 - 权限菜单补了“完全访问权限”二次确认，避免误点直接切到危险权限模式。
 - 现有后端数据适配：messages、toolCalls、approvals、patches、backgroundJobs、traces、activeTask、contextPreview。
 - clean transcript schema：已覆盖 user_text、assistant_text、assistant_progress、thinking、tool_use、tool_result、tool_group、permission_request、computer_use_permission、ask_user_question、background_task、task_summary、plan_update、goal_event、memory_event、compact_summary、api_retry、error、change_set、command、status、system。
+- 本地 haha 风格过程节点现在会在持久消息刷新时保留，`api_retry`、`compact_summary`、`goal_event`、`ask_user_question`、`computer_use_permission` 等不会因为后端 messages 刷新突然消失。
 - MCP/Skills/Settings 页面补了一层更统一的 haha-clean 低卡片覆盖：顶部概览、操作条、列表行、启用态和按钮统一为浅色细线风格。
 
 ## 需要后端补字段

@@ -157,13 +157,26 @@ function isLocalPendingMessage(message: ChatMessageView) {
 }
 
 function isEphemeralChatBlockMessage(message: ChatMessageView) {
+  const kind = message.metadata?.kind;
   return (
-    message.metadata?.kind === "tool_use" ||
-    message.metadata?.kind === "tool_result" ||
-    message.metadata?.kind === "tool_activity" ||
-    message.metadata?.kind === "assistant_progress" ||
-    message.metadata?.kind === "assistant_thinking" ||
-    message.metadata?.kind === "permission_request"
+    kind === "tool_use" ||
+    kind === "tool_result" ||
+    kind === "tool_activity" ||
+    kind === "assistant_progress" ||
+    kind === "assistant_thinking" ||
+    kind === "permission_request" ||
+    kind === "api_retry" ||
+    kind === "system_notification" ||
+    kind === "compact_summary" ||
+    kind === "goal_event" ||
+    kind === "memory_event" ||
+    kind === "ask_user_question" ||
+    kind === "computer_use_permission_request" ||
+    kind === "computer_use_permission" ||
+    kind === "background_task" ||
+    kind === "task_summary" ||
+    kind === "plan_update" ||
+    kind === "status"
   );
 }
 
@@ -1515,12 +1528,7 @@ function isEmptyStreamingAssistantShell(message: ChatMessageView): boolean {
 
 function isRuntimeProgressOnlyAssistantMessage(message: ChatMessageView): boolean {
   if (
-    message.metadata?.kind === "tool_use" ||
-    message.metadata?.kind === "tool_result" ||
-    message.metadata?.kind === "tool_activity" ||
-    message.metadata?.kind === "assistant_progress" ||
-    message.metadata?.kind === "assistant_thinking" ||
-    message.metadata?.kind === "permission_request"
+    isEphemeralChatBlockMessage(message)
   ) {
     return false;
   }

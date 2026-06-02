@@ -53,7 +53,7 @@ export function buildMockConfig(): AppConfig {
     policy: {
       approvalMode: "on_write_or_command",
       commandTimeoutMs: 600_000,
-      maxTaskSteps: 20,
+      maxTaskSteps: 30,
       maxPatchRepairAttempts: 2,
       maxFilesPerPatch: 20,
       allowNetwork: false,

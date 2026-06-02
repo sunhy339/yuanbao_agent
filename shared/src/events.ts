@@ -10,6 +10,7 @@ import type {
   TaskVerificationRecord,
   TaskStatus,
   EventVisibility,
+  SessionContextPreviewMetadata,
   WorktreeRecord,
 } from "./domain";
 
@@ -89,6 +90,7 @@ export interface AgentEventEnvelope<TPayload = unknown> {
   seq?: number;
   payload: TPayload;
   visibility?: EventVisibility;
+  hahaCc?: HahaCcServerMessage;
 }
 
 export interface TaskUpdatedPayload {
@@ -112,45 +114,7 @@ export interface TaskUpdatedPayload {
   context?: TaskContextPreviewPayload;
 }
 
-export interface TaskContextPreviewPayload {
-  workspaceId?: string;
-  workspaceName?: string;
-  workspaceRoot?: string;
-  projectFocus?: string | null;
-  projectMemory?: string | null;
-  searchQuery?: string;
-  searchMode?: string;
-  toolCount?: number;
-  budgetStats?: {
-    estimatedTokens?: number;
-    estimatedInputTokens?: number;
-    messageTokens?: number;
-    toolSchemaTokens?: number;
-    stablePrefixTokens?: number;
-    promptCache?: {
-      enabled?: boolean;
-      targetFillRatio?: number;
-      targetContextTokens?: number;
-      maxStableContextTokens?: number;
-      stablePrefixTokens?: number;
-    };
-    maxContextTokens?: number;
-    includedSections?: string[];
-    droppedSections?: string[];
-    trimmedSections?: string[];
-    promptLayers?: Array<{
-      name?: string;
-      tokenEstimate?: number;
-      [key: string]: unknown;
-    }>;
-  };
-  taskFocus?: {
-    taskId?: string;
-    currentStep?: string | null;
-    acceptanceCriteriaCount?: number;
-    outOfScopeCount?: number;
-  };
-}
+export interface TaskContextPreviewPayload extends SessionContextPreviewMetadata {}
 
 export interface SessionUpdatedPayload {
   summary?: string | null;
@@ -172,6 +136,41 @@ export interface TokenUsage {
   cachedTokens?: number;
   [key: string]: unknown;
 }
+
+export interface HahaCcTokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens?: number;
+  cache_creation_tokens?: number;
+}
+
+export interface HahaCcTeamMemberStatus {
+  agentId: string;
+  role: string;
+  status: "running" | "idle" | "completed" | "error";
+  currentTask?: string;
+}
+
+export type HahaCcServerMessage =
+  | { type: "connected"; sessionId: string }
+  | { type: "content_start"; blockType: "text" | "tool_use"; toolName?: string; toolUseId?: string; parentToolUseId?: string }
+  | { type: "content_delta"; text?: string; toolInput?: string }
+  | { type: "tool_use_complete"; toolName: string; toolUseId: string; input: unknown; parentToolUseId?: string }
+  | { type: "tool_result"; toolUseId: string; content: unknown; isError: boolean; parentToolUseId?: string }
+  | { type: "permission_request"; requestId: string; toolName: string; toolUseId?: string; input: unknown; description?: string }
+  | { type: "computer_use_permission_request"; requestId: string; request: Record<string, unknown> }
+  | { type: "message_complete"; usage: HahaCcTokenUsage }
+  | { type: "thinking"; text: string }
+  | { type: "status"; state: string; verb?: string; elapsed?: number; tokens?: number }
+  | { type: "api_retry"; attempt: number; maxRetries: number; retryDelayMs: number; errorStatus: number | null; errorType?: string; errorMessage?: string }
+  | { type: "error"; message: string; code: string; retryable?: boolean; businessErrorCode?: string }
+  | { type: "system_notification"; subtype: string; message?: string; data?: unknown }
+  | { type: "pong" }
+  | { type: "team_update"; teamName: string; members: HahaCcTeamMemberStatus[] }
+  | { type: "team_created"; teamName: string }
+  | { type: "team_deleted"; teamName: string }
+  | { type: "task_update"; taskId: string; status: string; progress?: string }
+  | { type: "session_title_updated"; sessionId: string; title: string };
 
 export interface ContentStartPayload {
   blockType: "text" | "tool_use";
@@ -220,7 +219,13 @@ export interface ContentDeltaPayload {
 export interface ThinkingPayload {
   text: string;
   messageId?: Identifier;
-  source?: "reasoning_summary" | "status" | string;
+  source?:
+    | "provider_reasoning_delta"
+    | "provider_reasoning_summary"
+    | "non_stream_thought_summary"
+    | "synthetic_progress"
+    | "status"
+    | string;
 }
 
 export interface AssistantProgressPayload {

@@ -49,6 +49,27 @@ _SERVER_MESSAGE_FIELDS: dict[str, set[str]] = {
     "session_title_updated": {"type", "sessionId", "title"},
 }
 
+_SERVER_MESSAGE_REQUIRED_FIELDS: dict[str, set[str]] = {
+    "connected": {"type", "sessionId"},
+    "content_start": {"type", "blockType"},
+    "tool_use_complete": {"type", "toolName", "toolUseId", "input"},
+    "tool_result": {"type", "toolUseId", "content", "isError"},
+    "permission_request": {"type", "requestId", "toolName", "input"},
+    "computer_use_permission_request": {"type", "requestId", "request"},
+    "message_complete": {"type", "usage"},
+    "thinking": {"type", "text"},
+    "status": {"type", "state"},
+    "api_retry": {"type", "attempt", "maxRetries", "retryDelayMs", "errorStatus"},
+    "error": {"type", "message", "code"},
+    "system_notification": {"type", "subtype"},
+    "pong": {"type"},
+    "team_update": {"type", "teamName", "members"},
+    "team_created": {"type", "teamName"},
+    "team_deleted": {"type", "teamName"},
+    "task_update": {"type", "taskId", "status"},
+    "session_title_updated": {"type", "sessionId", "title"},
+}
+
 
 def to_haha_cc_server_message(event: RuntimeEvent) -> dict[str, Any] | None:
     """Return a haha-cc-style flat ServerMessage for compatible events."""
@@ -151,15 +172,29 @@ def normalize_haha_cc_usage(usage: Any) -> dict[str, int]:
 def _flatten_payload(event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
     message = {"type": event_type}
     message.update({key: value for key, value in payload.items() if not str(key).startswith("_")})
-    return _server_message_shape(message)
+    return _server_message_filter(message)
 
 
-def _server_message_shape(message: dict[str, Any]) -> dict[str, Any]:
+def _server_message_filter(message: dict[str, Any]) -> dict[str, Any]:
     event_type = message.get("type")
     allowed = _SERVER_MESSAGE_FIELDS.get(str(event_type))
     if allowed is None:
         return message
     return {key: value for key, value in message.items() if key in allowed}
+
+
+def _server_message_shape(message: dict[str, Any]) -> dict[str, Any] | None:
+    shaped = _server_message_filter(message)
+    event_type = shaped.get("type")
+    required = _SERVER_MESSAGE_REQUIRED_FIELDS.get(str(event_type), {"type"})
+    for key in required:
+        if key not in shaped:
+            return None
+        if shaped[key] is None and key not in {"content", "errorStatus", "input"}:
+            return None
+        if isinstance(shaped[key], str) and not shaped[key]:
+            return None
+    return shaped
 
 
 def _raw_usage(payload: dict[str, Any]) -> Any:

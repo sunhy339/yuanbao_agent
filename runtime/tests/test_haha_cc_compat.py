@@ -55,6 +55,22 @@ def test_haha_cc_message_keeps_only_server_message_fields() -> None:
     }
 
 
+def test_haha_cc_message_rejects_incomplete_server_messages() -> None:
+    assert to_haha_cc_server_message(_event("content_start", {"toolName": "read_file"})) is None
+    assert (
+        to_haha_cc_server_message(
+            _event("permission_request", {"requestId": "approval_1", "toolName": "run_command"})
+        )
+        is None
+    )
+    assert (
+        to_haha_cc_server_message(
+            _event("computer_use_permission_request", {"request": {"action": "click"}})
+        )
+        is None
+    )
+
+
 def test_computer_use_permission_request_flattens_to_haha_cc_message() -> None:
     event = _event(
         "computer_use_permission_request",

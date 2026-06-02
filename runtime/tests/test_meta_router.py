@@ -58,6 +58,17 @@ class TestRuleBasedRouting:
         decision = self.router.route("Please update the README.md usage section")
         assert decision.scenario == Scenario.DOC_WRITE
         assert decision.skill_id == "doc_writer"
+        assert decision.max_steps >= 35
+
+    def test_doc_expert_snake_project_doc_request_gets_doc_budget(self) -> None:
+        decision = self.router.route(
+            "\u4f7f\u7528\u6587\u6863\u4e13\u5bb6\u7f16\u5199\u4e00\u4e0b"
+            "\u5f53\u524d\u8d2a\u5403\u86c7\u9879\u76ee\u7684\u6587\u6863"
+        )
+
+        assert decision.scenario == Scenario.DOC_WRITE
+        assert decision.skill_id == "doc_writer"
+        assert decision.max_steps >= 35
 
     def test_readme_mentioned_in_development_task_routes_to_code_edit(self) -> None:
         decision = self.router.route(
@@ -174,6 +185,12 @@ class TestRuleBasedRouting:
         decision = self.router.route("explain what is a decorator")
         assert decision.scenario == Scenario.SIMPLE_QUERY
 
+    def test_greeting_only_routes_to_simple_query(self) -> None:
+        decision = self.router.route("hello")
+        assert decision.scenario == Scenario.SIMPLE_QUERY
+        assert decision.strategy == ExecutionStrategy.REACT_FAST
+        assert decision.confidence >= 0.95
+
     # -- Fallback --
 
     def test_free_form_fallback(self) -> None:
@@ -236,13 +253,24 @@ class TestRoutingDecision:
         assert decision.enable_planning is True
 
     def test_free_form_uses_react_standard(self) -> None:
-        decision = self.router.route("hello world")
+        decision = self.router.route("delegate this")
         assert decision.strategy == ExecutionStrategy.REACT_STANDARD
 
     def test_simple_query_uses_react_fast(self) -> None:
         decision = self.router.route("explain closures")
         assert decision.strategy == ExecutionStrategy.REACT_FAST
         assert decision.max_steps <= 20
+
+    def test_work_scenarios_have_room_beyond_simple_loop_defaults(self) -> None:
+        doc_decision = self.router.route("Please update the project documentation")
+        code_decision = self.router.route("implement a new settings panel")
+        debug_decision = self.router.route("debug this crash")
+        multi_step_decision = self.router.route("refactor all modules")
+
+        assert doc_decision.max_steps >= 35
+        assert code_decision.max_steps >= 35
+        assert debug_decision.max_steps >= 45
+        assert multi_step_decision.max_steps >= 60
 
 
 # ---------------------------------------------------------------------------

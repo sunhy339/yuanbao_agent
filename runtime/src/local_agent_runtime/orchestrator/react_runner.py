@@ -435,7 +435,7 @@ class ReactRunnerMixin:
                     payload={
                         "text": explicit_thought_summary,
                         "messageId": task.get("activeAssistantMessageId"),
-                        "source": "thought_summary",
+                        "source": "non_stream_thought_summary",
                         "step": steps + 1,
                     },
                 )
@@ -724,7 +724,10 @@ class ReactRunnerMixin:
             remaining_steps=0,
             recommended_action=convergence.get("recommendedAction"),
         )
-        if convergence.get("recommendedAction") == "review_partial":
+        summary = self._budget_exhausted_summary(goal=goal, tool_results=tool_results, steps=steps, max_steps=max_steps)
+        result_counts = self._tool_results_summary_for_budget(tool_results)
+        no_successful_tool_results = result_counts["total"] > 0 and result_counts["completed"] == 0
+        if not no_successful_tool_results and convergence.get("recommendedAction") == "review_partial":
             question = str(
                 advice.get("userMessage")
                 or advice.get("handoffFocus")
@@ -769,13 +772,10 @@ class ReactRunnerMixin:
                 ],
                 source=str(advice.get("source") or "budget_convergence"),
             )
-        summary = self._budget_exhausted_summary(goal=goal, tool_results=tool_results, steps=steps, max_steps=max_steps)
-        result_counts = self._tool_results_summary_for_budget(tool_results)
-        no_successful_tool_results = result_counts["total"] > 0 and result_counts["completed"] == 0
         return {
-            "status": "failed" if no_successful_tool_results else "completed",
+            "status": "failed",
             "summary": summary,
-            "error_code": "MAX_STEPS_NO_SUCCESSFUL_TOOLS" if no_successful_tool_results else None,
+            "error_code": "MAX_STEPS_NO_SUCCESSFUL_TOOLS" if no_successful_tool_results else "MAX_STEPS_EXHAUSTED",
             "tool_results": tool_results,
             "budget_exhausted": True,
         }
@@ -994,7 +994,7 @@ class ReactRunnerMixin:
         reason: str,
     ) -> dict[str, Any]:
         fallback = {
-            "action": "summarize_partial",
+            "action": "pause_for_user",
             "reason": reason,
             "handoffFocus": self._budget_handoff_focus(goal=goal, tool_results=tool_results),
             "resumePolicy": "requires_user_follow_up",
@@ -1419,6 +1419,8 @@ class ReactRunnerMixin:
     })
 
     def _provider_tools(self, context: dict[str, Any]) -> list[dict[str, Any]]:
+        if context.get("minimal") is True or context.get("disableTools") is True:
+            return []
         tools_by_name: dict[str, dict[str, Any]] = {}
         # 1. Start with context-level tools (built by ContextBuilder)
         openai_tools = context.get("openai_tools")
@@ -1504,18 +1506,27 @@ class ReactRunnerMixin:
                 return max(1, int(override))
         except (TypeError, ValueError):
             pass
-        autonomy_steps = self._autonomy_profile_int(context, "maxSteps")
-        if autonomy_steps is not None:
-            return autonomy_steps
-        # Prefer routing-level max_steps (scenario-aware) over global config
         routing = context.get("routing")
         if isinstance(routing, dict):
+            workflow = routing.get("mainWorkflow")
+            budget = workflow.get("budget") if isinstance(workflow, dict) else None
+            if isinstance(budget, dict):
+                for key in ("resumeMaxSteps", "maxSteps", "max_steps"):
+                    budget_steps = budget.get(key)
+                    if budget_steps is not None:
+                        try:
+                            return max(1, int(budget_steps))
+                        except (TypeError, ValueError):
+                            pass
             routing_steps = routing.get("max_steps")
             if routing_steps is not None:
                 try:
                     return max(1, int(routing_steps))
                 except (TypeError, ValueError):
                     pass
+        autonomy_steps = self._autonomy_profile_int(context, "maxSteps")
+        if autonomy_steps is not None:
+            return autonomy_steps
         # Fallback to global config
         config = context.get("config") or {}
         policy = config.get("policy") if isinstance(config, dict) else {}

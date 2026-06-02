@@ -382,6 +382,71 @@ def test_background_message_send_returns_before_context_build_completes(
     assert task["status"] == "running"
 
 
+def test_background_simple_query_uses_minimal_context_without_tools(
+    runtime_harness: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from local_agent_runtime.provider.adapter import ProviderAdapter
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "large_notes.md").write_text("# Notes\n" + ("workspace detail\n" * 5000), encoding="utf-8")
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "Background simple query"},
+        ),
+        "session",
+    )
+    captured_contexts: list[dict[str, Any]] = []
+
+    def mock_generate(self: ProviderAdapter, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        captured_contexts.append(context)
+        return {"final": "hello", "prompt": prompt, "context": context}
+
+    monkeypatch.setattr(ProviderAdapter, "generate", mock_generate)
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {"sessionId": session["id"], "content": "\u4f60\u597d", "background": True},
+        ),
+        "task",
+    )
+
+    deadline = time.monotonic() + 5
+    completed_task = task
+    while time.monotonic() < deadline:
+        completed_task = _call_result(runtime_harness.call("task.get", {"taskId": task["id"]}), "task")
+        if completed_task["status"] == "completed":
+            break
+        time.sleep(0.05)
+
+    assert completed_task["status"] == "completed"
+    assert completed_task["routing"]["contextMode"] == "minimal"
+    assert captured_contexts
+    context = captured_contexts[0]
+    assert context["minimal"] is True
+    assert context["openai_tools"] == []
+    assert "large_notes.md" not in "\n".join(message["content"] for message in context["messages"])
+    turns = runtime_harness.store.list_provider_turns(task["id"])
+    assert turns
+    assert turns[0]["request_tool_count"] == 0
+    assert turns[0]["request_token_estimate"] < 1000
+    snapshot = runtime_harness.store.get_context_snapshot(turns[0]["context_snapshot_id"])
+    assert snapshot is not None
+    assert snapshot["tool_count"] == 0
+    included_sections = json.loads(snapshot["included_sections_json"] or "[]")
+    assert "stable_workspace_context" not in included_sections
+    context_events = [event for event in runtime_harness.events if event["type"] == "context.build.completed"]
+    assert context_events[-1]["payload"]["minimal"] is True
+
+
 def test_config_get_normalizes_legacy_provider_into_active_profile(runtime_harness: Any) -> None:
     config = runtime_harness.call("config.get", {})["result"]["config"]
     provider = config["provider"]
@@ -2401,6 +2466,44 @@ def test_background_task_preserves_routing_fields(
         assert workflow["workspaceSnapshot"]["workspaceId"] == workspace["id"]
         assert workflow["workspaceSnapshot"]["exists"] is True
         assert workflow["userTakeover"]["state"] == "none"
+
+
+def test_doc_expert_prompt_records_workflow_budget_from_routing(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _call_result(
+        runtime_harness.call("workspace.open", {"path": str(workspace_root)}),
+        "workspace",
+    )
+    session = _call_result(
+        runtime_harness.call(
+            "session.create",
+            {"workspaceId": workspace["id"], "title": "doc expert routing"},
+        ),
+        "session",
+    )
+
+    task = _call_result(
+        runtime_harness.call(
+            "message.send",
+            {
+                "sessionId": session["id"],
+                "content": (
+                    "\u4f7f\u7528\u6587\u6863\u4e13\u5bb6\u7f16\u5199\u4e00\u4e0b"
+                    "\u5f53\u524d\u8d2a\u5403\u86c7\u9879\u76ee\u7684\u6587\u6863"
+                ),
+            },
+        ),
+        "task",
+    )
+
+    routing = task["routing"]
+    assert routing["scenario"] == "doc_write"
+    assert routing["skill_id"] == "doc_writer"
+    assert routing["max_steps"] >= 35
+    workflow = routing["mainWorkflow"]
+    assert workflow["budget"]["maxSteps"] == routing["max_steps"]
+    assert workflow["budget"]["maxSteps"] >= 35
 
 
 def test_planning_provider_context_respects_configured_short_timeout(runtime_harness: Any) -> None:

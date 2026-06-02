@@ -119,5 +119,33 @@ def test_orchestrator_captures_behavior_snapshot_and_limits(tmp_path: Any) -> No
     assert snapshot["agentSoulProfile"]["id"] == "default"
     assert snapshot["promptLayers"]
     context["routing"] = {"profile_snapshot": snapshot}
-    assert orchestrator._max_task_steps(context) == 10  # noqa: SLF001
+    assert orchestrator._max_task_steps(context) == 15  # noqa: SLF001
     assert orchestrator._max_parallel_subtasks(context) == 2  # noqa: SLF001
+
+
+def test_react_step_budget_prefers_workflow_and_routing_over_autonomy_profile(tmp_path: Any) -> None:
+    store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+    session_id = _make_session(store, tmp_path)
+    context = ContextBuilder(store=store).build(session_id=session_id, goal="implement a multi file change")
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=EventBus(),
+        tool_registry=ToolRegistry(),
+        provider=None,
+    )
+
+    snapshot = orchestrator._runtime_profile_snapshot(context)  # noqa: SLF001
+    context["routing"] = {
+        "max_steps": 45,
+        "profile_snapshot": {
+            **snapshot,
+            "autonomyProfile": {**snapshot["autonomyProfile"], "maxSteps": 1},
+        },
+    }
+    assert orchestrator._max_task_steps(context) == 45  # noqa: SLF001
+
+    context["routing"]["mainWorkflow"] = {"budget": {"maxSteps": 60}}
+    assert orchestrator._max_task_steps(context) == 60  # noqa: SLF001
+
+    context["routing"]["mainWorkflow"]["budget"]["resumeMaxSteps"] = 72
+    assert orchestrator._max_task_steps(context) == 72  # noqa: SLF001

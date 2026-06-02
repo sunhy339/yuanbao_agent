@@ -246,6 +246,114 @@ describe("RuntimeClient desktop transport", () => {
     expect(unlisten).toHaveBeenCalled();
   });
 
+  it("subscribes to haha-cc compatible server messages", async () => {
+    const client = new RuntimeClient();
+    const listenMock = vi.mocked(listen);
+    const unlisten = vi.fn();
+    listenMock.mockResolvedValueOnce(unlisten);
+
+    const handler = vi.fn();
+    const unsubscribe = await client.subscribeHahaCcMessages(handler);
+
+    expect(listenMock).toHaveBeenLastCalledWith("haha-cc://message", expect.any(Function));
+    const listener = listenMock.mock.calls.at(-1)?.[1] as (event: { payload: unknown }) => void;
+    listener({ payload: { type: "content_delta", text: "hello" } });
+    expect(handler).toHaveBeenCalledWith({ type: "content_delta", text: "hello" });
+
+    unsubscribe();
+    expect(unlisten).toHaveBeenCalled();
+  });
+
+  it("wraps runtime ping for haha-cc connected and pong messages", async () => {
+    const client = new RuntimeClient();
+    const result = {
+      ok: true,
+      transport: "json-rpc-stdio",
+      hahaCcMessages: [
+        { type: "connected", sessionId: "sess_1" },
+        { type: "pong" },
+      ],
+      connected: { type: "connected", sessionId: "sess_1" },
+      pong: { type: "pong" },
+    };
+
+    invokeMock.mockResolvedValueOnce(result);
+
+    await expect(client.runtimePing({ sessionId: "sess_1", taskId: "task_1" })).resolves.toEqual(result);
+    expect(invokeMock).toHaveBeenLastCalledWith("runtime_ping", {
+      payload: { sessionId: "sess_1", taskId: "task_1" },
+    });
+  });
+
+  it("fetches haha-cc compatible messages after a sequence", async () => {
+    const client = new RuntimeClient();
+    const result = {
+      messages: [
+        { type: "content_delta", text: "hello" },
+        { type: "thinking", text: "plan" },
+      ],
+      lastSeq: 7,
+      truncated: false,
+    };
+
+    invokeMock.mockResolvedValueOnce(result);
+
+    await expect(client.hahaCcEventsAfter({ sessionId: "sess_1", afterSeq: 3, limit: 100 })).resolves.toEqual(result);
+    expect(invokeMock).toHaveBeenLastCalledWith("haha_cc_events_after", {
+      payload: { sessionId: "sess_1", afterSeq: 3, limit: 100 },
+    });
+  });
+
+  it("connects haha-cc messages with initial connected and keepalive pong", async () => {
+    const client = new RuntimeClient();
+    const listenMock = vi.mocked(listen);
+    const unlisten = vi.fn();
+    const handler = vi.fn();
+    listenMock.mockResolvedValueOnce(unlisten);
+    invokeMock
+      .mockResolvedValueOnce({
+        ok: true,
+        transport: "json-rpc-stdio",
+        hahaCcMessages: [
+          { type: "connected", sessionId: "sess_1" },
+          { type: "pong" },
+        ],
+        connected: { type: "connected", sessionId: "sess_1" },
+        pong: { type: "pong" },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        transport: "json-rpc-stdio",
+        hahaCcMessages: [
+          { type: "connected", sessionId: "sess_1" },
+          { type: "pong" },
+        ],
+        connected: { type: "connected", sessionId: "sess_1" },
+        pong: { type: "pong" },
+      });
+
+    const unsubscribe = await client.connectHahaCcMessages(handler, {
+      sessionId: "sess_1",
+      taskId: "task_1",
+      keepAliveMs: 1000,
+    });
+
+    expect(listenMock).toHaveBeenLastCalledWith("haha-cc://message", expect.any(Function));
+    expect(handler).toHaveBeenCalledWith({ type: "connected", sessionId: "sess_1" });
+    expect(handler).toHaveBeenCalledWith({ type: "pong" });
+    expect(invokeMock).toHaveBeenLastCalledWith("runtime_ping", {
+      payload: { sessionId: "sess_1", taskId: "task_1" },
+    });
+
+    handler.mockClear();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith({ type: "pong" });
+
+    unsubscribe();
+    expect(unlisten).toHaveBeenCalled();
+  });
+
   it("wraps local git management commands for the desktop workspace", async () => {
     const client = new RuntimeClient();
     const status = {

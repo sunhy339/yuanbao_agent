@@ -125,6 +125,42 @@ def test_openai_compatible_request_payload(monkeypatch: pytest.MonkeyPatch) -> N
     }
 
 
+def test_openai_compatible_response_reasoning_content_becomes_thought_summary() -> None:
+    def fake_post(**_kwargs: Any) -> tuple[int, bytes]:
+        return 200, json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "reasoning_content": "Inspect files before answering.",
+                            "content": "Done",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "Done"
+    assert response["thought_summary"] == "Inspect files before answering."
+    assert response["thoughtSummary"] == "Inspect files before answering."
+
+
 def test_openai_chat_serializes_image_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in (
         "LOCAL_AGENT_PROVIDER_MODEL",
@@ -175,6 +211,43 @@ def test_openai_chat_serializes_image_attachments(monkeypatch: pytest.MonkeyPatc
                 {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
             ],
         }
+    ]
+
+
+def test_openai_chat_preserves_context_prefix_message_boundaries() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "Stable context prefix:\nstable"},
+            {"role": "user", "content": "Dynamic context tail:\ndynamic"},
+            {"role": "user", "content": "Current user request:\ncontinue"},
+        ]
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["messages"] == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "Stable context prefix:\nstable"},
+        {"role": "user", "content": "Dynamic context tail:\ndynamic"},
+        {"role": "user", "content": "Current user request:\ncontinue"},
     ]
 
 
@@ -641,6 +714,44 @@ def test_openai_responses_serializes_image_attachments(monkeypatch: pytest.Monke
     ]
 
 
+def test_openai_responses_preserves_context_prefix_message_boundaries() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"id":"resp_1","status":"completed","output_text":"ok","output":[]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "Stable context prefix:\nstable"},
+            {"role": "user", "content": "Dynamic context tail:\ndynamic"},
+            {"role": "user", "content": "Current user request:\ncontinue"},
+        ]
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["input"] == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "Stable context prefix:\nstable"},
+        {"role": "user", "content": "Dynamic context tail:\ndynamic"},
+        {"role": "user", "content": "Current user request:\ncontinue"},
+    ]
+
+
 def test_openai_responses_tool_call_response_is_normalized() -> None:
     calls: list[dict[str, Any]] = []
 
@@ -878,6 +989,52 @@ def test_anthropic_messages_serializes_image_attachments(monkeypatch: pytest.Mon
     ]
 
 
+def test_anthropic_messages_preserves_context_prefix_message_boundaries() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, json.dumps(
+            {
+                "id": "msg_1",
+                "model": "claude-test",
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "ok"}],
+            }
+        ).encode("utf-8")
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "anthropic-messages",
+                "apiKey": "sk-ant",
+                "baseUrl": "https://api.anthropic.test",
+                "model": "claude-test",
+                "maxTokens": 777,
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "Stable context prefix:\nstable"},
+            {"role": "user", "content": "Dynamic context tail:\ndynamic"},
+            {"role": "user", "content": "Current user request:\ncontinue"},
+        ]
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["system"] == "sys"
+    assert payload["messages"] == [
+        {"role": "user", "content": "Stable context prefix:\nstable"},
+        {"role": "user", "content": "Dynamic context tail:\ndynamic"},
+        {"role": "user", "content": "Current user request:\ncontinue"},
+    ]
+
+
 def test_anthropic_messages_drops_orphan_tool_messages_from_request() -> None:
     calls: list[dict[str, Any]] = []
 
@@ -980,6 +1137,199 @@ def test_anthropic_messages_tool_use_response_is_normalized() -> None:
             "arguments": {"path": "README.md"},
         }
     ]
+
+
+def test_anthropic_messages_thinking_block_becomes_thought_summary() -> None:
+    def fake_post(**_kwargs: Any) -> tuple[int, bytes]:
+        return 200, json.dumps(
+            {
+                "id": "msg_thinking",
+                "model": "claude-test",
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": [
+                    {"type": "thinking", "thinking": "Check context first. "},
+                    {"type": "text", "text": "Done"},
+                ],
+            }
+        ).encode("utf-8")
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "anthropic",
+                "apiKey": "sk-ant",
+                "baseUrl": "https://api.anthropic.test/v1",
+                "model": "claude-test",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    response = adapter.chat(messages=[{"role": "user", "content": "hi"}])
+
+    assert response["message"]["content"] == "Done"
+    assert response["thought_summary"] == "Check context first. "
+    assert response["thoughtSummary"] == "Check context first. "
+
+
+def test_anthropic_messages_stream_routes_text_thinking_and_tool_deltas() -> None:
+    stream_calls: list[dict[str, Any]] = []
+
+    def fake_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def sse(event: str, data: dict[str, Any]) -> bytes:
+        return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n".encode("utf-8")
+
+    def fake_stream(**kwargs: Any) -> tuple[int, Any]:
+        stream_calls.append(kwargs)
+        return 200, iter(
+            [
+                sse(
+                    "message_start",
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": "msg_stream",
+                            "model": "claude-test",
+                            "role": "assistant",
+                            "usage": {"input_tokens": 5, "cache_read_input_tokens": 2},
+                        },
+                    },
+                ),
+                sse("content_block_start", {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}),
+                sse(
+                    "content_block_delta",
+                    {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Plan. "}},
+                ),
+                sse("content_block_stop", {"type": "content_block_stop", "index": 0}),
+                sse("content_block_start", {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": "Do"}}),
+                sse("content_block_delta", {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "ne"}}),
+                sse("content_block_stop", {"type": "content_block_stop", "index": 1}),
+                sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": 2,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "workspace_read",
+                            "input": {},
+                            "parentToolUseId": "call_parent",
+                        },
+                    },
+                ),
+                sse(
+                    "content_block_delta",
+                    {"type": "content_block_delta", "index": 2, "delta": {"type": "input_json_delta", "partial_json": "{\"path\":"}},
+                ),
+                sse(
+                    "content_block_delta",
+                    {"type": "content_block_delta", "index": 2, "delta": {"type": "input_json_delta", "partial_json": "\"README.md\"}"}},
+                ),
+                sse("content_block_stop", {"type": "content_block_stop", "index": 2}),
+                sse(
+                    "message_delta",
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "tool_use"},
+                        "usage": {"output_tokens": 10},
+                    },
+                ),
+                sse("message_stop", {"type": "message_stop"}),
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "anthropic",
+                "apiKey": "sk-ant",
+                "baseUrl": "https://api.anthropic.test/v1",
+                "model": "claude-test",
+            }
+        },
+        http_post=fake_post,
+        http_stream=fake_stream,
+    )
+
+    events = list(
+        adapter.chat_stream(
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "workspace.read",
+                        "description": "Read a file",
+                        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}},
+                    },
+                }
+            ],
+        )
+    )
+
+    assert len(stream_calls) == 1
+    call = stream_calls[0]
+    assert call["url"] == "https://api.anthropic.test/v1/messages"
+    assert call["headers"]["Accept"] == "text/event-stream"
+    payload = json.loads(call["body"].decode("utf-8"))
+    assert payload["stream"] is True
+    assert payload["tools"][0]["name"] == "workspace_read"
+    assert events[:3] == [
+        {"type": "thinking_delta", "delta": "Plan. ", "source": "provider_reasoning_delta"},
+        {"type": "content_delta", "delta": "Do"},
+        {"type": "content_delta", "delta": "ne"},
+    ]
+    assert events[3:5] == [
+        {
+            "type": "tool_call_delta",
+            "index": 2,
+            "id": "toolu_1",
+            "tool_type": "function",
+            "name": "workspace.read",
+            "arguments_delta": "",
+            "parentToolUseId": "call_parent",
+        },
+        {
+            "type": "tool_call_delta",
+            "index": 2,
+            "id": "toolu_1",
+            "tool_type": "function",
+            "name": "workspace.read",
+            "arguments_delta": "{\"path\":",
+            "parentToolUseId": "call_parent",
+        },
+    ]
+    assert events[5] == {
+        "type": "tool_call_delta",
+        "index": 2,
+        "id": "toolu_1",
+        "tool_type": "function",
+        "name": "workspace.read",
+        "arguments_delta": "\"README.md\"}",
+        "parentToolUseId": "call_parent",
+    }
+    assert {"type": "finish_reason", "finish_reason": "tool_use"} in events
+    assert events[-1]["type"] == "final"
+    assert events[-1]["response"]["message"]["content"] == "Done"
+    assert events[-1]["response"]["message"]["tool_calls"] == [
+        {
+            "id": "toolu_1",
+            "type": "function",
+            "name": "workspace.read",
+            "arguments": {"path": "README.md"},
+            "parentToolUseId": "call_parent",
+        }
+    ]
+    assert events[-1]["response"]["thought_summary"] == "Plan. "
+    assert events[-1]["response"]["raw"]["usage"] == {
+        "input_tokens": 5,
+        "cache_read_input_tokens": 2,
+        "output_tokens": 10,
+    }
 
 
 def test_anthropic_mode_replaces_default_openai_base_url() -> None:
@@ -1283,6 +1633,62 @@ def test_generate_prefers_streaming_when_enabled() -> None:
     assert response["finish_reason"] == "stop"
 
 
+def test_generate_streams_anthropic_messages_when_enabled() -> None:
+    stream_calls: list[dict[str, Any]] = []
+
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**kwargs: Any) -> tuple[int, Any]:
+        stream_calls.append(kwargs)
+        return 200, iter(
+            [
+                b'event: message_start\n',
+                b'data: {"type":"message_start","message":{"id":"msg_1","model":"claude-test","role":"assistant","usage":{"input_tokens":3}}}\n\n',
+                b'event: content_block_delta\n',
+                b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}\n\n',
+                b'event: message_delta\n',
+                b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n',
+                b'event: message_stop\n',
+                b'data: {"type":"message_stop"}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "anthropic",
+                "apiKey": "sk-ant",
+                "baseUrl": "https://api.anthropic.test",
+                "model": "claude-test",
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "anthropic",
+            "apiFormat": "anthropic-messages",
+            "streamingEnabled": True,
+            "apiKey": "sk-ant",
+            "baseUrl": "https://api.anthropic.test",
+            "model": "claude-test",
+        }
+    }
+
+    response = adapter.generate("say hi", context)
+
+    assert len(stream_calls) == 1
+    payload = json.loads(stream_calls[0]["body"].decode("utf-8"))
+    assert payload["stream"] is True
+    assert response["message"] == "Hi"
+    assert response["final"] == "Hi"
+    assert response["finish_reason"] == "end_turn"
+    assert response["raw"]["usage"] == {"input_tokens": 3, "output_tokens": 1}
+
+
 def test_openai_responses_streams_when_enabled() -> None:
     stream_calls: list[dict[str, Any]] = []
 
@@ -1390,8 +1796,8 @@ def test_openai_responses_stream_routes_reasoning_summary_to_thinking_delta() ->
     events = list(adapter.chat_stream(messages=[{"role": "user", "content": "hi"}], context=context))
 
     assert [event for event in events if event["type"] == "thinking_delta"] == [
-        {"type": "thinking_delta", "delta": "Checking ", "source": "reasoning_summary"},
-        {"type": "thinking_delta", "delta": "files.", "source": "reasoning_summary"},
+        {"type": "thinking_delta", "delta": "Checking ", "source": "provider_reasoning_summary"},
+        {"type": "thinking_delta", "delta": "files.", "source": "provider_reasoning_summary"},
     ]
     assert [event for event in events if event["type"] == "content_delta"] == [
         {"type": "content_delta", "delta": "Done"},
@@ -1856,7 +2262,7 @@ def test_provider_trace_defaults_anthropic_mode_to_messages() -> None:
 
     assert payload["apiFormat"] == "anthropic-messages"
     assert payload["requestPath"] == "/v1/messages"
-    assert probe._should_stream_provider(context) is False
+    assert probe._should_stream_provider(context) is True
 
 
 def test_openai_chat_trace_remains_streamable_by_default() -> None:

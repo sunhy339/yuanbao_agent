@@ -232,6 +232,13 @@ class ProviderAdapter:
         settings = self._resolve_settings(context)
         if settings is None:
             response = self.chat(messages=messages, tools=tools, context=context)
+            thought_summary = self._response_thought_summary(response)
+            if thought_summary:
+                yield {
+                    "type": "thinking_delta",
+                    "delta": thought_summary,
+                    "source": "non_stream_thought_summary",
+                }
             content = response["message"]["content"]
             if content:
                 yield {"type": "content_delta", "delta": content}
@@ -244,8 +251,17 @@ class ProviderAdapter:
             client = self._responses_client
         elif settings.api_format == "openai-chat":
             client = self._openai_client
+        elif settings.api_format == "anthropic-messages":
+            client = self._anthropic_client
         else:
             response = self.chat(messages=messages, tools=tools, context=context)
+            thought_summary = self._response_thought_summary(response)
+            if thought_summary:
+                yield {
+                    "type": "thinking_delta",
+                    "delta": thought_summary,
+                    "source": "non_stream_thought_summary",
+                }
             content = response["message"]["content"]
             if content:
                 yield {"type": "content_delta", "delta": content}
@@ -277,6 +293,14 @@ class ProviderAdapter:
         if last_error is not None:
             raise last_error
         raise ProviderAdapterError("Provider stream failed before a response was returned.")
+
+    @staticmethod
+    def _response_thought_summary(response: dict[str, Any]) -> str | None:
+        for key in ("thought_summary", "thoughtSummary"):
+            value = response.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
 
     def stream(self, prompt: str, context: dict[str, Any]) -> Iterator[dict[str, Any]]:
         messages = context.get("messages")
@@ -549,7 +573,7 @@ class ProviderAdapter:
 
     def _should_generate_via_stream(self, context: dict[str, Any] | None) -> bool:
         settings = self._resolve_settings(context)
-        if settings is None or settings.api_format != "openai-chat":
+        if settings is None or settings.api_format not in {"openai-chat", "openai-responses", "anthropic-messages"}:
             return False
         provider_config = self._merged_provider_config(context)
         stream_flag = self._provider_stream_flag(provider_config)

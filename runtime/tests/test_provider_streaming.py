@@ -67,6 +67,77 @@ def test_content_chunks_stream_and_emit_final_response() -> None:
     assert payload["stream"] is True
 
 
+def test_reasoning_content_chunks_stream_as_thinking_delta() -> None:
+    def fake_stream(**_kwargs: Any) -> tuple[int, Iterable[bytes]]:
+        return 200, iter(
+            [
+                _sse(
+                    {
+                        "id": "chatcmpl_1",
+                        "model": "test-chat",
+                        "choices": [
+                            {
+                                "delta": {
+                                    "role": "assistant",
+                                    "reasoning_content": "Need inspect. ",
+                                },
+                                "index": 0,
+                            }
+                        ],
+                    }
+                ),
+                _sse(
+                    {
+                        "id": "chatcmpl_1",
+                        "model": "test-chat",
+                        "choices": [
+                            {
+                                "delta": {
+                                    "reasoning_content": "Then answer. ",
+                                    "content": "Done",
+                                },
+                                "index": 0,
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    }
+                ),
+                _sse("[DONE]"),
+            ]
+        )
+
+    events = list(_adapter(fake_stream).chat_stream(messages=[{"role": "user", "content": "hi"}]))
+
+    assert [event for event in events if event["type"] == "thinking_delta"] == [
+        {"type": "thinking_delta", "delta": "Need inspect. ", "source": "provider_reasoning_delta"},
+        {"type": "thinking_delta", "delta": "Then answer. ", "source": "provider_reasoning_delta"},
+    ]
+    assert [event for event in events if event["type"] == "content_delta"] == [
+        {"type": "content_delta", "delta": "Done"},
+    ]
+    assert events[-1]["response"]["message"]["content"] == "Done"
+
+
+def test_thinking_chunks_stream_as_thinking_delta_for_chat_proxies() -> None:
+    def fake_stream(**_kwargs: Any) -> tuple[int, Iterable[bytes]]:
+        return 200, iter(
+            [
+                _sse({"choices": [{"delta": {"thinking": "Plan first."}, "index": 0}]}),
+                _sse({"choices": [{"delta": {"content": "Ready"}, "index": 0, "finish_reason": "stop"}]}),
+                _sse("[DONE]"),
+            ]
+        )
+
+    events = list(_adapter(fake_stream).chat_stream(messages=[{"role": "user", "content": "hi"}]))
+
+    assert [event for event in events if event["type"] == "thinking_delta"] == [
+        {"type": "thinking_delta", "delta": "Plan first.", "source": "provider_reasoning_delta"},
+    ]
+    assert [event for event in events if event["type"] == "content_delta"] == [
+        {"type": "content_delta", "delta": "Ready"},
+    ]
+
+
 def test_tool_call_chunks_stream_and_arguments_are_merged() -> None:
     def fake_stream(**_kwargs: Any) -> tuple[int, Iterable[bytes]]:
         return 200, iter(

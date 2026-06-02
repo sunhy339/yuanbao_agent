@@ -124,6 +124,65 @@ describe("buildSessionContextPreview", () => {
     expect(preview?.budgetStats?.maxContextTokens).toBe(200000);
   });
 
+  it("normalizes provider cache read usage from anthropic and responses shapes", () => {
+    const preview = buildSessionContextPreview({
+      events: [
+        {
+          eventId: "evt_usage_anthropic",
+          sessionId: "sess_1",
+          taskId: "task_1",
+          type: "message_complete",
+          ts: 3000,
+          payload: {
+            usage: {
+              input_tokens: 2200,
+              output_tokens: 90,
+              cache_read_input_tokens: 1200,
+              cache_creation_input_tokens: 64,
+            },
+          },
+        } as AgentEventEnvelope,
+      ],
+      traceEvents: [
+        {
+          id: "trace_usage_responses",
+          sessionId: "sess_1",
+          taskId: "task_1",
+          type: "provider.response",
+          source: "provider",
+          sequence: 1,
+          createdAt: 2000,
+          payload: {
+            usage: {
+              inputTokens: 1800,
+              outputTokens: 70,
+              input_tokens_details: {
+                cached_tokens: 900,
+              },
+            },
+          },
+        } satisfies TraceEventRecord,
+      ],
+      workspace: null,
+      session: null,
+      activeTaskId: "task_1",
+      activeTask: {
+        id: "task_1",
+        sessionId: "sess_1",
+        type: "chat",
+        status: "completed",
+        goal: "cache",
+        createdAt: 1000,
+        updatedAt: 3000,
+      },
+      maxContextTokens: 200000,
+    });
+
+    expect(preview?.budgetStats?.inputTokens).toBe(2200);
+    expect(preview?.budgetStats?.outputTokens).toBe(90);
+    expect(preview?.budgetStats?.cacheReadTokens).toBe(1200);
+  });
+
   it("keeps a context budget preview when only the session and model window are known", () => {
     const preview = buildSessionContextPreview({
       events: [],
@@ -149,6 +208,57 @@ describe("buildSessionContextPreview", () => {
     expect(preview?.budgetStats?.estimatedInputTokens).toBe(0);
     expect(preview?.budgetStats?.maxContextTokens).toBe(256000);
     expect(preview?.budgetStats?.estimated).toBe(true);
+  });
+
+  it("reads a persisted context snapshot from session metadata when no live event is available", () => {
+    const preview = buildSessionContextPreview({
+      events: [],
+      traceEvents: [],
+      workspace: null,
+      session: {
+        id: "sess_snapshot",
+        workspaceId: "workspace_snapshot",
+        title: "Persisted context",
+        workspaceRoot: "D:/py/test_pro",
+        workspaceName: "test_pro",
+        status: "active",
+        createdAt: 1000,
+        updatedAt: 2000,
+        metadata: {
+          contextPreview: {
+            workspaceRoot: "D:/py/test_pro",
+            toolCount: 7,
+            budgetStats: {
+              estimatedTokens: 6200,
+              estimatedInputTokens: 6200,
+              messageTokens: 5000,
+              toolSchemaTokens: 1200,
+              maxContextTokens: 256000,
+              updatedAt: 12345,
+              estimated: false,
+              includedSections: ["system_prompt", "task_context"],
+              promptLayers: [{ name: "role", tokenEstimate: 100 }],
+            },
+            taskFocus: {
+              currentStep: "Review persisted context",
+              acceptanceCriteriaCount: 2,
+            },
+          },
+        },
+      } as never,
+      activeTaskId: null,
+      activeTask: null,
+      maxContextTokens: 256000,
+    });
+
+    expect(preview?.workspaceRoot).toBe("D:/py/test_pro");
+    expect(preview?.toolCount).toBe(7);
+    expect(preview?.budgetStats?.estimatedTokens).toBe(6200);
+    expect(preview?.budgetStats?.estimatedInputTokens).toBe(6200);
+    expect(preview?.budgetStats?.maxContextTokens).toBe(256000);
+    expect(preview?.budgetStats?.updatedAt).toBe(12345);
+    expect(preview?.budgetStats?.estimated).toBe(false);
+    expect(preview?.taskFocus?.currentStep).toBe("Review persisted context");
   });
 });
 

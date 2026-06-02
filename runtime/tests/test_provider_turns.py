@@ -148,7 +148,11 @@ class ToolDeltaStreamProvider:
 
 
 class ThinkingDeltaStreamProvider:
+    def __init__(self) -> None:
+        self.stream_calls: list[dict[str, Any]] = []
+
     def stream(self, prompt: str, context: dict[str, Any]) -> Any:
+        self.stream_calls.append({"prompt": prompt, "context": context})
         yield {"type": "thinking_delta", "delta": "Checking ", "source": "reasoning_summary"}
         yield {"type": "thinking_delta", "delta": "files.", "source": "reasoning_summary"}
         yield {
@@ -159,6 +163,23 @@ class ThinkingDeltaStreamProvider:
             "type": "final",
             "response": {
                 "message": {"role": "assistant", "content": "Done", "tool_calls": []},
+                "finish_reason": "completed",
+                "raw": {},
+            },
+        }
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("streaming test should not fall back to generate")
+
+
+class TextDeltaStreamProvider:
+    def stream(self, prompt: str, context: dict[str, Any]) -> Any:
+        yield {"type": "content_delta", "delta": "Hello"}
+        yield {"type": "content_delta", "delta": " there"}
+        yield {
+            "type": "final",
+            "response": {
+                "message": {"role": "assistant", "content": "Hello there", "tool_calls": []},
                 "finish_reason": "completed",
                 "raw": {},
             },
@@ -805,6 +826,30 @@ class TestProviderTurnRPC:
         resp = _rpc(runtime, "events.after", {"sessionId": session["id"], "afterSeq": 0})
         assert "events" in resp["result"]
         assert "truncated" in resp["result"]
+
+    def test_rpc_runtime_ping_returns_haha_cc_messages(self, tmp_path: Any) -> None:
+        provider = ScriptedProvider([{"final": "done"}])
+        runtime = _make_runtime(tmp_path, provider)
+        session = _open_session(runtime, tmp_path)
+
+        resp = _rpc(runtime, "runtime.ping", {"sessionId": session["id"]})
+
+        result = resp["result"]
+        assert result["ok"] is True
+        assert result["transport"] == "json-rpc-stdio"
+        assert result["connected"] == {
+            "type": "connected",
+            "sessionId": session["id"],
+        }
+        assert result["pong"] == {
+            "type": "pong",
+        }
+        assert result["hahaCcMessages"] == [
+            result["connected"],
+            result["pong"],
+        ]
+        assert "payload" not in result["connected"]
+        assert "eventId" not in result["connected"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1786,6 +1831,54 @@ class TestProviderTurnTransportAndUsage:
         assert all(event["payload"]["toolPhaseLabel"] == "读取上下文" for event in deltas)
         assert all(event["payload"]["toolSemanticParentId"] == "phase:context_read" for event in deltas)
 
+        trace = runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+        trace_types = [event["type"] for event in trace]
+        assert "provider.stream.tool_call_delta" not in trace_types
+        assert all(
+            event["visibility"] == "trace"
+            for event in trace
+            if event["type"].startswith("provider.")
+        )
+
+    def test_stream_text_delta_emits_single_text_start(self, tmp_path: Any) -> None:
+        provider = TextDeltaStreamProvider()
+        runtime = _make_runtime(tmp_path, provider)
+        task = runtime.store.create_task(session_id="sess_1", task_type="chat", goal="answer", plan=[])
+        config = {
+            "provider": {
+                "mode": "openai-compatible",
+                "apiFormat": "openai-chat",
+                "streamingEnabled": True,
+                "model": "fake-stream",
+            }
+        }
+        runtime.store.update_config({"config": config})
+
+        response = runtime.orchestrator._request_provider_response(
+            session_id="sess_1",
+            task={**task, "role": "root", "activeAssistantMessageId": "msg_1"},
+            goal="answer",
+            provider_context={
+                "config": config,
+                "messages": [{"role": "user", "content": "answer"}],
+                "openai_tools": [],
+                "step": 1,
+            },
+        )
+
+        starts = [
+            event for event in runtime.events
+            if event["type"] == "content_start" and event["payload"].get("blockType") == "text"
+        ]
+        deltas = [
+            event for event in runtime.events
+            if event["type"] == "content_delta" and event["payload"].get("text")
+        ]
+        assert response["final_answer"] == "Hello there"
+        assert len(starts) == 1
+        assert starts[0]["payload"]["messageId"] == "msg_1"
+        assert [event["payload"]["text"] for event in deltas] == ["Hello", " there"]
+
     def test_stream_thinking_delta_emits_thinking_event(self, tmp_path: Any) -> None:
         provider = ThinkingDeltaStreamProvider()
         runtime = _make_runtime(tmp_path, provider)
@@ -1813,7 +1906,47 @@ class TestProviderTurnTransportAndUsage:
 
         thinking_events = [event for event in runtime.events if event["type"] == "thinking"]
         assert [event["payload"]["text"] for event in thinking_events] == ["Checking ", "files."]
-        assert all(event["payload"]["source"] == "reasoning_summary" for event in thinking_events)
+        assert all(event["payload"]["source"] == "provider_reasoning_summary" for event in thinking_events)
+        assert [event.get("hahaCc") for event in thinking_events] == [
+            {"type": "thinking", "text": "Checking "},
+            {"type": "thinking", "text": "files."},
+        ]
+        assert response["final_answer"] == "Done"
+
+    def test_anthropic_messages_format_uses_streaming_provider_path(self, tmp_path: Any) -> None:
+        provider = ThinkingDeltaStreamProvider()
+        runtime = _make_runtime(tmp_path, provider)
+        task = runtime.store.create_task(session_id="sess_1", task_type="chat", goal="think", plan=[])
+        config = {
+            "provider": {
+                "mode": "anthropic",
+                "apiFormat": "anthropic-messages",
+                "streamingEnabled": True,
+                "model": "claude-test",
+            }
+        }
+
+        response = runtime.orchestrator._request_provider_response(
+            session_id="sess_1",
+            task={**task, "role": "root", "activeAssistantMessageId": "msg_1"},
+            goal="think then answer",
+            provider_context={
+                "config": config,
+                "messages": [{"role": "user", "content": "think then answer"}],
+                "openai_tools": [],
+                "step": 1,
+            },
+        )
+
+        assert len(provider.stream_calls) == 1
+        assert provider.stream_calls[0]["context"]["config"]["provider"]["apiFormat"] == "anthropic-messages"
+        thinking_events = [event for event in runtime.events if event["type"] == "thinking"]
+        assert [event["payload"]["text"] for event in thinking_events] == ["Checking ", "files."]
+        assert [event.get("hahaCc") for event in thinking_events] == [
+            {"type": "thinking", "text": "Checking "},
+            {"type": "thinking", "text": "files."},
+        ]
+        assert response["_response_transport"] == "stream"
         assert response["final_answer"] == "Done"
 
 

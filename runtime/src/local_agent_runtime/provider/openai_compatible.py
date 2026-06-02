@@ -669,7 +669,7 @@ class OpenAICompatibleChatClient:
             "content": content if isinstance(content, str) else "",
             "tool_calls": self._normalize_tool_calls(message.get("tool_calls") or [], tool_name_map=tool_name_map),
         }
-        return {
+        normalized_response: dict[str, Any] = {
             "message": normalized_message,
             "finish_reason": first_choice.get("finish_reason"),
             "raw": {
@@ -678,6 +678,11 @@ class OpenAICompatibleChatClient:
                 "usage": response_json.get("usage"),
             },
         }
+        thought_summary = self._thinking_text_from_chat_payload(message)
+        if thought_summary:
+            normalized_response["thought_summary"] = thought_summary
+            normalized_response["thoughtSummary"] = thought_summary
+        return normalized_response
 
     def _normalize_tool_calls(self, tool_calls: Any, *, tool_name_map: dict[str, str] | None = None) -> list[dict[str, Any]]:
         if not isinstance(tool_calls, list):
@@ -729,6 +734,22 @@ class OpenAICompatibleChatClient:
                     return value.strip()
         return None
 
+    @staticmethod
+    def _thinking_text_from_chat_payload(payload: dict[str, Any]) -> str | None:
+        for key in ("reasoning_content", "reasoningContent", "thinking"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+        reasoning = payload.get("reasoning")
+        if isinstance(reasoning, str) and reasoning:
+            return reasoning
+        if isinstance(reasoning, dict):
+            for key in ("text", "content", "summary"):
+                value = reasoning.get(key)
+                if isinstance(value, str) and value:
+                    return value
+        return None
+
     def _normalize_stream(
         self,
         chunks: Iterable[bytes],
@@ -778,6 +799,14 @@ class OpenAICompatibleChatClient:
             delta_role = delta.get("role")
             if isinstance(delta_role, str) and delta_role:
                 role = delta_role
+
+            thinking_delta = self._thinking_text_from_chat_payload(delta)
+            if thinking_delta:
+                yield {
+                    "type": "thinking_delta",
+                    "delta": thinking_delta,
+                    "source": "provider_reasoning_delta",
+                }
 
             content_delta = delta.get("content")
             if isinstance(content_delta, str) and content_delta:
@@ -1315,7 +1344,7 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
                             "arguments_delta": delta,
                         }
                     elif "reasoning_summary_text" in event_type:
-                        yield {"type": "thinking_delta", "delta": delta, "source": "reasoning_summary"}
+                        yield {"type": "thinking_delta", "delta": delta, "source": "provider_reasoning_summary"}
                     else:
                         content_parts.append(delta)
                         yield {"type": "content_delta", "delta": delta}
@@ -1583,6 +1612,30 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
             raise ProviderAdapterError(f"Provider returned error: {self._error_message(response_json)}")
         return self._normalize_anthropic_response(response_json, tool_name_map=tool_name_map)
 
+    def stream(
+        self,
+        *,
+        settings: OpenAICompatibleSettings,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        request_tools, tool_name_map = self._prepare_anthropic_tools_for_request(tools)
+        payload = self._build_anthropic_payload(
+            settings=settings,
+            messages=messages,
+            tools=request_tools,
+            tool_name_map=tool_name_map,
+            stream=True,
+        )
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        status, chunks = self._stream_request(settings=settings, body=body)
+        if status >= 400:
+            response_body = b"".join(chunks)
+            raise ProviderAdapterError(
+                f"Provider request failed with HTTP {status}: {self._error_response_message(response_body)}"
+            )
+        yield from self._normalize_anthropic_stream(chunks, settings=settings, tool_name_map=tool_name_map)
+
     def request_url(self, settings: OpenAICompatibleSettings) -> str:
         from urllib.parse import urlsplit, urlunsplit
 
@@ -1607,6 +1660,20 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
             raise
         except Exception as exc:  # noqa: BLE001
             raise ProviderAdapterError(f"Provider request failed: {exc}") from exc
+
+    def _stream_request(self, *, settings: OpenAICompatibleSettings, body: bytes) -> tuple[int, Iterable[bytes]]:
+        headers = {
+            "x-api-key": settings.api_key,
+            "anthropic-version": settings.anthropic_version,
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        try:
+            return self._http_stream(url=self.request_url(settings), headers=headers, body=body, timeout=settings.timeout)
+        except ProviderAdapterError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ProviderAdapterError(f"Provider streaming request failed: {exc}") from exc
 
     def _prepare_anthropic_tools_for_request(
         self,
@@ -1639,6 +1706,7 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         tool_name_map: dict[str, str],
+        stream: bool = False,
     ) -> dict[str, Any]:
         system_parts, request_messages = self._serialize_anthropic_messages(messages, tool_name_map=tool_name_map)
         payload: dict[str, Any] = {
@@ -1646,6 +1714,8 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
             "max_tokens": settings.max_tokens or 4096,
             "messages": request_messages,
         }
+        if stream:
+            payload["stream"] = True
         if system_parts:
             payload["system"] = "\n\n".join(system_parts)
         if settings.temperature is not None:
@@ -1766,6 +1836,7 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
         tool_name_map: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         content_parts: list[str] = []
+        thought_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
         content = response_json.get("content")
         if isinstance(content, list):
@@ -1776,9 +1847,12 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
                 if block_type == "text" and isinstance(block.get("text"), str):
                     content_parts.append(block["text"])
                     continue
+                if block_type == "thinking" and isinstance(block.get("thinking"), str):
+                    thought_parts.append(block["thinking"])
+                    continue
                 if block_type == "tool_use":
                     tool_calls.append(self._normalize_anthropic_tool_use(block, tool_name_map=tool_name_map))
-        return {
+        normalized_response: dict[str, Any] = {
             "message": {
                 "role": response_json.get("role") if isinstance(response_json.get("role"), str) else "assistant",
                 "content": "".join(content_parts),
@@ -1790,6 +1864,224 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
                 "model": response_json.get("model"),
                 "usage": response_json.get("usage"),
             },
+        }
+        thought_summary = "".join(thought_parts)
+        if thought_summary:
+            normalized_response["thought_summary"] = thought_summary
+            normalized_response["thoughtSummary"] = thought_summary
+        return normalized_response
+
+    def _normalize_anthropic_stream(
+        self,
+        chunks: Iterable[bytes],
+        *,
+        settings: OpenAICompatibleSettings,
+        tool_name_map: dict[str, str] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        started_at = time.monotonic()
+        content_parts: list[str] = []
+        thought_parts: list[str] = []
+        role = "assistant"
+        tool_call_parts: dict[int, dict[str, Any]] = {}
+        finish_reason: Any = None
+        response_id: Any = None
+        model: Any = None
+        usage: Any = None
+
+        for data in self._iter_sse_data(chunks):
+            if time.monotonic() - started_at > settings.stream_timeout:
+                raise ProviderAdapterError(
+                    f"Provider streaming response exceeded {settings.stream_timeout:g}s before completion."
+                )
+            chunk = self._decode_sse_json(data)
+            if chunk is None:
+                continue
+            if self._contains_error(chunk):
+                raise ProviderAdapterError(f"Provider returned error: {self._error_message(chunk)}")
+
+            event_type = chunk.get("type")
+            if event_type == "message_start":
+                message = chunk.get("message") if isinstance(chunk.get("message"), dict) else {}
+                response_id = message.get("id", response_id)
+                model = message.get("model", model)
+                usage = self._merge_anthropic_usage(usage, message.get("usage"))
+                message_role = message.get("role")
+                if isinstance(message_role, str) and message_role:
+                    role = message_role
+                continue
+
+            if event_type == "content_block_start":
+                yield from self._apply_anthropic_content_block_start(
+                    chunk,
+                    tool_call_parts,
+                    tool_name_map=tool_name_map,
+                    content_parts=content_parts,
+                    thought_parts=thought_parts,
+                )
+                continue
+
+            if event_type == "content_block_delta":
+                yield from self._apply_anthropic_content_block_delta(
+                    chunk,
+                    tool_call_parts,
+                    tool_name_map=tool_name_map,
+                    max_tool_argument_chars=settings.max_tool_argument_chars,
+                    content_parts=content_parts,
+                    thought_parts=thought_parts,
+                )
+                continue
+
+            if event_type == "message_delta":
+                delta = chunk.get("delta") if isinstance(chunk.get("delta"), dict) else {}
+                if delta.get("stop_reason") is not None:
+                    finish_reason = delta.get("stop_reason")
+                    yield {"type": "finish_reason", "finish_reason": finish_reason}
+                usage = self._merge_anthropic_usage(usage, chunk.get("usage"))
+                continue
+
+            if event_type == "message_stop":
+                break
+
+            if event_type in {"ping", "content_block_stop"}:
+                continue
+
+        response = self._final_stream_response(
+            role=role,
+            content="".join(content_parts),
+            tool_call_parts=tool_call_parts,
+            finish_reason=finish_reason,
+            response_id=response_id,
+            model=model,
+            usage=usage,
+            tool_name_map=tool_name_map,
+        )
+        thought_summary = "".join(thought_parts)
+        if thought_summary:
+            response["thought_summary"] = thought_summary
+            response["thoughtSummary"] = thought_summary
+        yield {"type": "final", "response": response}
+
+    @staticmethod
+    def _merge_anthropic_usage(existing: Any, update: Any) -> Any:
+        if not isinstance(update, dict):
+            return existing
+        if not isinstance(existing, dict):
+            return dict(update)
+        merged = dict(existing)
+        merged.update(update)
+        return merged
+
+    def _apply_anthropic_content_block_start(
+        self,
+        chunk: dict[str, Any],
+        tool_call_parts: dict[int, dict[str, Any]],
+        *,
+        tool_name_map: dict[str, str] | None,
+        content_parts: list[str],
+        thought_parts: list[str],
+    ) -> Iterator[dict[str, Any]]:
+        index = chunk.get("index")
+        if not isinstance(index, int):
+            raise ProviderAdapterError("Provider returned invalid Anthropic SSE chunk: content block index must be an integer")
+        block = chunk.get("content_block") if isinstance(chunk.get("content_block"), dict) else {}
+        block_type = block.get("type")
+        if block_type == "text":
+            text = block.get("text")
+            if isinstance(text, str) and text:
+                content_parts.append(text)
+                yield {"type": "content_delta", "delta": text}
+            return
+        if block_type == "thinking":
+            thinking = block.get("thinking")
+            if isinstance(thinking, str) and thinking:
+                thought_parts.append(thinking)
+                yield {"type": "thinking_delta", "delta": thinking, "source": "provider_reasoning_delta"}
+            return
+        if block_type != "tool_use":
+            return
+
+        name = block.get("name")
+        if not isinstance(name, str) or not name:
+            raise ProviderAdapterError("Provider returned invalid Anthropic SSE chunk: tool_use is missing name")
+        original_name = self._original_tool_name(name, tool_name_map)
+        input_value = block.get("input")
+        initial_arguments = ""
+        if isinstance(input_value, dict) and input_value:
+            initial_arguments = json.dumps(input_value, ensure_ascii=False)
+        part = tool_call_parts.setdefault(
+            index,
+            {"id": None, "type": "function", "name": original_name, "arguments": ""},
+        )
+        part["id"] = str(block.get("id") or part.get("id") or f"call_{index}")
+        part["type"] = "function"
+        part["name"] = original_name
+        if initial_arguments:
+            part["arguments"] += initial_arguments
+        parent_tool_use_id = self._tool_call_parent_id(block)
+        if parent_tool_use_id:
+            part["parentToolUseId"] = parent_tool_use_id
+        yield {
+            "type": "tool_call_delta",
+            "index": index,
+            "id": part["id"],
+            "tool_type": "function",
+            "name": original_name,
+            "arguments_delta": initial_arguments,
+            **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
+        }
+
+    def _apply_anthropic_content_block_delta(
+        self,
+        chunk: dict[str, Any],
+        tool_call_parts: dict[int, dict[str, Any]],
+        *,
+        tool_name_map: dict[str, str] | None,
+        max_tool_argument_chars: int,
+        content_parts: list[str],
+        thought_parts: list[str],
+    ) -> Iterator[dict[str, Any]]:
+        index = chunk.get("index")
+        if not isinstance(index, int):
+            raise ProviderAdapterError("Provider returned invalid Anthropic SSE chunk: content block index must be an integer")
+        delta = chunk.get("delta") if isinstance(chunk.get("delta"), dict) else {}
+        delta_type = delta.get("type")
+        if delta_type == "text_delta":
+            text = delta.get("text")
+            if isinstance(text, str) and text:
+                content_parts.append(text)
+                yield {"type": "content_delta", "delta": text}
+            return
+        if delta_type == "thinking_delta":
+            thinking = delta.get("thinking")
+            if isinstance(thinking, str) and thinking:
+                thought_parts.append(thinking)
+                yield {"type": "thinking_delta", "delta": thinking, "source": "provider_reasoning_delta"}
+            return
+        if delta_type != "input_json_delta":
+            return
+
+        part = tool_call_parts.setdefault(
+            index,
+            {"id": f"call_{index}", "type": "function", "name": None, "arguments": ""},
+        )
+        partial_json = delta.get("partial_json")
+        if isinstance(partial_json, str):
+            part["arguments"] += partial_json
+            if len(part["arguments"]) > max_tool_argument_chars:
+                raise ProviderAdapterError(
+                    "Provider tool call arguments exceeded "
+                    f"{max_tool_argument_chars} characters before completion."
+                )
+        name = part.get("name")
+        original_name = self._original_tool_name(name, tool_name_map) if isinstance(name, str) else None
+        yield {
+            "type": "tool_call_delta",
+            "index": index,
+            "id": part.get("id") if isinstance(part.get("id"), str) else None,
+            "tool_type": part.get("type") if isinstance(part.get("type"), str) else None,
+            "name": original_name,
+            "arguments_delta": partial_json if isinstance(partial_json, str) else "",
+            **({"parentToolUseId": part.get("parentToolUseId")} if part.get("parentToolUseId") else {}),
         }
 
     def _normalize_anthropic_tool_use(

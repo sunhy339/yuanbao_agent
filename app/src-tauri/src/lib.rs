@@ -18,6 +18,7 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, State};
 
 const EVENT_CHANNEL: &str = "agent://event";
+const HAHA_CC_EVENT_CHANNEL: &str = "haha-cc://message";
 const TERMINAL_EVENT_CHANNEL: &str = "terminal://event";
 const RPC_TIMEOUT: Duration = Duration::from_secs(240);
 
@@ -26,6 +27,7 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(240);
 struct HostStatus {
     runtime_transport: &'static str,
     event_channel: &'static str,
+    haha_cc_event_channel: &'static str,
     runtime_running: bool,
     repo_root: String,
     python_module: &'static str,
@@ -56,6 +58,9 @@ struct ComputerUseProbeCapability {
 struct SessionCreatePayload {
     workspace_id: String,
     title: String,
+    work_dir: Option<String>,
+    repository: Option<Value>,
+    permission_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,6 +143,13 @@ struct MessageListPayload {
 #[serde(rename_all = "camelCase")]
 struct TaskGetPayload {
     task_id: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePingPayload {
+    session_id: Option<String>,
+    task_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -393,6 +405,14 @@ struct WorkspaceFileEntryView {
 #[serde(rename_all = "camelCase")]
 struct TraceListPayload {
     task_id: String,
+    limit: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HahaCcEventsAfterPayload {
+    session_id: String,
+    after_seq: Option<u64>,
     limit: Option<u64>,
 }
 
@@ -1493,6 +1513,13 @@ fn spawn_stdout_pump(
                 continue;
             }
 
+            if payload.get("kind").and_then(Value::as_str) == Some("haha_cc_message") {
+                if let Some(haha_cc_payload) = payload.get("payload").cloned() {
+                    let _ = app_handle.emit(HAHA_CC_EVENT_CHANNEL, haha_cc_payload);
+                }
+                continue;
+            }
+
             let Some(request_id) = payload.get("id").and_then(Value::as_str) else {
                 continue;
             };
@@ -1765,6 +1792,7 @@ fn host_status(state: State<'_, RuntimeManager>) -> Result<HostStatus, String> {
     Ok(HostStatus {
         runtime_transport: "json-rpc-stdio",
         event_channel: EVENT_CHANNEL,
+        haha_cc_event_channel: HAHA_CC_EVENT_CHANNEL,
         runtime_running: state.runtime_running(),
         repo_root: root,
         python_module: "local_agent_runtime.main",
@@ -2009,6 +2037,9 @@ async fn session_create(
             json!({
                 "workspaceId": payload.workspace_id,
                 "title": payload.title,
+                "workDir": payload.work_dir,
+                "repository": payload.repository,
+                "permissionMode": payload.permission_mode,
             }),
         )
         .await
@@ -2367,6 +2398,25 @@ async fn task_get(
             app_handle,
             "task.get".to_string(),
             json!({ "taskId": payload.task_id }),
+        )
+        .await
+}
+
+#[tauri::command]
+async fn runtime_ping(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: Option<RuntimePingPayload>,
+) -> Result<Value, String> {
+    let payload = payload.unwrap_or_default();
+    state
+        .call_async(
+            app_handle,
+            "runtime.ping".to_string(),
+            json!({
+                "sessionId": payload.session_id,
+                "taskId": payload.task_id,
+            }),
         )
         .await
 }
@@ -2846,6 +2896,25 @@ async fn trace_list(
             "trace.list".to_string(),
             json!({
                 "taskId": payload.task_id,
+                "limit": payload.limit,
+            }),
+        )
+        .await
+}
+
+#[tauri::command]
+async fn haha_cc_events_after(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: HahaCcEventsAfterPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "events.hahaCcAfter".to_string(),
+            json!({
+                "sessionId": payload.session_id,
+                "afterSeq": payload.after_seq.unwrap_or(0),
                 "limit": payload.limit,
             }),
         )
@@ -3343,6 +3412,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             git_local_init,
             git_local_checkout,
             git_local_commit,
+            runtime_ping,
             task_get,
             task_cancel,
             task_pause,
@@ -3373,6 +3443,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             command_cancel,
             diff_get,
             trace_list,
+            haha_cc_events_after,
             log_export,
             errors_list,
             metrics_list,

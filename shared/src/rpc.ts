@@ -29,6 +29,7 @@ import type {
   WorktreeRecord,
   WorkspaceRef,
 } from "./domain";
+import type { HahaCcServerMessage } from "./events";
 
 export interface JsonRpcRequest<TParams = unknown> {
   jsonrpc: "2.0";
@@ -97,6 +98,13 @@ export type RpcMethod =
   | "diff.get"
   | "command_log.get"
   | "trace.list"
+  | "events.after"
+  | "events.hahaCcAfter"
+  | "provider_turn.list"
+  | "context_snapshot.list"
+  | "context_snapshot.get"
+  | "context.budget"
+  | "autonomy.report"
   | "schedule.create"
   | "schedule.list"
   | "schedule.update"
@@ -139,6 +147,7 @@ export type RpcMethod =
   | "agent.profile.delete"
   | "agent.profile.validate"
   | "agent.profile.previewTools"
+  | "runtime.ping"
   | "hook.create"
   | "hook.update"
   | "hook.delete"
@@ -350,7 +359,18 @@ export interface GitLocalCommandResult {
   status?: GitLocalStatusResult;
 }
 
-export interface SessionCreateParams {
+export interface SessionLaunchRepositoryOptions {
+  branch?: string | null;
+  worktree?: boolean;
+}
+
+export interface SessionLaunchOptions {
+  workDir?: string;
+  repository?: SessionLaunchRepositoryOptions;
+  permissionMode?: string;
+}
+
+export interface SessionCreateParams extends SessionLaunchOptions {
   workspaceId: Identifier;
   title: string;
 }
@@ -484,6 +504,48 @@ export type CommandCancelParams = CommandLogGetParams;
 export interface TraceListParams {
   taskId: Identifier;
   limit?: number;
+}
+
+export interface EventsAfterParams {
+  sessionId: Identifier;
+  afterSeq?: number;
+  limit?: number;
+}
+
+export interface HahaCcEventsAfterParams extends EventsAfterParams {}
+
+export interface ProviderTurnListParams {
+  taskId: Identifier;
+}
+
+export interface ContextSnapshotListParams {
+  taskId: Identifier;
+}
+
+export interface ContextSnapshotGetParams {
+  snapshotId: Identifier;
+}
+
+export interface ContextBudgetParams {
+  taskId?: Identifier;
+  sessionId?: Identifier;
+}
+
+export interface AutonomyReportParams {
+  taskId: Identifier;
+}
+
+export interface RuntimePingParams {
+  sessionId?: Identifier;
+  taskId?: Identifier;
+}
+
+export interface RuntimePingResult {
+  ok: boolean;
+  transport: string;
+  hahaCcMessages: HahaCcServerMessage[];
+  connected?: Extract<HahaCcServerMessage, { type: "connected" }> | null;
+  pong?: Extract<HahaCcServerMessage, { type: "pong" }> | null;
 }
 
 export interface WorkspaceOpenResult {
@@ -740,6 +802,109 @@ export interface CommandCancelResult {
 
 export interface TraceListResult {
   traceEvents: TraceEventRecord[];
+}
+
+export interface EventsAfterResult {
+  events: TraceEventRecord[];
+  truncated: boolean;
+}
+
+export interface HahaCcEventsAfterResult {
+  messages: HahaCcServerMessage[];
+  lastSeq: number;
+  truncated: boolean;
+}
+
+export interface ProviderTurnRecord {
+  id: Identifier;
+  task_id?: Identifier;
+  taskId?: Identifier;
+  session_id?: Identifier;
+  sessionId?: Identifier;
+  turn_index?: number;
+  turnIndex?: number;
+  model?: string | null;
+  status?: string;
+  responseUsage?: Record<string, unknown>;
+  cacheUsage?: {
+    cacheHit?: boolean;
+    cachedTokens?: number;
+    cacheCreationTokens?: number;
+    [key: string]: unknown;
+  };
+  toolPolicyDecision?: Record<string, unknown>;
+  roleSnapshot?: Record<string, unknown>;
+  failureRecovery?: Record<string, unknown>;
+  toolPolicyExplanation?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface ProviderTurnListResult {
+  turns: ProviderTurnRecord[];
+}
+
+export interface ContextSnapshotRecord {
+  id: Identifier;
+  taskId: Identifier;
+  sessionId: Identifier;
+  providerTurnId?: Identifier | null;
+  tokenEstimate?: number | null;
+  maxContextTokens?: number | null;
+  includedSections?: string[];
+  trimmedSections?: unknown[];
+  droppedSections?: unknown[];
+  memoryIds?: Identifier[];
+  toolCount?: number | null;
+  skillId?: Identifier | null;
+  promptLayers?: Array<Record<string, unknown>>;
+  toolPolicyDecision?: Record<string, unknown>;
+  roleSnapshot?: Record<string, unknown>;
+  activeWorktree?: Record<string, unknown>;
+  createdAt?: number;
+  [key: string]: unknown;
+}
+
+export interface ContextSnapshotListResult {
+  snapshots: Array<ContextSnapshotRecord | Record<string, unknown>>;
+}
+
+export interface ContextSnapshotGetResult {
+  snapshot: ContextSnapshotRecord | Record<string, unknown> | null;
+}
+
+export interface ContextBudgetResult {
+  maxContextTokens: number;
+  latestSnapshot: ContextSnapshotRecord | null;
+  compactions: Array<Record<string, unknown>>;
+  tokenTrend: Array<{
+    snapshotId: Identifier;
+    tokenEstimate?: number | null;
+    createdAt?: number;
+  }>;
+  promptLayers: Array<Record<string, unknown>>;
+}
+
+export interface AutonomyReportResult {
+  task: TaskRecord;
+  autonomyProfile?: Record<string, unknown> | null;
+  agentSoulProfile?: Record<string, unknown> | null;
+  routing?: Record<string, unknown>;
+  metrics?: Record<string, unknown> | null;
+  decisions: TraceEventRecord[];
+  approvals: ApprovalRecord[];
+  policyGateOutcomes: Record<string, number>;
+  patches: PatchRecord[];
+  commands: CommandLogRecord[];
+  compactions: Array<Record<string, unknown>>;
+  subagents: Array<Record<string, unknown>>;
+  artifacts: Array<Record<string, unknown>>;
+  memoryRecall: {
+    memoryIds: Identifier[];
+    count: number;
+  };
+  contextBudget: ContextSnapshotRecord | null;
+  hookExecutions: RuntimeHookExecutionRecord[];
+  scopeConflicts: Array<Record<string, unknown>>;
 }
 
 export type GitStatusResult = GitStatusRecord;

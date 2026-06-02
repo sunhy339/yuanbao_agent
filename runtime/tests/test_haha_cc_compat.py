@@ -1,0 +1,415 @@
+from __future__ import annotations
+
+import json
+
+from local_agent_runtime.haha_cc_compat import normalize_haha_cc_usage, to_haha_cc_server_message
+from local_agent_runtime.models import RuntimeEvent
+from local_agent_runtime.store.sqlite_store import SQLiteStore
+
+
+def _event(event_type: str, payload: dict) -> RuntimeEvent:
+    return RuntimeEvent(
+        event_id="evt_1",
+        session_id="sess_1",
+        task_id="task_1",
+        type=event_type,
+        ts=100,
+        payload=payload,
+        visibility="chat",
+    )
+
+
+def test_chat_compat_events_flatten_to_haha_cc_server_messages() -> None:
+    assert to_haha_cc_server_message(
+        _event("content_start", {"blockType": "tool_use", "toolName": "read_file", "toolUseId": "call_1"})
+    ) == {
+        "type": "content_start",
+        "blockType": "tool_use",
+        "toolName": "read_file",
+        "toolUseId": "call_1",
+    }
+    assert to_haha_cc_server_message(
+        _event("tool_result", {"toolUseId": "call_1", "content": {"ok": True}, "isError": False})
+    ) == {
+        "type": "tool_result",
+        "toolUseId": "call_1",
+        "content": {"ok": True},
+        "isError": False,
+    }
+
+
+def test_haha_cc_message_keeps_only_server_message_fields() -> None:
+    assert to_haha_cc_server_message(
+        _event(
+            "content_delta",
+            {
+                "text": "hello",
+                "toolOutput": "stdout stays on the local envelope only",
+                "target": "npm test",
+                "_chatCompat": True,
+            },
+        )
+    ) == {
+        "type": "content_delta",
+        "text": "hello",
+    }
+
+
+def test_computer_use_permission_request_flattens_to_haha_cc_message() -> None:
+    event = _event(
+        "computer_use_permission_request",
+        {
+            "requestId": "approval_1",
+            "request": {"action": "click", "target": "Submit"},
+            "preview": {"risk": "low"},
+        },
+    )
+    assert event.payload["preview"] == {"risk": "low"}
+    assert to_haha_cc_server_message(event) == {
+        "type": "computer_use_permission_request",
+        "requestId": "approval_1",
+        "request": {"action": "click", "target": "Submit"},
+    }
+
+
+def test_message_complete_usage_is_normalized_to_snake_case() -> None:
+    message = to_haha_cc_server_message(
+        _event(
+            "message_complete",
+            {
+                "usage": {
+                    "inputTokens": 120,
+                    "outputTokens": 30,
+                    "cacheReadTokens": 80,
+                    "cacheCreationTokens": 12,
+                }
+            },
+        )
+    )
+
+    assert message == {
+        "type": "message_complete",
+        "usage": {
+            "input_tokens": 120,
+            "output_tokens": 30,
+            "cache_read_tokens": 80,
+            "cache_creation_tokens": 12,
+        },
+    }
+
+
+def test_message_completed_raw_usage_is_normalized() -> None:
+    message = to_haha_cc_server_message(
+        _event(
+            "message.completed",
+            {
+                "raw": {
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 5,
+                        "prompt_tokens_details": {"cached_tokens": 7},
+                    }
+                }
+            },
+        )
+    )
+
+    assert message == {
+        "type": "message_complete",
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_read_tokens": 7,
+        },
+    }
+
+
+def test_message_complete_usage_normalizes_anthropic_cache_tokens() -> None:
+    message = to_haha_cc_server_message(
+        _event(
+            "message.completed",
+            {
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 12,
+                    "cache_read_input_tokens": 80,
+                    "cache_creation_input_tokens": 15,
+                    "budgetRemainingTokens": 9000,
+                }
+            },
+        )
+    )
+
+    assert message == {
+        "type": "message_complete",
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 12,
+            "cache_read_tokens": 80,
+            "cache_creation_tokens": 15,
+        },
+    }
+
+
+def test_message_complete_usage_normalizes_nested_input_token_details() -> None:
+    assert normalize_haha_cc_usage(
+        {
+            "inputTokens": 200,
+            "outputTokens": 20,
+            "input_tokens_details": {
+                "cached_tokens": 120,
+                "cache_creation_tokens": 30,
+            },
+        }
+    ) == {
+        "input_tokens": 200,
+        "output_tokens": 20,
+        "cache_read_tokens": 120,
+        "cache_creation_tokens": 30,
+    }
+
+
+def test_failed_events_map_to_haha_cc_error_message() -> None:
+    assert to_haha_cc_server_message(
+        _event(
+            "message.failed",
+            {
+                "content": "Provider returned error: quota exceeded",
+                "errorCode": "MODEL_PROVIDER_ERROR",
+                "retryable": True,
+                "businessErrorCode": "quota_exceeded",
+            },
+        )
+    ) == {
+        "type": "error",
+        "message": "Provider returned error: quota exceeded",
+        "code": "MODEL_PROVIDER_ERROR",
+        "retryable": True,
+        "businessErrorCode": "quota_exceeded",
+    }
+    assert to_haha_cc_server_message(
+        _event(
+            "task.failed",
+            {
+                "resultSummary": "Task failed after approval was rejected.",
+                "error": {"code": "APPROVAL_REJECTED", "retryable": False},
+            },
+        )
+    ) == {
+        "type": "error",
+        "message": "Task failed after approval was rejected.",
+        "code": "APPROVAL_REJECTED",
+        "retryable": False,
+    }
+
+
+def test_task_and_session_events_map_to_haha_cc_names() -> None:
+    assert to_haha_cc_server_message(_event("task.updated", {"status": "running", "currentStep": "Reading"})) == {
+        "type": "task_update",
+        "taskId": "task_1",
+        "status": "running",
+        "progress": "Reading",
+    }
+    assert to_haha_cc_server_message(_event("task.created", {"status": "queued", "goal": "Write docs"})) == {
+        "type": "task_update",
+        "taskId": "task_1",
+        "status": "queued",
+        "progress": "Write docs",
+    }
+    assert to_haha_cc_server_message(_event("session.updated", {"title": "New title", "changedFields": ["title"]})) == {
+        "type": "session_title_updated",
+        "sessionId": "sess_1",
+        "title": "New title",
+    }
+    assert (
+        to_haha_cc_server_message(
+            _event("session.updated", {"title": "New title", "summary": "Task memory", "changedFields": ["summary"]})
+        )
+        is None
+    )
+
+
+def test_connected_and_pong_map_to_haha_cc_names() -> None:
+    assert to_haha_cc_server_message(_event("connected", {})) == {
+        "type": "connected",
+        "sessionId": "sess_1",
+    }
+    assert to_haha_cc_server_message(_event("pong", {})) == {
+        "type": "pong",
+    }
+
+
+def test_collaboration_events_map_to_haha_cc_team_messages() -> None:
+    assert to_haha_cc_server_message(
+        _event(
+            "collab.worker.heartbeat",
+            {"worker": {"id": "worker_1", "role": "reviewer", "status": "busy", "currentTaskId": "child_1"}},
+        )
+    ) == {
+        "type": "team_update",
+        "teamName": "reviewer",
+        "members": [
+            {
+                "agentId": "worker_1",
+                "role": "reviewer",
+                "status": "running",
+                "currentTask": "child_1",
+            }
+        ],
+    }
+    assert to_haha_cc_server_message(_event("collab.task.created", {"task": {"sessionId": "sess_1"}})) == {
+        "type": "team_created",
+        "teamName": "sess_1",
+    }
+    assert to_haha_cc_server_message(
+        _event(
+            "collab.message.sent",
+            {"message": {"taskId": "child_1", "senderWorkerId": "worker_1", "kind": "result", "body": "Done"}},
+        )
+    ) == {
+        "type": "team_update",
+        "teamName": "child_1",
+        "members": [
+            {
+                "agentId": "worker_1",
+                "role": "result",
+                "status": "running",
+                "currentTask": "Done",
+            }
+        ],
+    }
+    assert to_haha_cc_server_message(
+        _event(
+            "collab.worker.budget.updated",
+            {"dimension": "tokens", "consumed": 50, "budget": {"workerId": "worker_1", "role": "coder"}},
+        )
+    ) == {
+        "type": "team_update",
+        "teamName": "default",
+        "members": [
+            {
+                "agentId": "worker_1",
+                "role": "coder",
+                "status": "running",
+                "currentTask": "tokens budget consumed 50",
+            }
+        ],
+    }
+
+
+def test_normalize_usage_falls_back_total_tokens_to_input() -> None:
+    assert normalize_haha_cc_usage({"total_tokens": 42}) == {
+        "input_tokens": 42,
+        "output_tokens": 0,
+    }
+
+
+def test_trace_list_and_events_after_include_haha_cc_message(tmp_path) -> None:
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="compat trace")
+    task = store.create_task(session_id=session["id"], task_type="chat", goal="stream", plan=[])
+
+    trace = store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="content_delta",
+        source="assistant",
+        payload={"text": "hello", "toolOutput": "kept only on local payload"},
+    )
+
+    assert trace["hahaCc"] == {"type": "content_delta", "text": "hello"}
+    listed = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
+    assert listed[0]["hahaCc"] == {"type": "content_delta", "text": "hello"}
+    assert listed[0]["payload"]["toolOutput"] == "kept only on local payload"
+    after = store.events_after(session["id"], 0)["events"]
+    assert after[0]["hahaCc"] == {"type": "content_delta", "text": "hello"}
+
+
+def test_rpc_haha_cc_events_after_returns_flat_messages_and_last_sequence(tmp_path) -> None:
+    from local_agent_runtime.event_bus import EventBus
+    from local_agent_runtime.orchestrator.service import Orchestrator
+    from local_agent_runtime.rpc.server import JsonRpcServer
+    from local_agent_runtime.tools.registry import ToolRegistry
+
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="compat rpc")
+    task = store.create_task(session_id=session["id"], task_type="chat", goal="stream", plan=[])
+    store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="content_delta",
+        source="assistant",
+        payload={"text": "hello"},
+    )
+    store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="provider.request",
+        source="provider",
+        payload={"model": "test"},
+        visibility="trace",
+    )
+    store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="thinking",
+        source="assistant",
+        payload={"text": "plan"},
+    )
+
+    event_bus = EventBus()
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=ToolRegistry({}),
+        provider=None,
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    response = server.handle_line(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "req_1",
+                "method": "events.hahaCcAfter",
+                "params": {"sessionId": session["id"], "afterSeq": 0},
+            }
+        )
+    )
+
+    assert response["result"] == {
+        "messages": [
+            {"type": "content_delta", "text": "hello"},
+            {"type": "thinking", "text": "plan"},
+        ],
+        "lastSeq": 3,
+        "truncated": False,
+    }
+
+
+def test_trace_list_includes_haha_cc_error_message(tmp_path) -> None:
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="compat trace")
+    task = store.create_task(session_id=session["id"], task_type="chat", goal="fail", plan=[])
+
+    trace = store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="message.failed",
+        source="message",
+        payload={"content": "Provider failed", "errorCode": "MODEL_PROVIDER_ERROR"},
+    )
+
+    assert trace["hahaCc"] == {
+        "type": "error",
+        "message": "Provider failed",
+        "code": "MODEL_PROVIDER_ERROR",
+    }

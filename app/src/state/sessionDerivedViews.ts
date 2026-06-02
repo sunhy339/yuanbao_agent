@@ -27,16 +27,34 @@ function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? value as Record<string, unknown> : null;
 }
 
+function sessionContextPreviewSnapshot(session?: SessionRecord | null) {
+  const metadata = readRecord((session as { metadata?: unknown } | null | undefined)?.metadata);
+  const snapshot = readRecord(metadata?.contextPreview);
+  return snapshot as import("@shared").SessionContextPreviewMetadata | null;
+}
+
 function tokenUsageFromPayload(value: unknown) {
   const payload = readRecord(value);
   const usage = readRecord(payload?.usage) ?? readRecord(readRecord(payload?.raw)?.usage);
   if (!usage) return null;
   const promptDetails = readRecord(usage.prompt_tokens_details);
+  const promptDetailsCamel = readRecord(usage.promptTokensDetails);
+  const inputDetails = readRecord(usage.input_tokens_details);
+  const inputDetailsCamel = readRecord(usage.inputTokensDetails);
+  const details = promptDetails ?? promptDetailsCamel ?? inputDetails ?? inputDetailsCamel;
   const cachedTokens =
     readNumber(usage.cachedTokens) ??
     readNumber(usage.cached_tokens) ??
-    readNumber(promptDetails?.cached_tokens) ??
-    readNumber(promptDetails?.cache_read_tokens);
+    readNumber(usage.cacheReadTokens) ??
+    readNumber(usage.cache_read_tokens) ??
+    readNumber(usage.cacheReadInputTokens) ??
+    readNumber(usage.cache_read_input_tokens) ??
+    readNumber(details?.cached_tokens) ??
+    readNumber(details?.cachedTokens) ??
+    readNumber(details?.cache_read_tokens) ??
+    readNumber(details?.cacheReadTokens) ??
+    readNumber(details?.cache_read_input_tokens) ??
+    readNumber(details?.cacheReadInputTokens);
   const inputTokens =
     readNumber(usage.inputTokens) ??
     readNumber(usage.promptTokens) ??
@@ -77,12 +95,12 @@ export function buildSessionContextPreview({
     .filter((event) => belongsToSession(event.sessionId))
     .filter((event) => !activeTaskId || event.taskId === activeTaskId)
     .map((event) => ({ ts: event.ts, context: readTaskContextPreview(event.payload) }))
-    .filter((entry): entry is { ts: number; context: import("@shared").TaskContextPreviewPayload } => Boolean(entry.context));
+    .filter((entry): entry is { ts: number; context: import("@shared").SessionContextPreviewMetadata } => Boolean(entry.context));
   const traceContexts = traceEvents
     .filter((event) => belongsToSession(event.sessionId))
     .filter((event) => !activeTaskId || event.taskId === activeTaskId)
     .map((event) => ({ ts: event.createdAt, context: readTaskContextPreview(event.payload) }))
-    .filter((entry): entry is { ts: number; context: import("@shared").TaskContextPreviewPayload } => Boolean(entry.context));
+    .filter((entry): entry is { ts: number; context: import("@shared").SessionContextPreviewMetadata } => Boolean(entry.context));
   const latest = [...liveContexts, ...traceContexts].sort((left, right) => right.ts - left.ts)[0]?.context;
   const latestUsage = [
     ...events
@@ -94,11 +112,13 @@ export function buildSessionContextPreview({
   ]
     .filter((entry): entry is { ts: number; usage: NonNullable<ReturnType<typeof tokenUsageFromPayload>> } => Boolean(entry.usage))
     .sort((left, right) => right.ts - left.ts)[0];
-  const projectFocus = workspace?.focus ?? latest?.projectFocus ?? null;
-  const projectMemory = workspace?.summary ?? latest?.projectMemory ?? null;
+  const persisted = sessionContextPreviewSnapshot(session);
+  const contextSnapshot = latest ?? persisted ?? null;
+  const projectFocus = workspace?.focus ?? latest?.projectFocus ?? persisted?.projectFocus ?? null;
+  const projectMemory = workspace?.summary ?? latest?.projectMemory ?? persisted?.projectMemory ?? null;
   const estimatedTokens =
-    latest?.budgetStats?.estimatedTokens ??
-    latest?.budgetStats?.estimatedInputTokens ??
+    contextSnapshot?.budgetStats?.estimatedTokens ??
+    contextSnapshot?.budgetStats?.estimatedInputTokens ??
     latestUsage?.usage.inputTokens ??
     latestUsage?.usage.totalTokens ??
     sessionTokenEstimate(session);
@@ -108,34 +128,34 @@ export function buildSessionContextPreview({
   const hasBudgetFallback = fallbackMaxContextTokens !== undefined && Boolean(sessionId);
   const fallbackEstimatedTokens = estimatedTokens ?? (hasBudgetFallback ? 0 : undefined);
 
-  if (!latest && !projectFocus && !projectMemory && fallbackEstimatedTokens === undefined && !activeTask?.currentStep) {
+  if (!contextSnapshot && !projectFocus && !projectMemory && fallbackEstimatedTokens === undefined && !activeTask?.currentStep) {
     return undefined;
   }
 
   return {
     projectFocus,
     projectMemory,
-    workspaceRoot: session?.workspaceRoot ?? latest?.workspaceRoot ?? workspace?.rootPath,
-    searchQuery: latest?.searchQuery,
-    searchMode: latest?.searchMode,
-    toolCount: latest?.toolCount,
+    workspaceRoot: session?.workspaceRoot ?? contextSnapshot?.workspaceRoot ?? workspace?.rootPath,
+    searchQuery: contextSnapshot?.searchQuery,
+    searchMode: contextSnapshot?.searchMode,
+    toolCount: contextSnapshot?.toolCount,
     budgetStats: {
-      ...(latest?.budgetStats ?? {}),
+      ...(contextSnapshot?.budgetStats ?? {}),
       estimatedTokens: fallbackEstimatedTokens,
-      estimatedInputTokens: latest?.budgetStats?.estimatedInputTokens ?? latestUsage?.usage.inputTokens ?? fallbackEstimatedTokens,
-      messageTokens: latest?.budgetStats?.messageTokens ?? fallbackEstimatedTokens,
-      maxContextTokens: latest?.budgetStats?.maxContextTokens ?? fallbackMaxContextTokens,
-      inputTokens: latestUsage?.usage.inputTokens ?? latest?.budgetStats?.estimatedInputTokens ?? fallbackEstimatedTokens,
+      estimatedInputTokens: contextSnapshot?.budgetStats?.estimatedInputTokens ?? latestUsage?.usage.inputTokens ?? fallbackEstimatedTokens,
+      messageTokens: contextSnapshot?.budgetStats?.messageTokens ?? fallbackEstimatedTokens,
+      maxContextTokens: contextSnapshot?.budgetStats?.maxContextTokens ?? fallbackMaxContextTokens,
+      inputTokens: latestUsage?.usage.inputTokens ?? contextSnapshot?.budgetStats?.estimatedInputTokens ?? fallbackEstimatedTokens,
       outputTokens: latestUsage?.usage.outputTokens,
       cacheReadTokens: latestUsage?.usage.cachedTokens,
-      updatedAt: latestUsage?.ts ?? liveContexts[0]?.ts ?? traceContexts[0]?.ts,
-      estimated: !latest && !latestUsage,
+      updatedAt: latestUsage?.ts ?? liveContexts[0]?.ts ?? traceContexts[0]?.ts ?? contextSnapshot?.budgetStats?.updatedAt,
+      estimated: !latest && !latestUsage && !persisted,
     },
     taskFocus: {
-      currentStep: activeTask?.currentStep ?? latest?.taskFocus?.currentStep,
+      currentStep: activeTask?.currentStep ?? contextSnapshot?.taskFocus?.currentStep,
       acceptanceCriteriaCount:
-        activeTask?.acceptanceCriteria?.length ?? latest?.taskFocus?.acceptanceCriteriaCount,
-      outOfScopeCount: activeTask?.outOfScope?.length ?? latest?.taskFocus?.outOfScopeCount,
+        activeTask?.acceptanceCriteria?.length ?? contextSnapshot?.taskFocus?.acceptanceCriteriaCount,
+      outOfScopeCount: activeTask?.outOfScope?.length ?? contextSnapshot?.taskFocus?.outOfScopeCount,
     },
   };
 }

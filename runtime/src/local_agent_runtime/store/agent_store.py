@@ -9,6 +9,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from ..haha_cc_compat import normalize_haha_cc_usage
+
 class AgentStoreMixin:
     def upsert_agent_worker(self, params: dict[str, Any]) -> dict[str, Any]:
         worker_id = self._optional_string(params, "workerId") or self._optional_string(params, "id") or self.new_id("agent")
@@ -304,18 +306,29 @@ class AgentStoreMixin:
     def _provider_cache_usage(self, usage: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(usage, dict):
             return {"cacheHit": False, "cachedTokens": 0}
-        prompt_details = usage.get("prompt_tokens_details")
-        if not isinstance(prompt_details, dict):
-            return {"cacheHit": False, "cachedTokens": 0}
-        raw_cached = prompt_details.get("cached_tokens")
-        try:
-            cached_tokens = max(0, int(raw_cached))
-        except (TypeError, ValueError):
-            cached_tokens = 0
-        return {
+        normalized = normalize_haha_cc_usage(usage)
+        cached_tokens = self._int_from_value(normalized.get("cache_read_tokens"))
+        cache_creation_tokens = self._int_from_value(normalized.get("cache_creation_tokens"))
+        result = {
             "cacheHit": cached_tokens > 0,
             "cachedTokens": cached_tokens,
         }
+        if cache_creation_tokens > 0:
+            result["cacheCreationTokens"] = cache_creation_tokens
+        return result
+
+    @staticmethod
+    def _int_from_value(value: Any) -> int:
+        if isinstance(value, bool):
+            return 0
+        if isinstance(value, (int, float)):
+            return max(0, int(value))
+        if isinstance(value, str) and value.strip():
+            try:
+                return max(0, int(float(value)))
+            except ValueError:
+                return 0
+        return 0
 
     def _tool_policy_explanation(
         self,

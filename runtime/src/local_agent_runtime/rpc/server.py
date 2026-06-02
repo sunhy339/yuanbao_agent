@@ -7,7 +7,8 @@ import threading
 import time
 from typing import Any, Callable, TextIO
 
-from ..models import RpcEnvelope
+from ..haha_cc_compat import to_haha_cc_server_message
+from ..models import RpcEnvelope, RuntimeEvent
 from ..services.collaboration_service import CollaborationService
 from ..services.replay_service import ReplayService
 from ..services.command_background import cancel_background_command, get_background_command_event_bridge, get_background_command_service
@@ -74,7 +75,7 @@ class JsonRpcServer:
             "session.create": self._orchestrator.create_session,
             "session.get": self._store.get_session,
             "session.list": self._store.list_sessions,
-            "session.update": self._store.update_session,
+            "session.update": self._session_update,
             "session.delete": self._delete_session,
             "session.compact": self._orchestrator.compact_session,
             "session.branch": self._store.branch_session,
@@ -151,11 +152,13 @@ class JsonRpcServer:
             "mcp.server.delete": self._orchestrator.mcp_server_delete,
             "mcp.tools.refresh": self._orchestrator.mcp_tools_refresh,
             "events.after": self._events_after,
+            "events.hahaCcAfter": self._haha_cc_events_after,
             "provider_turn.list": self._provider_turn_list,
             "context_snapshot.list": self._context_snapshot_list,
             "context_snapshot.get": self._context_snapshot_get,
             "context.budget": self._store.get_context_budget,
             "autonomy.report": self._store.get_autonomy_report,
+            "runtime.ping": self._runtime_ping,
             "runtime.status": self._runtime_status,
             "hook.create": self._store.create_hook,
             "hook.update": self._store.update_hook,
@@ -313,6 +316,45 @@ class JsonRpcServer:
             self._orchestrator._memory_manager.forget_working(session_id)
         return self._store.delete_session(params)
 
+    def _session_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        before: dict[str, Any] | None = None
+        session_id = params.get("sessionId") or params.get("session_id")
+        if isinstance(session_id, str) and session_id.strip():
+            try:
+                before = self._store.get_session({"sessionId": session_id.strip()})["session"]
+            except Exception:  # noqa: BLE001
+                before = None
+        result = self._store.update_session(params)
+        session = result.get("session")
+        changed_fields = self._session_update_changed_fields(before, session) if isinstance(session, dict) else []
+        if isinstance(session, dict) and changed_fields:
+            event = RuntimeEvent(
+                event_id=self._store.new_id("evt"),
+                session_id=str(session.get("id") or session_id or ""),
+                task_id=str(session.get("id") or session_id or ""),
+                type="session.updated",
+                ts=self._store.now(),
+                payload={
+                    "sessionId": session.get("id"),
+                    "title": session.get("title"),
+                    "status": session.get("status"),
+                    "summary": session.get("summary"),
+                    "changedFields": changed_fields,
+                },
+                visibility="panel",
+            )
+            self._event_bus.publish(event)
+        return result
+
+    def _session_update_changed_fields(self, before: dict[str, Any] | None, after: dict[str, Any]) -> list[str]:
+        if before is None:
+            return ["title", "status", "summary"]
+        fields: list[str] = []
+        for field in ("title", "status", "summary"):
+            if before.get(field) != after.get(field):
+                fields.append(field)
+        return fields
+
     # -- Worktree RPCs ---------------------------------------------------------
 
     def _require_worktree_service(self) -> Any:
@@ -401,6 +443,28 @@ class JsonRpcServer:
         limit = int(params.get("limit", 500))
         return self._store.events_after(session_id, after_seq, limit=min(limit, 500))
 
+    def _haha_cc_events_after(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Fetch haha-cc flat ServerMessages after a trace sequence."""
+        result = self._events_after(params)
+        events = result.get("events") if isinstance(result, dict) else []
+        messages: list[dict[str, Any]] = []
+        last_seq = int(params.get("afterSeq", params.get("after_seq", 0)))
+        if isinstance(events, list):
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                sequence = event.get("sequence")
+                if isinstance(sequence, (int, float)) and not isinstance(sequence, bool):
+                    last_seq = max(last_seq, int(sequence))
+                haha_cc = event.get("hahaCc")
+                if isinstance(haha_cc, dict):
+                    messages.append(haha_cc)
+        return {
+            "messages": messages,
+            "lastSeq": last_seq,
+            "truncated": bool(result.get("truncated")) if isinstance(result, dict) else False,
+        }
+
     def _provider_turn_list(self, params: dict[str, Any]) -> dict[str, Any]:
         """List provider turns for a task."""
         task_id = params.get("taskId") or params.get("task_id", "")
@@ -418,6 +482,48 @@ class JsonRpcServer:
         snapshot_id = params.get("snapshotId") or params.get("snapshot_id", "")
         snapshot = self._store.get_context_snapshot(snapshot_id)
         return {"snapshot": snapshot}
+
+    def _runtime_ping(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Return haha-cc compatible liveness messages for stdio adapters."""
+        session_id = params.get("sessionId") or params.get("session_id") or "runtime"
+        task_id = params.get("taskId") or params.get("task_id") or "runtime"
+        if not isinstance(session_id, str) or not session_id.strip():
+            session_id = "runtime"
+        if not isinstance(task_id, str) or not task_id.strip():
+            task_id = "runtime"
+        session_id = session_id.strip()
+        task_id = task_id.strip()
+        now = int(time.time() * 1000)
+        messages = [
+            to_haha_cc_server_message(
+                RuntimeEvent(
+                    event_id=f"evt_ping_connected_{now}",
+                    session_id=session_id,
+                    task_id=task_id,
+                    type="connected",
+                    ts=now,
+                    payload={"sessionId": session_id},
+                )
+            ),
+            to_haha_cc_server_message(
+                RuntimeEvent(
+                    event_id=f"evt_ping_pong_{now}",
+                    session_id=session_id,
+                    task_id=task_id,
+                    type="pong",
+                    ts=now,
+                    payload={},
+                )
+            ),
+        ]
+        haha_cc_messages = [message for message in messages if message is not None]
+        return {
+            "ok": True,
+            "transport": "json-rpc-stdio",
+            "hahaCcMessages": haha_cc_messages,
+            "connected": haha_cc_messages[0] if haha_cc_messages else None,
+            "pong": haha_cc_messages[1] if len(haha_cc_messages) > 1 else None,
+        }
 
     def _runtime_status(self, params: dict[str, Any]) -> dict[str, Any]:
         """Return a UI-friendly snapshot of the current runtime state."""
@@ -768,4 +874,16 @@ class JsonRpcServer:
                 )
                 + "\n"
             )
+            haha_cc = payload.get("hahaCc")
+            if isinstance(haha_cc, dict):
+                self._writer.write(
+                    json.dumps(
+                        {
+                            "kind": "haha_cc_message",
+                            "payload": haha_cc,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
             self._writer.flush()

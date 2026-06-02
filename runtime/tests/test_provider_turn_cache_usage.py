@@ -58,6 +58,68 @@ def test_provider_turn_exposes_cache_usage(tmp_path: Path) -> None:
         store.close()
 
 
+def test_provider_turn_cache_usage_normalizes_anthropic_usage(tmp_path: Path) -> None:
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    try:
+        workspace = store.upsert_workspace(str(tmp_path / "workspace"))
+        session = store.create_session(workspace_id=workspace["id"], title="cache")
+        task = store.create_task(session_id=session["id"], task_type="edit", goal="cache", plan=[])
+        turn = store.create_provider_turn(task_id=task["id"], session_id=session["id"], turn_index=0, model="claude")
+        store.complete_provider_turn(
+            turn_id=turn["id"],
+            finish_reason="end_turn",
+            usage={
+                "input_tokens": 1200,
+                "output_tokens": 80,
+                "cache_read_input_tokens": 900,
+                "cache_creation_input_tokens": 64,
+            },
+            tool_call_count=0,
+            response_transport="stream",
+        )
+
+        turns = store.list_provider_turns(task["id"])
+        assert turns[0]["cacheUsage"] == {
+            "cacheHit": True,
+            "cachedTokens": 900,
+            "cacheCreationTokens": 64,
+        }
+    finally:
+        store.close()
+
+
+def test_provider_turn_cache_usage_normalizes_input_token_details(tmp_path: Path) -> None:
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    try:
+        workspace = store.upsert_workspace(str(tmp_path / "workspace"))
+        session = store.create_session(workspace_id=workspace["id"], title="cache")
+        task = store.create_task(session_id=session["id"], task_type="edit", goal="cache", plan=[])
+        turn = store.create_provider_turn(task_id=task["id"], session_id=session["id"], turn_index=0, model="responses")
+        store.complete_provider_turn(
+            turn_id=turn["id"],
+            finish_reason="completed",
+            usage={
+                "inputTokens": 1600,
+                "outputTokens": 120,
+                "input_tokens_details": {
+                    "cached_tokens": 1024,
+                    "cache_creation_tokens": 128,
+                },
+            },
+            tool_call_count=0,
+            response_transport="stream",
+        )
+
+        turns = store.list_provider_turns(task["id"])
+        assert turns[0]["cacheUsage"] == {
+            "cacheHit": True,
+            "cachedTokens": 1024,
+            "cacheCreationTokens": 128,
+        }
+    finally:
+        store.close()
+
+
 def test_runtime_status_includes_turn_cache_usage(tmp_path: Path) -> None:
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     try:

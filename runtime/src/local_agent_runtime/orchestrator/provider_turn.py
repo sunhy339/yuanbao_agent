@@ -736,11 +736,10 @@ class ProviderTurnMixin:
                                 payload={
                                     "text": delta,
                                     "messageId": task.get("activeAssistantMessageId"),
-                                    "source": event.get("source") or "reasoning_summary",
+                                    "source": self._thinking_source(event.get("source"), streaming=True),
                                 },
                             )
                     elif event_type == "tool_call_delta":
-                        self._append_provider_trace(task=task, event_type="provider.stream.tool_call_delta", payload=event)
                         index = event.get("index")
                         if not isinstance(index, int):
                             continue
@@ -966,13 +965,21 @@ class ProviderTurnMixin:
             return False
         provider_config = self._provider_trace_provider_config(provider_config)
         api_format = self._provider_trace_api_format(provider_config)
-        if api_format not in {"openai-chat", "openai-responses"}:
+        if api_format not in {"openai-chat", "openai-responses", "anthropic-messages"}:
             return False
         stream_flag = self._provider_stream_flag(provider_config)
         if stream_flag is not None:
             return stream_flag
         mode = str(provider_config.get("mode") or provider_config.get("providerMode") or "").strip().lower()
-        return mode in {"openai", "openai-compatible", "openai_compatible", "openai-compatible-chat"}
+        return mode in {
+            "openai",
+            "openai-compatible",
+            "openai_compatible",
+            "openai-compatible-chat",
+            "anthropic",
+            "anthropic-messages",
+            "anthropic_messages",
+        }
 
     @staticmethod
     def _can_fallback_to_non_stream(recovery: Any, *, has_partial_output: bool = False) -> bool:
@@ -1749,7 +1756,14 @@ class ProviderTurnMixin:
                 return True
         return False
 
-    def _append_provider_trace(self, *, task: dict[str, Any], event_type: str, payload: dict[str, Any]) -> None:
+    def _append_provider_trace(
+        self,
+        *,
+        task: dict[str, Any],
+        event_type: str,
+        payload: dict[str, Any],
+        visibility: str = "trace",
+    ) -> None:
         if not hasattr(self._store, "append_trace_event"):
             return
         self._store.append_trace_event(
@@ -1759,6 +1773,7 @@ class ProviderTurnMixin:
             source="provider",
             related_id=payload.get("model"),
             payload=payload,
+            visibility=visibility,
         )
 
     def _provider_trace_payload(self, provider_context: dict[str, Any]) -> dict[str, Any]:
@@ -1861,6 +1876,19 @@ class ProviderTurnMixin:
             "toolCallCount": len(response.get("tool_calls") or []),
             "hasFinal": any(isinstance(response.get(key), str) and bool(response.get(key)) for key in ("final", "final_answer", "answer")),
         }
+
+    @staticmethod
+    def _thinking_source(value: Any, *, streaming: bool) -> str:
+        source = str(value or "").strip()
+        if source in {"provider_reasoning_delta", "provider_reasoning_summary", "non_stream_thought_summary"}:
+            return source
+        if source in {"reasoning_delta", "reasoning"}:
+            return "provider_reasoning_delta"
+        if source in {"reasoning_summary", "summary"}:
+            return "provider_reasoning_summary"
+        if source in {"thought_summary", "thoughtSummary"}:
+            return "non_stream_thought_summary"
+        return "provider_reasoning_delta" if streaming else "non_stream_thought_summary"
 
     def _parse_provider_response(
         self,

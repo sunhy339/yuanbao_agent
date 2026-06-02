@@ -47,6 +47,8 @@ import type {
   HookListResult,
   HookResult,
   HookUpdateParams,
+  HahaCcEventsAfterParams,
+  HahaCcEventsAfterResult,
   MessageListParams,
   MessageListResult,
   MessageDeleteParams,
@@ -71,6 +73,8 @@ import type {
   PermissionRuleClearResult,
   ProviderTestParams,
   ProviderTestResult,
+  RuntimePingParams,
+  RuntimePingResult,
   ScheduledTaskCreateParams,
   ScheduledTaskListResult,
   ScheduledTaskLogsParams,
@@ -149,6 +153,7 @@ import type {
   WorkspaceMemoryClearParams,
   WorkspaceMemoryClearResult,
   WorkspaceOpenResult,
+  HahaCcServerMessage,
 } from "@shared";
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
@@ -163,6 +168,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 }
 
 const EVENT_CHANNEL = "agent://event";
+const HAHA_CC_EVENT_CHANNEL = "haha-cc://message";
 const TERMINAL_EVENT_CHANNEL = "terminal://event";
 const RUNTIME_BRIDGE_UNAVAILABLE_MESSAGE =
   "桌面运行时桥接不可用。请通过 Tauri 桌面应用打开 Yuanbao Agent，或为测试/预览显式启用浏览器预览模式。";
@@ -179,6 +185,11 @@ export type AppPathKind = "logs" | "data" | "skills";
 
 export interface AppPathOpenResult {
   path: string;
+}
+
+export interface HahaCcConnectionOptions extends RuntimePingParams {
+  keepAliveMs?: number;
+  onKeepAliveError?: (reason: unknown) => void;
 }
 
 // Client-side cache for Tauri results — used for optimistic updates and local reads
@@ -205,6 +216,7 @@ const clientCache: ClientCache = {
 export interface HostStatus {
   runtimeTransport: string;
   eventChannel: string;
+  hahaCcEventChannel: string;
   runtimeRunning: boolean;
   repoRoot: string;
   pythonModule: string;
@@ -418,6 +430,10 @@ export class RuntimeClient {
 
   async probeComputerUse(): Promise<ComputerUseProbeResult> {
     return invokeOrReject<ComputerUseProbeResult>("computer_use_probe");
+  }
+
+  async runtimePing(payload: RuntimePingParams = {}): Promise<RuntimePingResult> {
+    return invokePayloadOrReject<RuntimePingResult>("runtime_ping", payload);
   }
 
   canOpenLocalAppPaths(): boolean {
@@ -683,6 +699,10 @@ export class RuntimeClient {
     return invokePayloadOrReject<TraceListResult>("trace_list", payload);
   }
 
+  async hahaCcEventsAfter(payload: HahaCcEventsAfterParams): Promise<HahaCcEventsAfterResult> {
+    return invokePayloadOrReject<HahaCcEventsAfterResult>("haha_cc_events_after", payload);
+  }
+
   async getConfig(): Promise<ConfigGetResult> {
     const result = await invokeOrReject<ConfigGetResult>("config_get");
     clientCache.config = mergeRuntimeConfig(clientCache.config ?? result.config as RuntimeConfig, result.config as RuntimeConfig);
@@ -850,6 +870,63 @@ export class RuntimeClient {
       handler(event.payload);
     });
     return () => {
+      unlisten();
+    };
+  }
+
+  async subscribeHahaCcMessages(handler: (message: HahaCcServerMessage) => void): Promise<() => void> {
+    assertRuntimeBridgeAvailable("haha_cc_event_subscribe");
+    const unlisten = await listen<HahaCcServerMessage>(HAHA_CC_EVENT_CHANNEL, (event) => {
+      handler(event.payload);
+    });
+    return () => {
+      unlisten();
+    };
+  }
+
+  async connectHahaCcMessages(
+    handler: (message: HahaCcServerMessage) => void,
+    options: HahaCcConnectionOptions = {},
+  ): Promise<() => void> {
+    const { keepAliveMs = 30_000, onKeepAliveError, ...pingPayload } = options;
+    const unlisten = await this.subscribeHahaCcMessages(handler);
+    let stopped = false;
+    let keepAliveTimer: ReturnType<typeof setInterval> | undefined;
+
+    const emitPing = async (includeConnected: boolean): Promise<void> => {
+      const result = await this.runtimePing(pingPayload);
+      if (stopped) {
+        return;
+      }
+      for (const message of result.hahaCcMessages) {
+        if (!includeConnected && message.type === "connected") {
+          continue;
+        }
+        handler(message);
+      }
+    };
+
+    try {
+      await emitPing(true);
+    } catch (reason) {
+      stopped = true;
+      unlisten();
+      throw reason;
+    }
+
+    if (keepAliveMs > 0) {
+      keepAliveTimer = setInterval(() => {
+        void emitPing(false).catch((reason) => {
+          onKeepAliveError?.(reason);
+        });
+      }, keepAliveMs);
+    }
+
+    return () => {
+      stopped = true;
+      if (keepAliveTimer !== undefined) {
+        clearInterval(keepAliveTimer);
+      }
       unlisten();
     };
   }

@@ -121,7 +121,7 @@ class TestRuleBasedRouting:
         assert decision.skill_id is None
         assert decision.confidence >= 0.80
 
-    def test_complex_feedback_plan_with_readme_routes_to_multi_step(self) -> None:
+    def test_complex_feedback_plan_with_explicit_agents_routes_to_swarm(self) -> None:
         decision = self.router.route(
             "\u8bbe\u8ba1\u4e00\u4e2a\u7528\u6237\u53cd\u9988\u7cfb\u7edf\uff0c"
             "\u5305\u542b\u524d\u7aef\u5165\u53e3\u3001\u540e\u7aef API\u3001"
@@ -131,8 +131,9 @@ class TestRuleBasedRouting:
             "\u4e0d\u8981\u5b9e\u73b0\u4ee3\u7801\u3002"
         )
 
-        assert decision.scenario == Scenario.MULTI_STEP_TASK
-        assert decision.strategy == ExecutionStrategy.PLAN_THEN_EXECUTE
+        assert decision.scenario == Scenario.SWARM_TASK
+        assert decision.strategy == ExecutionStrategy.PLAN_SWARM
+        assert decision.enable_planning is True
         assert decision.skill_id is None
 
     def test_code_search_scenario_from_chinese(self) -> None:

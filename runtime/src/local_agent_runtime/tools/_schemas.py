@@ -871,11 +871,11 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
         "safety": {
             "level": "medium",
-            "requires_approval": False,
+            "requires_approval": True,
             "category": "notebook",
             "sandboxed": True,
             "notes": [
-                "execute_cell runs code in a subprocess — treat it like run_command.",
+                "execute_cell runs code in a subprocess and is gated by run_command approval.",
                 "Read-only actions (list_cells, get_cell) are safe.",
             ],
         },
@@ -946,6 +946,97 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "rate_limit": 20,
             "cost_per_use": 3,
             "estimated_duration_ms": 5000,
+        },
+    },
+    {
+        "name": "computer_use",
+        "description": (
+            "Request permission for a desktop or browser computer-use action. "
+            "The runtime pauses for user approval before any action is executed."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "Computer-use action to request.",
+                    "enum": ["inspect", "screenshot", "click", "type", "key", "scroll"],
+                },
+                "target": _string_property(
+                    "Target app, browser tab, window, or surface.",
+                    default="desktop",
+                    examples=["VS Code", "Browser", "desktop"],
+                ),
+                "permission": _string_property(
+                    "Short user-facing description of the requested permission.",
+                    examples=["Read the current VS Code window", "Click the Save button"],
+                ),
+                "details": {
+                    "type": "string",
+                    "description": "Optional extra details shown in the permission card.",
+                },
+                "selector": {
+                    "type": "string",
+                    "description": "Optional target selector or accessibility label.",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Text to type when action is type.",
+                },
+                "x": {"type": "number", "description": "Optional x coordinate."},
+                "y": {"type": "number", "description": "Optional y coordinate."},
+                "direction": {
+                    "type": "string",
+                    "description": "Scroll direction when action is scroll.",
+                    "enum": ["up", "down", "left", "right"],
+                },
+                "amount": {
+                    "type": "number",
+                    "description": "Optional scroll/click magnitude.",
+                },
+                "url": {
+                    "type": "string",
+                    "description": "Optional browser page URL associated with the target.",
+                },
+                "pageId": {
+                    "type": "string",
+                    "description": "Optional host/browser page identifier for injected browser executors.",
+                },
+                "browserContextId": {
+                    "type": "string",
+                    "description": "Optional host/browser context identifier for injected browser executors.",
+                },
+                "approvalId": {
+                    "type": "string",
+                    "description": "Runtime-supplied approval id when resuming after approval.",
+                },
+            },
+            "required": ["action", "target", "permission"],
+        },
+        "safety": {
+            "level": "dangerous",
+            "requires_approval": True,
+            "category": "computer_use",
+            "sandboxed": False,
+            "notes": [
+                "Always requires explicit user approval.",
+                "inspect returns runtime environment information, or browser page title/text/elements when a browser executor is available; screenshot attempts a local or browser screenshot backend.",
+                "click/type/key/scroll execute only when a desktop-control or injected browser/accessibility backend is available; otherwise they return a blocked result with recovery guidance.",
+            ],
+        },
+        "hints": [
+            "Use inspect when you need permission to look at the active app/window.",
+            "Use inspect with target='browser' and url/pageId/browserContextId when you need the current page title, text, and interactive element hints.",
+            "For click, provide x/y coordinates unless a browser DOM/accessibility executor with click.selector support is available.",
+            "For selector-based click/type/scroll, include url/pageId/browserContextId when known; without an injected browser DOM/accessibility executor the runtime will block with selector_executor_required.",
+            "Set LOCAL_AGENT_COMPUTER_USE_PLAYWRIGHT=1 with the optional computer-use-browser extra/playwright package installed to enable the built-in browser session executor.",
+            "Use a clear permission string so the user knows exactly what is being requested.",
+        ],
+        "metadata": {
+            "rate_limit": 12,
+            "cost_per_use": 10,
+            "estimated_duration_ms": 1000,
         },
     },
 ]

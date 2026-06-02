@@ -1,9 +1,9 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
-import { CleanActivityItem, CleanPermissionMessageBlock, CleanRuntimeBlock, CleanThinkingBlock, CleanToolMessageBlock, CleanWorklogBlock } from "./CleanConversation";
+import { CleanActivityItem, CleanPermissionMessageBlock, CleanRuntimeBlock, CleanSlashCommandBlock, CleanThinkingBlock, CleanToolMessageBlock, CleanWorklogBlock } from "./CleanConversation";
 
 afterEach(() => cleanup());
 
@@ -23,6 +23,39 @@ describe("CleanConversation", () => {
 
     expect(screen.getByRole("button", { name: /正在思考/ })).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("我在检查相关文件。")).toBeInTheDocument();
+  });
+
+  it("renders slash command results as expandable detail nodes", async () => {
+    const user = userEvent.setup();
+    const onCopyRuntimeText = vi.fn();
+
+    render(
+      <CleanSlashCommandBlock
+        onCopyRuntimeText={onCopyRuntimeText}
+        message={{
+          id: "slash:status",
+          role: "assistant",
+          content: "**运行时：** 本地运行时已连接\n**模型：** gpt-5",
+          metadata: {
+            kind: "slash_command",
+            command: "/status",
+            summary: "本地运行时已连接",
+            status: "completed",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /\/status/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("命令详情")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /\/status/ }));
+    expect(screen.getByText("命令详情")).toBeInTheDocument();
+    const detail = screen.getByText("命令详情").closest("figure") as HTMLElement;
+    expect(within(detail).getByText("模型：")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "复制" }));
+    expect(onCopyRuntimeText).toHaveBeenCalledWith("/status result", expect.stringContaining("**模型：** gpt-5"));
   });
 
   it("does not treat patch titles as changed file paths", () => {
@@ -46,9 +79,13 @@ describe("CleanConversation", () => {
   it("opens the matching local diff when a patch file row is clicked", async () => {
     const user = userEvent.setup();
     const onLoadPatch = vi.fn();
+    const onCopyRuntimeText = vi.fn();
+    const onOpenFile = vi.fn();
     render(
       <CleanRuntimeBlock
         onLoadPatch={onLoadPatch}
+        onCopyRuntimeText={onCopyRuntimeText}
+        onOpenFile={onOpenFile}
         item={{
           id: "patch:diff",
           kind: "patch",
@@ -76,24 +113,76 @@ describe("CleanConversation", () => {
 
     await user.click(screen.getByRole("button", { name: /snake_game\/rules\.py/ }));
 
+    expect(onOpenFile).toHaveBeenCalledWith("snake_game/rules.py");
     expect(onLoadPatch).not.toHaveBeenCalled();
     expect(screen.getAllByText("snake_game/rules.py").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("new_rules")).toBeInTheDocument();
     expect(screen.queryByText("new_game")).not.toBeInTheDocument();
+    expect(screen.getByText("+1")).toBeInTheDocument();
+    expect(screen.getByText("-1")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "1" }));
+    expect(onOpenFile).toHaveBeenCalledWith("snake_game/rules.py:1");
+
+    await user.click(screen.getByRole("button", { name: "复制" }));
+    expect(onCopyRuntimeText).toHaveBeenCalledWith("文件差异", expect.stringContaining("+new_rules"));
+    expect(onCopyRuntimeText).toHaveBeenCalledWith("文件差异", expect.not.stringContaining("+new_game"));
   });
 
-  it("exposes patch file list copy and revert placeholder actions", async () => {
+  it("syncs diff tabs with the right file pane", async () => {
+    const user = userEvent.setup();
+    const onOpenFile = vi.fn();
+    render(
+      <CleanRuntimeBlock
+        onOpenFile={onOpenFile}
+        item={{
+          id: "patch:tabs",
+          kind: "patch",
+          title: "Update snake_game files",
+          status: "applied",
+          code: "modified snake_game/game.py (+1/-1)\nmodified snake_game/rules.py (+1/-1)",
+          rawDetail: [
+            "diff --git a/snake_game/game.py b/snake_game/game.py",
+            "--- a/snake_game/game.py",
+            "+++ b/snake_game/game.py",
+            "@@ -1 +1 @@",
+            "-old_game",
+            "+new_game",
+            "diff --git a/snake_game/rules.py b/snake_game/rules.py",
+            "--- a/snake_game/rules.py",
+            "+++ b/snake_game/rules.py",
+            "@@ -1 +1 @@",
+            "-old_rules",
+            "+new_rules",
+          ].join("\n"),
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "查看全部差异" }));
+    const diffTabs = screen.getByLabelText("差异文件");
+    await user.click(within(diffTabs).getByRole("button", { name: /snake_game\/rules\.py/ }));
+
+    expect(onOpenFile).toHaveBeenCalledWith("snake_game/rules.py");
+    expect(screen.getByText("new_rules")).toBeInTheDocument();
+    expect(screen.queryByText("new_game")).not.toBeInTheDocument();
+  });
+
+  it("exposes patch file list copy and revert actions", async () => {
     const user = userEvent.setup();
     const onCopyRuntimeText = vi.fn();
     const onQuoteMessage = vi.fn();
+    const onRevertTaskChanges = vi.fn();
 
     render(
       <CleanRuntimeBlock
         onCopyRuntimeText={onCopyRuntimeText}
         onQuoteMessage={onQuoteMessage}
+        onRevertTaskChanges={onRevertTaskChanges}
         item={{
           id: "patch:actions",
           kind: "patch",
+          taskId: "task_1",
           title: "Update snake_game files",
           status: "applied",
           code: "modified snake_game/game.py (+2/-4)\nmodified snake_game/rules.py (+0/-2)",
@@ -106,16 +195,38 @@ describe("CleanConversation", () => {
       "改动文件列表",
       expect.stringContaining("snake_game/game.py  修改 +2 -4"),
     );
-    expect(screen.getByRole("button", { name: /撤销本轮/ })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /撤销本轮/ }));
+    expect(onRevertTaskChanges).toHaveBeenCalledWith("task_1");
 
     await user.click(screen.getByRole("button", { name: /审查改动/ }));
     expect(onQuoteMessage).toHaveBeenCalledWith(expect.stringContaining("请审查这轮改动：Update snake_game files"));
     expect(onQuoteMessage).toHaveBeenCalledWith(expect.stringContaining("snake_game/rules.py"));
   });
 
+  it("keeps revert disabled until a patch is applied", () => {
+    const onRevertTaskChanges = vi.fn();
+
+    render(
+      <CleanRuntimeBlock
+        onRevertTaskChanges={onRevertTaskChanges}
+        item={{
+          id: "patch:proposed",
+          kind: "patch",
+          taskId: "task_1",
+          title: "Update snake_game files",
+          status: "proposed",
+          code: "modified snake_game/game.py (+2/-4)",
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /撤销本轮/ })).toBeDisabled();
+  });
+
   it("passes patch review actions through activity runtime items", async () => {
     const user = userEvent.setup();
     const onQuoteMessage = vi.fn();
+    const onOpenFile = vi.fn();
 
     render(
       <CleanActivityItem
@@ -131,9 +242,13 @@ describe("CleanConversation", () => {
             code: "modified snake_game/game.py (+2/-4)",
           },
         }}
+        onOpenFile={onOpenFile}
         onQuoteMessage={onQuoteMessage}
       />,
     );
+
+    await user.click(screen.getByRole("button", { name: /snake_game\/game\.py/ }));
+    expect(onOpenFile).toHaveBeenCalledWith("snake_game/game.py");
 
     await user.click(screen.getByRole("button", { name: /审查改动/ }));
     expect(onQuoteMessage).toHaveBeenCalledWith(expect.stringContaining("请审查这轮改动：Update snake_game files"));
@@ -305,9 +420,39 @@ describe("CleanConversation", () => {
     expect(onCopyRuntimeText).toHaveBeenCalledWith("引用消息", expect.stringContaining("> 用户："));
   });
 
-  it("shows clear overflow actions and disabled backend placeholders", async () => {
+  it("renders user messages with markdown paragraphs instead of a single cramped line", () => {
+    const { container } = render(
+      <CleanActivityItem
+        item={{
+          id: "message:user:paragraphs",
+          kind: "message",
+          order: 1,
+          message: {
+            id: "user:paragraphs",
+            role: "user",
+            content: "第一段\n\n第二段\n保留换行",
+          },
+        }}
+      />,
+    );
+
+    const paragraphs = container.querySelectorAll(".hc-user .hc-markdown p");
+    expect(paragraphs).toHaveLength(2);
+    expect(paragraphs[0]).toHaveTextContent("第一段");
+    expect(paragraphs[1]?.textContent).toBe("第二段\n保留换行");
+  });
+
+  it("submits overflow transcript actions when handlers are available", async () => {
     const user = userEvent.setup();
     const onCopyRuntimeText = vi.fn();
+    const onContinueFromMessage = vi.fn();
+    const onBranchFromMessage = vi.fn();
+    const onDeleteMessage = vi.fn();
+    const message = {
+      id: "m-overflow",
+      role: "assistant" as const,
+      content: "下一步可以拆出 rules.py。",
+    };
 
     render(
       <CleanActivityItem
@@ -315,28 +460,38 @@ describe("CleanConversation", () => {
           id: "message:overflow",
           kind: "message",
           order: 1,
-          message: {
-            id: "m-overflow",
-            role: "assistant",
-            content: "下一步可以拆出 rules.py。",
-          },
+          message,
         }}
         onCopyRuntimeText={onCopyRuntimeText}
         onQuoteMessage={vi.fn()}
+        onContinueFromMessage={onContinueFromMessage}
+        onBranchFromMessage={onBranchFromMessage}
+        onDeleteMessage={onDeleteMessage}
       />,
     );
 
     await user.click(screen.getByRole("button", { name: "更多" }));
 
-    expect(screen.getByRole("button", { name: /从这里继续/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /从这里分支/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /删除消息/ })).toBeDisabled();
-
     await user.click(screen.getByRole("button", { name: /复制为 Markdown/ }));
     expect(onCopyRuntimeText).toHaveBeenCalledWith("Markdown 引用", expect.stringContaining("> 助手："));
+
+    await user.click(screen.getByRole("button", { name: "更多" }));
+    await user.click(screen.getByRole("button", { name: /从这里继续/ }));
+    expect(onContinueFromMessage).toHaveBeenCalledWith(message);
+
+    await user.click(screen.getByRole("button", { name: "更多" }));
+    await user.click(screen.getByRole("button", { name: /从这里分支/ }));
+    expect(onBranchFromMessage).toHaveBeenCalledWith(message);
+
+    await user.click(screen.getByRole("button", { name: "更多" }));
+    await user.click(screen.getByRole("button", { name: /删除消息/ }));
+    expect(onDeleteMessage).toHaveBeenCalledWith(message);
   });
 
-  it("renders ask-user events as a dedicated decision node", () => {
+  it("renders ask-user events as an interactive decision node", async () => {
+    const user = userEvent.setup();
+    const onSubmitUserQuestionAnswer = vi.fn();
+
     render(
       <CleanActivityItem
         item={{
@@ -357,16 +512,31 @@ describe("CleanConversation", () => {
             },
           },
         }}
+        onSubmitUserQuestionAnswer={onSubmitUserQuestionAnswer}
       />,
     );
 
     expect(screen.getByText("需要你确认")).toBeInTheDocument();
     expect(screen.getByText("要继续拆分渲染层吗？")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /继续/ })).toBeDisabled();
-    expect(screen.getAllByText("待接入回答提交").length).toBe(2);
+    await user.click(screen.getByRole("button", { name: /继续/ }));
+    expect(onSubmitUserQuestionAnswer).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "ask1" }),
+      expect.stringContaining("选择：继续"),
+    );
+
+    await user.type(screen.getByPlaceholderText("补充说明或直接回答..."), "继续，但先收窄到渲染层。");
+    await user.click(screen.getByRole("button", { name: "提交回答" }));
+    expect(onSubmitUserQuestionAnswer).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: "ask1" }),
+      "继续，但先收窄到渲染层。",
+    );
   });
 
-  it("renders computer-use permission placeholders", () => {
+  it("submits computer-use permission decisions", async () => {
+    const user = userEvent.setup();
+    const onApprove = vi.fn();
+    const onReject = vi.fn();
+
     render(
       <CleanActivityItem
         item={{
@@ -379,17 +549,39 @@ describe("CleanConversation", () => {
             content: "",
             metadata: {
               kind: "computer_use_permission",
+              approvalId: "appr_computer",
               app: "VS Code",
-              action: "读取当前窗口",
+              action: "click",
+              selector: "Run button",
+              x: 320,
+              y: 180,
+              url: "http://localhost:5173",
+              pageId: "page_1",
+              permission: "点击运行按钮",
             },
           },
         }}
+        onApprove={onApprove}
+        onReject={onReject}
       />,
     );
 
     expect(screen.getByText("Computer Use 权限")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "允许" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "拒绝" })).toBeDisabled();
+    const details = screen.getByLabelText("Computer Use 权限详情");
+    expect(within(details).getByText("动作")).toBeInTheDocument();
+    expect(within(details).getByText("click")).toBeInTheDocument();
+    expect(within(details).getByText("目标")).toBeInTheDocument();
+    expect(within(details).getByText("Run button")).toBeInTheDocument();
+    expect(within(details).getByText("坐标")).toBeInTheDocument();
+    expect(within(details).getByText("320, 180")).toBeInTheDocument();
+    expect(within(details).getByText("URL")).toBeInTheDocument();
+    expect(within(details).getByText("http://localhost:5173")).toBeInTheDocument();
+    expect(within(details).getByText("Page")).toBeInTheDocument();
+    expect(within(details).getByText("page_1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "允许" }));
+    await user.click(screen.getByRole("button", { name: "拒绝" }));
+    expect(onApprove).toHaveBeenCalledWith("appr_computer");
+    expect(onReject).toHaveBeenCalledWith("appr_computer");
   });
 
   it("uses readable action titles for inline tool messages", () => {
@@ -474,6 +666,96 @@ describe("CleanConversation", () => {
     expect(screen.getByText(/找到 4 项：game\.py、rules\.py、README\.md，另 1 项/)).toBeInTheDocument();
   });
 
+  it("prefers structured result summaries over streamed activity text", () => {
+    render(
+      <CleanToolMessageBlock
+        message={{
+          id: "tool-search",
+          role: "assistant",
+          content: "",
+          toolName: "search_files",
+          status: "completed",
+          metadata: {
+            inputText: JSON.stringify({ query: "needle" }),
+            resultSummary: "found 2 match(es) for needle: src/app.ts",
+            resultText: "过程\n正在搜索文件：search needle\n\n结果预览\n命中: 2 项\n样例: src/app.ts",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("found 2 match(es) for needle: src/app.ts")).toBeInTheDocument();
+    expect(screen.queryByText(/正在搜索文件/)).not.toBeInTheDocument();
+  });
+
+  it("renders blocked inline tool rows as warning status instead of failure", () => {
+    render(
+      <CleanToolMessageBlock
+        message={{
+          id: "tool-blocked",
+          role: "assistant",
+          content: "",
+          toolName: "write_file",
+          status: "blocked",
+          metadata: {
+            inputText: JSON.stringify({ path: "snake_game/game.py" }),
+            resultSummary: "blocked by policy",
+            status: "blocked",
+            isError: true,
+          },
+        }}
+      />,
+    );
+
+    const row = screen.getByText("已阻塞").closest("section") as HTMLElement;
+    expect(row).toHaveAttribute("data-tone", "warning");
+    expect(screen.queryByText("失败")).not.toBeInTheDocument();
+  });
+
+  it("shows backend tool duration on inline tool rows", () => {
+    render(
+      <CleanToolMessageBlock
+        message={{
+          id: "tool-duration",
+          role: "assistant",
+          content: "",
+          toolName: "run_command",
+          status: "completed",
+          metadata: {
+            inputText: JSON.stringify({ command: "npm test" }),
+            resultSummary: "exit 0: ok",
+            durationMs: 1250,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("1.3s")).toBeInTheDocument();
+  });
+
+  it("uses backend target metadata for started command tool titles", () => {
+    render(
+      <CleanToolMessageBlock
+        message={{
+          id: "tool-started-command",
+          role: "assistant",
+          content: "",
+          toolName: "run_command",
+          status: "streaming",
+          streaming: true,
+          metadata: {
+            kind: "tool_use",
+            toolUseId: "call_command",
+            target: "npm run dev",
+            inputSummary: "npm run dev",
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("运行 npm run dev")).toBeInTheDocument();
+  });
+
   it("uses readable action titles for permission messages", () => {
     render(
       <CleanPermissionMessageBlock
@@ -496,10 +778,42 @@ describe("CleanConversation", () => {
     expect(screen.queryByText(/apply_patch 需要确认/)).not.toBeInTheDocument();
   });
 
+  it("shows structured permission preview rows and changed files", () => {
+    render(
+      <CleanPermissionMessageBlock
+        onApproveAlways={vi.fn()}
+        message={{
+          id: "permission2",
+          role: "assistant",
+          content: "",
+          toolName: "apply_patch",
+          metadata: {
+            requestId: "approval-2",
+            approvalKind: "apply_patch",
+            previewRows: [
+              { label: "摘要", value: "Update rules" },
+              { label: "原因", value: "writes files" },
+            ],
+            changedPaths: ["src/rules.ts", "src/rules.test.ts"],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByText("摘要")).toBeInTheDocument();
+    expect(screen.getByText("Update rules")).toBeInTheDocument();
+    expect(screen.getByText("src/rules.ts")).toBeInTheDocument();
+    expect(screen.getByText("src/rules.test.ts")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "始终允许" })).not.toBeDisabled();
+  });
+
   it("renders approval runtime items as dedicated approval nodes", async () => {
     const user = userEvent.setup();
     const onApprove = vi.fn();
+    const onApproveAlways = vi.fn();
     const onReject = vi.fn();
+    const onLoadPatch = vi.fn();
+    const onOpenFile = vi.fn();
 
     render(
       <CleanRuntimeBlock
@@ -514,7 +828,10 @@ describe("CleanConversation", () => {
           rawDetail: "modified snake_game/rules.py (+2/-1)",
         }}
         onApprove={onApprove}
+        onApproveAlways={onApproveAlways}
         onReject={onReject}
+        onLoadPatch={onLoadPatch}
+        onOpenFile={onOpenFile}
       />,
     );
 
@@ -523,11 +840,40 @@ describe("CleanConversation", () => {
     expect(screen.getByText("snake_game/rules.py")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "允许一次" }));
+    await user.click(screen.getByRole("button", { name: /snake_game\/rules\.py/ }));
+    expect(onOpenFile).toHaveBeenCalledWith("snake_game/rules.py");
+    expect(onLoadPatch).toHaveBeenCalledWith("approval-1");
     expect(onApprove).toHaveBeenCalledWith("approval-1");
 
     await user.click(screen.getByRole("button", { name: "拒绝" }));
     expect(onReject).toHaveBeenCalledWith("approval-1");
-    expect(screen.getByRole("button", { name: "始终允许" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "始终允许" }));
+    expect(onApproveAlways).toHaveBeenCalledWith("approval-1");
+  });
+
+  it("shows structured approval preview rows for non-file approvals", () => {
+    render(
+      <CleanRuntimeBlock
+        item={{
+          id: "approval:command",
+          kind: "approval",
+          sourceId: "approval-command",
+          title: "run_command",
+          status: "pending",
+          riskLevel: "medium",
+          previewRows: [
+            { label: "命令", value: "npm run typecheck" },
+            { label: "目录", value: "app" },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText("命令")).toBeInTheDocument();
+    expect(screen.getByText("npm run typecheck")).toBeInTheDocument();
+    expect(screen.getByText("目录")).toBeInTheDocument();
+    expect(screen.getByText("app")).toBeInTheDocument();
   });
 
   it("renders expanded worklogs as compact runtime rows", async () => {
@@ -563,16 +909,22 @@ describe("CleanConversation", () => {
 
     expect(screen.getByText(/已处理 2 项操作/)).toBeInTheDocument();
     expect(screen.getByText(/读取上下文 2，均已收起为轻量日志/)).toBeInTheDocument();
-    expect(screen.getByText("我在读取项目上下文，低价值的读文件和目录检查已折叠收纳。")).toBeInTheDocument();
+    expect(screen.queryByText("我在读取项目上下文，低价值的读文件和目录检查已折叠收纳。")).not.toBeInTheDocument();
+    expect(screen.queryByText("查看 snake_game")).not.toBeInTheDocument();
+    expect(screen.queryByText("读取 snake_game/game.py")).not.toBeInTheDocument();
+    const groups = within(screen.getByLabelText("操作类别"));
+    expect(groups.getByText("读取上下文")).toBeInTheDocument();
+    expect(groups.getByText("2")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /复制摘要/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /已处理 2 项操作/ }));
+    expect(screen.getByText("我在读取项目上下文，低价值的读文件和目录检查已折叠收纳。")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /复制摘要/ }));
     expect(onCopyRuntimeText).toHaveBeenCalledWith("工作日志摘要", expect.stringContaining("#1 · 查看 snake_game · 已完成"));
 
     expect(screen.getByText("查看 snake_game")).toBeInTheDocument();
     expect(screen.getByText("读取 snake_game/game.py")).toBeInTheDocument();
-    expect(screen.getAllByText("读取上下文")).toHaveLength(2);
+    expect(screen.getAllByText("读取上下文").length).toBeGreaterThanOrEqual(2);
 
     await user.click(screen.getByRole("button", { name: /读取 snake_game\/game\.py/ }));
     await user.click(screen.getByRole("button", { name: "复制" }));
@@ -613,6 +965,410 @@ describe("CleanConversation", () => {
     expect(screen.getByText("读取 app/src/ui.tsx").closest(".hc-worklog-row")).toHaveAttribute("data-depth", "1");
   });
 
+  it("orders same-batch worklog tools by backend tool index", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "tool:second",
+            kind: "tool",
+            title: "read_file",
+            status: "completed",
+            toolName: "read_file",
+            toolUseId: "tc_2",
+            toolGroupId: "tgrp_1",
+            toolIndex: 1,
+            toolTotal: 2,
+            time: 20,
+            code: JSON.stringify({ path: "app/src/second.ts" }),
+          },
+          {
+            id: "tool:first",
+            kind: "tool",
+            title: "search_files",
+            status: "completed",
+            toolName: "search_files",
+            toolUseId: "tc_1",
+            toolGroupId: "tgrp_1",
+            toolIndex: 0,
+            toolTotal: 2,
+            time: 30,
+            code: JSON.stringify({ query: "needle" }),
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /已处理 2 项操作/ }));
+    const rows = screen.getAllByRole("button", { name: /搜索 needle|读取 app\/src\/second\.ts/ });
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("搜索 needle"),
+      expect.stringContaining("读取 app/src/second.ts"),
+    ]);
+  });
+
+  it("renders inferred search to read parent-child worklog trees", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "tool:search",
+            kind: "tool",
+            title: "search_files",
+            status: "completed",
+            toolName: "search_files",
+            toolUseId: "call_search",
+            toolGroupId: "tgrp_1",
+            toolIndex: 0,
+            toolTotal: 2,
+            toolSemanticParentId: "group:tgrp_1:phase:search",
+            toolSemanticParentLabel: "搜索",
+            code: JSON.stringify({ query: "needle" }),
+          },
+          {
+            id: "tool:read",
+            kind: "tool",
+            title: "read_file",
+            status: "completed",
+            toolName: "read_file",
+            toolUseId: "call_read",
+            parentToolUseId: "call_search",
+            toolGroupId: "tgrp_1",
+            toolIndex: 1,
+            toolTotal: 2,
+            toolSemanticParentId: "group:tgrp_1:phase:context_read",
+            toolSemanticParentLabel: "读取上下文",
+            code: JSON.stringify({ path: "app/src/target.ts" }),
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /已处理 2 项操作/ }));
+    expect(screen.getByText("1 个子步骤")).toBeInTheDocument();
+    expect(screen.getByText("读取 app/src/target.ts").closest(".hc-worklog-row")).toHaveAttribute("data-depth", "1");
+  });
+
+  it("renders inferred file change review parent-child worklog trees", async () => {
+    const { container } = render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "tool:write",
+            kind: "tool",
+            title: "write_file",
+            status: "completed",
+            toolName: "write_file",
+            toolUseId: "call_write",
+            toolGroupId: "tgrp_1",
+            toolIndex: 0,
+            toolTotal: 2,
+            toolCategory: "file_change",
+            toolSemanticParentId: "group:tgrp_1:phase:file_change",
+            toolSemanticParentLabel: "鏂囦欢鏀瑰姩",
+            code: JSON.stringify({ path: "app/src/target.ts", content: "updated" }),
+          },
+          {
+            id: "tool:verify",
+            kind: "tool",
+            title: "run_command",
+            status: "completed",
+            toolName: "run_command",
+            toolUseId: "call_verify",
+            parentToolUseId: "call_write",
+            toolGroupId: "tgrp_1",
+            toolIndex: 1,
+            toolTotal: 2,
+            toolCategory: "verification",
+            toolSemanticParentId: "group:tgrp_1:phase:verification",
+            toolSemanticParentLabel: "楠岃瘉",
+            code: JSON.stringify({ command: "npm run typecheck" }),
+          },
+          {
+            id: "tool:git",
+            kind: "tool",
+            title: "git_status",
+            status: "completed",
+            toolName: "git_status",
+            toolUseId: "call_status",
+            parentToolUseId: "call_write",
+            toolGroupId: "tgrp_1",
+            toolIndex: 2,
+            toolTotal: 3,
+            toolCategory: "git",
+            toolSemanticParentId: "group:tgrp_1:phase:git",
+            code: JSON.stringify({}),
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(container.querySelector(".hc-worklog-head") as HTMLElement);
+    const verifyRow = Array.from(container.querySelectorAll(".hc-worklog-row")).find((row) =>
+      row.textContent?.includes("npm run typecheck"),
+    );
+    expect(verifyRow).toHaveAttribute("data-depth", "1");
+    expect(verifyRow?.textContent).toContain("npm run typecheck");
+    const gitRow = Array.from(container.querySelectorAll(".hc-worklog-row")).find((row) =>
+      row.textContent?.includes("Git"),
+    );
+    expect(gitRow).toHaveAttribute("data-depth", "1");
+    const phases = Array.from(container.querySelectorAll(".hc-worklog-phase"));
+    expect(phases).toHaveLength(1);
+    expect(phases[0]).toHaveTextContent("npm run typecheck");
+    expect(phases[0]).toHaveTextContent("Git");
+  });
+
+  it("groups expanded worklog rows into semantic phases", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "tool:read",
+            kind: "tool",
+            title: "read_file",
+            status: "completed",
+            toolName: "read_file",
+            code: JSON.stringify({ path: "app/src/ui.tsx" }),
+          },
+          {
+            id: "tool:git",
+            kind: "tool",
+            title: "git_status",
+            status: "completed",
+            toolName: "git_status",
+            summary: "main: 1 changed file(s): app/src/ui.tsx",
+          },
+          {
+            id: "command:test",
+            kind: "command",
+            title: "npm run typecheck",
+            status: "completed",
+            code: "npm run typecheck",
+            toolCategory: "verification",
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /已处理 3 项操作/ }));
+    const phases = screen.getAllByRole("region").filter((node) => node.classList.contains("hc-worklog-phase"));
+    expect(phases.map((phase) => phase.getAttribute("aria-label"))).toEqual([
+      "阶段：验证",
+      "阶段：Git 检查",
+      "阶段：读取上下文",
+    ]);
+    expect(within(phases[0] as HTMLElement).getByText("运行命令")).toBeInTheDocument();
+    expect(within(phases[1] as HTMLElement).getByText("查看 Git 状态")).toBeInTheDocument();
+    expect(within(phases[2] as HTMLElement).getByText("读取 app/src/ui.tsx")).toBeInTheDocument();
+  });
+
+  it("summarizes verification commands as a semantic worklog phase", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "tool:read",
+            kind: "tool",
+            title: "read_file",
+            status: "completed",
+            toolName: "read_file",
+            code: JSON.stringify({ path: "app/src/ui.tsx" }),
+          },
+          {
+            id: "command:test",
+            kind: "command",
+            title: "npm run typecheck",
+            status: "completed",
+            code: "npm run typecheck",
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(/验证 1、读取上下文 1，1 项低噪声/)).toBeInTheDocument();
+    const groups = within(screen.getByLabelText("操作类别"));
+    expect(groups.getByText("验证")).toBeInTheDocument();
+    expect(groups.getByText("读取上下文")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /已处理 2 项操作/ }));
+    expect(screen.getByText("我在验证当前结果，并把测试、构建或检查输出收在下面。")).toBeInTheDocument();
+    const rows = screen.getAllByText("验证").map((node) => node.closest("article")).filter(Boolean);
+    expect(rows.some((row) => row?.getAttribute("data-kind") === "command")).toBe(true);
+  });
+
+  it("summarizes shell context commands as quiet worklog phases", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "command:rg",
+            kind: "command",
+            title: "run_command",
+            status: "completed",
+            code: JSON.stringify({ command: "rg -n CleanWorklogBlock app/src/ui/haha-clean" }),
+          },
+          {
+            id: "command:psread",
+            kind: "command",
+            title: "PowerShell",
+            status: "completed",
+            code: JSON.stringify({ command: "Get-Content app/src/ui/haha-clean/conversation/CleanConversation.tsx" }),
+          },
+          {
+            id: "command:gitdiff",
+            kind: "command",
+            title: "run_command",
+            status: "completed",
+            code: JSON.stringify({ command: "git diff -- app/src/ui/haha-clean/clean.css" }),
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(/Git 检查 1、搜索 1、读取上下文 1，均已收起为轻量日志/)).toBeInTheDocument();
+    const groups = within(screen.getByLabelText("操作类别"));
+    expect(groups.getByText("Git 检查")).toBeInTheDocument();
+    expect(groups.getByText("搜索")).toBeInTheDocument();
+    expect(groups.getByText("读取上下文")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /已处理 3 项操作/ }));
+    const phases = screen.getAllByRole("region").filter((node) => node.classList.contains("hc-worklog-phase"));
+    expect(phases.map((phase) => phase.getAttribute("aria-label"))).toEqual([
+      "阶段：Git 检查",
+      "阶段：搜索",
+      "阶段：读取上下文",
+    ]);
+    expect(within(phases[0] as HTMLElement).getByText(/git diff/)).toBeInTheDocument();
+    expect(within(phases[1] as HTMLElement).getByText(/rg -n CleanWorklogBlock/)).toBeInTheDocument();
+    expect(within(phases[2] as HTMLElement).getByText(/Get-Content app\/src\/ui\/haha-clean\/conversation\/CleanConversation\.tsx/)).toBeInTheDocument();
+  });
+
+  it("prefers backend toolCategory when grouping worklog phases", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "command:custom",
+            kind: "command",
+            title: "custom-ci-script",
+            status: "completed",
+            code: "custom-ci-script",
+            toolCategory: "verification",
+          },
+        ]}
+      />,
+    );
+
+    expect(within(screen.getByLabelText("操作类别")).getByText("验证")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /已处理 1 项操作/ }));
+    expect(screen.getByText("我在验证当前结果，并把测试、构建或检查输出收在下面。")).toBeInTheDocument();
+    const row = screen.getByRole("button", { name: /运行命令/ }).closest("article");
+    expect(row).toHaveAttribute("data-kind", "command");
+    expect(within(row as HTMLElement).getByText("验证")).toBeInTheDocument();
+  });
+
+  it("prefers backend toolPhaseLabel before category fallback", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "tool:phase",
+            kind: "tool",
+            title: "custom_probe",
+            status: "completed",
+            toolName: "custom_probe",
+            toolCategory: "context_read",
+            toolPhaseLabel: "验证",
+          },
+        ]}
+      />,
+    );
+
+    expect(within(screen.getByLabelText("操作类别")).getByText("验证")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("操作类别")).queryByText("读取上下文")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /已处理 1 项操作/ }));
+    expect(screen.getByRole("region", { name: "阶段：验证" })).toBeInTheDocument();
+  });
+
+  it("prefers backend semantic parent label before phase fallback", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "tool:semantic",
+            kind: "tool",
+            title: "custom_probe",
+            status: "completed",
+            toolName: "custom_probe",
+            toolCategory: "context_read",
+            toolPhaseLabel: "读取上下文",
+            toolSemanticParentId: "phase:verification",
+            toolSemanticParentLabel: "验证",
+          },
+        ]}
+      />,
+    );
+
+    expect(within(screen.getByLabelText("操作类别")).getByText("验证")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("操作类别")).queryByText("读取上下文")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /已处理 1 项操作/ }));
+    expect(screen.getByRole("region", { name: "阶段：验证" })).toBeInTheDocument();
+  });
+
+  it("keeps separate semantic parent ids as separate expanded worklog phases", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "tool:search:1",
+            kind: "tool",
+            title: "search_files",
+            status: "completed",
+            toolName: "search_files",
+            toolSemanticParentId: "group:tgrp_1:phase:search",
+            toolSemanticParentLabel: "搜索",
+          },
+          {
+            id: "tool:search:2",
+            kind: "tool",
+            title: "search_files",
+            status: "completed",
+            toolName: "search_files",
+            toolSemanticParentId: "group:tgrp_2:phase:search",
+            toolSemanticParentLabel: "搜索",
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /已处理 2 项操作/ }));
+    const searchPhases = screen
+      .getAllByRole("region", { name: "阶段：搜索" })
+      .filter((node) => node.classList.contains("hc-worklog-phase"));
+    expect(searchPhases).toHaveLength(2);
+    expect(within(searchPhases[0] as HTMLElement).getByText("语义阶段")).toBeInTheDocument();
+    expect(within(searchPhases[1] as HTMLElement).getByText("语义阶段")).toBeInTheDocument();
+  });
+
   it("uses Chinese file status and accurate copy labels in runtime details", async () => {
     const user = userEvent.setup();
     const onCopyRuntimeText = vi.fn();
@@ -636,5 +1392,35 @@ describe("CleanConversation", () => {
     expect(screen.getByText("修改 +2 -1")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "复制" }));
     expect(onCopyRuntimeText).toHaveBeenCalledWith("工具详情", "updated content");
+  });
+
+  it("shows structured tool result previews in expanded worklog rows", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <CleanWorklogBlock
+        items={[
+          {
+            id: "tool:list",
+            kind: "tool",
+            title: "查看目录",
+            status: "completed",
+            toolName: "list_dir",
+            summary: "listed 2 item(s) in src: src/app.ts, src/ui.tsx",
+            toolPhaseLabel: "读取上下文",
+            previewRows: [
+              { label: "目录", value: "src" },
+              { label: "样例", value: "src/app.ts, src/ui.tsx" },
+            ],
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /已处理 1 项操作/ }));
+    await user.click(screen.getByRole("button", { name: /查看目录/ }));
+    const preview = screen.getByLabelText("工具结果预览");
+    expect(within(preview).getByText("目录")).toBeInTheDocument();
+    expect(within(preview).getByText("src/app.ts, src/ui.tsx")).toBeInTheDocument();
   });
 });

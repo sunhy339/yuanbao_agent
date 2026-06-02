@@ -170,6 +170,7 @@ export interface SessionWorkspaceCollaboration {
 
 export interface SessionWorkspaceMessage {
   id: string;
+  sessionId?: string;
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   taskId?: string;
@@ -189,10 +190,14 @@ export interface SessionWorkspaceApproval {
   kind?: string;
   status: string;
   summary?: string;
+  filesChanged?: number;
+  changedPaths?: string[];
+  diff?: string;
   requestedAt?: number;
   risk?: "low" | "medium" | "high";
   parametersPreview?: string;
   fullInput?: string;
+  previewRows?: Array<{ label: string; value: string }>;
   command?: string;
   cwd?: string;
   completionEvidence?: {
@@ -266,6 +271,7 @@ export interface SessionWorkspacePatchFile {
 
 export interface SessionWorkspacePatch {
   id: string;
+  taskId?: string;
   summary: string;
   status: string;
   filesChanged?: number;
@@ -299,11 +305,23 @@ export interface SessionWorkspaceToolCall {
   id: string;
   toolUseId?: string;
   parentToolUseId?: string;
+  toolGroupId?: string;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: string;
+  toolOperationLabel?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
   toolName: string;
   status: string;
+  target?: string;
   taskId?: string;
   time?: number;
   resultSummary?: string;
+  resultPreview?: Array<{ label: string; value: string }>;
   durationMs?: number;
   tokenCount?: number;
   argsPreview?: string;
@@ -317,6 +335,20 @@ export interface SessionWorkspaceToolCall {
 
 export interface SessionWorkspaceBackgroundJob {
   id: string;
+  toolUseId?: string;
+  parentToolUseId?: string;
+  toolGroupId?: string;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: string;
+  toolOperationLabel?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
+  target?: string;
+  inputSummary?: string;
   command: string;
   status: string;
   cwd?: string;
@@ -354,6 +386,11 @@ export interface SessionWorkspaceContextPreview {
     messageTokens?: number | null;
     toolSchemaTokens?: number | null;
     stablePrefixTokens?: number | null;
+    inputTokens?: number | null;
+    outputTokens?: number | null;
+    cacheReadTokens?: number | null;
+    updatedAt?: number | null;
+    estimated?: boolean | null;
     promptCache?: {
       enabled?: boolean | null;
       targetFillRatio?: number | null;
@@ -362,8 +399,14 @@ export interface SessionWorkspaceContextPreview {
       stablePrefixTokens?: number | null;
     } | null;
     maxContextTokens?: number | null;
+    includedSections?: string[];
     droppedSections?: string[];
     trimmedSections?: string[];
+    promptLayers?: Array<{
+      name?: string;
+      tokenEstimate?: number | null;
+      [key: string]: unknown;
+    }>;
   } | null;
   taskFocus?: {
     currentStep?: string | null;
@@ -387,11 +430,17 @@ export interface SessionWorkspaceProps {
   contextPreview?: SessionWorkspaceContextPreview;
   onApprove?(approvalId: string): void | Promise<void>;
   onApproveForSession?(approvalId: string): void | Promise<void>;
+  onApproveAlways?(approvalId: string): void | Promise<void>;
   onReject?(approvalId: string): void | Promise<void>;
   onLoadPatch?(patchId: string): void | Promise<void>;
   onCopyPatchPath?(patchId: string, path: string): void | Promise<void>;
   onCopyRuntimeText?(label: string, text: string): void | Promise<void>;
+  onRevertTaskChanges?(taskId: string): void | Promise<void>;
+  onSubmitUserQuestionAnswer?(message: SessionWorkspaceMessage, answer: string): void | Promise<void>;
   onQuoteMessage?(text: string): void;
+  onContinueFromMessage?(message: SessionWorkspaceMessage): void | Promise<void>;
+  onBranchFromMessage?(message: SessionWorkspaceMessage): void | Promise<void>;
+  onDeleteMessage?(message: SessionWorkspaceMessage): void | Promise<void>;
   onRefreshCommandJob?(commandId: string): void | Promise<void>;
   onStopCommandJob?(commandId: string): void | Promise<void>;
   onRefreshTask?(): void | Promise<void>;
@@ -407,6 +456,7 @@ export interface SessionWorkspaceProps {
   worktreeDiff?: SessionWorkspaceWorktreeDiff | null;
   taskBusyAction?: "refresh" | "stop" | "pause" | "resume" | null;
   busyId?: string | null;
+  patchBusyId?: string | null;
   worktreeBusyAction?: "status" | "diff" | "requestMergeApproval" | "merge" | "cleanup" | null;
   worktreeError?: string | null;
   messagesLoading?: boolean;
@@ -423,6 +473,16 @@ export interface RuntimeTimelineItem {
   sourceId?: string;
   toolUseId?: string;
   parentToolUseId?: string;
+  toolGroupId?: string;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: string;
+  toolOperationLabel?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
   title: string;
   status?: string;
   summary?: string;
@@ -431,6 +491,8 @@ export interface RuntimeTimelineItem {
   code?: string;
   rawDetail?: string;
   completionEvidence?: SessionWorkspaceApproval["completionEvidence"];
+  previewRows?: Array<{ label: string; value: string }>;
+  supportsAlwaysAllow?: boolean;
   time?: number;
   durationMs?: number;
   diffLines?: DiffLine[];

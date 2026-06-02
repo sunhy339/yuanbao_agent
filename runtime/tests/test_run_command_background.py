@@ -112,6 +112,40 @@ def _rpc_call(server: JsonRpcServer, method: str, params: dict[str, Any]) -> dic
     return response["result"]
 
 
+def test_run_command_result_includes_runtime_steps(tmp_path: Path) -> None:
+    store, run_command, ctx = _make_run_command(
+        tmp_path,
+        {"policy": {"approvalMode": "never"}},
+    )
+    try:
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": "Write-Output stepped",
+                "internalValidation": True,
+            }
+        )
+
+        assert result["status"] == "completed"
+        assert result["stdout"].strip() == "stepped"
+        assert [step["label"] for step in result["steps"]] == [
+            "resolve",
+            "validate",
+            "scope",
+            "approval",
+            "log",
+            "execute",
+            "artifacts",
+        ]
+        assert result["steps"][0]["summary"].startswith("cwd=.; shell=")
+        assert result["steps"][3] == {"label": "approval", "status": "completed", "summary": "not required"}
+        assert result["steps"][5]["status"] == "completed"
+        assert result["steps"][5]["summary"] == "exit 0"
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("flag_name", ["background", "backgroundJob", "runInBackground"])
 def test_run_command_background_returns_immediately_and_finishes(flag_name: str, tmp_path: Path) -> None:
     store, run_command, ctx = _make_run_command(
@@ -136,6 +170,15 @@ def test_run_command_background_returns_immediately_and_finishes(flag_name: str,
         assert result.get("stdout", "") == ""
         assert result.get("stderr", "") == ""
         assert result["exitCode"] is None
+        assert [step["label"] for step in result["steps"]] == [
+            "resolve",
+            "validate",
+            "scope",
+            "approval",
+            "log",
+            "execute",
+        ]
+        assert result["steps"][-1] == {"label": "execute", "status": "running", "summary": "background command started"}
         assert elapsed < 0.2
 
         command_log = _wait_for_command_log(store, result["commandLog"]["id"])
@@ -301,6 +344,64 @@ def test_command_log_rpc_get_and_list_filters_logs(tmp_path: Path) -> None:
         store.close()
 
 
+def test_command_log_rpc_preserves_tool_metadata_from_trace(tmp_path: Path) -> None:
+    store, server, _run_command, ctx, _events = _make_runtime(tmp_path)
+    try:
+        task = store.get_task({"taskId": ctx["task_id"]})["task"]
+        command_log = store.create_command_log(
+            task_id=task["id"],
+            command="Write-Output metadata",
+            cwd=str(ctx["workspace_root"]),
+            shell="powershell",
+            tool_metadata={
+                "toolUseId": "call_command",
+                "toolName": "run_command",
+                "parentToolUseId": "call_parent",
+                "toolGroupId": "tgrp_1",
+                "toolIndex": 0,
+                "toolTotal": 1,
+                "toolOperationId": "verification",
+                "toolOperationLabel": "验证",
+                "toolCategory": "verification",
+                "toolPhaseId": "verification",
+                "toolPhaseLabel": "验证",
+                "toolSemanticParentId": "phase:verification",
+                "toolSemanticParentLabel": "验证",
+                "target": "npm test",
+                "inputSummary": "npm test",
+            },
+        )
+        store.update_command_log(
+            command_log["id"],
+            status="completed",
+            exit_code=0,
+            stdout_path=None,
+            stderr_path=None,
+        )
+
+        fetched = _rpc_call(server, "command_log.get", {"commandId": command_log["id"]})["commandLog"]
+        listed = _rpc_call(server, "command_log.list", {"taskId": task["id"]})["commandLogs"][0]
+        for record in (fetched, listed):
+            assert record["toolUseId"] == "call_command"
+            assert record["toolName"] == "run_command"
+            assert record["parentToolUseId"] == "call_parent"
+            assert record["toolGroupId"] == "tgrp_1"
+            assert record["toolIndex"] == 0
+            assert record["toolTotal"] == 1
+            assert record["toolOperationId"] == "verification"
+            assert record["toolOperationLabel"] == "验证"
+            assert record["toolCategory"] == "verification"
+            assert record["toolPhaseId"] == "verification"
+            assert record["toolPhaseLabel"] == "验证"
+            assert record["toolSemanticParentId"] == "phase:verification"
+            assert record["toolSemanticParentLabel"] == "验证"
+            assert record["target"] == "npm test"
+            assert record["inputSummary"] == "npm test"
+            assert record["shell"] == "powershell"
+    finally:
+        store.close()
+
+
 def test_run_command_background_emits_realtime_runtime_events(tmp_path: Path) -> None:
     store, _server, run_command, ctx, events = _make_runtime(tmp_path)
     try:
@@ -308,6 +409,18 @@ def test_run_command_background_emits_realtime_runtime_events(tmp_path: Path) ->
             {
                 "workspaceRoot": str(ctx["workspace_root"]),
                 "taskId": ctx["task_id"],
+                "toolUseId": "call_command",
+                "parentToolUseId": "parent_tool",
+                "toolGroupId": "tgrp_1",
+                "toolIndex": 0,
+                "toolTotal": 1,
+                "toolCategory": "verification",
+                "toolPhaseId": "verification",
+                "toolPhaseLabel": "验证",
+                "toolSemanticParentId": "phase:verification",
+                "toolSemanticParentLabel": "验证",
+                "target": "npm run watch",
+                "inputSummary": "npm run watch",
                 "command": 'Write-Output "alpha"; Start-Sleep -Milliseconds 500; Write-Output "omega"',
                 "background": True,
                 "internalValidation": True,
@@ -320,6 +433,18 @@ def test_run_command_background_emits_realtime_runtime_events(tmp_path: Path) ->
             lambda event: event["type"] == "command.started" and event["payload"]["commandId"] == command_id,
         )
         assert started_event["taskId"] == ctx["task_id"]
+        assert started_event["payload"]["toolUseId"] == "call_command"
+        assert started_event["payload"]["parentToolUseId"] == "parent_tool"
+        assert started_event["payload"]["toolGroupId"] == "tgrp_1"
+        assert started_event["payload"]["toolIndex"] == 0
+        assert started_event["payload"]["toolTotal"] == 1
+        assert started_event["payload"]["toolCategory"] == "verification"
+        assert started_event["payload"]["target"] == "npm run watch"
+        assert started_event["payload"]["inputSummary"] == "npm run watch"
+        assert started_event["payload"]["toolPhaseId"] == "verification"
+        assert started_event["payload"]["toolPhaseLabel"] == "验证"
+        assert started_event["payload"]["toolSemanticParentId"] == "phase:verification"
+        assert started_event["payload"]["toolSemanticParentLabel"] == started_event["payload"]["toolPhaseLabel"]
 
         output_event = _wait_for_event(
             events,
@@ -331,6 +456,18 @@ def test_run_command_background_emits_realtime_runtime_events(tmp_path: Path) ->
             ),
         )
         assert output_event["taskId"] == ctx["task_id"]
+        assert output_event["payload"]["toolUseId"] == "call_command"
+        assert output_event["payload"]["toolName"] == "run_command"
+        assert output_event["payload"]["parentToolUseId"] == "parent_tool"
+        assert output_event["payload"]["toolGroupId"] == "tgrp_1"
+        assert output_event["payload"]["toolIndex"] == 0
+        assert output_event["payload"]["toolTotal"] == 1
+        assert output_event["payload"]["toolCategory"] == "verification"
+        assert output_event["payload"]["target"] == "npm run watch"
+        assert output_event["payload"]["inputSummary"] == "npm run watch"
+        assert output_event["payload"]["toolPhaseLabel"] == "验证"
+        assert output_event["payload"]["toolSemanticParentId"] == "phase:verification"
+        assert output_event["payload"]["toolSemanticParentLabel"] == output_event["payload"]["toolPhaseLabel"]
         assert store.get_command_log({"commandId": command_id})["commandLog"]["status"] == "running"
 
         completed_event = _wait_for_event(
@@ -341,6 +478,16 @@ def test_run_command_background_emits_realtime_runtime_events(tmp_path: Path) ->
             ),
         )
         assert completed_event["payload"]["status"] == "completed"
+        assert completed_event["payload"]["toolUseId"] == "call_command"
+        assert completed_event["payload"]["toolGroupId"] == "tgrp_1"
+        assert completed_event["payload"]["toolIndex"] == 0
+        assert completed_event["payload"]["toolTotal"] == 1
+        assert completed_event["payload"]["toolCategory"] == "verification"
+        assert completed_event["payload"]["target"] == "npm run watch"
+        assert completed_event["payload"]["inputSummary"] == "npm run watch"
+        assert completed_event["payload"]["toolPhaseLabel"] == "验证"
+        assert completed_event["payload"]["toolSemanticParentId"] == "phase:verification"
+        assert completed_event["payload"]["toolSemanticParentLabel"] == completed_event["payload"]["toolPhaseLabel"]
     finally:
         store.close()
 
@@ -399,12 +546,49 @@ def test_command_cancel_stops_only_requested_background_command(tmp_path: Path) 
         terminal_event = _wait_for_event(
             events,
             lambda event: (
-                event["type"] == "command.failed"
+                event["type"] == "command.cancelled"
                 and event["payload"]["commandId"] == first_command_id
                 and event["payload"]["status"] == "cancelled"
             ),
         )
         assert terminal_event["taskId"] == ctx["task_id"]
+    finally:
+        store.close()
+
+
+def test_command_cancel_is_idempotent_while_cancellation_is_pending(tmp_path: Path) -> None:
+    store, server, run_command, ctx, events = _make_runtime(tmp_path)
+    try:
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": 'Write-Output "begin"; Start-Sleep -Seconds 15; Write-Output "never"',
+                "background": True,
+                "internalValidation": True,
+            }
+        )
+        command_id = result["commandLog"]["id"]
+
+        _wait_for_event(
+            events,
+            lambda event: (
+                event["type"] == "command.output"
+                and event["payload"]["commandId"] == command_id
+                and "begin" in event["payload"]["chunk"]
+            ),
+        )
+
+        first_cancel = _rpc_call(server, "command.cancel", {"commandId": command_id})
+        second_cancel = _rpc_call(server, "command.cancel", {"commandId": command_id})
+
+        assert first_cancel["cancelled"] is True
+        assert second_cancel["cancelled"] is False
+        assert second_cancel["commandLog"]["id"] == command_id
+        assert second_cancel["commandLog"]["status"] in {"running", "cancelled"}
+
+        command_log = _wait_for_command_log(store, command_id)
+        assert command_log["status"] == "cancelled"
     finally:
         store.close()
 
@@ -451,7 +635,7 @@ def test_task_cancel_stops_running_background_command(tmp_path: Path) -> None:
         terminal_event = _wait_for_event(
             events,
             lambda event: (
-                event["type"] == "command.failed"
+                event["type"] == "command.cancelled"
                 and event["payload"]["commandId"] == command_id
                 and event["payload"]["status"] == "cancelled"
             ),
@@ -459,7 +643,7 @@ def test_task_cancel_stops_running_background_command(tmp_path: Path) -> None:
         assert terminal_event["taskId"] == ctx["task_id"]
         trace_events = store.list_trace_events({"taskId": ctx["task_id"]})["traceEvents"]
         assert any(
-            event["type"] == "command.failed"
+            event["type"] == "command.cancelled"
             and event["payload"]["commandId"] == command_id
             and event["payload"]["status"] == "cancelled"
             for event in trace_events

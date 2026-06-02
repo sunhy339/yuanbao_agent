@@ -90,6 +90,50 @@ describe("RuntimeClient desktop transport", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("provider_test", { payload: providerPayload });
   });
 
+  it("sends explicit empty permission capability maps instead of reusing stale rules", async () => {
+    const client = new RuntimeClient();
+    const configPayload = {
+      config: {
+        policy: {
+          approvalMode: "none" as const,
+        },
+        permissions: {
+          preset: "autonomous" as const,
+          capabilities: {},
+        },
+      },
+    };
+
+    invokeMock.mockResolvedValueOnce({ config: configPayload.config });
+    await client.updateConfig(configPayload);
+
+    expect(invokeMock).toHaveBeenLastCalledWith("config_update", { payload: configPayload });
+  });
+
+  it("checks computer use capability probe through the Tauri command", async () => {
+    const client = new RuntimeClient();
+    const probe = {
+      status: "degraded",
+      checkedAt: 1780200000000,
+      platform: "windows",
+      desktopBridge: true,
+      runtimeRunning: true,
+      capabilities: [
+        {
+          id: "screen-observation",
+          label: "屏幕观察",
+          state: "ready",
+          detail: "Pillow ImageGrab 可导入。",
+        },
+      ],
+    };
+
+    invokeMock.mockResolvedValueOnce(probe);
+
+    await expect(client.probeComputerUse()).resolves.toEqual(probe);
+    expect(invokeMock).toHaveBeenLastCalledWith("computer_use_probe", undefined);
+  });
+
   it("wraps workspace memory clear payload for Tauri command arguments", async () => {
     const client = new RuntimeClient();
     const workspace = {
@@ -133,6 +177,26 @@ describe("RuntimeClient desktop transport", () => {
     });
     expect(invokeMock).toHaveBeenLastCalledWith("workspace_memory_init", {
       payload: { workspaceId: "ws_real" },
+    });
+  });
+
+  it("wraps workspace file search payload for Tauri command arguments", async () => {
+    const client = new RuntimeClient();
+    const result = {
+      rootPath: "D:/project",
+      query: "app",
+      entries: [{ name: "App.tsx", path: "src/App.tsx", kind: "file" }],
+      truncated: false,
+      scanned: 42,
+    };
+
+    invokeMock.mockResolvedValueOnce(result);
+
+    await expect(
+      client.workspaceFileSearch({ workspaceRoot: "D:/project", query: "app", maxEntries: 12 }),
+    ).resolves.toEqual(result);
+    expect(invokeMock).toHaveBeenLastCalledWith("workspace_file_search", {
+      payload: { workspaceRoot: "D:/project", query: "app", maxEntries: 12 },
     });
   });
 

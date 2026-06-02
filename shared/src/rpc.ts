@@ -1,4 +1,4 @@
-import type { AppConfig, ConfigPatch, ProviderConfig } from "./config";
+import type { AppConfig, CapabilityName, CapabilityRule, ConfigPatch, ProviderConfig } from "./config";
 import type {
   AgentProfileRecord,
   ApprovalRecord,
@@ -70,21 +70,29 @@ export type RpcMethod =
   | "workspace.memory.clear"
   | "workspace.memory.init"
   | "workspace.fileList"
+  | "workspace.fileSearch"
   | "workspace.fileRead"
   | "session.create"
   | "session.get"
   | "session.list"
   | "session.update"
   | "session.delete"
+  | "session.compact"
+  | "session.branch"
+  | "session.truncate"
   | "message.send"
   | "message.list"
+  | "message.delete"
   | "task.get"
   | "task.cancel"
   | "task.pause"
   | "task.resume"
+  | "task.revertChanges"
   | "approval.submit"
+  | "approval.allowAlways"
   | "config.get"
   | "config.update"
+  | "permission.rule.clear"
   | "provider.test"
   | "diff.get"
   | "command_log.get"
@@ -180,6 +188,20 @@ export interface WorkspaceFileListResult {
   truncated?: boolean;
 }
 
+export interface WorkspaceFileSearchParams {
+  workspaceRoot: string;
+  query?: string;
+  maxEntries?: number;
+}
+
+export interface WorkspaceFileSearchResult {
+  rootPath: string;
+  query: string;
+  entries: WorkspaceFileEntry[];
+  truncated?: boolean;
+  scanned?: number;
+}
+
 export interface WorkspaceFileReadParams {
   workspaceRoot: string;
   path: string;
@@ -194,6 +216,14 @@ export interface WorkspaceFileReadResult {
   truncated: boolean;
   binary: boolean;
   encoding?: string;
+}
+
+export interface OpenPathParams {
+  path: string;
+}
+
+export interface OpenPathResult {
+  path: string;
 }
 
 export type TerminalShell = "powershell" | "pwsh" | "cmd" | "bash" | "zsh" | "sh" | string;
@@ -268,6 +298,11 @@ export interface GitLocalCommitParams extends GitLocalParams {
 export interface GitLocalBranchRecord {
   name: string;
   current: boolean;
+  local?: boolean;
+  remote?: boolean;
+  remoteRef?: string | null;
+  checkedOut?: boolean;
+  worktreePath?: string | null;
 }
 
 export interface GitLocalStatusFile {
@@ -279,13 +314,20 @@ export interface GitLocalStatusFile {
 export interface GitLocalStatusResult {
   cwd: string;
   repoRoot: string;
+  repoName?: string | null;
   branch: string;
+  defaultBranch?: string | null;
   upstream?: string;
   ahead?: number;
   behind?: number;
   dirtyFiles: number;
   files: GitLocalStatusFile[];
   branches: GitLocalBranchRecord[];
+  worktrees?: Array<{
+    path: string;
+    branch?: string | null;
+    current?: boolean;
+  }>;
   clean: boolean;
   rawStatus: string;
 }
@@ -323,10 +365,22 @@ export interface SessionDeleteParams {
   sessionId: Identifier;
 }
 
+export interface SessionBranchParams {
+  sessionId: Identifier;
+  messageId: Identifier;
+  title?: string;
+}
+
+export interface SessionTruncateParams {
+  sessionId: Identifier;
+  messageId: Identifier;
+}
+
 export interface MessageSendParams {
   sessionId: Identifier;
   content: string;
   attachments: string[];
+  fileReferences?: string[];
   taskId?: Identifier;
   mode?: "new" | "supplement" | "queued";
   newTask?: boolean;
@@ -339,6 +393,11 @@ export interface MessageListParams {
   limit?: number;
 }
 
+export interface MessageDeleteParams {
+  sessionId: Identifier;
+  messageId: Identifier;
+}
+
 export interface TaskGetParams {
   taskId: Identifier;
 }
@@ -349,6 +408,7 @@ export interface TaskCancelParams {
 
 export type TaskPauseParams = TaskCancelParams;
 export type TaskResumeParams = TaskCancelParams;
+export type TaskRevertChangesParams = TaskCancelParams;
 
 export interface TaskListParams {
   sessionId?: Identifier;
@@ -388,6 +448,15 @@ export interface ScheduledTaskLogsParams {
 export interface ApprovalSubmitParams {
   approvalId: Identifier;
   decision: "approved" | "rejected";
+}
+
+export interface ApprovalAllowAlwaysParams {
+  approvalId: Identifier;
+  scope?: "capability";
+}
+
+export interface PermissionRuleClearParams {
+  capability: CapabilityName | string;
 }
 
 export interface DiffGetParams {
@@ -448,6 +517,22 @@ export interface SessionDeleteResult {
   session: SessionRecord;
 }
 
+export interface SessionBranchResult {
+  sourceSession: SessionRecord;
+  session: SessionRecord;
+  sourceMessage: MessageRecord;
+  messages: MessageRecord[];
+  copiedCount: number;
+}
+
+export interface SessionTruncateResult {
+  session: SessionRecord;
+  targetMessage: MessageRecord;
+  deletedMessages: MessageRecord[];
+  messages: MessageRecord[];
+  deletedCount: number;
+}
+
 export interface SessionCompactParams {
   sessionId: string;
   maxTokens?: number;
@@ -469,6 +554,13 @@ export interface MessageSendResult {
 
 export interface MessageListResult {
   messages: MessageRecord[];
+}
+
+export interface MessageDeleteResult {
+  session: SessionRecord;
+  message: MessageRecord;
+  messages: MessageRecord[];
+  deleted: boolean;
 }
 
 export interface TaskGetResult {
@@ -555,6 +647,13 @@ export interface TaskControlResult {
   task: TaskRecord;
 }
 
+export interface TaskRevertChangesResult {
+  task: TaskRecord;
+  patches: PatchRecord[];
+  changedPaths: string[];
+  reverted: boolean;
+}
+
 export interface ScheduledTaskResult {
   task: ScheduledTaskRecord;
 }
@@ -574,7 +673,15 @@ export interface ScheduledTaskLogsResult {
 
 export interface ApprovalSubmitResult {
   approval: ApprovalRecord;
+  task?: TaskRecord;
   worktreeMerge?: WorktreeMergeResult;
+}
+
+export interface ApprovalAllowAlwaysResult extends ApprovalSubmitResult {
+  config: AppConfig;
+  capability: CapabilityName | string;
+  rule: CapabilityRule;
+  scope: "capability" | string;
 }
 
 export interface ConfigGetResult {
@@ -583,6 +690,12 @@ export interface ConfigGetResult {
 
 export interface ConfigUpdateResult {
   config: AppConfig;
+}
+
+export interface PermissionRuleClearResult {
+  config: AppConfig;
+  capability: CapabilityName | string;
+  removed: boolean;
 }
 
 export type ConfigUpdateParams = ConfigPatch & {

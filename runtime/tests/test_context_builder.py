@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +120,316 @@ def test_context_builder_includes_recent_chat_messages(store: SQLiteStore, tmp_p
     assert "User: Keep the UI compact." in text
     assert "Assistant: I will preserve compact layout." in text
     assert text.index("Recent conversation:") < text.index("Current user request:\nContinue the interface work")
+
+
+def test_context_builder_includes_referenced_file_content(store: SQLiteStore, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    source_dir = workspace_root / "src"
+    source_dir.mkdir()
+    (source_dir / "target.ts").write_text(
+        "export const referencedValue = 'visible in context';\n",
+        encoding="utf-8",
+    )
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_text("must not leak\n", encoding="utf-8")
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="References")
+    store.create_message(
+        session_id=session["id"],
+        role="user",
+        content=f"Please inspect @src/target.ts and @{outside_file}",
+        metadata={
+            "attachments": ["src/target.ts", str(outside_file)],
+            "fileReferences": ["src/target.ts", str(outside_file)],
+        },
+    )
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Continue with the referenced file",
+        lightweight=False,
+    )
+
+    text = _message_text(context)
+    assert "Referenced files: src/target.ts" in text
+    assert "Referenced file content: src/target.ts" in text
+    assert "referencedValue" in text
+    assert "visible in context" in text
+    assert "must not leak" not in text
+
+
+def test_context_builder_includes_text_attachment_content(store: SQLiteStore, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    notes_dir = workspace_root / "notes"
+    notes_dir.mkdir()
+    (notes_dir / "attached.md").write_text(
+        "Attached workspace text should reach the model.\n",
+        encoding="utf-8",
+    )
+    outside_file = tmp_path / "outside-attachment.md"
+    outside_file.write_text("outside attachment must not leak\n", encoding="utf-8")
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Attachment context")
+    store.create_message(
+        session_id=session["id"],
+        role="user",
+        content="Please use the attached notes.",
+        metadata={"attachments": ["notes/attached.md", str(outside_file)]},
+    )
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Continue with the attached notes",
+        lightweight=False,
+    )
+
+    text = _message_text(context)
+    assert "Referenced files: notes/attached.md" in text
+    assert "Referenced file content: notes/attached.md" in text
+    assert "Attached workspace text should reach the model." in text
+    assert "outside attachment must not leak" not in text
+
+
+def test_context_builder_includes_current_message_references_before_persist(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "todo.md").write_text("- wire current references\n", encoding="utf-8")
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Current reference")
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Please use @todo.md",
+        lightweight=False,
+        current_message_metadata={"fileReferences": ["todo.md"], "attachments": ["todo.md"]},
+    )
+
+    text = _message_text(context)
+    assert "Referenced file content: todo.md" in text
+    assert "wire current references" in text
+
+
+def test_context_builder_attaches_current_workspace_image_before_persist(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    image_path = workspace_root / "shot.png"
+    image_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP8z8BQDwAFgwJ/lwOxPgAAAABJRU5ErkJggg=="
+    )
+    image_path.write_bytes(image_bytes)
+    outside_image = tmp_path / "outside.png"
+    outside_image.write_bytes(image_bytes)
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Current image")
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Please inspect the screenshot.",
+        lightweight=False,
+        current_message_metadata={"attachments": ["shot.png", str(outside_image)]},
+    )
+
+    user_message = context["messages"][-1]
+    assert user_message["content"] == "Current user request:\nPlease inspect the screenshot."
+    assert user_message["imageAttachments"] == [
+        {
+            "source": "base64",
+            "path": "shot.png",
+            "mimeType": "image/png",
+            "data": base64.b64encode(image_bytes).decode("ascii"),
+            "sizeBytes": len(image_bytes),
+        },
+        {
+            "source": "base64",
+            "path": outside_image.as_posix(),
+            "mimeType": "image/png",
+            "data": base64.b64encode(image_bytes).decode("ascii"),
+            "sizeBytes": len(image_bytes),
+        },
+    ]
+
+
+def test_context_builder_does_not_attach_external_file_references_as_images(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    image_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP8z8BQDwAFgwJ/lwOxPgAAAABJRU5ErkJggg=="
+    )
+    outside_image = tmp_path / "outside-reference.png"
+    outside_image.write_bytes(image_bytes)
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="External reference")
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal=f"Please inspect @{outside_image}",
+        lightweight=False,
+        current_message_metadata={"fileReferences": [str(outside_image)]},
+    )
+
+    text = _message_text(context)
+    assert "imageAttachments" not in context["messages"][-1]
+    assert "Attached external file content" not in text
+
+
+def test_context_builder_includes_current_external_text_attachment(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    outside_file = tmp_path / "external-notes.txt"
+    outside_file.write_text("external attachment should reach the model\n", encoding="utf-8")
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="External attachment")
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Use the attached external notes.",
+        lightweight=False,
+        current_message_metadata={"attachments": [str(outside_file)]},
+    )
+
+    text = _message_text(context)
+    assert f"Attached external file content: {outside_file.as_posix()}" in text
+    assert "external attachment should reach the model" in text
+
+
+def test_context_builder_skips_external_text_file_references(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    outside_file = tmp_path / "external-reference.txt"
+    outside_file.write_text("external reference must not leak\n", encoding="utf-8")
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="External reference")
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal=f"Please inspect @{outside_file}",
+        lightweight=False,
+        current_message_metadata={"fileReferences": [str(outside_file)]},
+    )
+
+    text = _message_text(context)
+    assert "external reference must not leak" not in text
+    assert "Attached external file content" not in text
+
+
+def test_context_builder_skips_historical_external_attachments(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    outside_file = tmp_path / "historical-external.txt"
+    outside_file.write_text("historical external attachment must not leak\n", encoding="utf-8")
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Historical external")
+    store.create_message(
+        session_id=session["id"],
+        role="user",
+        content="Earlier external attachment.",
+        metadata={"attachments": [str(outside_file)]},
+    )
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Continue without reattaching external files.",
+        lightweight=False,
+    )
+
+    text = _message_text(context)
+    assert "historical external attachment must not leak" not in text
+    assert "Attached external file content" not in text
+
+
+def test_context_builder_attaches_recent_workspace_images(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    image_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP8z8BQDwAFgwJ/lwOxPgAAAABJRU5ErkJggg=="
+    )
+    (workspace_root / "previous.png").write_bytes(image_bytes)
+    (workspace_root / "notes.md").write_text("not an image\n", encoding="utf-8")
+    outside_image = tmp_path / "outside.png"
+    outside_image.write_bytes(image_bytes)
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Historical image")
+    store.create_message(
+        session_id=session["id"],
+        role="user",
+        content="Here is the screenshot from the previous turn.",
+        metadata={"attachments": ["previous.png", "notes.md", str(outside_image)]},
+    )
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Use the previous screenshot.",
+        lightweight=False,
+    )
+
+    user_context_message = context["messages"][1]
+    current_request_message = context["messages"][-1]
+    assert "Recent conversation:" in str(user_context_message["content"])
+    assert user_context_message["imageAttachments"] == [
+        {
+            "source": "base64",
+            "path": "previous.png",
+            "mimeType": "image/png",
+            "data": base64.b64encode(image_bytes).decode("ascii"),
+            "sizeBytes": len(image_bytes),
+        }
+    ]
+    assert "imageAttachments" not in current_request_message
+
+
+def test_context_builder_prefers_current_image_when_history_duplicates_path(
+    store: SQLiteStore,
+    tmp_path: Path,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    image_bytes = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP8z8BQDwAFgwJ/lwOxPgAAAABJRU5ErkJggg=="
+    )
+    (workspace_root / "same.png").write_bytes(image_bytes)
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Duplicate image")
+    store.create_message(
+        session_id=session["id"],
+        role="user",
+        content="Earlier attached the same image.",
+        metadata={"attachments": ["same.png"]},
+    )
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Use this screenshot again.",
+        lightweight=False,
+        current_message_metadata={"attachments": ["same.png"]},
+    )
+
+    user_context_message = context["messages"][1]
+    current_request_message = context["messages"][-1]
+    assert "imageAttachments" not in user_context_message
+    assert current_request_message["imageAttachments"][0]["path"] == "same.png"
 
 
 def test_context_builder_preserves_large_recent_conversation_for_cache_prefix(

@@ -681,6 +681,8 @@ class WorkerRunner:
             return "Command started"
         if event_type == "command.completed":
             return "Command completed"
+        if event_type == "command.cancelled":
+            return "Command cancelled"
         if event_type == "command.failed":
             return "Command failed"
         if event_type == "command.output":

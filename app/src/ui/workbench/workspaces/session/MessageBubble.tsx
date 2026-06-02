@@ -141,6 +141,11 @@ function summarizeToolContent(content: string, kind: string) {
   return trimmed.replace(/\s+/g, " ").slice(0, 140);
 }
 
+function summarizeToolActivity(message: SessionWorkspaceMessage, inputText: string, resultText: string) {
+  const resultSummary = getMessageMetadataString(message, "resultSummary");
+  return `${summarizeToolContent(inputText, "tool_use")}${resultSummary ? ` → ${resultSummary}` : resultText ? ` → ${summarizeToolContent(resultText, "tool_result")}` : ""}`;
+}
+
 function getToolTarget(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return "";
@@ -167,6 +172,9 @@ function parseToolInputRecord(message: SessionWorkspaceMessage) {
 }
 
 function getToolStatusLabel(message: SessionWorkspaceMessage, isError: boolean, isActivity: boolean, isResult: boolean) {
+  if (message.status === "cancelled") {
+    return "已取消";
+  }
   if (isError) {
     return "失败";
   }
@@ -199,9 +207,7 @@ function ToolBlockContent({ message }: { message: SessionWorkspaceMessage }) {
     [content, metadataInput, metadataInputText],
   );
   const target = getToolTarget(inputRecord);
-  const summary = isActivity
-    ? `${summarizeToolContent(inputText, "tool_use")}${resultText ? ` → ${summarizeToolContent(resultText, "tool_result")}` : ""}`
-    : summarizeToolContent(content, kind);
+  const summary = isActivity ? summarizeToolActivity(message, inputText, resultText) : summarizeToolContent(content, kind);
   const toolLabel = formatToolNameLabel(message.toolName) || (isActivity ? "工具过程" : isResult ? "工具结果" : "工具调用");
   const statusLabel = getToolStatusLabel(message, isError, isActivity, isResult);
   const ToggleIcon = expanded ? ChevronDown : ChevronRight;

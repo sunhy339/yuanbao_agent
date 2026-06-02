@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import json
 import os
 import subprocess
 import time
@@ -836,6 +837,10 @@ def test_apply_patch_files_can_create_new_file_after_approval(runtime_harness: A
     )
 
     assert proposed["status"] == "approval_required"
+    request_payload = json.loads(proposed["approval"]["requestJson"])
+    assert request_payload["changedPaths"] == ["hello_world.py"]
+    assert request_payload["filesChanged"] == 1
+    assert "+++ b/hello_world.py" in request_payload["diffText"]
     approval_id = proposed["approval"]["id"]
     runtime_harness.store.resolve_approval(approval_id, "approved")
 

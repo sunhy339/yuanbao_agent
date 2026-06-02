@@ -477,8 +477,49 @@ class OpenAICompatibleChatClient:
                 }
                 serialized.append(tool_message)
                 continue
+            if role == "user":
+                user_message: dict[str, Any] = {"role": "user"}
+                content = message.get("content") if isinstance(message.get("content"), str) else ""
+                image_blocks = self._openai_chat_image_blocks(message.get("imageAttachments"))
+                if image_blocks:
+                    blocks: list[dict[str, Any]] = []
+                    if content:
+                        blocks.append({"type": "text", "text": content})
+                    blocks.extend(image_blocks)
+                    user_message["content"] = blocks
+                else:
+                    user_message["content"] = content
+                serialized.append(user_message)
+                continue
             serialized.append(dict(message))
         return serialized
+
+    def _openai_chat_image_blocks(self, image_attachments: Any) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        for attachment in self._iter_image_attachments(image_attachments):
+            image_url = self._attachment_image_url(attachment)
+            if image_url:
+                blocks.append({"type": "image_url", "image_url": {"url": image_url}})
+        return blocks
+
+    @staticmethod
+    def _iter_image_attachments(image_attachments: Any) -> Iterator[dict[str, Any]]:
+        if not isinstance(image_attachments, list):
+            return
+        for attachment in image_attachments:
+            if isinstance(attachment, dict):
+                yield attachment
+
+    @staticmethod
+    def _attachment_image_url(attachment: dict[str, Any]) -> str | None:
+        url = attachment.get("url")
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+        data = attachment.get("data")
+        mime_type = attachment.get("mimeType")
+        if isinstance(data, str) and data.strip() and isinstance(mime_type, str) and mime_type.startswith("image/"):
+            return f"data:{mime_type};base64,{data.strip()}"
+        return None
 
     def _drop_orphan_tool_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         valid_tool_call_ids: set[str] = set()
@@ -655,15 +696,38 @@ class OpenAICompatibleChatClient:
             original_name = self._original_tool_name(name, tool_name_map)
             raw_id = item.get("id")
             tool_call_id = raw_id if isinstance(raw_id, str) and raw_id else f"call_{len(normalized)}"
-            normalized.append(
-                {
-                    "id": tool_call_id,
-                    "type": item.get("type") or "function",
-                    "name": original_name,
-                    "arguments": self._parse_tool_arguments(original_name, function.get("arguments")),
-                }
-            )
+            normalized_call = {
+                "id": tool_call_id,
+                "type": item.get("type") or "function",
+                "name": original_name,
+                "arguments": self._parse_tool_arguments(original_name, function.get("arguments")),
+            }
+            parent_tool_use_id = self._tool_call_parent_id(item)
+            if parent_tool_use_id:
+                normalized_call["parentToolUseId"] = parent_tool_use_id
+            normalized.append(normalized_call)
         return normalized
+
+    @staticmethod
+    def _tool_call_parent_id(tool_call: dict[str, Any]) -> str | None:
+        candidates = (
+            tool_call.get("parentToolUseId"),
+            tool_call.get("parent_tool_use_id"),
+            tool_call.get("parentToolCallId"),
+            tool_call.get("parent_tool_call_id"),
+            tool_call.get("parentId"),
+            tool_call.get("parent_id"),
+        )
+        for value in candidates:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        metadata = tool_call.get("metadata")
+        if isinstance(metadata, dict):
+            for key in ("parentToolUseId", "parent_tool_use_id", "parentToolCallId", "parent_tool_call_id", "parentId", "parent_id"):
+                value = metadata.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return None
 
     def _normalize_stream(
         self,
@@ -829,6 +893,9 @@ class OpenAICompatibleChatClient:
                 index,
                 {"id": None, "type": "function", "name": None, "arguments": ""},
             )
+            parent_tool_use_id = self._tool_call_parent_id(item)
+            if parent_tool_use_id:
+                part["parentToolUseId"] = parent_tool_use_id
             tool_id = item.get("id")
             if isinstance(tool_id, str) and tool_id:
                 part["id"] = tool_id
@@ -879,6 +946,7 @@ class OpenAICompatibleChatClient:
                 {
                     "id": part["id"],
                     "type": part["type"],
+                    **({"parentToolUseId": part.get("parentToolUseId")} if part.get("parentToolUseId") else {}),
                     "function": {
                         "name": part["name"],
                         "arguments": part["arguments"],
@@ -1097,8 +1165,25 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
                 continue
             if role in {"system", "developer", "user"}:
                 content = message.get("content") if isinstance(message.get("content"), str) else ""
+                if role == "user":
+                    image_blocks = self._responses_image_blocks(message.get("imageAttachments"))
+                    if image_blocks:
+                        blocks: list[dict[str, Any]] = []
+                        if content:
+                            blocks.append({"type": "input_text", "text": content})
+                        blocks.extend(image_blocks)
+                        serialized.append({"role": role, "content": blocks})
+                        continue
                 serialized.append({"role": role, "content": content})
         return serialized
+
+    def _responses_image_blocks(self, image_attachments: Any) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        for attachment in self._iter_image_attachments(image_attachments):
+            image_url = self._attachment_image_url(attachment)
+            if image_url:
+                blocks.append({"type": "input_image", "image_url": image_url})
+        return blocks
 
     def _serialize_response_function_calls(self, tool_calls: Any, *, raw_to_safe: dict[str, str]) -> list[dict[str, Any]]:
         if not isinstance(tool_calls, list):
@@ -1218,8 +1303,19 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
                 if isinstance(delta, str) and delta:
                     if "function_call_arguments" in event_type:
                         item_id = self._responses_stream_tool_call_key(event)
-                        function_calls.setdefault(item_id, self._responses_stream_tool_call_seed(event))
-                        function_calls[item_id]["arguments"] += delta
+                        current = function_calls.setdefault(item_id, self._responses_stream_tool_call_seed(event))
+                        current["arguments"] += delta
+                        yield {
+                            "type": "tool_call_delta",
+                            "index": self._responses_stream_tool_call_index(event, fallback=len(function_calls) - 1),
+                            "id": current.get("id"),
+                            "tool_type": current.get("type"),
+                            "name": current.get("name"),
+                            "parentToolUseId": current.get("parentToolUseId"),
+                            "arguments_delta": delta,
+                        }
+                    elif "reasoning_summary_text" in event_type:
+                        yield {"type": "thinking_delta", "delta": delta, "source": "reasoning_summary"}
                     else:
                         content_parts.append(delta)
                         yield {"type": "content_delta", "delta": delta}
@@ -1236,9 +1332,21 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
                 if isinstance(item, dict) and item.get("type") == "function_call":
                     item_id = self._responses_stream_tool_call_key(event, item=item)
                     current = function_calls.setdefault(item_id, self._responses_stream_tool_call_seed(event, item=item))
+                    parent_tool_use_id = self._tool_call_parent_id(item)
+                    if parent_tool_use_id:
+                        current["parentToolUseId"] = parent_tool_use_id
                     name = item.get("name")
                     if isinstance(name, str) and name:
                         current["name"] = self._original_tool_name(name, tool_name_map)
+                        yield {
+                            "type": "tool_call_delta",
+                            "index": self._responses_stream_tool_call_index(event, fallback=len(function_calls) - 1),
+                            "id": current.get("id"),
+                            "tool_type": current.get("type"),
+                            "name": current.get("name"),
+                            "parentToolUseId": current.get("parentToolUseId"),
+                            "arguments_delta": "",
+                        }
                     raw_id = item.get("call_id") or item.get("id")
                     if isinstance(raw_id, str) and raw_id:
                         current["id"] = raw_id
@@ -1272,6 +1380,7 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
                             {
                                 "id": item["id"],
                                 "type": item["type"],
+                                **({"parentToolUseId": item.get("parentToolUseId")} if item.get("parentToolUseId") else {}),
                                 "function": {"name": item["name"], "arguments": item["arguments"]},
                             }
                             for item in merged_calls
@@ -1307,13 +1416,25 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         return "0"
 
     @staticmethod
+    def _responses_stream_tool_call_index(event: dict[str, Any], *, fallback: int) -> int:
+        value = event.get("output_index")
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    @staticmethod
     def _responses_stream_tool_call_seed(event: dict[str, Any], *, item: dict[str, Any] | None = None) -> dict[str, Any]:
         raw_id = None
         if isinstance(item, dict):
             raw_id = item.get("call_id") or item.get("id")
         if not isinstance(raw_id, str) or not raw_id:
             raw_id = event.get("call_id") or event.get("item_id") or event.get("output_index") or "0"
-        return {"id": str(raw_id), "type": "function", "name": None, "arguments": ""}
+        seed = {"id": str(raw_id), "type": "function", "name": None, "arguments": ""}
+        parent_tool_use_id = OpenAICompatibleChatClient._tool_call_parent_id(item or event)
+        if parent_tool_use_id:
+            seed["parentToolUseId"] = parent_tool_use_id
+        return seed
 
     @staticmethod
     def _merge_responses_stream_tool_call_parts(parts: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1323,6 +1444,9 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         if len(named) == 1:
             target = named[0]
             for call in unnamed:
+                parent_tool_use_id = call.get("parentToolUseId")
+                if parent_tool_use_id and not target.get("parentToolUseId"):
+                    target["parentToolUseId"] = parent_tool_use_id
                 arguments = call.get("arguments")
                 if isinstance(arguments, str) and arguments:
                     existing = target.get("arguments")
@@ -1367,13 +1491,19 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
             used_stream_ids.add(str(stream_call.get("id") or ""))
             arguments = call.get("arguments")
             stream_arguments = stream_call.get("arguments")
+            parent_tool_use_id = stream_call.get("parentToolUseId")
             if isinstance(stream_arguments, str) and stream_arguments and not arguments:
                 patched = dict(call)
                 name = str(patched.get("name") or stream_call.get("name") or "")
                 patched["arguments"] = self._parse_tool_arguments(name, stream_arguments)
+                if parent_tool_use_id and not patched.get("parentToolUseId"):
+                    patched["parentToolUseId"] = parent_tool_use_id
                 merged.append(patched)
             else:
-                merged.append(call)
+                patched = dict(call)
+                if parent_tool_use_id and not patched.get("parentToolUseId"):
+                    patched["parentToolUseId"] = parent_tool_use_id
+                merged.append(patched)
         existing_ids = {str(call.get("id") or "") for call in normalized_calls if isinstance(call, dict)}
         for stream_call in stream_parts:
             stream_id = str(stream_call.get("id") or "")
@@ -1388,6 +1518,7 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
                         "type": stream_call.get("type") or "function",
                         "name": name,
                         "arguments": self._parse_tool_arguments(name, arguments),
+                        **({"parentToolUseId": stream_call.get("parentToolUseId")} if stream_call.get("parentToolUseId") else {}),
                     }
                 )
         return merged
@@ -1416,11 +1547,13 @@ class OpenAIResponsesClient(OpenAICompatibleChatClient):
         if not isinstance(name, str) or not name:
             raise ProviderAdapterError("Provider returned invalid response: function_call is missing name")
         original_name = self._original_tool_name(name, tool_name_map)
+        parent_tool_use_id = self._tool_call_parent_id(item)
         return {
             "id": str(item.get("call_id") or item.get("id") or ""),
             "type": "function",
             "name": original_name,
             "arguments": self._parse_tool_arguments(original_name, item.get("arguments")),
+            **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
         }
 
 
@@ -1562,10 +1695,39 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
                 serialized.append({"role": "assistant", "content": blocks or content})
                 continue
             if role == "user":
-                serialized.append({"role": "user", "content": content})
+                image_blocks = self._anthropic_image_blocks(message.get("imageAttachments"))
+                if image_blocks:
+                    blocks: list[dict[str, Any]] = []
+                    if content:
+                        blocks.append({"type": "text", "text": content})
+                    blocks.extend(image_blocks)
+                    serialized.append({"role": "user", "content": blocks})
+                else:
+                    serialized.append({"role": "user", "content": content})
         if not serialized:
             serialized.append({"role": "user", "content": ""})
         return system_parts, serialized
+
+    def _anthropic_image_blocks(self, image_attachments: Any) -> list[dict[str, Any]]:
+        blocks: list[dict[str, Any]] = []
+        for attachment in self._iter_image_attachments(image_attachments):
+            data = attachment.get("data")
+            mime_type = attachment.get("mimeType")
+            if not isinstance(data, str) or not data.strip():
+                continue
+            if not isinstance(mime_type, str) or not mime_type.startswith("image/"):
+                continue
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime_type,
+                        "data": data.strip(),
+                    },
+                }
+            )
+        return blocks
 
     def _serialize_anthropic_tool_uses(self, tool_calls: Any, *, raw_to_safe: dict[str, str]) -> list[dict[str, Any]]:
         if not isinstance(tool_calls, list):
@@ -1642,9 +1804,11 @@ class AnthropicMessagesClient(OpenAICompatibleChatClient):
         original_name = self._original_tool_name(name, tool_name_map)
         input_value = block.get("input")
         arguments = input_value if isinstance(input_value, dict) else {}
+        parent_tool_use_id = self._tool_call_parent_id(block)
         return {
             "id": str(block.get("id") or ""),
             "type": "function",
             "name": original_name,
             "arguments": arguments,
+            **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
         }

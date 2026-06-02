@@ -13,6 +13,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -815,13 +816,22 @@ class TestWriteScopeToolIntegration:
         result = tools["write_file"](params)
 
         assert result["status"] == "approval_required"
+        assert result["changedPaths"] == ["src/ui/Button.tsx"]
+        assert result["filesChanged"] == 1
+        assert "+++ b/src/ui/Button.tsx" in result["diffText"]
         assert not target.exists()
         approval_id = result["approval"]["id"]
+        request_payload = json.loads(result["approval"]["requestJson"])
+        assert request_payload["changedPaths"] == ["src/ui/Button.tsx"]
+        assert request_payload["filesChanged"] == 1
+        assert "+++ b/src/ui/Button.tsx" in request_payload["diffText"]
 
         store.resolve_approval(approval_id, "approved")
         approved = tools["write_file"]({**params, "approvalId": approval_id})
 
         assert approved["status"] == "written"
+        assert approved["changedPaths"] == ["src/ui/Button.tsx"]
+        assert approved["filesChanged"] == 1
         assert target.read_text(encoding="utf-8") == params["content"]
 
     def test_write_file_ignores_placeholder_approval_id_and_still_requires_real_approval(self, tmp_path: Path) -> None:

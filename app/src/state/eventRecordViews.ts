@@ -14,6 +14,8 @@ export interface ApprovalCardView {
   patchId?: string;
   patchSummary?: string;
   filesChanged?: number;
+  changedPaths?: string[];
+  diffText?: string;
   command: string;
   cwd: string;
   shell: string;
@@ -21,6 +23,7 @@ export interface ApprovalCardView {
   risk: string;
   requestJson: string;
   requestSummary: string;
+  previewRows?: Array<{ label: string; value: string }>;
   completionEvidence?: ApprovalCompletionEvidenceView;
   status: "pending" | "approved" | "rejected";
   requestedAt: number;
@@ -99,6 +102,7 @@ export interface PatchCardView {
   requestedAt: number;
   updatedAt: number;
   diffText?: string;
+  changedPaths?: string[];
   approvalId?: string;
   approvalStatus?: ApprovalCardView["status"];
   approvalResolvedAt?: number;
@@ -109,10 +113,22 @@ export interface ToolTimelineItem {
   taskId: string;
   toolCallId: string;
   parentToolUseId?: string;
+  toolGroupId?: string;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: string;
+  toolOperationLabel?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
   toolName: string;
-  status: "started" | "completed" | "failed";
+  target?: string;
+  status: "started" | "completed" | "failed" | "blocked";
   argsSummary: string;
   resultSummary: string;
+  resultPreview?: Array<{ label: string; value: string }>;
   errorSummary?: string;
   argsRaw?: string;
   resultRaw?: string;
@@ -168,9 +184,18 @@ export function stringifyRequestJson(request: Record<string, unknown>): string {
 export function readRequestStringList(request: Record<string, unknown>, keys: string[]): string[] {
   for (const key of keys) {
     const value = request[key];
+    if (typeof value === "string" && value.trim()) {
+      return [value.trim()];
+    }
     if (Array.isArray(value)) {
       return value
-        .map((item) => (typeof item === "string" ? item.trim() : ""))
+        .map((item) => {
+          if (typeof item === "string") return item.trim();
+          if (!item || typeof item !== "object") return "";
+          const record = item as Record<string, unknown>;
+          const path = record.path ?? record.file ?? record.target;
+          return typeof path === "string" ? path.trim() : "";
+        })
         .filter(Boolean);
     }
   }

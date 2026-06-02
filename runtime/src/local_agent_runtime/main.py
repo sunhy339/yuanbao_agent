@@ -18,6 +18,7 @@ from .services.hook_service import HookService
 from .services.worktree_service import WorktreeService
 from .store.sqlite_store import SQLiteStore
 from .tools import build_builtin_tools
+from .tools.computer_use import build_env_computer_use_executor
 from .tools.registry import ToolRegistry
 
 
@@ -47,6 +48,7 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
     )
     from .context.scratchpad import Scratchpad
     scratchpad = Scratchpad(store)
+    computer_use_executor = build_env_computer_use_executor()
     tool_registry = ToolRegistry(
         build_builtin_tools(
             policy_guard=policy_guard,
@@ -55,6 +57,7 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
             memory_manager=memory_manager,
             scratchpad=scratchpad,
             permission_engine=permission_engine,
+            computer_use_executor=computer_use_executor,
         )
     )
     hook_service = HookService(
@@ -87,11 +90,16 @@ def build_server(database_path: str = ":memory:") -> JsonRpcServer:
         worktree_service=worktree_service,
         _skip_orphan_cleanup=os.environ.get("LOCAL_AGENT_CHILD_WORKER") == "1",
     )
+    shutdown_callbacks = []
+    close_computer_use_executor = getattr(computer_use_executor, "close", None)
+    if callable(close_computer_use_executor):
+        shutdown_callbacks.append(close_computer_use_executor)
     return JsonRpcServer(
         orchestrator=orchestrator,
         store=store,
         event_bus=event_bus,
         worktree_service=worktree_service,
+        shutdown_callbacks=shutdown_callbacks,
     )
 
 

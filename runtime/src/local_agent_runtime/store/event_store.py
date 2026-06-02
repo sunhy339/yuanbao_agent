@@ -117,7 +117,7 @@ class EventStoreMixin:
         normalized_type = str(event_type)
         if normalized_type.startswith(("approval.", "patch.")):
             return None
-        if normalized_type in {"command.started", "command.completed", "command.failed"}:
+        if normalized_type in {"command.started", "command.completed", "command.failed", "command.cancelled"}:
             return None
 
         payload = getattr(event, "payload", {})

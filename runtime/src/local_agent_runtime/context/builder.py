@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import logging
+import mimetypes
 import subprocess
 from pathlib import Path
 import re
@@ -58,6 +60,18 @@ DEFAULT_CANONICAL_MEMORY_FILES = (
     "MEMORY.md",
     "MEMORY.local.md",
 )
+IMAGE_ATTACHMENT_MAX_COUNT = 4
+IMAGE_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024
+EXTERNAL_ATTACHMENT_MAX_BYTES = 16_000
+EXTERNAL_ATTACHMENT_TOTAL_MAX_BYTES = 48_000
+IMAGE_ATTACHMENT_MIME_TYPES = {
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+IMAGE_ATTACHMENT_METADATA_KEYS = ("attachments", "images", "imagePaths")
 
 DEFAULT_AGENT_SOUL_BASELINE = {
     "id": "default",
@@ -124,6 +138,7 @@ class ContextBuilder(HistoryMixin):
         role: str | None = None,
         include_history: bool = True,
         include_scratchpad: bool = True,
+        current_message_metadata: dict[str, Any] | None = None,
     ) -> dict[str, object]:
         session = self._store.require_session(session_id)
         workspace = self._load_workspace(session["workspaceId"])
@@ -206,6 +221,7 @@ class ContextBuilder(HistoryMixin):
             role=role,
             include_history=include_history,
             include_scratchpad=include_scratchpad,
+            current_message_metadata=current_message_metadata,
         )
         return {
             "session_id": session_id,
@@ -280,7 +296,8 @@ class ContextBuilder(HistoryMixin):
         role: str | None = None,
         include_history: bool = True,
         include_scratchpad: bool = True,
-    ) -> tuple[list[dict[str, str]], dict[str, Any]]:
+        current_message_metadata: dict[str, Any] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         max_context_tokens = self._max_context_tokens(config)
         system_text, prompt_layers, role_text = self._compose_system_prompt(
             workspace_root=workspace["rootPath"],
@@ -337,11 +354,34 @@ class ContextBuilder(HistoryMixin):
                 )
             )
 
+        recent_messages: list[dict[str, Any]] = []
         if include_history:
+            recent_messages = self._recent_messages(
+                session["id"],
+                limit=self._policy_int(cache_policy, "recentMessages", 8),
+            )
             if lightweight:
-                sections.extend(self._conversation_history_sections(session))
+                sections.extend(
+                    self._conversation_history_sections(
+                        session,
+                        current_message_metadata=current_message_metadata,
+                    )
+                )
             else:
-                sections.extend(self._history_sections(session, policy=cache_policy))
+                sections.extend(
+                    self._history_sections(
+                        session,
+                        policy=cache_policy,
+                        current_message_metadata=current_message_metadata,
+                    )
+                )
+        sections.extend(
+            self._current_external_attachment_sections(
+                workspace_root=workspace["rootPath"],
+                metadata=current_message_metadata,
+                policy=cache_policy,
+            )
+        )
         if not lightweight:
             sections.append(
                 BudgetSection(
@@ -379,7 +419,7 @@ class ContextBuilder(HistoryMixin):
         user_message_section = next((section for section in non_system_sections if section.name == "user_message"), None)
         current_request = user_message_section.text if user_message_section is not None else f"Current user request:\n{goal}"
 
-        messages: list[dict[str, str]] = [
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_section.text},
         ]
         if user_context:
@@ -397,6 +437,13 @@ class ContextBuilder(HistoryMixin):
                     force=decision.force,
                 )
                 messages = result.kept_messages  # type: ignore[assignment]
+
+        messages = self._attach_image_attachments(
+            messages,
+            workspace_root=workspace["rootPath"],
+            current_message_metadata=current_message_metadata,
+            recent_messages=recent_messages if include_history else [],
+        )
 
         stable_prefix_tokens = self._stable_prefix_tokens(messages)
         message_tokens = max(0, budget_result.stats["estimatedTokens"] - tool_schema_tokens)
@@ -418,6 +465,274 @@ class ContextBuilder(HistoryMixin):
             messages,
             stats,
         )
+
+    def _attach_image_attachments(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        workspace_root: str,
+        current_message_metadata: dict[str, Any] | None,
+        recent_messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        image_attachments = self._current_message_image_attachments(
+            workspace_root=workspace_root,
+            metadata=current_message_metadata,
+        )
+        history_image_attachments = self._historical_message_image_attachments(
+            workspace_root=workspace_root,
+            messages=recent_messages,
+            exclude_paths={str(attachment.get("path") or "") for attachment in image_attachments},
+        )
+        if not image_attachments and not history_image_attachments:
+            return messages
+        next_messages = list(messages)
+        if history_image_attachments:
+            self._attach_images_to_first_context_message(next_messages, history_image_attachments)
+        if image_attachments:
+            self._attach_images_to_last_user_message(next_messages, image_attachments)
+        return next_messages
+
+    @staticmethod
+    def _attach_images_to_first_context_message(
+        messages: list[dict[str, Any]],
+        image_attachments: list[dict[str, Any]],
+    ) -> None:
+        for index, message in enumerate(messages):
+            if message.get("role") != "user":
+                continue
+            if "Recent conversation:" not in str(message.get("content") or ""):
+                continue
+            next_message = dict(message)
+            next_message["imageAttachments"] = image_attachments
+            messages[index] = next_message
+            return
+
+    @staticmethod
+    def _attach_images_to_last_user_message(
+        messages: list[dict[str, Any]],
+        image_attachments: list[dict[str, Any]],
+    ) -> None:
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].get("role") != "user":
+                continue
+            message = dict(messages[index])
+            message["imageAttachments"] = image_attachments
+            messages[index] = message
+            return
+
+    def _current_message_image_attachments(
+        self,
+        *,
+        workspace_root: str,
+        metadata: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(metadata, dict):
+            return []
+        root = Path(workspace_root).resolve()
+        inline_references = set(self._metadata_string_references(metadata, key="fileReferences"))
+        values = self._image_reference_values(metadata)
+        attachments: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in values:
+            if len(attachments) >= IMAGE_ATTACHMENT_MAX_COUNT:
+                break
+            if not isinstance(item, str):
+                continue
+            reference = self._clean_file_reference(item)
+            if not reference or reference in seen:
+                continue
+            seen.add(reference)
+            attachment = self._image_attachment_from_reference(
+                root,
+                reference,
+                allow_external=reference not in inline_references,
+            )
+            if attachment is not None:
+                attachments.append(attachment)
+        return attachments
+
+    def _historical_message_image_attachments(
+        self,
+        *,
+        workspace_root: str,
+        messages: list[dict[str, Any]],
+        exclude_paths: set[str],
+    ) -> list[dict[str, Any]]:
+        root = Path(workspace_root).resolve()
+        attachments: list[dict[str, Any]] = []
+        seen = {path for path in exclude_paths if path}
+        for message in reversed(messages):
+            if message.get("role") != "user":
+                continue
+            metadata = self._message_metadata(message)
+            for reference in self._image_reference_values(metadata):
+                if len(attachments) >= IMAGE_ATTACHMENT_MAX_COUNT:
+                    return list(reversed(attachments))
+                if not isinstance(reference, str):
+                    continue
+                cleaned = self._clean_file_reference(reference)
+                if not cleaned:
+                    continue
+                attachment = self._image_attachment_from_reference(root, cleaned)
+                if attachment is None:
+                    continue
+                path = str(attachment.get("path") or "")
+                if path in seen:
+                    continue
+                seen.add(path)
+                attachments.append(attachment)
+        return list(reversed(attachments))
+
+    @staticmethod
+    def _image_reference_values(metadata: dict[str, Any]) -> list[Any]:
+        values: list[Any] = []
+        for key in IMAGE_ATTACHMENT_METADATA_KEYS:
+            value = metadata.get(key)
+            if isinstance(value, list):
+                values.extend(value)
+            elif isinstance(value, str):
+                values.append(value)
+        return values
+
+    def _current_external_attachment_sections(
+        self,
+        *,
+        workspace_root: str,
+        metadata: dict[str, Any] | None,
+        policy: dict[str, Any],
+    ) -> list[BudgetSection]:
+        if not isinstance(metadata, dict):
+            return []
+        root = Path(workspace_root).resolve()
+        references = self._current_external_attachment_references(metadata)
+        if not references:
+            return []
+        max_files = self._policy_int(policy, "externalAttachments", 4)
+        max_bytes = self._policy_int(policy, "externalAttachmentMaxBytes", EXTERNAL_ATTACHMENT_MAX_BYTES)
+        max_total = self._policy_int(policy, "externalAttachmentsTotalMaxBytes", EXTERNAL_ATTACHMENT_TOTAL_MAX_BYTES)
+        sections: list[BudgetSection] = []
+        total_bytes = 0
+        for reference in references:
+            if len(sections) >= max_files or total_bytes >= max_total:
+                break
+            resolved = self._resolve_external_attachment(root, reference)
+            if resolved is None or self._image_mime_type(resolved.name) is not None:
+                continue
+            remaining = max_total - total_bytes
+            text = self._read_referenced_file(resolved, max_bytes=min(max_bytes, remaining))
+            if not text:
+                continue
+            total_bytes += len(text.encode("utf-8", errors="replace"))
+            display_path = resolved.as_posix()
+            sections.append(
+                BudgetSection(
+                    name=f"external_attachment:{display_path}",
+                    text="\n".join(
+                        [
+                            f"Attached external file content: {display_path}",
+                            "```text",
+                            text,
+                            "```",
+                        ]
+                    ),
+                    priority=935,
+                    minimum_tokens=48,
+                )
+            )
+        return sections
+
+    def _current_external_attachment_references(self, metadata: dict[str, Any]) -> list[str]:
+        inline_references = set(self._metadata_string_references(metadata, key="fileReferences"))
+        references: list[str] = []
+        for reference in self._metadata_string_references(metadata, key="attachments"):
+            if reference in inline_references or reference in references:
+                continue
+            references.append(reference)
+        return references
+
+    def _resolve_external_attachment(self, root: Path, reference: str) -> Path | None:
+        try:
+            candidate = Path(reference)
+            if not candidate.is_absolute():
+                return None
+            resolved = candidate.resolve()
+        except (OSError, RuntimeError):
+            return None
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            pass
+        else:
+            return None
+        if not resolved.is_file():
+            return None
+        return resolved
+
+    def _image_attachment_from_reference(
+        self,
+        root: Path,
+        reference: str,
+        *,
+        allow_external: bool = False,
+    ) -> dict[str, Any] | None:
+        try:
+            candidate = Path(reference)
+            resolved = candidate.resolve() if candidate.is_absolute() else (root / reference).resolve()
+        except (OSError, RuntimeError):
+            return None
+        inside_workspace = True
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            inside_workspace = False
+        if not inside_workspace and not allow_external:
+            return None
+        if not resolved.is_file():
+            return None
+        mime_type = self._image_mime_type(resolved.name)
+        if mime_type is None:
+            return None
+        try:
+            size = resolved.stat().st_size
+        except OSError:
+            return None
+        if size <= 0 or size > IMAGE_ATTACHMENT_MAX_BYTES:
+            return None
+        try:
+            data = base64.b64encode(resolved.read_bytes()).decode("ascii")
+        except OSError:
+            return None
+        try:
+            display_path = resolved.relative_to(root).as_posix()
+        except ValueError:
+            display_path = resolved.as_posix()
+        return {
+            "source": "base64",
+            "path": display_path,
+            "mimeType": mime_type,
+            "data": data,
+            "sizeBytes": size,
+        }
+
+    @staticmethod
+    def _image_mime_type(name: str) -> str | None:
+        suffix = Path(name).suffix.lower()
+        if suffix in IMAGE_ATTACHMENT_MIME_TYPES:
+            return IMAGE_ATTACHMENT_MIME_TYPES[suffix]
+        guessed, _encoding = mimetypes.guess_type(name)
+        return guessed if guessed in IMAGE_ATTACHMENT_MIME_TYPES.values() else None
+
+    def _metadata_string_references(self, metadata: dict[str, Any], *, key: str) -> list[str]:
+        value = metadata.get(key)
+        values = value if isinstance(value, list) else [value] if isinstance(value, str) else []
+        references: list[str] = []
+        for item in values:
+            if not isinstance(item, str):
+                continue
+            reference = self._clean_file_reference(item)
+            if reference and reference not in references:
+                references.append(reference)
+        return references
 
     def _max_context_tokens(self, config: dict[str, Any]) -> int:
         provider_config = config.get("provider") or {}

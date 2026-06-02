@@ -17,6 +17,10 @@ from ._shared import (
 )
 
 
+def _step(label: str, status: str, summary: str) -> dict[str, str]:
+    return {"label": label, "status": status, "summary": summary}
+
+
 def build_search_files_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None) -> dict[str, Any]:
     def search_files(params: dict[str, Any]) -> dict[str, Any]:
         workspace_root = require_workspace_root(params)
@@ -35,6 +39,10 @@ def build_search_files_tool(policy_guard: Any, store: Any, subagent_service: Any
 
         rg_available = shutil.which("rg") is not None
         backend = "python"
+        steps = [
+            _step("prepare", "completed", f"{mode} search for {query}"),
+            _step("backend", "completed", "rg" if rg_available else "python"),
+        ]
 
         if rg_available:
             try:
@@ -63,6 +71,7 @@ def build_search_files_tool(policy_guard: Any, store: Any, subagent_service: Any
                 PermissionError,
                 json.JSONDecodeError,
             ):
+                steps.append(_step("fallback", "completed", "python search"))
                 if mode == "filename":
                     matches = python_filename_search(
                         workspace_root,
@@ -101,12 +110,14 @@ def build_search_files_tool(policy_guard: Any, store: Any, subagent_service: Any
                     ignore_patterns,
                 )
 
+        steps.append(_step("search", "completed", f"{len(matches)} match(es)"))
         return {
             "query": query,
             "mode": mode,
             "backend": backend,
             "matches": matches,
             "total": len(matches),
+            "steps": steps,
         }
 
     return {"handler": search_files}

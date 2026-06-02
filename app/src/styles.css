@@ -246,8 +246,8 @@ textarea.short {
   line-height: 1.45;
 }
 
-input,
-select {
+#root > :not(.yb-v2) input,
+#root > :not(.yb-v2) select {
   width: 100%;
   padding: 12px 14px;
   border: 1px solid rgba(24, 32, 38, 0.12);
@@ -255,11 +255,11 @@ select {
   background: #fffdf9;
 }
 
-select {
+#root > :not(.yb-v2) select {
   color: #182026;
 }
 
-button {
+#root > :not(.yb-v2) button {
   border: 0;
   border-radius: 999px;
   padding: 12px 18px;
@@ -268,22 +268,22 @@ button {
   cursor: pointer;
 }
 
-button.secondary {
+#root > :not(.yb-v2) button.secondary {
   background: rgba(24, 32, 38, 0.08);
   color: #182026;
 }
 
-button.secondary.danger {
+#root > :not(.yb-v2) button.secondary.danger {
   background: rgba(154, 35, 35, 0.12);
   color: #9a2323;
 }
 
-button.warn {
+#root > :not(.yb-v2) button.warn {
   background: rgba(156, 79, 42, 0.12);
   color: #9c4f2a;
 }
 
-button:disabled {
+#root > :not(.yb-v2) button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }

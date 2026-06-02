@@ -7,17 +7,21 @@ import {
   type AccentColor,
   type LanguageMode,
   type ReasoningEffort,
+  fallbackGeneral,
 } from "./settingsTypes";
 
 export function GeneralPanel({ value, onChange }: { value: SettingsGeneralConfig; onChange: (next: SettingsGeneralConfig) => void }) {
   return (
     <div className="settings-panel settings-narrow-panel">
-      <header className="settings-panel-header settings-panel-header-plain">
+      <header className="settings-panel-header">
         <div>
           <p className="settings-kicker">通用</p>
           <h2>外观偏好</h2>
           <p>设置工作台主题、密度、强调色、动效、语言、推理力度和 Web 预检行为。</p>
         </div>
+        <button type="button" className="settings-secondary-action" onClick={() => onChange(fallbackGeneral)}>
+          恢复默认
+        </button>
       </header>
       <div className="settings-form-stack">
         <SegmentedControl

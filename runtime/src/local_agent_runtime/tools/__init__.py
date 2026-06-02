@@ -17,6 +17,7 @@ from .web_fetch import build_web_fetch_tool
 from .code_search import build_code_search_tool
 from .notebook import build_notebook_tool
 from .browser import build_browser_tool
+from .computer_use import build_computer_use_tool
 from .memory import build_memory_remember_tool, build_memory_recall_tool
 from .scratchpad_tool import build_scratchpad_write_tool, build_scratchpad_read_tool
 
@@ -29,6 +30,7 @@ def build_builtin_tools(
     memory_manager: Any | None = None,
     scratchpad: Any | None = None,
     permission_engine: Any | None = None,
+    computer_use_executor: Any | None = None,
 ) -> dict[str, Any]:
     """Build all built-in tools, returning a name -> handler mapping."""
     builders = [
@@ -45,11 +47,20 @@ def build_builtin_tools(
         ("code_search", build_code_search_tool),
         ("notebook", build_notebook_tool),
         ("browser", build_browser_tool),
+        ("computer_use", build_computer_use_tool),
     ]
     tools: dict[str, Any] = {}
-    _engine_tools = {"run_command", "apply_patch", "write_file", "web_fetch", "task"}
+    _engine_tools = {"run_command", "apply_patch", "write_file", "web_fetch", "task", "notebook", "computer_use"}
     for name, builder in builders:
-        if name in _engine_tools:
+        if name == "computer_use":
+            tools[name] = builder(
+                policy_guard,
+                store,
+                subagent_service,
+                permission_engine=permission_engine,
+                computer_use_executor=computer_use_executor,
+            )["handler"]
+        elif name in _engine_tools:
             tools[name] = builder(policy_guard, store, subagent_service, permission_engine=permission_engine)["handler"]
         else:
             tools[name] = builder(policy_guard, store, subagent_service)["handler"]

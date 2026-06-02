@@ -247,7 +247,7 @@ function markSupersededRuntimeItems(items: RuntimeTimelineItem[]) {
 export function buildToolRuntimePresentation(toolCall: SessionWorkspaceToolCall): ToolRuntimePresentation {
   const inputRecord = parseRuntimeJsonRecord(toolCall.rawInput);
   const command = readRuntimeString(inputRecord, ["command", "cmd"]);
-  const path = readRuntimeString(inputRecord, ["path", "file", "cwd", "root"]);
+  const path = toolCall.target ?? readRuntimeString(inputRecord, ["path", "file", "cwd", "root"]);
   const url = readRuntimeString(inputRecord, ["url"]);
   const query = readRuntimeString(inputRecord, ["query"]);
   const duration = formatDuration(toolCall.durationMs);
@@ -633,6 +633,7 @@ export function buildRuntimeItems({
       diffLines,
       time: patch.updatedAt,
       visibility: "chat",
+      taskId: patch.taskId,
     });
   });
 
@@ -664,6 +665,15 @@ export function buildRuntimeItems({
 
   approvals.forEach((approval) => {
     const normalizedStatus = approval.status.toLowerCase();
+    const approvalChangedPaths = approval.changedPaths?.filter(Boolean) ?? [];
+    const approvalPathSummary = approvalChangedPaths.length
+      ? compactList(approvalChangedPaths)
+      : null;
+    const approvalDiffLines = approval.diff ? parseUnifiedDiff(approval.diff) : undefined;
+    const approvalCode = compactMeta([
+      approval.command || approval.parametersPreview,
+      approvalPathSummary ? `files: ${approvalPathSummary}` : null,
+    ]).join("\n");
     items.push({
       id: `approval:${approval.id}`,
       kind: "approval",
@@ -684,13 +694,18 @@ export function buildRuntimeItems({
           fullInput: approval.fullInput,
         }),
         approval.kind,
+        approval.filesChanged !== undefined ? `${approval.filesChanged} 个文件` : null,
+        approvalPathSummary,
         approval.risk ? `风险：${formatStatusLabel(`${approval.risk} risk`)}` : null,
         approval.cwd,
       ]),
       riskLevel: approval.risk,
-      code: approval.command || approval.parametersPreview,
-      rawDetail: approval.fullInput,
+      code: approvalCode || undefined,
+      rawDetail: approval.diff || approval.fullInput,
+      diffLines: approvalDiffLines,
       completionEvidence: approval.completionEvidence,
+      previewRows: approval.previewRows,
+      supportsAlwaysAllow: ["apply_patch", "write_file", "delete_file", "run_command", "network_access", "computer_use", "subagent_dispatch", "worktree_merge"].includes(approval.kind ?? ""),
       time: approval.requestedAt,
       visibility: "chat",
       toolName: approval.kind,
@@ -707,6 +722,16 @@ export function buildRuntimeItems({
       kind: presentation.kind,
       toolUseId: toolCall.toolUseId ?? toolCall.id,
       parentToolUseId: toolCall.parentToolUseId,
+      toolGroupId: toolCall.toolGroupId,
+      toolIndex: toolCall.toolIndex,
+      toolTotal: toolCall.toolTotal,
+      toolOperationId: toolCall.toolOperationId,
+      toolOperationLabel: toolCall.toolOperationLabel,
+      toolCategory: toolCall.toolCategory,
+      toolPhaseId: toolCall.toolPhaseId,
+      toolPhaseLabel: toolCall.toolPhaseLabel,
+      toolSemanticParentId: toolCall.toolSemanticParentId,
+      toolSemanticParentLabel: toolCall.toolSemanticParentLabel,
       title: presentation.title,
       status: toolCall.status,
       summary: presentation.summary,
@@ -717,6 +742,7 @@ export function buildRuntimeItems({
         toolCall.stdout ? `标准输出\n${compactText(toolCall.stdout, 1200)}` : null,
         toolCall.stderr ? `标准错误\n${compactText(toolCall.stderr, 1200)}` : null,
       ]).join("\n\n"),
+      previewRows: toolCall.resultPreview,
       time: toolCall.time,
       durationMs: toolCall.durationMs,
       visibility: classifyToolVisibility(toolCall),
@@ -738,10 +764,23 @@ export function buildRuntimeItems({
     items.push({
       id: `command:${job.id}`,
       kind: "command",
+      sourceId: job.id,
+      toolUseId: job.toolUseId ?? job.id,
+      parentToolUseId: job.parentToolUseId,
+      toolGroupId: job.toolGroupId,
+      toolIndex: job.toolIndex,
+      toolTotal: job.toolTotal,
+      toolOperationId: job.toolOperationId,
+      toolOperationLabel: job.toolOperationLabel,
+      toolCategory: job.toolCategory,
+      toolPhaseId: job.toolPhaseId,
+      toolPhaseLabel: job.toolPhaseLabel,
+      toolSemanticParentId: job.toolSemanticParentId,
+      toolSemanticParentLabel: job.toolSemanticParentLabel,
       title: summarizeCommandForTitle(job.command),
       status: job.status,
       summary: compactMeta([
-        summarizeCommandAction(job.command),
+        job.inputSummary ?? job.target ?? summarizeCommandAction(job.command),
         job.summary || summarizeRuntimeOutput(job.stdout || job.stderr),
       ]).join(" · "),
       meta: compactMeta([
@@ -758,6 +797,7 @@ export function buildRuntimeItems({
       durationMs: job.durationMs,
       visibility: classifyBackgroundJobVisibility(job),
       groupKey: commandGroupKey(job.command),
+      toolName: "run_command",
     });
   });
 

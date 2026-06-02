@@ -16,7 +16,7 @@ from .config_store import ConfigStoreMixin
 from .event_store import EventStoreMixin
 from .agent_profile_store import AgentProfileStoreMixin
 from .extension_store import ExtensionStoreMixin
-from .proposal_store import ProposalStoreMixin
+from .proposal_store import ProposalStoreMixin, _command_trace_metadata
 from .repositories.hook_repository import HookStoreMixin
 from .repositories.worktree_repository import WorktreeStoreMixin
 from .session_store import SessionStoreMixin
@@ -200,6 +200,14 @@ class SQLiteStore(
             message["createdSeq"] = row["created_seq"]
         if row.get("updated_at") is not None:
             message["updatedAt"] = row["updated_at"]
+        metadata_raw = row.get("metadata_json")
+        if metadata_raw:
+            try:
+                metadata = json.loads(metadata_raw)
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            if isinstance(metadata, dict) and metadata:
+                message["metadata"] = metadata
         return message
 
     def _serialize_scheduled_task(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -371,10 +379,39 @@ class SQLiteStore(
             "updatedAt": row["updated_at"],
         }
 
+    def _command_log_started_trace_metadata(self, command_id: str) -> dict[str, Any]:
+        trace_row = self._conn.execute(
+            """
+            SELECT payload_json
+            FROM trace_events
+            WHERE related_id = ? AND type = 'command.started'
+            ORDER BY created_at DESC, sequence DESC
+            LIMIT 1
+            """,
+            (command_id,),
+        ).fetchone()
+        if trace_row is None:
+            return {}
+        try:
+            payload = json.loads(trace_row["payload_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        metadata = _command_trace_metadata(payload)
+        shell = payload.get("shell")
+        if isinstance(shell, str) and shell.strip():
+            metadata["shell"] = shell.strip()
+        background = payload.get("background")
+        if isinstance(background, bool):
+            metadata["background"] = background
+        return metadata
+
     def _serialize_command_log(self, row: dict[str, Any]) -> dict[str, Any]:
         started_at = row["started_at"]
         finished_at = row["finished_at"]
         duration_ms = None if finished_at is None else max(0, int(finished_at) - int(started_at))
+        trace_metadata = self._command_log_started_trace_metadata(row["id"])
         return {
             "id": row["id"],
             "taskId": row["task_id"],
@@ -387,6 +424,7 @@ class SQLiteStore(
             "durationMs": duration_ms,
             "stdoutPath": row["stdout_path"],
             "stderrPath": row["stderr_path"],
+            **trace_metadata,
         }
 
     def _serialize_trace_event(self, row: dict[str, Any]) -> dict[str, Any]:

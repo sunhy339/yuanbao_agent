@@ -14,15 +14,24 @@ from ._shared import (
 )
 
 
+def _step(label: str, status: str, summary: str) -> dict[str, str]:
+    return {"label": label, "status": status, "summary": summary}
+
+
 def build_git_status_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None) -> dict[str, Any]:
     def git_status(_params: dict[str, Any]) -> dict[str, Any]:
         params = _params
         workspace_root = require_workspace_root(params)
         cwd = resolve_git_cwd(policy_guard, workspace_root, params)
-        if not is_git_repository(cwd):
+        relative_cwd = to_relative_path(workspace_root, cwd)
+        steps = [
+            _step("resolve", "completed", relative_cwd),
+            _step("repository", "completed", "git" if is_git_repository(cwd) else "not git"),
+        ]
+        if steps[-1]["summary"] == "not git":
             return {
                 "workspaceRoot": to_relative_path(workspace_root, workspace_root),
-                "cwd": to_relative_path(workspace_root, cwd),
+                "cwd": relative_cwd,
                 "isGitRepository": False,
                 "branch": None,
                 "upstream": None,
@@ -30,6 +39,7 @@ def build_git_status_tool(policy_guard: Any, store: Any, subagent_service: Any |
                 "behind": 0,
                 "changes": [],
                 "summary": "Not a git repository.",
+                "steps": steps,
             }
         completed = run_git_command(cwd, ["status", "--short", "--branch"])
 
@@ -60,13 +70,17 @@ def build_git_status_tool(policy_guard: Any, store: Any, subagent_service: Any |
 
         return {
             "workspaceRoot": to_relative_path(workspace_root, workspace_root),
-            "cwd": to_relative_path(workspace_root, cwd),
+            "cwd": relative_cwd,
             "isGitRepository": True,
             "branch": branch,
             "upstream": upstream,
             "ahead": ahead,
             "behind": behind,
             "changes": changes,
+            "steps": [
+                *steps,
+                _step("status", "completed", f"{len(changes)} change(s)"),
+            ],
         }
 
     return {"handler": git_status}

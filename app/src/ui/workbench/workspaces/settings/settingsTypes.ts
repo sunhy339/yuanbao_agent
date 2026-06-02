@@ -5,6 +5,7 @@ import type {
   AgentProfileRecord,
   AgentProfileValidateParams,
   AgentProfileValidateResult,
+  CapabilityMode,
   HookCreateParams,
   HookUpdateParams,
   ProviderApiFormat,
@@ -95,6 +96,15 @@ export interface SettingsProviderPayload {
   preset: ProviderPresetId;
 }
 
+export interface SettingsPermissionRule {
+  capability: string;
+  label: string;
+  mode: CapabilityMode | string;
+  modeLabel: string;
+  scope: string;
+  description?: string;
+}
+
 export interface SettingsGeneralConfig {
   theme: ThemeMode;
   density: DensityMode;
@@ -169,7 +179,16 @@ export interface SettingsComputerUseConfig {
   systemKeyCombos: boolean;
   sensitiveActionConfirm: boolean;
   status?: string;
+  checkedAt?: number;
+  capabilities?: Array<{
+    id: string;
+    label: string;
+    state: "ready" | "partial" | "guarded" | "pending" | "disabled" | "blocked";
+    detail: string;
+  }>;
 }
+
+export type SettingsComputerUseCapability = NonNullable<SettingsComputerUseConfig["capabilities"]>[number];
 
 export interface SettingsAgentBehaviorConfig {
   autonomyActiveProfileId: string;
@@ -215,6 +234,9 @@ export interface SettingsWorkspaceProps {
   providerFeedback?: SettingsProviderFeedback | null;
   permissionMode?: string;
   onPermissionModeChange?: (mode: string) => void;
+  permissionRules?: SettingsPermissionRule[];
+  permissionRuleBusyId?: string | null;
+  onClearPermissionRule?: (capability: string) => void | Promise<void>;
   agentBehavior?: SettingsAgentBehaviorConfig;
   onAgentBehaviorChange?: (next: SettingsAgentBehaviorConfig) => void | Promise<void>;
   general?: SettingsGeneralConfig;

@@ -344,6 +344,7 @@ def build_patch_request_payload(
     workspace_root: Path,
     diff_text: str,
     files_changed: int,
+    changed_paths: list[str],
     dry_run: bool,
     patch_mode: str,
     patch_text: str | None = None,
@@ -355,6 +356,7 @@ def build_patch_request_payload(
         "dryRun": dry_run,
         "patchMode": patch_mode,
         "filesChanged": files_changed,
+        "changedPaths": changed_paths,
     }
     if patch_text is not None:
         payload["patchText"] = patch_text

@@ -9,6 +9,143 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+_COMMAND_TRACE_METADATA_STRING_KEYS = (
+    "toolUseId",
+    "toolName",
+    "parentToolUseId",
+    "toolGroupId",
+    "toolOperationId",
+    "toolOperationLabel",
+    "toolCategory",
+    "toolPhaseId",
+    "toolPhaseLabel",
+    "toolSemanticParentId",
+    "toolSemanticParentLabel",
+    "target",
+    "inputSummary",
+)
+_COMMAND_TRACE_METADATA_INT_KEYS = ("toolIndex", "toolTotal")
+
+
+def _command_trace_metadata(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    metadata: dict[str, Any] = {}
+    for key in _COMMAND_TRACE_METADATA_STRING_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            metadata[key] = value.strip()
+    for key in _COMMAND_TRACE_METADATA_INT_KEYS:
+        value = payload.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            metadata[key] = value
+    return metadata
+
+
+def _normalize_diff_path(path: str) -> str:
+    path = path.strip()
+    if path.startswith(("a/", "b/")):
+        path = path[2:]
+    return path
+
+
+def _append_changed_path(paths: list[str], path: str) -> None:
+    normalized = _normalize_diff_path(path)
+    if normalized and normalized != "/dev/null" and normalized not in paths:
+        paths.append(normalized)
+
+
+def _changed_paths_from_diff_text(diff_text: str) -> list[str]:
+    paths: list[str] = []
+    old_path = ""
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split()
+            if len(parts) >= 4:
+                _append_changed_path(paths, parts[3])
+            continue
+        if line.startswith("--- "):
+            old_path = line[4:].strip()
+            continue
+        if line.startswith("+++ "):
+            new_path = line[4:].strip()
+            _append_changed_path(paths, new_path if new_path != "/dev/null" else old_path)
+    return paths
+
+
+def _normalize_changed_paths(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    paths: list[str] = []
+    for item in value:
+        path = str(item).strip().replace("\\", "/") if isinstance(item, str) else ""
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _approval_text(value: Any, max_chars: int = 160) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text if len(text) <= max_chars else text[: max_chars - 3].rstrip() + "..."
+
+
+def _approval_preview_row(label: str, value: Any, *, max_chars: int = 160) -> dict[str, str] | None:
+    text = _approval_text(value, max_chars=max_chars)
+    if not text:
+        return None
+    return {"label": label, "value": text}
+
+
+def _approval_preview(kind: str, request: dict[str, Any]) -> list[dict[str, str]]:
+    rows: list[dict[str, str] | None]
+    if kind == "run_command":
+        rows = [_approval_preview_row("命令", request.get("command"), max_chars=220)]
+        if request.get("toolName") == "notebook" or request.get("notebookAction") == "execute_cell":
+            rows.extend(
+                [
+                    _approval_preview_row("Notebook", request.get("path")),
+                    _approval_preview_row("Cell", request.get("cellIndex")),
+                ]
+            )
+        rows.extend(
+            [
+                _approval_preview_row("目录", request.get("cwd") or request.get("workspaceRoot")),
+                _approval_preview_row("Shell", request.get("shell")),
+                _approval_preview_row("原因", request.get("policyReason") or request.get("risk") or request.get("reason")),
+            ]
+        )
+    elif kind == "network_access":
+        rows = [
+            _approval_preview_row("方法", request.get("method") or "GET"),
+            _approval_preview_row("URL", request.get("url"), max_chars=220),
+            _approval_preview_row("原因", request.get("reason") or request.get("risk")),
+        ]
+    elif kind == "computer_use":
+        rows = [
+            _approval_preview_row("应用", request.get("app") or request.get("target") or request.get("application")),
+            _approval_preview_row("动作", request.get("action")),
+            _approval_preview_row("权限", request.get("permission") or request.get("summary"), max_chars=220),
+            _approval_preview_row("详情", request.get("details"), max_chars=220),
+        ]
+    elif kind == "subagent_dispatch":
+        rows = [
+            _approval_preview_row("子任务", request.get("prompt"), max_chars=240),
+            _approval_preview_row("原因", request.get("reason") or request.get("risk")),
+        ]
+    else:
+        rows = [
+            _approval_preview_row("摘要", request.get("summary") or request.get("description")),
+            _approval_preview_row("目标", request.get("target") or request.get("path") or request.get("url")),
+            _approval_preview_row("原因", request.get("reason") or request.get("risk")),
+        ]
+    return [row for row in rows if row is not None][:5]
+
+
 class ProposalStoreMixin:
     def resolve_approval(self, approval_id: str, decision: str) -> dict[str, Any]:
         now = self.now()
@@ -28,6 +165,17 @@ class ProposalStoreMixin:
         if row is None:
             raise ValueError(f"Approval not found: {approval_id}")
         approval = self._serialize_approval(dict(row))
+        try:
+            request = json.loads(approval.get("requestJson") or "{}")
+        except json.JSONDecodeError:
+            request = {}
+        if not isinstance(request, dict):
+            request = {}
+        changed_paths = _normalize_changed_paths(request.get("changedPaths"))
+        if not changed_paths:
+            changed_paths = _changed_paths_from_diff_text(str(request.get("diffText") or request.get("patchText") or ""))
+        diff_text = request.get("diffText")
+        files_changed = request.get("filesChanged")
         self.append_trace_event(
             task_id=approval["taskId"],
             event_type="approval.resolved",
@@ -35,9 +183,16 @@ class ProposalStoreMixin:
             related_id=approval["id"],
             payload={
                 "approvalId": approval["id"],
+                "taskId": approval["taskId"],
                 "kind": approval["kind"],
+                "request": request,
+                "filesChanged": files_changed if isinstance(files_changed, int) else len(changed_paths),
+                "changedPaths": changed_paths,
+                "diffText": diff_text if isinstance(diff_text, str) else "",
+                "preview": _approval_preview(approval["kind"], request),
                 "decision": approval["decision"],
                 "decidedBy": approval["decidedBy"],
+                "decidedAt": approval["decidedAt"],
             },
             created_at=approval["decidedAt"],
         )
@@ -79,6 +234,7 @@ class ProposalStoreMixin:
         if row is None:
             raise ValueError(f"Patch not found: {patch_id}")
         patch = self._serialize_patch(dict(row))
+        changed_paths = _changed_paths_from_diff_text(patch["diffText"])
         self.append_trace_event(
             task_id=patch["taskId"],
             event_type="patch.proposed" if patch["status"] == "proposed" else f"patch.{patch['status']}",
@@ -90,9 +246,12 @@ class ProposalStoreMixin:
                 "summary": patch["summary"],
                 "status": patch["status"],
                 "filesChanged": patch["filesChanged"],
+                "changedPaths": changed_paths,
+                "diffText": patch["diffText"],
             },
             created_at=patch["createdAt"],
         )
+        patch["changedPaths"] = changed_paths
         return patch
 
     def update_patch(
@@ -130,6 +289,7 @@ class ProposalStoreMixin:
         if row is None:
             raise ValueError(f"Patch not found: {patch_id}")
         patch = self._serialize_patch(dict(row))
+        changed_paths = _changed_paths_from_diff_text(patch["diffText"])
         self.append_trace_event(
             task_id=patch["taskId"],
             event_type=f"patch.{patch['status']}",
@@ -141,9 +301,12 @@ class ProposalStoreMixin:
                 "summary": patch["summary"],
                 "status": patch["status"],
                 "filesChanged": patch["filesChanged"],
+                "changedPaths": changed_paths,
+                "diffText": patch["diffText"],
             },
             created_at=patch["updatedAt"],
         )
+        patch["changedPaths"] = changed_paths
         return patch
 
     def get_approval(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -171,6 +334,11 @@ class ProposalStoreMixin:
         if row is None:
             raise ValueError(f"Approval not found: {approval_id}")
         approval = self._serialize_approval(dict(row))
+        changed_paths = _normalize_changed_paths(request.get("changedPaths"))
+        if not changed_paths:
+            changed_paths = _changed_paths_from_diff_text(str(request.get("diffText") or request.get("patchText") or ""))
+        diff_text = request.get("diffText")
+        files_changed = request.get("filesChanged")
         self.append_trace_event(
             task_id=approval["taskId"],
             event_type="approval.requested",
@@ -178,8 +346,13 @@ class ProposalStoreMixin:
             related_id=approval["id"],
             payload={
                 "approvalId": approval["id"],
+                "taskId": approval["taskId"],
                 "kind": approval["kind"],
                 "request": request,
+                "filesChanged": files_changed if isinstance(files_changed, int) else len(changed_paths),
+                "changedPaths": changed_paths,
+                "diffText": diff_text if isinstance(diff_text, str) else "",
+                "preview": _approval_preview(approval["kind"], request),
             },
             created_at=approval["createdAt"],
         )
@@ -266,7 +439,23 @@ class ProposalStoreMixin:
         if row is None:
             raise ValueError(f"Patch not found: {params['patchId']}")
         patch = self._serialize_patch(dict(row))
+        patch["changedPaths"] = _changed_paths_from_diff_text(patch["diffText"])
         return {"patch": patch, "diffText": patch["diffText"]}
+
+    def list_patches_for_task(self, task_id: str) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM patches
+            WHERE task_id = ?
+            ORDER BY created_at ASC, updated_at ASC, id ASC
+            """,
+            (task_id,),
+        ).fetchall()
+        patches = [self._serialize_patch(dict(row)) for row in rows]
+        for patch in patches:
+            patch["changedPaths"] = _changed_paths_from_diff_text(patch["diffText"])
+        return patches
 
     def find_patch(
         self,
@@ -286,7 +475,9 @@ class ProposalStoreMixin:
         ).fetchone()
         if row is None:
             return None
-        return self._serialize_patch(dict(row))
+        patch = self._serialize_patch(dict(row))
+        patch["changedPaths"] = _changed_paths_from_diff_text(patch["diffText"])
+        return patch
 
     def get_command_log(self, params: dict[str, Any]) -> dict[str, Any]:
         row = self._conn.execute(
@@ -337,6 +528,7 @@ class ProposalStoreMixin:
         command: str,
         cwd: str,
         shell: str,
+        tool_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         command_id = self.new_id("cmd")
         now = self.now()
@@ -355,6 +547,7 @@ class ProposalStoreMixin:
             raise ValueError(f"Command log not found: {command_id}")
         record = self._serialize_command_log(dict(row))
         record["shell"] = shell
+        record.update(_command_trace_metadata(tool_metadata))
         self.append_trace_event(
             task_id=record["taskId"],
             event_type="command.started",
@@ -366,6 +559,7 @@ class ProposalStoreMixin:
                 "cwd": record["cwd"],
                 "shell": shell,
                 "status": record["status"],
+                **_command_trace_metadata(tool_metadata),
             },
             created_at=record["startedAt"],
         )
@@ -395,7 +589,27 @@ class ProposalStoreMixin:
         if row is None:
             raise ValueError(f"Command log not found: {command_id}")
         command_log = self._serialize_command_log(dict(row))
-        event_type = "command.completed" if command_log["status"] == "completed" else "command.failed"
+        if command_log["status"] == "completed":
+            event_type = "command.completed"
+        elif command_log["status"] == "cancelled":
+            event_type = "command.cancelled"
+        else:
+            event_type = "command.failed"
+        started_metadata: dict[str, Any] = {}
+        started_trace = self._conn.execute(
+            """
+            SELECT payload_json FROM trace_events
+            WHERE related_id = ? AND type = 'command.started'
+            ORDER BY created_at DESC, sequence DESC
+            LIMIT 1
+            """,
+            (command_log["id"],),
+        ).fetchone()
+        if started_trace is not None:
+            try:
+                started_metadata = _command_trace_metadata(json.loads(started_trace["payload_json"] or "{}"))
+            except (TypeError, json.JSONDecodeError):
+                started_metadata = {}
         self.append_trace_event(
             task_id=command_log["taskId"],
             event_type=event_type,
@@ -410,6 +624,7 @@ class ProposalStoreMixin:
                 "durationMs": command_log["durationMs"],
                 "stdoutPath": command_log["stdoutPath"],
                 "stderrPath": command_log["stderrPath"],
+                **started_metadata,
             },
             created_at=command_log["finishedAt"],
         )

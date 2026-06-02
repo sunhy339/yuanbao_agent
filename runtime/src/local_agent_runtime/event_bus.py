@@ -17,6 +17,7 @@ class EventBus:
     def __init__(self) -> None:
         self._subscribers: list[EventSink] = []
         self._seq_counter: int = 0
+        self._last_ts: int = 0
 
     def subscribe(self, sink: EventSink) -> None:
         self._subscribers.append(sink)
@@ -24,6 +25,9 @@ class EventBus:
     def publish(self, event: RuntimeEvent) -> None:
         self._seq_counter += 1
         event.seq = self._seq_counter
+        if event.ts <= self._last_ts:
+            event.ts = self._last_ts + 1
+        self._last_ts = event.ts
         for sink in list(self._subscribers):
             try:
                 sink(event)

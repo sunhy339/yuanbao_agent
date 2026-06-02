@@ -31,6 +31,35 @@ class ConfigStoreMixin:
         self._persist_config(self._config)
         return {"config": deepcopy(self._config)}
 
+    def clear_permission_rule(self, params: dict[str, Any]) -> dict[str, Any]:
+        capability = str(params.get("capability") or "").strip()
+        if not capability:
+            raise ValueError("capability is required")
+
+        config = deepcopy(self._config)
+        permissions = config.get("permissions")
+        if not isinstance(permissions, dict):
+            permissions = deepcopy(DEFAULT_CONFIG.get("permissions", {}))
+        capabilities = permissions.get("capabilities")
+        if not isinstance(capabilities, dict):
+            capabilities = {}
+        else:
+            capabilities = deepcopy(capabilities)
+
+        removed = capability in capabilities
+        capabilities.pop(capability, None)
+        permissions["capabilities"] = capabilities
+        config["permissions"] = permissions
+
+        self._config = self._normalize_config(config)
+        self._config_snapshot = None
+        self._persist_config(self._config)
+        return {
+            "config": deepcopy(self._config),
+            "capability": capability,
+            "removed": removed,
+        }
+
     # -- Feature flags --
 
     def get_feature_flag(self, key: str, default: bool = False) -> bool:
@@ -102,7 +131,9 @@ class ConfigStoreMixin:
     def _merge_config(self, base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
         merged = deepcopy(base)
         for key, value in patch.items():
-            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            if key == "capabilities" and isinstance(value, dict):
+                merged[key] = deepcopy(value)
+            elif isinstance(value, dict) and isinstance(merged.get(key), dict):
                 merged[key] = self._merge_config(merged[key], value)
             elif value is not None:
                 merged[key] = deepcopy(value)

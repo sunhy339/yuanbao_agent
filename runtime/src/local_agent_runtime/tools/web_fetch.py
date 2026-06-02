@@ -14,6 +14,10 @@ _DEFAULT_TIMEOUT = 30
 _MAX_RESPONSE_BYTES = 512 * 1024  # 512 KB
 
 
+def _step(label: str, status: str, summary: str) -> dict[str, str]:
+    return {"label": label, "status": status, "summary": summary}
+
+
 def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None, *, permission_engine: Any | None = None) -> dict[str, Any]:
     def web_fetch(params: dict[str, Any]) -> dict[str, Any]:
         url = str(params.get("url", "")).strip()
@@ -54,6 +58,9 @@ def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | 
         timeout = max(5, min(timeout, 120))
         max_bytes = int(params.get("max_bytes", _MAX_RESPONSE_BYTES))
         max_bytes = max(1024, min(max_bytes, 2 * 1024 * 1024))
+        steps = [
+            _step("request", "running", f"{method} {url}"),
+        ]
 
         req_data = None
         if body is not None:
@@ -82,12 +89,20 @@ def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | 
                 "url": url,
                 "error": f"HTTP {exc.code}: {exc.reason}",
                 "body": error_body,
+                "steps": [
+                    _step("request", "completed", f"{method} {url}"),
+                    _step("response", "blocked", f"HTTP {exc.code}: {exc.reason}"),
+                ],
             }
         except urllib.error.URLError as exc:
             return {
                 "status": "network_error",
                 "url": url,
                 "error": str(exc.reason),
+                "steps": [
+                    _step("request", "blocked", f"{method} {url}"),
+                    _step("network", "blocked", str(exc.reason)),
+                ],
             }
 
         status_code = response.status if hasattr(response, "status") else 200
@@ -95,6 +110,10 @@ def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | 
         raw = response.read(max_bytes + 1)
         truncated = len(raw) > max_bytes
         raw = raw[:max_bytes]
+        steps[0] = _step("request", "completed", f"{method} {url}")
+        steps.append(_step("response", "completed", f"HTTP {status_code}; {len(raw)} bytes"))
+        if truncated:
+            steps.append(_step("truncate", "completed", f"limited to {max_bytes} bytes"))
 
         encoding = "utf-8"
         if "charset=" in content_type:
@@ -104,6 +123,8 @@ def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | 
             text = raw.decode(encoding, errors="replace")
         except (LookupError, UnicodeDecodeError):
             text = raw.decode("utf-8", errors="replace")
+            encoding = "utf-8"
+        steps.append(_step("decode", "completed", f"{encoding}; {content_type or 'unknown content type'}"))
 
         return {
             "status": "ok",
@@ -116,6 +137,7 @@ def build_web_fetch_tool(policy_guard: Any, store: Any, subagent_service: Any | 
             "contentSource": "web",
             "contentTrust": "untrusted",
             "contentTrustReason": "Web content is untrusted and should not directly trigger high-risk tools without review.",
+            "steps": steps,
         }
 
     return {"handler": web_fetch}

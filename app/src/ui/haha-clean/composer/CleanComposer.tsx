@@ -1,29 +1,45 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   ArrowUp,
   AtSign,
   ChevronDown,
-  CircleHelp,
+  Check,
   Copy,
   Folder,
   Gauge,
+  GitBranch,
   ImagePlus,
   Paperclip,
   Plus,
+  Search,
   Shield,
   Slash,
   Square,
   X,
 } from "lucide-react";
+import type { GitLocalStatusResult } from "@shared";
 import type { QueuedPromptSubmission } from "../../../state/eventRecordViews";
+import { RuntimeClient } from "../../../lib/runtimeClient";
 import { matchCommands } from "../../../state/slashCommands";
 import type { ComposerRuntimeChildTask } from "../../workbench/ComposerDock";
 import type { SessionWorkspaceContextPreview, SessionWorkspaceWorktreeStatus } from "../../workbench/workspaces/session/types";
 import { basename } from "../shared/text";
 
+const composerRuntimeClient = new RuntimeClient();
+
 export interface CleanFileReferenceOption {
   path: string;
   label?: string;
+}
+
+export interface CleanRecentWorkspaceOption {
+  path: string;
+  name?: string;
+  repoName?: string | null;
+  branch?: string | null;
+  isGit?: boolean;
+  sessionCount?: number;
+  updatedAt?: number;
 }
 
 export interface CleanComposerProps {
@@ -39,11 +55,13 @@ export interface CleanComposerProps {
   disabled: boolean;
   sending?: boolean;
   submitting?: boolean;
+  stopPending?: boolean;
   queuedPromptCount?: number;
   attachments?: string[];
   onAttachmentsChange?: (attachments: string[]) => void;
   onAttachmentError?: (message: string) => void;
   fileReferenceOptions?: CleanFileReferenceOption[];
+  onFileReferenceQueryChange?: (query: string | null) => void;
   modelOptions?: Array<{ id: string; label: string; subtitle?: string }>;
   selectedModelId?: string;
   onSelectModel?: (modelId: string) => void;
@@ -53,6 +71,11 @@ export interface CleanComposerProps {
   permissionLabel?: string;
   permissionMode?: string;
   onPermissionModeChange?: (mode: string) => void;
+  onWorkspacePathChange?: (path: string) => void;
+  recentWorkspaceOptions?: CleanRecentWorkspaceOption[];
+  useWorktree?: boolean;
+  onUseWorktreeChange?: (enabled: boolean) => void | Promise<void>;
+  worktreeModeBusy?: boolean;
   onCopyText?: (text: string) => void | Promise<void>;
   contextLabel?: string;
   contextPreview?: SessionWorkspaceContextPreview | null;
@@ -72,9 +95,56 @@ function contextUsage(context?: SessionWorkspaceContextPreview | null) {
   const used = context?.budgetStats?.estimatedInputTokens ?? context?.budgetStats?.estimatedTokens;
   const max = context?.budgetStats?.maxContextTokens;
   if (typeof used === "number" && typeof max === "number" && max > 0) {
-    return `${Math.max(0, Math.min(99, Math.round((used / max) * 100)))}%`;
+    return `${Math.max(0, Math.min(100, Math.round((used / max) * 100)))}%`;
   }
   return "--";
+}
+
+function clampPercent(value?: number | null, max?: number | null) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  if (typeof max !== "number" || !Number.isFinite(max) || max <= 0) return 0;
+  return Math.max(0, Math.min(100, (value / max) * 100));
+}
+
+function contextTokenDashboard(contextPreview?: SessionWorkspaceContextPreview | null) {
+  const stats = contextPreview?.budgetStats;
+  const max = stats?.maxContextTokens;
+  const input = stats?.inputTokens ?? stats?.estimatedInputTokens ?? stats?.estimatedTokens ?? 0;
+  const cacheRead = stats?.cacheReadTokens ?? 0;
+  const output = stats?.outputTokens ?? 0;
+  const used = stats?.estimatedInputTokens ?? stats?.estimatedTokens ?? input;
+  const remaining = typeof max === "number" && Number.isFinite(max) ? Math.max(0, max - (used ?? 0)) : null;
+  const percent = typeof max === "number" && max > 0 ? Math.max(0, Math.min(100, Math.round(((used ?? 0) / max) * 100))) : null;
+  const updatedAt = typeof stats?.updatedAt === "number" ? stats.updatedAt : null;
+  return {
+    used,
+    remaining,
+    max,
+    percent,
+    input,
+    cacheRead,
+    output,
+    updatedAt,
+    estimated: Boolean(stats?.estimated),
+    bars: [
+      { label: "Input tokens", value: input, tone: "input", percent: clampPercent(input, max) },
+      { label: "Cache read", value: cacheRead, tone: "cache", percent: clampPercent(cacheRead, max) },
+      { label: "Output tokens", value: output, tone: "output", percent: clampPercent(output, max) },
+    ],
+  };
+}
+
+function relativeTimeLabel(timestamp?: number | null) {
+  if (typeof timestamp !== "number" || !Number.isFinite(timestamp) || timestamp <= 0) {
+    return null;
+  }
+  const diffMs = Math.max(0, Date.now() - timestamp);
+  const minutes = Math.round(diffMs / 60_000);
+  if (minutes < 1) return "刚刚更新";
+  if (minutes < 60) return `${minutes} 分钟前更新`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} 小时前更新`;
+  return `${Math.round(hours / 24)} 天前更新`;
 }
 
 function attachmentName(path: string) {
@@ -87,6 +157,34 @@ function isImageAttachment(path: string) {
 
 function attachmentUrl(path: string) {
   return path.replace(/\\/g, "/");
+}
+
+function mergeAttachmentPaths(current: string[], incoming: string[]) {
+  const next: string[] = [];
+  const seen = new Set<string>();
+  [...current, ...incoming].forEach((path) => {
+    const normalized = path.replace(/\\/g, "/").trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    next.push(normalized);
+  });
+  return next;
+}
+
+function hasDraggedFiles(dataTransfer?: DataTransfer | null) {
+  if (!dataTransfer) return false;
+  if (dataTransfer.files?.length) return true;
+  return Array.from(dataTransfer.types ?? []).some((type) => type === "Files" || type === "application/x-moz-file");
+}
+
+function droppedFilePath(file: File) {
+  const richerFile = file as File & { path?: string; webkitRelativePath?: string };
+  return richerFile.path?.trim() || richerFile.webkitRelativePath?.trim() || file.name.trim();
+}
+
+function pathsFromDrop(dataTransfer?: DataTransfer | null) {
+  if (!dataTransfer?.files?.length) return [];
+  return Array.from(dataTransfer.files).map(droppedFilePath).filter(Boolean);
 }
 
 function formatTokenCount(value?: number | null) {
@@ -119,8 +217,158 @@ function contextBudgetRows(contextPreview?: SessionWorkspaceContextPreview | nul
   return rows;
 }
 
+function contextSectionGroupName(section: string) {
+  if (section === "system_prompt") return "系统提示";
+  if (section === "user_message") return "当前请求";
+  if (section === "recent_conversation" || section === "session_summary") return "会话历史";
+  if (section === "workspace_summary" || section === "project_focus" || section.startsWith("stable_workspace")) return "项目上下文";
+  if (section.includes("memory")) return "记忆";
+  if (section.startsWith("key_file") || section.startsWith("referenced_file")) return "引用文件";
+  if (section.startsWith("task_history") || section === "scratchpad") return "任务状态";
+  if (section.startsWith("patch_diff")) return "文件改动";
+  if (section.startsWith("command_history") || section === "git_status") return "命令/Git";
+  return "其他";
+}
+
+function contextSectionGroups(sections?: string[]) {
+  const order = ["系统提示", "项目上下文", "记忆", "引用文件", "会话历史", "任务状态", "命令/Git", "文件改动", "当前请求", "其他"];
+  const counts = new Map<string, number>();
+  (sections ?? []).forEach((section) => {
+    const label = contextSectionGroupName(section);
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  });
+  return Array.from(counts.entries())
+    .map(([label, count]) => ({ label, count }))
+    .sort((left, right) => order.indexOf(left.label) - order.indexOf(right.label));
+}
+
+function contextPromptLayers(contextPreview?: SessionWorkspaceContextPreview | null) {
+  const layers = contextPreview?.budgetStats?.promptLayers ?? [];
+  return layers
+    .map((layer) => ({
+      name: typeof layer.name === "string" && layer.name.trim() ? layer.name.trim() : "layer",
+      tokens: typeof layer.tokenEstimate === "number" && Number.isFinite(layer.tokenEstimate)
+        ? layer.tokenEstimate
+        : null,
+    }))
+    .filter((layer) => layer.name)
+    .slice(0, 5);
+}
+
+function contextCompositionRows(contextPreview?: SessionWorkspaceContextPreview | null) {
+  const stats = contextPreview?.budgetStats;
+  const max = stats?.maxContextTokens;
+  const rows: Array<{ label: string; value: string; percent: number }> = [];
+  const addTokens = (label: string, tokens?: number | null) => {
+    if (typeof tokens !== "number" || !Number.isFinite(tokens)) return;
+    rows.push({
+      label,
+      value: formatTokenCount(tokens),
+      percent: typeof max === "number" && max > 0 ? Math.max(2, Math.min(100, (tokens / max) * 100)) : 0,
+    });
+  };
+  const promptLayerTokens = (stats?.promptLayers ?? []).reduce((total, layer) => {
+    const value = typeof layer.tokenEstimate === "number" && Number.isFinite(layer.tokenEstimate) ? layer.tokenEstimate : 0;
+    return total + value;
+  }, 0);
+  addTokens("系统提示", promptLayerTokens || undefined);
+  addTokens("工具 schema", stats?.toolSchemaTokens);
+  addTokens("上下文消息", stats?.messageTokens);
+  addTokens("稳定前缀", stats?.stablePrefixTokens);
+  if (contextPreview?.toolCount) {
+    rows.push({ label: "可用工具", value: `${contextPreview.toolCount} 个`, percent: 0 });
+  }
+  return rows;
+}
+
 function fileReferenceLabel(option: CleanFileReferenceOption) {
   return option.label || basename(option.path) || option.path;
+}
+
+function normalizeWorkspaceOption(option: string | CleanRecentWorkspaceOption): CleanRecentWorkspaceOption {
+  return typeof option === "string" ? { path: option } : option;
+}
+
+function recentWorkspaceOptionsForLaunch(currentPath: string, workspaceOptions: CleanRecentWorkspaceOption[] = []) {
+  if (typeof window === "undefined") {
+    return uniqueWorkspaceOptions([{ path: currentPath }, ...workspaceOptions]);
+  }
+  const candidates: CleanRecentWorkspaceOption[] = [
+    { path: currentPath },
+    ...workspaceOptions,
+    { path: window.localStorage.getItem("haha-clean:last-workspace") ?? "" },
+    { path: window.localStorage.getItem("yuanbao-agent:last-workspace") ?? "" },
+  ];
+  try {
+    const stored = JSON.parse(window.localStorage.getItem("haha-clean:recent-workspaces") ?? "[]");
+    if (Array.isArray(stored)) {
+      candidates.push(...stored
+        .filter((item): item is string | CleanRecentWorkspaceOption => (
+          typeof item === "string" ||
+          (Boolean(item) && typeof item === "object" && typeof (item as CleanRecentWorkspaceOption).path === "string")
+        ))
+        .map(normalizeWorkspaceOption));
+    }
+  } catch {
+    // Ignore invalid local cache.
+  }
+  return uniqueWorkspaceOptions(candidates);
+}
+
+function uniqueWorkspaceOptions(options: CleanRecentWorkspaceOption[]) {
+  const seen = new Set<string>();
+  return options
+    .map((option) => ({
+      ...option,
+      path: option.path.trim(),
+      name: option.name?.trim() || undefined,
+    }))
+    .filter((option) => option.path)
+    .filter((option) => {
+      const key = option.path.replace(/\\/g, "/").toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 8);
+}
+
+function rememberWorkspacePath(path: string) {
+  if (typeof window === "undefined") return;
+  const normalized = path.trim();
+  if (!normalized) return;
+  const next = recentWorkspaceOptionsForLaunch(normalized).map((option) => option.path);
+  window.localStorage.setItem("haha-clean:last-workspace", normalized);
+  window.localStorage.setItem("haha-clean:recent-workspaces", JSON.stringify(next));
+}
+
+function isTauriBridgeAvailable() {
+  return typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+}
+
+function errorMessage(reason: unknown) {
+  return reason instanceof Error ? reason.message : String(reason);
+}
+
+function gitFilePaths(status?: GitLocalStatusResult | null) {
+  return status?.files?.map((file) => file.path).filter(Boolean) ?? [];
+}
+
+function branchMetaLabel(branch: NonNullable<GitLocalStatusResult["branches"]>[number]) {
+  if (branch.current) return "当前分支";
+  if (branch.checkedOut) return "已在其他工作树中检出";
+  if (branch.remote && !branch.local) return branch.remoteRef || "远程分支";
+  return "本地分支";
+}
+
+function worktreeModeFromStorage() {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem("haha-clean:use-worktree") === "true";
+}
+
+function rememberWorktreeMode(value: boolean) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem("haha-clean:use-worktree", value ? "true" : "false");
 }
 
 function normalizeFileReferences(options: CleanFileReferenceOption[]) {
@@ -159,11 +407,13 @@ export function CleanComposer({
   disabled,
   sending,
   submitting,
+  stopPending = false,
   queuedPromptCount = 0,
   attachments = [],
   onAttachmentsChange,
   onAttachmentError,
   fileReferenceOptions = [],
+  onFileReferenceQueryChange,
   modelOptions = [],
   selectedModelId,
   onSelectModel,
@@ -173,6 +423,11 @@ export function CleanComposer({
   permissionLabel,
   permissionMode,
   onPermissionModeChange,
+  onWorkspacePathChange,
+  recentWorkspaceOptions = [],
+  useWorktree: controlledUseWorktree,
+  onUseWorktreeChange,
+  worktreeModeBusy = false,
   onCopyText,
   contextLabel,
   contextPreview,
@@ -187,40 +442,155 @@ export function CleanComposer({
   const [modelOpen, setModelOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [branchOpen, setBranchOpen] = useState(false);
+  const [worktreeOpen, setWorktreeOpen] = useState(false);
+  const [branchFilter, setBranchFilter] = useState("");
+  const [localGitStatus, setLocalGitStatus] = useState<GitLocalStatusResult | null>(null);
+  const [gitLoading, setGitLoading] = useState(false);
+  const [gitError, setGitError] = useState<string | null>(null);
+  const [localUseWorktree, setLocalUseWorktree] = useState(worktreeModeFromStorage);
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissedFor, setSlashDismissedFor] = useState("");
   const [caretIndex, setCaretIndex] = useState(promptValue.length);
   const [fileReferenceIndex, setFileReferenceIndex] = useState(0);
   const [fileReferenceDismissedFor, setFileReferenceDismissedFor] = useState("");
   const [pendingPermissionMode, setPendingPermissionMode] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const selectedModel = modelOptions.find((option) => option.id === selectedModelId) ?? modelOptions[0];
   const hasPayload = Boolean(promptValue.trim() || attachments.length);
   const canSubmit = !disabled && !submitting && hasPayload;
   const canQueue = Boolean(sending && canSubmit && onQueuePrompt);
   const context = contextUsage(contextPreview);
   const contextRows = contextBudgetRows(contextPreview);
+  const contextComposition = contextCompositionRows(contextPreview);
+  const contextGroups = contextSectionGroups(contextPreview?.budgetStats?.includedSections);
+  const contextLayers = contextPromptLayers(contextPreview);
+  const contextDashboard = contextTokenDashboard(contextPreview);
   const trimmedSections = contextPreview?.budgetStats?.trimmedSections ?? [];
   const droppedSections = contextPreview?.budgetStats?.droppedSections ?? [];
   const cwdName = basename(cwdLabel);
-  const dirtyFiles = worktreeStatus?.dirtyFiles ?? 0;
-  const worktreeFiles = worktreeStatus?.files ?? [];
+  const isNewSession = variant === "new";
+  const useWorktree = controlledUseWorktree ?? localUseWorktree;
+  const recentWorkspaces = useMemo(
+    () => recentWorkspaceOptionsForLaunch(cwdLabel, recentWorkspaceOptions),
+    [cwdLabel, recentWorkspaceOptions],
+  );
+  const dirtyFiles = (isNewSession ? localGitStatus?.dirtyFiles ?? worktreeStatus?.dirtyFiles : worktreeStatus?.dirtyFiles ?? localGitStatus?.dirtyFiles) ?? 0;
+  const worktreeFiles = (isNewSession ? gitFilePaths(localGitStatus).length ? gitFilePaths(localGitStatus) : worktreeStatus?.files ?? [] : worktreeStatus?.files ?? gitFilePaths(localGitStatus));
   const worktreeFileCopyText = worktreeFiles.join("\n");
-  const branchLabel = worktreeStatus?.branch || "未检测";
-  const upstreamLabel = worktreeStatus?.upstream || "无上游";
+  const branchLabel = (isNewSession ? localGitStatus?.branch ?? worktreeStatus?.branch : worktreeStatus?.branch || localGitStatus?.branch) || "未检测";
+  const upstreamLabel = (isNewSession ? localGitStatus?.upstream ?? worktreeStatus?.upstream : worktreeStatus?.upstream || localGitStatus?.upstream) || "无上游";
+  const aheadCount = (isNewSession ? localGitStatus?.ahead ?? worktreeStatus?.ahead : worktreeStatus?.ahead ?? localGitStatus?.ahead) ?? 0;
+  const behindCount = (isNewSession ? localGitStatus?.behind ?? worktreeStatus?.behind : worktreeStatus?.behind ?? localGitStatus?.behind) ?? 0;
+  const cleanWorktree = (isNewSession ? localGitStatus?.clean ?? worktreeStatus?.clean : worktreeStatus?.clean ?? localGitStatus?.clean) ?? dirtyFiles === 0;
   const syncLabel = [
-    worktreeStatus?.ahead ? `领先 ${worktreeStatus.ahead}` : "",
-    worktreeStatus?.behind ? `落后 ${worktreeStatus.behind}` : "",
-  ].filter(Boolean).join(" · ") || (worktreeStatus?.upstream ? "已同步" : "本地分支");
+    aheadCount ? `领先 ${aheadCount}` : "",
+    behindCount ? `落后 ${behindCount}` : "",
+  ].filter(Boolean).join(" · ") || (upstreamLabel !== "无上游" ? "已同步" : "本地分支");
+  const branchOptions = useMemo(() => {
+    const query = branchFilter.trim().toLowerCase();
+    return (localGitStatus?.branches ?? [])
+      .filter((branch) => {
+        if (!query) return true;
+        return [
+          branch.name,
+          branch.remoteRef ?? "",
+          branch.worktreePath ?? "",
+        ].some((value) => value.toLowerCase().includes(query));
+      })
+      .slice(0, 40);
+  }, [branchFilter, localGitStatus?.branches]);
+  const selectedBranch = localGitStatus?.branches?.find((branch) => branch.name === branchLabel) ?? null;
+  const selectedBranchWarnsOnCurrentWorktree = Boolean(
+    isNewSession &&
+    selectedBranch &&
+    selectedBranch.name !== localGitStatus?.branch &&
+    !useWorktree &&
+    ((localGitStatus?.dirtyFiles ?? 0) > 0 || selectedBranch.checkedOut),
+  );
+  const chooseWorkspaceFolder = useCallback(async () => {
+    if (!onWorkspacePathChange) return;
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: false,
+        directory: true,
+        title: "选择项目文件夹",
+      });
+      const selectedPath = Array.isArray(selected) ? selected[0] : selected;
+      if (typeof selectedPath === "string" && selectedPath.trim()) {
+        rememberWorkspacePath(selectedPath);
+        onWorkspacePathChange(selectedPath);
+        setWorkspaceOpen(false);
+      }
+    } catch (reason) {
+      onAttachmentError?.(reason instanceof Error ? reason.message : String(reason));
+    }
+  }, [onAttachmentError, onWorkspacePathChange]);
+  const selectRecentWorkspace = useCallback((path: string) => {
+    if (!onWorkspacePathChange) return;
+    rememberWorkspacePath(path);
+    onWorkspacePathChange(path);
+    setWorkspaceOpen(false);
+  }, [onWorkspacePathChange]);
+  const refreshLocalGitStatus = useCallback(async () => {
+    if (!cwdLabel.trim() || !isTauriBridgeAvailable()) return;
+    setGitLoading(true);
+    setGitError(null);
+    try {
+      const status = await composerRuntimeClient.gitLocalStatus({ cwd: cwdLabel });
+      setLocalGitStatus(status);
+    } catch (reason) {
+      setLocalGitStatus(null);
+      setGitError(errorMessage(reason));
+    } finally {
+      setGitLoading(false);
+    }
+  }, [cwdLabel]);
+  const selectBranch = useCallback(async (branch: string) => {
+    if (!cwdLabel.trim() || !branch.trim()) return;
+    setGitLoading(true);
+    setGitError(null);
+    try {
+      await composerRuntimeClient.gitLocalCheckout({ cwd: cwdLabel, branch });
+      const status = await composerRuntimeClient.gitLocalStatus({ cwd: cwdLabel });
+      setLocalGitStatus(status);
+      setBranchOpen(false);
+      setBranchFilter("");
+    } catch (reason) {
+      const message = errorMessage(reason);
+      setGitError(message);
+      onAttachmentError?.(message);
+    } finally {
+      setGitLoading(false);
+    }
+  }, [cwdLabel, onAttachmentError]);
+  const selectWorktreeMode = useCallback((nextUseWorktree: boolean) => {
+    setLocalUseWorktree(nextUseWorktree);
+    rememberWorktreeMode(nextUseWorktree);
+    setWorktreeOpen(false);
+    void onUseWorktreeChange?.(nextUseWorktree);
+  }, [onUseWorktreeChange]);
   const contextSummary = [
     "上下文",
     contextLabel || `当前占用 ${context}`,
+    `已使用: ${formatTokenCount(contextDashboard.used)}`,
+    `剩余: ${formatTokenCount(contextDashboard.remaining)}`,
+    `窗口: ${formatTokenCount(contextDashboard.max)}`,
+    `Input tokens: ${formatTokenCount(contextDashboard.input)}`,
+    `Cache read: ${formatTokenCount(contextDashboard.cacheRead)}`,
+    `Output tokens: ${formatTokenCount(contextDashboard.output)}`,
     ...contextRows.map((row) => `${row.label}: ${row.value}`),
     contextPreview?.taskFocus?.currentStep ? `当前步骤: ${contextPreview.taskFocus.currentStep}` : "",
     contextPreview?.projectFocus ? `项目焦点: ${contextPreview.projectFocus}` : "",
+    contextGroups.length ? `纳入上下文: ${contextGroups.map((group) => `${group.label} ${group.count}`).join("、")}` : "",
+    contextLayers.length ? `系统提示层: ${contextLayers.map((layer) => `${layer.name}${layer.tokens ? ` ${layer.tokens}` : ""}`).join("、")}` : "",
     trimmedSections.length || droppedSections.length
       ? `已压缩: ${[...trimmedSections, ...droppedSections].slice(0, 4).join("、")}`
       : "",
   ].filter(Boolean).join("\n");
+  const dropLabel = attachments.length ? "松开添加到附件" : "松开添加文件或图片";
   const slashMatches = useMemo(() => {
     if (promptValue === slashDismissedFor) return [];
     if (!promptValue.startsWith("/") || promptValue.includes(" ")) return [];
@@ -245,6 +615,35 @@ export function CleanComposer({
       : normalizedFileReferences;
     return candidates.slice(0, 8);
   }, [activeFileReference, normalizedFileReferences]);
+
+  useEffect(() => {
+    onFileReferenceQueryChange?.(activeFileReference?.query ?? null);
+  }, [activeFileReference?.query, onFileReferenceQueryChange]);
+
+  useEffect(() => {
+    setLocalGitStatus(null);
+    setGitError(null);
+    setBranchFilter("");
+    if (!cwdLabel.trim() || !isTauriBridgeAvailable()) return undefined;
+    let cancelled = false;
+    setGitLoading(true);
+    composerRuntimeClient
+      .gitLocalStatus({ cwd: cwdLabel })
+      .then((status) => {
+        if (cancelled) return;
+        setLocalGitStatus(status);
+      })
+      .catch((reason) => {
+        if (cancelled) return;
+        setGitError(errorMessage(reason));
+      })
+      .finally(() => {
+        if (!cancelled) setGitLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cwdLabel]);
 
   useEffect(() => {
     setSlashIndex(0);
@@ -293,18 +692,119 @@ export function CleanComposer({
     };
   }, [attachments.length, hidden, plusOpen, permissionOpen, promptValue, queuedPrompts.length]);
 
+  const addAttachmentPaths = useCallback(
+    (paths: string[]) => {
+      const normalized = paths.map((path) => path.trim()).filter(Boolean);
+      if (!normalized.length) {
+        onAttachmentError?.("没有读取到可添加的文件。");
+        return;
+      }
+      if (!onAttachmentsChange || disabled) return;
+      const next = mergeAttachmentPaths(attachments, normalized);
+      onAttachmentsChange(next);
+    },
+    [attachments, disabled, onAttachmentError, onAttachmentsChange],
+  );
+
   const addFiles = useCallback(async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const selected = await open({ multiple: true, directory: false });
       const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
       if (paths.length) {
-        onAttachmentsChange?.(Array.from(new Set([...attachments, ...paths])));
+        addAttachmentPaths(paths);
       }
     } catch (reason) {
       onAttachmentError?.(reason instanceof Error ? reason.message : String(reason));
     }
-  }, [attachments, onAttachmentError, onAttachmentsChange]);
+  }, [addAttachmentPaths, onAttachmentError]);
+
+  const handleDragEnter = useCallback(
+    (event: ReactDragEvent<HTMLFormElement>) => {
+      if (disabled || !hasDraggedFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "copy";
+      setDragActive(true);
+    },
+    [disabled],
+  );
+
+  const handleDragOver = useCallback(
+    (event: ReactDragEvent<HTMLFormElement>) => {
+      if (disabled || !hasDraggedFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "copy";
+      setDragActive(true);
+    },
+    [disabled],
+  );
+
+  const handleDragLeave = useCallback((event: ReactDragEvent<HTMLFormElement>) => {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    setDragActive(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (event: ReactDragEvent<HTMLFormElement>) => {
+      if (disabled || !hasDraggedFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDragActive(false);
+      addAttachmentPaths(pathsFromDrop(event.dataTransfer));
+    },
+    [addAttachmentPaths, disabled],
+  );
+
+  useEffect(() => {
+    if (hidden || typeof window === "undefined" || !(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
+      return undefined;
+    }
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const pointIsNearComposer = (position?: { x: number; y: number }, padding = 28) => {
+      const node = formRef.current;
+      if (!node || !position) return false;
+      const rect = node.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      const x = position.x > window.innerWidth + padding ? position.x / ratio : position.x;
+      const y = position.y > window.innerHeight + padding ? position.y / ratio : position.y;
+      return x >= rect.left - padding && x <= rect.right + padding && y >= rect.top - padding && y <= rect.bottom + padding;
+    };
+    void import("@tauri-apps/api/webview")
+      .then(({ getCurrentWebview }) =>
+        getCurrentWebview().onDragDropEvent((event) => {
+          if (disposed || disabled) return;
+          const payload = event.payload;
+          if (payload.type === "enter" || payload.type === "over") {
+            setDragActive(pointIsNearComposer(payload.position));
+            return;
+          }
+          if (payload.type === "leave") {
+            setDragActive(false);
+            return;
+          }
+          setDragActive(false);
+          if (payload.type === "drop" && pointIsNearComposer(payload.position, 48)) {
+            addAttachmentPaths(payload.paths);
+          }
+        }),
+      )
+      .then((cleanup) => {
+        if (disposed) {
+          cleanup();
+        } else {
+          unlisten = cleanup;
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [addAttachmentPaths, disabled, hidden]);
 
   const insertSlash = useCallback(() => {
     const node = textareaRef.current;
@@ -489,7 +989,12 @@ export function CleanComposer({
     <form
       ref={formRef}
       className="hc-composer"
+      aria-label="消息输入"
       data-variant={variant}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
       onSubmit={(event) => {
         event.preventDefault();
         if (canSubmit) onSubmitPrompt();
@@ -509,7 +1014,15 @@ export function CleanComposer({
         </div>
       ) : null}
 
-      <div className="hc-composer-card">
+      <div className="hc-composer-card" data-dragging={dragActive ? "true" : "false"}>
+        {dragActive ? (
+          <div className="hc-drop-overlay" role="status" aria-live="polite">
+            <div>
+              <ImagePlus size={18} />
+              <span>{dropLabel}</span>
+            </div>
+          </div>
+        ) : null}
         {attachments.length ? (
           <div className="hc-attachments">
             {attachments.map((path) => (
@@ -534,6 +1047,7 @@ export function CleanComposer({
         <textarea
           ref={textareaRef}
           value={promptValue}
+          aria-label="任务指令"
           placeholder={variant === "new" ? "随便问点什么..." : "描述下一步要本地智能体完成的事情..."}
           disabled={disabled}
           onChange={(event) => {
@@ -681,22 +1195,57 @@ export function CleanComposer({
               </button>
               {contextOpen ? (
                 <div className="hc-popover hc-context-popover" aria-label="上下文详情">
-                  <header>
-                    <strong>上下文</strong>
-                    <small>{contextLabel || `当前占用 ${context}`}</small>
+                  <header className="hc-context-usage-head">
+                    <strong>{contextDashboard.percent !== null ? `${contextDashboard.percent}%` : context}</strong>
+                    <small>{contextDashboard.estimated ? "估算" : "实时"}</small>
                   </header>
-                  {contextRows.length ? (
-                    <dl>
-                      {contextRows.map((row) => (
-                        <div key={row.label}>
-                          <dt>{row.label}</dt>
-                          <dd>{row.value}</dd>
-                        </div>
+                  <div className="hc-context-summary-grid" aria-label="上下文摘要">
+                    <div>
+                      <span>已使用</span>
+                      <strong>{formatTokenCount(contextDashboard.used)}</strong>
+                    </div>
+                    <div>
+                      <span>剩余</span>
+                      <strong>{formatTokenCount(contextDashboard.remaining)}</strong>
+                    </div>
+                    <div>
+                      <span>窗口</span>
+                      <strong>{formatTokenCount(contextDashboard.max)}</strong>
+                    </div>
+                  </div>
+                  <div className="hc-context-token-bars" aria-label="上下文 token 使用">
+                    {contextDashboard.bars.map((row) => (
+                      <div key={row.label}>
+                        <span>
+                          <strong>{row.label}</strong>
+                          <em>{formatTokenCount(row.value)}</em>
+                        </span>
+                        <i data-tone={row.tone} style={{ width: `${Math.max(row.value ? 1 : 0, row.percent)}%` }} aria-hidden="true" />
+                      </div>
+                    ))}
+                  </div>
+                  {relativeTimeLabel(contextDashboard.updatedAt) ? <p>{relativeTimeLabel(contextDashboard.updatedAt)}</p> : null}
+                  {contextGroups.length ? (
+                    <div className="hc-context-section-groups" aria-label="纳入上下文">
+                      {contextGroups.slice(0, 8).map((group) => (
+                        <span key={group.label}>
+                          {group.label}
+                          <b>{group.count}</b>
+                        </span>
                       ))}
-                    </dl>
-                  ) : (
-                    <p>暂无上下文统计。</p>
-                  )}
+                    </div>
+                  ) : null}
+                  {contextLayers.length ? (
+                    <div className="hc-context-layers" aria-label="系统提示层">
+                      <strong>系统提示层</strong>
+                      {contextLayers.map((layer) => (
+                        <span key={layer.name}>
+                          {layer.name}
+                          {layer.tokens ? <small>{formatTokenCount(layer.tokens)}</small> : null}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                   {contextPreview?.taskFocus?.currentStep ? <p>当前步骤：{contextPreview.taskFocus.currentStep}</p> : null}
                   {contextPreview?.projectFocus ? <p>项目焦点：{contextPreview.projectFocus}</p> : null}
                   {trimmedSections.length || droppedSections.length ? (
@@ -736,9 +1285,9 @@ export function CleanComposer({
               ) : null}
             </div>
             {sending && onStopPrompt ? (
-              <button type="button" className="hc-stop" onClick={onStopPrompt}>
+              <button type="button" className="hc-stop" data-pending={stopPending ? "true" : "false"} disabled={stopPending} onClick={onStopPrompt}>
                 <Square size={12} fill="currentColor" />
-                停止
+                {stopPending ? "停止中" : "停止"}
               </button>
             ) : null}
             {canQueue ? (
@@ -752,70 +1301,256 @@ export function CleanComposer({
           </div>
         </div>
         <div className="hc-context-strip">
-          <div className="hc-menu hc-strip-menu">
-            <button
-              type="button"
-              className="hc-context-strip-button"
-              aria-expanded={projectOpen}
-              onClick={() => {
-                setProjectOpen((open) => !open);
-                setContextOpen(false);
-                setModelOpen(false);
-              }}
-            >
-              <Folder size={16} />{cwdName}
-            </button>
-            {projectOpen ? (
-              <div className="hc-popover hc-project-popover" aria-label="项目目录">
-                <header>
-                  <strong>项目目录</strong>
-                  <small>{cwdName}</small>
-                </header>
-                <p title={cwdLabel}>{cwdLabel || "未选择工作区"}</p>
-                <dl className="hc-project-status">
-                  <div>
-                    <dt>分支</dt>
-                    <dd>{branchLabel}</dd>
+          {isNewSession ? (
+            <div className="hc-launch-bar" aria-label="会话启动环境">
+              <div className="hc-menu hc-launch-menu">
+                <button
+                  type="button"
+                  className="hc-launch-dir"
+                  title={cwdLabel || "选择项目文件夹"}
+                  disabled={!onWorkspacePathChange}
+                  aria-haspopup="menu"
+                  aria-expanded={workspaceOpen}
+                  onClick={() => {
+                    setWorkspaceOpen((open) => !open);
+                    setBranchOpen(false);
+                    setWorktreeOpen(false);
+                    setPermissionOpen(false);
+                    setContextOpen(false);
+                    setModelOpen(false);
+                  }}
+                >
+                  <Folder size={16} />
+                  <span>{cwdName || "选择项目..."}</span>
+                  <ChevronDown size={15} />
+                </button>
+                {workspaceOpen ? (
+                  <div className="hc-popover hc-workspace-popover" role="menu" aria-label="选择项目文件夹">
+                    <header>
+                      <strong>最近</strong>
+                    </header>
+                    {recentWorkspaces.length ? (
+                      <div className="hc-workspace-recent-list">
+                        {recentWorkspaces.map((workspace) => {
+                          const path = workspace.path;
+                          const selected = path === cwdLabel;
+                          const label = workspace.name || workspace.repoName || basename(path);
+                          const detail = [
+                            workspace.branch,
+                            workspace.sessionCount ? `${workspace.sessionCount} 个会话` : "",
+                            relativeTimeLabel(workspace.updatedAt),
+                          ].filter(Boolean).join(" · ");
+                          return (
+                            <button key={path} type="button" role="menuitem" title={path} data-active={selected ? "true" : undefined} onClick={() => selectRecentWorkspace(path)}>
+                              <Folder size={16} />
+                              <span>
+                                <strong>{label}</strong>
+                                <small>{detail || path}</small>
+                              </span>
+                              {selected ? <Check size={15} /> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p>暂无最近项目</p>
+                    )}
+                    <div className="hc-popover-actions">
+                      <button type="button" disabled={!onWorkspacePathChange} onClick={chooseWorkspaceFolder}>
+                        <Folder size={15} />
+                        选择其他文件夹
+                      </button>
+                    </div>
                   </div>
-                  <div>
-                    <dt>上游</dt>
-                    <dd>{upstreamLabel}</dd>
-                  </div>
-                  <div>
-                    <dt>同步</dt>
-                    <dd>{syncLabel}</dd>
-                  </div>
-                  <div>
-                    <dt>改动</dt>
-                    <dd>{worktreeStatus?.error || (dirtyFiles ? `${dirtyFiles} 个文件` : "工作区干净")}</dd>
-                  </div>
-                  <div>
-                    <dt>最近文件</dt>
-                    <dd>{worktreeFiles.slice(0, 3).join("、") || "暂无"}</dd>
-                  </div>
-                </dl>
-                <div className="hc-popover-actions">
-                  <button
-                    type="button"
-                    disabled={!cwdLabel}
-                    onClick={() => copyText(cwdLabel)}
-                  >
-                    <Copy size={13} />
-                    复制路径
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!worktreeFiles.length}
-                    onClick={() => copyText(worktreeFileCopyText)}
-                  >
-                    <Copy size={13} />
-                    复制改动文件
-                  </button>
-                </div>
-                <p>后续会在这里补最近项目和工作树切换。</p>
+                ) : null}
               </div>
-            ) : null}
-          </div>
+              <div className="hc-menu hc-launch-branch-menu">
+                <button
+                  type="button"
+                  className="hc-launch-chip hc-launch-button"
+                  title={gitError || branchLabel}
+                  aria-haspopup="menu"
+                  aria-expanded={branchOpen}
+                  disabled={!cwdLabel || gitLoading}
+                  onClick={() => {
+                    setBranchOpen((open) => !open);
+                    setWorkspaceOpen(false);
+                    setWorktreeOpen(false);
+                    setPermissionOpen(false);
+                    setContextOpen(false);
+                    setModelOpen(false);
+                  }}
+                >
+                  <GitBranch size={14} />
+                  <span>{gitLoading ? "检测中" : branchLabel}</span>
+                  <ChevronDown size={14} />
+                </button>
+                {branchOpen ? (
+                  <div className="hc-popover hc-branch-popover" role="menu" aria-label="选择分支">
+                    <label className="hc-branch-search">
+                      <Search size={14} />
+                      <input
+                        value={branchFilter}
+                        placeholder="筛选分支..."
+                        autoFocus
+                        onChange={(event) => setBranchFilter(event.currentTarget.value)}
+                      />
+                    </label>
+                    {gitError ? <p className="hc-launch-warning">{gitError}</p> : null}
+                    {selectedBranchWarnsOnCurrentWorktree ? (
+                      <p className="hc-launch-warning">
+                        {selectedBranch?.checkedOut
+                          ? "选中分支已在其他工作树中检出；使用独立工作树可避免改动当前目录。"
+                          : `当前工作树有 ${dirtyFiles} 个文件改动，直接切换可能会被 Git 阻止。`}
+                      </p>
+                    ) : null}
+                    {branchOptions.length ? (
+                      <div className="hc-branch-list">
+                        {branchOptions.map((branch) => (
+                          <button
+                            key={branch.name}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={branch.current}
+                            data-active={branch.current ? "true" : undefined}
+                            onClick={() => selectBranch(branch.name)}
+                          >
+                            <GitBranch size={14} />
+                            <span>
+                              <strong>{branch.name}</strong>
+                              <small>{branchMetaLabel(branch)}</small>
+                            </span>
+                            {branch.current ? <Check size={14} /> : null}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="hc-launch-empty">{gitLoading ? "正在读取分支..." : "没有可选分支"}</p>
+                    )}
+                    <div className="hc-popover-actions">
+                      <button type="button" disabled={gitLoading || !cwdLabel} onClick={() => void refreshLocalGitStatus()}>
+                        刷新状态
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+              <div className="hc-menu hc-launch-worktree-menu">
+                <button
+                  type="button"
+                  className="hc-launch-chip hc-launch-button"
+                  aria-haspopup="menu"
+                  aria-expanded={worktreeOpen}
+                  disabled={worktreeModeBusy}
+                  onClick={() => {
+                    setWorktreeOpen((open) => !open);
+                    setWorkspaceOpen(false);
+                    setBranchOpen(false);
+                    setPermissionOpen(false);
+                    setContextOpen(false);
+                    setModelOpen(false);
+                  }}
+                >
+                  <span>{useWorktree ? "独立工作树" : "当前工作树"}</span>
+                  <small>{worktreeModeBusy ? "保存中" : cleanWorktree ? "干净" : `${dirtyFiles} 个改动`}</small>
+                  <ChevronDown size={14} />
+                </button>
+                {worktreeOpen ? (
+                  <div className="hc-popover hc-worktree-popover" role="menu" aria-label="工作树模式">
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={!useWorktree}
+                      data-active={!useWorktree ? "true" : undefined}
+                      disabled={worktreeModeBusy}
+                      onClick={() => selectWorktreeMode(false)}
+                    >
+                      <strong>当前工作树</strong>
+                      <small>直接使用所选项目目录。</small>
+                      {!useWorktree ? <Check size={14} /> : null}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={useWorktree}
+                      data-active={useWorktree ? "true" : undefined}
+                      disabled={worktreeModeBusy}
+                      onClick={() => selectWorktreeMode(true)}
+                    >
+                      <strong>独立工作树</strong>
+                      <small>写入任务会自动创建隔离工作树。</small>
+                      {useWorktree ? <Check size={14} /> : null}
+                    </button>
+                    <p>{syncLabel}</p>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : (
+            <div className="hc-menu hc-strip-menu">
+              <button
+                type="button"
+                className="hc-context-strip-button"
+                aria-expanded={projectOpen}
+                onClick={() => {
+                  setProjectOpen((open) => !open);
+                  setContextOpen(false);
+                  setModelOpen(false);
+                }}
+              >
+                <Folder size={16} />{cwdName}
+              </button>
+              {projectOpen ? (
+                <div className="hc-popover hc-project-popover" aria-label="项目目录">
+                  <header>
+                    <strong>项目目录</strong>
+                    <small>{cwdName}</small>
+                  </header>
+                  <p title={cwdLabel}>{cwdLabel || "未选择工作区"}</p>
+                  <dl className="hc-project-status">
+                    <div>
+                      <dt>分支</dt>
+                      <dd>{branchLabel}</dd>
+                    </div>
+                    <div>
+                      <dt>上游</dt>
+                      <dd>{upstreamLabel}</dd>
+                    </div>
+                    <div>
+                      <dt>同步</dt>
+                      <dd>{syncLabel}</dd>
+                    </div>
+                    <div>
+                      <dt>改动</dt>
+                      <dd>{worktreeStatus?.error || (dirtyFiles ? `${dirtyFiles} 个文件` : "工作区干净")}</dd>
+                    </div>
+                    <div>
+                      <dt>最近文件</dt>
+                      <dd>{worktreeFiles.slice(0, 3).join("、") || "暂无"}</dd>
+                    </div>
+                  </dl>
+                  <div className="hc-popover-actions">
+                    <button
+                      type="button"
+                      disabled={!cwdLabel}
+                      onClick={() => copyText(cwdLabel)}
+                    >
+                      <Copy size={13} />
+                      复制路径
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!worktreeFiles.length}
+                      onClick={() => copyText(worktreeFileCopyText)}
+                    >
+                      <Copy size={13} />
+                      复制改动文件
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )}
           <button
             type="button"
             className="hc-context-strip-button"
@@ -826,9 +1561,6 @@ export function CleanComposer({
             }}
           >
             <Gauge size={14} />{contextLabel || `上下文 ${context}`}
-          </button>
-          <button type="button" className="hc-context-strip-button" disabled title="上下文能力说明">
-            <CircleHelp size={14} />权限与上下文会随会话更新
           </button>
           {runtimeChildTasks?.length ? <span>{runtimeChildTasks.length} 个子任务</span> : null}
         </div>

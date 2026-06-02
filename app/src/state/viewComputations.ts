@@ -35,6 +35,24 @@ import {
   sortByUpdatedAtDesc,
 } from "./eventRecordViews";
 
+function readPreviewRows(value: unknown): Array<{ label: string; value: string }> | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const rows = value
+    .map((row) => {
+      if (!row || typeof row !== "object") {
+        return null;
+      }
+      const record = row as Record<string, unknown>;
+      const label = typeof record.label === "string" ? record.label.trim() : "";
+      const rowValue = typeof record.value === "string" ? record.value.trim() : "";
+      return label && rowValue ? { label, value: rowValue } : null;
+    })
+    .filter((row): row is { label: string; value: string } => row !== null);
+  return rows.length ? rows.slice(0, 5) : undefined;
+}
+
 export interface AgentEventLike {
   type: string;
   payload: any;
@@ -44,6 +62,23 @@ export interface AgentEventLike {
   ts: number;
 }
 
+function normalizeChangedPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  value.forEach((item) => {
+    const path = typeof item === "string" ? item.trim().replace(/\\/g, "/") : "";
+    if (!path || seen.has(path)) {
+      return;
+    }
+    seen.add(path);
+    paths.push(path);
+  });
+  return paths;
+}
+
 export function computeToolTimelineItems(events: AgentEventLike[]): ToolTimelineItem[] {
   const items = new Map<string, ToolTimelineItem>();
 
@@ -51,7 +86,8 @@ export function computeToolTimelineItems(events: AgentEventLike[]): ToolTimeline
     if (
       event.type !== "tool.started" &&
       event.type !== "tool.completed" &&
-      event.type !== "tool.failed"
+      event.type !== "tool.failed" &&
+      event.type !== "tool.blocked"
     ) {
       continue;
     }
@@ -61,8 +97,10 @@ export function computeToolTimelineItems(events: AgentEventLike[]): ToolTimeline
     const current = items.get(toolCallId);
     const status = event.type.replace("tool.", "") as ToolTimelineItem["status"];
     const toolName = payload.toolName ?? current?.toolName ?? "unknown_tool";
-    const argumentValue = payload.arguments ?? getPayloadValue(event.payload, ["args", "input", "parameters"]);
-    const resultValue = getPayloadValue(event.payload, ["result", "output", "content", "summary"]);
+    const rawArgumentValue = payload.arguments ?? getPayloadValue(event.payload, ["args", "input", "parameters"]);
+    const argumentValue = payload.inputSummary ?? rawArgumentValue;
+    const rawResultValue = getPayloadValue(event.payload, ["result", "output", "content", "summary"]);
+    const resultValue = payload.resultSummary ?? rawResultValue;
     const errorValue = getPayloadValue(event.payload, ["error", "errorJson", "message"]);
     const durationMs =
       readEventNumber(event.payload, "durationMs") ??
@@ -75,13 +113,25 @@ export function computeToolTimelineItems(events: AgentEventLike[]): ToolTimeline
       taskId: event.taskId ?? "",
       toolCallId,
       parentToolUseId: readEventText(event.payload, "parentToolUseId") ?? current?.parentToolUseId,
+      toolGroupId: readEventText(event.payload, "toolGroupId") ?? current?.toolGroupId,
+      toolIndex: readEventNumber(event.payload, "toolIndex") ?? current?.toolIndex,
+      toolTotal: readEventNumber(event.payload, "toolTotal") ?? current?.toolTotal,
+      toolOperationId: readEventText(event.payload, "toolOperationId") ?? current?.toolOperationId,
+      toolOperationLabel: readEventText(event.payload, "toolOperationLabel") ?? current?.toolOperationLabel,
+      toolCategory: readEventText(event.payload, "toolCategory") ?? current?.toolCategory,
+      toolPhaseId: readEventText(event.payload, "toolPhaseId") ?? current?.toolPhaseId,
+      toolPhaseLabel: readEventText(event.payload, "toolPhaseLabel") ?? current?.toolPhaseLabel,
+      toolSemanticParentId: readEventText(event.payload, "toolSemanticParentId") ?? current?.toolSemanticParentId,
+      toolSemanticParentLabel: readEventText(event.payload, "toolSemanticParentLabel") ?? current?.toolSemanticParentLabel,
       toolName,
+      target: readEventText(event.payload, "target") ?? current?.target,
       status,
       argsSummary: summarizeToolArguments(toolName, argumentValue, current?.argsSummary ?? "未记录参数"),
       resultSummary,
+      resultPreview: readPreviewRows(payload.resultPreview) ?? current?.resultPreview,
       errorSummary: errorSummary || current?.errorSummary,
-      argsRaw: formatRawValue(argumentValue) ?? current?.argsRaw,
-      resultRaw: formatRawValue(resultValue ?? errorValue) ?? current?.resultRaw,
+      argsRaw: formatRawValue(rawArgumentValue) ?? current?.argsRaw,
+      resultRaw: formatRawValue(rawResultValue ?? errorValue) ?? current?.resultRaw,
       startedAt: current?.startedAt ?? event.ts,
       updatedAt: event.ts,
       finishedAt: status === "started" ? current?.finishedAt : event.ts,
@@ -93,124 +143,159 @@ export function computeToolTimelineItems(events: AgentEventLike[]): ToolTimeline
   return Array.from(items.values()).sort((left, right) => right.updatedAt - left.updatedAt);
 }
 
+type ApprovalEventPayloadDetails = {
+  approvalId: string;
+  taskId: string;
+  kind?: ApprovalRequestedPayload["kind"];
+  request?: Record<string, unknown>;
+  preview?: unknown;
+  patchId?: string;
+  filesChanged?: number;
+  changedPaths?: unknown;
+  diffText?: string;
+  completionReviewConclusion?: unknown;
+};
+
+function buildApprovalCardView(
+  payload: ApprovalEventPayloadDetails,
+  event: AgentEventLike,
+  current: ApprovalCardView | undefined,
+  status: ApprovalCardView["status"],
+  timing: {
+    requestedAt: number;
+    requestedEventId?: string;
+    resolvedAt?: number;
+    resolvedEventId?: string;
+  },
+): ApprovalCardView {
+  const request = readRecord(payload.request) ?? {};
+  const hasRequestDetails =
+    Boolean(payload.kind) ||
+    Object.keys(request).length > 0 ||
+    payload.preview !== undefined ||
+    payload.filesChanged !== undefined ||
+    payload.changedPaths !== undefined ||
+    payload.diffText !== undefined ||
+    payload.patchId !== undefined;
+  const kind = payload.kind ?? current?.kind ?? "run_command";
+  const payloadChangedPaths = normalizeChangedPaths(payload.changedPaths);
+  const requestChangedPaths = normalizeChangedPaths(readRequestStringList(request, ["changedPaths", "files", "filesChangedList", "changedFiles", "paths", "path", "file"]));
+  const changedPaths = payloadChangedPaths.length
+    ? payloadChangedPaths
+    : requestChangedPaths.length
+      ? requestChangedPaths
+      : current?.changedPaths ?? [];
+  const explicitFilesChanged = readRequestOptionalNumber(request, ["filesChanged", "files_changed"]) ??
+    (typeof payload.filesChanged === "number" && Number.isFinite(payload.filesChanged) ? payload.filesChanged : undefined);
+  const filesChanged = explicitFilesChanged ?? current?.filesChanged ?? (changedPaths.length ? changedPaths.length : undefined);
+  const payloadDiffText = readEventText(payload, "diffText") ?? readRequestText(request, "diffText", "");
+  const diffText = payloadDiffText || current?.diffText;
+  const patchId = kind === "apply_patch"
+    ? payload.patchId ?? readRequestPatchId(request) ?? current?.patchId
+    : undefined;
+  const isWorktreeMerge = kind === "worktree_merge";
+  const isCompletionReview = kind === "completion_review";
+  const completionEvidence = isCompletionReview ? buildCompletionEvidenceView(request) : undefined;
+  const worktreeBranch = readRequestText(request, "branchName", "worktree");
+  const worktreeTarget = readRequestText(request, "targetBranch", "main");
+  const worktreeDiffSummary = isWorktreeMerge ? buildWorktreeDiffSummary(request) : "";
+  const worktreeReviewSummary = isWorktreeMerge ? buildWorktreeReviewSummary(request) : "";
+  const worktreeStrategySummary = isWorktreeMerge ? buildWorktreeStrategySummary(request) : "";
+  const patchSummary = isWorktreeMerge
+    ? `Worktree merge ${worktreeBranch} -> ${worktreeTarget}`
+    : isCompletionReview
+      ? "Completion review required"
+      : readRequestText(request, "summary", readRequestText(request, "patchSummary", current?.patchSummary ?? "patch approval request"));
+  const defaultCommand = !hasRequestDetails && !current
+    ? "unknown"
+    : kind === "apply_patch"
+      ? "apply_patch"
+      : isWorktreeMerge
+        ? `merge ${worktreeBranch} -> ${worktreeTarget}`
+        : isCompletionReview
+          ? "review completion evidence"
+          : current?.command ?? "command";
+  const command = readRequestText(request, "command", defaultCommand);
+  const cwd = readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", readRequestText(request, "worktreePath", current?.cwd ?? ".")));
+  const risk = readRequestText(
+    request,
+    "risk",
+    current?.risk ??
+      (kind === "apply_patch"
+        ? "writes files"
+        : isCompletionReview
+          ? completionEvidence?.gateStatus ?? "completion evidence requires review"
+          : "executes command"),
+  );
+  const requestSummary = !hasRequestDetails
+    ? current?.requestSummary ?? "Resolved approval was received before the request event."
+    : kind === "apply_patch" || kind === "write_file"
+      ? `${patchSummary}${filesChanged !== undefined ? ` | ${filesChanged} file(s)` : ""}${
+          changedPaths.length > 0 ? ` | ${changedPaths.slice(0, 3).join(", ")}` : ""
+        }`
+      : isWorktreeMerge
+        ? compactSummary([command, worktreeDiffSummary, worktreeReviewSummary, worktreeStrategySummary])
+        : isCompletionReview
+          ? completionEvidence?.summary ?? `${readRequestText(request, "reason", "completion evidence requires review")} | ${readRequestText(request, "summary", "").slice(0, 120)}`
+          : `${command} | cwd ${cwd}`;
+  const previewRows = readApprovalPreviewRows(payload.preview, request, kind);
+  const mergedCompletionEvidence = mergeCompletionReviewConclusion(
+    mergeCompletionReviewConclusion(completionEvidence ?? current?.completionEvidence, current?.completionEvidence?.reviewConclusion),
+    payload.completionReviewConclusion,
+  );
+
+  return {
+    ...current,
+    approvalId: payload.approvalId,
+    taskId: payload.taskId,
+    kind,
+    patchId,
+    patchSummary,
+    filesChanged,
+    changedPaths,
+    diffText: diffText || undefined,
+    command,
+    cwd,
+    shell: readRequestText(request, "shell", current?.shell ?? "system default"),
+    timeoutMs: readRequestNumber(request, "timeoutMs", current?.timeoutMs ?? 0),
+    risk,
+    requestJson: Object.keys(request).length ? stringifyRequestJson(request) : current?.requestJson ?? "{}",
+    requestSummary,
+    previewRows: previewRows.length ? previewRows : current?.previewRows ?? [],
+    completionEvidence: mergedCompletionEvidence,
+    status,
+    requestedAt: timing.requestedAt,
+    updatedAt: event.ts,
+    requestedEventId: timing.requestedEventId,
+    resolvedAt: timing.resolvedAt,
+    resolvedEventId: timing.resolvedEventId,
+  };
+}
+
 export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView[] {
   const cards = new Map<string, ApprovalCardView>();
 
   for (const event of events) {
     if (event.type === "approval.requested") {
       const payload = event.payload as ApprovalRequestedPayload;
-      const request = payload.request as Record<string, unknown>;
-      const filesChanged = readRequestOptionalNumber(request, ["filesChanged", "files_changed"]);
-      const changedFiles = readRequestStringList(request, ["files", "filesChangedList", "paths"]);
-      const patchId = payload.kind === "apply_patch" ? payload.patchId ?? readRequestPatchId(request) : undefined;
-      const isWorktreeMerge = payload.kind === "worktree_merge";
-      const isCompletionReview = payload.kind === "completion_review";
-      const completionEvidence = isCompletionReview ? buildCompletionEvidenceView(request) : undefined;
-      const worktreeBranch = readRequestText(request, "branchName", "worktree");
-      const worktreeTarget = readRequestText(request, "targetBranch", "main");
-      const worktreeDiffSummary = isWorktreeMerge ? buildWorktreeDiffSummary(request) : "";
-      const worktreeReviewSummary = isWorktreeMerge ? buildWorktreeReviewSummary(request) : "";
-      const worktreeStrategySummary = isWorktreeMerge ? buildWorktreeStrategySummary(request) : "";
-      const patchSummary = isWorktreeMerge
-        ? `Worktree merge ${worktreeBranch} -> ${worktreeTarget}`
-        : isCompletionReview
-          ? "Completion review required"
-        : readRequestText(request, "summary", readRequestText(request, "patchSummary", "patch approval request"));
-      const command = readRequestText(
-        request,
-        "command",
-        payload.kind === "apply_patch"
-          ? "apply_patch"
-          : isWorktreeMerge
-            ? `merge ${worktreeBranch} -> ${worktreeTarget}`
-            : isCompletionReview
-              ? "review completion evidence"
-              : "command",
-      );
-      const cwd = readRequestText(request, "cwd", readRequestText(request, "workspaceRoot", readRequestText(request, "worktreePath", ".")));
       const current = cards.get(payload.approvalId);
-      cards.set(payload.approvalId, {
-        ...current,
-        approvalId: payload.approvalId,
-        taskId: payload.taskId,
-        kind: payload.kind,
-        patchId,
-        patchSummary,
-        filesChanged,
-        command,
-        cwd,
-        shell: readRequestText(request, "shell", "system default"),
-        timeoutMs: readRequestNumber(request, "timeoutMs", 0),
-        risk: readRequestText(
-          request,
-          "risk",
-          payload.kind === "apply_patch"
-            ? "writes files"
-            : isCompletionReview
-              ? completionEvidence?.gateStatus ?? "completion evidence requires review"
-              : "executes command",
-        ),
-        requestJson: stringifyRequestJson(request),
-        requestSummary:
-          payload.kind === "apply_patch"
-            ? `${patchSummary}${filesChanged !== undefined ? ` | ${filesChanged} file(s)` : ""}${
-                changedFiles.length > 0 ? ` | ${changedFiles.slice(0, 3).join(", ")}` : ""
-              }`
-            : isWorktreeMerge
-              ? compactSummary([command, worktreeDiffSummary, worktreeReviewSummary, worktreeStrategySummary])
-            : isCompletionReview
-              ? completionEvidence?.summary ?? `${readRequestText(request, "reason", "completion evidence requires review")} | ${readRequestText(request, "summary", "").slice(0, 120)}`
-              : `${command} | cwd ${cwd}`,
-        completionEvidence: mergeCompletionReviewConclusion(
-          completionEvidence,
-          current?.completionEvidence?.reviewConclusion,
-        ),
-        status: current?.status ?? "pending",
+      cards.set(payload.approvalId, buildApprovalCardView(payload, event, current, current?.status ?? "pending", {
         requestedAt: event.ts,
-        updatedAt: event.ts,
         requestedEventId: event.eventId,
         resolvedAt: current?.resolvedAt,
         resolvedEventId: current?.resolvedEventId,
-      });
+      }));
     }
 
     if (event.type === "approval.resolved") {
       const payload = event.payload as ApprovalResolvedPayload;
       const current = cards.get(payload.approvalId);
-      if (current) {
-        cards.set(payload.approvalId, {
-          ...current,
-          completionEvidence: mergeCompletionReviewConclusion(
-            current.completionEvidence,
-            payload.completionReviewConclusion,
-          ),
-          status: payload.decision,
-          resolvedAt: event.ts,
-          updatedAt: event.ts,
-          resolvedEventId: event.eventId,
-        });
-        continue;
-      }
-
-      cards.set(payload.approvalId, {
-        approvalId: payload.approvalId,
-        taskId: payload.taskId,
-        kind: "run_command",
-        patchId: undefined,
-        command: "unknown",
-        cwd: ".",
-        shell: "system default",
-        timeoutMs: 0,
-        risk: "not recorded",
-        requestJson: "{}",
-        requestSummary: "Resolved approval was received before the request event.",
-        completionEvidence: mergeCompletionReviewConclusion(undefined, payload.completionReviewConclusion),
-        status: payload.decision,
-        requestedAt: event.ts,
-        updatedAt: event.ts,
+      cards.set(payload.approvalId, buildApprovalCardView(payload, event, current, payload.decision, {
+        requestedAt: current?.requestedAt ?? event.ts,
         resolvedAt: event.ts,
+        requestedEventId: current?.requestedEventId,
         resolvedEventId: event.eventId,
-      });
+      }));
     }
   }
 
@@ -219,6 +304,81 @@ export function computeApprovalCards(events: AgentEventLike[]): ApprovalCardView
 
 function compactSummary(parts: string[]): string {
   return parts.map((part) => part.trim()).filter(Boolean).join(" | ");
+}
+
+function readApprovalPreviewRows(
+  rawPreview: unknown,
+  request: Record<string, unknown>,
+  kind: string,
+): Array<{ label: string; value: string }> {
+  const fromPayload = Array.isArray(rawPreview)
+    ? rawPreview
+        .map((item) => readRecord(item))
+        .filter((item): item is Record<string, unknown> => Boolean(item))
+        .map((item) => ({
+          label: readString(item["label"]) ?? "",
+          value: readString(item["value"]) ?? "",
+        }))
+        .filter((item) => item.label && item.value)
+    : [];
+  if (fromPayload.length) {
+    return fromPayload.slice(0, 5);
+  }
+
+  const row = (label: string, value: unknown) => {
+    const text = readString(value) ?? (typeof value === "number" && Number.isFinite(value) ? String(value) : undefined);
+    return text ? { label, value: text } : undefined;
+  };
+  const isNotebookExecution =
+    kind === "run_command" && (request["toolName"] === "notebook" || request["notebookAction"] === "execute_cell");
+  const coordinates =
+    request["x"] !== undefined && request["x"] !== "" && request["y"] !== undefined && request["y"] !== ""
+      ? `${String(request["x"])}, ${String(request["y"])}`
+      : "";
+  const scroll =
+    request["direction"] !== undefined || request["amount"] !== undefined
+      ? `${String(request["direction"] ?? "down")} ${String(request["amount"] ?? "")}`.trim()
+      : "";
+  const rows =
+    kind === "run_command"
+      ? [
+          row("命令", request["command"]),
+          ...(isNotebookExecution ? [row("Notebook", request["path"]), row("Cell", request["cellIndex"])] : []),
+          row("目录", request["cwd"] ?? request["workspaceRoot"]),
+          row("Shell", request["shell"]),
+          row("原因", request["policyReason"] ?? request["risk"] ?? request["reason"]),
+        ]
+      : kind === "network_access"
+        ? [
+            row("方法", request["method"] ?? "GET"),
+            row("URL", request["url"]),
+            row("原因", request["reason"] ?? request["risk"]),
+          ]
+        : kind === "computer_use"
+          ? [
+              row("应用", request["app"] ?? request["target"] ?? request["application"]),
+              row("动作", request["action"]),
+              row("目标", request["selector"] ?? request["target"]),
+              row("坐标", coordinates),
+              row("文本", request["text"]),
+              row("滚动", scroll),
+              row("URL", request["url"]),
+              row("Page", request["pageId"] ?? request["browserContextId"]),
+              row("权限", request["permission"] ?? request["summary"]),
+              row("详情", request["details"]),
+            ]
+          : kind === "subagent_dispatch"
+            ? [
+                row("子任务", request["prompt"]),
+                row("原因", request["reason"] ?? request["risk"]),
+              ]
+            : [
+                row("摘要", request["summary"] ?? request["description"]),
+                row("目标", request["target"] ?? request["path"] ?? request["url"]),
+                row("原因", request["reason"] ?? request["risk"]),
+              ];
+
+  return rows.filter((item): item is { label: string; value: string } => Boolean(item)).slice(0, kind === "computer_use" ? 8 : 5);
 }
 
 function buildWorktreeDiffSummary(request: Record<string, unknown>): string {
@@ -572,26 +732,30 @@ export function computePatchCards(
   const cards = new Map<string, PatchCardView>();
 
   for (const event of events) {
-    if (event.type === "patch.proposed") {
+    if (event.type.startsWith("patch.")) {
       const payload = event.payload as PatchProposedPayload;
       const patchId = readEventText(payload, "patchId");
       if (!patchId) continue;
       const diffText = readEventText(payload, "diffText");
+      const changedPaths = normalizeChangedPaths(payload.changedPaths);
+      const status = readEventText(payload, "status") ?? event.type.slice("patch.".length);
       cards.set(patchId, {
         patchId,
         taskId: event.taskId ?? "",
         summary: payload.summary ?? "",
-        filesChanged: payload.filesChanged ?? 0,
-        status: "proposed",
+        filesChanged: payload.filesChanged ?? changedPaths.length,
+        status: status as PatchRecord["status"],
         requestedAt: event.ts,
         updatedAt: event.ts,
         diffText,
+        changedPaths,
       });
     }
   }
 
   for (const [patchId, patch] of Object.entries(patchCacheById)) {
     const current = cards.get(patchId);
+    const changedPaths = normalizeChangedPaths(patch.changedPaths);
     cards.set(patchId, {
       patchId,
       taskId: patch.taskId,
@@ -601,6 +765,7 @@ export function computePatchCards(
       requestedAt: current?.requestedAt ?? patch.createdAt,
       updatedAt: Math.max(current?.updatedAt ?? patch.updatedAt, patch.updatedAt),
       diffText: patch.diffText,
+      changedPaths: changedPaths.length ? changedPaths : current?.changedPaths,
     });
   }
 
@@ -611,9 +776,11 @@ export function computePatchCards(
       card.approvalStatus = approval.status;
       card.approvalResolvedAt = approval.resolvedAt;
       card.updatedAt = Math.max(card.updatedAt, approval.updatedAt);
-      if (approval.status === "approved") {
+      const patchStatus = String(card.status ?? "").toLowerCase();
+      const approvalCanOwnStatus = !["applied", "reverted", "failed"].includes(patchStatus);
+      if (approval.status === "approved" && approvalCanOwnStatus) {
         card.status = "approved";
-      } else if (approval.status === "rejected") {
+      } else if (approval.status === "rejected" && approvalCanOwnStatus) {
         card.status = "rejected";
       }
     }

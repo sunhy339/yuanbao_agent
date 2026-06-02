@@ -35,6 +35,7 @@ export function messageRecordToChatMessage(record: MessageRecord): ChatMessageVi
     kind: record.kind,
     status: record.status,
     createdSeq: record.createdSeq,
+    metadata: record.metadata,
   };
 }
 
@@ -167,6 +168,7 @@ function isEphemeralChatBlockMessage(message: ChatMessageView) {
     kind === "permission_request" ||
     kind === "api_retry" ||
     kind === "system_notification" ||
+    kind === "system" ||
     kind === "compact_summary" ||
     kind === "goal_event" ||
     kind === "memory_event" ||
@@ -176,8 +178,103 @@ function isEphemeralChatBlockMessage(message: ChatMessageView) {
     kind === "background_task" ||
     kind === "task_summary" ||
     kind === "plan_update" ||
+    kind === "slash_command" ||
     kind === "status"
   );
+}
+
+interface ToolBatchMetadataPayload {
+  toolGroupId?: string | null;
+  toolIndex?: number | null;
+  toolTotal?: number | null;
+  toolOperationId?: string | null;
+  toolOperationLabel?: string | null;
+  toolCategory?: string | null;
+  toolPhaseId?: string | null;
+  toolPhaseLabel?: string | null;
+  toolSemanticParentId?: string | null;
+  toolSemanticParentLabel?: string | null;
+  target?: string | null;
+  inputSummary?: string | null;
+  durationMs?: number | null;
+}
+
+function toolBatchMetadataFromPayload(
+  payload: ToolBatchMetadataPayload,
+  current?: Record<string, unknown>,
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  const toolGroupId = payload.toolGroupId ?? current?.toolGroupId;
+  const toolIndex = payload.toolIndex ?? current?.toolIndex;
+  const toolTotal = payload.toolTotal ?? current?.toolTotal;
+  const toolOperationId = payload.toolOperationId ?? current?.toolOperationId;
+  const toolOperationLabel = payload.toolOperationLabel ?? current?.toolOperationLabel;
+  const toolCategory = payload.toolCategory ?? current?.toolCategory;
+  const toolPhaseId = payload.toolPhaseId ?? current?.toolPhaseId;
+  const toolPhaseLabel = payload.toolPhaseLabel ?? current?.toolPhaseLabel;
+  const toolSemanticParentId = payload.toolSemanticParentId ?? current?.toolSemanticParentId;
+  const toolSemanticParentLabel = payload.toolSemanticParentLabel ?? current?.toolSemanticParentLabel;
+  const target = payload.target ?? current?.target;
+  const inputSummary = payload.inputSummary ?? current?.inputSummary;
+  const durationMs = payload.durationMs ?? current?.durationMs;
+  if (toolGroupId != null) {
+    metadata.toolGroupId = toolGroupId;
+  }
+  if (toolIndex != null) {
+    metadata.toolIndex = toolIndex;
+  }
+  if (toolTotal != null) {
+    metadata.toolTotal = toolTotal;
+  }
+  if (toolOperationId != null) {
+    metadata.toolOperationId = toolOperationId;
+  }
+  if (toolOperationLabel != null) {
+    metadata.toolOperationLabel = toolOperationLabel;
+  }
+  if (toolCategory != null) {
+    metadata.toolCategory = toolCategory;
+  }
+  if (toolPhaseId != null) {
+    metadata.toolPhaseId = toolPhaseId;
+  }
+  if (toolPhaseLabel != null) {
+    metadata.toolPhaseLabel = toolPhaseLabel;
+  }
+  if (toolSemanticParentId != null) {
+    metadata.toolSemanticParentId = toolSemanticParentId;
+  }
+  if (toolSemanticParentLabel != null) {
+    metadata.toolSemanticParentLabel = toolSemanticParentLabel;
+  }
+  if (target != null) {
+    metadata.target = target;
+  }
+  if (inputSummary != null) {
+    metadata.inputSummary = inputSummary;
+  }
+  if (typeof durationMs === "number" && Number.isFinite(durationMs)) {
+    metadata.durationMs = durationMs;
+  }
+  return metadata;
+}
+
+function normalizePreviewRows(value: unknown): Array<{ label: string; value: string }> | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const rows = value
+    .map((row) => {
+      if (!row || typeof row !== "object") {
+        return null;
+      }
+      const record = row as Record<string, unknown>;
+      const label = typeof record.label === "string" ? record.label.trim() : "";
+      const rowValue = typeof record.value === "string" ? record.value.trim() : "";
+      return label && rowValue ? { label, value: rowValue } : null;
+    })
+    .filter((row): row is { label: string; value: string } => row !== null);
+  return rows.length ? rows.slice(0, 5) : undefined;
 }
 
 export function appendUserMessage(
@@ -188,6 +285,7 @@ export function appendUserMessage(
     content: string;
     now: number;
     clientMessageId?: string;
+    metadata?: Record<string, unknown>;
   },
 ): ChatMessageView[] {
   return [
@@ -201,6 +299,7 @@ export function appendUserMessage(
       createdAt: payload.now,
       updatedAt: payload.now,
       clientMessageId: payload.clientMessageId,
+      metadata: payload.metadata,
     },
   ];
 }
@@ -464,6 +563,18 @@ export function appendOrUpdateAssistantToolInputDelta(
     toolUseId: string;
     toolName?: string | null;
     parentToolUseId?: string | null;
+    toolGroupId?: string | null;
+    toolIndex?: number | null;
+    toolTotal?: number | null;
+    toolOperationId?: string | null;
+    toolOperationLabel?: string | null;
+    toolCategory?: string | null;
+    toolPhaseId?: string | null;
+    toolPhaseLabel?: string | null;
+    toolSemanticParentId?: string | null;
+    toolSemanticParentLabel?: string | null;
+    target?: string | null;
+    inputSummary?: string | null;
     sessionId: string;
     taskId?: string | null;
     delta: string;
@@ -489,6 +600,7 @@ export function appendOrUpdateAssistantToolInputDelta(
         kind: "tool_use",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? message.metadata?.parentToolUseId,
+        ...toolBatchMetadataFromPayload(payload, message.metadata),
       },
     };
     return next;
@@ -512,6 +624,143 @@ export function appendOrUpdateAssistantToolInputDelta(
         kind: "tool_use",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? undefined,
+        ...toolBatchMetadataFromPayload(payload),
+      },
+    },
+  ];
+}
+
+function appendToolOutputDelta(
+  currentOutput: unknown,
+  stream: string,
+  delta: string,
+): Record<string, string> {
+  const output = currentOutput && typeof currentOutput === "object" && !Array.isArray(currentOutput)
+    ? { ...(currentOutput as Record<string, unknown>) }
+    : {};
+  const key = stream === "stderr"
+    ? "stderr"
+    : stream === "stdout"
+      ? "stdout"
+      : stream === "activity"
+        ? "activity"
+        : "result";
+  return {
+    activity: typeof output.activity === "string" ? output.activity : "",
+    stdout: typeof output.stdout === "string" ? output.stdout : "",
+    stderr: typeof output.stderr === "string" ? output.stderr : "",
+    result: typeof output.result === "string" ? output.result : "",
+    [key]: appendAssistantContentDelta(typeof output[key] === "string" ? output[key] : "", delta),
+  };
+}
+
+function formatToolOutputText(output: unknown) {
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return "";
+  }
+  const record = output as Record<string, unknown>;
+  const activity = typeof record.activity === "string" ? record.activity.trimEnd() : "";
+  const stdout = typeof record.stdout === "string" ? record.stdout.trimEnd() : "";
+  const stderr = typeof record.stderr === "string" ? record.stderr.trimEnd() : "";
+  const result = typeof record.result === "string" ? record.result.trimEnd() : "";
+  return [
+    activity ? `过程\n${activity}` : "",
+    stdout ? `stdout\n${stdout}` : "",
+    stderr ? `stderr\n${stderr}` : "",
+    result ? `结果预览\n${result}` : "",
+  ].filter(Boolean).join("\n\n");
+}
+
+export function appendOrUpdateAssistantToolOutputDelta(
+  current: ChatMessageView[],
+  payload: {
+    toolUseId: string;
+    toolName?: string | null;
+    parentToolUseId?: string | null;
+    toolGroupId?: string | null;
+    toolIndex?: number | null;
+    toolTotal?: number | null;
+    toolOperationId?: string | null;
+    toolOperationLabel?: string | null;
+    toolCategory?: string | null;
+    toolPhaseId?: string | null;
+    toolPhaseLabel?: string | null;
+    toolSemanticParentId?: string | null;
+    toolSemanticParentLabel?: string | null;
+    target?: string | null;
+    inputSummary?: string | null;
+    sessionId: string;
+    taskId?: string | null;
+    delta: string;
+    stream?: string | null;
+    now: number;
+  },
+): ChatMessageView[] {
+  const messageId = `tool_use:${payload.toolUseId}`;
+  const stream = payload.stream === "stderr"
+    ? "stderr"
+    : payload.stream === "stdout"
+      ? "stdout"
+      : payload.stream === "activity"
+        ? "activity"
+        : "result_preview";
+  const next = [...current];
+  const index = next.findIndex(
+    (message) =>
+      message.id === messageId ||
+      message.id === `tool_activity:${payload.toolUseId}` ||
+      ((message.metadata?.kind === "tool_use" || message.metadata?.kind === "tool_activity") &&
+        message.metadata?.toolUseId === payload.toolUseId),
+  );
+  if (index >= 0) {
+    const message = next[index];
+    const output = appendToolOutputDelta(message.metadata?.output, stream, payload.delta);
+    const resultText = formatToolOutputText(output) || (
+      typeof message.metadata?.resultText === "string" ? message.metadata.resultText : ""
+    );
+    next[index] = {
+      ...message,
+      taskId: payload.taskId ?? message.taskId,
+      updatedAt: payload.now,
+      streaming: true,
+      placeholder: false,
+      status: "streaming",
+      toolName: payload.toolName ?? message.toolName,
+      metadata: {
+        ...(message.metadata ?? {}),
+        kind: message.metadata?.kind === "tool_activity" ? "tool_activity" : "tool_use",
+        toolUseId: payload.toolUseId,
+        parentToolUseId: payload.parentToolUseId ?? message.metadata?.parentToolUseId,
+        ...toolBatchMetadataFromPayload(payload, message.metadata),
+        output,
+        resultText,
+      },
+    };
+    return next;
+  }
+
+  const output = appendToolOutputDelta(undefined, stream, payload.delta);
+  return [
+    ...next,
+    {
+      id: messageId,
+      sessionId: payload.sessionId,
+      taskId: payload.taskId ?? "pending",
+      role: "assistant",
+      content: "",
+      createdAt: payload.now,
+      updatedAt: payload.now,
+      streaming: true,
+      placeholder: false,
+      status: "streaming",
+      toolName: payload.toolName ?? undefined,
+      metadata: {
+        kind: "tool_use",
+        toolUseId: payload.toolUseId,
+        parentToolUseId: payload.parentToolUseId ?? undefined,
+        ...toolBatchMetadataFromPayload(payload),
+        output,
+        resultText: formatToolOutputText(output),
       },
     },
   ];
@@ -523,12 +772,26 @@ export function appendOrUpdateAssistantToolStartMessage(
     toolUseId: string;
     toolName?: string | null;
     parentToolUseId?: string | null;
+    toolGroupId?: string | null;
+    toolIndex?: number | null;
+    toolTotal?: number | null;
+    toolOperationId?: string | null;
+    toolOperationLabel?: string | null;
+    toolCategory?: string | null;
+    toolPhaseId?: string | null;
+    toolPhaseLabel?: string | null;
+    toolSemanticParentId?: string | null;
+    toolSemanticParentLabel?: string | null;
+    target?: string | null;
+    inputSummary?: string | null;
+    input?: unknown;
     sessionId: string;
     taskId?: string | null;
     now: number;
   },
 ): ChatMessageView[] {
   const messageId = `tool_use:${payload.toolUseId}`;
+  const inputText = payload.input === undefined ? undefined : formatChatBlockValue(payload.input);
   const next = [...current];
   const index = next.findIndex(
     (message) =>
@@ -538,7 +801,11 @@ export function appendOrUpdateAssistantToolStartMessage(
   );
   if (index >= 0) {
     const message = next[index];
-    const terminal = message.status === "completed" || message.status === "failed";
+    const terminal =
+      message.status === "completed" ||
+      message.status === "failed" ||
+      message.status === "blocked" ||
+      message.status === "cancelled";
     next[index] = {
       ...message,
       taskId: payload.taskId ?? message.taskId,
@@ -551,6 +818,8 @@ export function appendOrUpdateAssistantToolStartMessage(
         kind: message.metadata?.kind === "tool_activity" ? "tool_activity" : "tool_use",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? message.metadata?.parentToolUseId,
+        ...toolBatchMetadataFromPayload(payload, message.metadata),
+        ...(inputText !== undefined ? { input: payload.input, inputText } : {}),
       },
     };
     return next;
@@ -574,6 +843,8 @@ export function appendOrUpdateAssistantToolStartMessage(
         kind: "tool_use",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? undefined,
+        ...toolBatchMetadataFromPayload(payload),
+        ...(inputText !== undefined ? { input: payload.input, inputText } : {}),
       },
     },
   ];
@@ -585,7 +856,19 @@ export function completeAssistantToolUseMessage(
     toolUseId: string;
     toolName: string;
     input: unknown;
+    target?: string | null;
+    inputSummary?: string | null;
     parentToolUseId?: string | null;
+    toolGroupId?: string | null;
+    toolIndex?: number | null;
+    toolTotal?: number | null;
+    toolOperationId?: string | null;
+    toolOperationLabel?: string | null;
+    toolCategory?: string | null;
+    toolPhaseId?: string | null;
+    toolPhaseLabel?: string | null;
+    toolSemanticParentId?: string | null;
+    toolSemanticParentLabel?: string | null;
     sessionId: string;
     taskId?: string | null;
     now: number;
@@ -619,6 +902,7 @@ export function completeAssistantToolUseMessage(
               kind: isActivity ? "tool_activity" : "tool_use",
               toolUseId: payload.toolUseId,
               parentToolUseId: payload.parentToolUseId ?? message.metadata?.parentToolUseId,
+              ...toolBatchMetadataFromPayload(payload, message.metadata),
               input: payload.input,
               inputText: content,
             },
@@ -645,6 +929,7 @@ export function completeAssistantToolUseMessage(
         kind: "tool_use",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? undefined,
+        ...toolBatchMetadataFromPayload(payload),
         input: payload.input,
         inputText: content,
       },
@@ -658,15 +943,34 @@ export function appendAssistantToolResultMessage(
     toolUseId: string;
     toolName?: string | null;
     parentToolUseId?: string | null;
+    toolGroupId?: string | null;
+    toolIndex?: number | null;
+    toolTotal?: number | null;
+    toolOperationId?: string | null;
+    toolOperationLabel?: string | null;
+    toolCategory?: string | null;
+    toolPhaseId?: string | null;
+    toolPhaseLabel?: string | null;
+    toolSemanticParentId?: string | null;
+    toolSemanticParentLabel?: string | null;
     content: unknown;
     isError?: boolean;
+    target?: string | null;
+    inputSummary?: string | null;
+    resultSummary?: string | null;
+    resultPreview?: Array<{ label: string; value: string }> | null;
+    durationMs?: number | null;
+    status?: MessageStatus;
+    lifecycleStatus?: string | null;
     sessionId: string;
     taskId?: string | null;
     now: number;
   },
 ): ChatMessageView[] {
   const messageId = `tool_result:${payload.toolUseId}`;
-  const content = formatToolResultSummary(payload.content, payload.isError);
+  const content = payload.resultSummary?.trim() || formatToolResultSummary(payload.content, payload.isError);
+  const resultPreview = normalizePreviewRows(payload.resultPreview);
+  const terminalStatus = payload.status ?? (payload.isError ? "failed" : "completed");
   const toolUseIndex = current.findIndex(
     (message) =>
       (message.metadata?.kind === "tool_use" || message.metadata?.kind === "tool_activity") &&
@@ -679,6 +983,7 @@ export function appendAssistantToolResultMessage(
       typeof message.metadata?.inputText === "string"
         ? message.metadata.inputText
         : message.content;
+    const existingOutputText = formatToolOutputText(message.metadata?.output);
     next[toolUseIndex] = {
       ...message,
       id: `tool_activity:${payload.toolUseId}`,
@@ -687,16 +992,23 @@ export function appendAssistantToolResultMessage(
       updatedAt: payload.now,
       streaming: false,
       placeholder: false,
-      status: payload.isError ? "failed" : "completed",
+      status: terminalStatus,
       toolName: payload.toolName ?? message.toolName,
       metadata: {
         ...(message.metadata ?? {}),
         kind: "tool_activity",
         toolUseId: payload.toolUseId,
         parentToolUseId: payload.parentToolUseId ?? message.metadata?.parentToolUseId,
+        ...toolBatchMetadataFromPayload(payload, message.metadata),
         inputText: inputContent,
-        resultText: content,
+        resultText: existingOutputText ? `${existingOutputText}\n\n${content}` : content,
+        target: payload.target ?? message.metadata?.target,
+        inputSummary: payload.inputSummary ?? message.metadata?.inputSummary,
+        resultSummary: payload.resultSummary ?? undefined,
+        resultPreview: resultPreview ?? message.metadata?.resultPreview,
+        output: message.metadata?.output,
         input: message.metadata?.input,
+        status: payload.lifecycleStatus ?? message.metadata?.status,
         rawContent: payload.content,
         isError: Boolean(payload.isError),
       },
@@ -714,12 +1026,19 @@ export function appendAssistantToolResultMessage(
     updatedAt: payload.now,
     streaming: false,
     placeholder: false,
-    status: payload.isError ? "failed" : "completed",
+    status: terminalStatus,
     toolName: payload.toolName ?? undefined,
     metadata: {
       kind: "tool_result",
       toolUseId: payload.toolUseId,
       parentToolUseId: payload.parentToolUseId ?? undefined,
+      ...toolBatchMetadataFromPayload(payload),
+      target: payload.target ?? undefined,
+      inputSummary: payload.inputSummary ?? undefined,
+      resultSummary: payload.resultSummary ?? undefined,
+      resultPreview,
+      durationMs: payload.durationMs,
+      status: payload.lifecycleStatus ?? undefined,
       isError: Boolean(payload.isError),
       rawContent: payload.content,
     },
@@ -758,12 +1077,13 @@ export function appendOrUpdateAssistantThinkingMessage(
     state?: string | null;
     verb?: string | null;
     text?: string | null;
+    source?: string | null;
     now: number;
   },
 ): ChatMessageView[] {
   const taskId = payload.taskId ?? "pending";
   const messageId = `assistant_thinking:${taskId}`;
-  const content = payload.text?.trim() || chatStatusLabel(payload.state ?? undefined, payload.verb);
+  const content = payload.text && payload.text.trim() ? payload.text : chatStatusLabel(payload.state ?? undefined, payload.verb);
   const existingIndex = current.findIndex((message) => message.id === messageId);
   const nextMessage: ChatMessageView = {
     id: messageId,
@@ -780,12 +1100,28 @@ export function appendOrUpdateAssistantThinkingMessage(
       kind: "assistant_thinking",
       state: payload.state,
       verb: payload.verb,
+      source: payload.source ?? undefined,
     },
   };
 
   if (existingIndex >= 0) {
     const next = [...current];
-    next[existingIndex] = nextMessage;
+    const existing = current[existingIndex];
+    const incomingStatusContent = chatStatusLabel(payload.state ?? undefined, payload.verb);
+    const existingStatusContent = chatStatusLabel(
+      typeof existing.metadata?.state === "string" ? existing.metadata.state : payload.state ?? undefined,
+      typeof existing.metadata?.verb === "string" ? existing.metadata.verb : payload.verb,
+    );
+    const shouldAppendText =
+      Boolean(payload.text?.trim()) &&
+      existing.metadata?.state === "thinking" &&
+      payload.state === "thinking" &&
+      existing.content !== incomingStatusContent &&
+      existing.content !== existingStatusContent;
+    next[existingIndex] = {
+      ...nextMessage,
+      content: shouldAppendText ? `${existing.content}${payload.text ?? ""}` : nextMessage.content,
+    };
     return next;
   }
   return [...current, nextMessage];
@@ -799,6 +1135,7 @@ export function appendAssistantProgressMessage(
     content: string;
     now: number;
     eventId?: string | null;
+    metadata?: Record<string, unknown> | null;
   },
 ): ChatMessageView[] {
   const content = payload.content.trim();
@@ -841,6 +1178,7 @@ export function appendAssistantProgressMessage(
       placeholder: false,
       status: "completed",
       metadata: {
+        ...(payload.metadata ?? {}),
         kind: "assistant_progress",
       },
     },
@@ -872,6 +1210,10 @@ export function appendOrUpdatePermissionRequestMessage(
     toolName?: string | null;
     input: unknown;
     description?: string | null;
+    preview?: Array<{ label: string; value: string }> | null;
+    filesChanged?: number | null;
+    changedPaths?: string[] | null;
+    diffText?: string | null;
     sessionId: string;
     taskId?: string | null;
     now: number;
@@ -896,6 +1238,11 @@ export function appendOrUpdatePermissionRequestMessage(
       kind: "permission_request",
       requestId: payload.requestId,
       input: payload.input,
+      approvalKind: payload.toolName ?? undefined,
+      previewRows: payload.preview ?? undefined,
+      filesChanged: typeof payload.filesChanged === "number" ? payload.filesChanged : undefined,
+      changedPaths: Array.isArray(payload.changedPaths) ? payload.changedPaths : undefined,
+      diffText: typeof payload.diffText === "string" ? payload.diffText : undefined,
     },
   };
 
@@ -912,13 +1259,59 @@ export function resolvePermissionRequestMessage(
   payload: {
     requestId: string;
     decision: "approved" | "rejected" | string;
+    input?: unknown;
+    toolName?: string | null;
+    preview?: Array<{ label: string; value: string }> | null;
+    filesChanged?: number | null;
+    changedPaths?: string[] | null;
+    diffText?: string | null;
+    sessionId?: string | null;
+    taskId?: string | null;
+    createIfMissing?: boolean;
     now: number;
   },
 ): ChatMessageView[] {
   const messageId = `permission_request:${payload.requestId}`;
   const existingIndex = current.findIndex((message) => message.id === messageId);
   if (existingIndex < 0) {
-    return current;
+    const hasDetails =
+      payload.input !== undefined ||
+      Boolean(payload.preview?.length) ||
+      typeof payload.filesChanged === "number" ||
+      Boolean(payload.changedPaths?.length) ||
+      typeof payload.diffText === "string";
+    if (!payload.createIfMissing || !payload.sessionId || !hasDetails) {
+      return current;
+    }
+    const input = formatChatBlockValue(payload.input);
+    return [
+      ...current,
+      {
+        id: messageId,
+        sessionId: payload.sessionId,
+        taskId: payload.taskId ?? "pending",
+        role: "assistant",
+        content: input || (payload.decision === "rejected" ? "此操作已被拒绝。" : "此操作已被允许。"),
+        createdAt: payload.now,
+        updatedAt: payload.now,
+        streaming: false,
+        placeholder: false,
+        status: payload.decision === "rejected" ? "failed" : "completed",
+        toolName: payload.toolName ?? undefined,
+        metadata: {
+          kind: "permission_request",
+          requestId: payload.requestId,
+          decision: payload.decision,
+          resolved: true,
+          ...(payload.input !== undefined ? { input: payload.input } : {}),
+          ...(payload.toolName ? { approvalKind: payload.toolName } : {}),
+          ...(payload.preview ? { previewRows: payload.preview } : {}),
+          ...(typeof payload.filesChanged === "number" ? { filesChanged: payload.filesChanged } : {}),
+          ...(Array.isArray(payload.changedPaths) ? { changedPaths: payload.changedPaths } : {}),
+          ...(typeof payload.diffText === "string" ? { diffText: payload.diffText } : {}),
+        },
+      },
+    ];
   }
   const next = [...current];
   const message = next[existingIndex];
@@ -932,9 +1325,70 @@ export function resolvePermissionRequestMessage(
       requestId: payload.requestId,
       decision: payload.decision,
       resolved: true,
+      ...(payload.input !== undefined ? { input: payload.input } : {}),
+      ...(payload.toolName ? { approvalKind: payload.toolName } : {}),
+      ...(payload.preview ? { previewRows: payload.preview } : {}),
+      ...(typeof payload.filesChanged === "number" ? { filesChanged: payload.filesChanged } : {}),
+      ...(Array.isArray(payload.changedPaths) ? { changedPaths: payload.changedPaths } : {}),
+      ...(typeof payload.diffText === "string" ? { diffText: payload.diffText } : {}),
     },
   };
   return next;
+}
+
+export function resolveSpecialApprovalMessage(
+  current: ChatMessageView[],
+  payload: {
+    approvalId: string;
+    decision: "approved" | "rejected" | string;
+    input?: unknown;
+    preview?: Array<{ label: string; value: string }> | null;
+    filesChanged?: number | null;
+    changedPaths?: string[] | null;
+    diffText?: string | null;
+    now: number;
+  },
+): ChatMessageView[] {
+  let changed = false;
+  const request = payload.input && typeof payload.input === "object" && !Array.isArray(payload.input)
+    ? payload.input as Record<string, unknown>
+    : {};
+  const next = current.map((message) => {
+    const metadata = message.metadata ?? {};
+    const messageApprovalId =
+      typeof metadata.approvalId === "string"
+        ? metadata.approvalId.trim()
+        : typeof metadata.requestId === "string"
+          ? metadata.requestId.trim()
+          : "";
+    if (!messageApprovalId || messageApprovalId !== payload.approvalId) {
+      return message;
+    }
+    const kind = typeof metadata.kind === "string" ? metadata.kind : "";
+    if (kind !== "computer_use_permission" && kind !== "computer_use_permission_request") {
+      return message;
+    }
+    changed = true;
+    return {
+      ...message,
+      updatedAt: payload.now,
+      status: payload.decision === "rejected" ? "failed" as const : "completed" as const,
+      metadata: {
+        ...metadata,
+        ...request,
+        kind: "computer_use_permission",
+        status: payload.decision,
+        decision: payload.decision,
+        resolved: true,
+        ...(payload.input !== undefined ? { request: payload.input } : {}),
+        ...(payload.preview ? { previewRows: payload.preview } : {}),
+        ...(typeof payload.filesChanged === "number" ? { filesChanged: payload.filesChanged } : {}),
+        ...(Array.isArray(payload.changedPaths) ? { changedPaths: payload.changedPaths } : {}),
+        ...(typeof payload.diffText === "string" ? { diffText: payload.diffText } : {}),
+      },
+    };
+  });
+  return changed ? next : current;
 }
 
 export function appendSpecialEventMessage(
@@ -954,29 +1408,40 @@ export function appendSpecialEventMessage(
 ): ChatMessageView[] {
   const normalizedKind = payload.kind.trim() || "system";
   const taskId = payload.taskId ?? "pending";
-  const eventKey = payload.eventId?.trim() || `${taskId}:${payload.now}`;
+  const approvalId =
+    typeof payload.metadata?.approvalId === "string" && payload.metadata.approvalId.trim()
+      ? payload.metadata.approvalId.trim()
+      : typeof payload.metadata?.requestId === "string" && payload.metadata.requestId.trim()
+        ? payload.metadata.requestId.trim()
+        : "";
+  const stableKey = normalizedKind === "computer_use_permission" && approvalId ? approvalId : "";
+  const eventKey = stableKey || payload.eventId?.trim() || `${taskId}:${payload.now}`;
   const messageId = `${normalizedKind}:${eventKey}`;
+  const existingIndex = current.findIndex((message) => message.id === messageId);
+  const existingMessage = existingIndex >= 0 ? current[existingIndex] : undefined;
+  const mergeExisting = Boolean(stableKey && existingMessage);
+  const metadataSource = payload.metadata ?? {};
   const content = [payload.content, payload.summary, payload.title]
     .map((value) => value?.trim() ?? "")
-    .find(Boolean) ?? "";
-  const existingIndex = current.findIndex((message) => message.id === messageId);
+    .find(Boolean) ?? (mergeExisting ? existingMessage?.content ?? "" : "");
   const nextMessage: ChatMessageView = {
     id: messageId,
     sessionId: payload.sessionId,
     taskId,
     role: "assistant",
     content,
-    createdAt: existingIndex >= 0 ? current[existingIndex].createdAt : payload.now,
+    createdAt: existingMessage?.createdAt ?? payload.now,
     updatedAt: payload.now,
     streaming: false,
     placeholder: false,
     status: payload.status && ["failed", "error"].includes(payload.status.toLowerCase()) ? "failed" : "completed",
     metadata: {
-      ...(payload.metadata ?? {}),
+      ...(mergeExisting ? existingMessage?.metadata ?? {} : {}),
+      ...metadataSource,
       kind: normalizedKind,
-      title: payload.title ?? undefined,
-      summary: payload.summary ?? undefined,
-      status: payload.status ?? undefined,
+      title: payload.title ?? (mergeExisting ? existingMessage?.metadata?.title : undefined),
+      summary: payload.summary ?? (mergeExisting ? existingMessage?.metadata?.summary : undefined),
+      status: payload.status ?? (mergeExisting ? existingMessage?.metadata?.status : undefined),
     },
   };
 
@@ -1459,6 +1924,7 @@ export function summarizeOperationalAssistantDelta(delta: string): string | null
     if (commandStatus === "started") return progressLine("命令已开始运行。");
     if (commandStatus === "completed") return progressLine("命令已完成。");
     if (commandStatus === "failed") return progressLine("命令失败，正在查看输出并准备修复。");
+    if (commandStatus === "cancelled") return progressLine("命令已取消。");
     return progressLine(`命令状态：${commandStatus}`);
   }
   if (normalized.startsWith("Running tool: ")) {

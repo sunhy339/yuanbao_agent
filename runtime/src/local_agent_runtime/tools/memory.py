@@ -5,6 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 
+def _step(label: str, status: str, summary: str) -> dict[str, str]:
+    return {"label": label, "status": status, "summary": summary}
+
+
 def build_memory_remember_tool(memory_manager: Any) -> dict[str, Any]:
     """Build the memory.remember tool handler."""
 
@@ -21,6 +25,10 @@ def build_memory_remember_tool(memory_manager: Any) -> dict[str, Any]:
 
         session_id = params.get("sessionId")
         workspace_id = params.get("workspaceId")
+        steps = [
+            _step("prepare", "completed", f"remember {kind.value} memory"),
+            _step("scope", "completed", f"session={bool(session_id)} workspace={bool(workspace_id)}"),
+        ]
 
         entry = memory_manager.remember(
             content=content,
@@ -28,11 +36,15 @@ def build_memory_remember_tool(memory_manager: Any) -> dict[str, Any]:
             workspace_id=workspace_id,
             kind=kind,
         )
+        steps.append(_step("store", "completed", f"{entry.kind.value} memory {entry.id}"))
+        if entry.keywords:
+            steps.append(_step("keywords", "completed", ", ".join(entry.keywords[:10])))
         return {
             "status": "ok",
             "id": entry.id,
             "kind": entry.kind.value,
             "keywords": entry.keywords[:10],
+            "steps": steps,
         }
 
     return {"handler": memory_remember}
@@ -49,6 +61,10 @@ def build_memory_recall_tool(memory_manager: Any) -> dict[str, Any]:
         limit = min(max(1, int(params.get("limit", 5))), 20)
         session_id = params.get("sessionId")
         workspace_id = params.get("workspaceId")
+        steps = [
+            _step("prepare", "completed", f"recall {limit} memory item(s) for {query}"),
+            _step("scope", "completed", f"session={bool(session_id)} workspace={bool(workspace_id)}"),
+        ]
 
         entries = memory_manager.recall(
             query=query,
@@ -56,6 +72,7 @@ def build_memory_recall_tool(memory_manager: Any) -> dict[str, Any]:
             workspace_id=workspace_id,
             limit=limit,
         )
+        steps.append(_step("search", "completed", f"{len(entries)} result(s)"))
         results = [
             {
                 "id": e.id,
@@ -69,6 +86,7 @@ def build_memory_recall_tool(memory_manager: Any) -> dict[str, Any]:
             "status": "ok",
             "count": len(results),
             "memories": results,
+            "steps": steps,
         }
 
     return {"handler": memory_recall}

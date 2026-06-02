@@ -40,6 +40,24 @@ def test_powershell_native_command_output_uses_utf8(tmp_path: Path) -> None:
     assert stdout.strip() == native_text
 
 
+def test_run_shell_streams_stdout_callback(tmp_path: Path) -> None:
+    chunks: list[str] = []
+
+    stdout, stderr, exit_code, status, _duration_ms = run_shell(
+        "powershell",
+        f'"{sys.executable}" -c "print(\'streamed output\')"',
+        tmp_path,
+        10_000,
+        stdout_callback=chunks.append,
+    )
+
+    assert status == "completed"
+    assert exit_code == 0
+    assert stderr == ""
+    assert stdout == "".join(chunks)
+    assert "streamed output" in "".join(chunks)
+
+
 def test_powershell_native_exe_preserves_nonzero_exit(tmp_path: Path) -> None:
     bad_file = tmp_path / "bad.py"
     bad_file.write_text("def nope(:\n", encoding="utf-8")
@@ -114,11 +132,11 @@ def test_run_command_falls_back_from_missing_bash_and_expands_py_compile_globs(t
     workspace = store.upsert_workspace(str(tmp_path))
     session = store.create_session(workspace_id=workspace["id"], title="run command")
     task = store.create_task(session_id=session["id"], task_type="main", goal="verify", plan=[])
+    store.update_config({"config": {"policy": {"approvalMode": "none"}, "permissions": {"preset": "autonomous"}}})
     config = store.get_config({})["config"]
     tool = build_run_command_tool(
         PolicyGuard(approval_mode=config["policy"]["approvalMode"]),
         store,
-        permission_engine=PermissionEngine(config=config, store=store),
     )["handler"]
 
     result = tool({

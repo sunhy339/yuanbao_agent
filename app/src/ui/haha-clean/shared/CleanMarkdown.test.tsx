@@ -42,6 +42,20 @@ describe("CleanMarkdown", () => {
     expect(screen.queryByText("##1 项目结构")).toBeNull();
   });
 
+  it("splits compact assistant markdown into readable blocks", () => {
+    const { container } = render(
+      <CleanMarkdown
+        content={"Done. ### Changes - `game.py`: loop update - `rules.py`: rules update 1. Run tests 2. Update docs"}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Changes" })).toBeTruthy();
+    expect(screen.getByText("game.py")).toBeTruthy();
+    expect(screen.getByText("rules.py")).toBeTruthy();
+    expect(container.querySelector("ul")).toBeTruthy();
+    expect(container.querySelector("ol")).toBeTruthy();
+  });
+
   it("renders task lists and simple markdown tables", () => {
     render(
       <CleanMarkdown

@@ -10,6 +10,7 @@ import logging
 from typing import Any
 
 from ..context.token_budget import estimate_tokens
+from ..execution.tool_pipeline import _tool_category, _tool_phase_metadata, _tool_semantic_parent_metadata
 from ..planner.preflight_split import build_provider_preflight_split_plan_payload
 from ..provider.failure_recovery import classify_provider_failure
 from ..react.types import ProviderTurnResult, TurnDecision
@@ -19,6 +20,19 @@ logger = logging.getLogger(__name__)
 
 class ProviderTurnMixin:
     """Mixin providing provider turn handling, streaming, and response parsing."""
+
+    @staticmethod
+    def _provider_stream_tool_metadata(tool_name: Any, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            return {}
+        tool_arguments = arguments if isinstance(arguments, dict) else {}
+        category = _tool_category(tool_name.strip(), tool_arguments)
+        phase_metadata = _tool_phase_metadata(category)
+        return {
+            "toolCategory": category,
+            **phase_metadata,
+            **_tool_semantic_parent_metadata(phase_metadata),
+        }
 
     def _provider_preflight_decision(
         self,
@@ -569,6 +583,29 @@ class ProviderTurnMixin:
                 payload=payload,
                 visibility="trace",
             )
+            preflight = decision.get("providerPreflight")
+            if (
+                payload["runtimeAction"] == "compact_context"
+                and payload["runtimeApplied"]
+                and isinstance(preflight, dict)
+            ):
+                self._publish_provider_compact_summary(
+                    session_id=session_id,
+                    task=task,
+                    phase="provider_preflight",
+                    reason=str(preflight.get("reason") or self._provider_preflight_reason(facts=facts, advice=advice)),
+                    original_count=preflight.get("originalMessageCount"),
+                    compacted_count=preflight.get("messageCount"),
+                    tokens_before=preflight.get("originalTokenEstimate"),
+                    tokens_after=preflight.get("tokenEstimate"),
+                    strategy="compact_context",
+                )
+            if payload["runtimeAction"] == "switch_provider" and payload["runtimeApplied"] and isinstance(provider_switch, dict):
+                self._publish_provider_switch_notification(
+                    session_id=session_id,
+                    task=task,
+                    provider_switch=provider_switch,
+                )
         recorder = getattr(self, "_record_provider_preflight_proposal", None)
         if callable(recorder):
             recorder(
@@ -599,6 +636,15 @@ class ProviderTurnMixin:
                     "step": provider_context.get("step"),
                 },
             )
+            publish_progress = getattr(self, "_publish_assistant_progress", None)
+            if callable(publish_progress):
+                publish_progress(
+                    session_id=session_id,
+                    task=task,
+                    text="正在请求模型",
+                    phase="provider_request",
+                    payload=self._provider_trace_payload(provider_context),
+                )
         if not self._should_stream_provider(provider_context):
             return self._request_non_streaming_provider_response(
                 session_id=session_id,
@@ -679,6 +725,20 @@ class ProviderTurnMixin:
                             final_response = response
                     elif event_type == "finish_reason":
                         self._append_provider_trace(task=task, event_type="provider.stream.finish", payload=event)
+                    elif event_type == "thinking_delta":
+                        delta = event.get("delta")
+                        if isinstance(delta, str) and delta:
+                            self._append_provider_trace(task=task, event_type="provider.stream.thinking_delta", payload=event)
+                            self._publish(
+                                session_id=session_id,
+                                task=task,
+                                event_type="thinking",
+                                payload={
+                                    "text": delta,
+                                    "messageId": task.get("activeAssistantMessageId"),
+                                    "source": event.get("source") or "reasoning_summary",
+                                },
+                            )
                     elif event_type == "tool_call_delta":
                         self._append_provider_trace(task=task, event_type="provider.stream.tool_call_delta", payload=event)
                         index = event.get("index")
@@ -687,10 +747,14 @@ class ProviderTurnMixin:
                         stream_state = _active_tool_streams.setdefault(index, {"toolUseId": None, "toolName": None})
                         tool_use_id = event.get("id")
                         tool_name = event.get("name")
+                        parent_tool_use_id = event.get("parentToolUseId")
                         if isinstance(tool_use_id, str) and tool_use_id:
                             stream_state["toolUseId"] = tool_use_id
                         if isinstance(tool_name, str) and tool_name:
                             stream_state["toolName"] = tool_name
+                        if isinstance(parent_tool_use_id, str) and parent_tool_use_id:
+                            stream_state["parentToolUseId"] = parent_tool_use_id
+                        stream_metadata = self._provider_stream_tool_metadata(stream_state.get("toolName"))
                         if stream_state.get("toolUseId") or stream_state.get("toolName"):
                             if not stream_state.get("started"):
                                 self._publish(
@@ -701,6 +765,8 @@ class ProviderTurnMixin:
                                         "blockType": "tool_use",
                                         "toolUseId": stream_state.get("toolUseId"),
                                         "toolName": stream_state.get("toolName"),
+                                        **({"parentToolUseId": stream_state.get("parentToolUseId")} if stream_state.get("parentToolUseId") else {}),
+                                        **stream_metadata,
                                     },
                                 )
                                 stream_state["started"] = True
@@ -713,6 +779,8 @@ class ProviderTurnMixin:
                                 payload={
                                     "toolUseId": stream_state.get("toolUseId"),
                                     "toolName": stream_state.get("toolName"),
+                                    **({"parentToolUseId": stream_state.get("parentToolUseId")} if stream_state.get("parentToolUseId") else {}),
+                                    **stream_metadata,
                                     "toolInput": arguments_delta,
                                 },
                             )
@@ -779,6 +847,17 @@ class ProviderTurnMixin:
                             "failureRecovery": recovery_payload,
                         },
                     )
+                    self._publish_provider_api_retry(
+                        session_id=session_id,
+                        task=task,
+                        stage="stream",
+                        strategy=strategy,
+                        recovery_payload=recovery_payload,
+                        error=stream_exc,
+                        attempt=_stream_attempt + 1,
+                        max_attempts=_max_stream_retries + 1,
+                        fallback_from_stream=True,
+                    )
                     return self._request_non_streaming_provider_response(
                         session_id=session_id,
                         task=task,
@@ -808,6 +887,22 @@ class ProviderTurnMixin:
                             "failureRecovery": recovery_payload,
                             "strategy": provider_context.get("_provider_recovery_retry"),
                         },
+                    )
+                    self._publish_provider_api_retry(
+                        session_id=session_id,
+                        task=task,
+                        stage="stream",
+                        strategy=strategy,
+                        recovery_payload=recovery_payload,
+                        error=stream_exc,
+                        attempt=_stream_attempt + 1,
+                        max_attempts=_max_stream_retries + 1,
+                    )
+                    self._publish_provider_recovery_compact_summary(
+                        session_id=session_id,
+                        task=task,
+                        retry_context=provider_context,
+                        recovery_payload=recovery_payload,
                     )
                     continue
                 raise
@@ -981,6 +1076,23 @@ class ProviderTurnMixin:
                         "failureRecovery": recovery_payload,
                         "strategy": retry_context.get("_provider_recovery_retry"),
                     },
+                )
+                self._publish_provider_api_retry(
+                    session_id=session_id,
+                    task=task,
+                    stage="non_stream",
+                    strategy=strategy,
+                    recovery_payload=recovery_payload,
+                    error=exc,
+                    attempt=2,
+                    max_attempts=2,
+                    fallback_from_stream=fallback_from_stream,
+                )
+                self._publish_provider_recovery_compact_summary(
+                    session_id=session_id,
+                    task=task,
+                    retry_context=retry_context,
+                    recovery_payload=recovery_payload,
                 )
                 return self._request_non_streaming_provider_response(
                     session_id=session_id,
@@ -1320,6 +1432,199 @@ class ProviderTurnMixin:
                 advice=advice,
             )
 
+    def _publish_provider_api_retry(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        stage: str,
+        strategy: str,
+        recovery_payload: dict[str, Any] | None,
+        error: BaseException | str,
+        attempt: int,
+        max_attempts: int,
+        fallback_from_stream: bool = False,
+    ) -> None:
+        if not hasattr(self, "_publish"):
+            return
+        recovery = recovery_payload if isinstance(recovery_payload, dict) else {}
+        payload: dict[str, Any] = {
+            "title": "API 重试",
+            "summary": self._provider_api_retry_summary(
+                stage=stage,
+                strategy=strategy,
+                recovery=recovery,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                fallback_from_stream=fallback_from_stream,
+            ),
+            "status": "warning",
+            "attempt": attempt,
+            "maxAttempts": max_attempts,
+            "stage": stage,
+            "strategy": strategy,
+            "category": recovery.get("category"),
+            "reason": recovery.get("reason"),
+            "message": recovery.get("userMessage") or str(error)[:400],
+            "hasPartialOutput": recovery.get("hasPartialOutput"),
+            "fallbackFromStream": fallback_from_stream,
+        }
+        for key in ("httpStatus", "advisorAccepted", "advisorAvailable", "advisorSource"):
+            if recovery.get(key) is not None:
+                payload[key] = recovery.get(key)
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="api_retry",
+            payload=payload,
+        )
+
+    @staticmethod
+    def _provider_api_retry_summary(
+        *,
+        stage: str,
+        strategy: str,
+        recovery: dict[str, Any],
+        attempt: int,
+        max_attempts: int,
+        fallback_from_stream: bool,
+    ) -> str:
+        category = str(recovery.get("category") or "")
+        if strategy == "fallback" or fallback_from_stream:
+            action = "流式响应中断，正在切换为非流式请求恢复"
+        elif strategy == "compact_or_split_context":
+            action = "请求上下文过大，正在压缩上下文后重试"
+        elif strategy == "retry_with_backoff":
+            action = "模型接口暂时不可用，正在退避后重试"
+        else:
+            action = "模型接口暂时不可用，正在重试"
+        if stage == "stream" and category == "timeout" and strategy != "fallback":
+            action = "流式响应超时，正在重新请求模型"
+        attempt_text = f"第 {attempt}/{max_attempts} 次尝试"
+        reason = str(recovery.get("reason") or "").strip()
+        return f"{action}（{attempt_text}）{f'：{reason}' if reason else ''}"
+
+    def _publish_provider_recovery_compact_summary(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        retry_context: dict[str, Any],
+        recovery_payload: dict[str, Any] | None,
+    ) -> None:
+        retry_meta = retry_context.get("_provider_recovery_retry")
+        if not isinstance(retry_meta, dict):
+            return
+        if retry_meta.get("strategy") != "compact_or_split_context":
+            return
+        recovery = recovery_payload if isinstance(recovery_payload, dict) else {}
+        self._publish_provider_compact_summary(
+            session_id=session_id,
+            task=task,
+            phase="provider_recovery",
+            reason=str(recovery.get("reason") or "provider request required a smaller context before retry"),
+            original_count=retry_meta.get("originalMessageCount"),
+            compacted_count=retry_meta.get("retryMessageCount"),
+            strategy="compact_or_split_context",
+            category=recovery.get("category"),
+        )
+
+    def _publish_provider_compact_summary(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        phase: str,
+        reason: str,
+        original_count: Any,
+        compacted_count: Any,
+        strategy: str,
+        tokens_before: Any | None = None,
+        tokens_after: Any | None = None,
+        category: Any | None = None,
+    ) -> None:
+        if not hasattr(self, "_publish"):
+            return
+        count_text = ""
+        if isinstance(original_count, int) and isinstance(compacted_count, int):
+            if compacted_count <= original_count:
+                count_text = f"{original_count} -> {compacted_count} 条消息"
+            else:
+                count_text = f"原始 {original_count} 条，压缩后上下文 {compacted_count} 条消息"
+        token_text = ""
+        if isinstance(tokens_before, int) and isinstance(tokens_after, int):
+            token_text = f"{tokens_before} -> {tokens_after} tokens"
+        details = "；".join(part for part in (count_text, token_text) if part)
+        summary = "已压缩上下文"
+        if details:
+            summary = f"{summary}（{details}）"
+        if reason:
+            summary = f"{summary}：{reason}"
+        payload: dict[str, Any] = {
+            "title": "上下文已压缩",
+            "summary": summary,
+            "status": "completed",
+            "phase": phase,
+            "strategy": strategy,
+            "reason": reason,
+            "originalMessageCount": original_count,
+            "messageCount": compacted_count,
+        }
+        if tokens_before is not None:
+            payload["tokensBefore"] = tokens_before
+        if tokens_after is not None:
+            payload["tokensAfter"] = tokens_after
+        if category is not None:
+            payload["category"] = category
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="compact_summary",
+            payload=payload,
+        )
+
+    def _publish_provider_switch_notification(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        provider_switch: dict[str, Any],
+    ) -> None:
+        if not hasattr(self, "_publish"):
+            return
+        to_profile = str(provider_switch.get("profileName") or provider_switch.get("toProfileId") or "fallback provider")
+        model = str(provider_switch.get("model") or "").strip()
+        reason = str(provider_switch.get("reason") or "").strip()
+        summary = f"本轮已切换到 {to_profile}"
+        if model:
+            summary = f"{summary}（{model}）"
+        if reason:
+            summary = f"{summary}：{reason}"
+        health = provider_switch.get("health") if isinstance(provider_switch.get("health"), dict) else {}
+        payload: dict[str, Any] = {
+            "title": "模型配置已切换",
+            "summary": summary,
+            "status": "completed",
+            "phase": "provider_preflight",
+            "fromProfileId": provider_switch.get("fromProfileId"),
+            "toProfileId": provider_switch.get("toProfileId"),
+            "profileName": provider_switch.get("profileName"),
+            "model": provider_switch.get("model"),
+            "mode": provider_switch.get("mode"),
+            "scope": provider_switch.get("scope"),
+            "reason": reason,
+        }
+        if health:
+            payload["healthState"] = health.get("healthState")
+            payload["lastStatus"] = health.get("lastStatus")
+            payload["rankReason"] = health.get("rankReason")
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="system_notification",
+            payload=payload,
+        )
+
     @staticmethod
     def _provider_recovery_should_retry(
         recovery: Any,
@@ -1566,6 +1871,14 @@ class ProviderTurnMixin:
     ) -> dict[str, Any]:
         if not isinstance(response, dict):
             raise RuntimeError("Provider returned invalid output: expected an object.")
+
+        explicit_decision = response.get("decision") or response.get("turn_decision")
+        if explicit_decision == TurnDecision.ASK_USER.value:
+            return {
+                "status": "ask_user",
+                "message": self._assistant_text(response),
+                "tool_calls": [],
+            }
 
         tool_calls = response.get("tool_calls")
         if tool_calls is not None:

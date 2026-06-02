@@ -20,6 +20,10 @@ from ..policy.permission_engine import PermissionRequest as PermRequest
 from ..services.write_scope_enforcement import WriteScopeEnforcer
 
 
+def _step(label: str, status: str, summary: str) -> dict[str, str]:
+    return {"label": label, "status": status, "summary": summary}
+
+
 def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None, *, permission_engine: Any | None = None) -> dict[str, Any]:
     def apply_patch(params: dict[str, Any]) -> dict[str, Any]:
         workspace_root = require_workspace_root(params)
@@ -43,14 +47,21 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 "filesChanged": 0,
                 "diffText": patch_text,
                 "dryRun": True,
+                "steps": [
+                    _step("parse", "blocked", str(exc)),
+                ],
             }
         patch_text = str(params.get("patchText") or params.get("patch_text") or patch_request["diffText"])
+        steps = [
+            _step("parse", "completed", f"{patch_request['filesChanged']} file(s)"),
+        ]
         files = params.get("files")
         request_payload = build_patch_request_payload(
             task_id=task_id,
             workspace_root=workspace_root,
             diff_text=patch_request["diffText"],
             files_changed=patch_request["filesChanged"],
+            changed_paths=patch_request["changedPaths"],
             dry_run=dry_run,
             patch_mode=patch_request["patchMode"],
             patch_text=patch_text if patch_request["patchMode"] == "patchText" else None,
@@ -70,7 +81,12 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 "changedPaths": patch_request["changedPaths"],
                 "diffText": patch_request["diffText"],
                 "dryRun": True,
+                "steps": [
+                    *steps,
+                    _step("validate", "blocked", str(exc)),
+                ],
             }
+        steps.append(_step("validate", "completed", f"{len(validated_paths)} path(s)"))
         scope_reasons: list[str] = []
         enforcer = WriteScopeEnforcer(store)
         for changed_path in validated_paths:
@@ -116,8 +132,13 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
                     "patchId": patch["id"],
                     "summary": patch["summary"],
                     "filesChanged": patch["filesChanged"],
+                    "changedPaths": patch.get("changedPaths") or validated_paths,
                     "diffText": patch["diffText"],
                     "dryRun": dry_run,
+                    "steps": [
+                        *steps,
+                        _step("approval", "blocked", "apply_patch approval required"),
+                    ],
                 }
         else:
             # PermissionEngine path (new) or legacy PolicyGuard path
@@ -137,8 +158,13 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
                         "error": decision.reason,
                         "summary": summary,
                         "filesChanged": patch_request["filesChanged"],
+                        "changedPaths": validated_paths,
                         "diffText": patch_request["diffText"],
                         "dryRun": dry_run,
+                        "steps": [
+                            *steps,
+                            _step("approval", "blocked", str(decision.reason)),
+                        ],
                     }
                 _skip_approval = decision.decision == "allow"
             else:
@@ -174,9 +200,15 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
                     "patchId": patch["id"],
                     "summary": patch["summary"],
                     "filesChanged": patch["filesChanged"],
+                    "changedPaths": patch.get("changedPaths") or validated_paths,
                     "diffText": patch["diffText"],
                     "dryRun": dry_run,
+                    "steps": [
+                        *steps,
+                        _step("approval", "blocked", "apply_patch approval required"),
+                    ],
                 }
+        steps.append(_step("approval", "completed", "patch approved"))
 
         if patch is None:
             raise ValueError("Failed to resolve patch state")
@@ -187,16 +219,23 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 "patchId": patch["id"],
                 "summary": patch["summary"],
                 "filesChanged": patch["filesChanged"],
+                "changedPaths": patch.get("changedPaths") or validated_paths,
                 "diffText": patch["diffText"],
                 "dryRun": True,
+                "steps": [
+                    *steps,
+                    _step("dry_run", "completed", f"{patch['filesChanged']} file(s)"),
+                ],
             }
 
         applied_paths: list[str] = []
         parsed_patch = parse_unified_diff(patch["diffText"])
+        steps.append(_step("apply", "running", f"{len(parsed_patch)} file patch(es)"))
         for file_patch in parsed_patch:
             relative_path, changed = apply_unified_diff_to_file(policy_guard, workspace_root, file_patch)
             if changed and relative_path not in applied_paths:
                 applied_paths.append(relative_path)
+        steps[-1] = _step("apply", "completed", f"{len(applied_paths)} changed path(s)")
 
         patch = store.update_patch(
             patch["id"],
@@ -211,8 +250,10 @@ def build_apply_patch_tool(policy_guard: Any, store: Any, subagent_service: Any 
             "patchId": patch["id"],
             "summary": patch["summary"],
             "filesChanged": patch["filesChanged"],
+            "changedPaths": patch.get("changedPaths") or applied_paths or validated_paths,
             "diffText": patch["diffText"],
             "dryRun": False,
+            "steps": steps,
         }
 
     return {"handler": apply_patch}

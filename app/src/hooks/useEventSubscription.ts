@@ -1,8 +1,12 @@
 import { useEffect, useRef } from "react";
 import type {
   AgentEventEnvelope,
+  AssistantProgressPayload,
   ChatMessageCompletePayload,
   ChatStatusPayload,
+  CommandLogRecord,
+  CommandLifecyclePayload,
+  CommandOutputPayload,
   ContentStartPayload,
   ContentDeltaPayload,
   MessageDeltaPayload,
@@ -10,6 +14,8 @@ import type {
   MessageCompletedPayload,
   MessageFailedPayload,
   PermissionRequestPayload,
+  ToolLifecyclePayload,
+  ToolOutputPayload,
   ToolResultPayload,
   ToolUseCompletePayload,
   SessionUpdatedPayload,
@@ -33,6 +39,7 @@ import {
   appendOrUpdateAssistantMessageCompletion,
   appendOrUpdateAssistantMessageDelta,
   appendOrUpdateAssistantToolInputDelta,
+  appendOrUpdateAssistantToolOutputDelta,
   appendAssistantToolResultMessage,
   appendAssistantProgressMessage,
   appendSpecialEventMessage,
@@ -43,6 +50,7 @@ import {
   completeChatCompatMessage,
   removeAssistantThinkingMessage,
   resolvePermissionRequestMessage,
+  resolveSpecialApprovalMessage,
   updateAssistantMessageByMessageId,
   reconcileBackendMessage,
   failAssistantMessage,
@@ -56,6 +64,7 @@ import {
   sortByUpdatedAtDesc,
 } from "../state/eventRecordViews";
 import { shouldPromoteTaskToActive } from "../state/sessionDerivedViews";
+import { TRACE_CACHE_LIMIT } from "../state/providerConfig";
 
 const runtimeClient = new RuntimeClient();
 
@@ -92,12 +101,15 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     setSession, setSessions,
     setTask, setActiveTaskId, setTaskHistory,
     setChatMessages,
+    setTraceEvents,
+    setCommandLogCacheById,
     setError,
     sessionActiveTaskMapRef,
     childTaskIdsRef,
     pendingAssistantTokenEventsRef,
     assistantTokenFlushTimerRef,
   } = deps;
+  const cancelledTaskIdsRef = useRef<Set<string>>(new Set());
 
   function isChatVisibleEvent(event: AgentEventEnvelope): boolean {
     return shouldShowEventInChat(event, childTaskIdsRef.current);
@@ -116,6 +128,15 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     );
   }
 
+  function discardPendingAssistantTokensForTask(taskId: string) {
+    const nextEvents = pendingAssistantTokenEventsRef.current.filter((event) => event.taskId !== taskId);
+    pendingAssistantTokenEventsRef.current = nextEvents;
+    if (nextEvents.length === 0 && assistantTokenFlushTimerRef.current !== null) {
+      clearTimeout(assistantTokenFlushTimerRef.current);
+      assistantTokenFlushTimerRef.current = null;
+    }
+  }
+
   function queueAssistantToken(event: AgentEventEnvelope) {
     const payload = event.payload as any;
     const delta = payload.delta ?? "";
@@ -127,6 +148,19 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
       assistantTokenFlushTimerRef.current = null;
       flushPendingAssistantTokens();
     }, 33);
+  }
+
+  function shouldSuppressCancelledTaskEvent(event: AgentEventEnvelope): boolean {
+    if (!event.taskId || !cancelledTaskIdsRef.current.has(event.taskId)) {
+      return false;
+    }
+    if (event.type.startsWith("task.") || event.type === "session.updated" || event.type === "approval.resolved") {
+      return false;
+    }
+    if (event.type === "command.cancelled") {
+      return false;
+    }
+    return true;
   }
 
   function shouldRenderLegacyAssistantToken(event: AgentEventEnvelope): boolean {
@@ -175,25 +209,179 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     return "";
   }
 
+  function readPayloadChunk(payload: unknown, keys: string[]): string {
+    if (!payload || typeof payload !== "object") {
+      return "";
+    }
+    const record = payload as Record<string, unknown>;
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "string" && value) {
+        return value;
+      }
+      if (typeof value === "number" || typeof value === "boolean") {
+        return String(value);
+      }
+    }
+    return "";
+  }
+
+  function appendCommandOutputTail(current: string, chunk: string, maxLength = 4000): string {
+    const next = `${current}${chunk}`;
+    if (next.length <= maxLength) {
+      return next;
+    }
+    return next.slice(next.length - maxLength);
+  }
+
+  function commandLifecycleStatus(eventType: string, status?: string): CommandLogRecord["status"] {
+    if (status === "running" || status === "completed" || status === "failed" || status === "timeout" || status === "killed" || status === "cancelled") {
+      return status;
+    }
+    if (eventType === "command.started") return "running";
+    if (eventType === "command.completed") return "completed";
+    if (eventType === "command.cancelled") return "cancelled";
+    return "failed";
+  }
+
+  function commandLogMetadataFromPayload(
+    payload: CommandLifecyclePayload | CommandOutputPayload,
+    current?: Partial<CommandLogRecord>,
+  ): Partial<CommandLogRecord> {
+    return {
+      toolUseId: payload.toolUseId ?? current?.toolUseId,
+      toolName: payload.toolName ?? current?.toolName,
+      parentToolUseId: payload.parentToolUseId ?? current?.parentToolUseId,
+      toolGroupId: payload.toolGroupId ?? current?.toolGroupId,
+      toolIndex: payload.toolIndex ?? current?.toolIndex,
+      toolTotal: payload.toolTotal ?? current?.toolTotal,
+      toolOperationId: payload.toolOperationId ?? current?.toolOperationId,
+      toolOperationLabel: payload.toolOperationLabel ?? current?.toolOperationLabel,
+      toolCategory: payload.toolCategory ?? current?.toolCategory,
+      toolPhaseId: payload.toolPhaseId ?? current?.toolPhaseId,
+      toolPhaseLabel: payload.toolPhaseLabel ?? current?.toolPhaseLabel,
+      toolSemanticParentId: payload.toolSemanticParentId ?? current?.toolSemanticParentId,
+      toolSemanticParentLabel: payload.toolSemanticParentLabel ?? current?.toolSemanticParentLabel,
+      target: payload.target ?? current?.target,
+      inputSummary: payload.inputSummary ?? current?.inputSummary,
+    };
+  }
+
+  function rememberCommandLifecycleEvent(event: AgentEventEnvelope, payload: CommandLifecyclePayload) {
+    if (!payload.commandId) {
+      return;
+    }
+    setCommandLogCacheById((current) => {
+      const existing = current[payload.commandId] as Partial<CommandLogRecord> | undefined;
+      const next: CommandLogRecord = {
+        id: payload.commandId,
+        taskId: event.taskId,
+        ...commandLogMetadataFromPayload(payload, existing),
+        command: payload.command ?? existing?.command ?? payload.target ?? payload.commandId,
+        cwd: payload.cwd ?? existing?.cwd ?? "",
+        shell: (payload.shell as CommandLogRecord["shell"] | undefined) ?? existing?.shell,
+        background: payload.background ?? existing?.background,
+        status: commandLifecycleStatus(event.type, payload.status),
+        exitCode: payload.exitCode ?? existing?.exitCode,
+        startedAt: existing?.startedAt ?? event.ts,
+        finishedAt: event.type === "command.started" ? existing?.finishedAt : event.ts,
+        durationMs: payload.durationMs ?? existing?.durationMs,
+        stdoutPath: payload.stdoutPath ?? existing?.stdoutPath,
+        stderrPath: payload.stderrPath ?? existing?.stderrPath,
+        stdout: existing?.stdout,
+        stderr: existing?.stderr,
+      };
+      return { ...current, [payload.commandId]: next };
+    });
+  }
+
+  function rememberCommandOutputEvent(event: AgentEventEnvelope, payload: CommandOutputPayload) {
+    if (!payload.commandId || !payload.chunk) {
+      return;
+    }
+    setCommandLogCacheById((current) => {
+      const existing = current[payload.commandId] as Partial<CommandLogRecord> | undefined;
+      const stream = payload.stream === "stderr" ? "stderr" : "stdout";
+      const next: CommandLogRecord = {
+        id: payload.commandId,
+        taskId: event.taskId,
+        ...commandLogMetadataFromPayload(payload, existing),
+        command: existing?.command ?? payload.target ?? payload.commandId,
+        cwd: existing?.cwd ?? "",
+        shell: existing?.shell,
+        background: existing?.background,
+        status: existing?.status ?? "running",
+        exitCode: existing?.exitCode,
+        startedAt: existing?.startedAt ?? event.ts,
+        finishedAt: existing?.finishedAt,
+        durationMs: existing?.durationMs,
+        stdoutPath: existing?.stdoutPath,
+        stderrPath: existing?.stderrPath,
+        stdout: stream === "stdout" ? appendCommandOutputTail(existing?.stdout ?? "", payload.chunk) : existing?.stdout,
+        stderr: stream === "stderr" ? appendCommandOutputTail(existing?.stderr ?? "", payload.chunk) : existing?.stderr,
+      };
+      return { ...current, [payload.commandId]: next };
+    });
+  }
+
+  function rememberTraceEvent(event: AgentEventEnvelope) {
+    setTraceEvents((current) => {
+      const trace: TraceEventRecord = {
+        id: event.eventId,
+        sessionId: event.sessionId,
+        taskId: event.taskId,
+        type: event.type,
+        source: event.type.split(".")[0] ?? "runtime",
+        payload: event.payload,
+        createdAt: event.ts,
+        sequence: event.seq ?? event.ts,
+        visibility: event.visibility,
+      };
+      const existingIndex = current.findIndex((item) => item.id === trace.id);
+      if (existingIndex >= 0) {
+        const next = [...current];
+        next[existingIndex] = { ...next[existingIndex], ...trace };
+        return next;
+      }
+      return [...current, trace].sort((left, right) => {
+        const timeDiff = (left.createdAt ?? 0) - (right.createdAt ?? 0);
+        if (timeDiff !== 0) return timeDiff;
+        return (left.sequence ?? 0) - (right.sequence ?? 0);
+      }).slice(-TRACE_CACHE_LIMIT);
+    });
+  }
+
   function appendSpecialEventFromEnvelope(event: AgentEventEnvelope, kind: string) {
     const payload = event.payload as Record<string, unknown> | null | undefined;
     const title = readPayloadText(payload, ["title", "label", "phase", "state", "type"]);
     const summary = readPayloadText(payload, ["summary", "description", "message", "detail", "reason"]);
     const content = readPayloadText(payload, ["content", "text", "body", "error"]);
     const status = readPayloadText(payload, ["status"]);
+    const blocksAssistantStream = kind === "ask_user_question" || kind === "computer_use_permission";
+    if (blocksAssistantStream) {
+      flushPendingAssistantTokens();
+    }
     setChatMessages((current) =>
-      appendSpecialEventMessage(current, {
-        kind,
-        sessionId: event.sessionId,
-        taskId: event.taskId,
-        content,
-        title,
-        summary,
-        status,
-        eventId: event.eventId,
-        metadata: payload && typeof payload === "object" ? payload : null,
-        now: event.ts,
-      }),
+      appendSpecialEventMessage(
+        blocksAssistantStream
+          ? removeAssistantThinkingMessage(current, {
+              sessionId: event.sessionId,
+              taskId: event.taskId,
+            })
+          : current,
+        {
+          kind,
+          sessionId: event.sessionId,
+          taskId: event.taskId,
+          content,
+          title,
+          summary,
+          status,
+          eventId: event.eventId,
+          metadata: payload && typeof payload === "object" ? payload : null,
+          now: event.ts,
+        },
+      ),
     );
   }
 
@@ -204,6 +392,18 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
     runtimeClient
       .subscribeEvents((event) => {
         if (!active) {
+          return;
+        }
+        rememberTraceEvent(event);
+
+        if (event.type === "task.started" || event.type === "task.resumed") {
+          cancelledTaskIdsRef.current.delete(event.taskId);
+        } else if (event.type === "task.cancelled") {
+          cancelledTaskIdsRef.current.add(event.taskId);
+          discardPendingAssistantTokensForTask(event.taskId);
+        }
+
+        if (shouldSuppressCancelledTaskEvent(event)) {
           return;
         }
 
@@ -217,7 +417,19 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               appendOrUpdateAssistantToolStartMessage(current, {
                 toolUseId: payload.toolUseId!,
                 toolName: payload.toolName,
+                target: payload.target,
+                inputSummary: payload.inputSummary,
                 parentToolUseId: payload.parentToolUseId,
+                toolGroupId: payload.toolGroupId,
+                toolIndex: payload.toolIndex,
+                toolTotal: payload.toolTotal,
+                toolOperationId: payload.toolOperationId,
+                toolOperationLabel: payload.toolOperationLabel,
+                toolCategory: payload.toolCategory,
+                toolPhaseId: payload.toolPhaseId,
+                toolPhaseLabel: payload.toolPhaseLabel,
+                toolSemanticParentId: payload.toolSemanticParentId,
+                toolSemanticParentLabel: payload.toolSemanticParentLabel,
                 sessionId: event.sessionId,
                 taskId: event.taskId,
                 now: event.ts,
@@ -271,10 +483,52 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               appendOrUpdateAssistantToolInputDelta(current, {
                 toolUseId,
                 toolName: payload.toolName,
+                target: payload.target,
+                inputSummary: payload.inputSummary,
                 parentToolUseId: payload.parentToolUseId,
+                toolGroupId: payload.toolGroupId,
+                toolIndex: payload.toolIndex,
+                toolTotal: payload.toolTotal,
+                toolOperationId: payload.toolOperationId,
+                toolOperationLabel: payload.toolOperationLabel,
+                toolCategory: payload.toolCategory,
+                toolPhaseId: payload.toolPhaseId,
+                toolPhaseLabel: payload.toolPhaseLabel,
+                toolSemanticParentId: payload.toolSemanticParentId,
+                toolSemanticParentLabel: payload.toolSemanticParentLabel,
                 sessionId: event.sessionId,
                 taskId: event.taskId,
                 delta: payload.toolInput!,
+                now: event.ts,
+              }),
+            );
+          }
+          if (typeof payload.toolOutput === "string" && payload.toolOutput) {
+            const toolUseId =
+              typeof payload.toolUseId === "string" && payload.toolUseId
+                ? payload.toolUseId
+                : `pending_${event.taskId}`;
+            setChatMessages((current) =>
+              appendOrUpdateAssistantToolOutputDelta(current, {
+                toolUseId,
+                toolName: payload.toolName,
+                target: payload.target,
+                inputSummary: payload.inputSummary,
+                parentToolUseId: payload.parentToolUseId,
+                toolGroupId: payload.toolGroupId,
+                toolIndex: payload.toolIndex,
+                toolTotal: payload.toolTotal,
+                toolOperationId: payload.toolOperationId,
+                toolOperationLabel: payload.toolOperationLabel,
+                toolCategory: payload.toolCategory,
+                toolPhaseId: payload.toolPhaseId,
+                toolPhaseLabel: payload.toolPhaseLabel,
+                toolSemanticParentId: payload.toolSemanticParentId,
+                toolSemanticParentLabel: payload.toolSemanticParentLabel,
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                delta: payload.toolOutput!,
+                stream: payload.outputStream,
                 now: event.ts,
               }),
             );
@@ -295,7 +549,19 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               toolUseId: payload.toolUseId,
               toolName: payload.toolName,
               input: payload.input,
+              target: payload.target,
+              inputSummary: payload.inputSummary,
               parentToolUseId: payload.parentToolUseId,
+              toolGroupId: payload.toolGroupId,
+              toolIndex: payload.toolIndex,
+              toolTotal: payload.toolTotal,
+              toolOperationId: payload.toolOperationId,
+              toolOperationLabel: payload.toolOperationLabel,
+              toolCategory: payload.toolCategory,
+              toolPhaseId: payload.toolPhaseId,
+              toolPhaseLabel: payload.toolPhaseLabel,
+              toolSemanticParentId: payload.toolSemanticParentId,
+              toolSemanticParentLabel: payload.toolSemanticParentLabel,
               sessionId: event.sessionId,
               taskId: event.taskId,
               now: event.ts,
@@ -317,11 +583,304 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               toolUseId: payload.toolUseId,
               toolName: payload.toolName,
               parentToolUseId: payload.parentToolUseId,
+              toolGroupId: payload.toolGroupId,
+              toolIndex: payload.toolIndex,
+              toolTotal: payload.toolTotal,
+              toolOperationId: payload.toolOperationId,
+              toolOperationLabel: payload.toolOperationLabel,
+              toolCategory: payload.toolCategory,
+              toolPhaseId: payload.toolPhaseId,
+              toolPhaseLabel: payload.toolPhaseLabel,
+              toolSemanticParentId: payload.toolSemanticParentId,
+              toolSemanticParentLabel: payload.toolSemanticParentLabel,
               content: payload.content,
               isError: payload.isError,
+              target: payload.target,
+              inputSummary: payload.inputSummary,
+              resultSummary: payload.resultSummary,
+              resultPreview: payload.resultPreview,
+              durationMs: payload.durationMs,
               sessionId: event.sessionId,
               taskId: event.taskId,
               now: event.ts,
+            }),
+          );
+          return;
+        }
+
+        if (event.type === "tool.started") {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          const payload = event.payload as ToolLifecyclePayload;
+          if (!payload.toolCallId) {
+            return;
+          }
+          setChatMessages((current) =>
+            appendOrUpdateAssistantToolStartMessage(current, {
+              toolUseId: payload.toolCallId,
+              toolName: payload.toolName,
+              input: payload.arguments,
+              target: payload.target,
+              inputSummary: payload.inputSummary,
+              parentToolUseId: payload.parentToolUseId,
+              toolGroupId: payload.toolGroupId,
+              toolIndex: payload.toolIndex,
+              toolTotal: payload.toolTotal,
+              toolOperationId: payload.toolOperationId,
+              toolOperationLabel: payload.toolOperationLabel,
+              toolCategory: payload.toolCategory,
+              toolPhaseId: payload.toolPhaseId,
+              toolPhaseLabel: payload.toolPhaseLabel,
+              toolSemanticParentId: payload.toolSemanticParentId,
+              toolSemanticParentLabel: payload.toolSemanticParentLabel,
+              sessionId: event.sessionId,
+              taskId: event.taskId,
+              now: event.ts,
+            }),
+          );
+          return;
+        }
+
+        if (event.type === "tool.completed" || event.type === "tool.failed" || event.type === "tool.blocked") {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          const payload = event.payload as ToolLifecyclePayload;
+          if (!payload.toolCallId) {
+            return;
+          }
+          const isError = event.type !== "tool.completed";
+          const resultContent = payload.result ?? {
+            status: event.type.slice("tool.".length),
+            reason: payload.reason,
+            error: payload.error,
+            failureKind: payload.failureKind,
+            recoveryHint: payload.recoveryHint,
+            recoveryDecision: payload.recoveryDecision,
+          };
+          setChatMessages((current) =>
+            appendAssistantToolResultMessage(current, {
+              toolUseId: payload.toolCallId,
+              toolName: payload.toolName,
+              parentToolUseId: payload.parentToolUseId,
+              toolGroupId: payload.toolGroupId,
+              toolIndex: payload.toolIndex,
+              toolTotal: payload.toolTotal,
+              toolOperationId: payload.toolOperationId,
+              toolOperationLabel: payload.toolOperationLabel,
+              toolCategory: payload.toolCategory,
+              toolPhaseId: payload.toolPhaseId,
+              toolPhaseLabel: payload.toolPhaseLabel,
+              toolSemanticParentId: payload.toolSemanticParentId,
+              toolSemanticParentLabel: payload.toolSemanticParentLabel,
+              content: resultContent,
+              isError,
+              status: event.type === "tool.blocked" ? "blocked" : isError ? "failed" : "completed",
+              lifecycleStatus: event.type.slice("tool.".length),
+              target: payload.target,
+              inputSummary: payload.inputSummary,
+              resultSummary: payload.resultSummary ?? payload.reason,
+              resultPreview: payload.resultPreview,
+              durationMs: payload.durationMs,
+              sessionId: event.sessionId,
+              taskId: event.taskId,
+              now: event.ts,
+            }),
+          );
+          return;
+        }
+
+        if (event.type === "tool.progress" || event.type === "tool.output") {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          if (isChatCompatPayload(event.payload)) {
+            return;
+          }
+          const payload = event.payload as ToolOutputPayload;
+          const toolUseId = payload.toolUseId ?? payload.toolCallId;
+          if (!toolUseId) {
+            return;
+          }
+          const delta = readPayloadChunk(payload, ["chunk", "delta", "toolOutput", "message", "summary", "text"]);
+          if (!delta) {
+            return;
+          }
+          const stream = payload.outputStream ?? payload.stream ?? (event.type === "tool.progress" ? "activity" : "result_preview");
+          setChatMessages((current) =>
+            appendOrUpdateAssistantToolOutputDelta(current, {
+              toolUseId,
+              toolName: payload.toolName,
+              target: payload.target,
+              inputSummary: payload.inputSummary,
+              parentToolUseId: payload.parentToolUseId,
+              toolGroupId: payload.toolGroupId,
+              toolIndex: payload.toolIndex,
+              toolTotal: payload.toolTotal,
+              toolOperationId: payload.toolOperationId,
+              toolOperationLabel: payload.toolOperationLabel,
+              toolCategory: payload.toolCategory,
+              toolPhaseId: payload.toolPhaseId,
+              toolPhaseLabel: payload.toolPhaseLabel,
+              toolSemanticParentId: payload.toolSemanticParentId,
+              toolSemanticParentLabel: payload.toolSemanticParentLabel,
+              sessionId: event.sessionId,
+              taskId: event.taskId,
+              delta,
+              stream,
+              now: event.ts,
+            }),
+          );
+          return;
+        }
+
+        if (event.type === "command.started") {
+          const payload = event.payload as CommandLifecyclePayload;
+          rememberCommandLifecycleEvent(event, payload);
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          if (!payload.toolUseId) {
+            return;
+          }
+          const commandTarget = payload.target ?? payload.command;
+          setChatMessages((current) =>
+            appendOrUpdateAssistantToolStartMessage(current, {
+              toolUseId: payload.toolUseId!,
+              toolName: payload.toolName ?? "run_command",
+              target: commandTarget,
+              inputSummary: payload.inputSummary ?? commandTarget,
+              parentToolUseId: payload.parentToolUseId,
+              toolGroupId: payload.toolGroupId,
+              toolIndex: payload.toolIndex,
+              toolTotal: payload.toolTotal,
+              toolOperationId: payload.toolOperationId,
+              toolOperationLabel: payload.toolOperationLabel,
+              toolCategory: payload.toolCategory,
+              toolPhaseId: payload.toolPhaseId,
+              toolPhaseLabel: payload.toolPhaseLabel,
+              toolSemanticParentId: payload.toolSemanticParentId,
+              toolSemanticParentLabel: payload.toolSemanticParentLabel,
+              sessionId: event.sessionId,
+              taskId: event.taskId,
+              now: event.ts,
+            }),
+          );
+          return;
+        }
+
+        if (event.type === "command.output") {
+          const payload = event.payload as CommandOutputPayload;
+          rememberCommandOutputEvent(event, payload);
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          if (!payload.toolUseId || !payload.chunk) {
+            return;
+          }
+          setChatMessages((current) =>
+            appendOrUpdateAssistantToolOutputDelta(current, {
+              toolUseId: payload.toolUseId!,
+              toolName: payload.toolName ?? "run_command",
+              target: payload.target,
+              inputSummary: payload.inputSummary,
+              parentToolUseId: payload.parentToolUseId,
+              toolGroupId: payload.toolGroupId,
+              toolIndex: payload.toolIndex,
+              toolTotal: payload.toolTotal,
+              toolOperationId: payload.toolOperationId,
+              toolOperationLabel: payload.toolOperationLabel,
+              toolCategory: payload.toolCategory,
+              toolPhaseId: payload.toolPhaseId,
+              toolPhaseLabel: payload.toolPhaseLabel,
+              toolSemanticParentId: payload.toolSemanticParentId,
+              toolSemanticParentLabel: payload.toolSemanticParentLabel,
+              sessionId: event.sessionId,
+              taskId: event.taskId,
+              delta: payload.chunk,
+              stream: payload.stream,
+              now: event.ts,
+            }),
+          );
+          return;
+        }
+
+        if (event.type === "command.completed" || event.type === "command.failed" || event.type === "command.cancelled") {
+          const payload = event.payload as CommandLifecyclePayload;
+          rememberCommandLifecycleEvent(event, payload);
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          if (!payload.toolUseId) {
+            return;
+          }
+          const normalizedStatus = String(payload.status ?? "").toLowerCase();
+          const isCancelled = event.type === "command.cancelled" || normalizedStatus === "cancelled";
+          const isError = !isCancelled && (event.type === "command.failed" || !["completed", "success", "succeeded"].includes(normalizedStatus));
+          const exitLabel = typeof payload.exitCode === "number" ? `exit ${payload.exitCode}` : String(payload.status || (isError ? "failed" : "completed"));
+          const summary = isError
+            ? `命令失败：${exitLabel}`
+            : `命令已完成：${exitLabel}`;
+          const commandSummary = isCancelled ? `命令已取消：${exitLabel}` : summary;
+          const commandTarget = payload.target ?? payload.command;
+          setChatMessages((current) =>
+            appendAssistantToolResultMessage(current, {
+              toolUseId: payload.toolUseId!,
+              toolName: payload.toolName ?? "run_command",
+              target: commandTarget,
+              inputSummary: payload.inputSummary ?? commandTarget,
+              parentToolUseId: payload.parentToolUseId,
+              toolGroupId: payload.toolGroupId,
+              toolIndex: payload.toolIndex,
+              toolTotal: payload.toolTotal,
+              toolOperationId: payload.toolOperationId,
+              toolOperationLabel: payload.toolOperationLabel,
+              toolCategory: payload.toolCategory,
+              toolPhaseId: payload.toolPhaseId,
+              toolPhaseLabel: payload.toolPhaseLabel,
+              toolSemanticParentId: payload.toolSemanticParentId,
+              toolSemanticParentLabel: payload.toolSemanticParentLabel,
+              content: {
+                status: payload.status,
+                exitCode: payload.exitCode,
+                commandId: payload.commandId,
+                stdoutPath: payload.stdoutPath,
+                stderrPath: payload.stderrPath,
+                background: payload.background,
+              },
+              isError,
+              status: isCancelled ? "cancelled" : undefined,
+              resultSummary: commandSummary,
+              durationMs: payload.durationMs,
+              sessionId: event.sessionId,
+              taskId: event.taskId,
+              now: event.ts,
+            }),
+          );
+          return;
+        }
+
+        if (event.type === "assistant_progress") {
+          if (!isChatVisibleEvent(event)) {
+            return;
+          }
+          const payload = event.payload as AssistantProgressPayload;
+          const text = readPayloadText(payload, ["text", "summary", "message", "title"]);
+          if (!text) {
+            return;
+          }
+          const metadata = event.payload && typeof event.payload === "object"
+            ? (event.payload as Record<string, unknown>)
+            : null;
+          setChatMessages((current) =>
+            appendAssistantProgressMessage(current, {
+              sessionId: event.sessionId,
+              taskId: event.taskId,
+              content: text,
+              now: event.ts,
+              eventId: event.eventId,
+              metadata,
             }),
           );
           return;
@@ -380,13 +939,14 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           if (!isChatVisibleEvent(event)) {
             return;
           }
-          const payload = event.payload as { text?: unknown };
+          const payload = event.payload as { text?: unknown; source?: unknown };
           setChatMessages((current) =>
             appendOrUpdateAssistantThinkingMessage(current, {
               sessionId: event.sessionId,
               taskId: event.taskId,
               state: "thinking",
               text: typeof payload.text === "string" ? payload.text : undefined,
+              source: typeof payload.source === "string" ? payload.source : undefined,
               now: event.ts,
             }),
           );
@@ -401,6 +961,25 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           if (!payload.requestId) {
             return;
           }
+          if (payload.resolved) {
+            setChatMessages((current) =>
+              resolvePermissionRequestMessage(current, {
+                requestId: payload.requestId,
+                decision: payload.decision ?? "approved",
+                toolName: payload.toolName,
+                input: payload.input,
+                preview: payload.preview,
+                filesChanged: payload.filesChanged,
+                changedPaths: payload.changedPaths,
+                diffText: payload.diffText,
+                sessionId: event.sessionId,
+                taskId: event.taskId,
+                createIfMissing: true,
+                now: event.ts,
+              }),
+            );
+            return;
+          }
           setChatMessages((current) =>
             appendOrUpdatePermissionRequestMessage(
               removeAssistantThinkingMessage(current, {
@@ -412,6 +991,10 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 toolName: payload.toolName,
                 input: payload.input,
                 description: payload.description,
+                preview: payload.preview,
+                filesChanged: payload.filesChanged,
+                changedPaths: payload.changedPaths,
+                diffText: payload.diffText,
                 sessionId: event.sessionId,
                 taskId: event.taskId,
                 now: event.ts,
@@ -450,15 +1033,45 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         }
 
         if (event.type === "approval.resolved") {
-          const payload = event.payload as { approvalId?: unknown; decision?: unknown };
+          const payload = event.payload as {
+            approvalId?: unknown;
+            decision?: unknown;
+            kind?: unknown;
+            request?: unknown;
+            preview?: Array<{ label: string; value: string }>;
+            filesChanged?: unknown;
+            changedPaths?: unknown;
+            diffText?: unknown;
+          };
           if (typeof payload.approvalId === "string" && payload.approvalId.trim()) {
             const approvalId = payload.approvalId.trim();
             setChatMessages((current) =>
-              resolvePermissionRequestMessage(current, {
-                requestId: approvalId,
-                decision: typeof payload.decision === "string" ? payload.decision : "approved",
-                now: event.ts,
-              }),
+              resolveSpecialApprovalMessage(
+                resolvePermissionRequestMessage(current, {
+                  requestId: approvalId,
+                  decision: typeof payload.decision === "string" ? payload.decision : "approved",
+                  toolName: typeof payload.kind === "string" ? payload.kind : undefined,
+                  input: payload.request,
+                  preview: payload.preview,
+                  filesChanged: typeof payload.filesChanged === "number" ? payload.filesChanged : undefined,
+                  changedPaths: Array.isArray(payload.changedPaths) ? payload.changedPaths.filter((item): item is string => typeof item === "string") : undefined,
+                  diffText: typeof payload.diffText === "string" ? payload.diffText : undefined,
+                  sessionId: event.sessionId,
+                  taskId: event.taskId,
+                  createIfMissing: true,
+                  now: event.ts,
+                }),
+                {
+                  approvalId,
+                  decision: typeof payload.decision === "string" ? payload.decision : "approved",
+                  input: payload.request,
+                  preview: payload.preview,
+                  filesChanged: typeof payload.filesChanged === "number" ? payload.filesChanged : undefined,
+                  changedPaths: Array.isArray(payload.changedPaths) ? payload.changedPaths.filter((item): item is string => typeof item === "string") : undefined,
+                  diffText: typeof payload.diffText === "string" ? payload.diffText : undefined,
+                  now: event.ts,
+                },
+              ),
             );
           }
         }
@@ -681,7 +1294,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
             // (handled by message.failed event now)
           }
           if (event.type === "task.cancelled" && !isChildWorker) {
-            flushPendingAssistantTokens();
+            discardPendingAssistantTokensForTask(event.taskId);
             setChatMessages((current) =>
               removeAssistantThinkingMessage(
                 stopStreamingMessagesForTask(current, {

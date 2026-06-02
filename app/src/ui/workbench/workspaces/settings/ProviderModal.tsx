@@ -46,6 +46,7 @@ export function ProviderModal({
     !draft.apiKey.trim() || !isDirectApiKey(draft.apiKey)
       ? parsedConfig.apiKeyEnvVarName
       : undefined;
+  const draftError = validateProviderDraft(draft);
 
   const updateDraft = (patch: Partial<ProviderFormDraft>) => {
     setTestResult(null);
@@ -73,6 +74,10 @@ export function ProviderModal({
   const handleTestProvider = async () => {
     setTestResult(null);
     setTestError(null);
+    if (draftError) {
+      setTestError(draftError);
+      return;
+    }
     try {
       const result = await onTestProviderConfig?.(toProviderPayload(draft));
       if (result) {
@@ -85,6 +90,10 @@ export function ProviderModal({
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
+    if (draftError) {
+      setTestError(draftError);
+      return;
+    }
     const payload = toProviderPayload(draft);
     if (mode === "edit" && provider) {
       await onEditProvider?.(provider.id, payload);
@@ -178,16 +187,41 @@ export function ProviderModal({
           {detectedApiKeyEnvVarName ? (
             <p className="settings-provider-feedback is-info">检测到环境变量：{detectedApiKeyEnvVarName}</p>
           ) : null}
+          {draftError ? <p className="settings-provider-feedback is-danger">{draftError}</p> : null}
           {testResult ? <pre className="settings-json-box">{formatProviderTestResult(testResult)}</pre> : null}
           {testError ? <p className="settings-provider-feedback is-danger">{testError}</p> : null}
         </div>
 
         <footer className="settings-modal-footer">
+          <p className="settings-modal-hint">
+            {draftError ? "修正上方提示后即可继续。" : "保存前可以先测试连接，确认模型映射和密钥可用。"}
+          </p>
           <button type="button" className="settings-secondary-action" onClick={onClose}>取消</button>
-          <button type="button" className="settings-secondary-action" onClick={handleTestProvider} disabled={providerTestBusy} aria-label="测试连接">{providerTestBusy ? "测试中..." : "测试连接"}</button>
-          <button type="submit" className="settings-primary-action" disabled={providerBusy} aria-label={mode === "edit" ? "保存" : "添加"}>{mode === "edit" ? "保存" : "添加"}</button>
+          <button type="button" className="settings-secondary-action" onClick={handleTestProvider} disabled={providerTestBusy || Boolean(draftError)} aria-label="测试连接">{providerTestBusy ? "测试中..." : "测试连接"}</button>
+          <button type="submit" className="settings-primary-action" disabled={providerBusy || Boolean(draftError)} aria-label={mode === "edit" ? "保存" : "添加"}>{mode === "edit" ? "保存" : "添加"}</button>
         </footer>
       </form>
     </div>
   );
+}
+
+function validateProviderDraft(draft: ProviderFormDraft): string | null {
+  if (!draft.name.trim()) {
+    return "请输入供应商名称。";
+  }
+  if (draft.endpoint.trim() && !/^https?:\/\//i.test(draft.endpoint.trim())) {
+    return "接口地址应以 http:// 或 https:// 开头。";
+  }
+  if (!draft.mainModel.trim()) {
+    return "请输入主模型。";
+  }
+  const configText = draft.jsonConfig.trim();
+  if (/^[{[]/.test(configText)) {
+    try {
+      JSON.parse(configText);
+    } catch {
+      return "设置 JSON 格式无效。";
+    }
+  }
+  return null;
 }

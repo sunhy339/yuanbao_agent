@@ -29,12 +29,44 @@ _CAPABILITY_APPROVAL_KIND: dict[str, str] = {
     "runCommand": "run_command",
     "webFetch": "network_access",
     "network": "network_access",
+    "computerUse": "computer_use",
     "subagents": "subagent_dispatch",
     "gitWrite": "apply_patch",
     "hooksExecute": "run_command",
 }
 
 _HIGH_RISK_CAPABILITIES = {"writeFile", "runCommand", "subagents"}
+
+_VERIFICATION_COMMAND_MARKERS = (
+    "pytest",
+    "unittest",
+    "npm test",
+    "npm run test",
+    "pnpm test",
+    "yarn test",
+    "cargo test",
+    "go test",
+    "mvn test",
+    "gradle test",
+    " tsc",
+    "tsc ",
+    "npm run build",
+    "pnpm build",
+    "yarn build",
+    "python -m py_compile",
+    "python -m compileall",
+)
+_READ_ONLY_COMMAND_PREFIXES = (
+    "git status",
+    "git diff",
+    "git log",
+    "git show",
+    "get-childitem",
+    "ls ",
+    "dir ",
+    "pwd",
+)
+_COMMAND_CHAIN_OR_REDIRECT_MARKERS = ("&&", "||", ";", ">", "<", "|")
 
 
 def collect_untrusted_content_signals(context: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -88,21 +120,63 @@ def _untrusted_content_guard(request: PermissionRequest) -> PermissionDecision |
     )
 
 
+def _is_low_risk_command(request: PermissionRequest) -> bool:
+    if request.capability != "runCommand":
+        return False
+    command = str(request.context.get("command") or "").strip()
+    if not command:
+        return False
+    command_lower = " ".join(command.casefold().split())
+    padded = f" {command_lower} "
+    if any(marker in command_lower for marker in _COMMAND_CHAIN_OR_REDIRECT_MARKERS):
+        return False
+    if any(command_lower == prefix.strip() or command_lower.startswith(prefix) for prefix in _READ_ONLY_COMMAND_PREFIXES):
+        return True
+    return any(marker in padded for marker in _VERIFICATION_COMMAND_MARKERS)
+
+
 class PermissionEngine:
     """Evaluates tool capability requests against the active permission config."""
 
     def __init__(self, config: dict[str, Any], store: Any = None) -> None:
+        self._store = store
+        self._apply_config(config)
+
+    def _apply_config(self, config: dict[str, Any]) -> None:
+        policy = config.get("policy") if isinstance(config, dict) else {}
+        self._approval_mode = (
+            str(policy.get("approvalMode") or "").strip().lower()
+            if isinstance(policy, dict)
+            else ""
+        )
         normalized = normalize_permissions(config)
         self._preset: str = normalized.get("preset", "balanced")
         self._capabilities: dict[str, Any] = normalized.get("capabilities", {})
-        self._store = store
+
+    def _approvals_disabled(self) -> bool:
+        return self._approval_mode in {"none", "never", "off", "no", "false"}
+
+    def _refresh_from_store(self) -> None:
+        if self._store is None:
+            return
+        try:
+            result = self._store.get_config({})
+        except Exception:  # noqa: BLE001
+            return
+        config = result.get("config") if isinstance(result, dict) else None
+        if isinstance(config, dict):
+            self._apply_config(config)
 
     def evaluate(self, request: PermissionRequest) -> PermissionDecision:
+        self._refresh_from_store()
         cap = request.capability
         untrusted_guard = _untrusted_content_guard(request)
+        low_risk_command = _is_low_risk_command(request)
         rule = self._capabilities.get(cap)
         if rule is None:
             # Unknown capability defaults to ask for safety
+            if self._approvals_disabled():
+                return PermissionDecision(decision="allow", capability=cap)
             return untrusted_guard or PermissionDecision(
                 decision="approval_required",
                 capability=cap,
@@ -120,12 +194,17 @@ class PermissionEngine:
             )
 
         if mode == "allow":
+            if self._approvals_disabled() or low_risk_command:
+                return PermissionDecision(decision="allow", capability=cap)
             return untrusted_guard or PermissionDecision(
                 decision="allow",
                 capability=cap,
             )
 
         # mode == "ask"
+        if self._approvals_disabled() or low_risk_command:
+            return PermissionDecision(decision="allow", capability=cap)
+
         approval_kind = _CAPABILITY_APPROVAL_KIND.get(cap, cap)
         # Refine writeFile approval kind based on tool_name
         if cap == "writeFile" and request.tool_name == "write_file":
@@ -141,9 +220,11 @@ class PermissionEngine:
         )
 
     def effective_config(self) -> dict[str, Any]:
+        self._refresh_from_store()
         return {"preset": self._preset, "capabilities": dict(self._capabilities)}
 
     def is_allowed(self, capability: str) -> bool:
+        self._refresh_from_store()
         rule = self._capabilities.get(capability)
         if rule is None:
             return False

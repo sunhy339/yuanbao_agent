@@ -107,6 +107,67 @@ class PartialStreamFailureProvider:
         return {"final": "Recovered through non-stream fallback."}
 
 
+class ToolDeltaStreamProvider:
+    def stream(self, prompt: str, context: dict[str, Any]) -> Any:
+        yield {
+            "type": "tool_call_delta",
+            "index": 0,
+            "id": "call_child",
+            "name": "read_file",
+            "parentToolUseId": "call_parent",
+            "arguments_delta": "{\"path\":",
+        }
+        yield {
+            "type": "tool_call_delta",
+            "index": 0,
+            "arguments_delta": "\"README.md\"}",
+        }
+        yield {
+            "type": "final",
+            "response": {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_child",
+                            "type": "function",
+                            "name": "read_file",
+                            "arguments": {"path": "README.md"},
+                            "parentToolUseId": "call_parent",
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+                "raw": {},
+            },
+        }
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("streaming test should not fall back to generate")
+
+
+class ThinkingDeltaStreamProvider:
+    def stream(self, prompt: str, context: dict[str, Any]) -> Any:
+        yield {"type": "thinking_delta", "delta": "Checking ", "source": "reasoning_summary"}
+        yield {"type": "thinking_delta", "delta": "files.", "source": "reasoning_summary"}
+        yield {
+            "type": "content_delta",
+            "delta": "Done",
+        }
+        yield {
+            "type": "final",
+            "response": {
+                "message": {"role": "assistant", "content": "Done", "tool_calls": []},
+                "finish_reason": "completed",
+                "raw": {},
+            },
+        }
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        raise AssertionError("streaming test should not fall back to generate")
+
+
 class AdvisorRecoveryProvider:
     """Provider that can fail main turns while answering advisor prompts."""
 
@@ -1031,6 +1092,15 @@ class TestAdvisorGuidedProviderRecovery:
         recovery = recovery_trace["payload"]["failureRecovery"]
         assert recovery["advisorAvailable"] is False
         assert recovery["advisorGate"]["reason"] == "no_partial_output"
+        retry_events = [event for event in runtime.events if event["type"] == "api_retry"]
+        assert retry_events
+        assert retry_events[-1]["payload"]["strategy"] == "compact_or_split_context"
+        compact_events = [event for event in runtime.events if event["type"] == "compact_summary"]
+        assert compact_events
+        assert compact_events[-1]["payload"]["phase"] == "provider_recovery"
+        assert compact_events[-1]["payload"]["strategy"] == "compact_or_split_context"
+        assert compact_events[-1]["payload"]["originalMessageCount"] == retry_meta["originalMessageCount"]
+        assert compact_events[-1]["payload"]["messageCount"] == retry_meta["retryMessageCount"]
 
     def test_timeout_without_partial_output_does_not_call_advisor_or_retry(self, tmp_path: Any) -> None:
         provider = AdvisorRecoveryProvider(
@@ -1072,6 +1142,7 @@ class TestAdvisorGuidedProviderRecovery:
             for event in runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
         ]
         assert "provider.failure.recovery_retry" not in trace_types
+        assert not [event for event in runtime.events if event["type"] == "api_retry"]
 
     def test_stream_partial_output_allows_recovery_advisor_and_fallback(self, tmp_path: Any) -> None:
         provider = PartialStreamFailureProvider()
@@ -1115,6 +1186,12 @@ class TestAdvisorGuidedProviderRecovery:
             for event in runtime.store.list_trace_events({"taskId": task["id"]})["traceEvents"]
         ]
         assert "provider.stream.fallback_non_stream" in trace_types
+        retry_events = [event for event in runtime.events if event["type"] == "api_retry"]
+        assert retry_events
+        assert retry_events[-1]["payload"]["strategy"] == "fallback"
+        assert retry_events[-1]["payload"]["stage"] == "stream"
+        assert retry_events[-1]["payload"]["fallbackFromStream"] is True
+        assert "非流式" in retry_events[-1]["payload"]["summary"]
 
     def test_auth_failure_with_advisor_does_not_call_advisor_or_retry(self, tmp_path: Any) -> None:
         provider = AdvisorRecoveryProvider(
@@ -1247,6 +1324,13 @@ class TestAdvisorGuidedProviderPreflight:
         preflight_trace = next(event for event in trace if event["type"] == "provider.preflight.decision")
         assert preflight_trace["payload"]["runtimeAction"] == "compact_context"
         assert preflight_trace["payload"]["runtimeApplied"] is True
+        compact_events = [event for event in runtime.events if event["type"] == "compact_summary"]
+        assert compact_events
+        assert compact_events[-1]["payload"]["phase"] == "provider_preflight"
+        assert compact_events[-1]["payload"]["strategy"] == "compact_context"
+        assert compact_events[-1]["payload"]["originalMessageCount"] == provider.main_calls[0]["context"]["_provider_preflight"]["originalMessageCount"]
+        assert compact_events[-1]["payload"]["messageCount"] == provider.main_calls[0]["context"]["_provider_preflight"]["messageCount"]
+        assert "上下文" in compact_events[-1]["payload"]["summary"]
 
     def test_provider_preflight_switches_provider_profile_for_turn(self, tmp_path: Any) -> None:
         provider = PreflightSwitchProvider()
@@ -1339,6 +1423,11 @@ class TestAdvisorGuidedProviderPreflight:
         assert preflight_trace["payload"]["runtimeApplied"] is True
         assert preflight_trace["payload"]["providerSwitch"]["toProfileId"] == "secondary"
         assert preflight_trace["payload"]["facts"]["providerProfileRanking"][0]["id"] == "secondary"
+        notifications = [event for event in runtime.events if event["type"] == "system_notification"]
+        assert notifications
+        assert notifications[-1]["payload"]["title"] == "模型配置已切换"
+        assert notifications[-1]["payload"]["toProfileId"] == "secondary"
+        assert notifications[-1]["payload"]["model"] == "secondary-model"
 
     def test_provider_preflight_rejects_unhealthy_switch_target(self, tmp_path: Any) -> None:
         provider = PreflightSwitchProvider(fallback_provider_id="secondary")
@@ -1647,6 +1736,85 @@ class TestProviderTurnTransportAndUsage:
         turns = runtime.store.list_provider_turns(task["id"])
         assert len(turns) == 1
         assert turns[0]["response_transport"] == "fallback_non_stream"
+        retry_events = [event for event in runtime.events if event["type"] == "api_retry"]
+        assert retry_events
+        assert retry_events[-1]["payload"]["strategy"] == "fallback"
+        assert retry_events[-1]["payload"]["stage"] == "stream"
+        assert retry_events[-1]["payload"]["fallbackFromStream"] is True
+
+    def test_stream_tool_call_delta_emits_chat_compat_tool_input(self, tmp_path: Any) -> None:
+        provider = ToolDeltaStreamProvider()
+        runtime = _make_runtime(tmp_path, provider)
+        task = runtime.store.create_task(session_id="sess_1", task_type="chat", goal="read", plan=[])
+        config = {
+            "provider": {
+                "mode": "openai-compatible",
+                "apiFormat": "openai-chat",
+                "streamingEnabled": True,
+                "model": "fake-stream",
+            }
+        }
+        runtime.store.update_config({"config": config})
+
+        response = runtime.orchestrator._request_provider_response(
+            session_id="sess_1",
+            task={**task, "role": "root", "activeAssistantMessageId": "msg_1"},
+            goal="read README",
+            provider_context={
+                "config": config,
+                "messages": [{"role": "user", "content": "read README"}],
+                "openai_tools": [],
+                "step": 1,
+            },
+        )
+
+        assert response["tool_calls"][0]["parentToolUseId"] == "call_parent"
+        starts = [event for event in runtime.events if event["type"] == "content_start"]
+        deltas = [event for event in runtime.events if event["type"] == "content_delta" and event["payload"].get("toolInput")]
+        assert starts[-1]["payload"]["blockType"] == "tool_use"
+        assert starts[-1]["payload"]["toolUseId"] == "call_child"
+        assert starts[-1]["payload"]["toolName"] == "read_file"
+        assert starts[-1]["payload"]["parentToolUseId"] == "call_parent"
+        assert starts[-1]["payload"]["toolCategory"] == "context_read"
+        assert starts[-1]["payload"]["toolPhaseId"] == "context_read"
+        assert starts[-1]["payload"]["toolPhaseLabel"] == "读取上下文"
+        assert starts[-1]["payload"]["toolSemanticParentId"] == "phase:context_read"
+        assert [event["payload"]["toolInput"] for event in deltas] == ["{\"path\":", "\"README.md\"}"]
+        assert all(event["payload"]["parentToolUseId"] == "call_parent" for event in deltas)
+        assert all(event["payload"]["toolCategory"] == "context_read" for event in deltas)
+        assert all(event["payload"]["toolPhaseId"] == "context_read" for event in deltas)
+        assert all(event["payload"]["toolPhaseLabel"] == "读取上下文" for event in deltas)
+        assert all(event["payload"]["toolSemanticParentId"] == "phase:context_read" for event in deltas)
+
+    def test_stream_thinking_delta_emits_thinking_event(self, tmp_path: Any) -> None:
+        provider = ThinkingDeltaStreamProvider()
+        runtime = _make_runtime(tmp_path, provider)
+        task = runtime.store.create_task(session_id="sess_1", task_type="chat", goal="think", plan=[])
+        config = {
+            "provider": {
+                "mode": "openai-compatible",
+                "apiFormat": "openai-responses",
+                "streamingEnabled": True,
+                "model": "fake-stream",
+            }
+        }
+
+        response = runtime.orchestrator._request_provider_response(
+            session_id="sess_1",
+            task={**task, "role": "root", "activeAssistantMessageId": "msg_1"},
+            goal="think then answer",
+            provider_context={
+                "config": config,
+                "messages": [{"role": "user", "content": "think then answer"}],
+                "openai_tools": [],
+                "step": 1,
+            },
+        )
+
+        thinking_events = [event for event in runtime.events if event["type"] == "thinking"]
+        assert [event["payload"]["text"] for event in thinking_events] == ["Checking ", "files."]
+        assert all(event["payload"]["source"] == "reasoning_summary" for event in thinking_events)
+        assert response["final_answer"] == "Done"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

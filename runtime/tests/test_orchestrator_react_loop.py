@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import pytest
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,11 +13,13 @@ from local_agent_runtime.orchestrator.service import Orchestrator
 from local_agent_runtime.planner.service import Planner
 from local_agent_runtime.provider.adapter import ProviderAdapter
 from local_agent_runtime.policy.guard import PolicyGuard
+from local_agent_runtime.policy.permission_engine import PermissionEngine
 from local_agent_runtime.router.meta_router import MetaRouter
 from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools import build_builtin_tools
+from local_agent_runtime.tools.notebook import build_notebook_tool
 from local_agent_runtime.tools.registry import ToolRegistry
 
 
@@ -30,6 +33,31 @@ class ScriptedProvider:
         if not self._responses:
             raise AssertionError("Provider called more times than scripted")
         return self._responses.pop(0)
+
+
+class MinimalSearchProvider:
+    def choose_tool_sequence(self, goal: str, context: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "search_files",
+                "arguments": {
+                    "workspaceRoot": context["workspace_root"],
+                    "query": "needle",
+                    "mode": "content",
+                },
+                "plan_step_id": "search-relevant-files",
+            }
+        ]
+
+    def pick_follow_up_tool(self, context: dict[str, Any], tool_results: list[dict[str, Any]]) -> dict[str, Any] | None:
+        return {
+            "name": "read_file",
+            "arguments": {"workspaceRoot": context["workspace_root"], "path": "alpha.txt"},
+            "plan_step_id": "search-relevant-files",
+        }
+
+    def summarize_findings(self, goal: str, context: dict[str, Any], tool_results: list[dict[str, Any]]) -> str:
+        return "Done."
 
 
 def _call_result(response: dict[str, Any], key: str) -> dict[str, Any]:
@@ -56,7 +84,7 @@ def _make_runtime_at_path(database_path: Any, provider: Any, tools: dict[str, An
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
     events: list[dict[str, Any]] = []
     event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
-    return SimpleNamespace(server=server, store=store, events=events)
+    return SimpleNamespace(server=server, store=store, orchestrator=orchestrator, events=events)
 
 
 def _make_builtin_runtime(tmp_path: Any, provider: Any) -> SimpleNamespace:
@@ -80,7 +108,7 @@ def _make_builtin_runtime(tmp_path: Any, provider: Any) -> SimpleNamespace:
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
     events: list[dict[str, Any]] = []
     event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
-    return SimpleNamespace(server=server, store=store, events=events)
+    return SimpleNamespace(server=server, store=store, orchestrator=orchestrator, events=events)
 
 
 def _rpc(runtime: SimpleNamespace, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -141,10 +169,991 @@ def test_react_loop_accepts_simple_final_answer(tmp_path: Any) -> None:
         "task",
     )
 
-    assert task["status"] == "completed"
+    assert task["status"] == "waiting_approval"
     assert task["resultSummary"] == "The provider answered directly."
-    assert [event["type"] for event in runtime.events if event["type"] == "message.completed"]
+    completed_events = [event for event in runtime.events if event["type"] == "message.completed"]
+    assert completed_events
+    compat_completed_events = [event for event in runtime.events if event["type"] == "message_complete"]
+    assert compat_completed_events
+    assert compat_completed_events[-1]["payload"]["messageId"] == completed_events[-1]["payload"]["messageId"]
+    assert compat_completed_events[-1]["payload"]["content"] == "The provider answered directly."
+    goal_events = [event for event in runtime.events if event["type"] == "goal_event"]
+    assert [event["payload"]["action"] for event in goal_events] == ["started", "completed"]
+    assert goal_events[-1]["payload"]["summary"] == "The provider answered directly."
     assert not [event for event in runtime.events if event["type"] == "tool.started"]
+
+
+def test_computer_use_approval_emits_dedicated_permission_events(tmp_path: Any) -> None:
+    provider = ScriptedProvider([{"final": "Permission test task."}])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {
+                "sessionId": session["id"],
+                "content": "Need desktop permission",
+            },
+        ),
+        "task",
+    )
+    approval = runtime.store.create_approval(
+        task["id"],
+        "computer_use",
+        {
+            "app": "VS Code",
+            "action": "click",
+            "selector": "Run button",
+            "x": 320,
+            "y": 180,
+            "permission": "Click the VS Code run button.",
+            "details": "Click the visible run button.",
+        },
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="approval.requested",
+        payload={
+            "approvalId": approval["id"],
+            "taskId": task["id"],
+            "kind": "computer_use",
+            "request": json.loads(approval["requestJson"]),
+        },
+    )
+    runtime.orchestrator.submit_approval({
+        "approvalId": approval["id"],
+        "decision": "approved",
+    })
+
+    request_events = [event for event in runtime.events if event["type"] == "computer_use_permission_request"]
+    resolved_events = [event for event in runtime.events if event["type"] == "computer_use_permission"]
+    assert request_events
+    assert request_events[-1]["payload"]["approvalId"] == approval["id"]
+    assert request_events[-1]["payload"]["app"] == "VS Code"
+    assert request_events[-1]["payload"]["action"] == "click"
+    assert request_events[-1]["payload"]["selector"] == "Run button"
+    assert request_events[-1]["payload"]["x"] == 320
+    assert request_events[-1]["payload"]["y"] == 180
+    assert request_events[-1]["payload"]["previewRows"] == [
+        {"label": "应用", "value": "VS Code"},
+        {"label": "动作", "value": "click"},
+        {"label": "目标", "value": "Run button"},
+        {"label": "坐标", "value": "320, 180"},
+        {"label": "权限", "value": "Click the VS Code run button."},
+    ]
+    assert resolved_events
+    assert resolved_events[-1]["payload"]["approvalId"] == approval["id"]
+    assert resolved_events[-1]["payload"]["decision"] == "approved"
+    assert resolved_events[-1]["payload"]["resolved"] is True
+
+
+def test_task_updated_bridges_plan_update_once(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Ship a focused patch",
+        plan=[
+            {"id": "inspect", "title": "Inspect files", "status": "active"},
+            {"id": "edit", "title": "Edit implementation", "status": "pending"},
+        ],
+        current_step="Inspect files",
+    )
+    payload = {
+        "status": "running",
+        "currentStep": "Inspect files",
+        "plan": task["plan"],
+    }
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="task.updated",
+        payload=payload,
+    )
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="task.updated",
+        payload=payload,
+    )
+
+    plan_events = [event for event in runtime.events if event["type"] == "plan_update"]
+    assert len(plan_events) == 1
+    assert plan_events[0]["visibility"] == "chat"
+    assert plan_events[0]["payload"]["_chatCompat"] is True
+    assert plan_events[0]["payload"]["currentStep"] == "Inspect files"
+    assert plan_events[0]["payload"]["activeStep"] == "Inspect files"
+    assert plan_events[0]["payload"]["stepCount"] == 2
+
+
+def test_tool_completed_bridge_preserves_structured_summaries(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Read one file",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.completed",
+        payload={
+            "toolCallId": "call_read",
+            "toolName": "read_file",
+            "target": "src/app.ts",
+            "inputSummary": "read src/app.ts",
+            "resultSummary": "read src/app.ts (17 chars)",
+            "resultPreview": [{"label": "文件", "value": "src/app.ts"}],
+            "result": {"content": "const app = true;"},
+        },
+    )
+
+    delta_events = [
+        event for event in runtime.events
+        if event["type"] == "content_delta" and event["payload"].get("toolUseId") == "call_read"
+    ]
+    assert delta_events
+    assert delta_events[-1]["payload"]["toolOutput"] == "文件: src/app.ts\n"
+    assert delta_events[-1]["payload"]["outputStream"] == "result_preview"
+    result_events = [event for event in runtime.events if event["type"] == "tool_result"]
+    assert result_events
+    assert result_events[-1]["payload"]["toolUseId"] == "call_read"
+    assert result_events[-1]["payload"]["target"] == "src/app.ts"
+    assert result_events[-1]["payload"]["inputSummary"] == "read src/app.ts"
+    assert result_events[-1]["payload"]["resultSummary"] == "read src/app.ts (17 chars)"
+    assert result_events[-1]["payload"]["resultPreview"] == [{"label": "文件", "value": "src/app.ts"}]
+
+
+def test_tool_completed_bridge_streams_structured_activity_before_result_preview(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Run a custom tool",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.completed",
+        payload={
+            "toolCallId": "call_custom",
+            "toolName": "mcp__docs__lookup",
+            "target": "install guide",
+            "inputSummary": "lookup install guide",
+            "resultSummary": "found 2 docs",
+            "resultPreview": [{"label": "摘要", "value": "found 2 docs"}],
+            "result": {
+                "status": "completed",
+                "steps": [
+                    {"label": "connect", "status": "completed", "summary": "opened docs index"},
+                    {"label": "search", "status": "completed", "summary": "matched install guide"},
+                ],
+            },
+        },
+    )
+
+    deltas = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta" and event["payload"].get("toolUseId") == "call_custom"
+    ]
+    assert [delta["outputStream"] for delta in deltas] == ["activity", "activity", "result_preview"]
+    assert deltas[0]["toolOutput"] == "connect (completed): opened docs index\n"
+    assert deltas[1]["toolOutput"] == "search (completed): matched install guide\n"
+    assert deltas[2]["toolOutput"] == "摘要: found 2 docs\n"
+
+
+def test_assistant_token_bridge_emits_single_text_start(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Explain the change",
+        plan=[],
+    )
+    task["activeAssistantMessageId"] = "msg_assistant_1"
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="assistant.token",
+        payload={"delta": "First sentence.", "step": 1},
+    )
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="assistant.token",
+        payload={"delta": " Second sentence.", "step": 1},
+    )
+
+    starts = [
+        event for event in runtime.events
+        if event["type"] == "content_start" and event["payload"].get("blockType") == "text"
+    ]
+    deltas = [event for event in runtime.events if event["type"] == "content_delta"]
+    assert len(starts) == 1
+    assert starts[0]["payload"]["messageId"] == "msg_assistant_1"
+    assert [event["payload"]["text"] for event in deltas] == ["First sentence.", " Second sentence."]
+
+
+def test_provider_turn_publishes_assistant_progress(tmp_path: Any) -> None:
+    provider = ScriptedProvider([{"final": "The provider answered directly."}])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "answer directly"},
+        ),
+        "task",
+    )
+
+    progress_events = [event for event in runtime.events if event["type"] == "assistant_progress"]
+    assert task["status"] == "waiting_approval"
+    assert [event["payload"]["phase"] for event in progress_events] == ["context_prepare", "provider_request"]
+    assert all(event["visibility"] == "chat" for event in progress_events)
+    assert all(event["payload"]["_chatCompat"] is True for event in progress_events)
+    assert progress_events[0]["payload"]["text"] == "正在整理上下文"
+    assert progress_events[-1]["payload"]["text"].startswith("正在请求模型")
+    assert progress_events[-1]["payload"]["summary"] == "正在请求模型"
+
+
+def test_react_turn_bridges_explicit_thought_summary_to_thinking(tmp_path: Any) -> None:
+    provider = ScriptedProvider([
+        {
+            "thought_summary": "先确认相关文件，再读取目标实现。",
+            "message": "我先搜索相关文件。",
+            "tool_calls": [
+                {
+                    "id": "call_search",
+                    "name": "search_files",
+                    "arguments": {"query": "needle"},
+                }
+            ],
+        },
+        {"final": "Done."},
+    ])
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "search_files": lambda params: {
+                "query": params["query"],
+                "matches": [],
+                "total": 0,
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "find needle"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "waiting_approval"
+    thinking_events = [event for event in runtime.events if event["type"] == "thinking"]
+    assert thinking_events
+    assert thinking_events[0]["payload"]["text"] == "先确认相关文件，再读取目标实现。"
+    assert thinking_events[0]["payload"]["source"] == "thought_summary"
+    assert thinking_events[0]["payload"]["messageId"]
+    assert thinking_events[0]["visibility"] == "chat"
+
+
+def test_child_provider_turn_does_not_publish_chat_progress(tmp_path: Any) -> None:
+    provider = ScriptedProvider([{"final": "child answer"}])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Child task",
+        plan=[],
+        role="worker",
+    )
+
+    runtime.orchestrator._request_provider_response(
+        session_id=session["id"],
+        task=task,
+        goal="Child task",
+        provider_context={
+            "messages": [],
+            "tools": [],
+            "config": runtime.store.get_config({})["config"],
+            "step": 1,
+        },
+    )
+
+    assert not [event for event in runtime.events if event["type"] == "assistant_progress"]
+
+
+def test_high_value_tool_started_bridges_progress(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Run tests",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.started",
+        payload={
+            "toolCallId": "call_command",
+            "toolName": "run_command",
+            "arguments": {"command": "npm test"},
+            "target": "npm test",
+            "inputSummary": "npm test",
+        },
+    )
+
+    progress_events = [
+        event for event in runtime.events
+        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_execution"
+    ]
+    assert progress_events
+    assert progress_events[-1]["payload"]["text"] == "准备运行命令：npm test"
+    assert progress_events[-1]["payload"]["toolName"] == "run_command"
+    assert progress_events[-1]["payload"]["toolUseId"] == "call_command"
+
+
+def test_tool_started_bridges_semantic_phase_progress_once(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Inspect workspace",
+        plan=[],
+    )
+
+    for tool_call_id, phase_id, phase_label in [
+        ("call_search", "group:tgrp_1:phase:search", "搜索"),
+        ("call_search_more", "group:tgrp_1:phase:search", "搜索"),
+        ("call_read", "group:tgrp_1:phase:context_read", "读取上下文"),
+    ]:
+        runtime.orchestrator._publish(
+            session_id=session["id"],
+            task=task,
+            event_type="tool.started",
+            payload={
+                "toolCallId": tool_call_id,
+                "toolName": "read_file" if "read" in tool_call_id else "search_files",
+                "arguments": {"path": "src/app.ts"},
+                "toolSemanticParentId": phase_id,
+                "toolSemanticParentLabel": phase_label,
+                "toolPhaseLabel": phase_label,
+                "toolGroupId": "tgrp_1",
+            },
+        )
+
+    phase_events = [
+        event for event in runtime.events
+        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_phase"
+    ]
+    assert [event["payload"]["text"] for event in phase_events] == ["进入搜索阶段", "进入读取上下文阶段"]
+    assert [event["payload"]["toolSemanticParentId"] for event in phase_events] == [
+        "group:tgrp_1:phase:search",
+        "group:tgrp_1:phase:context_read",
+    ]
+    assert all(event["payload"]["_chatCompat"] is True for event in phase_events)
+
+
+def test_probe_tool_started_bridges_activity_output_delta(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Search files",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.started",
+        payload={
+            "toolCallId": "call_search",
+            "toolName": "search_files",
+            "arguments": {"query": "needle"},
+            "target": "needle",
+            "inputSummary": "search needle",
+            "toolCategory": "search",
+            "toolPhaseId": "search",
+            "toolPhaseLabel": "搜索",
+            "toolSemanticParentId": "group:tgrp_1:phase:search",
+            "toolSemanticParentLabel": "搜索",
+            "toolGroupId": "tgrp_1",
+            "toolIndex": 0,
+            "toolTotal": 2,
+        },
+    )
+
+    delta_events = [
+        event for event in runtime.events
+        if event["type"] == "content_delta" and event["payload"].get("toolUseId") == "call_search"
+    ]
+    assert delta_events
+    assert delta_events[-1]["payload"]["toolOutput"] == "正在搜索文件：search needle\n"
+    assert delta_events[-1]["payload"]["outputStream"] == "activity"
+    assert delta_events[-1]["payload"]["toolCategory"] == "search"
+    assert delta_events[-1]["payload"]["toolSemanticParentId"] == "group:tgrp_1:phase:search"
+    assert delta_events[-1]["payload"]["toolGroupId"] == "tgrp_1"
+    assert delta_events[-1]["payload"]["toolIndex"] == 0
+    assert delta_events[-1]["payload"]["toolTotal"] == 2
+
+
+def test_low_value_tool_started_stays_quiet(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Read a file",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.started",
+        payload={
+            "toolCallId": "call_read",
+            "toolName": "read_file",
+            "arguments": {"path": "src/app.ts"},
+            "target": "src/app.ts",
+            "inputSummary": "read src/app.ts",
+        },
+    )
+
+    assert not [
+        event for event in runtime.events
+        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_execution"
+    ]
+
+
+def test_high_value_tool_completed_bridges_progress(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Run tests",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.completed",
+        payload={
+            "toolCallId": "call_command",
+            "toolName": "run_command",
+            "target": "npm test",
+            "inputSummary": "npm test",
+            "resultSummary": "exit 0: 12 passed",
+            "result": {"status": "completed", "stdout": "12 passed"},
+        },
+    )
+
+    progress_events = [
+        event for event in runtime.events
+        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_completed"
+    ]
+    assert progress_events
+    assert progress_events[-1]["payload"]["text"] == "命令已完成：exit 0: 12 passed"
+    assert progress_events[-1]["payload"]["status"] == "completed"
+    assert progress_events[-1]["payload"]["toolName"] == "run_command"
+    assert progress_events[-1]["payload"]["toolUseId"] == "call_command"
+    assert progress_events[-1]["payload"]["resultSummary"] == "exit 0: 12 passed"
+
+
+def test_background_run_command_completed_payload_bridges_running_progress(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Start server",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.completed",
+        payload={
+            "toolCallId": "call_command",
+            "toolName": "run_command",
+            "target": "npm run dev",
+            "inputSummary": "npm run dev",
+            "resultSummary": "running",
+            "result": {"status": "running", "background": True},
+        },
+    )
+
+    progress_events = [
+        event for event in runtime.events
+        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_running"
+    ]
+    assert progress_events
+    assert progress_events[-1]["payload"]["text"] == "命令已在后台运行：npm run dev"
+    assert progress_events[-1]["payload"]["status"] == "running"
+
+
+def test_low_value_tool_completed_stays_quiet(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Read a file",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.completed",
+        payload={
+            "toolCallId": "call_read",
+            "toolName": "read_file",
+            "target": "src/app.ts",
+            "inputSummary": "read src/app.ts",
+            "resultSummary": "read src/app.ts (17 chars)",
+            "result": {"content": "const app = true;"},
+        },
+    )
+
+    assert not [
+        event for event in runtime.events
+        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_completed"
+    ]
+
+
+def test_failed_tool_bridges_progress_even_for_low_value_tool(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Read a missing file",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.failed",
+        payload={
+            "toolCallId": "call_read",
+            "toolName": "read_file",
+            "target": "missing.ts",
+            "inputSummary": "read missing.ts",
+            "resultSummary": "missing.ts does not exist",
+            "result": {"status": "failed", "error": "missing.ts does not exist"},
+        },
+    )
+
+    progress_events = [
+        event for event in runtime.events
+        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_failed"
+    ]
+    assert progress_events
+    assert progress_events[-1]["payload"]["text"] == "读取文件失败：missing.ts does not exist"
+    assert progress_events[-1]["payload"]["status"] == "failed"
+    assert progress_events[-1]["payload"]["isError"] is True
+    assert progress_events[-1]["payload"]["toolName"] == "read_file"
+    assert progress_events[-1]["payload"]["toolUseId"] == "call_read"
+
+
+def test_command_output_bridges_tool_output_delta(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Run tests",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="command.output",
+        payload={
+            "commandId": "cmd_1",
+            "toolUseId": "call_command",
+            "toolName": "run_command",
+            "stream": "stdout",
+            "chunk": "3 passed\n",
+        },
+    )
+
+    delta_events = [
+        event for event in runtime.events
+        if event["type"] == "content_delta" and event["payload"].get("toolOutput")
+    ]
+    assert delta_events
+    assert delta_events[-1]["payload"]["toolUseId"] == "call_command"
+    assert delta_events[-1]["payload"]["toolName"] == "run_command"
+    assert delta_events[-1]["payload"]["toolOutput"] == "3 passed\n"
+    assert delta_events[-1]["payload"]["outputStream"] == "stdout"
+
+
+def test_foreground_run_command_streams_output_before_completion(tmp_path: Any) -> None:
+    runtime = _make_builtin_runtime(tmp_path, ScriptedProvider([]))
+    runtime.store.update_config({"config": {"policy": {"approvalMode": "none"}}})
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Run a command",
+        plan=[],
+    )
+
+    result = runtime.orchestrator._execute_tool(
+        session_id=session["id"],
+        task=task,
+        tool_spec={
+            "id": "call_command",
+            "name": "run_command",
+            "arguments": {
+                "workspaceRoot": str(tmp_path / "workspace"),
+                "command": "Write-Output streamed-output",
+                "cwd": ".",
+                "shell": "powershell",
+                "timeoutMs": 10_000,
+            },
+        },
+    )
+
+    assert result["result"]["status"] == "completed"
+    command_started_index = next(
+        index for index, event in enumerate(runtime.events)
+        if event["type"] == "command.started" and event["payload"].get("toolUseId") == "call_command"
+    )
+    command_output_index = next(
+        index for index, event in enumerate(runtime.events)
+        if event["type"] == "command.output" and event["payload"].get("toolUseId") == "call_command"
+    )
+    command_completed_index = next(
+        index for index, event in enumerate(runtime.events)
+        if event["type"] == "command.completed" and event["payload"].get("toolUseId") == "call_command"
+    )
+    tool_completed_index = next(
+        index for index, event in enumerate(runtime.events)
+        if event["type"] == "tool.completed" and event["payload"].get("toolCallId") == "call_command"
+    )
+    command_started = runtime.events[command_started_index]
+    output_event = runtime.events[command_output_index]
+    command_completed = runtime.events[command_completed_index]
+    assert command_started_index < command_output_index < command_completed_index < tool_completed_index
+    assert command_started["payload"]["commandId"].startswith("cmd_")
+    assert command_started["payload"]["status"] == "running"
+    assert command_started["payload"]["background"] is False
+    assert output_event["payload"]["commandId"].startswith("cmd_")
+    assert output_event["payload"]["stream"] == "stdout"
+    assert output_event["payload"]["chunk"] == "streamed-output\n"
+    assert command_completed["payload"]["commandId"] == output_event["payload"]["commandId"]
+    assert command_completed["payload"]["status"] == "completed"
+    assert command_completed["payload"]["exitCode"] == 0
+    assert command_completed["payload"]["background"] is False
+    delta_events = [
+        event for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_command"
+        and event["payload"].get("outputStream") == "stdout"
+        and event["payload"].get("toolOutput")
+    ]
+    assert delta_events
+    assert delta_events[-1]["payload"]["toolOutput"] == "streamed-output\n"
+    trace_events = runtime.store.list_trace_events({"taskId": task["id"], "limit": 100})["traceEvents"]
+    trace_started = next(event for event in trace_events if event["type"] == "command.started")
+    trace_completed = next(event for event in trace_events if event["type"] == "command.completed")
+    assert trace_started["payload"]["toolUseId"] == "call_command"
+    assert trace_started["payload"]["toolName"] == "run_command"
+    assert trace_started["payload"]["target"] == "Write-Output streamed-output"
+    assert trace_started["payload"]["inputSummary"] == "Write-Output streamed-output"
+    assert trace_completed["payload"]["toolUseId"] == "call_command"
+    assert trace_completed["payload"]["target"] == "Write-Output streamed-output"
+
+
+def test_tool_progress_bridges_realtime_activity_output_delta(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Fetch docs",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.progress",
+        payload={
+            "toolUseId": "call_fetch",
+            "toolName": "web_fetch",
+            "message": "connected to example.com\n",
+            "toolCategory": "web",
+            "toolPhaseId": "web_fetch",
+            "toolPhaseLabel": "网页读取",
+            "toolSemanticParentId": "group:tgrp_1:phase:web_fetch",
+            "toolSemanticParentLabel": "网页读取",
+            "toolGroupId": "tgrp_1",
+            "toolIndex": 0,
+            "toolTotal": 1,
+        },
+    )
+
+    delta_events = [
+        event for event in runtime.events
+        if event["type"] == "content_delta" and event["payload"].get("toolUseId") == "call_fetch"
+    ]
+    assert delta_events
+    assert delta_events[-1]["payload"]["toolOutput"] == "connected to example.com\n"
+    assert delta_events[-1]["payload"]["outputStream"] == "activity"
+    assert delta_events[-1]["payload"]["toolCategory"] == "web"
+    assert delta_events[-1]["payload"]["toolSemanticParentId"] == "group:tgrp_1:phase:web_fetch"
+    assert delta_events[-1]["payload"]["toolGroupId"] == "tgrp_1"
+    assert delta_events[-1]["payload"]["toolIndex"] == 0
+    assert delta_events[-1]["payload"]["toolTotal"] == 1
+
+
+def test_tool_output_bridges_realtime_result_preview_delta(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Fetch docs",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.output",
+        payload={
+            "toolCallId": "call_fetch",
+            "toolName": "web_fetch",
+            "chunk": "状态: HTTP 200\n",
+            "parentToolUseId": "call_parent",
+            "toolCategory": "web",
+        },
+    )
+
+    delta_events = [
+        event for event in runtime.events
+        if event["type"] == "content_delta" and event["payload"].get("toolUseId") == "call_fetch"
+    ]
+    assert delta_events
+    assert delta_events[-1]["payload"]["toolOutput"] == "状态: HTTP 200\n"
+    assert delta_events[-1]["payload"]["outputStream"] == "result_preview"
+    assert delta_events[-1]["payload"]["parentToolUseId"] == "call_parent"
+    assert delta_events[-1]["payload"]["toolCategory"] == "web"
+
+
+def test_react_loop_computer_use_tool_requests_permission_and_resumes(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_computer",
+                        "name": "computer_use",
+                        "arguments": {
+                            "action": "inspect",
+                            "target": "VS Code",
+                            "permission": "Read the current VS Code window",
+                            "details": "Inspect visible editor state before continuing.",
+                        },
+                    }
+                ]
+            },
+            {"final": "Computer Use permission path completed."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "inspect the app"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "waiting_approval"
+    approval_events = [
+        event for event in runtime.events
+        if event["type"] == "approval.requested" and event["payload"].get("kind") == "computer_use"
+    ]
+    assert approval_events
+    approval_id = approval_events[-1]["payload"]["approvalId"]
+    permission_events = [event for event in runtime.events if event["type"] == "computer_use_permission_request"]
+    assert permission_events
+    assert permission_events[-1]["payload"]["approvalId"] == approval_id
+    assert permission_events[-1]["payload"]["app"] == "VS Code"
+
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    assert final_task["status"] == "completed"
+    assert final_task["resultSummary"] == "Computer Use permission path completed."
+    resolved_events = [event for event in runtime.events if event["type"] == "computer_use_permission"]
+    assert resolved_events
+    assert resolved_events[-1]["payload"]["approvalId"] == approval_id
+    assert resolved_events[-1]["payload"]["decision"] == "approved"
+    assert provider.calls[1]["context"]["tool_results"][0]["name"] == "computer_use"
+    assert provider.calls[1]["context"]["tool_results"][0]["result"]["status"] == "completed"
+    assert provider.calls[1]["context"]["tool_results"][0]["result"]["action"] == "inspect"
+    assert "environment" in provider.calls[1]["context"]["tool_results"][0]["result"]
+    assert provider.calls[1]["context"]["tool_results"][0]["toolOperationId"] == "computer_use:vs code:inspect"
+    assert provider.calls[1]["context"]["tool_results"][0]["resultPreview"] == [
+        {"label": "状态", "value": "completed"},
+        {"label": "动作", "value": "inspect"},
+        {"label": "目标", "value": "VS Code"},
+        {"label": "摘要", "value": "Computer Use permission approved for Read the current VS Code window."},
+    ]
+    assert provider.calls[1]["context"]["tool_results"][0]["resultSummary"] == "Computer Use permission approved for Read the current VS Code window."
+    computer_progress = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolName") == "computer_use"
+    ]
+    assert len(computer_progress) >= 3
+    assert computer_progress[0]["toolCategory"] == "computer_use"
+    assert computer_progress[0]["toolOperationId"] == "computer_use:vs code:inspect"
+    assert "VS Code" in computer_progress[0]["message"]
+    assert any("permission" in payload.get("message", "") for payload in computer_progress)
+    assert any("environment" in payload.get("message", "") for payload in computer_progress)
+    computer_activity = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolName") == "computer_use"
+        and event["payload"].get("outputStream") == "activity"
+        and event["payload"].get("toolOutput") == computer_progress[0]["message"]
+    ]
+    assert computer_activity
+    assert computer_activity[0]["toolCategory"] == "computer_use"
+    computer_output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "computer_use"
+    )
+    assert computer_output["toolUseId"] == "call_computer"
+    assert computer_output["toolCategory"] == "computer_use"
+    assert computer_output["toolOperationId"] == "computer_use:vs code:inspect"
+    assert computer_output["outputStream"] == "result_preview"
+    assert "状态: completed" in computer_output["chunk"]
+    assert "动作: inspect" in computer_output["chunk"]
+    assert "目标: VS Code" in computer_output["chunk"]
+    computer_preview_deltas = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_computer"
+        and event["payload"].get("outputStream") == "result_preview"
+    ]
+    assert len(computer_preview_deltas) == 1
+    assert computer_preview_deltas[0]["toolOutput"] == computer_output["chunk"]
+    assert computer_preview_deltas[0]["toolCategory"] == "computer_use"
+
+
+def test_react_loop_computer_use_blocked_preview_includes_action_and_recovery(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_computer_blocked",
+                        "name": "computer_use",
+                        "arguments": {
+                            "action": "click",
+                            "target": "VS Code",
+                            "selector": "Run button",
+                            "url": "http://localhost:5173",
+                            "pageId": "page_1",
+                            "permission": "Click the visible run button",
+                        },
+                    }
+                ]
+            },
+            {"final": "Computer Use blocked path recorded."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "click the app"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "waiting_approval"
+    approval_id = next(
+        event["payload"]["approvalId"]
+        for event in runtime.events
+        if event["type"] == "approval.requested" and event["payload"].get("kind") == "computer_use"
+    )
+
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    assert final_task["status"] == "completed"
+    blocked = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.blocked" and event["payload"].get("toolCallId") == "call_computer_blocked"
+    )
+    assert blocked["resultSummary"].startswith("blocked click VS Code: selector_executor_required")
+    assert blocked["resultPreview"][:5] == [
+        {"label": "状态", "value": "blocked"},
+        {"label": "动作", "value": "click"},
+        {"label": "目标", "value": "VS Code"},
+        {"label": "选择器", "value": "Run button"},
+        {"label": "URL", "value": "http://localhost:5173"},
+    ]
+    assert blocked["resultPreview"][5:8] == [
+        {"label": "Page", "value": "page_1"},
+        {"label": "类型", "value": "selector_executor_required"},
+        {"label": "修复", "value": "Provide x/y coordinates from a screenshot, or enable a browser DOM/accessibility executor that supports click.selector for selector 'Run button'."},
+    ]
+    tool_result = provider.calls[1]["context"]["tool_results"][0]
+    assert tool_result["resultSummary"].startswith("blocked click VS Code: selector_executor_required")
+    assert tool_result["resultPreview"][1] == {"label": "动作", "value": "click"}
 
 
 def test_react_loop_continues_with_non_task_tools_after_child_result(tmp_path: Any) -> None:
@@ -221,6 +1230,61 @@ def test_react_loop_continues_with_non_task_tools_after_child_result(tmp_path: A
     assert "task" in second_policy["deniedToolNames"]
     assert "task" not in second_tool_names
     assert {"read_file", "apply_patch", "run_command"}.issubset(second_tool_names)
+    task_result = provider.calls[1]["context"]["tool_results"][0]
+    assert task_result["name"] == "task"
+    assert task_result["resultPreview"] == [
+        {"label": "状态", "value": "completed"},
+        {"label": "摘要", "value": "Child inspected inventory.py and found the target function."},
+        {"label": "子任务", "value": "task_child_1"},
+    ]
+    progress = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolName") == "task"
+    )
+    assert progress["toolUseId"] == "call_child"
+    assert progress["toolCategory"] == "subtask"
+    assert "Inspect inventory" in progress["message"]
+    activity = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_child"
+        and event["payload"].get("outputStream") == "activity"
+        and event["payload"].get("toolOutput") == progress["message"]
+    )
+    assert activity["toolCategory"] == "subtask"
+    task_activity_outputs = [
+        event["payload"]["toolOutput"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_child"
+        and event["payload"].get("outputStream") == "activity"
+    ]
+    assert "prepare (completed): Inspect inventory\n" in task_activity_outputs
+    assert "dispatch (completed): Child inspected inventory.py and found the target function.\n" in task_activity_outputs
+    assert "child_task (completed): task_child_1\n" in task_activity_outputs
+    task_output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "task"
+    )
+    assert task_output["toolUseId"] == "call_child"
+    assert task_output["toolCategory"] == "subtask"
+    assert task_output["outputStream"] == "result_preview"
+    assert "状态: completed" in task_output["chunk"]
+    assert "摘要: Child inspected inventory.py and found the target function." in task_output["chunk"]
+    assert "子任务: task_child_1" in task_output["chunk"]
+    task_preview_deltas = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_child"
+        and event["payload"].get("outputStream") == "result_preview"
+    ]
+    assert len(task_preview_deltas) == 1
+    assert task_preview_deltas[0]["toolOutput"] == task_output["chunk"]
+    assert task_preview_deltas[0]["toolCategory"] == "subtask"
 
 
 def test_react_loop_keeps_apply_patch_active_until_it_runs(tmp_path: Any) -> None:
@@ -828,10 +1892,2837 @@ def test_react_loop_executes_tool_call_and_returns_result_to_provider(tmp_path: 
     assert [event["payload"]["toolName"] for event in runtime.events if event["type"] == "tool.started"] == [
         "search_files"
     ]
+    first_text_delta_index = next(
+        index
+        for index, event in enumerate(runtime.events)
+        if event["type"] == "content_delta" and event["payload"].get("text") == "Searching the workspace."
+    )
+    first_tool_block_index = next(
+        index
+        for index, event in enumerate(runtime.events)
+        if event["type"] == "content_start"
+        and event["payload"].get("blockType") == "tool_use"
+        and event["payload"].get("toolUseId") == "call_search"
+    )
+    tool_started_index = next(
+        index
+        for index, event in enumerate(runtime.events)
+        if event["type"] == "tool.started" and event["payload"].get("toolCallId") == "call_search"
+    )
+    assert first_text_delta_index < first_tool_block_index <= tool_started_index
     second_context = provider.calls[1]["context"]
     assert second_context["messages"][-1]["role"] == "tool"
     assert second_context["messages"][-1]["tool_call_id"] == "call_search"
     assert second_context["tool_results"][0]["result"]["matches"][0]["path"] == "alpha.txt"
+
+
+def test_react_loop_marks_provider_tool_batch_order(tmp_path: Any) -> None:
+    tool_calls = [
+        {
+            "id": "call_search",
+            "name": "search_files",
+            "arguments": {"query": "needle"},
+        },
+        {
+            "id": "call_read",
+            "name": "read_file",
+            "arguments": {"path": "alpha.txt"},
+        },
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Checking the workspace.", "tool_calls": tool_calls},
+            {"final_answer": "Found needle in alpha.txt."},
+        ]
+    )
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "search_files": lambda params: {"matches": [{"path": "alpha.txt", "preview": "needle"}], "total": 1},
+            "read_file": lambda params: {"path": params["path"], "content": "needle", "bytesRead": 6},
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "find needle"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = [event for event in runtime.events if event["type"] == "tool.started"]
+    assert [event["payload"]["toolCallId"] for event in started] == ["call_search", "call_read"]
+    group_ids = {event["payload"]["toolGroupId"] for event in started}
+    assert len(group_ids) == 1
+    assert [event["payload"]["toolIndex"] for event in started] == [0, 1]
+    assert [event["payload"]["toolTotal"] for event in started] == [2, 2]
+    assert [event["payload"]["toolCategory"] for event in started] == ["search", "context_read"]
+    assert [event["payload"]["toolPhaseId"] for event in started] == ["search", "context_read"]
+    assert [event["payload"]["toolPhaseLabel"] for event in started] == ["搜索", "读取上下文"]
+    assert started[0]["payload"].get("parentToolUseId") is None
+    assert started[1]["payload"]["parentToolUseId"] == "call_search"
+    tool_group_id = started[0]["payload"]["toolGroupId"]
+    assert [event["payload"]["toolSemanticParentId"] for event in started] == [
+        f"group:{tool_group_id}:phase:search",
+        f"group:{tool_group_id}:phase:context_read",
+    ]
+    assert [event["payload"]["toolSemanticParentLabel"] for event in started] == [
+        event["payload"]["toolPhaseLabel"] for event in started
+    ]
+
+    tool_use_blocks = [event for event in runtime.events if event["type"] == "tool_use_complete"]
+    assert [event["payload"]["toolGroupId"] for event in tool_use_blocks] == [started[0]["payload"]["toolGroupId"]] * 2
+    assert [event["payload"]["toolIndex"] for event in tool_use_blocks] == [0, 1]
+    assert tool_use_blocks[1]["payload"]["parentToolUseId"] == "call_search"
+    assert [event["payload"]["toolCategory"] for event in tool_use_blocks] == ["search", "context_read"]
+    assert [event["payload"]["toolPhaseLabel"] for event in tool_use_blocks] == ["搜索", "读取上下文"]
+    assert [event["payload"]["toolSemanticParentId"] for event in tool_use_blocks] == [
+        f"group:{tool_group_id}:phase:search",
+        f"group:{tool_group_id}:phase:context_read",
+    ]
+    assert [event["payload"]["toolSemanticParentLabel"] for event in tool_use_blocks] == [
+        event["payload"]["toolPhaseLabel"] for event in tool_use_blocks
+    ]
+
+    tool_results = provider.calls[1]["context"]["tool_results"]
+    assert [result["toolGroupId"] for result in tool_results] == [started[0]["payload"]["toolGroupId"]] * 2
+    assert [result["toolIndex"] for result in tool_results] == [0, 1]
+    assert [result["toolTotal"] for result in tool_results] == [2, 2]
+    assert tool_results[1]["parentToolUseId"] == "call_search"
+    assert [result["toolCategory"] for result in tool_results] == ["search", "context_read"]
+    assert [result["toolPhaseLabel"] for result in tool_results] == ["搜索", "读取上下文"]
+    assert [result["toolSemanticParentId"] for result in tool_results] == [
+        f"group:{tool_group_id}:phase:search",
+        f"group:{tool_group_id}:phase:context_read",
+    ]
+    assert [result["toolSemanticParentLabel"] for result in tool_results] == [
+        result["toolPhaseLabel"] for result in tool_results
+    ]
+    assert [result["target"] for result in tool_results] == ["content: needle", "alpha.txt"]
+    assert tool_results[0]["resultSummary"] == "found 1 match(es) for content: needle: alpha.txt"
+    assert tool_results[0]["resultPreview"] == [
+        {"label": "查询", "value": "content: needle"},
+        {"label": "命中", "value": "1 项"},
+        {"label": "样例", "value": "alpha.txt"},
+    ]
+    assert tool_results[1]["inputSummary"] == "read alpha.txt"
+    assert tool_results[1]["resultSummary"] == "read alpha.txt (6 bytes)"
+    assert tool_results[1]["resultPreview"] == [
+        {"label": "文件", "value": "alpha.txt"},
+        {"label": "大小", "value": "6 bytes"},
+        {"label": "行数", "value": "1 行"},
+    ]
+    read_output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "read_file"
+    )
+    assert read_output["parentToolUseId"] == "call_search"
+    assert read_output["toolCategory"] == "context_read"
+    assert read_output["outputStream"] == "result_preview"
+    assert "文件: alpha.txt" in read_output["chunk"]
+    assert "大小: 6 bytes" in read_output["chunk"]
+    assert "行数: 1 行" in read_output["chunk"]
+    read_output_delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolName") == "read_file"
+        and event["payload"].get("outputStream") == "result_preview"
+        and event["payload"].get("toolOutput") == read_output["chunk"]
+    )
+    assert read_output_delta["parentToolUseId"] == "call_search"
+    assert read_output_delta["toolCategory"] == "context_read"
+    read_preview_deltas = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolName") == "read_file"
+        and event["payload"].get("outputStream") == "result_preview"
+    ]
+    assert len(read_preview_deltas) == 1
+
+
+def test_minimal_loop_parents_follow_up_read_to_prior_search_result(tmp_path: Any) -> None:
+    provider = MinimalSearchProvider()
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "search_files": lambda _params: {
+                "query": "needle",
+                "matches": [{"path": "alpha.txt", "preview": "needle"}],
+                "total": 1,
+            },
+            "read_file": lambda params: {"path": params["path"], "content": "needle", "bytesRead": 6},
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="find needle",
+        plan=[
+            {"id": "search-relevant-files", "title": "Search", "status": "active"},
+            {"id": "summarize-findings", "title": "Summarize", "status": "pending"},
+        ],
+    )
+    context = {
+        "workspace_root": str(tmp_path / "workspace"),
+        "workspace_id": session["workspaceId"],
+        "workspace_name": "workspace",
+    }
+
+    tool_results = runtime.orchestrator._run_minimal_loop(  # noqa: SLF001
+        session_id=session["id"],
+        task=task,
+        goal="find needle",
+        context=context,
+    )
+
+    assert [result["name"] for result in tool_results] == ["search_files", "read_file"]
+    assert tool_results[1]["parentToolUseId"] == tool_results[0]["id"]
+    started_read = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolName") == "read_file"
+    )
+    completed_read = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "read_file"
+    )
+    tool_result = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolName") == "read_file"
+    )
+    assert started_read["payload"]["parentToolUseId"] == tool_results[0]["id"]
+    assert completed_read["payload"]["parentToolUseId"] == tool_results[0]["id"]
+    assert tool_result["payload"]["parentToolUseId"] == tool_results[0]["id"]
+
+
+def test_react_loop_parents_cross_turn_read_to_prior_search_result(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {"id": "call_search", "name": "search_files", "arguments": {"query": "needle"}},
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_read", "name": "read_file", "arguments": {"path": "alpha.txt"}},
+                ]
+            },
+            {"final": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "search_files": lambda _params: {
+                "query": "needle",
+                "matches": [{"path": "alpha.txt", "preview": "needle"}],
+                "total": 1,
+            },
+            "read_file": lambda params: {"path": params["path"], "content": "needle", "bytesRead": 6},
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "find needle then read it"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started_read = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolName") == "read_file"
+    )
+    completed_read = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "read_file"
+    )
+    assert started_read["payload"]["parentToolUseId"] == "call_search"
+    assert completed_read["payload"]["parentToolUseId"] == "call_search"
+    tool_results = provider.calls[2]["context"]["tool_results"]
+    assert tool_results[1]["parentToolUseId"] == "call_search"
+
+
+def test_react_loop_parents_cross_turn_verification_to_prior_file_change(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_write",
+                        "name": "write_file",
+                        "arguments": {"path": "alpha.txt", "content": "needle"},
+                    },
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_verify", "name": "run_command", "arguments": {"command": "pytest -q"}},
+                ]
+            },
+            {"final": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "write_file": lambda params: {
+                "status": "written",
+                "path": params["path"],
+                "bytesWritten": len(params["content"]),
+            },
+            "run_command": lambda _params: {
+                "status": "completed",
+                "exitCode": 0,
+                "stdout": "ok",
+                "commandLog": {"id": "cmd_1"},
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "write and verify"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started_verify = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolName") == "run_command"
+    )
+    completed_verify = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "run_command"
+    )
+    assert started_verify["payload"]["parentToolUseId"] == "call_write"
+    assert completed_verify["payload"]["parentToolUseId"] == "call_write"
+    tool_results = provider.calls[2]["context"]["tool_results"]
+    assert tool_results[1]["parentToolUseId"] == "call_write"
+
+
+def test_react_loop_parents_cross_turn_read_of_changed_file(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_write",
+                        "name": "write_file",
+                        "arguments": {"path": "alpha.txt", "content": "needle"},
+                    },
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_read", "name": "read_file", "arguments": {"path": "alpha.txt"}},
+                ]
+            },
+            {"final": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "write_file": lambda params: {
+                "status": "written",
+                "path": params["path"],
+                "bytesWritten": len(params["content"]),
+            },
+            "read_file": lambda params: {"path": params["path"], "content": "needle", "bytesRead": 6},
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "write and reread"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started_read = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolName") == "read_file"
+    )
+    completed_read = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "read_file"
+    )
+    tool_result = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolName") == "read_file"
+    )
+    assert started_read["payload"]["parentToolUseId"] == "call_write"
+    assert completed_read["payload"]["parentToolUseId"] == "call_write"
+    assert tool_result["payload"]["parentToolUseId"] == "call_write"
+    tool_results = provider.calls[2]["context"]["tool_results"]
+    assert tool_results[1]["parentToolUseId"] == "call_write"
+
+
+def test_react_loop_parents_cross_turn_read_to_apply_patch_text_path(tmp_path: Any) -> None:
+    patch_text = _patch_text("alpha.txt", "old", "needle")
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_patch",
+                        "name": "apply_patch",
+                        "arguments": {"patchText": patch_text},
+                    },
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_read", "name": "read_file", "arguments": {"path": "alpha.txt"}},
+                ]
+            },
+            {"final": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "apply_patch": lambda params: {
+                "status": "applied",
+                "summary": "Modified alpha.txt",
+                "filesChanged": 1,
+                "diffText": params["patchText"],
+            },
+            "read_file": lambda params: {"path": params["path"], "content": "needle", "bytesRead": 6},
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "patch and reread"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started_read = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolName") == "read_file"
+    )
+    completed_read = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "read_file"
+    )
+    tool_result = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolName") == "read_file"
+    )
+    assert started_read["parentToolUseId"] == "call_patch"
+    assert completed_read["parentToolUseId"] == "call_patch"
+    assert tool_result["parentToolUseId"] == "call_patch"
+    tool_results = provider.calls[2]["context"]["tool_results"]
+    assert tool_results[1]["parentToolUseId"] == "call_patch"
+
+
+def test_react_loop_parents_cross_turn_git_review_to_prior_file_change(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_write",
+                        "name": "write_file",
+                        "arguments": {"path": "alpha.txt", "content": "needle"},
+                    },
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_status", "name": "git_status", "arguments": {}},
+                ]
+            },
+            {"final": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "write_file": lambda params: {
+                "status": "written",
+                "path": params["path"],
+                "bytesWritten": len(params["content"]),
+            },
+            "git_status": lambda _params: {
+                "branch": "main",
+                "changes": [{"path": "alpha.txt", "status": "modified"}],
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "write and inspect git"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started_status = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolName") == "git_status"
+    )
+    completed_status = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "git_status"
+    )
+    assert started_status["payload"]["parentToolUseId"] == "call_write"
+    assert completed_status["payload"]["parentToolUseId"] == "call_write"
+    tool_results = provider.calls[2]["context"]["tool_results"]
+    assert tool_results[1]["parentToolUseId"] == "call_write"
+
+
+def test_react_loop_assigns_missing_tool_call_ids_before_inferring_batch_tree(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "message": "Checking the workspace.",
+                "tool_calls": [
+                    {"name": "search_files", "arguments": {"query": "needle"}},
+                    {"name": "read_file", "arguments": {"path": "alpha.txt"}},
+                ],
+            },
+            {"final_answer": "Found needle in alpha.txt."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "search_files": lambda params: {"matches": [{"path": "alpha.txt", "preview": "needle"}], "total": 1},
+            "read_file": lambda params: {"path": params["path"], "content": "needle", "bytesRead": 6},
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "find needle"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = [event["payload"] for event in runtime.events if event["type"] == "tool.started"]
+    assert len(started) == 2
+    assert all(payload["toolCallId"].startswith("tc_") for payload in started)
+    assert started[1]["parentToolUseId"] == started[0]["toolCallId"]
+
+    assistant_tool_calls = provider.calls[1]["context"]["messages"][-3]["tool_calls"]
+    assert assistant_tool_calls[0]["id"] == started[0]["toolCallId"]
+    assert assistant_tool_calls[1]["id"] == started[1]["toolCallId"]
+    assert assistant_tool_calls[1]["parentToolUseId"] == started[0]["toolCallId"]
+    tool_messages = provider.calls[1]["context"]["messages"][-2:]
+    assert [message["tool_call_id"] for message in tool_messages] == [
+        started[0]["toolCallId"],
+        started[1]["toolCallId"],
+    ]
+    tool_results = provider.calls[1]["context"]["tool_results"]
+    assert tool_results[1]["parentToolUseId"] == started[0]["toolCallId"]
+
+
+def test_react_loop_preserves_explicit_tool_parent_when_inferring_batch_tree(tmp_path: Any) -> None:
+    tool_calls = [
+        {"id": "call_search", "name": "search_files", "arguments": {"query": "needle"}},
+        {
+            "id": "call_read",
+            "name": "read_file",
+            "parentToolUseId": "call_existing",
+            "arguments": {"path": "alpha.txt"},
+        },
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Checking the workspace.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "search_files": lambda params: {"matches": [{"path": "alpha.txt", "preview": "needle"}], "total": 1},
+            "read_file": lambda params: {"path": params["path"], "content": "needle", "bytesRead": 6},
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "find needle"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    }
+    assert started["call_read"]["parentToolUseId"] == "call_existing"
+    tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert tool_results["call_read"]["parentToolUseId"] == "call_existing"
+
+
+def test_react_loop_infers_verification_parent_from_file_change_tool(tmp_path: Any) -> None:
+    tool_calls = [
+        {
+            "id": "call_write",
+            "name": "write_file",
+            "arguments": {"path": "alpha.txt", "content": "needle"},
+        },
+        {
+            "id": "call_verify",
+            "name": "run_command",
+            "arguments": {"command": "python -m pytest tests -q"},
+        },
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Updating and verifying.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "write_file": lambda params: {"path": params["path"], "bytesWritten": len(params["content"])},
+            "run_command": lambda params: {
+                "status": "completed",
+                "exitCode": 0,
+                "stdout": "1 passed\n",
+                "commandLog": {"id": "cmd_1", "cwd": ".", "shell": "powershell"},
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "update and verify"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    }
+    assert started["call_write"].get("parentToolUseId") is None
+    assert started["call_verify"]["parentToolUseId"] == "call_write"
+    assert started["call_verify"]["toolCategory"] == "verification"
+
+    tool_use_blocks = {
+        event["payload"]["toolUseId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_use_complete"
+    }
+    assert tool_use_blocks["call_verify"]["parentToolUseId"] == "call_write"
+
+    tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert tool_results["call_verify"]["parentToolUseId"] == "call_write"
+    assert tool_results["call_verify"]["toolCategory"] == "verification"
+
+
+def test_react_loop_does_not_parent_plain_commands_to_file_changes(tmp_path: Any) -> None:
+    tool_calls = [
+        {
+            "id": "call_write",
+            "name": "write_file",
+            "arguments": {"path": "alpha.txt", "content": "needle"},
+        },
+        {
+            "id": "call_echo",
+            "name": "run_command",
+            "arguments": {"command": "echo done"},
+        },
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Updating and reporting.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "write_file": lambda params: {"path": params["path"], "bytesWritten": len(params["content"])},
+            "run_command": lambda params: {
+                "status": "completed",
+                "exitCode": 0,
+                "stdout": "done\n",
+                "commandLog": {"id": "cmd_1", "cwd": ".", "shell": "powershell"},
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "update and report"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    }
+    assert started["call_echo"].get("parentToolUseId") is None
+    assert started["call_echo"]["toolCategory"] == "command"
+    tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert tool_results["call_echo"].get("parentToolUseId") is None
+    assert tool_results["call_echo"]["toolCategory"] == "command"
+
+
+def test_react_loop_infers_git_review_parent_from_file_change_tool(tmp_path: Any) -> None:
+    tool_calls = [
+        {
+            "id": "call_write",
+            "name": "write_file",
+            "arguments": {"path": "alpha.txt", "content": "needle"},
+        },
+        {
+            "id": "call_status",
+            "name": "git_status",
+            "arguments": {},
+        },
+        {
+            "id": "call_diff",
+            "name": "git_diff",
+            "arguments": {},
+        },
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Updating and reviewing.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "write_file": lambda params: {"path": params["path"], "bytesWritten": len(params["content"])},
+            "git_status": lambda _params: {
+                "branch": "main",
+                "changedFiles": [{"path": "alpha.txt", "status": "modified"}],
+            },
+            "git_diff": lambda _params: {
+                "scope": "worktree",
+                "files": ["alpha.txt"],
+                "diff": "diff --git a/alpha.txt b/alpha.txt",
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "update and review"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    }
+    assert started["call_status"]["parentToolUseId"] == "call_write"
+    assert started["call_diff"]["parentToolUseId"] == "call_write"
+    assert started["call_status"]["toolCategory"] == "git"
+    assert started["call_diff"]["toolCategory"] == "git"
+
+    tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert tool_results["call_status"]["parentToolUseId"] == "call_write"
+    assert tool_results["call_diff"]["parentToolUseId"] == "call_write"
+    assert tool_results["call_status"]["toolCategory"] == "git"
+    assert tool_results["call_diff"]["toolCategory"] == "git"
+
+
+def test_react_loop_parents_git_diff_to_same_batch_git_status(tmp_path: Any) -> None:
+    tool_calls = [
+        {
+            "id": "call_status",
+            "name": "git_status",
+            "arguments": {},
+        },
+        {
+            "id": "call_diff",
+            "name": "git_diff",
+            "arguments": {},
+        },
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Reviewing git state.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "git_status": lambda _params: {
+                "branch": "main",
+                "changes": [{"path": "alpha.txt", "status": "modified"}],
+            },
+            "git_diff": lambda _params: {
+                "scope": "worktree",
+                "files": ["alpha.txt"],
+                "diff": "diff --git a/alpha.txt b/alpha.txt",
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "inspect git"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    }
+    assert started["call_status"].get("parentToolUseId") is None
+    assert started["call_diff"]["parentToolUseId"] == "call_status"
+
+    tool_use_blocks = {
+        event["payload"]["toolUseId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_use_complete"
+    }
+    assert tool_use_blocks["call_diff"]["parentToolUseId"] == "call_status"
+
+    tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert tool_results["call_diff"]["parentToolUseId"] == "call_status"
+    diff_output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "git_diff"
+    )
+    assert diff_output["parentToolUseId"] == "call_status"
+
+
+def test_react_loop_parents_cross_turn_git_diff_to_prior_git_status(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {"id": "call_status", "name": "git_status", "arguments": {}},
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_diff", "name": "git_diff", "arguments": {}},
+                ]
+            },
+            {"final": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "git_status": lambda _params: {
+                "branch": "main",
+                "changes": [{"path": "alpha.txt", "status": "modified"}],
+            },
+            "git_diff": lambda _params: {
+                "scope": "worktree",
+                "files": ["alpha.txt"],
+                "diff": "diff --git a/alpha.txt b/alpha.txt",
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "inspect git then diff"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started_diff = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolName") == "git_diff"
+    )
+    completed_diff = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "git_diff"
+    )
+    tool_result = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolName") == "git_diff"
+    )
+    assert started_diff["payload"]["parentToolUseId"] == "call_status"
+    assert completed_diff["payload"]["parentToolUseId"] == "call_status"
+    assert tool_result["payload"]["parentToolUseId"] == "call_status"
+    tool_results = provider.calls[2]["context"]["tool_results"]
+    assert tool_results[1]["parentToolUseId"] == "call_status"
+
+
+def test_react_loop_preserves_explicit_verification_parent_when_inferring_batch_tree(tmp_path: Any) -> None:
+    tool_calls = [
+        {
+            "id": "call_write",
+            "name": "write_file",
+            "arguments": {"path": "alpha.txt", "content": "needle"},
+        },
+        {
+            "id": "call_verify",
+            "name": "run_command",
+            "parentToolUseId": "call_existing",
+            "arguments": {"command": "npm run typecheck"},
+        },
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Updating and verifying.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "write_file": lambda params: {"path": params["path"], "bytesWritten": len(params["content"])},
+            "run_command": lambda params: {
+                "status": "completed",
+                "exitCode": 0,
+                "stdout": "ok\n",
+                "commandLog": {"id": "cmd_1", "cwd": ".", "shell": "powershell"},
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "update and verify"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    }
+    assert started["call_verify"]["parentToolUseId"] == "call_existing"
+    tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert tool_results["call_verify"]["parentToolUseId"] == "call_existing"
+
+
+def test_react_loop_marks_run_command_verification_category(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "message": "Verifying.",
+                "tool_calls": [
+                    {
+                        "id": "call_verify",
+                        "name": "run_command",
+                        "arguments": {"command": "npm run typecheck"},
+                    }
+                ],
+            },
+            {"final_answer": "Typecheck passed."},
+        ]
+    )
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "run_command": lambda params: {
+                "status": "completed",
+                "exitCode": 0,
+                "stdout": "ok\n",
+                "commandLog": {"id": "cmd_1", "cwd": ".", "shell": "powershell"},
+                "shell": "powershell",
+                "cwd": ".",
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "run checks"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = next(event for event in runtime.events if event["type"] == "tool.started")
+    assert started["payload"]["toolCategory"] == "verification"
+    assert started["payload"]["toolPhaseId"] == "verification"
+    assert started["payload"]["toolPhaseLabel"] == "验证"
+    semantic_parent_id = started["payload"]["toolSemanticParentId"]
+    assert semantic_parent_id == f"group:{started['payload']['toolGroupId']}:phase:verification"
+    assert started["payload"]["toolSemanticParentLabel"] == started["payload"]["toolPhaseLabel"]
+    progress = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolUseId") == "call_verify"
+    )
+    assert progress["toolName"] == "run_command"
+    assert progress["toolCategory"] == "verification"
+    assert progress["target"] == "npm run typecheck"
+    assert progress["inputSummary"] == "npm run typecheck"
+    assert progress["outputStream"] == "activity"
+    assert "npm run typecheck" in progress["message"]
+    progress_delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_verify"
+        and event["payload"].get("outputStream") == "activity"
+        and event["payload"].get("toolOutput") == progress["message"]
+    )
+    assert progress_delta["toolName"] == "run_command"
+    assert progress_delta["toolCategory"] == "verification"
+    assert progress_delta["target"] == "npm run typecheck"
+    assert progress_delta["inputSummary"] == "npm run typecheck"
+    assert progress_delta["toolSemanticParentId"] == semantic_parent_id
+    output = next(event for event in runtime.events if event["type"] == "command.output")
+    assert output["payload"]["toolCategory"] == "verification"
+    assert output["payload"]["target"] == "npm run typecheck"
+    assert output["payload"]["inputSummary"] == "npm run typecheck"
+    assert output["payload"]["toolPhaseLabel"] == "验证"
+    assert output["payload"]["toolSemanticParentId"] == semantic_parent_id
+    assert output["payload"]["toolSemanticParentLabel"] == output["payload"]["toolPhaseLabel"]
+    tool_use = next(event for event in runtime.events if event["type"] == "tool_use_complete")
+    assert tool_use["payload"]["toolCategory"] == "verification"
+    assert tool_use["payload"]["toolPhaseLabel"] == "验证"
+    assert tool_use["payload"]["toolSemanticParentId"] == semantic_parent_id
+    assert tool_use["payload"]["toolSemanticParentLabel"] == tool_use["payload"]["toolPhaseLabel"]
+    tool_result = next(event for event in runtime.events if event["type"] == "tool_result")
+    assert tool_result["payload"]["toolCategory"] == "verification"
+    assert tool_result["payload"]["toolPhaseLabel"] == "验证"
+    assert tool_result["payload"]["toolSemanticParentId"] == semantic_parent_id
+    assert tool_result["payload"]["toolSemanticParentLabel"] == tool_result["payload"]["toolPhaseLabel"]
+    assert tool_result["payload"]["resultPreview"] == [
+        {"label": "命令", "value": "npm run typecheck"},
+        {"label": "状态", "value": "exit 0"},
+        {"label": "目录", "value": "."},
+        {"label": "Shell", "value": "powershell"},
+        {"label": "输出", "value": "ok"},
+    ]
+    provider_tool_results = provider.calls[1]["context"]["tool_results"]
+    assert provider_tool_results[0]["toolCategory"] == "verification"
+    assert provider_tool_results[0]["toolPhaseLabel"] == "验证"
+    assert provider_tool_results[0]["toolSemanticParentId"] == semantic_parent_id
+    assert provider_tool_results[0]["toolSemanticParentLabel"] == provider_tool_results[0]["toolPhaseLabel"]
+    assert provider_tool_results[0]["target"] == "npm run typecheck"
+    assert provider_tool_results[0]["inputSummary"] == "npm run typecheck"
+    assert provider_tool_results[0]["resultSummary"] == "exit 0: ok"
+    assert provider_tool_results[0]["resultPreview"] == tool_result["payload"]["resultPreview"]
+
+
+def test_react_loop_emits_specific_result_summaries_for_probe_tools(tmp_path: Any) -> None:
+    tool_calls = [
+        {"id": "call_list", "name": "list_dir", "arguments": {"path": "src"}},
+        {"id": "call_search", "name": "search_files", "arguments": {"query": "needle"}},
+        {"id": "call_status", "name": "git_status", "arguments": {}},
+        {"id": "call_diff", "name": "git_diff", "arguments": {}},
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Inspecting.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "list_dir": lambda params: {
+                "path": "src",
+                "items": [
+                    {"path": "src/app.ts", "type": "file"},
+                    {"path": "src/ui.tsx", "type": "file"},
+                ],
+            },
+            "search_files": lambda params: {
+                "query": params["query"],
+                "matches": [{"path": "src/app.ts", "line": 4, "preview": "needle"}],
+                "total": 1,
+            },
+            "git_status": lambda params: {
+                "isGitRepository": True,
+                "branch": "main",
+                "ahead": 1,
+                "behind": 2,
+                "changes": [{"status": "M", "path": "src/app.ts"}],
+            },
+            "git_diff": lambda params: {
+                "isGitRepository": True,
+                "staged": False,
+                "files": [{"status": "M", "path": "src/app.ts"}],
+                "diff": "diff --git a/src/app.ts b/src/app.ts\n",
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "inspect probes"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    completed = {
+        event["payload"]["toolName"]: event["payload"]["resultSummary"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") in {
+            "list_dir",
+            "search_files",
+            "git_status",
+            "git_diff",
+        }
+    }
+    assert completed["list_dir"] == "listed 2 item(s) in src: src/app.ts, src/ui.tsx"
+    assert completed["search_files"] == "found 1 match(es) for needle: src/app.ts"
+    assert completed["git_status"] == "main: 1 changed file(s) (ahead 1, behind 2): src/app.ts"
+    assert completed["git_diff"] == "worktree diff: 1 file(s): src/app.ts"
+    previews = {
+        event["payload"]["toolName"]: event["payload"]["resultPreview"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") in {
+            "list_dir",
+            "search_files",
+            "git_status",
+            "git_diff",
+        }
+    }
+    assert previews["list_dir"] == [
+        {"label": "目录", "value": "src"},
+        {"label": "项目", "value": "2 项"},
+        {"label": "样例", "value": "src/app.ts, src/ui.tsx"},
+    ]
+    assert {"label": "命中", "value": "1 项"} in previews["search_files"]
+    assert {"label": "分支", "value": "main"} in previews["git_status"]
+    assert {"label": "范围", "value": "worktree"} in previews["git_diff"]
+    probe_outputs = {
+        event["payload"]["toolName"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output"
+        and event["payload"].get("toolName") in {"list_dir", "search_files", "git_status", "git_diff"}
+    }
+    assert set(probe_outputs) == {"list_dir", "search_files", "git_status", "git_diff"}
+    assert probe_outputs["list_dir"]["toolCategory"] == "context_read"
+    assert "目录: src" in probe_outputs["list_dir"]["chunk"]
+    assert "项目: 2 项" in probe_outputs["list_dir"]["chunk"]
+    search_output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "search_files"
+    )
+    assert search_output["toolCategory"] == "search"
+    assert search_output["outputStream"] == "result_preview"
+    assert "查询: needle" in search_output["chunk"]
+    assert "命中: 1 项" in search_output["chunk"]
+    assert "样例: src/app.ts" in search_output["chunk"]
+    search_output_delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolName") == "search_files"
+        and event["payload"].get("outputStream") == "result_preview"
+        and event["payload"].get("toolOutput") == search_output["chunk"]
+    )
+    assert search_output_delta["toolCategory"] == "search"
+    assert probe_outputs["git_status"]["toolCategory"] == "git"
+    assert "分支: main" in probe_outputs["git_status"]["chunk"]
+    assert "同步: ahead 1, behind 2" in probe_outputs["git_status"]["chunk"]
+    assert probe_outputs["git_diff"]["toolCategory"] == "git"
+    assert "范围: worktree" in probe_outputs["git_diff"]["chunk"]
+    assert "文件: 1 个" in probe_outputs["git_diff"]["chunk"]
+    for tool_name, output in probe_outputs.items():
+        delta = next(
+            event["payload"]
+            for event in runtime.events
+            if event["type"] == "content_delta"
+            and event["payload"].get("toolName") == tool_name
+            and event["payload"].get("outputStream") == "result_preview"
+            and event["payload"].get("toolOutput") == output["chunk"]
+        )
+        assert delta["toolCategory"] == output["toolCategory"]
+    for tool_name in probe_outputs:
+        preview_deltas = [
+            event["payload"]
+            for event in runtime.events
+            if event["type"] == "content_delta"
+            and event["payload"].get("toolName") == tool_name
+            and event["payload"].get("outputStream") == "result_preview"
+        ]
+        assert len(preview_deltas) == 1
+
+
+def test_react_loop_emits_specific_result_summaries_for_web_and_memory_tools(tmp_path: Any) -> None:
+    tool_calls = [
+        {"id": "call_web", "name": "web_fetch", "arguments": {"url": "https://example.com/docs", "method": "GET"}},
+        {"id": "call_remember", "name": "memory.remember", "arguments": {"content": "Use pytest", "kind": "long_term"}},
+        {"id": "call_recall", "name": "memory.recall", "arguments": {"query": "testing", "limit": 2}},
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Checking web and memory.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "web_fetch": lambda params: {
+                "status": "ok",
+                "statusCode": 200,
+                "url": params["url"],
+                "contentType": "text/html; charset=utf-8",
+                "content": "Example documentation body",
+                "bytesRead": 26,
+            },
+            "memory.remember": lambda params: {
+                "status": "ok",
+                "id": "mem_1",
+                "kind": params["kind"],
+                "keywords": ["pytest", "testing"],
+            },
+            "memory.recall": lambda params: {
+                "status": "ok",
+                "count": 1,
+                "memories": [
+                    {
+                        "id": "mem_1",
+                        "kind": "long_term",
+                        "content": "Use pytest for tests",
+                        "keywords": ["pytest"],
+                    }
+                ],
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "inspect web and memory"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    completed = {
+        event["payload"]["toolName"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") in {
+            "web_fetch",
+            "memory.remember",
+            "memory.recall",
+        }
+    }
+    assert completed["web_fetch"]["toolCategory"] == "web"
+    assert completed["web_fetch"]["toolPhaseLabel"] == "网页读取"
+    assert completed["web_fetch"]["resultSummary"].startswith("HTTP 200 https://example.com/docs")
+    assert {"label": "URL", "value": "https://example.com/docs"} in completed["web_fetch"]["resultPreview"]
+    assert {"label": "状态", "value": "HTTP 200"} in completed["web_fetch"]["resultPreview"]
+    assert completed["memory.remember"]["resultSummary"] == "remembered long_term memory mem_1: pytest, testing"
+    assert {"label": "关键词", "value": "pytest, testing"} in completed["memory.remember"]["resultPreview"]
+    assert completed["memory.recall"]["resultSummary"] == "recalled 1 memory item(s) for testing: long_term: Use pytest for tests"
+    assert {"label": "结果", "value": "1 项"} in completed["memory.recall"]["resultPreview"]
+
+    tool_results = {result["name"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert tool_results["web_fetch"]["toolCategory"] == "web"
+    assert tool_results["web_fetch"]["toolPhaseLabel"] == "网页读取"
+    assert tool_results["web_fetch"]["target"] == "https://example.com/docs"
+    assert tool_results["web_fetch"]["inputSummary"] == "fetch GET https://example.com/docs"
+    assert tool_results["memory.remember"]["inputSummary"] == "remember long_term: Use pytest"
+    assert tool_results["memory.recall"]["target"] == "testing"
+    remember_output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "memory.remember"
+    )
+    assert remember_output["toolCategory"] == "memory"
+    assert remember_output["outputStream"] == "result_preview"
+    assert "ok" in remember_output["chunk"]
+    assert "long_term" in remember_output["chunk"]
+    assert "ID: mem_1" in remember_output["chunk"]
+    assert "pytest, testing" in remember_output["chunk"]
+    remember_output_delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolName") == "memory.remember"
+        and event["payload"].get("outputStream") == "result_preview"
+        and event["payload"].get("toolOutput") == remember_output["chunk"]
+    )
+    assert remember_output_delta["toolCategory"] == "memory"
+    remember_preview_deltas = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolName") == "memory.remember"
+        and event["payload"].get("outputStream") == "result_preview"
+    ]
+    assert len(remember_preview_deltas) == 1
+    recall_output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "memory.recall"
+    )
+    assert recall_output["toolCategory"] == "memory"
+    assert recall_output["outputStream"] == "result_preview"
+    assert "查询: testing" in recall_output["chunk"]
+    assert "结果: 1 项" in recall_output["chunk"]
+    assert "样例: long_term: Use pytest for tests" in recall_output["chunk"]
+    recall_output_delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolName") == "memory.recall"
+        and event["payload"].get("outputStream") == "result_preview"
+        and event["payload"].get("toolOutput") == recall_output["chunk"]
+    )
+    assert recall_output_delta["toolCategory"] == "memory"
+    recall_preview_deltas = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolName") == "memory.recall"
+        and event["payload"].get("outputStream") == "result_preview"
+    ]
+    assert len(recall_preview_deltas) == 1
+
+
+def test_react_loop_emits_executor_tool_progress_for_web_and_memory_tools(tmp_path: Any) -> None:
+    tool_calls = [
+        {"id": "call_web", "name": "web_fetch", "arguments": {"url": "https://example.com/docs", "method": "GET"}},
+        {"id": "call_remember", "name": "memory.remember", "arguments": {"content": "Use pytest", "kind": "long_term"}},
+        {"id": "call_recall", "name": "memory.recall", "arguments": {"query": "testing", "limit": 2}},
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Checking web and memory.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "web_fetch": lambda params: {
+                "status": "ok",
+                "statusCode": 200,
+                "url": params["url"],
+                "content": "Example documentation body",
+                "steps": [
+                    {"label": "request", "status": "completed", "summary": f"GET {params['url']}"},
+                    {"label": "response", "status": "completed", "summary": "HTTP 200; 26 bytes"},
+                    {"label": "decode", "status": "completed", "summary": "utf-8; text/plain"},
+                ],
+            },
+            "memory.remember": lambda params: {
+                "status": "ok",
+                "id": "mem_1",
+                "kind": params["kind"],
+            },
+            "memory.recall": lambda params: {
+                "status": "ok",
+                "count": 0,
+                "memories": [],
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "inspect web and memory progress"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    progress_by_tool: dict[str, list[dict[str, Any]]] = {}
+    for event in runtime.events:
+        payload = event["payload"]
+        if event["type"] == "tool.progress" and payload.get("toolName") in {
+            "web_fetch",
+            "memory.remember",
+            "memory.recall",
+        }:
+            progress_by_tool.setdefault(str(payload["toolName"]), []).append(payload)
+    assert set(progress_by_tool) == {"web_fetch", "memory.remember", "memory.recall"}
+
+    web_progress = progress_by_tool["web_fetch"]
+    assert all(payload["toolUseId"] == "call_web" for payload in web_progress)
+    assert all(payload["toolCategory"] == "web" for payload in web_progress)
+    assert all(payload["toolPhaseId"] == "web" for payload in web_progress)
+    assert any("GET" in payload["message"] for payload in web_progress)
+    assert any("https://example.com/docs" in payload["message"] for payload in web_progress)
+
+    remember_progress = progress_by_tool["memory.remember"]
+    assert all(payload["toolUseId"] == "call_remember" for payload in remember_progress)
+    assert all(payload["toolCategory"] == "memory" for payload in remember_progress)
+    assert any("long_term" in payload["message"] for payload in remember_progress)
+
+    recall_progress = progress_by_tool["memory.recall"]
+    assert all(payload["toolUseId"] == "call_recall" for payload in recall_progress)
+    assert all(payload["toolCategory"] == "memory" for payload in recall_progress)
+    assert any("testing" in payload["message"] for payload in recall_progress)
+
+    activity_deltas_by_tool: dict[str, list[dict[str, Any]]] = {}
+    for event in runtime.events:
+        payload = event["payload"]
+        if event["type"] == "content_delta" and payload.get("outputStream") == "activity":
+            activity_deltas_by_tool.setdefault(str(payload.get("toolUseId") or ""), []).append(payload)
+    for payloads in progress_by_tool.values():
+        for payload in payloads:
+            tool_use_id = payload["toolUseId"]
+            assert any(delta.get("toolOutput") == payload["message"] for delta in activity_deltas_by_tool[tool_use_id])
+            assert any(delta.get("toolCategory") == payload["toolCategory"] for delta in activity_deltas_by_tool[tool_use_id])
+    web_activity = activity_deltas_by_tool["call_web"]
+    assert any(delta.get("toolOutput") == "request (completed): GET https://example.com/docs\n" for delta in web_activity)
+    assert any(delta.get("toolOutput") == "response (completed): HTTP 200; 26 bytes\n" for delta in web_activity)
+    assert any(delta.get("toolOutput") == "decode (completed): utf-8; text/plain\n" for delta in web_activity)
+
+    web_output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "web_fetch"
+    )
+    assert web_output["toolUseId"] == "call_web"
+    assert web_output["toolCategory"] == "web"
+    assert web_output["outputStream"] == "result_preview"
+    assert "URL: https://example.com/docs" in web_output["chunk"]
+    assert "状态: HTTP 200" in web_output["chunk"]
+    web_output_delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_web"
+        and event["payload"].get("outputStream") == "result_preview"
+        and event["payload"].get("toolOutput") == web_output["chunk"]
+    )
+    assert web_output_delta["toolCategory"] == "web"
+    web_preview_deltas = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_web"
+        and event["payload"].get("outputStream") == "result_preview"
+    ]
+    assert len(web_preview_deltas) == 1
+
+
+def test_react_loop_emits_browser_tool_web_progress_and_result_preview(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "message": "Checking browser.",
+                "tool_calls": [
+                    {
+                        "id": "call_browser",
+                        "name": "browser",
+                        "arguments": {"url": "https://example.com/docs", "action": "read"},
+                    }
+                ],
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "browser": lambda params: {
+                "status": "ok",
+                "statusCode": 200,
+                "url": params["url"],
+                "action": params["action"],
+                "title": "Example Docs",
+                "contentType": "text/html; charset=utf-8",
+                "content": "Example documentation body",
+                "bytesRead": 26,
+                "steps": [
+                    {"label": "request", "status": "completed", "summary": f"read {params['url']}"},
+                    {"label": "response", "status": "completed", "summary": "HTTP 200; 26 bytes"},
+                    {"label": "decode", "status": "completed", "summary": "utf-8; text/html"},
+                    {"label": "extract", "status": "completed", "summary": "26 text characters"},
+                ],
+            }
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "inspect browser"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolName") == "browser"
+    )
+    assert started["toolCategory"] == "web"
+    assert started["toolPhaseId"] == "web"
+    assert started["toolPhaseLabel"] == "网页读取"
+    assert started["target"] == "https://example.com/docs"
+    assert started["inputSummary"] == "browser read https://example.com/docs"
+
+    progress = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolName") == "browser"
+    )
+    assert progress["toolUseId"] == "call_browser"
+    assert progress["toolCategory"] == "web"
+    assert "read" in progress["message"]
+    assert "https://example.com/docs" in progress["message"]
+
+    completed = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "browser"
+    )
+    assert completed["toolCategory"] == "web"
+    assert completed["resultSummary"].startswith("HTTP 200 https://example.com/docs")
+    assert "Example Docs" in completed["resultSummary"]
+    assert {"label": "URL", "value": "https://example.com/docs"} in completed["resultPreview"]
+    assert {"label": "动作", "value": "read"} in completed["resultPreview"]
+    assert {"label": "状态", "value": "HTTP 200"} in completed["resultPreview"]
+    assert {"label": "标题", "value": "Example Docs"} in completed["resultPreview"]
+    assert {"label": "摘要", "value": "Example documentation body"} in completed["resultPreview"]
+
+    tool_result = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolName") == "browser"
+    )
+    assert tool_result["toolCategory"] == "web"
+    assert tool_result["resultPreview"] == completed["resultPreview"]
+
+    provider_tool_result = provider.calls[1]["context"]["tool_results"][0]
+    assert provider_tool_result["name"] == "browser"
+    assert provider_tool_result["toolCategory"] == "web"
+    assert provider_tool_result["target"] == "https://example.com/docs"
+    assert provider_tool_result["inputSummary"] == "browser read https://example.com/docs"
+    assert provider_tool_result["resultPreview"] == completed["resultPreview"]
+
+    started_activity = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolName") == "browser"
+        and event["payload"].get("outputStream") == "activity"
+        and "正在读取网页" in event["payload"].get("toolOutput", "")
+    )
+    assert started_activity["toolCategory"] == "web"
+    browser_activity = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_browser"
+        and event["payload"].get("outputStream") == "activity"
+    ]
+    assert any(delta.get("toolOutput") == "request (completed): read https://example.com/docs\n" for delta in browser_activity)
+    assert any(delta.get("toolOutput") == "response (completed): HTTP 200; 26 bytes\n" for delta in browser_activity)
+    assert any(delta.get("toolOutput") == "decode (completed): utf-8; text/html\n" for delta in browser_activity)
+    assert any(delta.get("toolOutput") == "extract (completed): 26 text characters\n" for delta in browser_activity)
+
+    output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "browser"
+    )
+    assert output["toolUseId"] == "call_browser"
+    assert output["toolCategory"] == "web"
+    assert output["outputStream"] == "result_preview"
+    assert "URL: https://example.com/docs" in output["chunk"]
+    assert "动作: read" in output["chunk"]
+    assert "状态: HTTP 200" in output["chunk"]
+    assert "标题: Example Docs" in output["chunk"]
+
+    output_delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolName") == "browser"
+        and event["payload"].get("outputStream") == "result_preview"
+        and event["payload"].get("toolOutput") == output["chunk"]
+    )
+    assert output_delta["toolCategory"] == "web"
+
+
+def test_react_loop_parents_browser_to_same_batch_web_fetch(tmp_path: Any) -> None:
+    tool_calls = [
+        {"id": "call_web", "name": "web_fetch", "arguments": {"url": "https://example.com/docs/", "method": "GET"}},
+        {
+            "id": "call_browser",
+            "name": "browser",
+            "arguments": {"url": "https://EXAMPLE.com/docs#overview", "action": "read"},
+        },
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Fetch then inspect browser.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "web_fetch": lambda params: {
+                "status": "ok",
+                "statusCode": 200,
+                "url": params["url"],
+                "content": "Example documentation body",
+            },
+            "browser": lambda params: {
+                "status": "ok",
+                "statusCode": 200,
+                "url": params["url"],
+                "action": params["action"],
+                "title": "Example Docs",
+                "content": "Example documentation body",
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "fetch then inspect browser"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    }
+    assert started["call_web"].get("parentToolUseId") is None
+    assert started["call_browser"]["parentToolUseId"] == "call_web"
+
+    completed_browser = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolCallId") == "call_browser"
+    )
+    assert completed_browser["parentToolUseId"] == "call_web"
+
+    tool_use_blocks = {
+        event["payload"]["toolUseId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_use_complete"
+    }
+    assert tool_use_blocks["call_browser"]["parentToolUseId"] == "call_web"
+
+    tool_result = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_browser"
+    )
+    assert tool_result["parentToolUseId"] == "call_web"
+    provider_tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert provider_tool_results["call_browser"]["parentToolUseId"] == "call_web"
+
+    browser_output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolUseId") == "call_browser"
+    )
+    assert browser_output["parentToolUseId"] == "call_web"
+
+
+def test_react_loop_parents_cross_turn_browser_to_prior_web_fetch(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_web",
+                        "name": "web_fetch",
+                        "arguments": {"url": "https://example.com/docs/", "method": "GET"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_browser",
+                        "name": "browser",
+                        "arguments": {"url": "https://EXAMPLE.com/docs#overview", "action": "read"},
+                    }
+                ]
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "web_fetch": lambda params: {
+                "status": "ok",
+                "statusCode": 200,
+                "url": params["url"],
+                "content": "Example documentation body",
+            },
+            "browser": lambda params: {
+                "status": "ok",
+                "statusCode": 200,
+                "url": params["url"],
+                "action": params["action"],
+                "title": "Example Docs",
+                "content": "Example documentation body",
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "fetch then inspect browser"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started_browser = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolCallId") == "call_browser"
+    )
+    completed_browser = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolCallId") == "call_browser"
+    )
+    tool_result = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_browser"
+    )
+    assert started_browser["parentToolUseId"] == "call_web"
+    assert completed_browser["parentToolUseId"] == "call_web"
+    assert tool_result["parentToolUseId"] == "call_web"
+    tool_results = provider.calls[2]["context"]["tool_results"]
+    assert tool_results[1]["parentToolUseId"] == "call_web"
+
+
+def test_react_loop_emits_notebook_tool_progress_and_result_preview(tmp_path: Any) -> None:
+    tool_calls = [
+        {
+            "id": "call_nb_list",
+            "name": "notebook",
+            "arguments": {"path": "analysis.ipynb", "action": "list_cells"},
+        },
+        {
+            "id": "call_nb_get",
+            "name": "notebook",
+            "arguments": {"path": "analysis.ipynb", "action": "get_cell", "cell_index": 1},
+        },
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Inspecting notebook.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+
+    def notebook(params: dict[str, Any]) -> dict[str, Any]:
+        assert params["taskId"].startswith("task_")
+        assert params["sessionId"].startswith("sess_")
+        action = params["action"]
+        if action == "list_cells":
+            return {
+                "path": params["path"],
+                "action": action,
+                "kernel": "Python 3",
+                "totalCells": 3,
+                "cells": [
+                    {"index": 0, "cellType": "markdown", "sourcePreview": "# Analysis"},
+                    {"index": 1, "cellType": "code", "sourcePreview": "df.head()"},
+                    {"index": 2, "cellType": "code", "sourcePreview": "print('ok')"},
+                ],
+            }
+        if action == "get_cell":
+            return {
+                "path": params["path"],
+                "action": action,
+                "index": params["cell_index"],
+                "cellType": "code",
+                "source": "df.head()",
+                "outputs": [{"output_type": "stream", "text": ["rows"]}],
+                "executionCount": 7,
+            }
+        raise AssertionError(f"Unexpected notebook action: {action}")
+
+    runtime = _make_runtime(tmp_path, provider, {"notebook": notebook})
+    runtime.store.update_config({"config": {"policy": {"approvalMode": "none"}}})
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "inspect notebook"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    completed = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "notebook"
+    }
+    assert set(completed) == {"call_nb_list", "call_nb_get"}
+    assert completed["call_nb_list"]["toolCategory"] == "notebook"
+    assert completed["call_nb_list"]["toolPhaseId"] == "notebook"
+    assert completed["call_nb_list"]["toolPhaseLabel"] == "Notebook"
+    assert completed["call_nb_list"]["target"] == "analysis.ipynb"
+    assert completed["call_nb_list"]["inputSummary"] == "notebook list_cells analysis.ipynb"
+    assert completed["call_nb_list"]["resultSummary"].startswith("listed 3 notebook cell(s) in analysis.ipynb")
+    assert {"label": "Kernel", "value": "Python 3"} in completed["call_nb_list"]["resultPreview"]
+    assert {"label": "Cells", "value": "3 个"} in completed["call_nb_list"]["resultPreview"]
+    assert any(row.get("label") == "样例" and "#0 markdown" in row.get("value", "") for row in completed["call_nb_list"]["resultPreview"])
+
+    assert completed["call_nb_get"]["target"] == "analysis.ipynb #cell 1"
+    assert completed["call_nb_get"]["inputSummary"] == "notebook get_cell analysis.ipynb #cell 1"
+    assert "read analysis.ipynb #cell 1" in completed["call_nb_get"]["resultSummary"]
+    assert {"label": "类型", "value": "code"} in completed["call_nb_get"]["resultPreview"]
+    assert {"label": "输出", "value": "1 项"} in completed["call_nb_get"]["resultPreview"]
+    assert {"label": "源码", "value": "df.head()"} in completed["call_nb_get"]["resultPreview"]
+
+    provider_tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert provider_tool_results["call_nb_list"]["toolCategory"] == "notebook"
+    assert provider_tool_results["call_nb_list"]["toolPhaseLabel"] == "Notebook"
+    assert provider_tool_results["call_nb_get"]["parentToolUseId"] == "call_nb_list"
+    assert provider_tool_results["call_nb_get"]["resultPreview"] == completed["call_nb_get"]["resultPreview"]
+
+    started = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolName") == "notebook"
+    }
+    assert started["call_nb_list"].get("parentToolUseId") is None
+    assert started["call_nb_get"]["parentToolUseId"] == "call_nb_list"
+
+    progress = {
+        event["payload"]["toolUseId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolName") == "notebook"
+    }
+    assert set(progress) == {"call_nb_list", "call_nb_get"}
+    assert progress["call_nb_get"]["toolCategory"] == "notebook"
+    assert "get_cell" in progress["call_nb_get"]["message"]
+    assert "analysis.ipynb #cell 1" in progress["call_nb_get"]["message"]
+
+    started_activity = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolName") == "notebook"
+        and event["payload"].get("outputStream") == "activity"
+    ]
+    assert any("正在处理 Notebook" in payload.get("toolOutput", "") for payload in started_activity)
+    assert any(payload.get("toolCategory") == "notebook" for payload in started_activity)
+
+    outputs = {
+        event["payload"]["toolUseId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "notebook"
+    }
+    assert set(outputs) == {"call_nb_list", "call_nb_get"}
+    assert outputs["call_nb_get"]["toolCategory"] == "notebook"
+    assert outputs["call_nb_get"]["parentToolUseId"] == "call_nb_list"
+    assert outputs["call_nb_get"]["outputStream"] == "result_preview"
+    assert "Notebook: analysis.ipynb #cell 1" in outputs["call_nb_get"]["chunk"]
+    assert "类型: code" in outputs["call_nb_get"]["chunk"]
+    assert "输出: 1 项" in outputs["call_nb_get"]["chunk"]
+
+    get_output_delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_nb_get"
+        and event["payload"].get("outputStream") == "result_preview"
+        and event["payload"].get("toolOutput") == outputs["call_nb_get"]["chunk"]
+    )
+    assert get_output_delta["toolCategory"] == "notebook"
+
+
+def test_react_loop_parents_cross_turn_notebook_get_to_prior_list(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_nb_list",
+                        "name": "notebook",
+                        "arguments": {"path": "analysis.ipynb", "action": "list_cells"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_nb_get",
+                        "name": "notebook",
+                        "arguments": {"path": "analysis.ipynb", "action": "get_cell", "cell_index": 1},
+                    }
+                ]
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+
+    def notebook(params: dict[str, Any]) -> dict[str, Any]:
+        action = params["action"]
+        if action == "list_cells":
+            return {
+                "path": params["path"],
+                "action": action,
+                "totalCells": 2,
+                "cells": [
+                    {"index": 0, "cellType": "markdown", "sourcePreview": "# Analysis"},
+                    {"index": 1, "cellType": "code", "sourcePreview": "df.head()"},
+                ],
+            }
+        if action == "get_cell":
+            return {
+                "path": params["path"],
+                "action": action,
+                "index": params["cell_index"],
+                "cellType": "code",
+                "source": "df.head()",
+                "outputs": [],
+            }
+        raise AssertionError(f"Unexpected notebook action: {action}")
+
+    runtime = _make_runtime(tmp_path, provider, {"notebook": notebook})
+    runtime.store.update_config({"config": {"policy": {"approvalMode": "none"}}})
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "list then read notebook"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started_get = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolCallId") == "call_nb_get"
+    )
+    completed_get = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolCallId") == "call_nb_get"
+    )
+    tool_result = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_nb_get"
+    )
+    assert started_get["parentToolUseId"] == "call_nb_list"
+    assert completed_get["parentToolUseId"] == "call_nb_list"
+    assert tool_result["parentToolUseId"] == "call_nb_list"
+    tool_results = provider.calls[2]["context"]["tool_results"]
+    assert tool_results[1]["parentToolUseId"] == "call_nb_list"
+
+
+def test_react_loop_emits_notebook_execute_cell_preview_when_approved(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "message": "Executing notebook cell.",
+                "tool_calls": [
+                    {
+                        "id": "call_nb_exec",
+                        "name": "notebook",
+                        "arguments": {"path": "analysis.ipynb", "action": "execute_cell", "cell_index": 2},
+                    }
+                ],
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+
+    def notebook(params: dict[str, Any]) -> dict[str, Any]:
+        assert params["taskId"].startswith("task_")
+        assert params["sessionId"].startswith("sess_")
+        return {
+            "path": params["path"],
+            "action": params["action"],
+            "index": params["cell_index"],
+            "cellType": "code",
+            "source": "print('ok')",
+            "executionResult": {"exitCode": 0, "stdout": "ok\n", "stderr": ""},
+        }
+
+    runtime = _make_runtime(tmp_path, provider, {"notebook": notebook})
+    runtime.store.update_config({"config": {"policy": {"approvalMode": "none"}}})
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "execute notebook cell"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    completed = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "notebook"
+    )
+    assert completed["toolCategory"] == "notebook"
+    assert completed["target"] == "analysis.ipynb #cell 2"
+    assert completed["inputSummary"] == "notebook execute_cell analysis.ipynb #cell 2"
+    assert completed["resultSummary"] == "executed analysis.ipynb #cell 2: exit 0: ok"
+    assert {"label": "动作", "value": "execute_cell"} in completed["resultPreview"]
+    assert {"label": "状态", "value": "exit 0"} in completed["resultPreview"]
+    assert {"label": "输出", "value": "ok"} in completed["resultPreview"]
+
+    provider_tool_result = provider.calls[1]["context"]["tool_results"][0]
+    assert provider_tool_result["toolCategory"] == "notebook"
+    assert provider_tool_result["toolPhaseLabel"] == "Notebook"
+    assert provider_tool_result["resultPreview"] == completed["resultPreview"]
+
+    output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "notebook"
+    )
+    assert output["toolUseId"] == "call_nb_exec"
+    assert output["toolCategory"] == "notebook"
+    assert output["outputStream"] == "result_preview"
+    assert "Notebook: analysis.ipynb #cell 2" in output["chunk"]
+    assert "状态: exit 0" in output["chunk"]
+    assert "输出: ok" in output["chunk"]
+
+    output_delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_nb_exec"
+        and event["payload"].get("outputStream") == "result_preview"
+        and event["payload"].get("toolOutput") == output["chunk"]
+    )
+    assert output_delta["toolCategory"] == "notebook"
+
+
+def test_react_loop_notebook_execute_cell_uses_run_command_approval_and_resumes(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "message": "Execute notebook cell after approval.",
+                "tool_calls": [
+                    {
+                        "id": "call_nb_exec",
+                        "name": "notebook",
+                        "arguments": {
+                            "path": "analysis.ipynb",
+                            "action": "execute_cell",
+                            "cell_index": 0,
+                            "timeout": 5,
+                        },
+                    }
+                ],
+            },
+            {"final_answer": "Notebook execution completed after approval."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+    runtime.store.update_config({"config": {"permissions": {"preset": "balanced"}}})
+    config = runtime.store.get_config({})["config"]
+    handler = build_notebook_tool(
+        PolicyGuard(approval_mode=config["policy"]["approvalMode"]),
+        runtime.store,
+        permission_engine=PermissionEngine(config=config, store=runtime.store),
+    )["handler"]
+    runtime.server._orchestrator._tool_registry.register("notebook", handler)  # noqa: SLF001
+
+    session = _open_session(runtime, tmp_path)
+    notebook_path = tmp_path / "workspace" / "analysis.ipynb"
+    notebook_path.write_text(
+        json.dumps(
+            {
+                "cells": [
+                    {
+                        "cell_type": "code",
+                        "execution_count": None,
+                        "metadata": {},
+                        "outputs": [],
+                        "source": ["print('approved notebook')\n"],
+                    }
+                ],
+                "metadata": {"kernelspec": {"display_name": "Python 3"}},
+                "nbformat": 4,
+                "nbformat_minor": 5,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "execute notebook cell"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "waiting_approval"
+    approval_payload = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "approval.requested" and event["payload"].get("kind") == "run_command"
+    )
+    approval_id = approval_payload["approvalId"]
+    request = approval_payload["request"]
+    assert request["toolName"] == "notebook"
+    assert request["notebookAction"] == "execute_cell"
+    assert request["command"] == "notebook execute_cell analysis.ipynb #cell 0"
+    assert request["path"] == "analysis.ipynb"
+    assert request["cellIndex"] == 0
+    assert request["shell"] == "python"
+    assert approval_payload["preview"][0]["value"] == "notebook execute_cell analysis.ipynb #cell 0"
+    assert any(row["label"] == "Notebook" and row["value"] == "analysis.ipynb" for row in approval_payload["preview"])
+
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    assert final_task["status"] == "completed"
+    assert final_task["resultSummary"] == "Notebook execution completed after approval."
+    completed = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "notebook"
+    ]
+    assert completed[-1]["result"]["executionResult"]["stdout"] == "approved notebook\n"
+    assert provider.calls[1]["context"]["tool_results"][0]["name"] == "notebook"
+    assert provider.calls[1]["context"]["tool_results"][0]["result"]["executionResult"]["exitCode"] == 0
+
+
+def test_react_loop_emits_scratchpad_tool_progress_and_result_preview(tmp_path: Any) -> None:
+    tool_calls = [
+        {
+            "id": "call_scratch_write",
+            "name": "scratchpad.write",
+            "arguments": {"key": "hypothesis", "value": "alpha path is likely relevant"},
+        },
+        {
+            "id": "call_scratch_read",
+            "name": "scratchpad.read",
+            "arguments": {"key": "hypothesis"},
+        },
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Using scratchpad.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+
+    def scratchpad_write(params: dict[str, Any]) -> dict[str, Any]:
+        assert params["taskId"].startswith("task_")
+        assert params["sessionId"].startswith("sess_")
+        return {"status": "ok", "id": "scratch_1", "key": params["key"]}
+
+    def scratchpad_read(params: dict[str, Any]) -> dict[str, Any]:
+        assert params["taskId"].startswith("task_")
+        assert params["sessionId"].startswith("sess_")
+        return {
+            "status": "ok",
+            "id": "scratch_1",
+            "key": params["key"],
+            "value": "alpha path is likely relevant",
+        }
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {"scratchpad.write": scratchpad_write, "scratchpad.read": scratchpad_read},
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "store and read scratchpad state"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    completed = {
+        event["payload"]["toolName"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed"
+        and event["payload"].get("toolName") in {"scratchpad.write", "scratchpad.read"}
+    }
+    assert completed["scratchpad.write"]["toolCategory"] == "memory"
+    assert completed["scratchpad.write"]["toolPhaseId"] == "memory"
+    assert completed["scratchpad.write"]["target"] == "hypothesis"
+    assert completed["scratchpad.write"]["inputSummary"] == "scratchpad write hypothesis"
+    assert completed["scratchpad.write"]["resultSummary"] == "stored scratchpad hypothesis (scratch_1)"
+    assert any(row.get("value") == "hypothesis" for row in completed["scratchpad.write"]["resultPreview"])
+    assert any(row.get("value") == "scratch_1" for row in completed["scratchpad.write"]["resultPreview"])
+    assert completed["scratchpad.read"]["target"] == "hypothesis"
+    assert completed["scratchpad.read"]["inputSummary"] == "scratchpad read hypothesis"
+    assert completed["scratchpad.read"]["resultSummary"] == "read scratchpad hypothesis: alpha path is likely relevant"
+    assert any(row.get("value") == "alpha path is likely relevant" for row in completed["scratchpad.read"]["resultPreview"])
+
+    tool_results = {result["name"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert tool_results["scratchpad.write"]["toolCategory"] == "memory"
+    assert tool_results["scratchpad.write"]["resultSummary"] == completed["scratchpad.write"]["resultSummary"]
+    assert tool_results["scratchpad.read"]["resultPreview"] == completed["scratchpad.read"]["resultPreview"]
+
+    progress = {
+        event["payload"]["toolName"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress"
+        and event["payload"].get("toolName") in {"scratchpad.write", "scratchpad.read"}
+    }
+    assert set(progress) == {"scratchpad.write", "scratchpad.read"}
+    assert progress["scratchpad.write"]["toolUseId"] == "call_scratch_write"
+    assert progress["scratchpad.write"]["toolCategory"] == "memory"
+    assert "scratchpad" in progress["scratchpad.write"]["message"]
+    assert "hypothesis" in progress["scratchpad.write"]["message"]
+    assert progress["scratchpad.read"]["toolUseId"] == "call_scratch_read"
+    assert "scratchpad" in progress["scratchpad.read"]["message"]
+    assert "hypothesis" in progress["scratchpad.read"]["message"]
+
+    for tool_name, tool_use_id in {
+        "scratchpad.write": "call_scratch_write",
+        "scratchpad.read": "call_scratch_read",
+    }.items():
+        output = next(
+            event["payload"]
+            for event in runtime.events
+            if event["type"] == "tool.output" and event["payload"].get("toolName") == tool_name
+        )
+        assert output["toolUseId"] == tool_use_id
+        assert output["toolCategory"] == "memory"
+        assert output["outputStream"] == "result_preview"
+        assert "hypothesis" in output["chunk"]
+        assert "scratch_1" in output["chunk"]
+        if tool_name == "scratchpad.read":
+            assert "alpha path is likely relevant" in output["chunk"]
+
+        preview_deltas = [
+            event["payload"]
+            for event in runtime.events
+            if event["type"] == "content_delta"
+            and event["payload"].get("toolUseId") == tool_use_id
+            and event["payload"].get("outputStream") == "result_preview"
+        ]
+        assert len(preview_deltas) == 1
+        assert preview_deltas[0]["toolOutput"] == output["chunk"]
+        assert preview_deltas[0]["toolCategory"] == "memory"
+
+        activity_deltas = [
+            event["payload"]
+            for event in runtime.events
+            if event["type"] == "content_delta"
+            and event["payload"].get("toolUseId") == tool_use_id
+            and event["payload"].get("outputStream") == "activity"
+        ]
+        assert any("scratchpad" in delta.get("toolOutput", "") for delta in activity_deltas)
+        assert any("hypothesis" in delta.get("toolOutput", "") for delta in activity_deltas)
+
+
+def test_react_loop_parents_scratchpad_read_to_same_batch_write(tmp_path: Any) -> None:
+    tool_calls = [
+        {
+            "id": "call_scratch_write",
+            "name": "scratchpad.write",
+            "arguments": {"key": "hypothesis", "value": "alpha path is likely relevant"},
+        },
+        {
+            "id": "call_scratch_read",
+            "name": "scratchpad.read",
+            "arguments": {"key": "hypothesis"},
+        },
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Using scratchpad.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "scratchpad.write": lambda params: {"status": "ok", "id": "scratch_1", "key": params["key"]},
+            "scratchpad.read": lambda params: {
+                "status": "ok",
+                "id": "scratch_1",
+                "key": params["key"],
+                "value": "alpha path is likely relevant",
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "store and read scratchpad state"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    }
+    assert started["call_scratch_write"].get("parentToolUseId") is None
+    assert started["call_scratch_read"]["parentToolUseId"] == "call_scratch_write"
+
+    tool_use_blocks = {
+        event["payload"]["toolUseId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_use_complete"
+    }
+    assert tool_use_blocks["call_scratch_read"]["parentToolUseId"] == "call_scratch_write"
+
+    tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert tool_results["call_scratch_read"]["parentToolUseId"] == "call_scratch_write"
+    scratch_read_output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "scratchpad.read"
+    )
+    assert scratch_read_output["parentToolUseId"] == "call_scratch_write"
+
+
+def test_react_loop_parents_cross_turn_scratchpad_read_to_prior_write(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_scratch_write",
+                        "name": "scratchpad.write",
+                        "arguments": {"key": "hypothesis", "value": "alpha path is likely relevant"},
+                    },
+                ]
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_scratch_read", "name": "scratchpad.read", "arguments": {"key": "hypothesis"}},
+                ]
+            },
+            {"final": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "scratchpad.write": lambda params: {"status": "ok", "id": "scratch_1", "key": params["key"]},
+            "scratchpad.read": lambda params: {
+                "status": "ok",
+                "id": "scratch_1",
+                "key": params["key"],
+                "value": "alpha path is likely relevant",
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "store then read scratchpad state"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started_read = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolName") == "scratchpad.read"
+    )
+    completed_read = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "scratchpad.read"
+    )
+    tool_result = next(
+        event
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolName") == "scratchpad.read"
+    )
+    assert started_read["payload"]["parentToolUseId"] == "call_scratch_write"
+    assert completed_read["payload"]["parentToolUseId"] == "call_scratch_write"
+    assert tool_result["payload"]["parentToolUseId"] == "call_scratch_write"
+    tool_results = provider.calls[2]["context"]["tool_results"]
+    assert tool_results[1]["parentToolUseId"] == "call_scratch_write"
+
+
+def test_react_loop_emits_executor_tool_progress_for_unblocked_write_file(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_write",
+                        "name": "write_file",
+                        "arguments": {"path": "notes.txt", "content": "hello\n"},
+                    }
+                ]
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    runtime.store.update_config({"config": {"policy": {"approvalMode": "none"}}})
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "write notes"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert not [event for event in runtime.events if event["type"] == "approval.requested"]
+    progress = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolName") == "write_file"
+    )
+    assert progress["toolUseId"] == "call_write"
+    assert progress["toolCategory"] == "file_change"
+    assert "notes.txt" in progress["message"]
+    activity = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_write"
+        and event["payload"].get("outputStream") == "activity"
+        and event["payload"].get("toolOutput") == progress["message"]
+    )
+    assert activity["toolCategory"] == "file_change"
+    write_output = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "write_file"
+    )
+    assert write_output["toolUseId"] == "call_write"
+    assert write_output["toolCategory"] == "file_change"
+    assert write_output["outputStream"] == "result_preview"
+    assert "文件: notes.txt" in write_output["chunk"]
+    assert "写入: 6 bytes" in write_output["chunk"]
+    write_delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_write"
+        and event["payload"].get("outputStream") == "result_preview"
+        and event["payload"].get("toolOutput") == write_output["chunk"]
+    )
+    assert write_delta["toolCategory"] == "file_change"
+    write_preview_deltas = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_write"
+        and event["payload"].get("outputStream") == "result_preview"
+    ]
+    assert len(write_preview_deltas) == 1
+
+
+def test_react_loop_emits_generic_result_preview_for_custom_mcp_tools(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "message": "Looking it up.",
+                "tool_calls": [
+                    {
+                        "id": "call_custom",
+                        "name": "mcp__docs__lookup",
+                        "arguments": {"query": "install guide"},
+                    }
+                ],
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "mcp__docs__lookup": lambda params: {
+                "status": "completed",
+                "summary": f"Found docs for {params['query']}",
+                "items": [
+                    {"title": "Install guide", "url": "https://example.com/install"},
+                    {"title": "Troubleshooting", "url": "https://example.com/debug"},
+                ],
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "lookup docs"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    completed = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolName") == "mcp__docs__lookup"
+    )
+    assert completed["target"] == "install guide"
+    assert completed["resultSummary"] == "Found docs for install guide"
+    assert {"label": "状态", "value": "completed"} in completed["resultPreview"]
+    assert {"label": "目标", "value": "install guide"} in completed["resultPreview"]
+    assert {"label": "摘要", "value": "Found docs for install guide"} in completed["resultPreview"]
+    assert {"label": "样例", "value": "Install guide, Troubleshooting"} in completed["resultPreview"]
+
+    provider_tool_result = provider.calls[1]["context"]["tool_results"][0]
+    assert provider_tool_result["resultPreview"] == completed["resultPreview"]
+    assert isinstance(completed["durationMs"], int)
+    assert completed["durationMs"] >= 0
+    assert provider_tool_result["durationMs"] == completed["durationMs"]
+    raw_progress = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolUseId") == "call_custom"
+    ]
+    assert raw_progress[0]["message"] == "正在调用 MCP 工具：install guide\n"
+    assert raw_progress[0]["toolCategory"] == "mcp"
+    assert raw_progress[0]["toolPhaseId"] == "mcp"
+    assert raw_progress[0]["toolPhaseLabel"] == "MCP"
+    assert raw_progress[0]["toolOperationId"] == "mcp:docs:lookup:install guide"
+    assert raw_progress[0]["toolOperationLabel"] == "MCP"
+    assert raw_progress[0]["toolSemanticParentId"] == f"group:{raw_progress[0]['toolGroupId']}:phase:mcp"
+    assert completed["toolCategory"] == "mcp"
+    assert completed["toolOperationId"] == "mcp:docs:lookup:install guide"
+    assert provider_tool_result["toolCategory"] == "mcp"
+    assert provider_tool_result["toolOperationId"] == "mcp:docs:lookup:install guide"
+    activity = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_custom"
+        and event["payload"].get("outputStream") == "activity"
+    )
+    assert activity["toolOutput"] == "正在调用 MCP 工具：install guide\n"
+    delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_custom"
+        and event["payload"].get("outputStream") == "result_preview"
+    )
+    assert "状态: completed" in delta["toolOutput"]
+    assert "摘要: Found docs for install guide" in delta["toolOutput"]
+    assert "样例: Install guide, Troubleshooting" in delta["toolOutput"]
+    tool_result = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolName") == "mcp__docs__lookup"
+    )
+    assert tool_result["resultPreview"] == completed["resultPreview"]
+    assert tool_result["durationMs"] == completed["durationMs"]
+
+
+def test_react_loop_streams_structured_tool_steps_once_before_result_preview(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "message": "Looking it up.",
+                "tool_calls": [
+                    {
+                        "id": "call_custom",
+                        "name": "mcp__docs__lookup",
+                        "arguments": {"query": "install guide"},
+                    }
+                ],
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "mcp__docs__lookup": lambda params: {
+                "status": "completed",
+                "summary": f"Found docs for {params['query']}",
+                "steps": [
+                    {"label": "connect", "status": "completed", "summary": "opened docs index"},
+                    {"label": "search", "status": "completed", "summary": "matched install guide"},
+                ],
+                "items": [{"title": "Install guide", "url": "https://example.com/install"}],
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "lookup docs"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    progress = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolUseId") == "call_custom"
+    ]
+    assert [payload["message"] for payload in progress] == [
+        "正在调用 MCP 工具：install guide\n",
+        "connect (completed): opened docs index\n",
+        "search (completed): matched install guide\n",
+    ]
+
+    deltas = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta" and event["payload"].get("toolUseId") == "call_custom"
+    ]
+    assert [delta["outputStream"] for delta in deltas] == [
+        "activity",
+        "activity",
+        "activity",
+        "result_preview",
+    ]
+    activity_outputs = [delta["toolOutput"] for delta in deltas if delta["outputStream"] == "activity"]
+    assert len(activity_outputs) == 3
+    assert activity_outputs[0].endswith("install guide\n")
+    assert activity_outputs[1:] == [
+        "connect (completed): opened docs index\n",
+        "search (completed): matched install guide\n",
+    ]
+    assert sum(1 for delta in deltas if delta["toolOutput"] == "connect (completed): opened docs index\n") == 1
+    assert sum(1 for delta in deltas if delta["toolOutput"] == "search (completed): matched install guide\n") == 1
+
+
+def test_react_loop_streams_generic_diagnostics_as_activity(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_custom",
+                        "name": "custom_lookup",
+                        "arguments": {"query": "install guide"},
+                    }
+                ],
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "custom_lookup": lambda _params: {
+                "status": "completed",
+                "summary": "lookup completed with diagnostics",
+                "diagnostics": [
+                    {"code": "connect", "ok": True, "message": "opened docs index", "durationMs": 12},
+                    {"code": "cache_miss", "ok": False, "error": "no local cache", "count": 0},
+                ],
+                "items": [{"title": "Install guide"}],
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "lookup docs"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    progress_messages = [
+        event["payload"]["message"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolUseId") == "call_custom"
+    ]
+    assert progress_messages == [
+        "正在调用工具：install guide\n",
+        "connect (completed): opened docs index [durationMs=12ms]\n",
+        "cache_miss (failed): no local cache [count=0]\n",
+    ]
+    deltas = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta" and event["payload"].get("toolUseId") == "call_custom"
+    ]
+    assert [delta["outputStream"] for delta in deltas] == [
+        "activity",
+        "activity",
+        "activity",
+        "result_preview",
+    ]
+    assert any(delta["toolOutput"] == "cache_miss (failed): no local cache [count=0]\n" for delta in deltas)
 
 
 @pytest.mark.skip(reason="Hangs due to subprocess initialization in _make_builtin_runtime")
@@ -993,8 +4884,152 @@ def test_react_loop_pauses_for_approval_and_resumes_after_submit(tmp_path: Any) 
     assert final_task["status"] == "completed"
     assert final_task["resultSummary"] == "Command completed after approval."
     assert "task.waiting_approval" in [event["type"] for event in runtime.events]
+    resolved = next(event["payload"] for event in runtime.events if event["type"] == "approval.resolved")
+    assert resolved["approvalId"] == approval_id
+    assert resolved["kind"] == "run_command"
+    assert resolved["decision"] == "approved"
+    assert resolved["decidedBy"] == "user"
+    assert resolved["decidedAt"] is not None
+    assert resolved["request"] == {"command": "Write-Output approved"}
+    assert resolved["preview"] == [{"label": "命令", "value": "Write-Output approved"}]
     assert [event["type"] for event in runtime.events].count("tool.completed") == 2
     assert provider.calls[1]["context"]["tool_results"][0]["result"]["stdout"] == "approved\n"
+
+
+def test_react_resume_parents_remaining_tool_to_approved_custom_result(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_lookup",
+                        "name": "custom_lookup",
+                        "arguments": {"query": "install guide"},
+                    },
+                    {
+                        "id": "call_read",
+                        "name": "read_file",
+                        "arguments": {"path": "docs/install.md"},
+                    },
+                ]
+            },
+            {"final": "Approved lookup read completed."},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+
+    def custom_lookup(params: dict[str, Any]) -> dict[str, Any]:
+        request = {"query": params["query"]}
+        if not params.get("approvalId"):
+            approval = runtime.store.create_approval(
+                task_id=params["taskId"],
+                kind="custom_lookup",
+                request=request,
+            )
+            return {"status": "approval_required", "approval": approval, "summary": "lookup approval required"}
+        return {
+            "status": "completed",
+            "summary": "lookup approved",
+            "items": [{"title": "Install guide", "path": "docs/install.md"}],
+        }
+
+    runtime.server._orchestrator._tool_registry.register("custom_lookup", custom_lookup)  # noqa: SLF001
+    runtime.server._orchestrator._tool_registry.register(  # noqa: SLF001
+        "read_file",
+        lambda params: {"path": params["path"], "content": "install", "bytesRead": 7},
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "lookup then read after approval"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "waiting_approval"
+    state = runtime.store.get_pending_react_state(task["id"])
+    assert state is not None
+    assert state["remaining_tool_calls"][0]["id"] == "call_read"
+    approval_id = next(event for event in runtime.events if event["type"] == "approval.requested")["payload"][
+        "approvalId"
+    ]
+
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    assert final_task["status"] == "completed"
+    started_read = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolCallId") == "call_read"
+    )
+    assert started_read["parentToolUseId"] == "call_lookup"
+    assert started_read["toolOperationId"] == "tool:custom_lookup:install guide"
+    provider_tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert provider_tool_results["call_read"]["parentToolUseId"] == "call_lookup"
+    assert provider_tool_results["call_read"]["toolOperationId"] == "tool:custom_lookup:install guide"
+
+
+def test_react_loop_pauses_for_ask_user_and_resumes_with_supplement(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "decision": "ask_user",
+                "message": "需要先确认继续拆渲染层还是改数据层？",
+                "thought_summary": "目标有歧义，需要用户选择范围。",
+                "why_complete": "scope_unclear",
+                "policy_needs": {
+                    "options": [
+                        {"label": "渲染层", "value": "ui", "description": "只处理 UI 渲染。"},
+                        {"label": "数据层", "value": "data", "description": "先补数据管线。"},
+                    ],
+                },
+            },
+            {"final": "已按补充说明继续。"},
+        ]
+    )
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "继续做 parity"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "paused"
+    question_event = next(event for event in runtime.events if event["type"] == "ask_user_question")
+    assert question_event["payload"]["question"] == "需要先确认继续拆渲染层还是改数据层？"
+    assert question_event["payload"]["status"] == "waiting"
+    assert question_event["payload"]["options"][0]["label"] == "渲染层"
+    assert runtime.store.get_pending_react_state(task["id"]) is not None
+
+    supplement = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {
+                "sessionId": session["id"],
+                "taskId": task["id"],
+                "mode": "supplement",
+                "content": "选择：渲染层",
+            },
+        ),
+        "task",
+    )
+    resumed = _call_result(_rpc(runtime, "task.resume", {"taskId": task["id"]}), "task")
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+
+    assert supplement["status"] == "paused"
+    assert resumed["status"] == "completed"
+    assert final_task["resultSummary"] == "已按补充说明继续。"
+    assert "task.supplement.consumed" in [event["type"] for event in runtime.events]
 
 
 def test_react_loop_persists_pending_state_when_approval_is_required(tmp_path: Any) -> None:
@@ -1426,6 +5461,11 @@ def test_react_loop_converges_when_max_steps_are_exceeded(tmp_path: Any) -> None
     event_types = [event["type"] for event in runtime.events]
     assert "tool.completed" in event_types
     assert "task.budget.exhausted" in event_types
+    progress_events = [event for event in runtime.events if event["type"] == "assistant_progress"]
+    assert any(event["payload"].get("phase") == "budget_exhausted" for event in progress_events)
+    budget_progress = next(event for event in progress_events if event["payload"].get("phase") == "budget_exhausted")
+    assert budget_progress["payload"]["text"] == "已达到步骤预算，正在整理当前进展"
+    assert budget_progress["payload"]["recommendedAction"] == "summarize_partial"
 
 
 def test_react_loop_fails_when_max_steps_exhausted_with_only_failed_tools(tmp_path: Any) -> None:
@@ -1440,7 +5480,7 @@ def test_react_loop_fails_when_max_steps_exhausted_with_only_failed_tools(tmp_pa
                     }
                 ]
             },
-            {"final": "This answer should not be reached."},
+            {"final": "Budget continuation completed."},
         ]
     )
 
@@ -1535,6 +5575,13 @@ def test_react_loop_records_budget_pressure_before_exhaustion(tmp_path: Any) -> 
     pressure_events = [event for event in runtime.events if event["type"] == "task.budget.pressure"]
     assert pressure_events
     assert pressure_events[-1]["payload"]["pressure"] == "critical"
+    progress_events = [
+        event for event in runtime.events
+        if event["type"] == "assistant_progress" and event["payload"].get("phase") == "budget_pressure"
+    ]
+    assert progress_events
+    assert progress_events[-1]["payload"]["text"] == "步骤预算接近上限，正在收束当前任务"
+    assert progress_events[-1]["payload"]["pressure"] == "critical"
 
 
 def test_react_loop_records_budget_convergence_advisor_proposal(tmp_path: Any) -> None:
@@ -1571,7 +5618,7 @@ def test_react_loop_records_budget_convergence_advisor_proposal(tmp_path: Any) -
                     }
                 ]
             },
-            {"final": "This answer should not be reached."},
+            {"final": "Budget continuation completed."},
         ]
     )
     runtime = _make_runtime(tmp_path, provider, {"read_file": lambda _params: {"content": "alpha"}})
@@ -1600,6 +5647,7 @@ def test_react_loop_records_budget_convergence_advisor_proposal(tmp_path: Any) -
     )
 
     workflow = task["routing"]["mainWorkflow"]
+    assert task["status"] == "paused"
     assert workflow["convergence"]["source"] == "llm"
     assert workflow["convergence"]["recommendedAction"] == "review_partial"
     assert workflow["convergence"]["handoffFocus"] == "Review alpha.txt before granting more steps."
@@ -1614,6 +5662,32 @@ def test_react_loop_records_budget_convergence_advisor_proposal(tmp_path: Any) -
     assert workflow["convergence"]["proposalRecordId"] == proposals[0]["id"]
     event_types = [event["type"] for event in runtime.events]
     assert "agent.decision.budget_convergence" in event_types
+    progress_events = [event for event in runtime.events if event["type"] == "assistant_progress"]
+    budget_progress = next(event for event in progress_events if event["payload"].get("phase") == "budget_exhausted")
+    assert budget_progress["payload"]["recommendedAction"] == "review_partial"
+    question_event = next(event for event in runtime.events if event["type"] == "ask_user_question")
+    assert question_event["payload"]["question"] == "Review alpha.txt before granting more steps."
+    assert question_event["payload"]["resumePolicy"] == "requires_user_budget_update"
+    assert runtime.store.get_pending_react_state(task["id"]) is not None
+
+    runtime.server._orchestrator._decision_advisor = None  # noqa: SLF001
+    _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {
+                "sessionId": session["id"],
+                "taskId": task["id"],
+                "mode": "supplement",
+                "content": "continue with more budget",
+            },
+        ),
+        "task",
+    )
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+    assert final_task["status"] == "completed"
+    assert final_task["resultSummary"] == "Budget continuation completed."
+    assert runtime.store.get_pending_react_state(task["id"]) is None
 
 
 def test_react_loop_reuses_duplicate_read_file_results(tmp_path: Any) -> None:
@@ -1667,7 +5741,14 @@ def test_react_loop_reuses_duplicate_read_file_results(tmp_path: Any) -> None:
         if event["type"] == "tool.completed" and event["payload"].get("toolName") == "read_file"
     ]
     assert len(read_events) == 1
-    assert provider.calls[-1]["context"]["tool_results"][-1]["result"]["cached"] is True
+    cached_result = provider.calls[-1]["context"]["tool_results"][-1]
+    assert cached_result["result"]["cached"] is True
+    assert cached_result["toolCategory"] == "context_read"
+    assert cached_result["toolPhaseLabel"] == "读取上下文"
+    assert cached_result["toolSemanticParentId"] == f"group:{cached_result['toolGroupId']}:phase:context_read"
+    assert cached_result["toolSemanticParentLabel"] == cached_result["toolPhaseLabel"]
+    assert cached_result["inputSummary"] == "read calculator.py"
+    assert cached_result["resultSummary"] == "read calculator.py (5 bytes)"
 
 
 def test_react_loop_publishes_live_context_budget_updates(tmp_path: Any) -> None:
@@ -1761,6 +5842,667 @@ def test_react_loop_fails_when_tool_fails(tmp_path: Any) -> None:
     assert "Tool explode failed." in messages[1]["content"]
 
 
+def test_react_loop_failed_tool_result_preview_includes_recovery_hint(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_docs",
+                        "name": "mcp__docs__lookup",
+                        "arguments": {"query": "install guide"},
+                    }
+                ]
+            },
+            {"final_answer": "Recovery noted."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "mcp__docs__lookup": lambda _params: {
+                "status": "failed",
+                "error": "MCP server unavailable",
+                "summary": "MCP server unavailable",
+            }
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "lookup docs"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "waiting_approval"
+    failed = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.failed" and event["payload"].get("toolCallId") == "call_docs"
+    )
+    assert isinstance(failed["durationMs"], int)
+    assert failed["durationMs"] >= 0
+    assert {"label": "状态", "value": "failed"} in failed["resultPreview"]
+    assert {"label": "错误", "value": "MCP server unavailable"} in failed["resultPreview"]
+    assert {"label": "类型", "value": "mcp_server_unavailable"} in failed["resultPreview"]
+    assert any(
+        row.get("label") == "修复" and "refresh tools" in row.get("value", "")
+        for row in failed["resultPreview"]
+    )
+
+    tool_result = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_docs"
+    )
+    assert tool_result["resultPreview"] == failed["resultPreview"]
+    assert tool_result["durationMs"] == failed["durationMs"]
+    result_preview_delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_docs"
+        and event["payload"].get("outputStream") == "result_preview"
+    )
+    assert "错误: MCP server unavailable" in result_preview_delta["toolOutput"]
+    assert "类型: mcp_server_unavailable" in result_preview_delta["toolOutput"]
+
+    assert tool_result["content"]["failureKind"] == "mcp_server_unavailable"
+    assert "refresh tools" in tool_result["content"]["recoveryHint"]
+    provider_tool_result = provider.calls[1]["context"]["tool_results"][0]
+    assert provider_tool_result["durationMs"] == failed["durationMs"]
+
+
+def test_react_loop_failed_tool_summary_preview_includes_recovery_hint(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_custom",
+                        "name": "custom_lookup",
+                        "arguments": {"query": "install guide"},
+                    }
+                ]
+            },
+            {"final_answer": "Recovery noted."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {"custom_lookup": lambda _params: {"status": "failed", "summary": "lookup returned no usable data"}},
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "lookup docs"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "waiting_approval"
+    failed = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.failed" and event["payload"].get("toolCallId") == "call_custom"
+    )
+    assert {"label": "状态", "value": "failed"} in failed["resultPreview"]
+    assert {"label": "类型", "value": "tool_failed"} in failed["resultPreview"]
+    assert any(row.get("label") == "修复" for row in failed["resultPreview"])
+    assert {"label": "摘要", "value": "lookup returned no usable data"} in failed["resultPreview"]
+
+
+def test_react_loop_emits_progress_and_operation_for_custom_tools(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_custom",
+                        "name": "custom_lookup",
+                        "arguments": {"query": "install guide"},
+                    }
+                ]
+            },
+            {"final_answer": "Custom lookup done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "custom_lookup": lambda params: {
+                "status": "completed",
+                "summary": f"lookup returned {params['query']}",
+                "items": [{"title": "Install guide"}],
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "lookup docs"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    progress = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolUseId") == "call_custom"
+    )
+    assert progress["message"] == "正在调用工具：install guide\n"
+    assert progress["toolOperationId"] == "tool:custom_lookup:install guide"
+    assert progress["toolCategory"] == "tool"
+    assert progress["toolSemanticParentId"] == f"group:{progress['toolGroupId']}:phase:tool"
+    completed = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolCallId") == "call_custom"
+    )
+    assert completed["toolOperationId"] == "tool:custom_lookup:install guide"
+    provider_tool_result = provider.calls[1]["context"]["tool_results"][0]
+    assert provider_tool_result["toolOperationId"] == "tool:custom_lookup:install guide"
+    activity_deltas = [
+        event["payload"]["toolOutput"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_custom"
+        and event["payload"].get("outputStream") == "activity"
+    ]
+    assert activity_deltas == ["正在调用工具：install guide\n"]
+
+
+def test_react_loop_emits_url_operation_for_custom_tool_without_query(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_custom",
+                        "name": "custom_fetch",
+                        "arguments": {"url": "https://EXAMPLE.com/docs/intro/#setup"},
+                    }
+                ]
+            },
+            {"final_answer": "Custom fetch done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "custom_fetch": lambda params: {
+                "status": "completed",
+                "summary": "fetched docs",
+                "url": params["url"],
+                "title": "Intro",
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "fetch docs"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolCallId") == "call_custom"
+    )
+    assert started["target"] == "https://EXAMPLE.com/docs/intro/#setup"
+    assert started["inputSummary"] == "https://EXAMPLE.com/docs/intro/#setup"
+    progress = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolUseId") == "call_custom"
+    )
+    assert "https://EXAMPLE.com/docs/intro/#setup" in progress["message"]
+    assert progress["toolOperationId"] == "tool:custom_fetch:url:https://example.com/docs/intro"
+    assert progress["toolCategory"] == "tool"
+    completed = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolCallId") == "call_custom"
+    )
+    assert completed["toolOperationId"] == "tool:custom_fetch:url:https://example.com/docs/intro"
+    provider_tool_result = provider.calls[1]["context"]["tool_results"][0]
+    assert provider_tool_result["toolOperationId"] == "tool:custom_fetch:url:https://example.com/docs/intro"
+
+
+def test_react_loop_emits_path_operation_for_mcp_tool_without_query(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_mcp",
+                        "name": "mcp__fs__lookup",
+                        "arguments": {"path": "Docs/Install.md"},
+                    }
+                ]
+            },
+            {"final_answer": "MCP lookup done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "mcp__fs__lookup": lambda params: {
+                "status": "completed",
+                "summary": "found file",
+                "items": [{"path": params["path"]}],
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "lookup file"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    progress = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolUseId") == "call_mcp"
+    )
+    assert "Docs/Install.md" in progress["message"]
+    assert progress["toolOperationId"] == "mcp:fs:lookup:path:docs/install.md"
+    assert progress["toolCategory"] == "mcp"
+    completed = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolCallId") == "call_mcp"
+    )
+    assert completed["toolOperationId"] == "mcp:fs:lookup:path:docs/install.md"
+    provider_tool_result = provider.calls[1]["context"]["tool_results"][0]
+    assert provider_tool_result["toolOperationId"] == "mcp:fs:lookup:path:docs/install.md"
+
+
+def test_react_loop_parents_read_file_to_prior_custom_result_path(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_lookup",
+                        "name": "custom_lookup",
+                        "arguments": {"query": "install guide"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_read",
+                        "name": "read_file",
+                        "arguments": {"path": "docs/install.md"},
+                    }
+                ]
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "custom_lookup": lambda params: {
+                "status": "completed",
+                "summary": f"lookup returned {params['query']}",
+                "items": [{"title": "Install guide", "path": "docs/install.md"}],
+            },
+            "read_file": lambda params: {"path": params["path"], "content": "install", "bytesRead": 7},
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "lookup docs then read"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started_read = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolCallId") == "call_read"
+    )
+    completed_read = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolCallId") == "call_read"
+    )
+    tool_result = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_read"
+    )
+    assert started_read["parentToolUseId"] == "call_lookup"
+    assert completed_read["parentToolUseId"] == "call_lookup"
+    assert tool_result["parentToolUseId"] == "call_lookup"
+    assert started_read["toolOperationId"] == "tool:custom_lookup:install guide"
+    assert completed_read["toolOperationId"] == "tool:custom_lookup:install guide"
+    assert tool_result["toolOperationId"] == "tool:custom_lookup:install guide"
+    tool_results = provider.calls[2]["context"]["tool_results"]
+    assert tool_results[1]["parentToolUseId"] == "call_lookup"
+    assert tool_results[1]["toolOperationId"] == "tool:custom_lookup:install guide"
+
+
+def test_react_loop_parents_same_batch_read_file_to_custom_result_path(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_lookup",
+                        "name": "custom_lookup",
+                        "arguments": {"query": "install guide"},
+                    },
+                    {
+                        "id": "call_read",
+                        "name": "read_file",
+                        "arguments": {"path": "docs/debug.md"},
+                    },
+                ]
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "custom_lookup": lambda params: {
+                "status": "completed",
+                "summary": f"lookup returned {params['query']}",
+                "items": [
+                    {"title": "Install guide", "path": "docs/install.md"},
+                    {"title": "Troubleshooting", "path": "docs/debug.md"},
+                ],
+            },
+            "read_file": lambda params: {"path": params["path"], "content": "debug", "bytesRead": 5},
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "lookup and read debug docs"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    }
+    assert started["call_read"]["parentToolUseId"] == "call_lookup"
+    assert started["call_read"]["toolOperationId"] == "tool:custom_lookup:install guide"
+    tool_use_blocks = {
+        event["payload"]["toolUseId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_use_complete"
+    }
+    assert tool_use_blocks["call_read"]["parentToolUseId"] == "call_lookup"
+    assert tool_use_blocks["call_read"]["toolOperationId"] == "tool:custom_lookup:install guide"
+    provider_tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert provider_tool_results["call_read"]["parentToolUseId"] == "call_lookup"
+    assert provider_tool_results["call_read"]["toolOperationId"] == "tool:custom_lookup:install guide"
+
+
+def test_react_loop_inherits_same_batch_operation_from_custom_result_path(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_lookup",
+                        "name": "custom_manifest",
+                        "arguments": {},
+                    },
+                    {
+                        "id": "call_read",
+                        "name": "read_file",
+                        "arguments": {"path": "docs/result.md"},
+                    },
+                ]
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "custom_manifest": lambda _params: {
+                "status": "completed",
+                "summary": "manifest loaded",
+                "items": [{"path": "docs/result.md"}],
+            },
+            "read_file": lambda params: {"path": params["path"], "content": "result", "bytesRead": 6},
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "load manifest and read result"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    completed_lookup = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolCallId") == "call_lookup"
+    )
+    assert completed_lookup["toolOperationId"] == "tool:custom_manifest:path:docs/result.md"
+    started = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    }
+    assert started["call_read"]["parentToolUseId"] == "call_lookup"
+    assert started["call_read"]["toolOperationId"] == "tool:custom_manifest:path:docs/result.md"
+    provider_tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert provider_tool_results["call_lookup"]["toolOperationId"] == "tool:custom_manifest:path:docs/result.md"
+    assert provider_tool_results["call_read"]["parentToolUseId"] == "call_lookup"
+    assert provider_tool_results["call_read"]["toolOperationId"] == "tool:custom_manifest:path:docs/result.md"
+
+
+def test_react_loop_parents_browser_to_prior_mcp_result_url(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_lookup",
+                        "name": "mcp__docs__lookup",
+                        "arguments": {"query": "install guide"},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_browser",
+                        "name": "browser",
+                        "arguments": {"url": "https://EXAMPLE.com/install#intro", "action": "read"},
+                    }
+                ]
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "mcp__docs__lookup": lambda params: {
+                "status": "completed",
+                "summary": f"Found docs for {params['query']}",
+                "results": [{"title": "Install guide", "url": "https://example.com/install/"}],
+            },
+            "browser": lambda params: {
+                "status": "ok",
+                "statusCode": 200,
+                "url": params["url"],
+                "action": params["action"],
+                "title": "Install guide",
+                "content": "install docs",
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "lookup docs then open"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started_browser = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started" and event["payload"].get("toolCallId") == "call_browser"
+    )
+    completed_browser = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.completed" and event["payload"].get("toolCallId") == "call_browser"
+    )
+    tool_result = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_result" and event["payload"].get("toolUseId") == "call_browser"
+    )
+    assert started_browser["parentToolUseId"] == "call_lookup"
+    assert completed_browser["parentToolUseId"] == "call_lookup"
+    assert tool_result["parentToolUseId"] == "call_lookup"
+    assert started_browser["toolOperationId"] == "mcp:docs:lookup:install guide"
+    assert completed_browser["toolOperationId"] == "mcp:docs:lookup:install guide"
+    assert tool_result["toolOperationId"] == "mcp:docs:lookup:install guide"
+    tool_results = provider.calls[2]["context"]["tool_results"]
+    assert tool_results[1]["parentToolUseId"] == "call_lookup"
+    assert tool_results[1]["toolOperationId"] == "mcp:docs:lookup:install guide"
+
+
+def test_react_loop_parents_same_batch_browser_to_any_mcp_result_url(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_lookup",
+                        "name": "mcp__docs__lookup",
+                        "arguments": {"query": "install guide"},
+                    },
+                    {
+                        "id": "call_browser",
+                        "name": "browser",
+                        "arguments": {"url": "https://example.com/debug#errors", "action": "read"},
+                    },
+                ]
+            },
+            {"final_answer": "Done."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "mcp__docs__lookup": lambda params: {
+                "status": "completed",
+                "summary": f"Found docs for {params['query']}",
+                "items": [
+                    {"title": "Install guide", "url": "https://example.com/install"},
+                    {"title": "Troubleshooting", "url": "https://example.com/debug/"},
+                ],
+            },
+            "browser": lambda params: {
+                "status": "ok",
+                "statusCode": 200,
+                "url": params["url"],
+                "action": params["action"],
+                "title": "Troubleshooting",
+                "content": "debug docs",
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "lookup and open debug docs"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    started = {
+        event["payload"]["toolCallId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    }
+    assert started["call_browser"]["parentToolUseId"] == "call_lookup"
+    assert started["call_browser"]["toolOperationId"] == "mcp:docs:lookup:install guide"
+    tool_use_blocks = {
+        event["payload"]["toolUseId"]: event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool_use_complete"
+    }
+    assert tool_use_blocks["call_browser"]["parentToolUseId"] == "call_lookup"
+    assert tool_use_blocks["call_browser"]["toolOperationId"] == "mcp:docs:lookup:install guide"
+    provider_tool_results = {result["id"]: result for result in provider.calls[1]["context"]["tool_results"]}
+    assert provider_tool_results["call_browser"]["parentToolUseId"] == "call_lookup"
+    assert provider_tool_results["call_browser"]["toolOperationId"] == "mcp:docs:lookup:install guide"
+
+
 def test_react_loop_fails_on_invalid_provider_output(tmp_path: Any) -> None:
     provider = ScriptedProvider([{"thought": "No final answer and no tools."}])
     runtime = _make_runtime(tmp_path, provider)
@@ -1844,6 +6586,62 @@ def test_react_loop_returns_invalid_patch_to_provider_and_accepts_repair(tmp_pat
     assert final_task["resultSummary"].startswith("Patch repaired and applied.")
     assert "Validated with git status" in final_task["resultSummary"]
     assert (workspace_root / "README.md").read_text(encoding="utf-8") == "new line\n"
+    patch_progress = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.progress" and event["payload"].get("toolName") == "apply_patch"
+    ]
+    assert patch_progress
+    assert all(payload["toolCategory"] == "file_change" for payload in patch_progress)
+    progress_messages = [str(payload.get("message") or "") for payload in patch_progress]
+    assert any("README.md" in message for message in progress_messages)
+    assert any("parse (completed): 1 file(s)" in message for message in progress_messages)
+    assert any("validate (completed): 1 path(s)" in message for message in progress_messages)
+    assert any("approval (blocked): apply_patch approval required" in message for message in progress_messages)
+    assert any("approval (completed): patch approved" in message for message in progress_messages)
+    assert any("apply (completed): 1 changed path(s)" in message for message in progress_messages)
+    patch_activity = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolName") == "apply_patch"
+        and event["payload"].get("outputStream") == "activity"
+    ]
+    assert patch_activity
+    assert all(delta["toolCategory"] == "file_change" for delta in patch_activity)
+    activity_outputs = [str(delta.get("toolOutput") or "") for delta in patch_activity]
+    for message in progress_messages:
+        assert message in activity_outputs
+    patch_outputs = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "tool.output" and event["payload"].get("toolName") == "apply_patch"
+    ]
+    assert patch_outputs
+    repaired_output = patch_outputs[-1]
+    assert repaired_output["toolUseId"] == "call_repaired_patch"
+    assert repaired_output["toolCategory"] == "file_change"
+    assert repaired_output["outputStream"] == "result_preview"
+    assert "状态: applied" in repaired_output["chunk"]
+    assert "文件: 1 个" in repaired_output["chunk"]
+    assert "样例: README.md" in repaired_output["chunk"]
+    repaired_delta = next(
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_repaired_patch"
+        and event["payload"].get("outputStream") == "result_preview"
+        and event["payload"].get("toolOutput") == repaired_output["chunk"]
+    )
+    assert repaired_delta["toolCategory"] == "file_change"
+    repaired_preview_deltas = [
+        event["payload"]
+        for event in runtime.events
+        if event["type"] == "content_delta"
+        and event["payload"].get("toolUseId") == "call_repaired_patch"
+        and event["payload"].get("outputStream") == "result_preview"
+    ]
+    assert len(repaired_preview_deltas) == 1
 
 
 def test_react_loop_fails_when_patch_repair_attempts_are_exhausted(tmp_path: Any) -> None:
@@ -2295,10 +7093,25 @@ class TestStoreInbox:
         assert entry["task_id"] == "task_1"
         assert entry["status"] == "pending"
         assert entry["content"] == "Use Python 3.12"
+        assert entry["metadata_json"] == "{}"
 
         pending = store.get_pending_supplements("task_1")
         assert len(pending) == 1
         assert pending[0]["id"] == entry["id"]
+        store.close()
+
+    def test_create_and_get_pending_with_metadata(self, tmp_path: Any) -> None:
+        store = SQLiteStore(str(tmp_path / "test.sqlite3"))
+        entry = store.create_inbox_entry(
+            task_id="task_1",
+            session_id="sess_1",
+            content="Inspect @src/app.ts",
+            metadata={"fileReferences": ["src/app.ts"], "attachments": ["src/app.ts"]},
+        )
+
+        pending = store.get_pending_supplements("task_1")
+        assert pending[0]["id"] == entry["id"]
+        assert '"fileReferences": ["src/app.ts"]' in pending[0]["metadata_json"]
         store.close()
 
     def test_mark_consumed(self, tmp_path: Any) -> None:
@@ -2492,6 +7305,56 @@ def test_attach_supplemental_message_emits_received_event(tmp_path: Any) -> None
     assert received_events[0]["payload"]["inboxEntryId"] == pending[0]["id"]
 
     store.close()
+
+
+def test_running_supplement_includes_referenced_file_content(tmp_path: Any) -> None:
+    provider = ScriptedProvider([
+        {
+            "message": "Running a command.",
+            "tool_calls": [
+                {"id": "call_1", "name": "run_command", "arguments": {"command": "echo wait"}},
+            ],
+        },
+        {"final_answer": "done"},
+    ])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    workspace_root = Path(session["workspaceRoot"])
+    source_dir = workspace_root / "src"
+    source_dir.mkdir(exist_ok=True)
+    (source_dir / "hint.ts").write_text("export const supplementHint = true;\n", encoding="utf-8")
+    inbox_entries_created: list[dict[str, Any]] = []
+
+    original_execute_tool = runtime.orchestrator._execute_tool
+
+    def execute_and_inject(*args: Any, **kwargs: Any) -> Any:
+        task_arg = kwargs.get("task") or (args[1] if len(args) > 1 else {})
+        task_id = task_arg.get("id") if isinstance(task_arg, dict) else ""
+        entry = runtime.store.create_inbox_entry(
+            task_id=task_id,
+            session_id=session["id"],
+            content="Use @src/hint.ts",
+            metadata={"fileReferences": ["src/hint.ts"], "attachments": ["src/hint.ts"]},
+        )
+        inbox_entries_created.append(entry)
+        return original_execute_tool(*args, **kwargs)
+
+    runtime.orchestrator._execute_tool = execute_and_inject  # type: ignore[method-assign]
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "do work"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert len(inbox_entries_created) == 1
+    assert len(provider.calls) == 2
+    second_messages = provider.calls[1]["context"]["messages"]
+    supplement_msgs = [m for m in second_messages if m.get("role") == "user" and "[User supplement]" in m.get("content", "")]
+    assert len(supplement_msgs) == 1
+    assert "Use @src/hint.ts" in supplement_msgs[0]["content"]
+    assert "Referenced file content: src/hint.ts" in supplement_msgs[0]["content"]
+    assert "supplementHint" in supplement_msgs[0]["content"]
 
 
 # ── Edge case: supplement to tasks in various states ────────────────────────

@@ -22,11 +22,59 @@ class BackgroundCommandRequest:
     command_log_id: str
     task_id: str
     session_id: str
+    tool_use_id: str | None
+    parent_tool_use_id: str | None
+    tool_group_id: str | None
+    tool_index: int | None
+    tool_total: int | None
+    tool_operation_id: str | None
+    tool_operation_label: str | None
+    tool_category: str | None
+    tool_phase_id: str | None
+    tool_phase_label: str | None
+    tool_semantic_parent_id: str | None
+    tool_semantic_parent_label: str | None
+    target: str | None
+    input_summary: str | None
     command: str
     cwd: str
     shell: str
     timeout_ms: int
     workspace_root: str
+
+
+def _tool_metadata_payload(request: BackgroundCommandRequest) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if request.tool_use_id:
+        payload["toolUseId"] = request.tool_use_id
+        payload["toolName"] = "run_command"
+    if request.parent_tool_use_id:
+        payload["parentToolUseId"] = request.parent_tool_use_id
+    if request.tool_group_id:
+        payload["toolGroupId"] = request.tool_group_id
+    if request.tool_index is not None:
+        payload["toolIndex"] = request.tool_index
+    if request.tool_total is not None:
+        payload["toolTotal"] = request.tool_total
+    if request.tool_operation_id:
+        payload["toolOperationId"] = request.tool_operation_id
+    if request.tool_operation_label:
+        payload["toolOperationLabel"] = request.tool_operation_label
+    if request.tool_category:
+        payload["toolCategory"] = request.tool_category
+    if request.tool_phase_id:
+        payload["toolPhaseId"] = request.tool_phase_id
+    if request.tool_phase_label:
+        payload["toolPhaseLabel"] = request.tool_phase_label
+    if request.tool_semantic_parent_id:
+        payload["toolSemanticParentId"] = request.tool_semantic_parent_id
+    if request.tool_semantic_parent_label:
+        payload["toolSemanticParentLabel"] = request.tool_semantic_parent_label
+    if request.target:
+        payload["target"] = request.target
+    if request.input_summary:
+        payload["inputSummary"] = request.input_summary
+    return payload
 
 
 class _StreamingArtifactWriter:
@@ -80,13 +128,16 @@ class _RunningBackgroundCommand:
             cancelled = self.cancelled
         return cancelled
 
-    def cancel(self) -> None:
+    def cancel(self) -> bool:
         runtime: WorkerProcessRuntime | None
         with self.lock:
+            if self.cancelled:
+                return False
             self.cancelled = True
             runtime = self.runtime
         if runtime is not None:
             runtime.kill()
+        return True
 
     def is_cancelled(self) -> bool:
         with self.lock:
@@ -125,8 +176,7 @@ class BackgroundCommandService:
             state = self._running.get(command_log_id)
         if state is None:
             return False
-        state.cancel()
-        return True
+        return state.cancel()
 
     def active_command_ids(self) -> list[str]:
         """Return IDs of all currently running background commands."""
@@ -224,8 +274,7 @@ class BackgroundCommandService:
             stderr_writer.append(str(exc))
             self._append_command_output_trace(
                 store,
-                task_id=request.task_id,
-                command_log_id=request.command_log_id,
+                request=request,
                 stream_name="stderr",
                 chunk=str(exc),
             )
@@ -325,8 +374,7 @@ class BackgroundCommandService:
         buffer.clear()
         self._append_command_output_trace(
             store,
-            task_id=request.task_id,
-            command_log_id=request.command_log_id,
+            request=request,
             stream_name=stream_name,
             chunk=chunk,
         )
@@ -341,20 +389,20 @@ class BackgroundCommandService:
         self,
         store: SQLiteStore,
         *,
-        task_id: str,
-        command_log_id: str,
+        request: BackgroundCommandRequest,
         stream_name: str,
         chunk: str,
     ) -> None:
         if not chunk:
             return
         store.append_trace_event(
-            task_id=task_id,
+            task_id=request.task_id,
             event_type="command.output",
             source="command",
-            related_id=command_log_id,
+            related_id=request.command_log_id,
             payload={
-                "commandId": command_log_id,
+                "commandId": request.command_log_id,
+                **_tool_metadata_payload(request),
                 "stream": stream_name,
                 "chunk": chunk,
             },
@@ -377,6 +425,7 @@ class BackgroundCommandService:
                 event_type="command.output",
                 payload={
                     "commandId": request.command_log_id,
+                    **_tool_metadata_payload(request),
                     "stream": stream_name,
                     "chunk": chunk,
                 },
@@ -392,6 +441,7 @@ class BackgroundCommandService:
                 event_type="command.started",
                 payload={
                     "commandId": request.command_log_id,
+                    **_tool_metadata_payload(request),
                     "command": request.command,
                     "cwd": request.cwd,
                     "shell": request.shell,
@@ -411,7 +461,12 @@ class BackgroundCommandService:
         request: BackgroundCommandRequest,
         command_log: dict[str, Any],
     ) -> None:
-        event_type = "command.completed" if command_log["status"] == "completed" else "command.failed"
+        if command_log["status"] == "completed":
+            event_type = "command.completed"
+        elif command_log["status"] == "cancelled":
+            event_type = "command.cancelled"
+        else:
+            event_type = "command.failed"
         self._event_bridge.emit(
             self._event_payload(
                 store=store,
@@ -419,6 +474,7 @@ class BackgroundCommandService:
                 event_type=event_type,
                 payload={
                     "commandId": command_log["id"],
+                    **_tool_metadata_payload(request),
                     "command": command_log["command"],
                     "cwd": command_log["cwd"],
                     "shell": request.shell,

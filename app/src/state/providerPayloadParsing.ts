@@ -1,6 +1,6 @@
-import type { AppConfig, ProviderProfile } from "@shared";
+import type { AppConfig, CapabilityName, CapabilityRule, PermissionPreset, ProviderProfile } from "@shared";
 import type { RuntimeConfig } from "../lib/runtimeClient";
-import type { SettingsProviderPayload } from "../ui/workbench/workspaces/settings/SettingsWorkspace";
+import type { SettingsPermissionRule, SettingsProviderPayload } from "../ui/workbench/workspaces/settings/SettingsWorkspace";
 import {
   DEFAULT_PROVIDER_API_FORMAT,
   DEFAULT_PROVIDER_API_KEY_ENV_VAR,
@@ -277,7 +277,7 @@ export function settingsLanguageToConfig(language: "zh" | "en" | "auto"): string
 
 export function settingsModeToApprovalMode(mode: string): AppConfig["policy"]["approvalMode"] {
   if (mode === "skip") {
-    return "relaxed";
+    return "none";
   }
   if (mode === "edits") {
     return "on_write_or_command";
@@ -285,12 +285,73 @@ export function settingsModeToApprovalMode(mode: string): AppConfig["policy"]["a
   return "strict";
 }
 
-export function approvalModeToSettingsMode(mode?: AppConfig["policy"]["approvalMode"]): string {
-  if (mode === "relaxed") {
+export function settingsModeToPermissionPreset(mode: string): PermissionPreset {
+  if (mode === "skip" || mode === "edits") {
+    return "autonomous";
+  }
+  if (mode === "plan") {
+    return "safe";
+  }
+  return "balanced";
+}
+
+export function approvalModeToSettingsMode(mode?: AppConfig["policy"]["approvalMode"] | string): string {
+  if (mode === "none" || mode === "never" || mode === "off" || mode === "relaxed") {
     return "skip";
   }
   if (mode === "on_write_or_command") {
     return "edits";
   }
   return "ask";
+}
+
+const capabilityLabels: Partial<Record<CapabilityName | string, string>> = {
+  readFile: "文件读取",
+  writeFile: "文件写入",
+  runCommand: "命令执行",
+  webFetch: "Web 访问",
+  network: "网络访问",
+  subagents: "子任务",
+  memoryWrite: "记忆写入",
+  gitWrite: "Git 写入",
+  browserAutomation: "浏览器自动化",
+  computerUse: "电脑操作",
+  hooksExecute: "Hooks 执行",
+};
+
+const capabilityDescriptions: Partial<Record<CapabilityName | string, string>> = {
+  writeFile: "来自“始终允许”或手动配置的文件写入规则。",
+  runCommand: "来自“始终允许”或手动配置的命令执行规则。",
+  webFetch: "来自“始终允许”或手动配置的 Web 访问规则。",
+  computerUse: "来自“始终允许”或手动配置的电脑操作规则。",
+  subagents: "来自“始终允许”或手动配置的子任务规则。",
+  gitWrite: "来自“始终允许”或手动配置的 Git 写入规则。",
+};
+
+const permissionModeLabels: Record<string, string> = {
+  allow: "始终允许",
+  ask: "每次询问",
+  blocked: "阻止",
+};
+
+export function buildSettingsPermissionRules(config: RuntimeConfig | null): SettingsPermissionRule[] {
+  const capabilities = config?.permissions?.capabilities;
+  if (!capabilities) {
+    return [];
+  }
+
+  return Object.entries(capabilities)
+    .filter((entry): entry is [string, CapabilityRule] => {
+      const [, rule] = entry;
+      return Boolean(rule && typeof rule === "object" && typeof rule.mode === "string");
+    })
+    .map(([capability, rule]) => ({
+      capability,
+      label: capabilityLabels[capability] ?? capability,
+      mode: rule.mode,
+      modeLabel: permissionModeLabels[rule.mode] ?? rule.mode,
+      scope: rule.scope || "*",
+      description: capabilityDescriptions[capability] ?? "来自配置文件的 capability 覆盖规则。",
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label, "zh-CN"));
 }

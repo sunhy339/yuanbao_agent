@@ -6,6 +6,7 @@ import { SkillsWorkspace } from "./SkillsWorkspace";
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 describe("SkillsWorkspace", () => {
@@ -65,11 +66,54 @@ describe("SkillsWorkspace", () => {
     expect(screen.queryByRole("button", { name: /添加技能/ })).not.toBeInTheDocument();
   });
 
+  it("filters installed skills by search text and type", async () => {
+    const user = userEvent.setup();
+    render(
+      <SkillsWorkspace
+        providerLabel="local"
+        mcpServers={[]}
+        skills={[
+          {
+            id: "docs",
+            name: "Docs",
+            description: "Document workflows",
+            path: "category:productivity",
+            systemPrompt: "Use document-safe editing workflows.",
+            toolWhitelist: ["read_docx", "write_docx"],
+            isBuiltin: true,
+            enabled: true,
+          },
+          {
+            id: "custom-reviewer",
+            name: "Custom Reviewer",
+            description: "Checks implementation plans",
+            path: "category:custom",
+            systemPrompt: "Review the proposed change.",
+            toolWhitelist: ["read_file"],
+            isBuiltin: false,
+            enabled: true,
+          },
+        ]}
+      />,
+    );
+
+    await user.type(screen.getByRole("textbox", { name: "搜索技能" }), "review");
+
+    expect(screen.queryByText("Docs")).not.toBeInTheDocument();
+    expect(screen.getByText("Custom Reviewer")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "内置" }));
+
+    expect(screen.queryByText("Custom Reviewer")).not.toBeInTheDocument();
+    expect(screen.getByText("没有匹配的技能")).toBeInTheDocument();
+  });
+
   it("creates, edits, and deletes custom skill presets through callbacks", async () => {
     const user = userEvent.setup();
     const onCreateSkill = vi.fn().mockResolvedValue(undefined);
     const onUpdateSkill = vi.fn().mockResolvedValue(undefined);
     const onDeleteSkill = vi.fn().mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(
       <SkillsWorkspace
         providerLabel="local"
@@ -124,6 +168,7 @@ describe("SkillsWorkspace", () => {
 
     await user.click(screen.getByRole("button", { name: "删除" }));
 
+    expect(confirm).toHaveBeenCalledWith("删除技能“Custom Reviewer”？");
     expect(onDeleteSkill).toHaveBeenCalledWith("custom-reviewer");
   });
 });

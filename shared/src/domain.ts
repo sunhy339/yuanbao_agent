@@ -1,6 +1,6 @@
 export type Identifier = string;
 
-export type ApprovalMode = "strict" | "on_write_or_command" | "relaxed";
+export type ApprovalMode = "strict" | "on_write_or_command" | "relaxed" | "none";
 export type ProviderMode = "mock" | "openai-compatible";
 export type SessionStatus = "active" | "archived" | "failed";
 export type TaskStatus =
@@ -18,6 +18,7 @@ export type PatchStatus =
   | "proposed"
   | "approved"
   | "applied"
+  | "reverted"
   | "rejected"
   | "failed";
 export type ApprovalKind =
@@ -25,11 +26,13 @@ export type ApprovalKind =
   | "run_command"
   | "delete_file"
   | "network_access"
+  | "computer_use"
   | "subagent_dispatch"
   | "plan"
   | "write_file"
   | "worktree_merge"
-  | "completion_review";
+  | "completion_review"
+  | "advisor_tool";
 export type ApprovalDecision = "approved" | "rejected";
 export type ToolCallStatus = "started" | "completed" | "failed";
 export type CommandStatus =
@@ -48,7 +51,7 @@ export type ScheduledRunStatus =
   | "cancelled";
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 export type MessageKind = "normal" | "supplement" | "failure" | "system";
-export type MessageStatus = "streaming" | "completed" | "failed";
+export type MessageStatus = "streaming" | "completed" | "failed" | "blocked" | "cancelled";
 export type TraceEventSource =
   | "provider"
   | "tool"
@@ -77,6 +80,7 @@ export type TraceEventType =
   | "command.started"
   | "command.output"
   | "command.completed"
+  | "command.cancelled"
   | "command.failed"
   | "policy.decision"
   | "task.budget.pressure"
@@ -270,6 +274,7 @@ export interface MessageRecord {
   status?: MessageStatus;
   createdSeq?: number;
   updatedAt?: number;
+  metadata?: Record<string, unknown>;
 }
 
 export interface PlanStep {
@@ -384,6 +389,7 @@ export interface PatchRecord {
   workspaceId: Identifier;
   summary: string;
   diffText: string;
+  changedPaths?: string[];
   status: PatchStatus;
   filesChanged: number;
   createdAt: number;
@@ -393,9 +399,25 @@ export interface PatchRecord {
 export interface CommandLogRecord {
   id: Identifier;
   taskId: Identifier;
+  toolUseId?: string;
+  toolName?: string;
+  parentToolUseId?: string;
+  toolGroupId?: string;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: string;
+  toolOperationLabel?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
+  target?: string;
+  inputSummary?: string;
   command: string;
   cwd: string;
   shell?: "powershell" | "bash" | "zsh";
+  background?: boolean;
   status: CommandStatus;
   exitCode?: number;
   startedAt: number;

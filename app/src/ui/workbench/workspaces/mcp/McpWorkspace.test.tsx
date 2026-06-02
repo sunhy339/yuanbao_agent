@@ -1,11 +1,12 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpWorkspace } from "./McpWorkspace";
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 describe("McpWorkspace", () => {
@@ -107,6 +108,7 @@ describe("McpWorkspace", () => {
   it("uses selected server actions for toggle, tool refresh, and delete", async () => {
     const user = userEvent.setup();
     const actions = handlers();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(
       <McpWorkspace
         servers={[
@@ -129,7 +131,65 @@ describe("McpWorkspace", () => {
 
     expect(actions.onToggleServer).toHaveBeenCalledWith("srv_files", false);
     expect(actions.onRefreshTools).toHaveBeenCalledWith("srv_files");
+    expect(confirm).toHaveBeenCalledWith("删除 MCP 服务器“filesystem”？");
     expect(actions.onDeleteServer).toHaveBeenCalledWith("srv_files");
+  });
+
+  it("requires transport-specific fields before submitting MCP servers", async () => {
+    const user = userEvent.setup();
+    const actions = handlers();
+    render(<McpWorkspace servers={[]} {...actions} />);
+
+    await user.type(screen.getByLabelText("名称"), "missing command");
+
+    expect(screen.getByText("请输入启动命令。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "创建服务器" })).toBeDisabled();
+    expect(actions.onCreateServer).not.toHaveBeenCalled();
+
+    await user.selectOptions(screen.getByLabelText("传输方式"), "http");
+
+    expect(screen.getByText("请输入服务器 URL。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "创建服务器" })).toBeDisabled();
+  });
+
+  it("filters MCP servers by search text and enabled state", async () => {
+    const user = userEvent.setup();
+    const actions = handlers();
+    render(
+      <McpWorkspace
+        servers={[
+          {
+            id: "srv_files",
+            name: "filesystem",
+            transport: "stdio",
+            command: "npx",
+            args: ["@modelcontextprotocol/server-filesystem"],
+            enabled: true,
+          },
+          {
+            id: "srv_web",
+            name: "web-search",
+            transport: "http",
+            url: "http://127.0.0.1:8787/sse",
+            enabled: false,
+          },
+        ]}
+        {...actions}
+      />,
+    );
+
+    const registry = screen.getByRole("heading", { name: "运行时注册表" }).closest("section");
+    expect(registry).not.toBeNull();
+
+    await user.type(screen.getByRole("textbox", { name: "搜索 MCP 服务器" }), "web");
+
+    expect(within(registry as HTMLElement).queryByText("filesystem")).not.toBeInTheDocument();
+    expect(within(registry as HTMLElement).getByText("web-search")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "启用" }));
+
+    expect(within(registry as HTMLElement).queryByText("web-search")).not.toBeInTheDocument();
+    expect(within(registry as HTMLElement).getByText("没有匹配的 MCP 服务器")).toBeInTheDocument();
   });
 
   it("shows persistent errors and keeps the draft when create fails", async () => {
@@ -148,6 +208,7 @@ describe("McpWorkspace", () => {
     );
 
     await user.type(screen.getByLabelText("名称"), "broken server");
+    await user.type(screen.getByLabelText("命令"), "npx");
     await user.click(screen.getByRole("button", { name: "创建服务器" }));
 
     expect(screen.getByRole("alert", { name: "MCP 错误" })).toHaveTextContent("Command is required");

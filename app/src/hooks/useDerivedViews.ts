@@ -12,7 +12,7 @@ import type { ProviderSettingsForm } from "../state/providerConfig";
 import type { ProviderTestResult } from "@shared";
 import type { ApprovalCardView, PatchCardView, ToolTimelineItem } from "../state/eventRecordViews";
 import type { ComposerRuntimeChildTask } from "../ui/workbench/ComposerDock";
-import type { SettingsProvider, SettingsAgentBehaviorConfig, SettingsAgentConfig, SettingsSkillConfig } from "../ui/workbench/workspaces/settings/SettingsWorkspace";
+import type { SettingsProvider, SettingsAgentBehaviorConfig, SettingsAgentConfig, SettingsSkillConfig, SettingsPermissionRule } from "../ui/workbench/workspaces/settings/SettingsWorkspace";
 import type { ScheduledTask, ExecutionLog } from "../ui/workbench/workspaces/scheduled/ScheduledWorkspace";
 import type { SessionWorkspaceCollaboration, SessionWorkspaceBackgroundJob, SessionWorkspaceContextPreview } from "../ui/workbench/workspaces/session/SessionWorkspace";
 import type { WorkbenchTab } from "../ui/workbench/types";
@@ -21,7 +21,7 @@ import { getVisibleChatMessages } from "../state/chatMessages";
 import { normalizeProviderConfig, formatCompactCount, buildSettingsAgentBehaviorConfig } from "../state/providerConfig";
 import { buildSettingsProviderLastTest, getProviderStatusView, getProviderRuntimeNotice, getProviderHealthView } from "../state/providerStatus";
 import { normalizeSkillForSettings } from "../state/mcpSkillPayloads";
-import { approvalModeToSettingsMode, buildSettingsGeneralConfig } from "../state/providerPayloadParsing";
+import { approvalModeToSettingsMode, buildSettingsGeneralConfig, buildSettingsPermissionRules } from "../state/providerPayloadParsing";
 import { permissionModes } from "../ui/workbench/workspaces/settings/settingsTypes";
 import { scheduledRecordToWorkspaceTask, scheduledRunToExecutionLog } from "../state/scheduleHelpers";
 import { readEventText, readEventNumber, summarizeValue, countAddedLines, countDeletedLines, parsePatchFiles, riskToLevel } from "../state/traceReaders";
@@ -131,6 +131,12 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
     [chatMessages, session?.id],
   );
 
+  const maxContextTokenBudget = useMemo(() => {
+    const raw = activeProviderProfile?.maxContextTokens ?? providerSettings.maxContextTokens;
+    const value = typeof raw === "number" ? raw : Number(raw);
+    return Number.isFinite(value) && value > 0 ? value : undefined;
+  }, [activeProviderProfile?.maxContextTokens, providerSettings.maxContextTokens]);
+
   // Session context preview
   const sessionContextPreview = useMemo(
     () =>
@@ -138,10 +144,12 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
         events,
         traceEvents,
         workspace,
+        session,
         activeTaskId,
         activeTask: task,
+        maxContextTokens: maxContextTokenBudget,
       }),
-    [activeTaskId, events, traceEvents, task, workspace],
+    [activeTaskId, events, maxContextTokenBudget, session, traceEvents, task, workspace],
   );
 
   // Settings providers
@@ -186,6 +194,11 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
 
   const settingsAgentBehavior = useMemo(
     () => buildSettingsAgentBehaviorConfig(config),
+    [config],
+  );
+
+  const settingsPermissionRules = useMemo<SettingsPermissionRule[]>(
+    () => buildSettingsPermissionRules(config),
     [config],
   );
 
@@ -234,10 +247,14 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
         kind: approval.kind,
         status: approval.status,
         summary: approval.requestSummary,
+        filesChanged: approval.filesChanged,
+        changedPaths: approval.changedPaths,
+        diff: approval.diffText,
         requestedAt: approval.requestedAt,
         risk: riskToLevel(approval.risk),
         parametersPreview: approval.requestSummary,
         fullInput: approval.requestJson,
+        previewRows: approval.previewRows,
         command: approval.command,
         cwd: approval.cwd,
         completionEvidence: approval.completionEvidence,
@@ -249,13 +266,14 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
     () =>
       patchCards.map((patch) => ({
         id: patch.patchId,
+        taskId: patch.taskId,
         summary: patch.summary,
         status: patch.status,
         filesChanged: patch.filesChanged,
         additions: countAddedLines(patch.diffText ?? ""),
         deletions: countDeletedLines(patch.diffText ?? ""),
         updatedAt: patch.updatedAt,
-        files: parsePatchFiles(patch.diffText),
+        files: parsePatchFiles(patch.diffText, patch.changedPaths),
         diff: patch.diffText,
       })),
     [patchCards],
@@ -288,16 +306,27 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
   const sessionToolCalls = useMemo(
     () =>
       toolTimelineItems
-        .filter((toolCall) => !activeTaskId || toolCall.taskId === activeTaskId)
         .map((toolCall) => ({
           id: toolCall.id,
           toolUseId: toolCall.toolCallId,
           parentToolUseId: toolCall.parentToolUseId,
+          toolGroupId: toolCall.toolGroupId,
+          toolIndex: toolCall.toolIndex,
+          toolTotal: toolCall.toolTotal,
+          toolOperationId: toolCall.toolOperationId,
+          toolOperationLabel: toolCall.toolOperationLabel,
+          toolCategory: toolCall.toolCategory,
+          toolPhaseId: toolCall.toolPhaseId,
+          toolPhaseLabel: toolCall.toolPhaseLabel,
+          toolSemanticParentId: toolCall.toolSemanticParentId,
+          toolSemanticParentLabel: toolCall.toolSemanticParentLabel,
           toolName: toolCall.toolName,
           status: toolCall.status,
+          target: toolCall.target,
           taskId: toolCall.taskId,
           time: toolCall.finishedAt ?? toolCall.updatedAt ?? toolCall.startedAt,
           resultSummary: toolCall.errorSummary ?? toolCall.resultSummary,
+          resultPreview: toolCall.resultPreview,
           durationMs: toolCall.durationMs,
           argsPreview: toolCall.argsSummary,
           input: toolCall.argsSummary,
@@ -306,7 +335,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
           rawOutput: toolCall.resultRaw,
           stderr: toolCall.errorSummary,
         })),
-    [activeTaskId, toolTimelineItems],
+    [toolTimelineItems],
   );
 
   const sessionCollaboration = useMemo(
@@ -332,12 +361,10 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
   const sessionBackgroundJobs = useMemo(
     () => {
       const eventJobs = buildSessionBackgroundJobs(events, traceEvents);
-      const commandLogs = Object.values(commandLogCacheById).filter(
-        (log) => !activeTaskId || log.taskId === activeTaskId,
-      );
+      const commandLogs = Object.values(commandLogCacheById);
       return mergeSessionBackgroundJobs(eventJobs, commandLogs);
     },
-    [activeTaskId, commandLogCacheById, events, traceEvents],
+    [commandLogCacheById, events, traceEvents],
   );
 
   // Labels
@@ -386,8 +413,8 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
     : `${formatCompactCount(contextStats?.estimatedTokens ?? contextStats?.estimatedInputTokens)} 上下文`;
 
   const cwdLabel =
-    sessionContextPreview?.workspaceRoot ??
     activeSessionWorkspaceRoot ??
+    sessionContextPreview?.workspaceRoot ??
     workspace?.rootPath ??
     workspacePath ??
     "";
@@ -403,6 +430,7 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
     toolTimelineItems, approvalCards, approvalByPatchId, patchCards,
     visibleChatMessages, sessionContextPreview,
     settingsProviders, settingsAgentBehavior, sessionTaskCount,
+    settingsPermissionRules,
     scheduledTasks, settingsSkills, settingsAgents, scheduledLogsByTaskId,
     sessionApprovals, sessionPatches, sessionTraceItems, sessionToolCalls,
     sessionCollaboration, composerRuntimeChildTasks, sessionBackgroundJobs,

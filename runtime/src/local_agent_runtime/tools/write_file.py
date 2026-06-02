@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 from typing import Any
 
@@ -16,6 +17,23 @@ from ..policy.permission_engine import PermissionRequest as PermRequest
 from ..services.write_scope_enforcement import WriteScopeEnforcer
 
 
+def _step(label: str, status: str, summary: str) -> dict[str, str]:
+    return {"label": label, "status": status, "summary": summary}
+
+
+def _build_write_file_diff(relative_path: str, original_text: str, new_text: str, *, is_new_file: bool) -> str:
+    return "\n".join(
+        difflib.unified_diff(
+            original_text.splitlines(),
+            new_text.splitlines(),
+            fromfile="/dev/null" if is_new_file else f"a/{relative_path}",
+            tofile=f"b/{relative_path}",
+            lineterm="",
+            n=3,
+        )
+    )
+
+
 def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None, *, permission_engine: Any | None = None) -> dict[str, Any]:
     def write_file(params: dict[str, Any]) -> dict[str, Any]:
         workspace_root = require_workspace_root(params)
@@ -28,10 +46,20 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
         reasons = WriteScopeEnforcer(store).check_patch_in_scope(task_id, relative_path)
         if reasons:
             raise ValueError("Write scope violation: " + "; ".join(reasons))
+        steps = [
+            _step("resolve", "completed", relative_path),
+            _step("scope", "completed", "write scope allowed"),
+        ]
         content = params.get("content", "")
         encoding = params.get("encoding", "utf-8")
         create_dirs = params.get("create_dirs", True)
         overwrite = params.get("overwrite", True)
+        content_text = str(content)
+        existing_text = file_path.read_text(encoding=str(encoding), errors="replace") if file_path.is_file() else ""
+        is_new_file = not file_path.is_file()
+        diff_text = _build_write_file_diff(relative_path, existing_text, content_text, is_new_file=is_new_file)
+        changed_paths = [relative_path]
+        steps.append(_step("diff", "completed", f"{len(diff_text)} character(s)"))
 
         if file_path.is_file() and not overwrite:
             raise ValueError(f"File already exists and overwrite is false: {relative_path}")
@@ -44,6 +72,9 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
             "encoding": encoding,
             "create_dirs": bool(create_dirs),
             "overwrite": bool(overwrite),
+            "filesChanged": 1,
+            "changedPaths": changed_paths,
+            "diffText": diff_text,
         }
 
         approval = approval_by_id_or_none(store, approval_id)
@@ -60,9 +91,16 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
                     "status": "approval_required",
                     "approval": approval,
                     "path": relative_path,
+                    "filesChanged": 1,
+                    "changedPaths": changed_paths,
+                    "diffText": diff_text,
                     "bytesWritten": 0,
                     "created": not file_path.is_file(),
                     "encoding": encoding,
+                    "steps": [
+                        *steps,
+                        _step("approval", "blocked", "write_file approval required"),
+                    ],
                 }
         elif permission_engine is not None:
             decision = permission_engine.evaluate(PermRequest(
@@ -78,7 +116,14 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
                     "status": "blocked",
                     "error": decision.reason,
                     "path": relative_path,
+                    "filesChanged": 1,
+                    "changedPaths": changed_paths,
+                    "diffText": diff_text,
                     "bytesWritten": 0,
+                    "steps": [
+                        *steps,
+                        _step("approval", "blocked", str(decision.reason)),
+                    ],
                 }
             if decision.decision == "approval_required":
                 if not task_id:
@@ -92,9 +137,16 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
                     "status": "approval_required",
                     "approval": approval,
                     "path": relative_path,
+                    "filesChanged": 1,
+                    "changedPaths": changed_paths,
+                    "diffText": diff_text,
                     "bytesWritten": 0,
                     "created": not file_path.is_file(),
                     "encoding": encoding,
+                    "steps": [
+                        *steps,
+                        _step("approval", "blocked", "write_file approval required"),
+                    ],
                 }
         elif policy_guard.requires_approval(
             "write_file",
@@ -109,24 +161,38 @@ def build_write_file_tool(policy_guard: Any, store: Any, subagent_service: Any |
                 "status": "approval_required",
                 "approval": approval,
                 "path": relative_path,
+                "filesChanged": 1,
+                "changedPaths": changed_paths,
+                "diffText": diff_text,
                 "bytesWritten": 0,
                 "created": not file_path.is_file(),
                 "encoding": encoding,
+                "steps": [
+                    *steps,
+                    _step("approval", "blocked", "write_file approval required"),
+                ],
             }
+        steps.append(_step("approval", "completed", "write allowed"))
 
         if create_dirs and not file_path.parent.exists():
             file_path.parent.mkdir(parents=True, exist_ok=True)
+            steps.append(_step("mkdir", "completed", to_relative_path(workspace_root, file_path.parent)))
 
         existing = file_path.is_file()
-        new_bytes = str(content).encode(str(encoding), errors="replace")
+        new_bytes = content_text.encode(str(encoding), errors="replace")
         file_path.write_bytes(new_bytes)
+        steps.append(_step("write", "completed", f"{len(new_bytes)} byte(s)"))
 
         return {
             "status": "written",
             "path": relative_path,
+            "filesChanged": 1,
+            "changedPaths": changed_paths,
+            "diffText": diff_text,
             "bytesWritten": len(new_bytes),
             "created": not existing,
             "encoding": encoding,
+            "steps": steps,
         }
 
     return {"handler": write_file}

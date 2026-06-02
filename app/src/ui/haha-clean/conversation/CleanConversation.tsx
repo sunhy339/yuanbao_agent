@@ -8,6 +8,7 @@ import {
   CircleAlert,
   Copy,
   CornerDownRight,
+  GitBranch,
   FileDiff,
   Files,
   HelpCircle,
@@ -17,8 +18,10 @@ import {
   MousePointerClick,
   RotateCcw,
   ScanSearch,
+  SendHorizontal,
   TerminalSquare,
   Target,
+  Trash2,
   Wrench,
 } from "lucide-react";
 import type {
@@ -53,6 +56,21 @@ type PatchFileSummary = {
   additions?: number;
   deletions?: number;
 };
+
+const ALWAYS_ALLOW_APPROVAL_KINDS = new Set([
+  "apply_patch",
+  "write_file",
+  "delete_file",
+  "run_command",
+  "network_access",
+  "computer_use",
+  "subagent_dispatch",
+  "worktree_merge",
+]);
+
+function supportsAlwaysAllowKind(kind?: string | null) {
+  return Boolean(kind && ALWAYS_ALLOW_APPROVAL_KINDS.has(kind));
+}
 
 function messageKind(message: SessionWorkspaceMessage) {
   const metaKind = message.metadata?.kind;
@@ -158,13 +176,28 @@ function summarizeToolResultText(value: string) {
 }
 
 function toolInlineSummary(message: SessionWorkspaceMessage) {
+  const structuredResult = readString(message.metadata?.resultSummary);
   const result = summarizeToolResultText(readString(message.metadata?.resultText));
-  return compactText(result || message.content || "等待工具返回结果", 170);
+  return compactText(structuredResult || result || message.content || "等待工具返回结果", 170);
 }
 
 function toolInlineTarget(message: SessionWorkspaceMessage) {
   const input = readToolInputRecord(message);
   return compactText(readString(input?.path ?? input?.file ?? input?.cwd ?? input?.command ?? input?.query), 92);
+}
+
+function metadataPreviewRows(value: unknown): Array<{ label: string; value: string }> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const record = row as Record<string, unknown>;
+      const label = typeof record.label === "string" ? record.label.trim() : "";
+      const rowValue = typeof record.value === "string" ? record.value.trim() : "";
+      return label && rowValue ? { label, value: rowValue } : null;
+    })
+    .filter((row): row is { label: string; value: string } => row !== null)
+    .slice(0, 5);
 }
 
 function normalizeRuntimeToolName(item: RuntimeTimelineItem) {
@@ -174,13 +207,61 @@ function normalizeRuntimeToolName(item: RuntimeTimelineItem) {
   return name;
 }
 
+const CONTEXT_SEARCH_COMMAND_RE =
+  /^(rg|grep|ag|ack|findstr|select-string|find|where(?:\.exe)?|which|whereis|locate)\b/i;
+const CONTEXT_READ_COMMAND_RE =
+  /^(cat|head|tail|less|more|wc|stat|file|strings|jq|awk|cut|sort|uniq|tr|get-content|gc|get-item|test-path|resolve-path|get-filehash|get-acl|format-hex|pwd|get-location)\b/i;
+const CONTEXT_LIST_COMMAND_RE =
+  /^(ls|dir|tree|du|get-childitem|gci)\b/i;
+const CONTEXT_GIT_COMMAND_RE =
+  /^git\s+(status|diff|log|show|branch|remote|tag|rev-parse|rev-list|ls-files|grep|blame)\b/i;
+
+function normalizedRuntimeCommand(item: RuntimeTimelineItem) {
+  const candidates = [item.code, item.rawDetail, item.title]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  for (const candidate of candidates) {
+    const parsed = parseJson(candidate);
+    const structured = readRecordString(parsed, ["command", "cmd"]);
+    if (structured) return structured;
+    if (
+      CONTEXT_GIT_COMMAND_RE.test(candidate) ||
+      CONTEXT_LIST_COMMAND_RE.test(candidate) ||
+      CONTEXT_SEARCH_COMMAND_RE.test(candidate) ||
+      CONTEXT_READ_COMMAND_RE.test(candidate)
+    ) {
+      return candidate;
+    }
+  }
+  return candidates[0] ?? "";
+}
+
+function isShellRuntime(item: RuntimeTimelineItem) {
+  const name = normalizeRuntimeToolName(item);
+  return item.kind === "command" || ["run_command", "command", "bash", "shell_command", "powershell"].includes(name);
+}
+
+function contextCommandKind(item: RuntimeTimelineItem) {
+  if (!isShellRuntime(item)) return "";
+  const command = normalizedRuntimeCommand(item);
+  if (!command) return "";
+  if (CONTEXT_GIT_COMMAND_RE.test(command)) return "git";
+  if (CONTEXT_LIST_COMMAND_RE.test(command)) return "list";
+  if (CONTEXT_SEARCH_COMMAND_RE.test(command)) return "search";
+  if (CONTEXT_READ_COMMAND_RE.test(command)) return "read";
+  return "";
+}
+
 function isQuietRuntime(item: RuntimeTimelineItem) {
   const name = normalizeRuntimeToolName(item);
   const status = item.status?.toLowerCase() ?? "";
   if (isInFlight(status) || ["failed", "error", "cancelled", "rejected"].includes(status)) {
     return false;
   }
-  return ["read_file", "list_dir", "list_directory", "git_status", "git_diff", "search_files", "code_search"].includes(name);
+  return (
+    ["read_file", "list_dir", "list_directory", "git_status", "git_diff", "search_files", "code_search"].includes(name) ||
+    Boolean(contextCommandKind(item))
+  );
 }
 
 function runtimeKindName(item: RuntimeTimelineItem) {
@@ -190,9 +271,73 @@ function runtimeKindName(item: RuntimeTimelineItem) {
   return normalizeRuntimeToolName(item).replace(/_/g, "-") || item.kind;
 }
 
-function runtimeGroupLabel(item: RuntimeTimelineItem) {
+const TOOL_CATEGORY_LABELS: Record<string, string> = {
+  command: "命令",
+  computer_use: "桌面操作",
+  context_read: "读取上下文",
+  file_change: "文件改动",
+  git: "Git 检查",
+  memory: "记忆",
+  search: "搜索",
+  subtask: "子任务",
+  tool: "工具",
+  verification: "验证",
+  web: "网页读取",
+};
+
+const WORKLOG_GROUP_ORDER = [
+  "审批",
+  "文件改动",
+  "验证",
+  "命令",
+  "Git 检查",
+  "搜索",
+  "读取上下文",
+  "子任务",
+  "记忆",
+  "网页读取",
+  "工具",
+];
+
+const VERIFICATION_COMMAND_RE =
+  /\b(npm\s+(?:run\s+)?(?:test|typecheck|lint|build)|pnpm\s+(?:run\s+)?(?:test|typecheck|lint|build)|yarn\s+(?:test|typecheck|lint|build)|pytest|vitest|jest|playwright|tsc|ruff|eslint|mypy|cargo\s+(?:test|check|build)|go\s+test|dotnet\s+test)\b|\b(test|typecheck|lint|build|verify|check)\b/i;
+
+function runtimeCommandText(item: RuntimeTimelineItem) {
+  return [item.title, item.code, item.rawDetail].filter(Boolean).join("\n");
+}
+
+function isVerificationRuntime(item: RuntimeTimelineItem) {
   const name = normalizeRuntimeToolName(item);
-  if (item.kind === "command" || ["run_command", "command", "bash", "shell_command"].includes(name)) return "命令";
+  if (!isShellRuntime(item)) {
+    return false;
+  }
+  return VERIFICATION_COMMAND_RE.test(runtimeCommandText(item));
+}
+
+function runtimeGroupLabel(item: RuntimeTimelineItem) {
+  const operationLabel = typeof item.toolOperationLabel === "string" ? item.toolOperationLabel.trim() : "";
+  if (operationLabel) {
+    return operationLabel;
+  }
+  const semanticParentLabel = typeof item.toolSemanticParentLabel === "string" ? item.toolSemanticParentLabel.trim() : "";
+  if (semanticParentLabel) {
+    return semanticParentLabel;
+  }
+  const phaseLabel = typeof item.toolPhaseLabel === "string" ? item.toolPhaseLabel.trim() : "";
+  if (phaseLabel) {
+    return phaseLabel;
+  }
+  const category = typeof item.toolCategory === "string" ? item.toolCategory.trim() : "";
+  if (category && TOOL_CATEGORY_LABELS[category]) {
+    return TOOL_CATEGORY_LABELS[category];
+  }
+  const name = normalizeRuntimeToolName(item);
+  if (isVerificationRuntime(item)) return "验证";
+  const contextKind = contextCommandKind(item);
+  if (contextKind === "git") return "Git 检查";
+  if (contextKind === "search") return "搜索";
+  if (contextKind === "read" || contextKind === "list") return "读取上下文";
+  if (isShellRuntime(item)) return "命令";
   if (item.kind === "patch" || name === "apply_patch" || name === "write_file") return "文件改动";
   if (item.kind === "approval") return "审批";
   if (["read_file", "list_dir", "list_directory"].includes(name)) return "读取上下文";
@@ -203,15 +348,40 @@ function runtimeGroupLabel(item: RuntimeTimelineItem) {
   return "工具";
 }
 
-function worklogDigest(items: RuntimeTimelineItem[], quietCount: number) {
-  const groups = new Map<string, number>();
+function compareWorklogGroupLabels(left: string, right: string) {
+  const leftIndex = WORKLOG_GROUP_ORDER.indexOf(left);
+  const rightIndex = WORKLOG_GROUP_ORDER.indexOf(right);
+  const normalizedLeft = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex;
+  const normalizedRight = rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex;
+  if (normalizedLeft !== normalizedRight) {
+    return normalizedLeft - normalizedRight;
+  }
+  return left.localeCompare(right);
+}
+
+function worklogGroupEntries(items: RuntimeTimelineItem[]) {
+  const groups = new Map<string, { label: string; count: number; tone: CleanTranscriptKind | "normal" }>();
   items.forEach((item) => {
-    const group = runtimeGroupLabel(item);
-    groups.set(group, (groups.get(group) ?? 0) + 1);
+    const label = runtimeGroupLabel(item);
+    const existing = groups.get(label);
+    const tone = item.kind === "approval" ? "permission_request" :
+      item.kind === "patch" ? "change_set" :
+      statusTone(item.status) === "danger" ? "error" :
+      "normal";
+    if (existing) {
+      existing.count += 1;
+      if (tone !== "normal") existing.tone = tone;
+      return;
+    }
+    groups.set(label, { label, count: 1, tone });
   });
-  const labels = Array.from(groups.entries())
+  return Array.from(groups.values()).sort((left, right) => compareWorklogGroupLabels(left.label, right.label));
+}
+
+function worklogDigest(items: RuntimeTimelineItem[], quietCount: number) {
+  const labels = worklogGroupEntries(items)
     .slice(0, 4)
-    .map(([label, count]) => `${label} ${count}`);
+    .map((group) => `${group.label} ${group.count}`);
   const suffix = quietCount && quietCount === items.length ? "，均已收起为轻量日志" : quietCount ? `，${quietCount} 项低噪声` : "";
   return `${labels.join("、")}${suffix}`;
 }
@@ -223,6 +393,9 @@ function worklogNarrative(items: RuntimeTimelineItem[]) {
   }
   if (groups.has("审批")) {
     return "这里需要你确认权限或改动请求，相关上下文已收在下面。";
+  }
+  if (groups.has("验证")) {
+    return "我在验证当前结果，并把测试、构建或检查输出收在下面。";
   }
   if (groups.has("命令")) {
     return "我在运行命令并记录结果，必要时可以展开查看完整输出。";
@@ -249,6 +422,24 @@ function runtimeTreeId(item: RuntimeTimelineItem) {
   return item.toolUseId || item.sourceId || item.id.replace(/^(tool|command|runtime):/, "");
 }
 
+function compareWorklogTreeNodes(left: WorklogTreeNode, right: WorklogTreeNode) {
+  const leftItem = left.item;
+  const rightItem = right.item;
+  if (leftItem.toolGroupId && rightItem.toolGroupId && leftItem.toolGroupId === rightItem.toolGroupId) {
+    const leftIndex = leftItem.toolIndex ?? Number.MAX_SAFE_INTEGER;
+    const rightIndex = rightItem.toolIndex ?? Number.MAX_SAFE_INTEGER;
+    if (leftIndex !== rightIndex) {
+      return leftIndex - rightIndex;
+    }
+  }
+  const leftTime = leftItem.time ?? Number.MAX_SAFE_INTEGER;
+  const rightTime = rightItem.time ?? Number.MAX_SAFE_INTEGER;
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  return leftItem.id.localeCompare(rightItem.id);
+}
+
 function buildWorklogTree(items: RuntimeTimelineItem[]): WorklogTreeNode[] {
   const byId = new Map<string, WorklogTreeNode>();
   const roots: WorklogTreeNode[] = [];
@@ -270,7 +461,7 @@ function buildWorklogTree(items: RuntimeTimelineItem[]): WorklogTreeNode[] {
   });
 
   const assignDepth = (nodes: WorklogTreeNode[], depth: number): WorklogTreeNode[] =>
-    nodes.map((node) => ({
+    [...nodes].sort(compareWorklogTreeNodes).map((node) => ({
       ...node,
       depth,
       children: assignDepth(node.children, Math.min(depth + 1, 4)),
@@ -289,6 +480,48 @@ function flattenWorklogTree(nodes: WorklogTreeNode[]): WorklogTreeNode[] {
   return flat;
 }
 
+type WorklogPhase = {
+  id: string;
+  label: string;
+  nodes: WorklogTreeNode[];
+};
+
+function runtimeGroupKey(item: RuntimeTimelineItem) {
+  const operationId = typeof item.toolOperationId === "string" ? item.toolOperationId.trim() : "";
+  if (operationId) {
+    return operationId;
+  }
+  const semanticParentId = typeof item.toolSemanticParentId === "string" ? item.toolSemanticParentId.trim() : "";
+  return semanticParentId || runtimeGroupLabel(item);
+}
+
+function worklogPhaseTone(nodes: WorklogTreeNode[]) {
+  if (nodes.some((node) => statusTone(node.item.status) === "danger")) return "danger";
+  if (nodes.some((node) => isInFlight(node.item.status))) return "running";
+  if (nodes.some((node) => statusTone(node.item.status) === "warning")) return "warning";
+  if (nodes.length && nodes.every((node) => statusTone(node.item.status) === "success")) return "success";
+  return "neutral";
+}
+
+function worklogPhaseEntries(nodes: WorklogTreeNode[]) {
+  const phases = new Map<string, { label: string; nodes: WorklogTreeNode[] }>();
+  const addNode = (node: WorklogTreeNode, phaseSource: RuntimeTimelineItem) => {
+    const key = runtimeGroupKey(phaseSource);
+    const label = runtimeGroupLabel(phaseSource);
+    const phase = phases.get(key);
+    if (phase) {
+      phase.nodes.push(node);
+    } else {
+      phases.set(key, { label, nodes: [node] });
+    }
+    node.children.forEach((child) => addNode(child, phaseSource));
+  };
+  nodes.forEach((node) => addNode(node, node.item));
+  return Array.from(phases.entries())
+    .map(([id, phase]): WorklogPhase => ({ id, label: phase.label, nodes: phase.nodes }))
+    .sort((left, right) => compareWorklogGroupLabels(left.label, right.label) || left.id.localeCompare(right.id));
+}
+
 function worklogSummaryText(items: RuntimeTimelineItem[]) {
   const lines = items.map((item, index) => {
     const parts = [
@@ -301,6 +534,10 @@ function worklogSummaryText(items: RuntimeTimelineItem[]) {
     return parts.join(" · ");
   });
   return [`已执行 ${items.length} 项`, ...lines].join("\n");
+}
+
+function worklogGroupCounts(items: RuntimeTimelineItem[]) {
+  return worklogGroupEntries(items);
 }
 
 function splitDiffText(value: string) {
@@ -338,6 +575,7 @@ function normalizePatchSummaryLine(line: string): PatchFileSummary | null {
   let path = match[2]?.trim() ?? "";
   path = path.replace(/^["']|["']$/g, "").replace(/^[ab]\//, "");
   if (!path || /\s/.test(path) && !/[./\\]/.test(path)) return null;
+  if (/^(files|changedPaths|paths)\s*:/i.test(path)) return null;
   if (/^(update|apply|patch|approval|request)\b/i.test(path)) return null;
   return {
     path,
@@ -350,6 +588,7 @@ function normalizePatchSummaryLine(line: string): PatchFileSummary | null {
 function isLikelyPatchPath(path: string) {
   const normalized = path.replace(/^[ab]\//, "").trim();
   if (!normalized || /^(update|apply|patch|approval|request)\b/i.test(normalized)) return false;
+  if (/^(files|changedPaths|paths)\s*:/i.test(normalized)) return false;
   if (/^[-+]{3}\s+/.test(normalized)) return false;
   if (/\s/.test(normalized)) return false;
   return /[./\\]/.test(normalized);
@@ -441,6 +680,14 @@ function readMetadataString(message: SessionWorkspaceMessage, keys: string[]) {
   return "";
 }
 
+function readMetadataPreviewRows(message: SessionWorkspaceMessage, keys: string[]) {
+  for (const key of keys) {
+    const rows = metadataPreviewRows(message.metadata?.[key]);
+    if (rows.length) return rows;
+  }
+  return [];
+}
+
 function messageTitleForKind(kind: CleanTranscriptKind | string, message: SessionWorkspaceMessage) {
   const title = readMetadataString(message, ["title", "label", "action", "event", "state"]);
   if (title) return title;
@@ -454,6 +701,7 @@ function messageTitleForKind(kind: CleanTranscriptKind | string, message: Sessio
     goal_event: "目标状态",
     memory_event: "记忆更新",
     plan_update: "计划更新",
+    slash_command: "命令结果",
     status: "状态",
     system: "系统消息",
     task_summary: "任务摘要",
@@ -480,11 +728,19 @@ function MessageActions({
   align = "left",
   onCopyRuntimeText,
   onQuoteMessage,
+  onContinueFromMessage,
+  onBranchFromMessage,
+  onDeleteMessage,
+  busy = false,
 }: {
   message: SessionWorkspaceMessage;
   align?: "left" | "right";
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
   onQuoteMessage?: (text: string) => void;
+  onContinueFromMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  onBranchFromMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  onDeleteMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  busy?: boolean;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const content = message.content.trim();
@@ -548,21 +804,51 @@ function MessageActions({
               </button>
             </li>
             <li>
-              <button type="button" disabled title="需要后端支持从指定 transcript target 继续">
+              <button
+                type="button"
+                disabled={!onContinueFromMessage || busy}
+                title={onContinueFromMessage ? "截断当前会话到这条消息" : "需要后端支持从指定 transcript target 继续"}
+                onClick={() => {
+                  if (!onContinueFromMessage || busy) return;
+                  closeMore();
+                  void onContinueFromMessage(message);
+                }}
+              >
+                <RotateCcw size={13} />
                 <span>从这里继续</span>
-                <small>等待上下文截断接口</small>
+                <small>保留到此处，后续记录从 transcript 删除</small>
               </button>
             </li>
             <li>
-              <button type="button" disabled title="需要后端 branchSession 接口">
+              <button
+                type="button"
+                disabled={!onBranchFromMessage || busy}
+                title={onBranchFromMessage ? "复制到一条新的分支会话" : "需要后端 branchSession 接口"}
+                onClick={() => {
+                  if (!onBranchFromMessage || busy) return;
+                  closeMore();
+                  void onBranchFromMessage(message);
+                }}
+              >
+                <GitBranch size={13} />
                 <span>从这里分支</span>
-                <small>等待会话分支接口</small>
+                <small>复制到新会话，原会话保持不变</small>
               </button>
             </li>
             <li>
-              <button type="button" disabled title="需要后端 transcript mutation 接口">
+              <button
+                type="button"
+                disabled={!onDeleteMessage || busy}
+                title={onDeleteMessage ? "删除这条会话记录" : "需要后端 transcript mutation 接口"}
+                onClick={() => {
+                  if (!onDeleteMessage || busy) return;
+                  closeMore();
+                  void onDeleteMessage(message);
+                }}
+              >
+                <Trash2 size={13} />
                 <span>删除消息</span>
-                <small>等待会话记录变更接口</small>
+                <small>仅删除 transcript，不撤销文件改动</small>
               </button>
             </li>
           </menu>
@@ -576,10 +862,18 @@ export const CleanAssistantMessage = memo(function CleanAssistantMessage({
   message,
   onCopyRuntimeText,
   onQuoteMessage,
+  onContinueFromMessage,
+  onBranchFromMessage,
+  onDeleteMessage,
+  busy,
 }: {
   message: SessionWorkspaceMessage;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
   onQuoteMessage?: (text: string) => void;
+  onContinueFromMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  onBranchFromMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  onDeleteMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  busy?: boolean;
 }) {
   const content = stripAssistantRuntimeProgress(message.content).trim();
   const attachments = messageAttachments(message);
@@ -597,7 +891,15 @@ export const CleanAssistantMessage = memo(function CleanAssistantMessage({
         {content ? <CleanMarkdown content={content} /> : null}
         <CleanAttachmentGallery attachments={attachments} onCopy={onCopyRuntimeText} />
       </article>
-      <MessageActions message={message} onCopyRuntimeText={onCopyRuntimeText} onQuoteMessage={onQuoteMessage} />
+      <MessageActions
+        message={message}
+        onCopyRuntimeText={onCopyRuntimeText}
+        onQuoteMessage={onQuoteMessage}
+        onContinueFromMessage={onContinueFromMessage}
+        onBranchFromMessage={onBranchFromMessage}
+        onDeleteMessage={onDeleteMessage}
+        busy={busy}
+      />
     </div>
   );
 });
@@ -606,19 +908,36 @@ export const CleanUserMessage = memo(function CleanUserMessage({
   message,
   onCopyRuntimeText,
   onQuoteMessage,
+  onContinueFromMessage,
+  onBranchFromMessage,
+  onDeleteMessage,
+  busy,
 }: {
   message: SessionWorkspaceMessage;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
   onQuoteMessage?: (text: string) => void;
+  onContinueFromMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  onBranchFromMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  onDeleteMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  busy?: boolean;
 }) {
   const attachments = messageAttachments(message);
   return (
     <div className="hc-message-stack" data-role="user">
       <article className="hc-message hc-user">
-        <p>{message.content}</p>
+        <CleanMarkdown content={message.content} />
         <CleanAttachmentGallery attachments={attachments} onCopy={onCopyRuntimeText} />
       </article>
-      <MessageActions message={message} align="right" onCopyRuntimeText={onCopyRuntimeText} onQuoteMessage={onQuoteMessage} />
+      <MessageActions
+        message={message}
+        align="right"
+        onCopyRuntimeText={onCopyRuntimeText}
+        onQuoteMessage={onQuoteMessage}
+        onContinueFromMessage={onContinueFromMessage}
+        onBranchFromMessage={onBranchFromMessage}
+        onDeleteMessage={onDeleteMessage}
+        busy={busy}
+      />
     </div>
   );
 });
@@ -648,28 +967,48 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const failed = message.status === "failed" || message.metadata?.isError === true;
+  const lifecycleStatus = typeof message.metadata?.status === "string" ? message.metadata.status : "";
+  const blocked = message.status === "blocked" || lifecycleStatus.toLowerCase() === "blocked";
+  const failed = !blocked && (message.status === "failed" || message.metadata?.isError === true);
+  const cancelled = message.status === "cancelled";
   const input = typeof message.metadata?.inputText === "string" ? message.metadata.inputText : "";
   const result = typeof message.metadata?.resultText === "string" ? message.metadata.resultText : "";
+  const metadataTarget = readMetadataString(message, ["target", "inputSummary"]);
+  const fallbackInput = metadataTarget ? JSON.stringify({ target: metadataTarget }) : "";
+  const previewRows = metadataPreviewRows(message.metadata?.resultPreview);
   const details = [input ? `输入\n${input}` : "", result ? `结果\n${result}` : "", message.content].filter(Boolean).join("\n\n");
   const title = toolActionTitle({
     toolName: message.toolName,
-    title: readMetadataString(message, ["title", "label", "action"]),
-    input,
+    title: readMetadataString(message, ["target", "inputSummary", "title", "label", "action"]),
+    input: input || fallbackInput,
     rawDetail: result || message.content,
   });
-  const target = toolInlineTarget(message);
+  const target = toolInlineTarget(message) || compactText(metadataTarget, 92);
   const showTarget = Boolean(target && !title.includes(target));
+  const durationLabel = formatDuration(readRecordNumber(message.metadata, ["durationMs"]));
+  const toneStatus = blocked ? "blocked" : message.status;
+  const statusText = message.streaming ? "运行中" : blocked ? "已阻塞" : cancelled ? "已取消" : failed ? "失败" : "完成";
   return (
-    <section className="hc-tool-inline" data-tone={failed ? "danger" : statusTone(message.status)} data-kind={(message.toolName ?? "tool").replace(/_/g, "-")}>
+    <section className="hc-tool-inline" data-tone={failed ? "danger" : statusTone(toneStatus)} data-kind={(message.toolName ?? "tool").replace(/_/g, "-")}>
       <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <Wrench size={15} />
         <strong>{title}</strong>
         {showTarget ? <code>{target}</code> : null}
         <span>{toolInlineSummary(message)}</span>
-        <em>{message.streaming ? "运行中" : failed ? "失败" : "完成"}</em>
+        <em>{statusText}</em>
+        {durationLabel ? <time>{durationLabel}</time> : null}
       </button>
+      {expanded && previewRows.length ? (
+        <dl className="hc-tool-preview" aria-label="工具结果预览">
+          {previewRows.map((row) => (
+            <div key={`${row.label}:${row.value}`}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       {expanded && details ? (
         <figure className="hc-tool-detail">
           <figcaption>
@@ -690,11 +1029,13 @@ export const CleanToolMessageBlock = memo(function CleanToolMessageBlock({
 export const CleanPermissionMessageBlock = memo(function CleanPermissionMessageBlock({
   message,
   onApprove,
+  onApproveAlways,
   onReject,
   busyId,
 }: {
   message: SessionWorkspaceMessage;
   onApprove?: (approvalId: string) => void | Promise<void>;
+  onApproveAlways?: (approvalId: string) => void | Promise<void>;
   onReject?: (approvalId: string) => void | Promise<void>;
   busyId?: string | null;
 }) {
@@ -702,8 +1043,14 @@ export const CleanPermissionMessageBlock = memo(function CleanPermissionMessageB
   const resolved = message.metadata?.resolved === true;
   const decision = typeof message.metadata?.decision === "string" ? message.metadata.decision : "";
   const busy = Boolean(requestId && busyId === requestId);
+  const approvalKind = readMetadataString(message, ["approvalKind", "kind"]) || message.toolName;
+  const canAlwaysAllow = Boolean(onApproveAlways && supportsAlwaysAllowKind(approvalKind));
   const inputText = readMetadataString(message, ["parametersPreview", "inputText", "fullInput", "command"]);
   const detailText = isGenericApprovalText(message.content) ? "" : message.content.trim();
+  const previewRows = readMetadataPreviewRows(message, ["previewRows", "preview"]);
+  const changedPaths = readMetadataList(message, ["changedPaths", "paths", "files"]);
+  const filesChanged = readMetadataString(message, ["filesChanged"]);
+  const diffText = readMetadataString(message, ["diffText"]);
   const permissionTitle = toolActionTitle({
     toolName: message.toolName,
     title: readMetadataString(message, ["title", "label"]),
@@ -711,22 +1058,56 @@ export const CleanPermissionMessageBlock = memo(function CleanPermissionMessageB
     rawDetail: message.content,
     fallback: "权限请求",
   });
+  const resolutionLabel = resolved ? `已${decision === "rejected" ? "拒绝" : "批准"}` : "等待你的操作";
+  const cardTitle = resolved ? permissionTitle : `${permissionTitle} 需要确认`;
   return (
     <section className="hc-permission-card" data-resolved={resolved ? "true" : "false"}>
       <header>
         <CircleAlert size={15} />
         <div>
-          <strong>{permissionTitle} 需要确认</strong>
-          <span>{resolved ? `已${decision === "rejected" ? "拒绝" : "批准"}` : "等待你的操作"}</span>
+          <strong>{cardTitle}</strong>
+          <span>{resolutionLabel}</span>
         </div>
         <StatusChip status={resolved ? (decision === "rejected" ? "rejected" : "approved") : "waiting_approval"} />
       </header>
+      {previewRows.length ? (
+        <dl className="hc-approval-preview" aria-label="审批预览">
+          {previewRows.slice(0, 5).map((row) => (
+            <div key={`${row.label}:${row.value}`}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {changedPaths.length ? (
+        <div className="hc-change-list hc-change-list-compact">
+          {changedPaths.slice(0, 6).map((path) => (
+            <span key={path}>
+              <code>{path}</code>
+              <small>待确认</small>
+            </span>
+          ))}
+          {changedPaths.length > 6 ? <span><code>另 {changedPaths.length - 6} 个文件</code></span> : null}
+        </div>
+      ) : filesChanged ? (
+        <p className="hc-permission-meta">涉及 {filesChanged} 个文件</p>
+      ) : null}
       {detailText ? <pre>{detailText}</pre> : null}
+      {diffText && !detailText ? <p className="hc-permission-meta">已附带差异预览，可在运行记录中展开审查。</p> : null}
       {!resolved && requestId ? (
         <div className="hc-approval-actions">
           <button type="button" data-variant="allow" disabled={busy} onClick={() => void onApprove?.(requestId)}>允许一次</button>
           <button type="button" data-variant="deny" disabled={busy} onClick={() => void onReject?.(requestId)}>拒绝</button>
-          <button type="button" data-variant="always" disabled title="需要后端提供权限规则接口">始终允许</button>
+          <button
+            type="button"
+            data-variant="always"
+            disabled={busy || !canAlwaysAllow}
+            title={canAlwaysAllow ? "以后同类操作不再询问" : "此审批暂不支持始终允许"}
+            onClick={() => void onApproveAlways?.(requestId)}
+          >
+            始终允许
+          </button>
         </div>
       ) : null}
     </section>
@@ -790,6 +1171,54 @@ export const CleanSpecialEventBlock = memo(function CleanSpecialEventBlock({
   );
 });
 
+export const CleanSlashCommandBlock = memo(function CleanSlashCommandBlock({
+  message,
+  onCopyRuntimeText,
+}: {
+  message: SessionWorkspaceMessage;
+  onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const content = message.content.trim();
+  const command = readMetadataString(message, ["command", "title"]) || "/command";
+  const args = readMetadataString(message, ["args", "argument"]);
+  const summary = compactText(
+    readMetadataString(message, ["summary", "description", "message"]) ||
+      content.split(/\r?\n/).find((line) => line.trim()) ||
+      content,
+    180,
+  );
+  const status = readMetadataString(message, ["status", "phase"]) || message.status;
+  const detailLabel = `${command} result`;
+
+  return (
+    <section className="hc-slash-command" data-status={statusTone(status)}>
+      <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
+        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <TerminalSquare size={15} />
+        <code>{command}</code>
+        {args ? <small>{args}</small> : null}
+        {summary ? <span>{summary}</span> : null}
+        <StatusChip status={status} />
+      </button>
+      {expanded && content ? (
+        <figure className="hc-slash-command-detail">
+          <figcaption>
+            <span>命令详情</span>
+            {onCopyRuntimeText ? (
+              <button type="button" onClick={() => void onCopyRuntimeText(detailLabel, content)}>
+                <Copy size={12} />
+                <span>复制</span>
+              </button>
+            ) : null}
+          </figcaption>
+          <CleanMarkdown content={content} />
+        </figure>
+      ) : null}
+    </section>
+  );
+});
+
 function readMetadataList(message: SessionWorkspaceMessage, keys: string[]) {
   for (const key of keys) {
     const value = message.metadata?.[key];
@@ -798,18 +1227,110 @@ function readMetadataList(message: SessionWorkspaceMessage, keys: string[]) {
   return [];
 }
 
+function readMetadataRecordList(message: SessionWorkspaceMessage, keys: string[]) {
+  return readMetadataList(message, keys)
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
+}
+
+function formatAgentTaskStatus(status?: string) {
+  const normalized = status?.toLowerCase() ?? "";
+  if (["running", "started", "queued", "pending", "planning", "verifying"].includes(normalized)) return "运行中";
+  if (["waiting_approval", "blocked"].includes(normalized)) return "等待确认";
+  if (["completed", "complete", "done", "finished", "succeeded", "success", "passed"].includes(normalized)) return "完成";
+  if (["cancelled", "canceled"].includes(normalized)) return "已取消";
+  if (["failed", "error", "rejected"].includes(normalized)) return "失败";
+  return status || "记录";
+}
+
+function agentTaskTone(status?: string) {
+  const normalized = status?.toLowerCase() ?? "";
+  if (["failed", "error", "rejected", "cancelled", "canceled"].includes(normalized)) return "danger";
+  if (["running", "started", "queued", "pending", "planning", "verifying", "waiting_approval", "blocked"].includes(normalized)) return "running";
+  if (["completed", "complete", "done", "finished", "succeeded", "success", "passed"].includes(normalized)) return "success";
+  return "neutral";
+}
+
+export const CleanAgentTaskGroupBlock = memo(function CleanAgentTaskGroupBlock({
+  message,
+}: {
+  message: SessionWorkspaceMessage;
+}) {
+  const [expanded, setExpanded] = useState(agentTaskTone(message.status) === "running");
+  const tasks = readMetadataRecordList(message, ["agentTasks"]);
+  const results = readMetadataRecordList(message, ["agentResults"]);
+  const title = readMetadataString(message, ["title"]) || `派遣了 ${tasks.length} 个代理`;
+  const summary = readMetadataString(message, ["summary"]) || message.content.trim();
+
+  return (
+    <section className="hc-agent-group" data-status={agentTaskTone(message.status)}>
+      <button type="button" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
+        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <Files size={15} />
+        <strong>{title}</strong>
+        {summary ? <span>{summary}</span> : null}
+        <StatusChip status={message.status} />
+      </button>
+      {expanded ? (
+        <div className="hc-agent-task-list">
+          {tasks.map((task) => {
+            const id = readString(task.id) || readString(task.title);
+            const taskStatus = readString(task.status);
+            const worker = readString(task.workerName);
+            const agentType = readString(task.agentType);
+            const description = readString(task.attention) || readString(task.summary) || readString(task.errorMessage);
+            const duration = readRecordNumber(task, ["durationMs"]);
+            return (
+              <article key={id} data-tone={agentTaskTone(taskStatus)}>
+                <Circle size={10} />
+                <div>
+                  <strong>{readString(task.title) || id}</strong>
+                  <small>{[worker, agentType, duration !== null ? formatDuration(duration) : ""].filter(Boolean).join(" · ")}</small>
+                  {description ? <p>{compactText(description, 180)}</p> : null}
+                </div>
+                <em>{formatAgentTaskStatus(taskStatus)}</em>
+              </article>
+            );
+          })}
+          {results.length ? (
+            <div className="hc-agent-results">
+              {results.map((result) => (
+                <p key={readString(result.id) || readString(result.taskId)}>
+                  <strong>{readString(result.title) || readString(result.taskId)}</strong>
+                  <span>{compactText(readString(result.summary), 180)}</span>
+                </p>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+});
+
 export const CleanAskUserQuestionBlock = memo(function CleanAskUserQuestionBlock({
   message,
   onCopyRuntimeText,
+  onSubmitUserQuestionAnswer,
+  busy,
 }: {
   message: SessionWorkspaceMessage;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onSubmitUserQuestionAnswer?: (message: SessionWorkspaceMessage, answer: string) => void | Promise<void>;
+  busy?: boolean;
 }) {
+  const [answer, setAnswer] = useState("");
   const question =
     readMetadataString(message, ["question", "prompt", "summary", "message", "description"]) ||
     message.content.trim() ||
     "需要你补充信息";
   const options = readMetadataList(message, ["options", "choices"]);
+  const canSubmit = Boolean(onSubmitUserQuestionAnswer);
+  const submitAnswer = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || !onSubmitUserQuestionAnswer) return;
+    void onSubmitUserQuestionAnswer(message, trimmed);
+    setAnswer("");
+  };
   return (
     <section className="hc-question-event">
       <header>
@@ -826,16 +1347,44 @@ export const CleanAskUserQuestionBlock = memo(function CleanAskUserQuestionBlock
             const record = option && typeof option === "object" ? option as Record<string, unknown> : null;
             const label = record ? readString(record.label ?? record.value ?? record.title) : readString(option);
             const description = record ? readString(record.description ?? record.detail) : "";
+            const value = record ? readString(record.value ?? record.label ?? record.title) : label;
+            const answerText = [
+              `选择：${label || value || `选项 ${index + 1}`}`,
+              value && value !== label ? `值：${value}` : "",
+              description ? `说明：${description}` : "",
+            ].filter(Boolean).join("\n");
             return (
-              <button type="button" key={`${label}:${index}`} disabled>
+              <button
+                type="button"
+                key={`${label}:${index}`}
+                disabled={!canSubmit || busy}
+                onClick={() => submitAnswer(answerText)}
+              >
                 <strong>{label || `选项 ${index + 1}`}</strong>
                 {description ? <span>{description}</span> : null}
-                <em>待接入回答提交</em>
+                <em>{canSubmit ? (busy ? "提交中..." : "点击提交这个回答") : "等待回答提交接口"}</em>
               </button>
             );
           })}
         </div>
       ) : null}
+      <div className="hc-question-reply">
+        <textarea
+          value={answer}
+          disabled={!canSubmit || busy}
+          rows={3}
+          placeholder={canSubmit ? "补充说明或直接回答..." : "等待回答提交接口"}
+          onChange={(event) => setAnswer(event.target.value)}
+        />
+        <button
+          type="button"
+          disabled={!canSubmit || busy || !answer.trim()}
+          onClick={() => submitAnswer(answer)}
+        >
+          <SendHorizontal size={13} />
+          {busy ? "提交中" : "提交回答"}
+        </button>
+      </div>
       <footer>
         <button type="button" onClick={() => void onCopyRuntimeText?.("待确认问题", question)}>
           <Copy size={13} />复制问题
@@ -848,33 +1397,144 @@ export const CleanAskUserQuestionBlock = memo(function CleanAskUserQuestionBlock
 export const CleanComputerUsePermissionBlock = memo(function CleanComputerUsePermissionBlock({
   message,
   onCopyRuntimeText,
+  onApprove,
+  onApproveAlways,
+  onReject,
+  busyId,
 }: {
   message: SessionWorkspaceMessage;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onApprove?: (approvalId: string) => void | Promise<void>;
+  onApproveAlways?: (approvalId: string) => void | Promise<void>;
+  onReject?: (approvalId: string) => void | Promise<void>;
+  busyId?: string | null;
 }) {
+  const approvalId = readMetadataString(message, ["approvalId", "requestId"]);
+  const resolved = message.metadata?.resolved === true;
+  const decision = readMetadataString(message, ["decision"]);
+  const busy = Boolean(approvalId && busyId === approvalId);
+  const canAlwaysAllow = Boolean(onApproveAlways);
   const appName = readMetadataString(message, ["app", "application", "target", "windowTitle"]);
-  const permission = readMetadataString(message, ["permission", "action", "summary", "description"]) || message.content.trim();
-  const details = Object.entries(message.metadata ?? {})
-    .filter(([key, value]) => key !== "kind" && value !== undefined && value !== null && typeof value !== "object")
+  const action = readMetadataString(message, ["action", "permission", "summary", "description"]) || message.content.trim();
+  const selector = readMetadataString(message, ["selector"]);
+  const x = readMetadataString(message, ["x"]);
+  const y = readMetadataString(message, ["y"]);
+  const coordinates = x && y ? `${x}, ${y}` : "";
+  const text = readMetadataString(message, ["text"]);
+  const direction = readMetadataString(message, ["direction"]);
+  const amount = readMetadataString(message, ["amount"]);
+  const scroll = direction || amount ? [direction || "down", amount].filter(Boolean).join(" ") : "";
+  const url = readMetadataString(message, ["url"]);
+  const page = readMetadataString(message, ["pageId", "browserContextId"]);
+  const permission = readMetadataString(message, ["permission", "summary", "description"]);
+  const detailText = readMetadataString(message, ["details", "reason", "risk"]);
+  const previewRows = readMetadataPreviewRows(message, ["previewRows", "preview"]);
+  const fallbackRows = [
+    { label: "应用", value: appName },
+    { label: "动作", value: action },
+    { label: "目标", value: selector || readMetadataString(message, ["target"]) },
+    { label: "坐标", value: coordinates },
+    { label: "文本", value: text },
+    { label: "滚动", value: scroll },
+    { label: "URL", value: url },
+    { label: "Page", value: page },
+    { label: "权限", value: permission },
+    { label: "风险", value: detailText },
+  ].filter((row) => row.value);
+  const rows = (previewRows.length ? previewRows : fallbackRows).slice(0, 8);
+  const summary = resolved
+    ? `已${decision === "rejected" ? "拒绝" : "允许"}`
+    : ([appName, action].filter(Boolean).join(" · ") || "等待授权详情");
+  const hiddenDetailKeys = new Set([
+    "kind",
+    "resolved",
+    "decision",
+    "status",
+    "request",
+    "preview",
+    "previewRows",
+    "approvalId",
+    "requestId",
+    "app",
+    "application",
+    "target",
+    "windowTitle",
+    "action",
+    "permission",
+    "summary",
+    "description",
+    "details",
+    "reason",
+    "risk",
+    "selector",
+    "x",
+    "y",
+    "text",
+    "direction",
+    "amount",
+    "url",
+    "pageId",
+    "browserContextId",
+  ]);
+  const rawDetails = Object.entries(message.metadata ?? {})
+    .filter(([key, value]) => (
+      !hiddenDetailKeys.has(key) &&
+      value !== undefined &&
+      value !== null &&
+      typeof value !== "object"
+    ))
     .map(([key, value]) => `${key}: ${String(value)}`)
     .join("\n");
+  const details = [
+    ...rows.map((row) => `${row.label}: ${row.value}`),
+    detailText && !rows.some((row) => row.value === detailText) ? `详情: ${detailText}` : "",
+    message.content.trim() && message.content.trim() !== action ? message.content.trim() : "",
+    rawDetails,
+  ].filter(Boolean).join("\n");
   return (
-    <section className="hc-computer-event">
+    <section className="hc-computer-event" data-resolved={resolved ? "true" : "false"}>
       <header>
         <MousePointerClick size={16} />
         <div>
           <strong>Computer Use 权限</strong>
-          <span>{[appName, permission].filter(Boolean).join(" · ") || "等待授权详情"}</span>
+          <span>{summary}</span>
         </div>
-        <StatusChip status={readMetadataString(message, ["status"]) || message.status || "waiting"} />
+        <StatusChip status={resolved ? (decision === "rejected" ? "rejected" : "approved") : readMetadataString(message, ["status"]) || message.status || "waiting"} />
       </header>
-      {details ? <pre>{details}</pre> : null}
+      {rows.length ? (
+        <dl className="hc-computer-preview" aria-label="Computer Use 权限详情">
+          {rows.map((row) => (
+            <div key={`${row.label}:${row.value}`}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {rawDetails ? <pre>{rawDetails}</pre> : null}
       <footer>
-        <button type="button" onClick={() => void onCopyRuntimeText?.("Computer Use 权限", [permission, details].filter(Boolean).join("\n\n"))}>
+        <button type="button" onClick={() => void onCopyRuntimeText?.("Computer Use 权限", details)}>
           <Copy size={13} />复制详情
         </button>
-        <button type="button" disabled title="需要后端 Computer Use 授权接口">允许</button>
-        <button type="button" disabled title="需要后端 Computer Use 授权接口">拒绝</button>
+        {!resolved && approvalId ? (
+          <>
+            <button type="button" data-variant="allow" disabled={busy} onClick={() => void onApprove?.(approvalId)}>
+              {busy ? "提交中" : "允许"}
+            </button>
+            <button
+              type="button"
+              data-variant="always"
+              disabled={busy || !canAlwaysAllow}
+              title={canAlwaysAllow ? "以后同类 Computer Use 操作不再询问" : "此审批暂不支持始终允许"}
+              onClick={() => void onApproveAlways?.(approvalId)}
+            >
+              始终允许
+            </button>
+            <button type="button" data-variant="deny" disabled={busy} onClick={() => void onReject?.(approvalId)}>
+              拒绝
+            </button>
+          </>
+        ) : null}
       </footer>
     </section>
   );
@@ -901,42 +1561,190 @@ function StatusChip({ status }: { status?: string }) {
   return <em className="hc-status-chip" data-tone={statusTone(status)}>{statusLabel(status)}</em>;
 }
 
+type DiffGroup = {
+  oldPath: string;
+  newPath: string;
+  lines: ReturnType<typeof parseUnifiedDiff>;
+};
+
+function diffGroupPath(group: DiffGroup, fallback = "diff") {
+  return normalizeDiffPath(group.newPath || group.oldPath || fallback);
+}
+
+function diffGroupTitle(group: DiffGroup, index: number) {
+  return diffGroupPath(group, `diff ${index + 1}`);
+}
+
+function diffLineStats(lines: DiffGroup["lines"]) {
+  return lines.reduce(
+    (stats, line) => {
+      if (line.type === "add") return { ...stats, additions: stats.additions + 1 };
+      if (line.type === "remove") return { ...stats, deletions: stats.deletions + 1 };
+      return stats;
+    },
+    { additions: 0, deletions: 0 },
+  );
+}
+
+function diffGroupToText(group: DiffGroup) {
+  return group.lines
+    .map((line) => {
+      if (line.type === "add") return `+${line.content}`;
+      if (line.type === "remove") return `-${line.content}`;
+      if (line.type === "context") return ` ${line.content}`;
+      return line.content;
+    })
+    .join("\n");
+}
+
+function parseHunkStart(content: string) {
+  const match = /^@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?/.exec(content);
+  if (!match) return null;
+  return { oldLine: Number(match[1]), newLine: Number(match[2]) };
+}
+
+function diffRows(lines: DiffGroup["lines"]) {
+  let oldLine = 0;
+  let newLine = 0;
+  return lines.map((line) => {
+    const hunkStart = line.type === "header" ? parseHunkStart(line.content) : null;
+    if (hunkStart) {
+      oldLine = hunkStart.oldLine;
+      newLine = hunkStart.newLine;
+    }
+
+    if (line.type === "add") {
+      const row = { line, oldNumber: "", newNumber: newLine ? String(newLine) : "", targetLine: newLine || null };
+      newLine += 1;
+      return row;
+    }
+    if (line.type === "remove") {
+      const row = { line, oldNumber: oldLine ? String(oldLine) : "", newNumber: "", targetLine: null };
+      oldLine += 1;
+      return row;
+    }
+    if (line.type === "context") {
+      const row = {
+        line,
+        oldNumber: oldLine ? String(oldLine) : "",
+        newNumber: newLine ? String(newLine) : "",
+        targetLine: newLine || null,
+      };
+      if (oldLine) oldLine += 1;
+      if (newLine) newLine += 1;
+      return row;
+    }
+    return { line, oldNumber: "", newNumber: "", targetLine: null };
+  });
+}
+
 function DiffPreview({
   item,
   selectedPath,
+  onSelectPath,
+  onCopyRuntimeText,
+  onOpenFile,
 }: {
   item: RuntimeTimelineItem;
   selectedPath?: string | null;
+  onSelectPath?: (path: string) => void;
+  onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onOpenFile?: (path: string) => void;
 }) {
   const selected = selectedPath ? normalizeDiffPath(selectedPath) : "";
-  const allGroups = item.diffLines?.length
+  const allGroups: DiffGroup[] = item.diffLines?.length
     ? [{ oldPath: "", newPath: selected || "diff", lines: item.diffLines }]
     : splitDiffText(item.rawDetail || "");
-  const diffGroups = selected
-    ? allGroups.filter((group) => {
-        const paths = [group.newPath, group.oldPath].map(normalizeDiffPath);
-        return paths.includes(selected);
-      })
-    : allGroups;
-  if (!diffGroups.length) return null;
+  if (!allGroups.length) return null;
+  const selectedIndex = Math.max(0, allGroups.findIndex((group) => {
+    const paths = [group.newPath, group.oldPath].map(normalizeDiffPath);
+    return selected ? paths.includes(selected) : false;
+  }));
+  const group = allGroups[selectedIndex] ?? allGroups[0];
+  const rows = diffRows(group.lines);
+  const visibleRows = rows.slice(0, 180);
+  const overflowRows = Math.max(0, rows.length - visibleRows.length);
+  const stats = diffLineStats(group.lines);
+  const title = diffGroupTitle(group, selectedIndex);
+  const changedPath = group.oldPath && group.newPath && normalizeDiffPath(group.oldPath) !== normalizeDiffPath(group.newPath)
+    ? `${normalizeDiffPath(group.oldPath)} -> ${normalizeDiffPath(group.newPath)}`
+    : "";
   return (
     <div className="hc-diff-preview">
-      {diffGroups.slice(0, 3).map((group, groupIndex) => (
-        <section key={`${group.newPath}:${groupIndex}`} className="hc-diff-file">
-          <header>
-            <code>{group.newPath || group.oldPath || `diff ${groupIndex + 1}`}</code>
+      {allGroups.length > 1 ? (
+        <div className="hc-diff-tabs" aria-label="差异文件">
+          {allGroups.slice(0, 8).map((entry, index) => {
+            const path = diffGroupPath(entry, `diff ${index + 1}`);
+            const entryStats = diffLineStats(entry.lines);
+            return (
+              <button
+                type="button"
+                key={`${path}:${index}`}
+                aria-pressed={index === selectedIndex}
+                onClick={() => {
+                  onSelectPath?.(path);
+                  onOpenFile?.(path);
+                }}
+              >
+                <code>{path}</code>
+                <span>+{entryStats.additions} -{entryStats.deletions}</span>
+              </button>
+            );
+          })}
+          {allGroups.length > 8 ? <em>+{allGroups.length - 8}</em> : null}
+        </div>
+      ) : null}
+      <section className="hc-diff-file">
+        <header>
+          <div>
+            <code>{title}</code>
+            {changedPath ? <small>{changedPath}</small> : null}
+          </div>
+          <div className="hc-diff-file-meta">
+            <span data-kind="add">+{stats.additions}</span>
+            <span data-kind="remove">-{stats.deletions}</span>
             <span>{group.lines.length} 行</span>
-          </header>
-          <ol>
-            {group.lines.slice(0, 90).map((line, index) => (
+            {onCopyRuntimeText ? (
+              <button type="button" onClick={() => void onCopyRuntimeText("文件差异", diffGroupToText(group))}>
+                <Copy size={12} />复制
+              </button>
+            ) : null}
+          </div>
+        </header>
+        <ol>
+          {visibleRows.map(({ line, oldNumber, newNumber, targetLine }, index) => {
+            const sourcePath = normalizeDiffPath(group.newPath || group.oldPath || selectedPath || "");
+            const targetPath = sourcePath && targetLine ? `${sourcePath}:${targetLine}` : "";
+            return (
               <li key={`${index}:${line.content}`} data-type={line.type}>
-                <span>{line.type === "add" ? "+" : line.type === "remove" ? "-" : line.type === "header" ? "@" : " "}</span>
+                <span className="hc-diff-sign">{line.type === "add" ? "+" : line.type === "remove" ? "-" : line.type === "header" ? "@" : " "}</span>
+                <span className="hc-diff-old-line">{oldNumber}</span>
+                {targetPath ? (
+                  <button
+                    type="button"
+                    className="hc-diff-new-line"
+                    title={`在右侧打开第 ${targetLine} 行`}
+                    onClick={() => onOpenFile?.(targetPath)}
+                  >
+                    {newNumber}
+                  </button>
+                ) : (
+                  <span className="hc-diff-new-line">{newNumber}</span>
+                )}
                 <code>{line.content || " "}</code>
               </li>
-            ))}
-          </ol>
-        </section>
-      ))}
+            );
+          })}
+          {overflowRows ? (
+            <li data-type="header">
+              <span className="hc-diff-sign">@</span>
+              <span className="hc-diff-old-line" />
+              <span className="hc-diff-new-line" />
+              <code>已折叠 {overflowRows} 行，复制可获取当前文件完整差异</code>
+            </li>
+          ) : null}
+        </ol>
+      </section>
     </div>
   );
 }
@@ -944,16 +1752,20 @@ function DiffPreview({
 function ApprovalRuntimeBlock({
   item,
   onApprove,
+  onApproveAlways,
   onReject,
   onLoadPatch,
   onCopyRuntimeText,
+  onOpenFile,
   busyId,
 }: {
   item: RuntimeTimelineItem;
   onApprove?: (approvalId: string) => void | Promise<void>;
+  onApproveAlways?: (approvalId: string) => void | Promise<void>;
   onReject?: (approvalId: string) => void | Promise<void>;
   onLoadPatch?: (patchId: string) => void | Promise<void>;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onOpenFile?: (path: string) => void;
   busyId?: string | null;
 }) {
   const [expanded, setExpanded] = useState(shouldExpandByDefault(item));
@@ -963,14 +1775,23 @@ function ApprovalRuntimeBlock({
     item.sourceId &&
       ["pending", "waiting", "waiting_approval", "queued"].includes(item.status?.toLowerCase() ?? ""),
   );
+  const canAlwaysAllow = Boolean(onApproveAlways && item.supportsAlwaysAllow !== false);
   const busy = Boolean(item.sourceId && busyId === item.sourceId);
   const hasDiff = Boolean(item.diffLines?.length || item.rawDetail?.includes("diff --git"));
+  const approvalStatus = item.status?.toLowerCase() ?? "";
+  const approvalEyebrow = canApprove
+    ? "需要确认"
+    : approvalStatus === "approved"
+      ? "已批准"
+      : approvalStatus === "rejected"
+        ? "已拒绝"
+        : "已处理";
 
   return (
     <section className="hc-runtime hc-approval" data-tone={statusTone(item.status)} data-risky={item.riskLevel ?? "medium"}>
       <header className="hc-approval-head">
         <div>
-          <span className="hc-runtime-eyebrow">需要确认</span>
+          <span className="hc-runtime-eyebrow">{approvalEyebrow}</span>
           <strong>{runtimeLabel(item)}</strong>
           {runtimeSummary(item) ? <small>{runtimeSummary(item)}</small> : null}
         </div>
@@ -983,6 +1804,7 @@ function ApprovalRuntimeBlock({
               type="button"
               key={file.path}
               onClick={() => {
+                onOpenFile?.(file.path);
                 if (item.sourceId) void onLoadPatch?.(item.sourceId);
               }}
             >
@@ -992,11 +1814,29 @@ function ApprovalRuntimeBlock({
           ))}
         </div>
       ) : null}
+      {item.previewRows?.length ? (
+        <dl className="hc-approval-preview" aria-label="审批预览">
+          {item.previewRows.slice(0, 5).map((row) => (
+            <div key={`${row.label}:${row.value}`}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       {canApprove ? (
         <div className="hc-approval-actions">
           <button type="button" data-variant="allow" disabled={busy} onClick={() => void onApprove?.(item.sourceId ?? "")}>允许一次</button>
           <button type="button" data-variant="deny" disabled={busy} onClick={() => void onReject?.(item.sourceId ?? "")}>拒绝</button>
-          <button type="button" data-variant="always" disabled title="需要后端提供权限规则接口">始终允许</button>
+          <button
+            type="button"
+            data-variant="always"
+            disabled={busy || !canAlwaysAllow}
+            title={canAlwaysAllow ? "以后同类操作不再询问" : "此审批暂不支持始终允许"}
+            onClick={() => void onApproveAlways?.(item.sourceId ?? "")}
+          >
+            始终允许
+          </button>
         </div>
       ) : null}
       {output || hasDiff ? (
@@ -1005,7 +1845,7 @@ function ApprovalRuntimeBlock({
           {expanded ? "收起详情" : hasDiff ? "查看差异" : "查看详情"}
         </button>
       ) : null}
-      {expanded && hasDiff ? <DiffPreview item={item} /> : null}
+      {expanded && hasDiff ? <DiffPreview item={item} onCopyRuntimeText={onCopyRuntimeText} onOpenFile={onOpenFile} /> : null}
       {expanded && output && !hasDiff ? (
         <figure className="hc-runtime-output">
           <figcaption>
@@ -1025,12 +1865,18 @@ function PatchRuntimeBlock({
   item,
   onLoadPatch,
   onCopyRuntimeText,
+  onOpenFile,
   onQuoteMessage,
+  onRevertTaskChanges,
+  busyId,
 }: {
   item: RuntimeTimelineItem;
   onLoadPatch?: (patchId: string) => void | Promise<void>;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onOpenFile?: (path: string) => void;
   onQuoteMessage?: (text: string) => void;
+  onRevertTaskChanges?: (taskId: string) => void | Promise<void>;
+  busyId?: string | null;
 }) {
   const files = useMemo(() => patchFileSummaries(item), [item]);
   const diffGroups = useMemo(() => (
@@ -1046,6 +1892,9 @@ function PatchRuntimeBlock({
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const selectedDiffPath = selectedPath && diffPaths.has(normalizeDiffPath(selectedPath)) ? selectedPath : null;
   const fileListText = patchFileListText(files);
+  const patchStatus = item.status?.toLowerCase();
+  const canRevert = Boolean(item.taskId && onRevertTaskChanges && patchStatus === "applied");
+  const revertBusy = Boolean(item.taskId && busyId === `revert:${item.taskId}`);
 
   return (
     <section className="hc-runtime hc-patch" data-kind={item.kind} data-tone={statusTone(item.status)}>
@@ -1070,9 +1919,14 @@ function PatchRuntimeBlock({
               <Copy size={13} />
               复制文件列表
             </button>
-            <button type="button" disabled title="需要后端提供 revert turn 接口">
+            <button
+              type="button"
+              disabled={!canRevert || revertBusy}
+              title={canRevert ? "反向应用这轮已保存的 patch diff" : patchStatus === "reverted" ? "这轮改动已撤销" : "没有可撤销的已应用 patch"}
+              onClick={() => item.taskId && void onRevertTaskChanges?.(item.taskId)}
+            >
               <RotateCcw size={13} />
-              撤销本轮
+              {revertBusy ? "撤销中" : "撤销本轮"}
             </button>
             <button
               type="button"
@@ -1094,6 +1948,7 @@ function PatchRuntimeBlock({
               key={file.path}
               data-selected={selectedDiffPath === file.path ? "true" : "false"}
               onClick={() => {
+                onOpenFile?.(file.path);
                 if (diffPaths.has(normalizeDiffPath(file.path))) {
                   setSelectedPath(file.path);
                   setExpanded(true);
@@ -1121,7 +1976,15 @@ function PatchRuntimeBlock({
           {expanded ? "收起差异" : selectedDiffPath ? "查看所选差异" : "查看全部差异"}
         </button>
       ) : null}
-      {expanded ? <DiffPreview item={item} selectedPath={selectedDiffPath} /> : null}
+      {expanded ? (
+        <DiffPreview
+          item={item}
+          selectedPath={selectedDiffPath}
+          onSelectPath={setSelectedPath}
+          onCopyRuntimeText={onCopyRuntimeText}
+          onOpenFile={onOpenFile}
+        />
+      ) : null}
     </section>
   );
 }
@@ -1129,20 +1992,32 @@ function PatchRuntimeBlock({
 export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
   item,
   onApprove,
+  onApproveAlways,
   onReject,
   onLoadPatch,
   onCopyRuntimeText,
+  onOpenFile,
   onQuoteMessage,
+  onRevertTaskChanges,
+  onContinueFromMessage,
+  onBranchFromMessage,
+  onDeleteMessage,
   onRefreshCommandJob,
   onStopCommandJob,
   busyId,
 }: {
   item: RuntimeTimelineItem;
   onApprove?: (approvalId: string) => void | Promise<void>;
+  onApproveAlways?: (approvalId: string) => void | Promise<void>;
   onReject?: (approvalId: string) => void | Promise<void>;
   onLoadPatch?: (patchId: string) => void | Promise<void>;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onOpenFile?: (path: string) => void;
   onQuoteMessage?: (text: string) => void;
+  onRevertTaskChanges?: (taskId: string) => void | Promise<void>;
+  onContinueFromMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  onBranchFromMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  onDeleteMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
   onRefreshCommandJob?: (commandId: string) => void | Promise<void>;
   onStopCommandJob?: (commandId: string) => void | Promise<void>;
   busyId?: string | null;
@@ -1153,6 +2028,7 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
   const tone = statusTone(item.status);
   const busy = Boolean(item.sourceId && busyId === item.sourceId);
   const canApprove = item.kind === "approval" && item.sourceId && ["pending", "waiting", "waiting_approval", "queued"].includes(item.status?.toLowerCase() ?? "");
+  const canAlwaysAllow = Boolean(onApproveAlways && item.supportsAlwaysAllow !== false);
   const canStop = item.kind === "command" && item.sourceId && isInFlight(item.status) && onStopCommandJob;
   const canRefresh = item.kind === "command" && item.sourceId && onRefreshCommandJob;
   const risky = item.kind === "approval" || item.riskLevel === "medium" || item.riskLevel === "high";
@@ -1163,16 +2039,28 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
       <ApprovalRuntimeBlock
         item={item}
         onApprove={onApprove}
+        onApproveAlways={onApproveAlways}
         onReject={onReject}
         onLoadPatch={onLoadPatch}
         onCopyRuntimeText={onCopyRuntimeText}
+        onOpenFile={onOpenFile}
         busyId={busyId}
       />
     );
   }
 
   if (item.kind === "patch") {
-    return <PatchRuntimeBlock item={item} onLoadPatch={onLoadPatch} onCopyRuntimeText={onCopyRuntimeText} onQuoteMessage={onQuoteMessage} />;
+    return (
+      <PatchRuntimeBlock
+        item={item}
+        onLoadPatch={onLoadPatch}
+        onCopyRuntimeText={onCopyRuntimeText}
+        onOpenFile={onOpenFile}
+        onQuoteMessage={onQuoteMessage}
+        onRevertTaskChanges={onRevertTaskChanges}
+        busyId={busyId}
+      />
+    );
   }
 
   if (isQuietRuntime(item)) {
@@ -1202,7 +2090,15 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
             <div className="hc-approval-actions">
               <button type="button" data-variant="allow" disabled={busy} onClick={() => void onApprove?.(item.sourceId ?? "")}>允许一次</button>
               <button type="button" data-variant="deny" disabled={busy} onClick={() => void onReject?.(item.sourceId ?? "")}>拒绝</button>
-              <button type="button" data-variant="always" disabled title="需要后端提供权限规则接口">始终允许</button>
+              <button
+                type="button"
+                data-variant="always"
+                disabled={busy || !canAlwaysAllow}
+                title={canAlwaysAllow ? "以后同类操作不再询问" : "此审批暂不支持始终允许"}
+                onClick={() => void onApproveAlways?.(item.sourceId ?? "")}
+              >
+                始终允许
+              </button>
             </div>
           ) : null}
           {files.length ? (
@@ -1212,6 +2108,7 @@ export const CleanRuntimeBlock = memo(function CleanRuntimeBlock({
                   type="button"
                   key={file.path}
                   onClick={() => {
+                    onOpenFile?.(file.path);
                     if (item.sourceId) void onLoadPatch?.(item.sourceId);
                   }}
                 >
@@ -1272,6 +2169,16 @@ function CleanWorklogRuntimeRow({
         <StatusChip status={item.status} />
         {formatDuration(item.durationMs) ? <time>{formatDuration(item.durationMs)}</time> : null}
       </button>
+      {expanded && item.previewRows?.length ? (
+        <dl className="hc-tool-preview" aria-label="工具结果预览">
+          {item.previewRows.slice(0, 5).map((row) => (
+            <div key={`${row.label}:${row.value}`}>
+              <dt>{row.label}</dt>
+              <dd>{row.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       {expanded && detail ? (
         <figure className="hc-worklog-detail">
           <figcaption>
@@ -1287,6 +2194,24 @@ function CleanWorklogRuntimeRow({
   );
 }
 
+function CleanWorklogPhaseRoot({ phase }: { phase: WorklogPhase }) {
+  const tone = worklogPhaseTone(phase.nodes);
+  const childTotal = phase.nodes.reduce((total, node) => total + node.children.length, 0);
+  const runningCount = phase.nodes.filter((node) => isInFlight(node.item.status)).length;
+  const failedCount = phase.nodes.filter((node) => statusTone(node.item.status) === "danger").length;
+  const summary = failedCount ? `${failedCount} 个异常` : runningCount ? `${runningCount} 个进行中` : childTotal ? `包含 ${childTotal} 个子步骤` : "语义阶段";
+  return (
+    <div className="hc-worklog-phase-root" data-tone={tone}>
+      <span>
+        <ListChecks size={13} />
+        <strong>{phase.label}</strong>
+      </span>
+      <em>{phase.nodes.length} 项</em>
+      <small>{summary}</small>
+    </div>
+  );
+}
+
 export function CleanWorklogBlock({
   items,
   onCopyRuntimeText,
@@ -1299,20 +2224,35 @@ export function CleanWorklogBlock({
   const importantItems = items.filter((item) => !isQuietRuntime(item));
   const tree = useMemo(() => buildWorklogTree(items), [items]);
   const flatTree = useMemo(() => flattenWorklogTree(tree), [tree]);
-  const visible = expanded
-    ? flatTree
-    : (importantItems.length ? flatTree.filter((node) => !isQuietRuntime(node.item)).slice(0, 3) : flatTree.slice(0, 3));
+  const phases = useMemo(() => worklogPhaseEntries(tree), [tree]);
+  const groupCounts = useMemo(() => worklogGroupCounts(items), [items]);
+  const collapsedImportant = importantItems.length
+    ? flatTree.filter((node) => !isQuietRuntime(node.item)).slice(0, 3)
+    : [];
+  const visible = expanded ? flatTree : collapsedImportant;
   const digest = worklogDigest(items, quietCount);
   const narrative = worklogNarrative(items);
   const summaryText = worklogSummaryText(items);
+  const runningCount = items.filter((item) => isInFlight(item.status)).length;
+  const failedCount = items.filter((item) => statusTone(item.status) === "danger").length;
   return (
-    <section className="hc-worklog">
-      <p className="hc-worklog-narrative">{narrative}</p>
-      <button type="button" className="hc-worklog-head" onClick={() => setExpanded((open) => !open)}>
+    <section className="hc-worklog" data-expanded={expanded ? "true" : "false"}>
+      <button type="button" className="hc-worklog-head" aria-expanded={expanded} onClick={() => setExpanded((open) => !open)}>
         {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         <span>已处理 {items.length} 项操作</span>
-        {!expanded && digest ? <em>{digest}</em> : null}
+        <em>{expanded ? narrative : digest}</em>
+        <small>
+          {runningCount ? `${runningCount} 进行中` : failedCount ? `${failedCount} 失败` : quietCount ? `${quietCount} 已收起` : "过程日志"}
+        </small>
       </button>
+      <div className="hc-worklog-groups" aria-label="操作类别">
+        {groupCounts.slice(0, 5).map((group) => (
+          <span key={group.label} data-kind={group.tone}>
+            {group.label}
+            <b>{group.count}</b>
+          </span>
+        ))}
+      </div>
       {expanded ? (
         <div className="hc-worklog-actions">
           <button
@@ -1325,20 +2265,45 @@ export function CleanWorklogBlock({
           </button>
         </div>
       ) : null}
-      <div className="hc-worklog-list">
-        {visible.map((node) => (
-          <CleanWorklogRuntimeRow
-            key={node.item.id}
-            item={node.item}
-            depth={node.depth}
-            childCount={node.children.length}
-            onCopyRuntimeText={onCopyRuntimeText}
-          />
-        ))}
-      </div>
-      {!expanded && flatTree.length > visible.length ? (
+      {expanded ? (
+        <div className="hc-worklog-phases">
+          {phases.map((phase) => (
+            <section className="hc-worklog-phase" key={phase.id} aria-label={`阶段：${phase.label}`}>
+              <header>
+                <span>{phase.label}</span>
+                <small>{phase.nodes.length} 项</small>
+              </header>
+              <CleanWorklogPhaseRoot phase={phase} />
+              <div className="hc-worklog-list">
+                {phase.nodes.map((node) => (
+                  <CleanWorklogRuntimeRow
+                    key={node.item.id}
+                    item={node.item}
+                    depth={node.depth}
+                    childCount={node.children.length}
+                    onCopyRuntimeText={onCopyRuntimeText}
+                  />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      ) : (
+        <div className="hc-worklog-list">
+          {visible.map((node) => (
+            <CleanWorklogRuntimeRow
+              key={node.item.id}
+              item={node.item}
+              depth={node.depth}
+              childCount={node.children.length}
+              onCopyRuntimeText={onCopyRuntimeText}
+            />
+          ))}
+        </div>
+      )}
+      {!expanded && importantItems.length > visible.length ? (
         <button type="button" className="hc-show-more" onClick={() => setExpanded(true)}>
-          展开另外 {flatTree.length - visible.length} 项
+          展开另外 {importantItems.length - visible.length} 项
         </button>
       ) : null}
     </section>
@@ -1348,23 +2313,37 @@ export function CleanWorklogBlock({
 export function CleanActivityItem({
   item,
   onApprove,
+  onApproveAlways,
   onReject,
   onLoadPatch,
   onCopyRuntimeText,
+  onOpenFile,
   onQuoteMessage,
+  onRevertTaskChanges,
+  onContinueFromMessage,
+  onBranchFromMessage,
+  onDeleteMessage,
   onRefreshCommandJob,
   onStopCommandJob,
   busyId,
+  onSubmitUserQuestionAnswer,
 }: {
   item: ConversationActivityItem;
   onApprove?: (approvalId: string) => void | Promise<void>;
+  onApproveAlways?: (approvalId: string) => void | Promise<void>;
   onReject?: (approvalId: string) => void | Promise<void>;
   onLoadPatch?: (patchId: string) => void | Promise<void>;
   onCopyRuntimeText?: (label: string, text: string) => void | Promise<void>;
+  onOpenFile?: (path: string) => void;
   onQuoteMessage?: (text: string) => void;
+  onRevertTaskChanges?: (taskId: string) => void | Promise<void>;
+  onContinueFromMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  onBranchFromMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
+  onDeleteMessage?: (message: SessionWorkspaceMessage) => void | Promise<void>;
   onRefreshCommandJob?: (commandId: string) => void | Promise<void>;
   onStopCommandJob?: (commandId: string) => void | Promise<void>;
   busyId?: string | null;
+  onSubmitUserQuestionAnswer?: (message: SessionWorkspaceMessage, answer: string) => void | Promise<void>;
 }) {
   const transcriptKind = transcriptKindForActivity(item);
   if (item.kind === "runtime") {
@@ -1373,10 +2352,13 @@ export function CleanActivityItem({
         <CleanRuntimeBlock
           item={item.runtime}
           onApprove={onApprove}
+          onApproveAlways={onApproveAlways}
           onReject={onReject}
           onLoadPatch={onLoadPatch}
           onCopyRuntimeText={onCopyRuntimeText}
+          onOpenFile={onOpenFile}
           onQuoteMessage={onQuoteMessage}
+          onRevertTaskChanges={onRevertTaskChanges}
           onRefreshCommandJob={onRefreshCommandJob}
           onStopCommandJob={onStopCommandJob}
           busyId={busyId}
@@ -1399,16 +2381,43 @@ export function CleanActivityItem({
     return wrap(<CleanThinkingBlock message={message} />);
   }
   if (kind === "permission_request") {
-    return wrap(<CleanPermissionMessageBlock message={message} onApprove={onApprove} onReject={onReject} busyId={busyId} />);
+    return wrap(
+      <CleanPermissionMessageBlock
+        message={message}
+        onApprove={onApprove}
+        onApproveAlways={onApproveAlways}
+        onReject={onReject}
+        busyId={busyId}
+      />,
+    );
   }
   if (kind === "tool_use" || kind === "tool_result" || kind === "tool_activity") {
     return wrap(<CleanToolMessageBlock message={message} onCopyRuntimeText={onCopyRuntimeText} />);
   }
   if (kind === "ask_user_question") {
-    return wrap(<CleanAskUserQuestionBlock message={message} onCopyRuntimeText={onCopyRuntimeText} />);
+    return wrap(
+      <CleanAskUserQuestionBlock
+        message={message}
+        onCopyRuntimeText={onCopyRuntimeText}
+        onSubmitUserQuestionAnswer={onSubmitUserQuestionAnswer}
+        busy={busyId === message.id}
+      />,
+    );
+  }
+  if (kind === "slash_command") {
+    return wrap(<CleanSlashCommandBlock message={message} onCopyRuntimeText={onCopyRuntimeText} />);
   }
   if (kind === "computer_use_permission" || kind === "computer_use_permission_request") {
-    return wrap(<CleanComputerUsePermissionBlock message={message} onCopyRuntimeText={onCopyRuntimeText} />);
+    return wrap(
+      <CleanComputerUsePermissionBlock
+        message={message}
+        onCopyRuntimeText={onCopyRuntimeText}
+        onApprove={onApprove}
+        onApproveAlways={onApproveAlways}
+        onReject={onReject}
+        busyId={busyId}
+      />,
+    );
   }
   if (
     [
@@ -1418,6 +2427,7 @@ export function CleanActivityItem({
       "goal_event",
       "memory_event",
       "plan_update",
+      "slash_command",
       "status",
       "system",
       "task_summary",
@@ -1426,16 +2436,35 @@ export function CleanActivityItem({
     message.kind === "failure" ||
     message.status === "failed"
   ) {
+    if (kind === "background_task" && readMetadataRecordList(message, ["agentTasks"]).length) {
+      return wrap(<CleanAgentTaskGroupBlock message={message} />);
+    }
     return wrap(<CleanSpecialEventBlock message={message} transcriptKind={transcriptKind} />);
   }
   if (message.role === "user") {
     return wrap(
-      <CleanUserMessage message={message} onCopyRuntimeText={onCopyRuntimeText} onQuoteMessage={onQuoteMessage} />,
+      <CleanUserMessage
+        message={message}
+        onCopyRuntimeText={onCopyRuntimeText}
+        onQuoteMessage={onQuoteMessage}
+        onContinueFromMessage={onContinueFromMessage}
+        onBranchFromMessage={onBranchFromMessage}
+        onDeleteMessage={onDeleteMessage}
+        busy={busyId === message.id}
+      />,
     );
   }
   if (message.role === "assistant") {
     return wrap(
-      <CleanAssistantMessage message={message} onCopyRuntimeText={onCopyRuntimeText} onQuoteMessage={onQuoteMessage} />,
+      <CleanAssistantMessage
+        message={message}
+        onCopyRuntimeText={onCopyRuntimeText}
+        onQuoteMessage={onQuoteMessage}
+        onContinueFromMessage={onContinueFromMessage}
+        onBranchFromMessage={onBranchFromMessage}
+        onDeleteMessage={onDeleteMessage}
+        busy={busyId === message.id}
+      />,
     );
   }
   return null;

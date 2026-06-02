@@ -70,6 +70,7 @@ TOOL_CAPABILITIES: dict[str, str] = {
     "run_command": "runCommand",
     "web_fetch": "webFetch",
     "browser": "browserAutomation",
+    "computer_use": "computerUse",
     "task": "subagents",
     "notebook": "runCommand",
     "memory.remember": "memoryWrite",

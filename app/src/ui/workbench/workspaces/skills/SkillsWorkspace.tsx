@@ -100,9 +100,27 @@ export function SkillsWorkspace({
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [editorMode, setEditorMode] = useState<"create" | "edit" | null>(null);
   const [draft, setDraft] = useState<SkillDraft>(emptySkillDraft);
+  const [skillQuery, setSkillQuery] = useState("");
+  const [skillFilter, setSkillFilter] = useState<"all" | "enabled" | "custom" | "builtin">("all");
   const enabledSkills = skills.filter((skill) => skill.enabled).length;
   const enabledServers = mcpServers.filter((server) => server.enabled).length;
   const availableTools = mcpToolCount;
+  const visibleSkills = useMemo(() => {
+    const query = skillQuery.trim().toLowerCase();
+    return skills.filter((skill) => {
+      if (skillFilter === "enabled" && !skill.enabled) return false;
+      if (skillFilter === "custom" && skill.isBuiltin) return false;
+      if (skillFilter === "builtin" && !skill.isBuiltin) return false;
+      if (!query) return true;
+      return [
+        skill.name,
+        skill.description ?? "",
+        skill.path ?? "",
+        skill.systemPrompt ?? "",
+        ...(skill.toolWhitelist ?? []),
+      ].some((value) => value.toLowerCase().includes(query));
+    });
+  }, [skillFilter, skillQuery, skills]);
   const selectedSkill = useMemo(
     () => skills.find((skill) => skill.id === selectedSkillId) ?? null,
     [selectedSkillId, skills],
@@ -170,6 +188,12 @@ export function SkillsWorkspace({
     setSelectedSkillId(skill.id);
     setDraft(draftFromSkill(skill));
     setEditorMode("edit");
+  }
+
+  function requestDeleteSkill(skill: SettingsSkillConfig) {
+    if (window.confirm(`删除技能“${skill.name}”？`)) {
+      void onDeleteSkill?.(skill.id);
+    }
   }
 
   const selectedSkillIsCustom = Boolean(selectedSkill && !selectedSkill.isBuiltin);
@@ -371,11 +395,40 @@ export function SkillsWorkspace({
             <p className="yb-kicker">技能库</p>
             <h2>已安装预设</h2>
           </div>
-          <StatusBadge label={`共 ${skills.length} 个`} tone="primary" />
+          <StatusBadge label={`${visibleSkills.length}/${skills.length} 个`} tone="primary" />
         </header>
-        {skills.length ? (
+        <div className="skills-library-tools" aria-label="技能筛选">
+          <label>
+            <span>搜索</span>
+            <input
+              aria-label="搜索技能"
+              value={skillQuery}
+              placeholder="名称、描述、工具或提示词"
+              onChange={(event) => setSkillQuery(event.currentTarget.value)}
+            />
+          </label>
+          <div className="skills-filter-tabs" role="tablist" aria-label="技能类型筛选">
+            {[
+              { id: "all", label: "全部" },
+              { id: "enabled", label: "可用" },
+              { id: "custom", label: "自定义" },
+              { id: "builtin", label: "内置" },
+            ].map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                role="tab"
+                aria-selected={skillFilter === option.id}
+                onClick={() => setSkillFilter(option.id as typeof skillFilter)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        {visibleSkills.length ? (
           <div className="skills-list">
-            {skills.map((skill) => (
+            {visibleSkills.map((skill) => (
               <article key={skill.id} className="skills-skill-row" data-enabled={skill.enabled}>
                 <div>
                   <strong>{skill.name}</strong>
@@ -396,6 +449,11 @@ export function SkillsWorkspace({
                 </div>
               </article>
             ))}
+          </div>
+        ) : skills.length ? (
+          <div className="skills-empty">
+            <strong>没有匹配的技能</strong>
+            <span>调整搜索词或类型筛选后再检查。</span>
           </div>
         ) : (
           <div className="skills-empty">
@@ -426,7 +484,7 @@ export function SkillsWorkspace({
                     <Button
                       size="sm"
                       variant="danger"
-                      onClick={() => void onDeleteSkill?.(selectedSkill.id)}
+                      onClick={() => requestDeleteSkill(selectedSkill)}
                       disabled={!onDeleteSkill || busySkillId === selectedSkill.id}
                       loading={busySkillId === selectedSkill.id}
                     >

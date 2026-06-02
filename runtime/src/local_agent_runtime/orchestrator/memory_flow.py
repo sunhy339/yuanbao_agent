@@ -53,14 +53,14 @@ class MemoryFlowMixin:
         "avoid ",
     )
 
-    def _promote_scratchpad_to_memory(self, session_id: str) -> None:
+    def _promote_scratchpad_to_memory(self, session_id: str, task: dict[str, Any] | None = None) -> None:
         """Promote scratchpad entries to session memory after task completion."""
         if self._memory_manager is None or self._scratchpad is None:
             return
         from ..memory.types import MemoryKind, MemoryCategory, MemoryScope, MemorySource
         entries = self._scratchpad.list_entries(session_id)
         for entry in entries:
-            self._memory_manager.remember(
+            memory_entry = self._memory_manager.remember(
                 content=f"[{entry.key}] {entry.value}",
                 session_id=session_id,
                 kind=MemoryKind.SESSION,
@@ -70,6 +70,12 @@ class MemoryFlowMixin:
                     "confidence": 0.7,
                     "source": MemorySource.ASSISTANT_SUMMARY.value,
                 },
+            )
+            self._publish_memory_event(
+                session_id=session_id,
+                task=task or {"id": "system", "role": "root"},
+                memory_entry=memory_entry,
+                action="promoted",
             )
         if entries:
             self._scratchpad.clear(session_id)
@@ -91,6 +97,55 @@ class MemoryFlowMixin:
         except Exception:  # noqa: BLE001
             logger.debug("Memory consolidation failed for session %s", session_id, exc_info=True)
             self._tracer.end_span(span.span_id, status="error")
+
+    def _publish_memory_event(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        memory_entry: Any,
+        action: str,
+    ) -> None:
+        if not hasattr(self, "_publish") or memory_entry is None:
+            return
+        metadata = getattr(memory_entry, "metadata", None)
+        metadata = metadata if isinstance(metadata, dict) else {}
+        category = str(metadata.get("category") or "memory")
+        source = str(metadata.get("source") or "runtime")
+        kind = getattr(getattr(memory_entry, "kind", None), "value", None) or str(getattr(memory_entry, "kind", "") or "")
+        content = str(getattr(memory_entry, "content", "") or "")
+        preview = self._single_line(content)
+        if len(preview) > 160:
+            preview = f"{preview[:157]}..."
+        labels = {
+            "task_learning": "任务记忆",
+            "verified_capability": "验证结果记忆",
+            "project_convention": "项目约定记忆",
+            "runtime_invariant": "运行约束记忆",
+            "failure_recovery_pattern": "恢复经验记忆",
+            "user_preference": "用户偏好记忆",
+            "open_issue": "开放问题记忆",
+            "implementation_note": "实现备注记忆",
+        }
+        title = labels.get(category, "记忆已更新")
+        payload: dict[str, Any] = {
+            "title": title,
+            "summary": preview,
+            "status": "completed",
+            "action": action,
+            "memoryId": getattr(memory_entry, "id", None),
+            "memoryKind": kind,
+            "category": category,
+            "source": source,
+            "scope": metadata.get("scope"),
+            "confidence": metadata.get("confidence"),
+        }
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="memory_event",
+            payload=payload,
+        )
 
     def _remember_task_result(self, *, session_id: str, task: dict[str, Any]) -> None:
         if not hasattr(self._store, "update_session_summary"):
@@ -153,7 +208,7 @@ class MemoryFlowMixin:
             except Exception:  # noqa: BLE001
                 pass
 
-            self._memory_manager.remember(
+            memory_entry = self._memory_manager.remember(
                 session_id=session_id,
                 workspace_id=workspace_id,
                 content=memory_content,
@@ -168,8 +223,14 @@ class MemoryFlowMixin:
                 },
                 dedup=(task_status == "completed"),
             )
+            self._publish_memory_event(
+                session_id=session_id,
+                task=task,
+                memory_entry=memory_entry,
+                action="stored",
+            )
             for extracted in self._structured_task_memories(task):
-                self._memory_manager.remember(
+                memory_entry = self._memory_manager.remember(
                     session_id=session_id,
                     workspace_id=workspace_id,
                     content=str(extracted["content"]),
@@ -183,6 +244,12 @@ class MemoryFlowMixin:
                         "sourceMessageIds": source_message_ids,
                     },
                     dedup=True,
+                )
+                self._publish_memory_event(
+                    session_id=session_id,
+                    task=task,
+                    memory_entry=memory_entry,
+                    action="stored",
                 )
 
             # Detect explicit user preferences from user messages
@@ -200,7 +267,7 @@ class MemoryFlowMixin:
                     if any(p in lower_uc for p in self._USER_PREFERENCE_HINTS):
                         if any(marker in lower_uc for marker in self._NON_PREFERENCE_PATTERNS):
                             continue
-                        self._memory_manager.remember(
+                        memory_entry = self._memory_manager.remember(
                             session_id=session_id,
                             workspace_id=workspace_id,
                             content=f"[User preference] {uc[:200]}",
@@ -214,6 +281,12 @@ class MemoryFlowMixin:
                                 "sourceMessageIds": source_message_ids,
                             },
                             dedup=True,
+                        )
+                        self._publish_memory_event(
+                            session_id=session_id,
+                            task=task,
+                            memory_entry=memory_entry,
+                            action="stored",
                         )
 
     _SUPPLEMENT_MEMORY_PATTERNS: list[str] = [
@@ -254,7 +327,7 @@ class MemoryFlowMixin:
             if any(marker in lower_content for marker in self._NON_PREFERENCE_PATTERNS):
                 continue
 
-            self._memory_manager.remember(
+            memory_entry = self._memory_manager.remember(
                 session_id=session_id,
                 workspace_id=workspace_id,
                 content=f"[Supplement] {content}",
@@ -268,6 +341,12 @@ class MemoryFlowMixin:
                     "sourceMessageIds": [entry.get("message_id", "")],
                 },
                 dedup=True,
+            )
+            self._publish_memory_event(
+                session_id=session_id,
+                task=task,
+                memory_entry=memory_entry,
+                action="stored",
             )
 
     def _structured_task_memories(self, task: dict[str, Any]) -> list[dict[str, Any]]:

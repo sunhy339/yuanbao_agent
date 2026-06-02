@@ -13,6 +13,10 @@ from ._shared import (
 )
 
 
+def _step(label: str, status: str, summary: str) -> dict[str, str]:
+    return {"label": label, "status": status, "summary": summary}
+
+
 def build_read_file_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None) -> dict[str, Any]:
     def read_file(params: dict[str, Any]) -> dict[str, Any]:
         workspace_root = require_workspace_root(params)
@@ -22,16 +26,24 @@ def build_read_file_tool(policy_guard: Any, store: Any, subagent_service: Any | 
         if is_ignored(file_path, workspace_root, store, params.get("ignore")):
             raise ValueError(f"File is ignored by current search rules: {params['path']}")
 
+        relative_path = to_relative_path(workspace_root, file_path)
         encoding = params.get("encoding", "utf-8")
         max_bytes = params.get("max_bytes")
         raw = file_path.read_bytes()
+        total_bytes = len(raw)
+        steps = [
+            _step("resolve", "completed", relative_path),
+            _step("read", "completed", f"{total_bytes} byte(s)"),
+        ]
         truncated = False
         if max_bytes is not None:
             limit = max(1, int(max_bytes))
             truncated = len(raw) > limit
             raw = raw[:limit]
+            if truncated:
+                steps.append(_step("truncate", "completed", f"limited to {limit} byte(s)"))
+        steps.append(_step("decode", "completed", str(encoding)))
 
-        relative_path = to_relative_path(workspace_root, file_path)
         lowered_name = PurePosixPath(relative_path).name.lower()
         trust = "trusted"
         trust_reason = "Workspace source file."
@@ -44,10 +56,11 @@ def build_read_file_tool(policy_guard: Any, store: Any, subagent_service: Any | 
             "encoding": encoding,
             "truncated": truncated,
             "bytesRead": len(raw),
-            "totalBytes": file_path.stat().st_size,
+            "totalBytes": total_bytes,
             "contentSource": "workspace_document" if trust == "untrusted" else "workspace_file",
             "contentTrust": trust,
             "contentTrustReason": trust_reason,
+            "steps": steps,
         }
 
     return {"handler": read_file}

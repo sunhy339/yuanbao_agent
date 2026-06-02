@@ -34,6 +34,7 @@ class ReactResumeMixin:
                 tool_spec=pending_spec,
                 budget=None,
             )
+            self._ensure_tool_result_operation(pending_spec, tool_result)
             if runtime_task["status"] == "waiting_approval":
                 state["pending_tool_spec"] = pending_spec
                 self._save_pending_react_state(task["id"], state)
@@ -44,6 +45,10 @@ class ReactResumeMixin:
             self._advance_after_tool(session_id=task["sessionId"], task=runtime_task, tool_spec=pending_spec)
 
             for index, tool_call in enumerate(list(state.get("remaining_tool_calls", []))):
+                if state.get("tool_results"):
+                    updated_tool_call = self._annotate_tool_call_with_completed_results(tool_call, state["tool_results"])
+                    if updated_tool_call is not tool_call:
+                        self._sync_tool_metadata(updated_tool_call, tool_call)
                 tool_spec = self._provider_tool_call_to_spec(tool_call, state["context"])
                 tool_result = self._execute_tool(
                     session_id=task["sessionId"],
@@ -51,6 +56,7 @@ class ReactResumeMixin:
                     tool_spec=tool_spec,
                     budget=None,
                 )
+                self._ensure_tool_result_operation(tool_spec, tool_result)
                 if runtime_task["status"] == "waiting_approval":
                     state["pending_tool_call"] = tool_call
                     state["pending_tool_spec"] = tool_spec

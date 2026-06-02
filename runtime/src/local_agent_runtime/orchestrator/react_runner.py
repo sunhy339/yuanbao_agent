@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 from ..context.token_budget import estimate_tokens
 from ..provider.failure_recovery import classify_provider_failure
 from ..policy.tool_policy_resolver import ToolPolicyDecision, ToolPolicyResolver
+from ..react.types import TurnDecision
 from ..services.worker_budget import WorkerBudget, WorkerBudgetExceededError
 
 logger = logging.getLogger(__name__)
@@ -112,6 +114,8 @@ class ReactRunnerMixin:
             _step_memory_ids = []
             # Refresh task status to detect external pause
             task = self._store.get_task({"taskId": task["id"]})["task"]
+            if task["status"] == "cancelled":
+                return {"status": "cancelled", "summary": "Task was cancelled.", "tool_results": tool_results}
             if task["status"] == "paused":
                 self._pending_react_tasks[task["id"]] = {
                     "session_id": session_id,
@@ -135,9 +139,12 @@ class ReactRunnerMixin:
                     task=task,
                     goal=goal,
                     context=context,
+                    messages=messages,
                     tool_results=tool_results,
                     steps=steps,
                     max_steps=max_steps,
+                    react_started=react_started,
+                    patch_repair_attempts=patch_repair_attempts,
                 )
 
             # Drain pending supplements from task inbox
@@ -145,7 +152,7 @@ class ReactRunnerMixin:
             if pending_supplements:
                 supplement_lines = []
                 for entry in pending_supplements:
-                    supplement_lines.append(f"- {entry['content']}")
+                    supplement_lines.append(self._supplement_prompt_line(entry, context))
                     self._store.mark_supplement_consumed(
                         entry["id"],
                         consumed_by_turn_id=f"step_{steps}",
@@ -338,6 +345,8 @@ class ReactRunnerMixin:
                     budget=budget,
                 )
             except Exception as exc:
+                if self._task_is_cancelled(task):
+                    return {"status": "cancelled", "summary": "Task was cancelled.", "tool_results": tool_results}
                 recorded_recovery = provider_context.get("_provider_failure_recovery_payload")
                 failure_recovery = (
                     recorded_recovery
@@ -369,6 +378,9 @@ class ReactRunnerMixin:
                         error=str(exc),
                     )
                 raise
+            task = self._store.get_task({"taskId": task["id"]})["task"]
+            if task["status"] == "cancelled":
+                return {"status": "cancelled", "summary": "Task was cancelled.", "tool_results": tool_results}
             parsed = self._parse_provider_response(
                 response,
                 allow_fallback=not react_started and steps == 0,
@@ -408,6 +420,25 @@ class ReactRunnerMixin:
                     "turn_id": provider_turn["id"],
                 },
             )
+            explicit_thought_summary = (
+                response.get("thought_summary")
+                if isinstance(response.get("thought_summary"), str)
+                else response.get("thoughtSummary")
+                if isinstance(response.get("thoughtSummary"), str)
+                else None
+            )
+            if explicit_thought_summary and response.get("_response_transport") != "stream":
+                self._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="thinking",
+                    payload={
+                        "text": explicit_thought_summary,
+                        "messageId": task.get("activeAssistantMessageId"),
+                        "source": "thought_summary",
+                        "step": steps + 1,
+                    },
+                )
             if parsed["status"] == "fallback":
                 return parsed
 
@@ -426,6 +457,29 @@ class ReactRunnerMixin:
             assistant_text = parsed.get("message") or ""
             if parsed["status"] == "completed" and not assistant_text:
                 assistant_text = parsed["summary"]
+
+            if turn_result.decision == TurnDecision.ASK_USER:
+                return self._pause_react_for_user_question(
+                    session_id=session_id,
+                    task=task,
+                    goal=goal,
+                    context=context,
+                    messages=messages,
+                    tool_results=tool_results,
+                    steps=steps,
+                    react_started=react_started,
+                    patch_repair_attempts=patch_repair_attempts,
+                    question=assistant_text or "请补充下一步需要我遵循的信息后继续。",
+                    summary=turn_result.thought_summary,
+                    reason=turn_result.why_complete or "provider_requested_user_input",
+                    options=(
+                        turn_result.policy_needs.get("options")
+                        if isinstance(turn_result.policy_needs, dict)
+                        else None
+                    ),
+                    source="react_turn",
+                )
+
             streamed_or_published = bool(response.get("_streamed_content"))
             if assistant_text and not response.get("_streamed_content"):
                 self._publish(
@@ -444,7 +498,7 @@ class ReactRunnerMixin:
                     "assistant_output_published": streamed_or_published,
                 }
 
-            tool_calls = parsed["tool_calls"]
+            tool_calls = self._annotate_tool_call_batch_with_history(parsed["tool_calls"], tool_results)
             messages.append(
                 {
                     "role": "assistant",
@@ -453,6 +507,13 @@ class ReactRunnerMixin:
                 }
             )
             for index, tool_call in enumerate(tool_calls):
+                task = self._store.get_task({"taskId": task["id"]})["task"]
+                if task["status"] == "cancelled":
+                    return {"status": "cancelled", "summary": "Task was cancelled.", "tool_results": tool_results}
+                if tool_results:
+                    updated_tool_call = self._annotate_tool_call_with_completed_results(tool_call, tool_results)
+                    if updated_tool_call is not tool_call:
+                        self._sync_tool_metadata(updated_tool_call, tool_call)
                 tool_spec = self._provider_tool_call_to_spec(tool_call, context)
                 cache_key = self._read_file_cache_key(tool_spec)
                 cached_tool_result = read_file_cache.get(cache_key) if cache_key else None
@@ -466,10 +527,14 @@ class ReactRunnerMixin:
                         budget=budget,
                         context=context,
                     )
+                    task = self._store.get_task({"taskId": task["id"]})["task"]
+                    if task["status"] == "cancelled":
+                        return {"status": "cancelled", "summary": "Task was cancelled.", "tool_results": tool_results}
                     if cache_key and not self._tool_failed(tool_spec["name"], tool_result["result"]):
                         read_file_cache[cache_key] = deepcopy(tool_result)
                     elif self._invalidates_read_file_cache(tool_spec["name"]):
                         read_file_cache.clear()
+                self._ensure_tool_result_operation(tool_spec, tool_result)
                 if task["status"] == "waiting_approval":
                     self._pending_react_tasks[task["id"]] = {
                         "session_id": session_id,
@@ -575,9 +640,12 @@ class ReactRunnerMixin:
         task: dict[str, Any],
         goal: str,
         context: dict[str, Any],
+        messages: list[dict[str, Any]],
         tool_results: list[dict[str, Any]],
         steps: int,
         max_steps: int,
+        react_started: bool,
+        patch_repair_attempts: int,
     ) -> dict[str, Any]:
         routing = dict(task.get("routing") or context.get("routing") or {})
         workflow = dict(routing.get("mainWorkflow") or {})
@@ -646,6 +714,61 @@ class ReactRunnerMixin:
                 "budget": budget_state,
             },
         )
+        self._publish_budget_progress(
+            session_id=session_id,
+            task=task,
+            phase="budget_exhausted",
+            pressure="exhausted",
+            consumed_steps=steps,
+            max_steps=max_steps,
+            remaining_steps=0,
+            recommended_action=convergence.get("recommendedAction"),
+        )
+        if convergence.get("recommendedAction") == "review_partial":
+            question = str(
+                advice.get("userMessage")
+                or advice.get("handoffFocus")
+                or self._budget_handoff_focus(goal=goal, tool_results=tool_results)
+                or "当前任务已达到步骤预算，需要你确认下一步。"
+            ).strip()
+            resume_context = self._context_with_additional_step_budget(
+                {**context, "routing": routing, "messages": messages},
+                consumed_steps=steps,
+                current_limit=max_steps,
+            )
+            return self._pause_react_for_user_question(
+                session_id=session_id,
+                task=task,
+                goal=goal,
+                context=resume_context,
+                messages=messages,
+                tool_results=tool_results,
+                steps=steps,
+                react_started=react_started,
+                patch_repair_attempts=patch_repair_attempts,
+                question=question,
+                summary=str(advice.get("reason") or "任务已达到步骤预算，需要用户决定是否继续。"),
+                reason="max_steps_exhausted",
+                resume_policy=str(advice.get("resumePolicy") or "requires_user_budget_update"),
+                options=advice.get("nextUserOptions") or [
+                    {
+                        "label": "继续并追加预算",
+                        "value": "continue_with_more_budget",
+                        "description": "允许当前任务继续执行更多步骤。",
+                    },
+                    {
+                        "label": "调整目标",
+                        "value": "change_goal",
+                        "description": "补充新的范围或约束后继续。",
+                    },
+                    {
+                        "label": "收尾总结",
+                        "value": "wrap_up",
+                        "description": "保留当前进展并整理结论。",
+                    },
+                ],
+                source=str(advice.get("source") or "budget_convergence"),
+            )
         summary = self._budget_exhausted_summary(goal=goal, tool_results=tool_results, steps=steps, max_steps=max_steps)
         result_counts = self._tool_results_summary_for_budget(tool_results)
         no_successful_tool_results = result_counts["total"] > 0 and result_counts["completed"] == 0
@@ -718,6 +841,16 @@ class ReactRunnerMixin:
                     "convergence": workflow["convergence"],
                 },
                 visibility="panel",
+            )
+            self._publish_budget_progress(
+                session_id=session_id,
+                task=task,
+                phase="budget_pressure",
+                pressure=pressure,
+                consumed_steps=steps,
+                max_steps=max_steps,
+                remaining_steps=step_dimension.get("remaining"),
+                recommended_action=(workflow.get("convergence") or {}).get("recommendedAction"),
             )
         return task
 
@@ -798,6 +931,44 @@ class ReactRunnerMixin:
             "remaining": max(0, limit_int - estimated_int),
             "pressure": pressure,
         }
+
+    def _publish_budget_progress(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        phase: str,
+        pressure: str,
+        consumed_steps: int,
+        max_steps: int,
+        remaining_steps: Any = None,
+        recommended_action: str | None = None,
+    ) -> None:
+        publish_progress = getattr(self, "_publish_assistant_progress", None)
+        if not callable(publish_progress):
+            return
+        if phase == "budget_exhausted":
+            text = "已达到步骤预算，正在整理当前进展"
+            status = "waiting"
+        elif pressure == "critical":
+            text = "步骤预算接近上限，正在收束当前任务"
+            status = "running"
+        else:
+            return
+        publish_progress(
+            session_id=session_id,
+            task=task,
+            text=text,
+            phase=phase,
+            status=status,
+            payload={
+                "pressure": pressure,
+                "consumedSteps": consumed_steps,
+                "remainingSteps": remaining_steps,
+                "maxSteps": max_steps,
+                "recommendedAction": recommended_action,
+            },
+        )
 
     def _budget_convergence_runtime_action(self, advice: dict[str, Any]) -> str:
         action = str(advice.get("action") or "")
@@ -984,6 +1155,137 @@ class ReactRunnerMixin:
             "recent": recent[-5:],
         }
 
+    def _pause_react_for_user_question(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+        messages: list[dict[str, Any]],
+        tool_results: list[dict[str, Any]],
+        steps: int,
+        react_started: bool,
+        patch_repair_attempts: int,
+        question: str,
+        summary: str | None = None,
+        reason: str | None = None,
+        resume_policy: str = "requires_user_follow_up",
+        options: Any = None,
+        source: str = "runtime",
+    ) -> dict[str, Any]:
+        normalized_options = self._normalize_user_question_options(options)
+        if not normalized_options:
+            normalized_options = self._default_user_question_options()
+        pending_state = {
+            "session_id": session_id,
+            "goal": goal,
+            "context": context,
+            "messages": [
+                *messages,
+                {"role": "assistant", "content": question},
+            ],
+            "tool_results": tool_results,
+            "steps": steps,
+            "react_started": react_started,
+            "patch_repair_attempts": patch_repair_attempts,
+            "pending_tool_call": None,
+            "pending_tool_spec": None,
+            "remaining_tool_calls": [],
+        }
+        self._pending_react_tasks[task["id"]] = pending_state
+        self._save_pending_react_state(task["id"], pending_state)
+        paused_task = self._store.update_task_status(task_id=task["id"], status="paused")
+        self._publish(
+            session_id=session_id,
+            task=paused_task,
+            event_type="ask_user_question",
+            payload={
+                "title": "需要你补充信息",
+                "question": question,
+                "summary": summary or question,
+                "status": "waiting",
+                "reason": reason or "needs_user_input",
+                "resumePolicy": resume_policy,
+                "options": normalized_options,
+                "source": source,
+            },
+        )
+        self._publish(
+            session_id=session_id,
+            task=paused_task,
+            event_type="task.paused",
+            payload={
+                "status": "paused",
+                "previousStatus": task.get("status"),
+                "reason": "ask_user_question",
+            },
+        )
+        return {"status": "paused", "question": question}
+
+    @staticmethod
+    def _normalize_user_question_options(options: Any) -> list[dict[str, str]]:
+        if not isinstance(options, list):
+            return []
+        normalized: list[dict[str, str]] = []
+        for index, option in enumerate(options[:4]):
+            if isinstance(option, dict):
+                label = str(option.get("label") or option.get("title") or option.get("value") or "").strip()
+                value = str(option.get("value") or label or f"option_{index + 1}").strip()
+                description = str(option.get("description") or option.get("detail") or "").strip()
+            else:
+                label = str(option or "").strip()
+                value = label or f"option_{index + 1}"
+                description = ""
+            if not label:
+                label = f"选项 {index + 1}"
+            normalized.append({
+                "label": label[:80],
+                "value": value[:120],
+                "description": description[:240],
+            })
+        return normalized
+
+    @staticmethod
+    def _default_user_question_options() -> list[dict[str, str]]:
+        return [
+            {
+                "label": "继续当前方向",
+                "value": "continue",
+                "description": "把这条回复作为补充说明，恢复当前任务。",
+            },
+            {
+                "label": "调整目标",
+                "value": "change_goal",
+                "description": "补充新的约束或范围，让任务按新目标继续。",
+            },
+            {
+                "label": "收尾总结",
+                "value": "wrap_up",
+                "description": "停止深入执行，优先整理当前进展。",
+            },
+        ]
+
+    @staticmethod
+    def _context_with_additional_step_budget(
+        context: dict[str, Any],
+        *,
+        consumed_steps: int,
+        current_limit: int,
+    ) -> dict[str, Any]:
+        next_context = deepcopy(context)
+        additional_steps = max(3, min(10, current_limit))
+        next_context["_max_task_steps_override"] = max(current_limit, consumed_steps) + additional_steps
+        routing = dict(next_context.get("routing") or {})
+        workflow = dict(routing.get("mainWorkflow") or {})
+        budget = dict(workflow.get("budget") or {})
+        budget["resumeMaxSteps"] = next_context["_max_task_steps_override"]
+        budget["resumeAdditionalSteps"] = additional_steps
+        workflow["budget"] = budget
+        routing["mainWorkflow"] = workflow
+        next_context["routing"] = routing
+        return next_context
+
     @staticmethod
     def _budget_exhausted_summary(
         *,
@@ -1006,6 +1308,110 @@ class ReactRunnerMixin:
         if isinstance(messages, list) and messages:
             return list(messages)
         return [{"role": "user", "content": goal}]
+
+    def _supplement_prompt_line(self, entry: dict[str, Any], context: dict[str, Any]) -> str:
+        line = f"- {entry['content']}"
+        reference_text = self._supplement_reference_text(entry, context)
+        if reference_text:
+            return f"{line}\n{reference_text}"
+        return line
+
+    def _supplement_reference_text(self, entry: dict[str, Any], context: dict[str, Any]) -> str:
+        references = self._supplement_file_references(self._supplement_metadata(entry))
+        if not references:
+            return ""
+        workspace_root = context.get("workspace_root")
+        if not isinstance(workspace_root, str) or not workspace_root.strip():
+            return ""
+        root = Path(workspace_root).resolve()
+        if not root.exists() or not root.is_dir():
+            return ""
+
+        sections: list[str] = []
+        for reference in references[:4]:
+            resolved = self._resolve_supplement_reference(root, reference)
+            if resolved is None:
+                continue
+            text = self._read_supplement_reference(resolved, max_bytes=12_000)
+            if not text:
+                continue
+            try:
+                display_path = resolved.relative_to(root).as_posix()
+            except ValueError:
+                display_path = reference
+            sections.extend(
+                [
+                    f"Referenced file content: {display_path}",
+                    "```text",
+                    text,
+                    "```",
+                ]
+            )
+        return "\n".join(sections)
+
+    @staticmethod
+    def _supplement_metadata(entry: dict[str, Any]) -> dict[str, Any]:
+        metadata = entry.get("metadata")
+        if isinstance(metadata, dict):
+            return metadata
+        raw = entry.get("metadata_json")
+        if not raw:
+            return {}
+        import json
+
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _supplement_file_references(metadata: dict[str, Any]) -> list[str]:
+        references: list[str] = []
+        for key in ("fileReferences", "attachments"):
+            value = metadata.get(key)
+            values = value if isinstance(value, list) else [value] if isinstance(value, str) else []
+            for item in values:
+                if not isinstance(item, str):
+                    continue
+                reference = item.strip().strip("\"'`").replace("\\", "/")
+                if reference and reference not in references:
+                    references.append(reference)
+        return references
+
+    @staticmethod
+    def _resolve_supplement_reference(root: Path, reference: str) -> Path | None:
+        if not reference or "\x00" in reference:
+            return None
+        candidate = Path(reference)
+        try:
+            resolved = candidate.resolve() if candidate.is_absolute() else (root / reference).resolve()
+        except (OSError, RuntimeError):
+            return None
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            return None
+        return resolved if resolved.is_file() else None
+
+    @staticmethod
+    def _read_supplement_reference(path: Path, *, max_bytes: int) -> str:
+        if max_bytes <= 0:
+            return ""
+        try:
+            with path.open("rb") as handle:
+                data = handle.read(max_bytes + 1)
+        except OSError:
+            return ""
+        if b"\x00" in data[:4096]:
+            return ""
+        truncated = len(data) > max_bytes
+        text = data[:max_bytes].decode("utf-8", errors="replace").strip()
+        if not text:
+            return ""
+        if truncated:
+            return f"{text.rstrip()}\n[truncated]"
+        return text
 
     # Strategies that are allowed to create child tasks via the `task` tool.
     _TASK_TOOL_STRATEGIES: frozenset[str] = frozenset({
@@ -1092,6 +1498,12 @@ class ReactRunnerMixin:
         return True
 
     def _max_task_steps(self, context: dict[str, Any]) -> int:
+        override = context.get("_max_task_steps_override")
+        try:
+            if override is not None:
+                return max(1, int(override))
+        except (TypeError, ValueError):
+            pass
         autonomy_steps = self._autonomy_profile_int(context, "maxSteps")
         if autonomy_steps is not None:
             return autonomy_steps
@@ -1321,7 +1733,7 @@ class ReactRunnerMixin:
         budget: WorkerBudget | None = None,
     ) -> list[dict[str, Any]]:
         tool_results: list[dict[str, Any]] = []
-        tool_sequence = self._provider.choose_tool_sequence(goal=goal, context=context)
+        tool_sequence = self._annotate_tool_spec_batch(self._provider.choose_tool_sequence(goal=goal, context=context))
 
         for index, tool_spec in enumerate(tool_sequence):
             tool_result = self._execute_tool(
@@ -1366,6 +1778,7 @@ class ReactRunnerMixin:
 
         follow_up_tool = self._provider.pick_follow_up_tool(context=context, tool_results=tool_results)
         if follow_up_tool is not None:
+            follow_up_tool = self._annotate_follow_up_tool_spec(follow_up_tool, tool_results)
             tool_results.append(
                 self._execute_tool(
                     session_id=session_id,

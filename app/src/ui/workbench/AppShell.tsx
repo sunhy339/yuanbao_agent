@@ -38,6 +38,7 @@ interface AppShellProps {
   disabled: boolean;
   sending?: boolean;
   submitting?: boolean;
+  stopPending?: boolean;
   queuedPromptCount?: number;
   attachments?: string[];
   onAttachmentsChange?: (attachments: string[]) => void;
@@ -51,12 +52,23 @@ interface AppShellProps {
   permissionLabel?: string;
   permissionMode?: string;
   onPermissionModeChange?: (mode: string) => void;
+  onWorkspacePathChange?: (path: string) => void;
+  useWorktree?: boolean;
+  onUseWorktreeChange?: (enabled: boolean) => void | Promise<void>;
+  worktreeModeBusy?: boolean;
   runtimeLabel?: string;
   mcpLabel?: string;
   approvalLabel?: string;
   contextLabel?: string;
   contextPreview?: import("../workbench/workspaces/session/types").SessionWorkspaceContextPreview | null;
   worktreeStatus?: { dirtyFiles?: number; files?: string[] } | null;
+  fileWorkspaceChangedFiles?: Array<{
+    path: string;
+    status?: string;
+    additions?: number;
+    deletions?: number;
+    source?: string;
+  }>;
   activeTaskStatus?: string | null;
   activeTaskCurrentStep?: string | null;
   loading?: boolean;
@@ -96,6 +108,7 @@ export function AppShell({
   disabled,
   sending,
   submitting,
+  stopPending,
   queuedPromptCount,
   attachments,
   onAttachmentsChange,
@@ -109,12 +122,17 @@ export function AppShell({
   permissionLabel,
   permissionMode,
   onPermissionModeChange,
+  onWorkspacePathChange,
+  useWorktree,
+  onUseWorktreeChange,
+  worktreeModeBusy,
   runtimeLabel,
   mcpLabel,
   approvalLabel,
   contextLabel,
   contextPreview,
   worktreeStatus,
+  fileWorkspaceChangedFiles,
   activeTaskStatus,
   activeTaskCurrentStep,
   loading,
@@ -161,9 +179,10 @@ export function AppShell({
         onQueuedPromptRemove={onQueuedPromptRemove}
         onQueuedPromptMove={onQueuedPromptMove}
         disabled={disabled}
-        sending={sending}
-        submitting={submitting}
-        queuedPromptCount={queuedPromptCount}
+            sending={sending}
+            submitting={submitting}
+            stopPending={stopPending}
+            queuedPromptCount={queuedPromptCount}
         attachments={attachments}
         onAttachmentsChange={onAttachmentsChange}
         onAttachmentError={onAttachmentError}
@@ -176,6 +195,10 @@ export function AppShell({
         permissionLabel={permissionLabel}
         permissionMode={permissionMode}
         onPermissionModeChange={onPermissionModeChange}
+        onWorkspacePathChange={onWorkspacePathChange}
+        useWorktree={useWorktree}
+        onUseWorktreeChange={onUseWorktreeChange}
+        worktreeModeBusy={worktreeModeBusy}
         loading={loading}
         runtimeLabel={runtimeLabel}
         mcpLabel={mcpLabel}
@@ -183,6 +206,7 @@ export function AppShell({
         contextLabel={contextLabel}
         contextPreview={contextPreview}
         worktreeStatus={worktreeStatus}
+        fileWorkspaceChangedFiles={fileWorkspaceChangedFiles}
         activeTaskStatus={activeTaskStatus}
         activeTaskCurrentStep={activeTaskCurrentStep}
       >

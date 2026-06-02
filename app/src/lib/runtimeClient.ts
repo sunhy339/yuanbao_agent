@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   ApprovalRecord,
+  ApprovalAllowAlwaysParams,
+  ApprovalAllowAlwaysResult,
   ApprovalSubmitParams,
   ApprovalSubmitResult,
   AgentProfileCreateParams,
@@ -47,6 +49,8 @@ import type {
   HookUpdateParams,
   MessageListParams,
   MessageListResult,
+  MessageDeleteParams,
+  MessageDeleteResult,
   MessageSendParams,
   MessageSendResult,
   MessageRecord,
@@ -60,7 +64,11 @@ import type {
   McpServerUpdateParams,
   McpToolsRefreshParams,
   McpToolsRefreshRpcResult,
+  OpenPathParams,
+  OpenPathResult,
   PatchRecord,
+  PermissionRuleClearParams,
+  PermissionRuleClearResult,
   ProviderTestParams,
   ProviderTestResult,
   ScheduledTaskCreateParams,
@@ -76,10 +84,14 @@ import type {
   ScheduledTaskUpdateParams,
   SessionCreateParams,
   SessionCreateResult,
+  SessionBranchParams,
+  SessionBranchResult,
   SessionDeleteParams,
   SessionDeleteResult,
   SessionCompactParams,
   SessionCompactResult,
+  SessionTruncateParams,
+  SessionTruncateResult,
   SessionListResult,
   SessionUpdateParams,
   SessionUpdateResult,
@@ -101,6 +113,8 @@ import type {
   TaskListParams,
   TaskListResult,
   TaskRecord,
+  TaskRevertChangesParams,
+  TaskRevertChangesResult,
   TaskResumeParams,
   TerminalControlResult,
   TerminalEvent,
@@ -124,6 +138,8 @@ import type {
   WorktreeStatusResult,
   WorkspaceFileListParams,
   WorkspaceFileListResult,
+  WorkspaceFileSearchParams,
+  WorkspaceFileSearchResult,
   WorkspaceFileReadParams,
   WorkspaceFileReadResult,
   WorkspaceFocusUpdateParams,
@@ -192,6 +208,24 @@ export interface HostStatus {
   runtimeRunning: boolean;
   repoRoot: string;
   pythonModule: string;
+}
+
+export type ComputerUseCapabilityState = "ready" | "partial" | "guarded" | "pending" | "disabled" | "blocked";
+
+export interface ComputerUseProbeCapability {
+  id: string;
+  label: string;
+  state: ComputerUseCapabilityState;
+  detail: string;
+}
+
+export interface ComputerUseProbeResult {
+  status: string;
+  checkedAt: number;
+  platform: string;
+  desktopBridge: boolean;
+  runtimeRunning: boolean;
+  capabilities: ComputerUseProbeCapability[];
 }
 
 function isTauriBridgeAvailable(): boolean {
@@ -299,10 +333,9 @@ function mergeRuntimeConfig(current: RuntimeConfig, next: ConfigUpdateParams): R
     },
     permissions: {
       preset: patch.permissions?.preset ?? curPermissions.preset,
-      capabilities: {
-        ...curPermissions.capabilities,
-        ...patch.permissions?.capabilities,
-      },
+      capabilities: patch.permissions && "capabilities" in patch.permissions
+        ? { ...(patch.permissions.capabilities ?? {}) }
+        : { ...curPermissions.capabilities },
     },
     tools: {
       ...curTools,
@@ -383,6 +416,10 @@ export class RuntimeClient {
     return invokeOrReject<HostStatus>("host_status");
   }
 
+  async probeComputerUse(): Promise<ComputerUseProbeResult> {
+    return invokeOrReject<ComputerUseProbeResult>("computer_use_probe");
+  }
+
   canOpenLocalAppPaths(): boolean {
     return isTauriBridgeAvailable();
   }
@@ -449,6 +486,18 @@ export class RuntimeClient {
     return invokePayloadOrReject<SessionCompactResult>("session_compact", payload);
   }
 
+  async branchSession(payload: SessionBranchParams): Promise<SessionBranchResult> {
+    const result = await invokePayloadOrReject<SessionBranchResult>("session_branch", payload);
+    rememberSession(result.session);
+    return result;
+  }
+
+  async truncateSession(payload: SessionTruncateParams): Promise<SessionTruncateResult> {
+    const result = await invokePayloadOrReject<SessionTruncateResult>("session_truncate", payload);
+    rememberSession(result.session);
+    return result;
+  }
+
   async sendMessage(payload: MessageSendParams): Promise<MessageSendResult> {
     return invokePayloadOrReject<MessageSendResult>("message_send", payload);
   }
@@ -457,12 +506,26 @@ export class RuntimeClient {
     return invokePayloadOrReject<MessageListResult>("message_list", payload);
   }
 
+  async deleteMessage(payload: MessageDeleteParams): Promise<MessageDeleteResult> {
+    const result = await invokePayloadOrReject<MessageDeleteResult>("message_delete", payload);
+    rememberSession(result.session);
+    return result;
+  }
+
   async workspaceFileList(payload: WorkspaceFileListParams): Promise<WorkspaceFileListResult> {
     return invokePayloadOrReject<WorkspaceFileListResult>("workspace_file_list", payload);
   }
 
+  async workspaceFileSearch(payload: WorkspaceFileSearchParams): Promise<WorkspaceFileSearchResult> {
+    return invokePayloadOrReject<WorkspaceFileSearchResult>("workspace_file_search", payload);
+  }
+
   async workspaceFileRead(payload: WorkspaceFileReadParams): Promise<WorkspaceFileReadResult> {
     return invokePayloadOrReject<WorkspaceFileReadResult>("workspace_file_read", payload);
+  }
+
+  async openPath(payload: OpenPathParams): Promise<OpenPathResult> {
+    return invokePayloadOrReject<OpenPathResult>("open_path", payload);
   }
 
   async terminalStart(payload: TerminalStartParams = {}): Promise<TerminalStartResult> {
@@ -505,6 +568,10 @@ export class RuntimeClient {
     return invokePayloadOrReject<ApprovalSubmitResult>("approval_submit", payload);
   }
 
+  async approvalAllowAlways(payload: ApprovalAllowAlwaysParams): Promise<ApprovalAllowAlwaysResult> {
+    return invokePayloadOrReject<ApprovalAllowAlwaysResult>("approval_allow_always", payload);
+  }
+
   async diffGet(payload: DiffGetParams): Promise<DiffGetResult> {
     return invokePayloadOrReject<DiffGetResult>("diff_get", payload);
   }
@@ -535,6 +602,10 @@ export class RuntimeClient {
 
   async resumeTask(payload: TaskResumeParams): Promise<TaskControlResult> {
     return invokePayloadOrReject<TaskControlResult>("task_resume", payload);
+  }
+
+  async revertTaskChanges(payload: TaskRevertChangesParams): Promise<TaskRevertChangesResult> {
+    return invokePayloadOrReject<TaskRevertChangesResult>("task_revert_changes", payload);
   }
 
   async listTasks(payload: TaskListParams = {}): Promise<TaskListResult> {
@@ -620,6 +691,12 @@ export class RuntimeClient {
 
   async updateConfig(payload: ConfigUpdateParams): Promise<ConfigUpdateResult> {
     const result = await invokePayloadOrReject<ConfigUpdateResult>("config_update", payload);
+    clientCache.config = mergeRuntimeConfig(clientCache.config ?? result.config as RuntimeConfig, result.config as RuntimeConfig);
+    return result;
+  }
+
+  async clearPermissionRule(payload: PermissionRuleClearParams): Promise<PermissionRuleClearResult> {
+    const result = await invokePayloadOrReject<PermissionRuleClearResult>("permission_rule_clear", payload);
     clientCache.config = mergeRuntimeConfig(clientCache.config ?? result.config as RuntimeConfig, result.config as RuntimeConfig);
     return result;
   }

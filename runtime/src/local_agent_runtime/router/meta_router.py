@@ -103,6 +103,12 @@ class MetaRouter:
         Fallback: FREE_FORM → REACT_STANDARD.
         """
         rule_result = self._rule_based_route(goal, context)
+        if self._has_explicit_multi_agent_signal(goal):
+            return self._build_decision(
+                scenario=Scenario.SWARM_TASK,
+                confidence=max(rule_result.confidence, 0.9),
+                reasoning=f"explicit-multi-agent-signal: {rule_result.reasoning}",
+            )
         defer_rule_to_llm = self._should_defer_rule_to_llm(goal, rule_result)
         consult_routing_advisor = self._should_consult_routing_advisor(
             context=context,
@@ -319,6 +325,33 @@ class MetaRouter:
             guarded.metadata["rule_candidate"] = dict(llm_result.metadata.get("rule_candidate") or {})
             return guarded
         return llm_result
+
+    @staticmethod
+    def _has_explicit_multi_agent_signal(goal: str) -> bool:
+        lowered = goal.casefold()
+        markers = (
+            "multi-agent",
+            "multi agent",
+            "multiple agents",
+            "parallel agents",
+            "subagent",
+            "subagents",
+            "swarm",
+            "多agent",
+            "多 agent",
+            "多个agent",
+            "多个 agent",
+            "多个智能体",
+            "多智能体",
+            "子agent",
+            "子 agent",
+            "子智能体",
+            "并行agent",
+            "并行 agent",
+            "起多个agent",
+            "起多个 agent",
+        )
+        return any(marker in lowered for marker in markers)
 
     @staticmethod
     def _has_planning_or_delegation_signal(goal: str) -> bool:

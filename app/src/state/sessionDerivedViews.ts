@@ -1,6 +1,7 @@
 import type {
   AgentEventEnvelope,
   CommandLogRecord,
+  SessionRecord,
   TaskRecord,
   TraceEventRecord,
   WorkspaceRef,
@@ -13,43 +14,123 @@ import type {
 import { formatStatusLabel } from "../ui/copy";
 import { readTaskContextPreview } from "./eventRecordViews";
 
+function readNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? value as Record<string, unknown> : null;
+}
+
+function tokenUsageFromPayload(value: unknown) {
+  const payload = readRecord(value);
+  const usage = readRecord(payload?.usage) ?? readRecord(readRecord(payload?.raw)?.usage);
+  if (!usage) return null;
+  const promptDetails = readRecord(usage.prompt_tokens_details);
+  const cachedTokens =
+    readNumber(usage.cachedTokens) ??
+    readNumber(usage.cached_tokens) ??
+    readNumber(promptDetails?.cached_tokens) ??
+    readNumber(promptDetails?.cache_read_tokens);
+  const inputTokens =
+    readNumber(usage.inputTokens) ??
+    readNumber(usage.promptTokens) ??
+    readNumber(usage.prompt_tokens) ??
+    readNumber(usage.input_tokens);
+  const outputTokens =
+    readNumber(usage.outputTokens) ??
+    readNumber(usage.completionTokens) ??
+    readNumber(usage.completion_tokens) ??
+    readNumber(usage.output_tokens);
+  const totalTokens =
+    readNumber(usage.totalTokens) ??
+    readNumber(usage.total_tokens) ??
+    ((inputTokens ?? 0) + (outputTokens ?? 0) || undefined);
+  return { inputTokens, outputTokens, cachedTokens, totalTokens };
+}
+
 export function buildSessionContextPreview({
   events,
   traceEvents,
   workspace,
+  session,
   activeTaskId,
   activeTask,
+  maxContextTokens,
 }: {
   events: AgentEventEnvelope[];
   traceEvents: TraceEventRecord[];
   workspace: WorkspaceRef | null;
+  session?: SessionRecord | null;
   activeTaskId: string | null;
   activeTask: TaskRecord | null;
+  maxContextTokens?: number | null;
 }): SessionWorkspaceContextPreview | undefined {
+  const sessionId = session?.id ?? activeTask?.sessionId ?? null;
+  const belongsToSession = (eventSessionId?: string | null) => !sessionId || !eventSessionId || eventSessionId === sessionId;
   const liveContexts = events
+    .filter((event) => belongsToSession(event.sessionId))
     .filter((event) => !activeTaskId || event.taskId === activeTaskId)
     .map((event) => ({ ts: event.ts, context: readTaskContextPreview(event.payload) }))
     .filter((entry): entry is { ts: number; context: import("@shared").TaskContextPreviewPayload } => Boolean(entry.context));
   const traceContexts = traceEvents
+    .filter((event) => belongsToSession(event.sessionId))
     .filter((event) => !activeTaskId || event.taskId === activeTaskId)
     .map((event) => ({ ts: event.createdAt, context: readTaskContextPreview(event.payload) }))
     .filter((entry): entry is { ts: number; context: import("@shared").TaskContextPreviewPayload } => Boolean(entry.context));
   const latest = [...liveContexts, ...traceContexts].sort((left, right) => right.ts - left.ts)[0]?.context;
+  const latestUsage = [
+    ...events
+      .filter((event) => belongsToSession(event.sessionId))
+      .map((event) => ({ ts: event.ts, usage: tokenUsageFromPayload(event.payload) })),
+    ...traceEvents
+      .filter((event) => belongsToSession(event.sessionId))
+      .map((event) => ({ ts: event.createdAt, usage: tokenUsageFromPayload(event.payload) })),
+  ]
+    .filter((entry): entry is { ts: number; usage: NonNullable<ReturnType<typeof tokenUsageFromPayload>> } => Boolean(entry.usage))
+    .sort((left, right) => right.ts - left.ts)[0];
   const projectFocus = workspace?.focus ?? latest?.projectFocus ?? null;
   const projectMemory = workspace?.summary ?? latest?.projectMemory ?? null;
+  const estimatedTokens =
+    latest?.budgetStats?.estimatedTokens ??
+    latest?.budgetStats?.estimatedInputTokens ??
+    latestUsage?.usage.inputTokens ??
+    latestUsage?.usage.totalTokens ??
+    sessionTokenEstimate(session);
+  const fallbackMaxContextTokens = typeof maxContextTokens === "number" && Number.isFinite(maxContextTokens) && maxContextTokens > 0
+    ? maxContextTokens
+    : undefined;
+  const hasBudgetFallback = fallbackMaxContextTokens !== undefined && Boolean(sessionId);
+  const fallbackEstimatedTokens = estimatedTokens ?? (hasBudgetFallback ? 0 : undefined);
 
-  if (!latest && !projectFocus && !projectMemory) {
+  if (!latest && !projectFocus && !projectMemory && fallbackEstimatedTokens === undefined && !activeTask?.currentStep) {
     return undefined;
   }
 
   return {
     projectFocus,
     projectMemory,
-    workspaceRoot: latest?.workspaceRoot ?? workspace?.rootPath,
+    workspaceRoot: session?.workspaceRoot ?? latest?.workspaceRoot ?? workspace?.rootPath,
     searchQuery: latest?.searchQuery,
     searchMode: latest?.searchMode,
     toolCount: latest?.toolCount,
-    budgetStats: latest?.budgetStats,
+    budgetStats: {
+      ...(latest?.budgetStats ?? {}),
+      estimatedTokens: fallbackEstimatedTokens,
+      estimatedInputTokens: latest?.budgetStats?.estimatedInputTokens ?? latestUsage?.usage.inputTokens ?? fallbackEstimatedTokens,
+      messageTokens: latest?.budgetStats?.messageTokens ?? fallbackEstimatedTokens,
+      maxContextTokens: latest?.budgetStats?.maxContextTokens ?? fallbackMaxContextTokens,
+      inputTokens: latestUsage?.usage.inputTokens ?? latest?.budgetStats?.estimatedInputTokens ?? fallbackEstimatedTokens,
+      outputTokens: latestUsage?.usage.outputTokens,
+      cacheReadTokens: latestUsage?.usage.cachedTokens,
+      updatedAt: latestUsage?.ts ?? liveContexts[0]?.ts ?? traceContexts[0]?.ts,
+      estimated: !latest && !latestUsage,
+    },
     taskFocus: {
       currentStep: activeTask?.currentStep ?? latest?.taskFocus?.currentStep,
       acceptanceCriteriaCount:
@@ -57,6 +138,14 @@ export function buildSessionContextPreview({
       outOfScopeCount: activeTask?.outOfScope?.length ?? latest?.taskFocus?.outOfScopeCount,
     },
   };
+}
+
+function sessionTokenEstimate(session?: SessionRecord | null) {
+  const raw = (session as { tokenCount?: unknown } | null | undefined)?.tokenCount;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+    return undefined;
+  }
+  return raw;
 }
 
 export function getTaskBadgeClass(status?: TaskRecord["status"]): string {
@@ -119,6 +208,25 @@ interface CollaborationSourceEvent {
   payload: unknown;
   time: number;
   taskId?: string;
+}
+
+function readCommandToolMetadata(payload: Record<string, unknown>, current?: SessionWorkspaceBackgroundJob) {
+  return {
+    toolUseId: readRecordString(payload, "toolUseId") ?? current?.toolUseId,
+    parentToolUseId: readRecordString(payload, "parentToolUseId") ?? current?.parentToolUseId,
+    toolGroupId: readRecordString(payload, "toolGroupId") ?? current?.toolGroupId,
+    toolIndex: readRecordNumber(payload, "toolIndex") ?? current?.toolIndex,
+    toolTotal: readRecordNumber(payload, "toolTotal") ?? current?.toolTotal,
+    toolOperationId: readRecordString(payload, "toolOperationId") ?? current?.toolOperationId,
+    toolOperationLabel: readRecordString(payload, "toolOperationLabel") ?? current?.toolOperationLabel,
+    toolCategory: readRecordString(payload, "toolCategory") ?? current?.toolCategory,
+    toolPhaseId: readRecordString(payload, "toolPhaseId") ?? current?.toolPhaseId,
+    toolPhaseLabel: readRecordString(payload, "toolPhaseLabel") ?? current?.toolPhaseLabel,
+    toolSemanticParentId: readRecordString(payload, "toolSemanticParentId") ?? current?.toolSemanticParentId,
+    toolSemanticParentLabel: readRecordString(payload, "toolSemanticParentLabel") ?? current?.toolSemanticParentLabel,
+    target: readRecordString(payload, "target") ?? current?.target,
+    inputSummary: readRecordString(payload, "inputSummary") ?? current?.inputSummary,
+  };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -205,6 +313,23 @@ function readChildTaskAttention(record: Record<string, unknown>): string | undef
   return undefined;
 }
 
+function isTerminalChildTaskStatus(status?: string): boolean {
+  const normalized = status?.trim().toLowerCase() ?? "";
+  return ["completed", "complete", "done", "finished", "succeeded", "success", "passed", "failed", "error", "cancelled", "canceled", "skipped"].includes(normalized);
+}
+
+function planningSubtaskStatus(type: string, payload: Record<string, unknown>): string | undefined {
+  const explicit = readRecordString(payload, "status");
+  if (explicit) return explicit;
+  const suffix = type.slice("task.planning.subtask.".length);
+  if (suffix === "started") return "running";
+  if (suffix === "completed") return "completed";
+  if (suffix === "failed") return "failed";
+  if (suffix === "skipped") return "skipped";
+  if (suffix === "waiting_approval") return "waiting_approval";
+  return suffix || undefined;
+}
+
 function appendOutputTail(current: string, chunk: string, maxLength = 4000): string {
   if (current.endsWith(chunk)) {
     return current;
@@ -236,7 +361,7 @@ export function buildSessionCollaboration(
       payload: trace.payload,
       time: trace.createdAt,
     })),
-  ];
+  ].sort((left, right) => left.time - right.time);
 
   const rememberWorker = (worker: Record<string, unknown> | null, time: number) => {
     if (!worker) {
@@ -274,32 +399,37 @@ export function buildSessionCollaboration(
     if (!id) {
       return;
     }
+    const current = childTasks.get(id);
+    const status = readRecordString(task, "status") ?? current?.status;
+    const completedAt =
+      readRecordNumber(task, "completedAt") ??
+      current?.completedAt ??
+      (isTerminalChildTaskStatus(status) ? time : undefined);
     childTasks.set(id, {
       id,
-      title: readRecordString(task, "title") ?? id,
-      status: readRecordString(task, "status"),
-      workerId: readRecordString(task, "assignedWorkerId"),
-      summary: readResultSummary(task),
-      attention: readChildTaskAttention(task),
+      title: readRecordString(task, "title") ?? current?.title ?? id,
+      status,
+      workerId: readRecordString(task, "assignedWorkerId") ?? current?.workerId,
+      summary: readResultSummary(task) ?? current?.summary,
+      attention: readChildTaskAttention(task) ?? current?.attention,
       updatedAt: readRecordNumber(task, "updatedAt") ?? time,
-      createdAt: readRecordNumber(task, "createdAt"),
-      completedAt: readRecordNumber(task, "completedAt"),
-      durationMs: readRecordNumber(task, "durationMs"),
-      agentType: readRecordString(task, "agentType") ?? (readChildRecord(task, "metadata") ? readRecordString(readChildRecord(task, "metadata")!, "agentType") : undefined),
-      artifactCount: readRecordNumber(task, "artifactCount"),
-      errorMessage: readRecordString(task, "errorMessage"),
+      createdAt: readRecordNumber(task, "createdAt") ?? current?.createdAt ?? time,
+      completedAt,
+      durationMs: readRecordNumber(task, "durationMs") ?? readRecordNumber(task, "duration_ms") ?? current?.durationMs,
+      agentType: readRecordString(task, "agentType") ?? (readChildRecord(task, "metadata") ? readRecordString(readChildRecord(task, "metadata")!, "agentType") : undefined) ?? current?.agentType,
+      artifactCount: readRecordNumber(task, "artifactCount") ?? current?.artifactCount,
+      errorMessage: readRecordString(task, "errorMessage") ?? current?.errorMessage,
     });
 
-    const status = readRecordString(task, "status");
-    const summary = readResultSummary(task);
+    const summary = readResultSummary(task) ?? current?.summary;
     if (summary && (status === "completed" || status === "failed")) {
       results.set(`${id}:result`, {
         id: `${id}:result`,
         taskId: id,
-        title: readRecordString(task, "title") ?? id,
+        title: readRecordString(task, "title") ?? current?.title ?? id,
         status,
         summary,
-        updatedAt: readRecordNumber(task, "completedAt") ?? readRecordNumber(task, "updatedAt") ?? time,
+        updatedAt: completedAt ?? readRecordNumber(task, "updatedAt") ?? time,
       });
     }
   };
@@ -313,6 +443,25 @@ export function buildSessionCollaboration(
     if (event.type.startsWith("collab.task.")) {
       rememberTask(readChildRecord(payload, "task"), event.time);
       rememberWorker(readChildRecord(payload, "worker"), event.time);
+    }
+
+    if (event.type.startsWith("task.planning.subtask.")) {
+      const id = readRecordString(payload, "subtaskId") ?? readRecordString(payload, "id") ?? readRecordString(payload, "taskId");
+      if (id) {
+        const status = planningSubtaskStatus(event.type, payload);
+        const planningTask: Record<string, unknown> = {
+          ...payload,
+          id,
+          title: readRecordString(payload, "subtaskTitle") ?? readRecordString(payload, "title") ?? id,
+          status,
+          summary: readRecordString(payload, "summary") ?? readRecordString(payload, "result"),
+          updatedAt: event.time,
+        };
+        if (isTerminalChildTaskStatus(status)) {
+          planningTask.completedAt = event.time;
+        }
+        rememberTask(planningTask, event.time);
+      }
     }
 
     if (event.type.startsWith("collab.worker.")) {
@@ -421,6 +570,7 @@ export function buildSessionBackgroundJobs(
             : "failed");
     const next: SessionWorkspaceBackgroundJob = {
       id,
+      ...readCommandToolMetadata(payload, current),
       command: readRecordString(payload, "command") ?? current?.command ?? id,
       status,
       cwd: readRecordString(payload, "cwd") ?? current?.cwd,
@@ -463,6 +613,7 @@ export function buildSessionBackgroundJobs(
     };
     jobs.set(id, {
       ...current,
+      ...readCommandToolMetadata(payload, current),
       stdout: stream === "stdout" ? appendOutputTail(current.stdout ?? "", chunk) : current.stdout,
       stderr: stream === "stderr" ? appendOutputTail(current.stderr ?? "", chunk) : current.stderr,
     });
@@ -496,6 +647,20 @@ export function buildSessionBackgroundJobs(
 export function commandLogToSessionBackgroundJob(log: CommandLogRecord): SessionWorkspaceBackgroundJob {
   return {
     id: log.id,
+    toolUseId: log.toolUseId,
+    parentToolUseId: log.parentToolUseId,
+    toolGroupId: log.toolGroupId,
+    toolIndex: log.toolIndex,
+    toolTotal: log.toolTotal,
+    toolOperationId: log.toolOperationId,
+    toolOperationLabel: log.toolOperationLabel,
+    toolCategory: log.toolCategory,
+    toolPhaseId: log.toolPhaseId,
+    toolPhaseLabel: log.toolPhaseLabel,
+    toolSemanticParentId: log.toolSemanticParentId,
+    toolSemanticParentLabel: log.toolSemanticParentLabel,
+    target: log.target,
+    inputSummary: log.inputSummary,
     command: log.command,
     status: log.status,
     cwd: log.cwd,
@@ -508,7 +673,7 @@ export function commandLogToSessionBackgroundJob(log: CommandLogRecord): Session
     stderr: log.stderr,
     stdoutPath: log.stdoutPath,
     stderrPath: log.stderrPath,
-    isBackground: false,
+    isBackground: log.background ?? false,
     summary:
       log.status === "running"
         ? "命令仍在运行。"
@@ -526,9 +691,24 @@ export function mergeSessionBackgroundJobs(
 
   for (const log of commandLogs) {
     const current = jobsById.get(log.id);
+    const commandJob = commandLogToSessionBackgroundJob(log);
     jobsById.set(log.id, {
       ...current,
-      ...commandLogToSessionBackgroundJob(log),
+      ...commandJob,
+      toolUseId: current?.toolUseId ?? commandJob.toolUseId,
+      parentToolUseId: current?.parentToolUseId ?? commandJob.parentToolUseId,
+      toolGroupId: current?.toolGroupId ?? commandJob.toolGroupId,
+      toolIndex: current?.toolIndex ?? commandJob.toolIndex,
+      toolTotal: current?.toolTotal ?? commandJob.toolTotal,
+      toolOperationId: current?.toolOperationId ?? commandJob.toolOperationId,
+      toolOperationLabel: current?.toolOperationLabel ?? commandJob.toolOperationLabel,
+      toolCategory: current?.toolCategory ?? commandJob.toolCategory,
+      toolPhaseId: current?.toolPhaseId ?? commandJob.toolPhaseId,
+      toolPhaseLabel: current?.toolPhaseLabel ?? commandJob.toolPhaseLabel,
+      toolSemanticParentId: current?.toolSemanticParentId ?? commandJob.toolSemanticParentId,
+      toolSemanticParentLabel: current?.toolSemanticParentLabel ?? commandJob.toolSemanticParentLabel,
+      target: current?.target ?? commandJob.target,
+      inputSummary: current?.inputSummary ?? commandJob.inputSummary,
       stdout: log.stdout ?? current?.stdout,
       stderr: log.stderr ?? current?.stderr,
       stdoutPath: log.stdoutPath ?? current?.stdoutPath,

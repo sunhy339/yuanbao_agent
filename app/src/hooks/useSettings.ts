@@ -6,7 +6,7 @@ import type {
   SettingsComputerUseConfig,
   SettingsAgentBehaviorConfig,
 } from "../ui/workbench/workspaces/settings/SettingsWorkspace";
-import { RuntimeClient } from "../lib/runtimeClient";
+import { RuntimeClient, type ComputerUseProbeCapability, type ComputerUseProbeResult } from "../lib/runtimeClient";
 import {
   normalizeRuntimeConfig,
   normalizeAutonomyConfig,
@@ -16,33 +16,100 @@ import {
   buildSettingsGeneralConfig,
   settingsLanguageToConfig,
   settingsModeToApprovalMode,
+  settingsModeToPermissionPreset,
 } from "../state/providerPayloadParsing";
 import type { HookDeps } from "./types";
 
 const runtimeClient = new RuntimeClient();
+
+const fullAccessCapabilityOverrides = {
+  writeFile: { mode: "allow", scope: "*" },
+  runCommand: { mode: "allow", scope: "*" },
+  webFetch: { mode: "allow", scope: "*" },
+  network: { mode: "allow", scope: "*" },
+  subagents: { mode: "allow", scope: "*" },
+  memoryWrite: { mode: "allow", scope: "*" },
+  gitWrite: { mode: "allow", scope: "*" },
+  hooksExecute: { mode: "allow", scope: "*" },
+} as const;
 
 export interface UseSettingsDeps extends HookDeps {
   config: RuntimeConfig | null;
   setConfig: (config: RuntimeConfig) => void;
 }
 
-function buildComputerUseStatus(): string {
+function buildComputerUseProbe(): Pick<SettingsComputerUseConfig, "status" | "checkedAt" | "capabilities"> {
   const clipboardAvailable =
     typeof navigator !== "undefined" &&
     typeof navigator.clipboard?.writeText === "function";
   const desktopBridgeAvailable = runtimeClient.canOpenLocalAppPaths();
-  const ready = [
-    clipboardAvailable ? "剪贴板" : null,
-    desktopBridgeAvailable ? "桌面 shell 桥接" : null,
-    "敏感动作确认",
-  ].filter(Boolean);
-  const pending = [
-    "屏幕观察",
-    "浏览器自动化",
-    "系统快捷键",
-  ];
 
-  return `${new Date().toLocaleTimeString("zh-CN", { hour12: false })} 已检查：${ready.join("、")} 可用；${pending.join("、")} 的权限探测尚未接入。`;
+  return {
+    status: "degraded",
+    checkedAt: Date.now(),
+    capabilities: [
+      {
+        id: "permission-audit",
+        label: "权限审计",
+        state: "ready",
+        detail: "computer_use 会先走运行时审批，并把申请与审批结果写入专用事件。",
+      },
+      {
+        id: "screen-observation",
+        label: "屏幕观察",
+        state: "ready",
+        detail: "截图 action 已接入运行时，执行时会尝试 Pillow ImageGrab 并返回缩略预览。",
+      },
+      {
+        id: "desktop-actions",
+        label: "桌面动作",
+        state: desktopBridgeAvailable ? "partial" : "guarded",
+        detail: desktopBridgeAvailable
+          ? "桌面桥接可用；运行时会优先使用 pyautogui，Windows 下可回退到 ctypes 坐标点击/滚动。"
+          : "当前预览环境没有 Tauri 桌面桥接；正式桌面会话中可执行坐标点击、键入、按键与滚动。",
+      },
+      {
+        id: "browser-dom",
+        label: "浏览器 DOM 控制",
+        state: "partial",
+        detail: "Playwright page-like executor 协议已就绪，宿主还需要注入真实浏览器会话后才能按 selector 点击/输入。",
+      },
+      {
+        id: "clipboard",
+        label: "剪贴板",
+        state: clipboardAvailable ? "ready" : "guarded",
+        detail: clipboardAvailable ? "浏览器剪贴板写入可用。" : "当前上下文未暴露浏览器剪贴板写入 API。",
+      },
+      {
+        id: "system-key-combos",
+        label: "系统快捷键",
+        state: "guarded",
+        detail: "单键 press 已接入；系统级组合键仍保留在显式确认和后续宿主能力扩展下。",
+      },
+    ],
+  };
+}
+
+function mergeBrowserClipboardProbe(
+  probe: ComputerUseProbeResult,
+  clipboardAvailable: boolean,
+): Pick<SettingsComputerUseConfig, "status" | "checkedAt" | "capabilities"> {
+  return {
+    status: probe.status,
+    checkedAt: probe.checkedAt,
+    capabilities: probe.capabilities.map((capability: ComputerUseProbeCapability) => {
+      if (capability.id !== "clipboard") {
+        return capability;
+      }
+      return {
+        ...capability,
+        state: clipboardAvailable ? "ready" : capability.state,
+        detail: clipboardAvailable
+          ? "浏览器剪贴板写入可用；系统级读写仍需显式权限。"
+          : capability.detail,
+      };
+    }),
+  };
 }
 
 export function useSettings(deps: UseSettingsDeps) {
@@ -74,6 +141,7 @@ export function useSettings(deps: UseSettingsDeps) {
     systemKeyCombos: false,
     sensitiveActionConfirm: true,
   });
+  const [permissionRuleBusyId, setPermissionRuleBusyId] = useState<string | null>(null);
 
   async function handleGeneralSettingsChange(next: SettingsGeneralConfig) {
     setGeneralSettings(next);
@@ -172,6 +240,12 @@ export function useSettings(deps: UseSettingsDeps) {
           policy: {
             approvalMode: settingsModeToApprovalMode(mode),
           },
+          permissions: {
+            preset: settingsModeToPermissionPreset(mode),
+            capabilities: mode === "skip"
+              ? fullAccessCapabilityOverrides
+              : { ...(config.permissions?.capabilities ?? {}) },
+          },
         },
       });
       const normalized = normalizeRuntimeConfig(result.config);
@@ -179,6 +253,26 @@ export function useSettings(deps: UseSettingsDeps) {
       addToast("success", "权限模式已保存");
     } catch (reason) {
       toastError(reason);
+    }
+  }
+
+  async function handleClearPermissionRule(capability: string) {
+    if (!config || !capability) {
+      return;
+    }
+
+    setPermissionRuleBusyId(capability);
+    setError(null);
+
+    try {
+      const result = await runtimeClient.clearPermissionRule({ capability });
+      const normalized = normalizeRuntimeConfig(result.config);
+      setConfig(normalized);
+      addToast("success", result.removed ? "已恢复默认权限规则" : "权限规则已经是默认状态");
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setPermissionRuleBusyId((current) => (current === capability ? null : current));
     }
   }
 
@@ -202,13 +296,25 @@ export function useSettings(deps: UseSettingsDeps) {
     }
   }
 
-  function handleRecheckComputerUse() {
-    const status = buildComputerUseStatus();
-    setComputerUseSettings((current) => ({
-      ...current,
-      status,
-    }));
-    addToast("info", "电脑操作能力已检查");
+  async function handleRecheckComputerUse() {
+    const clipboardAvailable =
+      typeof navigator !== "undefined" &&
+      typeof navigator.clipboard?.writeText === "function";
+    try {
+      const runtimeProbe = await runtimeClient.probeComputerUse();
+      setComputerUseSettings((current) => ({
+        ...current,
+        ...mergeBrowserClipboardProbe(runtimeProbe, clipboardAvailable),
+      }));
+      addToast("info", "电脑操作能力已检查");
+    } catch (reason) {
+      const probe = buildComputerUseProbe();
+      setComputerUseSettings((current) => ({
+        ...current,
+        ...probe,
+      }));
+      toastError(reason);
+    }
   }
 
   return {
@@ -218,9 +324,11 @@ export function useSettings(deps: UseSettingsDeps) {
     setIMSettings,
     computerUseSettings,
     setComputerUseSettings,
+    permissionRuleBusyId,
     handleGeneralSettingsChange,
     handleAgentBehaviorChange,
     handlePermissionModeChange,
+    handleClearPermissionRule,
     handleOpenAppPath,
     handleCopyRuntimeText,
     handleRecheckComputerUse,

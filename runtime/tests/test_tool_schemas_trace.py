@@ -27,6 +27,7 @@ EXPECTED_TOOL_NAMES = {
     "code_search",
     "notebook",
     "browser",
+    "computer_use",
     "memory.remember",
     "memory.recall",
     "scratchpad.write",
@@ -111,8 +112,8 @@ def test_builtin_tool_schemas_are_complete_and_openai_convertible() -> None:
             assert run_command_properties["backgroundJob"]["oneOf"][0]["type"] == "boolean"
         elif name in {"web_fetch", "browser"}:
             assert "url" in input_schema["required"]
-        elif name in {"memory.remember", "memory.recall", "scratchpad.write", "scratchpad.read"}:
-            pass  # memory/scratchpad tools use session-scoped params, not workspaceRoot
+        elif name in {"computer_use", "memory.remember", "memory.recall", "scratchpad.write", "scratchpad.read"}:
+            pass  # session/task-scoped tools do not require workspaceRoot
         else:
             assert "workspaceRoot" in input_schema["required"]
         assert json.loads(json.dumps(input_schema)) == input_schema
@@ -231,7 +232,16 @@ def test_store_appends_trace_for_approval_patch_and_command_lifecycle(tmp_path: 
         session = store.create_session(workspace_id=workspace["id"], title="Lifecycle trace")
         task = store.create_task(session_id=session["id"], task_type="chat", goal="trace lifecycle", plan=[])
 
-        approval = store.create_approval(task["id"], "run_command", {"command": "python --version"})
+        approval = store.create_approval(
+            task["id"],
+            "apply_patch",
+            {
+                "summary": "Update README.md",
+                "filesChanged": 1,
+                "changedPaths": ["README.md"],
+                "diffText": "diff --git a/README.md b/README.md\n",
+            },
+        )
         store.resolve_approval(approval["id"], "approved")
         patch = store.create_patch(
             task_id=task["id"],
@@ -246,7 +256,26 @@ def test_store_appends_trace_for_approval_patch_and_command_lifecycle(tmp_path: 
             command="python --version",
             cwd=".",
             shell="powershell",
+            tool_metadata={
+                "toolUseId": "call_command",
+                "toolName": "run_command",
+                "target": "python --version",
+                "inputSummary": "python --version",
+                "toolGroupId": "tgrp_1",
+                "toolIndex": 0,
+                "toolTotal": 1,
+                "toolCategory": "verification",
+            },
         )
+        assert command["toolUseId"] == "call_command"
+        assert command["toolName"] == "run_command"
+        assert command["target"] == "python --version"
+        assert command["inputSummary"] == "python --version"
+        assert command["toolGroupId"] == "tgrp_1"
+        assert command["toolIndex"] == 0
+        assert command["toolTotal"] == 1
+        assert command["toolCategory"] == "verification"
+        assert command["shell"] == "powershell"
         store.update_command_log(command["id"], status="completed", exit_code=0)
 
         events = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
@@ -260,8 +289,85 @@ def test_store_appends_trace_for_approval_patch_and_command_lifecycle(tmp_path: 
             "command.completed",
         ]
         assert events[0]["relatedId"] == approval["id"]
+        assert events[0]["payload"]["taskId"] == task["id"]
+        assert events[0]["payload"]["filesChanged"] == 1
+        assert events[0]["payload"]["changedPaths"] == ["README.md"]
+        assert events[0]["payload"]["diffText"].startswith("diff --git a/README.md")
+        assert events[0]["payload"]["preview"][0] == {"label": "摘要", "value": "Update README.md"}
+        assert events[1]["payload"]["taskId"] == task["id"]
+        assert events[1]["payload"]["request"]["summary"] == "Update README.md"
+        assert events[1]["payload"]["filesChanged"] == 1
+        assert events[1]["payload"]["changedPaths"] == ["README.md"]
+        assert events[1]["payload"]["diffText"].startswith("diff --git a/README.md")
+        assert events[1]["payload"]["preview"][0] == {"label": "摘要", "value": "Update README.md"}
+        assert events[1]["payload"]["decision"] == "approved"
+        assert events[1]["payload"]["decidedAt"] is not None
         assert events[2]["payload"]["filesChanged"] == 1
+        assert events[2]["payload"]["changedPaths"] == ["README.md"]
+        assert events[2]["payload"]["diffText"].startswith("diff --git a/README.md")
+        assert events[4]["payload"]["toolUseId"] == "call_command"
+        assert events[4]["payload"]["target"] == "python --version"
+        assert events[4]["payload"]["inputSummary"] == "python --version"
+        assert events[4]["payload"]["toolGroupId"] == "tgrp_1"
+        assert events[4]["payload"]["toolIndex"] == 0
+        assert events[4]["payload"]["toolTotal"] == 1
+        assert events[4]["payload"]["toolCategory"] == "verification"
+        assert events[-1]["payload"]["toolUseId"] == "call_command"
+        assert events[-1]["payload"]["target"] == "python --version"
         assert events[-1]["payload"]["exitCode"] == 0
+
+        listed_command = store.list_command_logs({"taskId": task["id"]})["commandLogs"][0]
+        fetched_command = store.get_command_log({"commandId": command["id"]})["commandLog"]
+        for command_log in (listed_command, fetched_command):
+            assert command_log["toolUseId"] == "call_command"
+            assert command_log["toolName"] == "run_command"
+            assert command_log["target"] == "python --version"
+            assert command_log["inputSummary"] == "python --version"
+            assert command_log["toolGroupId"] == "tgrp_1"
+            assert command_log["toolIndex"] == 0
+            assert command_log["toolTotal"] == 1
+            assert command_log["toolCategory"] == "verification"
+            assert command_log["shell"] == "powershell"
+    finally:
+        store.close()
+
+
+def test_store_adds_structured_preview_for_non_file_approvals(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    try:
+        workspace = store.upsert_workspace(str(tmp_path))
+        session = store.create_session(workspace_id=workspace["id"], title="Approval preview")
+        task = store.create_task(session_id=session["id"], task_type="chat", goal="preview approval", plan=[])
+
+        approval = store.create_approval(
+            task["id"],
+            "run_command",
+            {
+                "command": "npm run typecheck",
+                "cwd": "app",
+                "shell": "powershell",
+                "policyReason": "Command needs approval outside allowlist.",
+            },
+        )
+
+        event = store.list_trace_events({"taskId": task["id"]})["traceEvents"][0]
+
+        assert event["relatedId"] == approval["id"]
+        assert event["payload"]["preview"] == [
+            {"label": "命令", "value": "npm run typecheck"},
+            {"label": "目录", "value": "app"},
+            {"label": "Shell", "value": "powershell"},
+            {"label": "原因", "value": "Command needs approval outside allowlist."},
+        ]
+
+        store.resolve_approval(approval["id"], "approved")
+        resolved_event = store.list_trace_events({"taskId": task["id"]})["traceEvents"][1]
+        assert resolved_event["payload"]["taskId"] == task["id"]
+        assert resolved_event["payload"]["request"]["command"] == "npm run typecheck"
+        assert resolved_event["payload"]["preview"] == event["payload"]["preview"]
+        assert resolved_event["payload"]["decision"] == "approved"
+        assert resolved_event["payload"]["decidedBy"] == "user"
+        assert resolved_event["payload"]["decidedAt"] is not None
     finally:
         store.close()
 

@@ -191,5 +191,6 @@ export function messageRecordToChatMessageLocal(record: import("@shared").Messag
     kind: record.kind,
     status: record.status,
     createdSeq: record.createdSeq,
+    metadata: record.metadata,
   };
 }

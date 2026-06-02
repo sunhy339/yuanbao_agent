@@ -39,7 +39,14 @@ class SupplementFlowMixin:
             return None
         return task
 
-    def _attach_supplemental_message(self, *, session_id: str, task: dict[str, Any], content: str) -> dict[str, Any]:
+    def _attach_supplemental_message(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if task.get("status") not in ACTIVE_SUPPLEMENT_STATUSES:
             raise ValueError(f"Cannot supplement task that is not active: {task.get('id')}")
         # Create user message for chat history
@@ -49,6 +56,7 @@ class SupplementFlowMixin:
             role="user",
             content=content,
             kind="supplement",
+            metadata=metadata,
         )
         # Write to task inbox so the running loop can consume it
         inbox_entry = self._store.create_inbox_entry(
@@ -56,6 +64,7 @@ class SupplementFlowMixin:
             session_id=session_id,
             content=content,
             message_id=user_msg["id"],
+            metadata=metadata,
         )
         routing = self._routing_with_user_takeover(task=task, content=content)
         updated_task = self._store.update_task(

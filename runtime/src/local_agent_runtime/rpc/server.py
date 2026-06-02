@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
 import time
@@ -11,11 +12,13 @@ from ..services.collaboration_service import CollaborationService
 from ..services.replay_service import ReplayService
 from ..services.command_background import cancel_background_command, get_background_command_event_bridge, get_background_command_service
 from ..services.schedule_service import ScheduleService
+from ..services.task_revert_service import revert_task_changes
 from ..store.sqlite_store import SQLiteStore
 from ..memory.store import MemoryStore
 from ..memory.types import MemoryKind
 
 RpcHandler = Callable[[dict[str, Any]], dict[str, Any]]
+logger = logging.getLogger(__name__)
 
 
 def _entry_to_dict(entry: Any) -> dict[str, Any]:
@@ -42,11 +45,20 @@ class JsonRpcServer:
     ``{"kind": "event", "payload": ...}``.
     """
 
-    def __init__(self, orchestrator: Any, store: Any, event_bus: Any, *, worktree_service: Any = None) -> None:
+    def __init__(
+        self,
+        orchestrator: Any,
+        store: Any,
+        event_bus: Any,
+        *,
+        worktree_service: Any = None,
+        shutdown_callbacks: list[Callable[[], None]] | None = None,
+    ) -> None:
         self._orchestrator = orchestrator
         self._store = store
         self._event_bus = event_bus
         self._worktree_service = worktree_service
+        self._shutdown_callbacks = list(shutdown_callbacks or [])
         self._schedule = ScheduleService(store)
         self._collaboration = CollaborationService(store, event_bus)
         self._replay = ReplayService(store)
@@ -65,17 +77,23 @@ class JsonRpcServer:
             "session.update": self._store.update_session,
             "session.delete": self._delete_session,
             "session.compact": self._orchestrator.compact_session,
+            "session.branch": self._store.branch_session,
+            "session.truncate": self._store.truncate_session,
             "message.send": self._orchestrator.send_message,
             "message.list": self._store.list_messages,
+            "message.delete": self._store.delete_message,
             "worker.run_child_task": self._orchestrator.run_child_task,
             "task.get": self._store.get_task,
             "task.list": self._store.list_tasks,
             "task.cancel": self._orchestrator.cancel_task,
             "task.pause": self._orchestrator.pause_task,
             "task.resume": self._orchestrator.resume_task,
+            "task.revertChanges": self._task_revert_changes,
             "approval.submit": self._orchestrator.submit_approval,
+            "approval.allowAlways": self._orchestrator.allow_approval_always,
             "config.get": self._store.get_config,
             "config.update": self._store.update_config,
+            "permission.rule.clear": self._store.clear_permission_rule,
             "config.effective": self._orchestrator.config_effective,
             "prompt.preview": self._orchestrator.prompt_preview,
             "provider.test": self._orchestrator.test_provider,
@@ -202,7 +220,15 @@ class JsonRpcServer:
         self._orchestrator.shutdown_mcp()
 
     def graceful_shutdown(self, timeout: float = 10.0) -> None:
-        self._orchestrator.graceful_shutdown(timeout=timeout)
+        try:
+            self._orchestrator.graceful_shutdown(timeout=timeout)
+        finally:
+            callbacks, self._shutdown_callbacks = self._shutdown_callbacks, []
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Shutdown callback failed: %s", exc, exc_info=True)
 
     def handle_line(self, line: str) -> dict[str, Any]:
         envelope = RpcEnvelope(**json.loads(line))
@@ -315,6 +341,11 @@ class JsonRpcServer:
 
     def _worktree_merge(self, params: dict[str, Any]) -> dict[str, Any]:
         return self._require_worktree_service().merge(params)
+
+    # -- Task mutation RPCs ----------------------------------------------------
+
+    def _task_revert_changes(self, params: dict[str, Any]) -> dict[str, Any]:
+        return revert_task_changes(self._store, params)
 
     # -- Command RPCs ----------------------------------------------------------
 

@@ -78,6 +78,51 @@ def _available_node_executable() -> str | None:
     return resolve_node_executable()
 
 
+def _step(label: str, status: str, summary: str) -> dict[str, str]:
+    return {"label": label, "status": status, "summary": summary}
+
+
+def _command_tool_metadata(
+    *,
+    tool_use_id: str | None,
+    parent_tool_use_id: str | None,
+    tool_group_id: str | None,
+    tool_index: Any,
+    tool_total: Any,
+    tool_operation_id: str | None,
+    tool_operation_label: str | None,
+    tool_category: str | None,
+    tool_phase_id: str | None,
+    tool_phase_label: str | None,
+    tool_semantic_parent_id: str | None,
+    tool_semantic_parent_label: str | None,
+    tool_target: str | None,
+    tool_input_summary: str | None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {"toolName": "run_command"}
+    for key, value in {
+        "toolUseId": tool_use_id,
+        "parentToolUseId": parent_tool_use_id,
+        "toolGroupId": tool_group_id,
+        "toolOperationId": tool_operation_id,
+        "toolOperationLabel": tool_operation_label,
+        "toolCategory": tool_category,
+        "toolPhaseId": tool_phase_id,
+        "toolPhaseLabel": tool_phase_label,
+        "toolSemanticParentId": tool_semantic_parent_id,
+        "toolSemanticParentLabel": tool_semantic_parent_label,
+        "target": tool_target,
+        "inputSummary": tool_input_summary,
+    }.items():
+        if isinstance(value, str) and value.strip():
+            metadata[key] = value.strip()
+    if isinstance(tool_index, int) and not isinstance(tool_index, bool):
+        metadata["toolIndex"] = tool_index
+    if isinstance(tool_total, int) and not isinstance(tool_total, bool):
+        metadata["toolTotal"] = tool_total
+    return metadata
+
+
 def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None, *, permission_engine: Any | None = None) -> dict[str, Any]:
     def run_command(params: dict[str, Any]) -> dict[str, Any]:
         workspace_root = require_workspace_root(params)
@@ -89,6 +134,24 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         active_command_policy = current_command_policy(store)
         active_run_command_config = current_run_command_config(store)
         task_id = str(params.get("taskId") or params.get("task_id") or "").strip()
+        tool_use_id = str(params.get("toolUseId") or params.get("tool_use_id") or "").strip() or None
+        parent_tool_use_id = str(params.get("parentToolUseId") or params.get("parent_tool_use_id") or "").strip() or None
+        tool_group_id = str(params.get("toolGroupId") or params.get("tool_group_id") or "").strip() or None
+        tool_operation_id = str(params.get("toolOperationId") or params.get("tool_operation_id") or "").strip() or None
+        tool_operation_label = str(params.get("toolOperationLabel") or params.get("tool_operation_label") or "").strip() or None
+        tool_category = str(params.get("toolCategory") or params.get("tool_category") or "").strip() or None
+        tool_phase_id = str(params.get("toolPhaseId") or params.get("tool_phase_id") or "").strip() or None
+        tool_phase_label = str(params.get("toolPhaseLabel") or params.get("tool_phase_label") or "").strip() or None
+        tool_semantic_parent_id = str(params.get("toolSemanticParentId") or params.get("tool_semantic_parent_id") or "").strip() or None
+        tool_semantic_parent_label = str(params.get("toolSemanticParentLabel") or params.get("tool_semantic_parent_label") or "").strip() or None
+        tool_target = str(params.get("target") or params.get("toolTarget") or params.get("tool_target") or "").strip() or None
+        tool_input_summary = str(params.get("inputSummary") or params.get("input_summary") or "").strip() or None
+        tool_index = params.get("toolIndex", params.get("tool_index"))
+        tool_total = params.get("toolTotal", params.get("tool_total"))
+        stdout_callback = params.get("_stdoutCallback")
+        stderr_callback = params.get("_stderrCallback")
+        command_started_callback = params.get("_commandStartedCallback")
+        command_log_id_sink = params.get("_commandLogIdSink")
         approval_id = str(params.get("approvalId") or params.get("approval_id") or "").strip() or None
         internal_validation = bool(params.get("internalValidation") or params.get("internal_validation"))
         background = background_requested(params)
@@ -97,15 +160,20 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         execution_command = _powershell_execution_command(requested_command, shell_name)
         timeout_ms = int(params.get("timeoutMs") or params.get("timeout_ms") or active_command_policy["commandTimeoutMs"])
         timeout_ms = max(1000, min(timeout_ms, 1_800_000))
+        steps = [
+            _step("resolve", "completed", f"cwd={cwd_rel}; shell={shell_name}; timeout={timeout_ms}ms"),
+        ]
 
         allowlist_review_reason: str | None = None
         try:
             policy_guard.validate_command(requested_command, active_run_command_config)
+            steps.append(_step("validate", "completed", "command policy allowed"))
         except ValueError as exc:
             reason = str(exc)
             if "allowlist" not in reason.casefold():
                 raise
             allowlist_review_reason = reason
+            steps.append(_step("validate", "completed", "allowlist review required"))
         permission_decision = None
 
         # PermissionEngine gate (new path)
@@ -125,7 +193,15 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
                     "error": permission_decision.reason,
                     "command": command,
                     "cwd": cwd_rel,
+                    "shell": shell_name,
+                    "timeoutMs": timeout_ms,
+                    "background": background,
+                    "steps": [
+                        *steps,
+                        _step("permission", "blocked", str(permission_decision.reason)),
+                    ],
                 }
+            steps.append(_step("permission", "completed", str(permission_decision.decision)))
 
         cwd_path = Path(cwd_rel)
         cwd_abs = cwd_path.resolve() if cwd_path.is_absolute() else (workspace_root / cwd_path).resolve()
@@ -142,6 +218,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
             )
             if scope_reasons:
                 raise ValueError("Write scope violation: " + "; ".join(scope_reasons))
+            steps.append(_step("scope", "completed", "command scope allowed"))
         request = approval_request(
             task_id=request_task_id or "",
             command=requested_command,
@@ -168,6 +245,10 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
                     "shell": shell_name,
                     "timeoutMs": timeout_ms,
                     "background": background,
+                    "steps": [
+                        *steps,
+                        _step("approval", "blocked", "run_command approval required"),
+                    ],
                 }
         elif (
             allowlist_review_reason is not None
@@ -194,7 +275,12 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 "shell": shell_name,
                 "timeoutMs": timeout_ms,
                 "background": background,
+                "steps": [
+                    *steps,
+                    _step("approval", "blocked", "run_command approval required"),
+                ],
             }
+        steps.append(_step("approval", "completed", "command approved" if approval_id else "not required"))
 
         if not request_task_id:
             raise ValueError("taskId is required for command execution")
@@ -204,16 +290,54 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
             command=command,
             cwd=cwd_rel,
             shell=shell_name,
+            tool_metadata=_command_tool_metadata(
+                tool_use_id=tool_use_id,
+                parent_tool_use_id=parent_tool_use_id,
+                tool_group_id=tool_group_id,
+                tool_index=tool_index,
+                tool_total=tool_total,
+                tool_operation_id=tool_operation_id,
+                tool_operation_label=tool_operation_label,
+                tool_category=tool_category,
+                tool_phase_id=tool_phase_id,
+                tool_phase_label=tool_phase_label,
+                tool_semantic_parent_id=tool_semantic_parent_id,
+                tool_semantic_parent_label=tool_semantic_parent_label,
+                tool_target=tool_target,
+                tool_input_summary=tool_input_summary,
+            ),
         )
+        params["commandLogId"] = command_log["id"]
+        if isinstance(command_log_id_sink, dict):
+            command_log_id_sink["value"] = command_log["id"]
+        steps.append(_step("log", "completed", command_log["id"]))
+        if not background and callable(command_started_callback):
+            command_started_callback(command_log)
 
         if background:
             session_id = store.get_task({"taskId": request_task_id})["task"]["sessionId"]
             service = get_background_command_service(store.database_path)
+            normalized_tool_index = tool_index if isinstance(tool_index, int) and not isinstance(tool_index, bool) else None
+            normalized_tool_total = tool_total if isinstance(tool_total, int) and not isinstance(tool_total, bool) else None
             bg_request = BackgroundCommandRequest(
                 database_path=store.database_path,
                 command_log_id=command_log["id"],
                 task_id=request_task_id,
                 session_id=session_id,
+                tool_use_id=tool_use_id,
+                parent_tool_use_id=parent_tool_use_id,
+                tool_group_id=tool_group_id,
+                tool_index=normalized_tool_index,
+                tool_total=normalized_tool_total,
+                tool_operation_id=tool_operation_id,
+                tool_operation_label=tool_operation_label,
+                tool_category=tool_category,
+                tool_phase_id=tool_phase_id,
+                tool_phase_label=tool_phase_label,
+                tool_semantic_parent_id=tool_semantic_parent_id,
+                tool_semantic_parent_label=tool_semantic_parent_label,
+                target=tool_target,
+                input_summary=tool_input_summary,
                 command=command,
                 cwd=cwd_rel,
                 shell=shell_name,
@@ -222,6 +346,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
             )
             service.emit_started_event(bg_request)
             service.submit(bg_request)
+            steps.append(_step("execute", "running", "background command started"))
             return {
                 "status": "running",
                 "background": True,
@@ -232,6 +357,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 "durationMs": None,
                 "shell": shell_name,
                 "cwd": cwd_rel,
+                "steps": steps,
             }
 
         stdout = ""
@@ -240,13 +366,26 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
         status = "completed"
         duration_ms = 0
         command_error: Exception | None = None
+        steps.append(_step("execute", "running", command))
         try:
-            stdout, stderr, exit_code, status, duration_ms = run_shell(shell_name, execution_command, cwd_abs, timeout_ms)
+            stdout, stderr, exit_code, status, duration_ms = run_shell(
+                shell_name,
+                execution_command,
+                cwd_abs,
+                timeout_ms,
+                stdout_callback=stdout_callback if callable(stdout_callback) else None,
+                stderr_callback=stderr_callback if callable(stderr_callback) else None,
+            )
         except Exception as exc:  # noqa: BLE001
             command_error = exc
             stderr = str(exc)
             status = "failed"
         finally:
+            steps[-1] = _step(
+                "execute",
+                "completed" if status == "completed" else status,
+                f"exit {exit_code}" if exit_code is not None else status,
+            )
             finished_at = store.now()
             stdout_path = store.write_command_artifact(command_log["id"], "stdout", stdout)
             stderr_path = store.write_command_artifact(command_log["id"], "stderr", stderr)
@@ -258,6 +397,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 stderr_path=stderr_path,
                 finished_at=finished_at,
             )
+            steps.append(_step("artifacts", "completed", "stdout/stderr saved"))
         if command_error is not None:
             raise command_error
 
@@ -270,6 +410,7 @@ def build_run_command_tool(policy_guard: Any, store: Any, subagent_service: Any 
             "durationMs": duration_ms,
             "shell": shell_name,
             "cwd": cwd_rel,
+            "steps": steps,
             **({"executedCommand": execution_command} if execution_command != requested_command else {}),
         }
 

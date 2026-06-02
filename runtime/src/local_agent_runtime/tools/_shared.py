@@ -14,6 +14,7 @@ import shlex
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -677,17 +678,33 @@ def run_shell(
     command: str,
     cwd: Path,
     timeout_ms: int,
+    *,
+    stdout_callback: Callable[[str], None] | None = None,
+    stderr_callback: Callable[[str], None] | None = None,
 ) -> tuple[str, str, int | None, str, int]:
     started = time.perf_counter()
     if shell_name == "powershell":
         dumped = _run_simple_file_dump(command, cwd)
         if dumped is not None:
+            if stdout_callback is not None:
+                stdout_callback(dumped)
             duration_ms = int((time.perf_counter() - started) * 1000)
             return dumped, "", 0, "completed", duration_ms
         command = _normalize_powershell_invocation(command)
-        native_result = _run_simple_native_exe(command, cwd, timeout_ms)
-        if native_result is not None:
-            return native_result
+        if stdout_callback is None and stderr_callback is None:
+            native_result = _run_simple_native_exe(command, cwd, timeout_ms)
+            if native_result is not None:
+                return native_result
+
+    if stdout_callback is not None or stderr_callback is not None:
+        return run_shell_command(
+            shell_name,
+            command,
+            cwd,
+            timeout_ms,
+            stdout_callback=stdout_callback,
+            stderr_callback=stderr_callback,
+        )
 
     try:
         completed = subprocess.run(

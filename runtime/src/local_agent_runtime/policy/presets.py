@@ -18,7 +18,7 @@ SAFE_PRESET: dict[str, Any] = {
     "memoryWrite": _RULE("allow"),
     "gitWrite": _RULE("ask"),
     "browserAutomation": _RULE("blocked"),
-    "computerUse": _RULE("blocked"),
+    "computerUse": _RULE("ask"),
     "hooksExecute": _RULE("ask"),
 }
 
@@ -32,7 +32,7 @@ BALANCED_PRESET: dict[str, Any] = {
     "memoryWrite": _RULE("allow"),
     "gitWrite": _RULE("ask"),
     "browserAutomation": _RULE("blocked"),
-    "computerUse": _RULE("blocked"),
+    "computerUse": _RULE("ask"),
     "hooksExecute": _RULE("ask"),
 }
 
@@ -46,7 +46,7 @@ AUTONOMOUS_PRESET: dict[str, Any] = {
     "memoryWrite": _RULE("allow"),
     "gitWrite": _RULE("ask"),
     "browserAutomation": _RULE("blocked"),
-    "computerUse": _RULE("blocked"),
+    "computerUse": _RULE("ask"),
     "hooksExecute": _RULE("ask"),
 }
 

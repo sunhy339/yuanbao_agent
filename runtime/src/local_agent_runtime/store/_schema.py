@@ -81,7 +81,8 @@ class SchemaBootstrapMixin:
                 kind TEXT DEFAULT 'normal',
                 status TEXT DEFAULT 'completed',
                 created_seq INTEGER DEFAULT NULL,
-                updated_at INTEGER
+                updated_at INTEGER,
+                metadata_json TEXT DEFAULT '{}'
             );
 
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
@@ -358,6 +359,7 @@ class SchemaBootstrapMixin:
                 status TEXT NOT NULL DEFAULT 'pending',
                 consumed_by_turn_id TEXT,
                 created_seq INTEGER DEFAULT NULL,
+                metadata_json TEXT DEFAULT '{}',
                 created_at INTEGER NOT NULL,
                 consumed_at INTEGER
             );
@@ -789,6 +791,7 @@ class SchemaBootstrapMixin:
             "status": "TEXT DEFAULT 'completed'",
             "created_seq": "INTEGER DEFAULT NULL",
             "updated_at": "INTEGER",
+            "metadata_json": "TEXT DEFAULT '{}'",
         }
         for column, definition in expected.items():
             if column not in columns:
@@ -914,13 +917,15 @@ class SchemaBootstrapMixin:
         self._conn.commit()
 
     def _ensure_inbox_columns(self) -> None:
-        """Add created_seq column to task_inbox if missing."""
+        """Add optional task_inbox columns if missing."""
         columns = {
             row["name"]
             for row in self._conn.execute("PRAGMA table_info(task_inbox)").fetchall()
         }
         if "created_seq" not in columns:
             self._conn.execute("ALTER TABLE task_inbox ADD COLUMN created_seq INTEGER DEFAULT NULL")
+        if "metadata_json" not in columns:
+            self._conn.execute("ALTER TABLE task_inbox ADD COLUMN metadata_json TEXT DEFAULT '{}'")
         self._conn.commit()
 
     def _ensure_mcp_server_columns(self) -> None:

@@ -6,6 +6,7 @@ import { SettingsWorkspace } from "./SettingsWorkspace";
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 function getProviderButton(name: string) {
@@ -170,6 +171,31 @@ describe("SettingsWorkspace", () => {
     expect(anthropicOption).not.toBeDisabled();
   });
 
+  it("validates provider modal fields before testing or saving", async () => {
+    const user = userEvent.setup();
+    const onAddProvider = vi.fn();
+    const onTestProviderConfig = vi.fn();
+    const { container } = render(
+      <SettingsWorkspace
+        onAddProvider={onAddProvider}
+        onTestProviderConfig={onTestProviderConfig}
+      />,
+    );
+
+    await openAddProviderModal(container);
+
+    const dialog = screen.getByRole("dialog");
+    await user.clear(dialog.querySelector("#provider-endpoint") as HTMLInputElement);
+    await user.type(dialog.querySelector("#provider-endpoint") as HTMLInputElement, "api.invalid.local");
+
+    expect(within(dialog).getByText("接口地址应以 http:// 或 https:// 开头。")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "测试连接" })).toBeDisabled();
+    expect(dialog.querySelector('button[type="submit"]')).toBeDisabled();
+
+    expect(onTestProviderConfig).not.toHaveBeenCalled();
+    expect(onAddProvider).not.toHaveBeenCalled();
+  });
+
   it("derives the API key env var from pasted env config", async () => {
     const user = userEvent.setup();
     const onAddProvider = vi.fn();
@@ -276,7 +302,7 @@ describe("SettingsWorkspace", () => {
       />,
     );
 
-    expect(screen.getByText("当前")).toBeInTheDocument();
+    expect(screen.getAllByText("当前").length).toBeGreaterThan(0);
     expect(screen.getByText("当前供应商")).toBeInTheDocument();
     expect(screen.getByText("当前模型")).toBeInTheDocument();
     expect(screen.getByText("测试通过")).toBeInTheDocument();
@@ -311,9 +337,46 @@ describe("SettingsWorkspace", () => {
     expect(onSaveProvider).toHaveBeenCalledWith("backup");
   });
 
+  it("filters provider list by search text and state", async () => {
+    const user = userEvent.setup();
+    render(
+      <SettingsWorkspace
+        providers={[
+          {
+            id: "primary",
+            name: "Primary Provider",
+            endpoint: "https://primary.example.com",
+            models: ["primary-chat"],
+            status: "ready",
+          },
+          {
+            id: "backup",
+            name: "Backup Provider",
+            endpoint: "https://backup.example.com",
+            models: ["backup-chat"],
+            status: "standby",
+          },
+        ]}
+        activeProviderId="primary"
+      />,
+    );
+
+    await user.type(screen.getByRole("textbox", { name: "搜索供应商" }), "backup");
+    const providerList = screen.getByLabelText("供应商列表");
+
+    expect(within(providerList).queryByText("Primary Provider")).not.toBeInTheDocument();
+    expect(within(providerList).getByText("Backup Provider")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "可用" }));
+
+    expect(within(providerList).queryByText("Backup Provider")).not.toBeInTheDocument();
+    expect(within(providerList).getByText("没有匹配的供应商")).toBeInTheDocument();
+  });
+
   it("uses the permission mode prop and calls the permission change callback", async () => {
     const user = userEvent.setup();
     const onPermissionModeChange = vi.fn();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     const { container } = render(
       <SettingsWorkspace
         permissionMode="plan"
@@ -333,8 +396,79 @@ describe("SettingsWorkspace", () => {
 
     await user.click(skipRadio);
 
+    expect(confirm).toHaveBeenCalledWith("切换到自主执行会减少审批提示，仅建议在受控环境中使用。继续切换？");
     expect(onPermissionModeChange).toHaveBeenCalledWith("skip");
     expect(skipRadio).toBeChecked();
+  });
+
+  it("shows explicit permission rules and clears them from settings", async () => {
+    const user = userEvent.setup();
+    const onClearPermissionRule = vi.fn();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { container } = render(
+      <SettingsWorkspace
+        permissionRules={[
+          {
+            capability: "runCommand",
+            label: "命令执行",
+            mode: "allow",
+            modeLabel: "始终允许",
+            scope: "*",
+            description: "来自审批的始终允许规则。",
+          },
+        ]}
+        onClearPermissionRule={onClearPermissionRule}
+      />,
+    );
+
+    await user.click(container.querySelectorAll(".settings-nav button")[1] as HTMLElement);
+
+    const ruleList = container.querySelector(".settings-rule-list") as HTMLElement;
+    expect(within(ruleList).getByText("命令执行")).toBeInTheDocument();
+    expect(within(ruleList).getByText(/scope:/)).toHaveTextContent("始终允许");
+    await user.click(within(ruleList).getByRole("button", { name: "恢复默认" }));
+
+    expect(confirm).toHaveBeenCalledWith("恢复“命令执行”的默认权限规则？");
+    expect(onClearPermissionRule).toHaveBeenCalledWith("runCommand");
+  });
+
+  it("filters explicit permission rules by text and mode", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <SettingsWorkspace
+        permissionRules={[
+          {
+            capability: "runCommand",
+            label: "命令执行",
+            mode: "allow",
+            modeLabel: "始终允许",
+            scope: "*",
+            description: "来自审批的始终允许规则。",
+          },
+          {
+            capability: "networkAccess",
+            label: "网络访问",
+            mode: "deny",
+            modeLabel: "拒绝",
+            scope: "workspace",
+            description: "敏感环境禁用网络。",
+          },
+        ]}
+      />,
+    );
+
+    await user.click(container.querySelectorAll(".settings-nav button")[1] as HTMLElement);
+    const ruleSection = screen.getByRole("heading", { name: "始终允许与显式规则" }).closest("section") as HTMLElement;
+
+    await user.type(screen.getByRole("textbox", { name: "搜索权限规则" }), "网络");
+
+    expect(within(ruleSection).queryByText("命令执行")).not.toBeInTheDocument();
+    expect(within(ruleSection).getByText("网络访问")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "允许" }));
+
+    expect(within(ruleSection).queryByText("网络访问")).not.toBeInTheDocument();
+    expect(within(ruleSection).getByText("没有匹配的权限规则")).toBeInTheDocument();
   });
 
   it("uses controlled general props and emits full next values", async () => {
@@ -391,6 +525,21 @@ describe("SettingsWorkspace", () => {
       reasoningEffort: "medium",
       webFetchPreflight: false,
     });
+
+    await user.click(screen.getByRole("button", { name: "恢复默认" }));
+
+    expect(onGeneralChange).toHaveBeenCalledWith({
+      theme: "dark",
+      density: "comfortable",
+      radius: "md",
+      motion: "subtle",
+      accentColor: "cyan",
+      transparency: 0.78,
+      fontScale: 1,
+      language: "auto",
+      reasoningEffort: "max",
+      webFetchPreflight: true,
+    });
   });
 
   it("keeps secondary sections as connectable skeletons", async () => {
@@ -446,11 +595,57 @@ describe("SettingsWorkspace", () => {
     await openSettingsSection(container, "电脑操作");
     expect(screen.getByRole("button", { name: "重新检查" })).toBeDisabled();
     expect(screen.getByText("桌面权限重新检查尚未实现。")).toBeInTheDocument();
+    expect(screen.getByLabelText("电脑操作能力状态")).toHaveTextContent("截图 action 已接入运行时");
 
     await openSettingsSection(container, "关于");
     expect(screen.getByRole("button", { name: "打开日志" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "打开数据目录" })).toBeDisabled();
     expect(screen.getByText("打开本地目录还在等待 Tauri shell 桥接；上方路径可用于手动检查。")).toBeInTheDocument();
+  });
+
+  it("surfaces checked computer-use capabilities", async () => {
+    const user = userEvent.setup();
+    const onRecheckComputerUse = vi.fn();
+    const { container } = render(
+      <SettingsWorkspace
+        computerUse={{
+          screenshot: true,
+          browserAutomation: true,
+          clipboardAccess: true,
+          systemKeyCombos: false,
+          sensitiveActionConfirm: true,
+          status: "degraded",
+          checkedAt: new Date("2026-05-31T03:04:05Z").getTime(),
+          capabilities: [
+            {
+              id: "screen-observation",
+              label: "屏幕观察",
+              state: "ready",
+              detail: "截图 action 已接入运行时，执行时会尝试 Pillow ImageGrab 并返回缩略预览。",
+            },
+            {
+              id: "browser-dom",
+              label: "浏览器 DOM 控制",
+              state: "partial",
+              detail: "Playwright page-like executor 协议已就绪，宿主还需要注入真实浏览器会话。",
+            },
+          ],
+        }}
+        onRecheckComputerUse={onRecheckComputerUse}
+      />,
+    );
+
+    await openSettingsSection(container, "电脑操作");
+
+    const capabilities = screen.getByLabelText("电脑操作能力状态");
+    expect(capabilities).toHaveTextContent("屏幕观察");
+    expect(capabilities).toHaveTextContent("已接入");
+    expect(capabilities).toHaveTextContent("浏览器 DOM 控制");
+    expect(capabilities).toHaveTextContent("部分接入");
+    expect(screen.getByText(/状态：部分可用/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "重新检查" }));
+    expect(onRecheckComputerUse).toHaveBeenCalledTimes(1);
   });
 
   it("manages dynamic agent profiles from settings", async () => {

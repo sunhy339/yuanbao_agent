@@ -16,6 +16,10 @@ from ._shared import (
 )
 
 
+def _step(label: str, status: str, summary: str) -> dict[str, str]:
+    return {"label": label, "status": status, "summary": summary}
+
+
 def _chunk_by_lines(text: str, chunk_size: int = 50, overlap: int = 5) -> list[dict[str, Any]]:
     """Split text into overlapping line-based chunks."""
     lines = text.splitlines()
@@ -101,6 +105,7 @@ def build_code_search_tool(policy_guard: Any, store: Any, subagent_service: Any 
         search_root = resolve_workspace_path(policy_guard, workspace_root, params.get("path"))
         if not search_root.is_dir():
             raise ValueError(f"Directory does not exist: {params.get('path', '.')}")
+        relative_root = to_relative_path(workspace_root, search_root)
 
         ignore_patterns = merged_ignore_patterns(store, params.get("ignore"))
         entries = walk_directory(
@@ -111,8 +116,10 @@ def build_code_search_tool(policy_guard: Any, store: Any, subagent_service: Any 
             max_depth=max(1, min(int(params.get("max_depth", 6)), 8)),
             ignore_patterns=ignore_patterns,
         )
+        file_candidates = [entry for entry in entries if entry.get("type") == "file"]
 
         results: list[dict[str, Any]] = []
+        scanned_files = 0
         for entry in entries:
             if len(results) >= max_results:
                 break
@@ -121,6 +128,7 @@ def build_code_search_tool(policy_guard: Any, store: Any, subagent_service: Any 
                 continue
             if glob_patterns and not any(matches_glob(entry["path"], pattern) for pattern in glob_patterns):
                 continue
+            scanned_files += 1
             try:
                 content = entry_path.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -159,6 +167,12 @@ def build_code_search_tool(policy_guard: Any, store: Any, subagent_service: Any 
             "results": results[:max_results],
             "totalMatches": len(results),
             "truncated": len(results) > max_results,
+            "steps": [
+                _step("prepare", "completed", f"{mode} search for {query}"),
+                _step("walk", "completed", f"{len(file_candidates)} file candidate(s) under {relative_root}"),
+                _step("scan", "completed", f"{scanned_files} file(s)"),
+                _step("match", "completed", f"{len(results[:max_results])} result(s)"),
+            ],
         }
 
     return {"handler": code_search}

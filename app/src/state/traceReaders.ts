@@ -103,9 +103,19 @@ export function countDeletedLines(diffText: string): number {
     .filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
 }
 
-export function parsePatchFiles(diffText = "") {
+export function parsePatchFiles(diffText = "", changedPaths: string[] = []) {
   if (!diffText.trim()) {
-    return [];
+    return changedPaths
+      .map((path) => path.trim().replace(/\\/g, "/"))
+      .filter(Boolean)
+      .filter((path, index, paths) => paths.indexOf(path) === index)
+      .map((path) => ({
+        path,
+        status: "modified",
+        additions: 0,
+        deletions: 0,
+        diff: "",
+      }));
   }
 
   const sections = diffText.split(/^diff --git /m).filter(Boolean);
@@ -229,6 +239,9 @@ export function firstUsefulLine(value?: string): string | undefined {
 }
 
 export function summarizeToolArguments(toolName: string, value: unknown, fallback = "未记录参数"): string {
+  if (typeof value === "string" && value.trim()) {
+    return truncateText(value, 120);
+  }
   const parsed = parseToolValue(value);
   const record = asRecord(parsed);
   const path = toolString(record, ["path", "file", "cwd", "root"]);
@@ -266,6 +279,9 @@ export function summarizeToolResult(toolName: string, resultValue: unknown, erro
     return `失败：${summarizeValue(errorValue, "", 160)}`;
   }
 
+  if (typeof resultValue === "string" && resultValue.trim()) {
+    return truncateText(resultValue, 160);
+  }
   const parsed = parseToolValue(resultValue);
   const record = asRecord(parsed);
 

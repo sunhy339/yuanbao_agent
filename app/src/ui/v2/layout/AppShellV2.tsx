@@ -48,6 +48,7 @@ export interface AppShellV2Props {
   disabled: boolean;
   sending?: boolean;
   submitting?: boolean;
+  stopPending?: boolean;
   queuedPromptCount?: number;
   attachments?: string[];
   onAttachmentsChange?: (attachments: string[]) => void;
@@ -61,12 +62,23 @@ export interface AppShellV2Props {
   permissionLabel?: string;
   permissionMode?: string;
   onPermissionModeChange?: (mode: string) => void;
+  onWorkspacePathChange?: (path: string) => void;
+  useWorktree?: boolean;
+  onUseWorktreeChange?: (enabled: boolean) => void | Promise<void>;
+  worktreeModeBusy?: boolean;
   runtimeLabel?: string;
   mcpLabel?: string;
   approvalLabel?: string;
   contextLabel?: string;
   contextPreview?: SessionWorkspaceContextPreview | null;
   worktreeStatus?: { dirtyFiles?: number; files?: string[] } | null;
+  fileWorkspaceChangedFiles?: Array<{
+    path: string;
+    status?: string;
+    additions?: number;
+    deletions?: number;
+    source?: string;
+  }>;
   activeTaskStatus?: string | null;
   activeTaskCurrentStep?: string | null;
   loading?: boolean;
@@ -99,6 +111,7 @@ export function AppShellV2({
   disabled,
   sending,
   submitting,
+  stopPending,
   queuedPromptCount,
   attachments,
   onAttachmentsChange,
@@ -196,6 +209,7 @@ export function AppShellV2({
             disabled={disabled}
             sending={sending}
             submitting={submitting}
+            stopPending={stopPending}
             queuedPromptCount={queuedPromptCount}
             attachments={attachments}
             onAttachmentsChange={onAttachmentsChange}

@@ -17,6 +17,8 @@ import {
   isUsableTimelineTimestamp,
   isRuntimeInFlight,
   isTaskControllable,
+  isVerificationCommand,
+  normalizeComparableCommand,
 } from "./utils";
 import { MessageBubble } from "./MessageBubble";
 import { RuntimeEventCard } from "./RuntimeEventCard";
@@ -47,6 +49,15 @@ const LOW_SIGNAL_TASK_STEP_PATTERNS = [
   /waiting for (?:the )?model/i,
 ];
 
+const WORKLOG_CONTEXT_COMMAND_RE =
+  /^(git\s+(?:status|diff|log|show|branch|remote|tag|rev-parse|rev-list|ls-files|grep|blame)(?:\s|$)|rg(?:\s|$)|grep(?:\s|$)|ag(?:\s|$)|ack(?:\s|$)|findstr(?:\s|$)|select-string(?:\s|$)|find(?:\s|$)|where(?:\.exe)?(?:\s|$)|which(?:\s|$)|whereis(?:\s|$)|locate(?:\s|$)|cat(?:\s|$)|head(?:\s|$)|tail(?:\s|$)|less(?:\s|$)|more(?:\s|$)|type(?:\s|$)|wc(?:\s|$)|stat(?:\s|$)|file(?:\s|$)|strings(?:\s|$)|jq(?:\s|$)|awk(?:\s|$)|cut(?:\s|$)|sort(?:\s|$)|uniq(?:\s|$)|tr(?:\s|$)|get-content(?:\s|$)|gc(?:\s|$)|get-item(?:\s|$)|test-path(?:\s|$)|resolve-path(?:\s|$)|get-filehash(?:\s|$)|get-acl(?:\s|$)|format-hex(?:\s|$)|pwd(?:\s|$)|get-location(?:\s|$)|ls(?:\s|$)|dir(?:\s|$)|tree(?:\s|$)|du(?:\s|$)|get-childitem(?:\s|$)|gci(?:\s|$))/i;
+
+const WORKLOG_VERIFICATION_COMMAND_RE =
+  /\b(npm\s+(?:run\s+)?(?:test|typecheck|lint|build)|pnpm\s+(?:run\s+)?(?:test|typecheck|lint|build)|yarn\s+(?:test|typecheck|lint|build)|pytest|vitest|jest|playwright|tsc|ruff|eslint|mypy|cargo\s+(?:test|check|build)|go\s+test|dotnet\s+test)\b|\b(test|typecheck|lint|build|verify|check)\b/i;
+
+const WORKLOG_ROUTINE_MUTATION_COMMAND_RE =
+  /^git\s+(?:add|commit|reset\s+--soft|restore\s+--staged)(?:\s|$)/i;
+
 function isUsableActivityTime(value?: number): value is number {
   return isUsableTimelineTimestamp(value);
 }
@@ -63,6 +74,60 @@ function isLowSignalTaskStep(value?: string | null) {
   return LOW_SIGNAL_TASK_STEP_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
+function readCommandFromStructuredText(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object") {
+      return "";
+    }
+    const record = parsed as Record<string, unknown>;
+    const command = record.command ?? record.cmd;
+    return typeof command === "string" ? command.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function runtimeCommandText(item: RuntimeTimelineItem) {
+  const candidates = [item.code, item.rawDetail, item.title]
+    .map((value) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+
+  for (const candidate of candidates) {
+    const structuredCommand = readCommandFromStructuredText(candidate);
+    if (structuredCommand) {
+      return structuredCommand;
+    }
+    const normalized = normalizeComparableCommand(candidate);
+    if (
+      normalized &&
+      (
+        WORKLOG_CONTEXT_COMMAND_RE.test(normalized) ||
+        WORKLOG_ROUTINE_MUTATION_COMMAND_RE.test(normalized) ||
+        WORKLOG_VERIFICATION_COMMAND_RE.test(normalized) ||
+        isVerificationCommand(normalized)
+      )
+    ) {
+      return candidate;
+    }
+  }
+
+  return candidates[0] ?? "";
+}
+
+function isCollapsibleCommandRuntimeItem(item: RuntimeTimelineItem) {
+  const command = normalizeComparableCommand(runtimeCommandText(item));
+  if (!command) {
+    return false;
+  }
+  return (
+    isVerificationCommand(command) ||
+    WORKLOG_VERIFICATION_COMMAND_RE.test(command) ||
+    WORKLOG_CONTEXT_COMMAND_RE.test(command) ||
+    WORKLOG_ROUTINE_MUTATION_COMMAND_RE.test(command)
+  );
+}
+
 function isCollapsibleWorklogRuntimeItem(item: RuntimeTimelineItem) {
   if (!["tool", "command"].includes(item.kind)) {
     return false;
@@ -77,10 +142,7 @@ function isCollapsibleWorklogRuntimeItem(item: RuntimeTimelineItem) {
     return false;
   }
   if (item.kind === "command") {
-    const title = item.title.toLowerCase();
-    const code = item.code?.toLowerCase() ?? "";
-    return /^(git status|git diff|pwd|ls|dir|get-childitem|get-location)\b/.test(title) ||
-      /^(git status|git diff|pwd|ls|dir|get-childitem|get-location)\b/.test(code);
+    return isCollapsibleCommandRuntimeItem(item);
   }
   return !["run_command"].includes(item.toolName ?? "");
 }

@@ -294,6 +294,13 @@ export function getRepeatedReadFileKey(toolCall: SessionWorkspaceToolCall) {
 
 export function compactRepeatedReadFileCalls(toolCalls: SessionWorkspaceToolCall[]) {
   const sorted = [...toolCalls].sort((left, right) => {
+    if (left.toolGroupId && right.toolGroupId && left.toolGroupId === right.toolGroupId) {
+      const leftIndex = left.toolIndex ?? Number.MAX_SAFE_INTEGER;
+      const rightIndex = right.toolIndex ?? Number.MAX_SAFE_INTEGER;
+      if (leftIndex !== rightIndex) {
+        return leftIndex - rightIndex;
+      }
+    }
     const leftTime = left.time ?? Number.MAX_SAFE_INTEGER;
     const rightTime = right.time ?? Number.MAX_SAFE_INTEGER;
     return leftTime - rightTime || left.id.localeCompare(right.id);

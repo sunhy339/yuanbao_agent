@@ -445,3 +445,278 @@
     linear-gradient(90deg, rgba(196, 122, 74, 0.14), transparent 72%),
     rgba(241, 245, 249, 0.86);
 }
+
+/* Haha-clean skills settings pass. */
+.yb-v2 .skills-workspace {
+  gap: 10px;
+  min-height: 100%;
+  padding: 18px 22px 30px;
+  color: #202124;
+  background: #fbfaf7;
+}
+
+.yb-v2 .skills-command-strip,
+.yb-v2 .skills-action-row,
+.yb-v2 .skills-agent-board,
+.yb-v2 .skills-runtime-panel,
+.yb-v2 .skills-library,
+.yb-v2 .skills-inspector,
+.yb-v2 .skills-editor {
+  border: 1px solid #e8dfd8;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.yb-v2 .skills-command-strip::before,
+.yb-v2 .skills-agent-board::before,
+.yb-v2 .skills-runtime-panel::before,
+.yb-v2 .skills-library::before,
+.yb-v2 .skills-inspector::before,
+.yb-v2 .skills-editor::before {
+  display: none;
+}
+
+.yb-v2 .skills-command-strip {
+  grid-template-columns: minmax(280px, 1fr) minmax(360px, auto);
+  gap: 12px;
+  padding: 12px;
+}
+
+.yb-v2 .skills-command-strip h1 {
+  margin-top: 2px;
+  font-size: 20px;
+  line-height: 1.18;
+}
+
+.yb-v2 .skills-command-strip p:not(.yb-kicker) {
+  margin-top: 5px;
+  color: #6d635d;
+  font-size: 13px;
+  line-height: 1.48;
+}
+
+.yb-v2 .skills-command-strip dl {
+  grid-template-columns: repeat(4, minmax(70px, 1fr));
+  gap: 6px;
+}
+
+.yb-v2 .skills-command-strip dl div,
+.yb-v2 .skills-runtime-panel li,
+.yb-v2 .skills-skill-row,
+.yb-v2 .skills-agent-card,
+.yb-v2 .skills-empty,
+.yb-v2 .skills-inspector dl div,
+.yb-v2 .skills-tool-list span {
+  border: 1px solid #e8dfd8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.yb-v2 .skills-command-strip dl div {
+  min-height: 42px;
+  padding: 7px 8px;
+  background: #f8f6f2;
+}
+
+.yb-v2 .skills-command-strip dt,
+.yb-v2 .skills-skill-meta > span,
+.yb-v2 .skills-inspector dt {
+  color: #9a8d84;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.yb-v2 .skills-command-strip dd {
+  color: #202124;
+  font-size: 14px;
+}
+
+.yb-v2 .skills-action-row {
+  gap: 7px;
+  padding: 8px;
+}
+
+.yb-v2 .skills-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.34fr);
+  gap: 10px;
+}
+
+.yb-v2 .skills-agent-board,
+.yb-v2 .skills-runtime-panel,
+.yb-v2 .skills-library,
+.yb-v2 .skills-inspector,
+.yb-v2 .skills-editor {
+  padding: 12px;
+}
+
+.yb-v2 .skills-agent-board > header,
+.yb-v2 .skills-library > header,
+.yb-v2 .skills-inspector > header,
+.yb-v2 .skills-editor > header {
+  margin-bottom: 10px;
+}
+
+.yb-v2 .skills-agent-board h2,
+.yb-v2 .skills-runtime-panel h2,
+.yb-v2 .skills-library h2,
+.yb-v2 .skills-inspector h3,
+.yb-v2 .skills-editor h2 {
+  font-size: 17px;
+  line-height: 1.24;
+}
+
+.yb-v2 .skills-agent-lanes {
+  gap: 8px;
+}
+
+.yb-v2 .skills-agent-card {
+  min-height: 126px;
+  padding: 10px;
+}
+
+.yb-v2 .skills-agent-mark {
+  width: 28px;
+  height: 28px;
+  border-color: #e8dfd8;
+  color: #ffffff;
+  background: #9b5b3c;
+}
+
+.yb-v2 .skills-agent-card h3,
+.yb-v2 .skills-skill-row strong,
+.yb-v2 .skills-runtime-panel strong,
+.yb-v2 .skills-empty strong,
+.yb-v2 .skills-inspector h4 {
+  color: #202124;
+}
+
+.yb-v2 .skills-agent-card p,
+.yb-v2 .skills-skill-row span,
+.yb-v2 .skills-runtime-panel span,
+.yb-v2 .skills-empty span,
+.yb-v2 .skills-readonly-note {
+  color: #6d635d;
+}
+
+.yb-v2 .skills-runtime-panel ul,
+.yb-v2 .skills-list {
+  gap: 6px;
+}
+
+.yb-v2 .skills-library-tools {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 8px;
+}
+
+.yb-v2 .skills-library-tools label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  border: 1px solid #e8dfd8;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 0 9px;
+  color: #9a8d84;
+  font-size: 12px;
+}
+
+.yb-v2 .skills-library-tools input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #202124;
+  font: inherit;
+}
+
+.yb-v2 .skills-filter-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.yb-v2 .skills-filter-tabs button {
+  min-height: 30px;
+  border: 1px solid #e8dfd8;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #6d635d;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.yb-v2 .skills-filter-tabs button[aria-selected="true"] {
+  border-color: #d4c4ba;
+  background: #f4eee9;
+  color: #9b5b3c;
+  font-weight: 700;
+}
+
+.yb-v2 .skills-runtime-panel li {
+  padding: 8px 9px;
+}
+
+.yb-v2 .skills-skill-row {
+  min-height: 48px;
+  padding: 8px 9px;
+}
+
+.yb-v2 .skills-skill-row[data-enabled="true"] {
+  border-color: #d4c4ba;
+  background: #f4eee9;
+  box-shadow: inset 2px 0 0 #9b5b3c;
+}
+
+.yb-v2 .skills-empty {
+  min-height: 132px;
+  background: #f8f6f2;
+}
+
+.yb-v2 .skills-inspector {
+  margin-top: 8px;
+}
+
+.yb-v2 .skills-inspector dl {
+  gap: 6px;
+}
+
+.yb-v2 .skills-inspector dl div {
+  padding: 8px 9px;
+}
+
+.yb-v2 .skills-inspector dd,
+.yb-v2 .skills-tool-list span {
+  color: #202124;
+}
+
+.yb-v2 .skills-inspector pre,
+.yb-v2 .skills-editor-form input,
+.yb-v2 .skills-editor-form textarea {
+  border: 1px solid #e8dfd8;
+  border-radius: 7px;
+  color: #202124;
+  background: #f8f6f2;
+}
+
+.yb-v2 .skills-editor-form input:focus,
+.yb-v2 .skills-editor-form textarea:focus {
+  outline: none;
+  border-color: #9b5b3c;
+  box-shadow: 0 0 0 3px rgba(155, 91, 60, 0.12);
+}
+
+@media (max-width: 1180px) {
+  .yb-v2 .skills-workspace {
+    padding: 14px;
+  }
+
+  .yb-v2 .skills-command-strip,
+  .yb-v2 .skills-grid,
+  .yb-v2 .skills-agent-lanes {
+    grid-template-columns: 1fr;
+  }
+}

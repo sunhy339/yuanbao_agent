@@ -6,7 +6,7 @@ import type {
   TraceEventRecord,
 } from "@shared";
 import { RuntimeClient } from "../lib/runtimeClient";
-import { TRACE_LIMIT, isTaskControllable } from "../state/providerConfig";
+import { TRACE_CACHE_LIMIT, TRACE_LIMIT, isTaskControllable } from "../state/providerConfig";
 import type { TaskControlAction } from "../state/providerConfig";
 import { upsertRecord } from "../state/eventRecordViews";
 import type { HookDeps } from "./types";
@@ -62,7 +62,15 @@ export function useTaskTrace(deps: UseTaskTraceDeps) {
           .catch(() => ({ commandLogs: [] as CommandLogRecord[] })),
       ]);
       if (!isCancelled()) {
-        setTraceEvents(result.traceEvents);
+        setTraceEvents((current) => {
+          const next = new Map(current.map((trace) => [trace.id, trace]));
+          result.traceEvents.forEach((trace) => next.set(trace.id, trace));
+          return Array.from(next.values()).sort((left, right) => {
+            const timeDiff = (left.createdAt ?? 0) - (right.createdAt ?? 0);
+            if (timeDiff !== 0) return timeDiff;
+            return (left.sequence ?? 0) - (right.sequence ?? 0);
+          }).slice(-TRACE_CACHE_LIMIT);
+        });
         setCommandLogCacheById((current) => ({
           ...current,
           ...Object.fromEntries(commandResult.commandLogs.map((log) => [log.id, log])),
@@ -70,7 +78,6 @@ export function useTaskTrace(deps: UseTaskTraceDeps) {
       }
     } catch (reason) {
       if (!isCancelled()) {
-        setTraceEvents([]);
         setTraceError(reason instanceof Error ? reason.message : String(reason));
       }
     } finally {
@@ -155,8 +162,6 @@ export function useTaskTrace(deps: UseTaskTraceDeps) {
 
   async function handleRefreshTrace() {
     if (!activeTaskId) {
-      setTraceEvents([]);
-      setCommandLogCacheById({});
       setTraceError(null);
       return;
     }

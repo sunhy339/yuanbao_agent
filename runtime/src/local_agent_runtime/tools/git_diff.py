@@ -15,22 +15,32 @@ from ._shared import (
 )
 
 
+def _step(label: str, status: str, summary: str) -> dict[str, str]:
+    return {"label": label, "status": status, "summary": summary}
+
+
 def build_git_diff_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None) -> dict[str, Any]:
     def git_diff(params: dict[str, Any]) -> dict[str, Any]:
         workspace_root = require_workspace_root(params)
         cwd = resolve_git_cwd(policy_guard, workspace_root, params)
         staged = bool(params.get("staged", False))
         pathspec = resolve_git_pathspec(policy_guard, workspace_root, cwd, params.get("path"))
-        if not is_git_repository(cwd):
+        relative_cwd = to_relative_path(workspace_root, cwd)
+        steps = [
+            _step("resolve", "completed", relative_cwd),
+            _step("repository", "completed", "git" if is_git_repository(cwd) else "not git"),
+        ]
+        if steps[-1]["summary"] == "not git":
             return {
                 "workspaceRoot": str(workspace_root),
-                "cwd": to_relative_path(workspace_root, cwd),
+                "cwd": relative_cwd,
                 "isGitRepository": False,
                 "staged": staged,
                 "path": pathspec,
                 "files": [],
                 "diff": "",
                 "summary": "Not a git repository.",
+                "steps": steps,
             }
 
         git_args = ["diff"]
@@ -57,12 +67,17 @@ def build_git_diff_tool(policy_guard: Any, store: Any, subagent_service: Any | N
 
         return {
             "workspaceRoot": str(workspace_root),
-            "cwd": to_relative_path(workspace_root, cwd),
+            "cwd": relative_cwd,
             "isGitRepository": True,
             "staged": staged,
             "path": pathspec,
             "files": files,
             "diff": diff_completed.stdout or "",
+            "steps": [
+                *steps,
+                _step("diff", "completed", f"{len(diff_completed.stdout or '')} character(s)"),
+                _step("files", "completed", f"{len(files)} file(s)"),
+            ],
         }
 
     return {"handler": git_diff}

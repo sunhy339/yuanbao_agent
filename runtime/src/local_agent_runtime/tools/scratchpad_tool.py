@@ -5,6 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 
+def _step(label: str, status: str, summary: str) -> dict[str, str]:
+    return {"label": label, "status": status, "summary": summary}
+
+
 def build_scratchpad_write_tool(scratchpad: Any) -> dict[str, Any]:
     """Build the scratchpad.write tool handler."""
 
@@ -17,11 +21,17 @@ def build_scratchpad_write_tool(scratchpad: Any) -> dict[str, Any]:
         if not session_id:
             raise ValueError("sessionId is required (injected by orchestrator)")
 
+        steps = [
+            _step("prepare", "completed", f"scratchpad write {key}"),
+            _step("scope", "completed", "session scratchpad"),
+        ]
         entry = scratchpad.write(session_id=session_id, key=key, value=value)
+        steps.append(_step("store", "completed", f"{entry.key} ({entry.id})"))
         return {
             "status": "ok",
             "id": entry.id,
             "key": entry.key,
+            "steps": steps,
         }
 
     return {"handler": scratchpad_write}
@@ -38,14 +48,21 @@ def build_scratchpad_read_tool(scratchpad: Any) -> dict[str, Any]:
         if not session_id:
             raise ValueError("sessionId is required (injected by orchestrator)")
 
+        steps = [
+            _step("prepare", "completed", f"scratchpad read {key}"),
+            _step("scope", "completed", "session scratchpad"),
+        ]
         entry = scratchpad.read(session_id=session_id, key=key)
         if entry is None:
-            return {"status": "not_found", "key": key}
+            steps.append(_step("lookup", "completed", "not found"))
+            return {"status": "not_found", "key": key, "steps": steps}
+        steps.append(_step("lookup", "completed", f"{entry.key} ({entry.id})"))
         return {
             "status": "ok",
             "id": entry.id,
             "key": entry.key,
             "value": entry.value,
+            "steps": steps,
         }
 
     return {"handler": scratchpad_read}

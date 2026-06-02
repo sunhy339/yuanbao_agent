@@ -12,6 +12,7 @@ import type {
   McpServerRecord,
   RuntimeHookExecutionRecord,
   RuntimeHookRecord,
+  MessageRecord,
   SessionRecord,
   SkillPresetRecord,
   TaskRecord,
@@ -31,19 +32,23 @@ import { AppShell } from "./ui/workbench/AppShell";
 import { getSidebarActiveSessionId, resolveSessionForTab } from "./ui/workbench/sessionRouting";
 import { getInitialTabs } from "./ui/workbench/tabModel";
 import type { WorkbenchTab } from "./ui/workbench/types";
+import type { SessionWorkspaceMessage } from "./ui/workbench/workspaces/session/types";
 import { ToastContainer, createToast, type ToastEntry } from "./ui/workbench/Toast";
 import {
+  SESSION_TRACE_TASK_LIMIT,
   TRACE_AUTO_REFRESH_STATUSES,
   normalizeRuntimeConfig,
   buildProviderSettingsForm,
   buildCommandPolicyForm,
   serializePatternList,
+  TRACE_CACHE_LIMIT,
+  TRACE_LIMIT,
   type ProviderSettingsForm,
   isTaskControllable,
 } from "./state/providerConfig";
 import type { QueuedPromptSubmission } from "./state/eventRecordViews";
 import { buildSettingsGeneralConfig } from "./state/providerPayloadParsing";
-import { sortByUpdatedAtDesc } from "./state/eventRecordViews";
+import { sortByUpdatedAtDesc, upsertRecord } from "./state/eventRecordViews";
 import {
   appendAssistantToken,
 } from "./state/chatTokenHelpers";
@@ -65,6 +70,19 @@ import { useEventSubscription } from "./hooks/useEventSubscription";
 import { useDerivedViews } from "./hooks/useDerivedViews";
 
 const runtimeClient = new RuntimeClient();
+
+function mergeTraceEvents(
+  current: TraceEventRecord[],
+  incoming: TraceEventRecord[],
+): TraceEventRecord[] {
+  const next = new Map(current.map((trace) => [trace.id, trace]));
+  incoming.forEach((trace) => next.set(trace.id, trace));
+  return Array.from(next.values()).sort((left, right) => {
+    const timeDiff = (left.createdAt ?? 0) - (right.createdAt ?? 0);
+    if (timeDiff !== 0) return timeDiff;
+    return (left.sequence ?? 0) - (right.sequence ?? 0);
+  }).slice(-TRACE_CACHE_LIMIT);
+}
 
 function resolveActiveTabKind(tab: unknown): string | undefined {
   const candidate = tab as { id?: unknown; kind?: unknown };
@@ -108,6 +126,7 @@ export function App() {
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [messageBusy, setMessageBusy] = useState(false);
+  const [worktreeModeBusy, setWorktreeModeBusy] = useState(false);
   const [openTabs, setOpenTabs] = useState<WorkbenchTab[]>(() => getInitialTabs());
   const [activeTabId, setActiveTabId] = useState<WorkbenchTab["id"]>("system:new-session");
 
@@ -181,6 +200,31 @@ export function App() {
     if (result?.cleaned) {
       addToast("success", "Worktree cleaned.");
       await handleRefreshTask();
+    }
+  }
+
+  async function handleUseWorktreeChange(enabled: boolean) {
+    if (!config) {
+      return;
+    }
+
+    setWorktreeModeBusy(true);
+    setError(null);
+    try {
+      const result = await runtimeClient.updateConfig({
+        config: {
+          worktree: {
+            ...config.worktree,
+            autoBindWriteTasks: enabled,
+          },
+        },
+      });
+      setConfig(normalizeRuntimeConfig(result.config));
+      addToast("success", enabled ? "新任务将使用独立工作树" : "新任务将使用当前工作树");
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setWorktreeModeBusy(false);
     }
   }
 
@@ -397,6 +441,53 @@ export function App() {
     );
   }
 
+  function refreshSessionTranscript(sessionId: string, messages: MessageRecord[], nextSession?: SessionRecord) {
+    setChatMessages((current) => replaceSessionMessages(current, sessionId, messages));
+    if (nextSession) {
+      setSessions((current) => sortByUpdatedAtDesc([nextSession, ...current.filter((item) => item.id !== nextSession.id)]));
+      setSession((current) => (current?.id === nextSession.id ? nextSession : current));
+    }
+  }
+
+  async function loadRecentSessionTrace(
+    sessionId: string | null | undefined,
+    taskCandidates: TaskRecord[] = taskHistory,
+    isCancelled: () => boolean = () => false,
+  ) {
+    if (!sessionId) return;
+    const sessionTasks = sortByUpdatedAtDesc(
+      taskCandidates.filter((item) => item.sessionId === sessionId),
+    ).slice(0, SESSION_TRACE_TASK_LIMIT);
+    if (!sessionTasks.length) return;
+
+    const results = await Promise.all(
+      sessionTasks.map((item) =>
+        Promise.all([
+          runtimeClient.listTrace({ taskId: item.id, limit: TRACE_LIMIT }),
+          runtimeClient.commandLogList({ taskId: item.id, limit: TRACE_LIMIT }).catch(() => ({ commandLogs: [] })),
+        ])
+          .then(([traceResult, commandResult]) => ({
+            traceEvents: traceResult.traceEvents,
+            commandLogs: commandResult.commandLogs,
+          }))
+          .catch(() => ({ traceEvents: [], commandLogs: [] })),
+      ),
+    );
+    if (isCancelled()) return;
+
+    const loadedTraceEvents = results.flatMap((result) => result.traceEvents);
+    const loadedCommandLogs = results.flatMap((result) => result.commandLogs);
+    if (loadedTraceEvents.length) {
+      setTraceEvents((current) => mergeTraceEvents(current, loadedTraceEvents));
+    }
+    if (loadedCommandLogs.length) {
+      setCommandLogCacheById((current) => ({
+        ...current,
+        ...Object.fromEntries(loadedCommandLogs.map((log) => [log.id, log])),
+      }));
+    }
+  }
+
   async function loadSessionMessages(sessionId: string | null | undefined) {
     if (!sessionId) return;
     const requestId = messageLoadRequestRef.current + 1;
@@ -405,8 +496,123 @@ export function App() {
       const result = await runtimeClient.listMessages({ sessionId, limit: 500 });
       if (messageLoadRequestRef.current !== requestId) return;
       setChatMessages((current) => replaceSessionMessages(current, sessionId, result.messages));
+      void loadRecentSessionTrace(
+        sessionId,
+        undefined,
+        () => messageLoadRequestRef.current !== requestId,
+      );
     } catch (reason) {
       if (messageLoadRequestRef.current === requestId) toastError(reason);
+    }
+  }
+
+  async function handleContinueFromMessage(message: SessionWorkspaceMessage) {
+    const sessionId = message.sessionId || session?.id;
+    if (!sessionId || !message.id) return;
+    try {
+      const result = await runtimeClient.truncateSession({ sessionId, messageId: message.id });
+      refreshSessionTranscript(sessionId, result.messages, result.session);
+      addToast("success", result.deletedCount > 0 ? `已从这里继续，移除 ${result.deletedCount} 条后续记录。` : "已定位到这条消息，后面没有可移除记录。");
+    } catch (reason) {
+      toastError(reason);
+    }
+  }
+
+  async function handleBranchFromMessage(message: SessionWorkspaceMessage) {
+    const sessionId = message.sessionId || session?.id;
+    if (!sessionId || !message.id) return;
+    try {
+      const source = sessions.find((item) => item.id === sessionId) ?? session;
+      const result = await runtimeClient.branchSession({
+        sessionId,
+        messageId: message.id,
+        title: source ? `${source.title} 分支` : undefined,
+      });
+      setSessions((current) => sortByUpdatedAtDesc([result.session, ...current.filter((item) => item.id !== result.session.id)]));
+      refreshSessionTranscript(result.session.id, result.messages, result.session);
+      setSession(result.session);
+      setTask(null);
+      setActiveTaskForSession(null, result.session.id);
+      setOpenTabs((current) => {
+        const id = `session:${result.session.id}` as const;
+        if (current.some((tab) => tab.id === id)) {
+          setActiveTabId(id);
+          return current;
+        }
+        setActiveTabId(id);
+        return [
+          ...current,
+          {
+            id,
+            kind: "session",
+            title: result.session.title,
+            sessionId: result.session.id,
+            closable: true,
+          },
+        ];
+      });
+      addToast("success", `已创建分支会话，复制 ${result.copiedCount} 条记录。`);
+    } catch (reason) {
+      toastError(reason);
+    }
+  }
+
+  async function handleDeleteMessage(message: SessionWorkspaceMessage) {
+    const sessionId = message.sessionId || session?.id;
+    if (!sessionId || !message.id) return;
+    try {
+      const result = await runtimeClient.deleteMessage({ sessionId, messageId: message.id });
+      refreshSessionTranscript(sessionId, result.messages, result.session);
+      addToast("success", "已删除这条会话记录。");
+    } catch (reason) {
+      toastError(reason);
+    }
+  }
+
+  async function handleRevertTaskChanges(taskId: string) {
+    if (!taskId) return;
+    setPatchBusyId(`revert:${taskId}`);
+    setError(null);
+    try {
+      const result = await runtimeClient.revertTaskChanges({ taskId });
+      setTask(result.task);
+      setTaskHistory((current) => upsertRecord(current, result.task));
+      setPatchCacheById((current) => ({
+        ...current,
+        ...Object.fromEntries(result.patches.map((patch) => [patch.id, patch])),
+      }));
+      await loadTraceForTask(taskId);
+      addToast("success", result.changedPaths.length ? `已撤销 ${result.changedPaths.length} 个文件的本轮改动。` : "已撤销本轮改动。");
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setPatchBusyId((current) => (current === `revert:${taskId}` ? null : current));
+    }
+  }
+
+  async function handleApprovalAllowAlways(approvalId: string) {
+    if (!approvalId) return;
+    setApprovalBusyId(approvalId);
+    setError(null);
+    try {
+      const result = await runtimeClient.approvalAllowAlways({ approvalId, scope: "capability" });
+      setConfig(normalizeRuntimeConfig(result.config));
+      const nextTask = result.task;
+      if (nextTask) {
+        setTask(nextTask);
+        setTaskHistory((current) => upsertRecord(current, nextTask));
+      }
+      if (result.worktreeMerge) {
+        const refreshed = await runtimeClient.getTask(result.approval.taskId);
+        setTask(refreshed.task);
+        setTaskHistory((current) => upsertRecord(current, refreshed.task));
+      }
+      await loadTraceForTask(result.approval.taskId);
+      addToast("success", `已始终允许 ${result.capability}。`);
+    } catch (reason) {
+      toastError(reason);
+    } finally {
+      setApprovalBusyId((current) => (current === approvalId ? null : current));
     }
   }
 
@@ -513,20 +719,6 @@ export function App() {
     setToasts((current) => current.filter((t) => t.id !== id));
   }
 
-  function buildComputerUseStatus(): string {
-    const clipboardAvailable =
-      typeof navigator !== "undefined" &&
-      typeof navigator.clipboard?.writeText === "function";
-    const desktopBridgeAvailable = runtimeClient.canOpenLocalAppPaths();
-    const ready = [
-      clipboardAvailable ? "clipboard" : null,
-      desktopBridgeAvailable ? "desktop bridge" : null,
-      "manual confirmation",
-    ].filter(Boolean);
-    const pending = ["screenshot capture", "computer-use action runtime", "permission audit"];
-    return `${new Date().toLocaleTimeString("zh-CN", { hour12: false })} ready: ${ready.join(", ")}; pending: ${pending.join(", ")}`;
-  }
-
   // Destructure hook returns
   const {
     providerSettings, setProviderSettings,
@@ -553,8 +745,9 @@ export function App() {
     generalSettings, setGeneralSettings,
     imSettings, setIMSettings,
     computerUseSettings, setComputerUseSettings,
+    permissionRuleBusyId,
     handleGeneralSettingsChange, handleAgentBehaviorChange,
-    handlePermissionModeChange, handleOpenAppPath,
+    handlePermissionModeChange, handleClearPermissionRule, handleOpenAppPath,
     handleCopyRuntimeText, handleRecheckComputerUse,
   } = settingsHook;
   const {
@@ -696,6 +889,7 @@ export function App() {
         setTask(initialTask);
         setActiveTaskForSession(initialTask?.id ?? null, initialSession?.id);
         void loadSessionMessages(initialSession?.id);
+        void loadRecentSessionTrace(initialSession?.id, nextTasks.tasks, () => disposed);
         setScheduledRecords(nextScheduledTasks.tasks);
         setSelectedScheduledTaskId(nextScheduledTasks.tasks[0]?.id ?? null);
         setSkills(nextSkills.skills);
@@ -734,8 +928,6 @@ export function App() {
 
   useEffect(() => {
     if (!activeTaskId) {
-      setTraceEvents([]);
-      setCommandLogCacheById({});
       setTraceError(null);
       setTraceBusy(false);
       return;
@@ -744,6 +936,22 @@ export function App() {
     void loadTraceForTask(activeTaskId, () => cancelled);
     return () => { cancelled = true; };
   }, [activeTaskId, traceAutoRefreshStatus]);
+
+  const sessionTraceTaskKey = session?.id
+    ? sortByUpdatedAtDesc(taskHistory.filter((item) => item.sessionId === session.id))
+        .slice(0, SESSION_TRACE_TASK_LIMIT)
+        .map((item) => `${item.id}:${item.updatedAt ?? 0}`)
+        .join("|")
+    : "";
+
+  useEffect(() => {
+    if (!session?.id || !sessionTraceTaskKey) {
+      return;
+    }
+    let cancelled = false;
+    void loadRecentSessionTrace(session.id, taskHistory, () => cancelled);
+    return () => { cancelled = true; };
+  }, [session?.id, sessionTraceTaskKey]);
 
   useEffect(() => {
     if (!activeTaskId || !session?.id) {
@@ -886,6 +1094,28 @@ export function App() {
   const activeTabKind = resolveActiveTabKind(activeTab);
   const composerVisible = activeTabKind === "new-session" || activeTabKind === "session";
   const queuedPromptCount = queuedPromptSubmissions.length;
+  const fileWorkspaceChangedFiles = [
+    ...(task?.changedFiles ?? []).map((file) => ({
+      path: file.path,
+      status: file.status,
+      additions: file.additions,
+      deletions: file.deletions,
+      source: "task",
+    })),
+    ...((views.sessionPatches ?? []) as any[]).flatMap((patch) => (
+      (patch.files ?? []).map((file: any) => ({
+        path: file.path,
+        status: file.status,
+        additions: file.additions,
+        deletions: file.deletions,
+        source: "patch",
+      }))
+    )),
+    ...(worktreeStatus?.files ?? []).map((path) => ({
+      path,
+      source: "worktree",
+    })),
+  ];
 
   // ── Render ──────────────────────────────────────────────────────────
   return (
@@ -915,6 +1145,7 @@ export function App() {
       disabled={loading || !runtimeReady}
       sending={composerSending}
       submitting={messageBusy}
+      stopPending={taskControlBusyAction === "cancel"}
       queuedPromptCount={queuedPromptCount}
       runtimeChildTasks={views.composerRuntimeChildTasks}
       attachments={promptAttachments}
@@ -933,12 +1164,17 @@ export function App() {
       permissionLabel={views.permissionLabel}
       permissionMode={views.permissionMode}
       onPermissionModeChange={handlePermissionModeChange}
+      onWorkspacePathChange={setWorkspacePath}
+      useWorktree={config?.worktree?.autoBindWriteTasks ?? true}
+      onUseWorktreeChange={handleUseWorktreeChange}
+      worktreeModeBusy={worktreeModeBusy}
       runtimeLabel={views.runtimeStatusLabel}
       mcpLabel={views.mcpStatusLabel}
       approvalLabel={views.approvalStatusLabel}
       contextLabel={views.contextStatusLabel}
       contextPreview={views.sessionContextPreview}
       worktreeStatus={worktreeStatus ?? null}
+      fileWorkspaceChangedFiles={fileWorkspaceChangedFiles}
       activeTaskStatus={task?.status ?? null}
       activeTaskCurrentStep={task?.currentStep ?? null}
       theme={generalSettings.theme}
@@ -997,9 +1233,14 @@ export function App() {
         workspaceName={views.workspaceName}
         config={config}
         handleApprovalSubmit={handleApprovalSubmit}
+        handleApprovalAllowAlways={handleApprovalAllowAlways}
         handleLoadPatchDiff={handleLoadPatchDiff}
         handleCopyRuntimeText={handleCopyRuntimeText}
         handleQuoteMessage={handleQuoteMessage}
+        handleRevertTaskChanges={handleRevertTaskChanges}
+        handleContinueFromMessage={handleContinueFromMessage}
+        handleBranchFromMessage={handleBranchFromMessage}
+        handleDeleteMessage={handleDeleteMessage}
         handleRefreshCommandJob={handleRefreshCommandJob}
         handleStopCommandJob={handleStopCommandJob}
         handleRefreshTask={handleRefreshTask}
@@ -1075,6 +1316,9 @@ export function App() {
         providerTestBusy={providerTestBusy}
         providerFeedback={providerFeedback ?? undefined}
         handlePermissionModeChange={handlePermissionModeChange}
+        settingsPermissionRules={views.settingsPermissionRules}
+        permissionRuleBusyId={permissionRuleBusyId}
+        handleClearPermissionRule={handleClearPermissionRule}
         setIMSettings={setIMSettings}
         imSettings={imSettings}
         setComputerUseSettings={setComputerUseSettings}

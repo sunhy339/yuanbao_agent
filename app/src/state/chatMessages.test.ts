@@ -4,6 +4,7 @@ import {
   appendOrUpdateAssistantMessageCompletion,
   appendOrUpdateAssistantMessageDelta,
   appendOrUpdateAssistantToolInputDelta,
+  appendOrUpdateAssistantToolOutputDelta,
   appendOrUpdateAssistantToolStartMessage,
   appendOrUpdateAssistantThinkingMessage,
   appendOrUpdatePermissionRequestMessage,
@@ -22,6 +23,7 @@ import {
   removeAssistantThinkingMessage,
   replaceSessionMessages,
   resolvePermissionRequestMessage,
+  resolveSpecialApprovalMessage,
   sanitizeAssistantStatusContent,
   stripAssistantRuntimeProgress,
   summarizeOperationalAssistantDelta,
@@ -140,6 +142,25 @@ describe("chatMessages", () => {
     );
   });
 
+  it("appends streaming thinking summary deltas", () => {
+    const first = appendOrUpdateAssistantThinkingMessage(messages, {
+      sessionId: "sess_1",
+      taskId: "task_3",
+      state: "thinking",
+      text: "Reading ",
+      now: 4,
+    });
+    const next = appendOrUpdateAssistantThinkingMessage(first, {
+      sessionId: "sess_1",
+      taskId: "task_3",
+      state: "thinking",
+      text: "files.",
+      now: 5,
+    });
+
+    expect(next.find((message) => message.id === "assistant_thinking:task_3")?.content).toBe("Reading files.");
+  });
+
   it("keeps permission request blocks when persisted messages refresh", () => {
     const withPermission = appendOrUpdatePermissionRequestMessage(messages, {
       requestId: "approval_1",
@@ -171,6 +192,38 @@ describe("chatMessages", () => {
     });
   });
 
+  it("stores structured permission request preview and changed files", () => {
+    const withPermission = appendOrUpdatePermissionRequestMessage(messages, {
+      requestId: "approval_1",
+      toolName: "apply_patch",
+      input: { summary: "Update rules" },
+      description: "Patch needs approval",
+      preview: [{ label: "摘要", value: "Update rules" }],
+      filesChanged: 2,
+      changedPaths: ["src/rules.ts", "src/rules.test.ts"],
+      diffText: "diff --git a/src/rules.ts b/src/rules.ts\n",
+      sessionId: "sess_1",
+      taskId: "task_3",
+      now: 4,
+    });
+
+    const permission = getVisibleChatMessages(withPermission, "sess_1").find(
+      (message) => message.id === "permission_request:approval_1",
+    );
+    expect(permission).toMatchObject({
+      toolName: "apply_patch",
+      metadata: {
+        kind: "permission_request",
+        requestId: "approval_1",
+        approvalKind: "apply_patch",
+        previewRows: [{ label: "摘要", value: "Update rules" }],
+        filesChanged: 2,
+        changedPaths: ["src/rules.ts", "src/rules.test.ts"],
+        diffText: "diff --git a/src/rules.ts b/src/rules.ts\n",
+      },
+    });
+  });
+
   it("marks permission request blocks resolved without keeping action state", () => {
     const withPermission = appendOrUpdatePermissionRequestMessage(messages, {
       requestId: "approval_1",
@@ -194,6 +247,214 @@ describe("chatMessages", () => {
     expect(permission).toMatchObject({
       status: "completed",
       metadata: { kind: "permission_request", requestId: "approval_1", decision: "approved", resolved: true },
+    });
+  });
+
+  it("uses resolved approval payload to fill missing permission details", () => {
+    const withPermission = appendOrUpdatePermissionRequestMessage(messages, {
+      requestId: "approval_1",
+      toolName: "approval",
+      input: {},
+      sessionId: "sess_1",
+      taskId: "task_3",
+      now: 4,
+    });
+
+    const resolved = resolvePermissionRequestMessage(withPermission, {
+      requestId: "approval_1",
+      decision: "approved",
+      toolName: "apply_patch",
+      input: { summary: "Update rules" },
+      preview: [{ label: "摘要", value: "Update rules" }],
+      filesChanged: 1,
+      changedPaths: ["src/rules.ts"],
+      diffText: "diff --git a/src/rules.ts b/src/rules.ts\n",
+      now: 5,
+    });
+
+    const permission = getVisibleChatMessages(resolved, "sess_1").find(
+      (message) => message.id === "permission_request:approval_1",
+    );
+    expect(permission).toMatchObject({
+      status: "completed",
+      metadata: {
+        approvalKind: "apply_patch",
+        previewRows: [{ label: "摘要", value: "Update rules" }],
+        filesChanged: 1,
+        changedPaths: ["src/rules.ts"],
+        diffText: "diff --git a/src/rules.ts b/src/rules.ts\n",
+      },
+    });
+  });
+
+  it("creates a resolved permission card from detailed resolved payload when the request is missing", () => {
+    const resolved = resolvePermissionRequestMessage(messages, {
+      requestId: "approval_1",
+      decision: "approved",
+      toolName: "write_file",
+      input: { path: "src/new.ts", risk: "writes file" },
+      preview: [{ label: "文件", value: "src/new.ts" }],
+      filesChanged: 1,
+      changedPaths: ["src/new.ts"],
+      diffText: "--- /dev/null\n+++ b/src/new.ts\n",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      createIfMissing: true,
+      now: 5,
+    });
+
+    const permission = getVisibleChatMessages(resolved, "sess_1").find(
+      (message) => message.id === "permission_request:approval_1",
+    );
+    expect(permission).toMatchObject({
+      status: "completed",
+      toolName: "write_file",
+      metadata: {
+        kind: "permission_request",
+        requestId: "approval_1",
+        decision: "approved",
+        resolved: true,
+        approvalKind: "write_file",
+        previewRows: [{ label: "文件", value: "src/new.ts" }],
+        filesChanged: 1,
+        changedPaths: ["src/new.ts"],
+        diffText: "--- /dev/null\n+++ b/src/new.ts\n",
+      },
+    });
+  });
+
+  it("does not create a low-value permission card for empty resolved payloads", () => {
+    const resolved = resolvePermissionRequestMessage(messages, {
+      requestId: "approval_1",
+      decision: "approved",
+      sessionId: "sess_1",
+      createIfMissing: true,
+      now: 5,
+    });
+
+    expect(getVisibleChatMessages(resolved, "sess_1").some(
+      (message) => message.id === "permission_request:approval_1",
+    )).toBe(false);
+  });
+
+  it("reuses computer-use approval id and resolves the special card", () => {
+    const withRequest = appendSpecialEventMessage(messages, {
+      kind: "computer_use_permission",
+      sessionId: "sess_1",
+      taskId: "task_3",
+      content: "",
+      summary: "Read current window",
+      status: "waiting_approval",
+      metadata: {
+        kind: "computer_use_permission",
+        approvalId: "appr_computer",
+        app: "VS Code",
+        action: "Read current window",
+      },
+      now: 4,
+    });
+    const withResolvedEvent = appendSpecialEventMessage(withRequest, {
+      kind: "computer_use_permission",
+      sessionId: "sess_1",
+      taskId: "task_3",
+      content: "",
+      summary: "Read current window",
+      status: "approved",
+      metadata: {
+        kind: "computer_use_permission",
+        approvalId: "appr_computer",
+        decision: "approved",
+        resolved: true,
+      },
+      now: 5,
+    });
+
+    const cards = getVisibleChatMessages(withResolvedEvent, "sess_1").filter(
+      (message) => message.id === "computer_use_permission:appr_computer",
+    );
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      metadata: {
+        app: "VS Code",
+        action: "Read current window",
+        decision: "approved",
+        resolved: true,
+      },
+    });
+
+    const resolved = resolveSpecialApprovalMessage(withResolvedEvent, {
+      approvalId: "appr_computer",
+      decision: "rejected",
+      now: 6,
+    });
+    const card = getVisibleChatMessages(resolved, "sess_1").find(
+      (message) => message.id === "computer_use_permission:appr_computer",
+    );
+    expect(card).toMatchObject({
+      status: "failed",
+      metadata: {
+        kind: "computer_use_permission",
+        approvalId: "appr_computer",
+        app: "VS Code",
+        action: "Read current window",
+        decision: "rejected",
+        resolved: true,
+      },
+    });
+  });
+
+  it("fills computer-use special cards with resolved approval request details", () => {
+    const withRequest = appendSpecialEventMessage(messages, {
+      kind: "computer_use_permission",
+      sessionId: "sess_1",
+      taskId: "task_3",
+      content: "",
+      summary: "Computer Use approval",
+      status: "waiting_approval",
+      metadata: {
+        kind: "computer_use_permission",
+        approvalId: "appr_computer",
+      },
+      now: 4,
+    });
+
+    const resolved = resolveSpecialApprovalMessage(withRequest, {
+      approvalId: "appr_computer",
+      decision: "approved",
+      input: {
+        app: "Browser",
+        action: "click",
+        selector: "button[type=submit]",
+        url: "http://localhost:5173",
+        pageId: "page_1",
+      },
+      preview: [
+        { label: "动作", value: "click" },
+        { label: "目标", value: "button[type=submit]" },
+      ],
+      now: 6,
+    });
+
+    const card = getVisibleChatMessages(resolved, "sess_1").find(
+      (message) => message.id === "computer_use_permission:appr_computer",
+    );
+    expect(card).toMatchObject({
+      status: "completed",
+      metadata: {
+        kind: "computer_use_permission",
+        approvalId: "appr_computer",
+        decision: "approved",
+        resolved: true,
+        app: "Browser",
+        action: "click",
+        selector: "button[type=submit]",
+        url: "http://localhost:5173",
+        pageId: "page_1",
+        previewRows: [
+          { label: "动作", value: "click" },
+          { label: "目标", value: "button[type=submit]" },
+        ],
+      },
     });
   });
 
@@ -290,6 +551,7 @@ describe("chatMessages", () => {
     expect(summarizeOperationalAssistantDelta("Subtask tool completed: run_command")).toContain("命令已完成。");
     expect(summarizeOperationalAssistantDelta("Subtask waiting for approval: run_command")).toContain("等待审批：命令。");
     expect(summarizeOperationalAssistantDelta("Subtask tool failed: run_command")).toContain("命令失败");
+    expect(summarizeOperationalAssistantDelta("Subtask command cancelled")).toContain("命令已取消。");
     expect(summarizeOperationalAssistantDelta('Task Cancelled {"acceptanceCriteria":["Keep focused"]}')).toBe(
       "\n\n任务已取消，已停止继续执行。",
     );
@@ -830,6 +1092,8 @@ describe("chatMessages", () => {
     const withInput = appendOrUpdateAssistantToolInputDelta([], {
       toolUseId: "tc_1",
       toolName: "run_command",
+      target: "npm test",
+      inputSummary: "npm test",
       sessionId: "sess_1",
       taskId: "task_1",
       delta: "{\"command\":\"npm",
@@ -869,11 +1133,240 @@ describe("chatMessages", () => {
     });
   });
 
+  it("streams tool output into the matching tool activity block", () => {
+    const started = completeAssistantToolUseMessage(
+      appendOrUpdateAssistantToolStartMessage([], {
+        toolUseId: "tc_1",
+        toolName: "run_command",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        now: 1,
+      }),
+      {
+        toolUseId: "tc_1",
+        toolName: "run_command",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        input: { command: "npm test" },
+        now: 2,
+      },
+    );
+    const withStdout = appendOrUpdateAssistantToolOutputDelta(started, {
+      toolUseId: "tc_1",
+      toolName: "run_command",
+      target: "npm test",
+      inputSummary: "npm test",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      stream: "stdout",
+      delta: "first line\n",
+      now: 3,
+    });
+    const withStderr = appendOrUpdateAssistantToolOutputDelta(withStdout, {
+      toolUseId: "tc_1",
+      toolName: "run_command",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      stream: "stderr",
+      delta: "warning\n",
+      now: 4,
+    });
+    const completed = appendAssistantToolResultMessage(withStderr, {
+      toolUseId: "tc_1",
+      toolName: "run_command",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      content: { status: "completed", exitCode: 0 },
+      resultSummary: "exit 0: ok",
+      now: 5,
+    });
+
+    expect(completed[0]).toMatchObject({
+      id: "tool_activity:tc_1",
+      streaming: false,
+      metadata: {
+        target: "npm test",
+        inputSummary: "npm test",
+        output: {
+          stdout: "first line\n",
+          stderr: "warning\n",
+          result: "",
+        },
+        resultText: "stdout\nfirst line\n\nstderr\nwarning\n\nexit 0: ok",
+      },
+    });
+  });
+
+  it("streams non-command tool result previews into the matching activity block", () => {
+    const started = completeAssistantToolUseMessage(
+      appendOrUpdateAssistantToolStartMessage([], {
+        toolUseId: "tc_preview",
+        toolName: "search_files",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        now: 1,
+      }),
+      {
+        toolUseId: "tc_preview",
+        toolName: "search_files",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        input: { query: "needle" },
+        now: 2,
+      },
+    );
+    const withActivity = appendOrUpdateAssistantToolOutputDelta(started, {
+      toolUseId: "tc_preview",
+      toolName: "search_files",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      stream: "activity",
+      delta: "正在搜索文件：search needle\n",
+      now: 3,
+    });
+    const withPreview = appendOrUpdateAssistantToolOutputDelta(withActivity, {
+      toolUseId: "tc_preview",
+      toolName: "search_files",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      stream: "result_preview",
+      delta: "命中: 2 项\n样例: src/app.ts\n",
+      now: 4,
+    });
+
+    expect(withPreview[0]).toMatchObject({
+      metadata: {
+        output: {
+          activity: "正在搜索文件：search needle\n",
+          result: "命中: 2 项\n样例: src/app.ts\n",
+        },
+        resultText: "过程\n正在搜索文件：search needle\n\n结果预览\n命中: 2 项\n样例: src/app.ts",
+      },
+    });
+  });
+
+  it("appends multiple structured tool activity deltas before result previews", () => {
+    const started = completeAssistantToolUseMessage(
+      appendOrUpdateAssistantToolStartMessage([], {
+        toolUseId: "tc_steps",
+        toolName: "mcp__docs__lookup",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        now: 1,
+      }),
+      {
+        toolUseId: "tc_steps",
+        toolName: "mcp__docs__lookup",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        input: { query: "install guide" },
+        now: 2,
+      },
+    );
+    const withFirstStep = appendOrUpdateAssistantToolOutputDelta(started, {
+      toolUseId: "tc_steps",
+      toolName: "mcp__docs__lookup",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      stream: "activity",
+      delta: "connect (completed): opened docs index\n",
+      now: 3,
+    });
+    const withSecondStep = appendOrUpdateAssistantToolOutputDelta(withFirstStep, {
+      toolUseId: "tc_steps",
+      toolName: "mcp__docs__lookup",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      stream: "activity",
+      delta: "search (completed): matched install guide\n",
+      now: 4,
+    });
+    const withPreview = appendOrUpdateAssistantToolOutputDelta(withSecondStep, {
+      toolUseId: "tc_steps",
+      toolName: "mcp__docs__lookup",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      stream: "result_preview",
+      delta: "摘要: found 2 docs\n",
+      now: 5,
+    });
+
+    expect(withPreview[0]).toMatchObject({
+      metadata: {
+        output: {
+          activity: "connect (completed): opened docs index\nsearch (completed): matched install guide\n",
+          result: "摘要: found 2 docs\n",
+        },
+      },
+    });
+    expect(withPreview[0].metadata?.resultText).toContain("connect (completed): opened docs index");
+    expect(withPreview[0].metadata?.resultText).toContain("search (completed): matched install guide");
+    expect(withPreview[0].metadata?.resultText).toContain("摘要: found 2 docs");
+  });
+
+  it("preserves structured tool summaries on merged tool result blocks", () => {
+    const withInput = completeAssistantToolUseMessage(
+      appendOrUpdateAssistantToolStartMessage([], {
+        toolUseId: "tc_2",
+        toolName: "read_file",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        now: 1,
+      }),
+      {
+        toolUseId: "tc_2",
+        toolName: "read_file",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        input: { path: "src/app.ts" },
+        now: 2,
+      },
+    );
+    const withResult = appendAssistantToolResultMessage(withInput, {
+      toolUseId: "tc_2",
+      toolName: "read_file",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      content: { content: "const app = true;" },
+      target: "src/app.ts",
+      inputSummary: "read src/app.ts",
+      resultSummary: "read src/app.ts (17 chars)",
+      durationMs: 37,
+      resultPreview: [{ label: "文件", value: "src/app.ts" }],
+      now: 3,
+    });
+
+    expect(withResult[0].metadata?.durationMs).toBe(37);
+    expect(withResult[0]).toMatchObject({
+      id: "tool_activity:tc_2",
+      content: '{\n  "path": "src/app.ts"\n}',
+      metadata: {
+        target: "src/app.ts",
+        inputSummary: "read src/app.ts",
+        resultSummary: "read src/app.ts (17 chars)",
+        resultPreview: [{ label: "文件", value: "src/app.ts" }],
+        resultText: "read src/app.ts (17 chars)",
+      },
+    });
+  });
+
   it("shows a content_start tool block before input deltas arrive", () => {
     const started = appendOrUpdateAssistantToolStartMessage([], {
       toolUseId: "tc_1",
       toolName: "read_file",
+      target: "src/index.ts",
+      inputSummary: "read src/index.ts",
       parentToolUseId: "parent_1",
+      toolGroupId: "tgrp_1",
+      toolIndex: 1,
+      toolTotal: 2,
+      toolOperationId: "context:path:src/index.ts",
+      toolOperationLabel: "读取上下文",
+      toolCategory: "context_read",
+      toolPhaseId: "context_read",
+      toolPhaseLabel: "读取上下文",
+      toolSemanticParentId: "phase:context_read",
+      toolSemanticParentLabel: "读取上下文",
       sessionId: "sess_1",
       taskId: "task_1",
       now: 1,
@@ -887,7 +1380,19 @@ describe("chatMessages", () => {
         metadata: {
           kind: "tool_use",
           toolUseId: "tc_1",
+          target: "src/index.ts",
+          inputSummary: "read src/index.ts",
           parentToolUseId: "parent_1",
+          toolGroupId: "tgrp_1",
+          toolIndex: 1,
+          toolTotal: 2,
+          toolOperationId: "context:path:src/index.ts",
+          toolOperationLabel: "读取上下文",
+          toolCategory: "context_read",
+          toolPhaseId: "context_read",
+          toolPhaseLabel: "读取上下文",
+          toolSemanticParentId: "phase:context_read",
+          toolSemanticParentLabel: "读取上下文",
         },
       }),
     ]);
@@ -895,7 +1400,19 @@ describe("chatMessages", () => {
     const completed = completeAssistantToolUseMessage(started, {
       toolUseId: "tc_1",
       toolName: "read_file",
+      target: "src/index.ts",
+      inputSummary: "read src/index.ts",
       parentToolUseId: "parent_1",
+      toolGroupId: "tgrp_1",
+      toolIndex: 1,
+      toolTotal: 2,
+      toolOperationId: "context:path:src/index.ts",
+      toolOperationLabel: "读取上下文",
+      toolCategory: "context_read",
+      toolPhaseId: "context_read",
+      toolPhaseLabel: "读取上下文",
+      toolSemanticParentId: "phase:context_read",
+      toolSemanticParentLabel: "读取上下文",
       sessionId: "sess_1",
       taskId: "task_1",
       input: { path: "src/index.ts" },
@@ -906,8 +1423,47 @@ describe("chatMessages", () => {
       streaming: false,
       status: "completed",
       metadata: {
+        target: "src/index.ts",
+        inputSummary: "read src/index.ts",
         parentToolUseId: "parent_1",
+        toolGroupId: "tgrp_1",
+        toolIndex: 1,
+        toolTotal: 2,
+        toolOperationId: "context:path:src/index.ts",
+        toolOperationLabel: "读取上下文",
+        toolCategory: "context_read",
+        toolPhaseId: "context_read",
+        toolPhaseLabel: "读取上下文",
+        toolSemanticParentId: "phase:context_read",
+        toolSemanticParentLabel: "读取上下文",
         inputText: '{\n  "path": "src/index.ts"\n}',
+      },
+    });
+  });
+
+  it("keeps raw lifecycle tool starts streaming while preserving arguments", () => {
+    const started = appendOrUpdateAssistantToolStartMessage([], {
+      toolUseId: "tc_raw",
+      toolName: "read_file",
+      input: { path: "src/app.ts" },
+      target: "src/app.ts",
+      inputSummary: "read src/app.ts",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      now: 1,
+    });
+
+    expect(started[0]).toMatchObject({
+      id: "tool_use:tc_raw",
+      streaming: true,
+      status: "streaming",
+      metadata: {
+        kind: "tool_use",
+        toolUseId: "tc_raw",
+        target: "src/app.ts",
+        inputSummary: "read src/app.ts",
+        input: { path: "src/app.ts" },
+        inputText: '{\n  "path": "src/app.ts"\n}',
       },
     });
   });
@@ -944,12 +1500,14 @@ describe("chatMessages", () => {
 
   it("keeps haha-style special transcript events across persisted message refreshes", () => {
     const localEvents = appendSpecialEventMessage([], {
-      kind: "compact_summary",
+      kind: "slash_command",
       sessionId: "sess_1",
       taskId: "task_1",
-      title: "上下文已压缩",
-      summary: "旧工具日志已自动折叠。",
-      eventId: "evt_compact",
+      content: "**运行时：** 本地运行时已连接",
+      title: "/status result",
+      summary: "本地运行时已连接",
+      eventId: "evt_status",
+      metadata: { command: "/status", args: "" },
       now: 10,
     });
 
@@ -965,7 +1523,36 @@ describe("chatMessages", () => {
     ]);
 
     expect(getVisibleChatMessages(refreshed, "sess_1").map((message) => message.id)).toEqual([
-      "compact_summary:evt_compact",
+      "slash_command:evt_status",
+      "assistant_final",
+    ]);
+  });
+
+  it("keeps system special transcript events across persisted message refreshes", () => {
+    const localEvents = appendSpecialEventMessage([], {
+      kind: "system",
+      sessionId: "sess_1",
+      taskId: "task_1",
+      content: "Switched to fallback model",
+      title: "Provider notice",
+      eventId: "evt_system",
+      metadata: { model: "fallback-model" },
+      now: 10,
+    });
+
+    const refreshed = replaceSessionMessages(localEvents, "sess_1", [
+      {
+        id: "assistant_final",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        role: "assistant",
+        content: "Done.",
+        createdAt: 20,
+      },
+    ]);
+
+    expect(getVisibleChatMessages(refreshed, "sess_1").map((message) => message.id)).toEqual([
+      "system:evt_system",
       "assistant_final",
     ]);
   });
@@ -990,6 +1577,8 @@ describe("chatMessages", () => {
     const merged = appendAssistantToolResultMessage(completed, {
       toolUseId: "tc_1",
       toolName: "run_command",
+      target: "npm test",
+      inputSummary: "npm test",
       sessionId: "sess_1",
       taskId: "task_1",
       content: { status: "completed" },
@@ -1002,6 +1591,8 @@ describe("chatMessages", () => {
     expect(merged[0]).toMatchObject({
       metadata: {
         kind: "tool_activity",
+        target: "npm test",
+        inputSummary: "npm test",
         inputText: '{\n  "command": "npm test"\n}',
         resultText: '{\n  "status": "completed"\n}',
       },
@@ -1015,6 +1606,7 @@ describe("chatMessages", () => {
       sessionId: "sess_1",
       taskId: "task_1",
       content: "ok",
+      durationMs: 12,
       now: 3,
     });
 
@@ -1032,6 +1624,7 @@ describe("chatMessages", () => {
       "stored_user",
       "tool_result:tc_1",
     ]);
+    expect(getVisibleChatMessages(next, "sess_1")[1].metadata?.durationMs).toBe(12);
   });
 
   it("completes all streaming chat-compat blocks for a task", () => {

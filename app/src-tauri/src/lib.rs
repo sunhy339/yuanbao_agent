@@ -31,11 +31,67 @@ struct HostStatus {
     python_module: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ComputerUseProbe {
+    status: &'static str,
+    checked_at: u128,
+    platform: String,
+    desktop_bridge: bool,
+    runtime_running: bool,
+    capabilities: Vec<ComputerUseProbeCapability>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ComputerUseProbeCapability {
+    id: &'static str,
+    label: &'static str,
+    state: &'static str,
+    detail: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionCreatePayload {
     workspace_id: String,
     title: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionUpdatePayload {
+    session_id: String,
+    title: Option<String>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionIdPayload {
+    session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionCompactPayload {
+    session_id: String,
+    max_tokens: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionMessageTargetPayload {
+    session_id: String,
+    message_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionBranchPayload {
+    session_id: String,
+    message_id: String,
+    title: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +119,7 @@ struct MessageSendPayload {
     session_id: String,
     content: String,
     attachments: Vec<String>,
+    file_references: Option<Vec<String>>,
     task_id: Option<String>,
     mode: Option<String>,
     new_task: Option<bool>,
@@ -86,6 +143,12 @@ struct TaskGetPayload {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TaskControlPayload {
+    task_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskRevertChangesPayload {
     task_id: String,
 }
 
@@ -184,6 +247,19 @@ struct ApprovalSubmitPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ApprovalAllowAlwaysPayload {
+    approval_id: String,
+    scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PermissionRuleClearPayload {
+    capability: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CommandLogGetPayload {
     command_id: String,
 }
@@ -219,10 +295,31 @@ struct WorkspaceFileListPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct WorkspaceFileSearchPayload {
+    workspace_root: String,
+    query: Option<String>,
+    max_entries: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceFileSearchCandidate {
+    entry: WorkspaceFileEntryView,
+    score: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct WorkspaceFileReadPayload {
     workspace_root: String,
     path: String,
     max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenPathPayload {
+    path: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -708,7 +805,14 @@ fn spawn_pipe_terminal(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env("TERM", if cfg!(target_os = "windows") { "dumb" } else { "xterm-256color" });
+        .env(
+            "TERM",
+            if cfg!(target_os = "windows") {
+                "dumb"
+            } else {
+                "xterm-256color"
+            },
+        );
 
     let mut child = command
         .spawn()
@@ -972,6 +1076,13 @@ fn git_stdout(cwd: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+fn git_stdout_optional(cwd: &Path, args: &[&str]) -> Option<String> {
+    git_stdout(cwd, args)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 fn resolve_git_repo(cwd: &Path) -> Result<PathBuf, String> {
     let root = git_stdout(cwd, &["rev-parse", "--show-toplevel"])?;
     let root = PathBuf::from(root.trim());
@@ -1024,6 +1135,89 @@ fn parse_branch_header(header: &str) -> (String, Option<String>, u64, u64) {
     (branch, upstream, ahead, behind)
 }
 
+fn normalize_remote_branch(ref_name: &str) -> Option<(String, String)> {
+    let trimmed = ref_name.trim();
+    if trimmed.is_empty() || trimmed.ends_with("/HEAD") {
+        return None;
+    }
+    let slash = trimmed.find('/')?;
+    if slash == 0 {
+        return None;
+    }
+    let remote = &trimmed[..slash];
+    let name = &trimmed[slash + 1..];
+    if name.is_empty() {
+        return None;
+    }
+    let display_name = if remote == "origin" {
+        name.to_string()
+    } else {
+        trimmed.to_string()
+    };
+    Some((display_name, trimmed.to_string()))
+}
+
+fn parse_worktree_list(stdout: &str, cwd: &Path) -> Vec<Value> {
+    let mut worktrees = Vec::new();
+    let mut current_path: Option<String> = None;
+    let mut current_branch: Option<String> = None;
+
+    for line in stdout.lines() {
+        if let Some(path_text) = line.strip_prefix("worktree ") {
+            if let Some(path) = current_path.take() {
+                let is_current = PathBuf::from(&path)
+                    .canonicalize()
+                    .ok()
+                    .map(|path| path == cwd)
+                    .unwrap_or(false);
+                worktrees.push(json!({
+                    "path": path,
+                    "branch": current_branch.take(),
+                    "current": is_current,
+                }));
+            }
+            current_path = Some(path_text.trim().to_string());
+            current_branch = None;
+            continue;
+        }
+
+        if let Some(ref_name) = line.strip_prefix("branch ") {
+            current_branch = Some(
+                ref_name
+                    .trim()
+                    .strip_prefix("refs/heads/")
+                    .unwrap_or(ref_name.trim())
+                    .to_string(),
+            );
+        }
+    }
+
+    if let Some(path) = current_path.take() {
+        let is_current = PathBuf::from(&path)
+            .canonicalize()
+            .ok()
+            .map(|path| path == cwd)
+            .unwrap_or(false);
+        worktrees.push(json!({
+            "path": path,
+            "branch": current_branch.take(),
+            "current": is_current,
+        }));
+    }
+
+    worktrees
+}
+
+fn default_branch(cwd: &Path) -> Option<String> {
+    if let Some(origin_head) = git_stdout_optional(cwd, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]) {
+        if let Some(value) = origin_head.strip_prefix("origin/") {
+            return Some(value.to_string());
+        }
+        return Some(origin_head);
+    }
+    git_stdout_optional(cwd, &["branch", "--show-current"])
+}
+
 fn git_status_value(cwd: &Path) -> Result<Value, String> {
     let repo_root = resolve_git_repo(cwd)?;
     let raw_status = git_stdout(cwd, &["status", "--short", "--branch"])?;
@@ -1034,8 +1228,19 @@ fn git_status_value(cwd: &Path) -> Result<Value, String> {
         .filter(|line| !line.trim().is_empty())
         .map(parse_status_file)
         .collect();
-    let branch_raw = git_stdout(cwd, &["branch", "--format=%(HEAD)%09%(refname:short)"])?;
-    let branches: Vec<Value> = branch_raw
+    let worktree_raw = git_stdout(&repo_root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    let worktrees = parse_worktree_list(&worktree_raw, cwd);
+    let checked_out_by_branch: HashMap<String, String> = worktrees
+        .iter()
+        .filter_map(|worktree| {
+            let branch = worktree.get("branch").and_then(Value::as_str)?;
+            let path = worktree.get("path").and_then(Value::as_str)?;
+            Some((branch.to_string(), path.to_string()))
+        })
+        .collect();
+
+    let branch_raw = git_stdout(cwd, &["branch", "--format=%(HEAD)%09%(refname:short)", "--list"])?;
+    let mut branches: Vec<Value> = branch_raw
         .lines()
         .filter_map(|line| {
             let (head, name) = line.split_once('\t')?;
@@ -1043,24 +1248,78 @@ fn git_status_value(cwd: &Path) -> Result<Value, String> {
             if trimmed.is_empty() {
                 return None;
             }
+            let worktree_path = checked_out_by_branch.get(trimmed).cloned();
             Some(json!({
                 "name": trimmed,
                 "current": head.trim() == "*",
+                "local": true,
+                "remote": false,
+                "remoteRef": null,
+                "checkedOut": worktree_path.is_some(),
+                "worktreePath": worktree_path,
             }))
         })
         .collect();
+    let existing_branch_names: std::collections::HashSet<String> = branches
+        .iter()
+        .filter_map(|branch| branch.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    if let Ok(remote_raw) = git_stdout(cwd, &["for-each-ref", "--format=%(refname:short)", "refs/remotes"]) {
+        for line in remote_raw.lines() {
+            if let Some((name, remote_ref)) = normalize_remote_branch(line) {
+                if existing_branch_names.contains(&name) {
+                    for branch_value in branches.iter_mut() {
+                        if branch_value.get("name").and_then(Value::as_str) == Some(name.as_str()) {
+                            if let Some(object) = branch_value.as_object_mut() {
+                                object.insert("remote".to_string(), json!(true));
+                                object.insert("remoteRef".to_string(), json!(remote_ref));
+                            }
+                        }
+                    }
+                } else {
+                    branches.push(json!({
+                        "name": name,
+                        "current": false,
+                        "local": false,
+                        "remote": true,
+                        "remoteRef": remote_ref,
+                        "checkedOut": false,
+                        "worktreePath": null,
+                    }));
+                }
+            }
+        }
+    }
+    branches.sort_by(|left, right| {
+        let left_current = left.get("current").and_then(Value::as_bool).unwrap_or(false);
+        let right_current = right.get("current").and_then(Value::as_bool).unwrap_or(false);
+        if left_current != right_current {
+            return right_current.cmp(&left_current);
+        }
+        let left_local = left.get("local").and_then(Value::as_bool).unwrap_or(false);
+        let right_local = right.get("local").and_then(Value::as_bool).unwrap_or(false);
+        if left_local != right_local {
+            return right_local.cmp(&left_local);
+        }
+        let left_name = left.get("name").and_then(Value::as_str).unwrap_or("");
+        let right_name = right.get("name").and_then(Value::as_str).unwrap_or("");
+        left_name.cmp(right_name)
+    });
     let dirty_files = files.len();
 
     Ok(json!({
         "cwd": cwd.display().to_string(),
         "repoRoot": repo_root.display().to_string(),
+        "repoName": repo_root.file_name().and_then(|name| name.to_str()).unwrap_or_default(),
         "branch": branch,
+        "defaultBranch": default_branch(cwd),
         "upstream": upstream,
         "ahead": ahead,
         "behind": behind,
         "dirtyFiles": dirty_files,
         "files": files,
         "branches": branches,
+        "worktrees": worktrees,
         "clean": dirty_files == 0,
         "rawStatus": raw_status,
     }))
@@ -1405,12 +1664,97 @@ fn file_modified_at_ms(metadata: &fs::Metadata) -> Option<u128> {
         .map(|duration| duration.as_millis())
 }
 
+fn should_skip_workspace_search_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".hg"
+            | ".svn"
+            | ".idea"
+            | ".vscode"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | ".next"
+            | ".nuxt"
+            | ".turbo"
+            | ".venv"
+            | "venv"
+            | "__pycache__"
+    )
+}
+
+fn workspace_search_score(path: &str, name: &str, query: &str) -> Option<i64> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let haystack = path.to_lowercase();
+    let name_haystack = name.to_lowercase();
+    let query_lower = query.to_lowercase();
+    if name_haystack == query_lower {
+        return Some(400);
+    }
+    if haystack == query_lower {
+        return Some(360);
+    }
+    if name_haystack.starts_with(&query_lower) {
+        return Some(320 - name_haystack.len() as i64);
+    }
+    if haystack.starts_with(&query_lower) {
+        return Some(280 - haystack.len() as i64);
+    }
+    if name_haystack.contains(&query_lower) {
+        return Some(220 - name_haystack.len() as i64);
+    }
+    if haystack.contains(&query_lower) {
+        return Some(180 - haystack.len() as i64);
+    }
+
+    let mut last_index = 0usize;
+    let mut gaps = 0i64;
+    for needle in query_lower.chars() {
+        let remainder = &haystack[last_index..];
+        let Some(index) = remainder.find(needle) else {
+            return None;
+        };
+        gaps += index as i64;
+        last_index += index + needle.len_utf8();
+    }
+    Some(120 - gaps - haystack.len() as i64)
+}
+
 fn append_path_env(name: &str, first_path: &Path) -> Result<std::ffi::OsString, String> {
     let mut paths = vec![first_path.to_path_buf()];
     if let Some(existing) = env::var_os(name) {
         paths.extend(env::split_paths(&existing));
     }
     env::join_paths(paths).map_err(|reason| format!("Failed to prepare {name}: {reason}"))
+}
+
+fn run_python_probe(script: &str) -> Result<Value, String> {
+    let runtime_src = resolve_runtime_src()?;
+    let python_executable = env::var("LOCAL_AGENT_PYTHON").unwrap_or_else(|_| "python".to_string());
+    let output = Command::new(python_executable)
+        .arg("-c")
+        .arg(script)
+        .env("PYTHONPATH", append_path_env("PYTHONPATH", &runtime_src)?)
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .output()
+        .map_err(|reason| format!("Failed to run Python capability probe: {reason}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("Python capability probe exited with {}", output.status)
+        } else {
+            stderr
+        });
+    }
+
+    serde_json::from_slice(&output.stdout)
+        .map_err(|reason| format!("Failed to parse Python capability probe: {reason}"))
 }
 
 #[tauri::command]
@@ -1424,6 +1768,171 @@ fn host_status(state: State<'_, RuntimeManager>) -> Result<HostStatus, String> {
         runtime_running: state.runtime_running(),
         repo_root: root,
         python_module: "local_agent_runtime.main",
+    })
+}
+
+#[tauri::command]
+fn computer_use_probe(state: State<'_, RuntimeManager>) -> Result<ComputerUseProbe, String> {
+    let checked_at = now_ms();
+    let platform = env::consts::OS.to_string();
+    let runtime_running = state.runtime_running();
+    let probe = run_python_probe(
+        r#"
+import importlib.util, json, os, platform
+
+def has_module(name):
+    try:
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+print(json.dumps({
+    "pillowImageGrab": has_module("PIL.ImageGrab"),
+    "pyautogui": has_module("pyautogui"),
+    "playwright": has_module("playwright.sync_api"),
+    "playwrightEnabled": os.environ.get("LOCAL_AGENT_COMPUTER_USE_PLAYWRIGHT", "").strip().lower() in {"1", "true", "yes", "on"},
+    "windows": platform.system().lower() == "windows",
+    "display": os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") or os.environ.get("SESSIONNAME") or "",
+}, ensure_ascii=False))
+"#,
+    );
+    let (image_grab, pyautogui, playwright, playwright_enabled, windows, display, probe_error) =
+        match probe {
+            Ok(value) => (
+                value
+                    .get("pillowImageGrab")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                value
+                    .get("pyautogui")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                value
+                    .get("playwright")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                value
+                    .get("playwrightEnabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                value
+                    .get("windows")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(cfg!(target_os = "windows")),
+                value
+                    .get("display")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                None,
+            ),
+            Err(reason) => (
+                false,
+                false,
+                false,
+                false,
+                cfg!(target_os = "windows"),
+                String::new(),
+                Some(reason),
+            ),
+        };
+    let desktop_fallback = windows;
+    let desktop_state = if pyautogui {
+        "ready"
+    } else if desktop_fallback {
+        "partial"
+    } else {
+        "guarded"
+    };
+    let status = if image_grab && (pyautogui || desktop_fallback) {
+        "ready"
+    } else {
+        "degraded"
+    };
+    let screenshot_detail = if image_grab {
+        "Pillow ImageGrab 可导入，截图 action 会在执行时尝试抓屏。".to_string()
+    } else if let Some(error) = &probe_error {
+        format!("Python 探测暂不可用；截图执行时仍会返回明确失败原因。{error}")
+    } else {
+        "Pillow ImageGrab 未探测到；截图执行时会返回明确失败原因。".to_string()
+    };
+    let desktop_detail = if pyautogui {
+        format!(
+            "pyautogui 可导入；坐标点击、键入、按键和滚动可走桌面 executor。display={}",
+            if display.is_empty() {
+                "unknown"
+            } else {
+                display.as_str()
+            }
+        )
+    } else if desktop_fallback {
+        "pyautogui 未探测到；Windows ctypes fallback 可处理坐标点击和滚动，键入/按键仍建议安装 pyautogui 或注入 executor。".to_string()
+    } else if let Some(error) = &probe_error {
+        format!("Python 探测暂不可用；桌面动作会在运行时尝试可用 executor。{error}")
+    } else {
+        "未探测到 pyautogui 或平台 fallback；需要安装 pyautogui 或注入自定义 executor。".to_string()
+    };
+    let browser_detail = if playwright && playwright_enabled {
+        "Playwright sync API 可导入，且 LOCAL_AGENT_COMPUTER_USE_PLAYWRIGHT 已开启；browser inspect/screenshot 和 selector click/type/scroll 可通过宿主浏览器 session executor 尝试执行。".to_string()
+    } else if playwright {
+        "Playwright sync API 可导入；设置 LOCAL_AGENT_COMPUTER_USE_PLAYWRIGHT=1 后可启用宿主浏览器 session executor。".to_string()
+    } else {
+        "Playwright page-like executor 协议已就绪；当前未探测到 Playwright sync API，宿主仍可注入真实浏览器会话对象。".to_string()
+    };
+
+    Ok(ComputerUseProbe {
+        status,
+        checked_at,
+        platform,
+        desktop_bridge: true,
+        runtime_running,
+        capabilities: vec![
+            ComputerUseProbeCapability {
+                id: "permission-audit",
+                label: "权限审计",
+                state: "ready",
+                detail: "computer_use 会先走运行时审批，并把申请与审批结果写入专用事件。"
+                    .to_string(),
+            },
+            ComputerUseProbeCapability {
+                id: "screen-observation",
+                label: "屏幕观察",
+                state: if image_grab { "ready" } else { "guarded" },
+                detail: screenshot_detail,
+            },
+            ComputerUseProbeCapability {
+                id: "desktop-actions",
+                label: "桌面动作",
+                state: desktop_state,
+                detail: desktop_detail,
+            },
+            ComputerUseProbeCapability {
+                id: "browser-dom",
+                label: "浏览器 DOM 控制",
+                state: if playwright && playwright_enabled {
+                    "ready"
+                } else if playwright {
+                    "guarded"
+                } else {
+                    "partial"
+                },
+                detail: browser_detail,
+            },
+            ComputerUseProbeCapability {
+                id: "clipboard",
+                label: "剪贴板",
+                state: "guarded",
+                detail: "系统级剪贴板读写仍需显式权限与宿主 API；前端会单独探测浏览器剪贴板写入。"
+                    .to_string(),
+            },
+            ComputerUseProbeCapability {
+                id: "system-key-combos",
+                label: "系统快捷键",
+                state: "guarded",
+                detail: "单键 press 已接入；系统级组合键继续保留在显式确认和后续宿主能力扩展下。"
+                    .to_string(),
+            },
+        ],
     })
 }
 
@@ -1516,6 +2025,89 @@ async fn session_list(
 }
 
 #[tauri::command]
+async fn session_update(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: SessionUpdatePayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "session.update".to_string(),
+            json!({
+                "sessionId": payload.session_id,
+                "title": payload.title,
+                "status": payload.status,
+            }),
+        )
+        .await
+}
+
+#[tauri::command]
+async fn session_delete(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: SessionIdPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "session.delete".to_string(),
+            json!({ "sessionId": payload.session_id }),
+        )
+        .await
+}
+
+#[tauri::command]
+async fn session_compact(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: SessionCompactPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "session.compact".to_string(),
+            json!({ "sessionId": payload.session_id, "maxTokens": payload.max_tokens }),
+        )
+        .await
+}
+
+#[tauri::command]
+async fn session_branch(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: SessionBranchPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "session.branch".to_string(),
+            json!({
+                "sessionId": payload.session_id,
+                "messageId": payload.message_id,
+                "title": payload.title,
+            }),
+        )
+        .await
+}
+
+#[tauri::command]
+async fn session_truncate(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: SessionMessageTargetPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "session.truncate".to_string(),
+            json!({ "sessionId": payload.session_id, "messageId": payload.message_id }),
+        )
+        .await
+}
+
+#[tauri::command]
 async fn message_send(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -1531,6 +2123,7 @@ async fn message_send(
                 "sessionId": payload.session_id,
                 "content": payload.content,
                 "attachments": payload.attachments,
+                "fileReferences": payload.file_references.unwrap_or_default(),
                 "taskId": payload.task_id,
                 "mode": payload.mode,
                 "newTask": payload.new_task,
@@ -1552,6 +2145,21 @@ async fn message_list(
             app_handle,
             "message.list".to_string(),
             json!({ "sessionId": payload.session_id, "limit": payload.limit }),
+        )
+        .await
+}
+
+#[tauri::command]
+async fn message_delete(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: SessionMessageTargetPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "message.delete".to_string(),
+            json!({ "sessionId": payload.session_id, "messageId": payload.message_id }),
         )
         .await
 }
@@ -1608,6 +2216,93 @@ fn workspace_file_list(payload: WorkspaceFileListPayload) -> Result<Value, Strin
         "path": relative_path_string(&root, &target),
         "entries": entries,
         "truncated": truncated,
+    }))
+}
+
+#[tauri::command]
+fn workspace_file_search(payload: WorkspaceFileSearchPayload) -> Result<Value, String> {
+    let (root, _) = resolve_workspace_path(&payload.workspace_root, None)?;
+    let query = payload.query.unwrap_or_default().trim().to_string();
+    let limit = payload.max_entries.unwrap_or(24).clamp(1, 80);
+    let scan_limit = 20_000usize;
+    let mut scanned = 0usize;
+    let mut truncated = false;
+    let mut stack = vec![root.clone()];
+    let mut candidates: Vec<WorkspaceFileSearchCandidate> = Vec::new();
+
+    while let Some(directory) = stack.pop() {
+        let read_dir = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry_result in read_dir {
+            if scanned >= scan_limit {
+                truncated = true;
+                break;
+            }
+            let Ok(entry) = entry_result else {
+                continue;
+            };
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                if !should_skip_workspace_search_dir(&name) {
+                    stack.push(entry.path());
+                }
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+
+            scanned += 1;
+            let path = relative_path_string(&root, &entry.path());
+            let Some(score) = workspace_search_score(&path, &name, &query) else {
+                continue;
+            };
+            let metadata = entry
+                .metadata()
+                .map_err(|reason| format!("Failed to read file metadata: {reason}"))?;
+            candidates.push(WorkspaceFileSearchCandidate {
+                score,
+                entry: WorkspaceFileEntryView {
+                    name,
+                    path,
+                    kind: "file".to_string(),
+                    size: Some(metadata.len()),
+                    modified_at: file_modified_at_ms(&metadata),
+                },
+            });
+        }
+        if scanned >= scan_limit {
+            break;
+        }
+    }
+
+    candidates.sort_by(|left, right| {
+        right.score.cmp(&left.score).then_with(|| {
+            left.entry
+                .path
+                .to_lowercase()
+                .cmp(&right.entry.path.to_lowercase())
+        })
+    });
+    if candidates.len() > limit {
+        truncated = true;
+        candidates.truncate(limit);
+    }
+
+    Ok(json!({
+        "rootPath": root.display().to_string(),
+        "query": query,
+        "entries": candidates.into_iter().map(|candidate| candidate.entry).collect::<Vec<_>>(),
+        "truncated": truncated,
+        "scanned": scanned,
     }))
 }
 
@@ -1716,6 +2411,21 @@ async fn task_resume(
         .call_async(
             app_handle,
             "task.resume".to_string(),
+            json!({ "taskId": payload.task_id }),
+        )
+        .await
+}
+
+#[tauri::command]
+async fn task_revert_changes(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: TaskRevertChangesPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "task.revertChanges".to_string(),
             json!({ "taskId": payload.task_id }),
         )
         .await
@@ -1992,6 +2702,24 @@ async fn approval_submit(
 }
 
 #[tauri::command]
+async fn approval_allow_always(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: ApprovalAllowAlwaysPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "approval.allowAlways".to_string(),
+            json!({
+                "approvalId": payload.approval_id,
+                "scope": payload.scope,
+            }),
+        )
+        .await
+}
+
+#[tauri::command]
 async fn config_get(
     app_handle: AppHandle,
     state: State<'_, RuntimeManager>,
@@ -2009,6 +2737,23 @@ async fn config_update(
 ) -> Result<Value, String> {
     state
         .call_async(app_handle, "config.update".to_string(), payload)
+        .await
+}
+
+#[tauri::command]
+async fn permission_rule_clear(
+    app_handle: AppHandle,
+    state: State<'_, RuntimeManager>,
+    payload: PermissionRuleClearPayload,
+) -> Result<Value, String> {
+    state
+        .call_async(
+            app_handle,
+            "permission.rule.clear".to_string(),
+            json!({
+                "capability": payload.capability,
+            }),
+        )
         .await
 }
 
@@ -2186,6 +2931,18 @@ fn open_app_path(app_handle: AppHandle, kind: String) -> Result<Value, String> {
         _ => return Err(format!("Unsupported app path kind: {kind}")),
     };
 
+    open_path_in_file_manager(&target)?;
+    Ok(json!({ "path": target.display().to_string() }))
+}
+
+#[tauri::command]
+fn open_path(payload: OpenPathPayload) -> Result<Value, String> {
+    let target = PathBuf::from(payload.path.trim())
+        .canonicalize()
+        .map_err(|reason| format!("Failed to resolve path: {reason}"))?;
+    if !target.exists() {
+        return Err("Path does not exist".to_string());
+    }
     open_path_in_file_manager(&target)?;
     Ok(json!({ "path": target.display().to_string() }))
 }
@@ -2559,15 +3316,23 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
         .manage(TerminalManager::default())
         .invoke_handler(tauri::generate_handler![
             host_status,
+            computer_use_probe,
             workspace_open,
             workspace_focus_update,
             workspace_memory_clear,
             workspace_memory_init,
             session_create,
             session_list,
+            session_update,
+            session_delete,
+            session_compact,
+            session_branch,
+            session_truncate,
             message_send,
             message_list,
+            message_delete,
             workspace_file_list,
+            workspace_file_search,
             workspace_file_read,
             terminal_start,
             terminal_write,
@@ -2582,6 +3347,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             task_cancel,
             task_pause,
             task_resume,
+            task_revert_changes,
             task_list,
             worktree_get,
             worktree_get_by_task,
@@ -2597,8 +3363,10 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             schedule_run_now,
             schedule_logs,
             approval_submit,
+            approval_allow_always,
             config_get,
             config_update,
+            permission_rule_clear,
             provider_test,
             command_log_get,
             command_log_list,
@@ -2609,6 +3377,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             errors_list,
             metrics_list,
             open_app_path,
+            open_path,
             skill_list,
             skill_create,
             skill_update,

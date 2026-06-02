@@ -25,6 +25,7 @@ import type {
   SettingsGeneralConfig,
   SettingsIMConfig,
   SettingsComputerUseConfig,
+  SettingsPermissionRule,
 } from "./settings/SettingsWorkspace";
 import type {
   ScheduledTask,
@@ -126,9 +127,14 @@ export interface WorkspaceRouterProps {
   workspaceName: string;
   config: RuntimeConfig | null;
   handleApprovalSubmit: (approvalId: string, decision: "approved" | "rejected") => Promise<void>;
+  handleApprovalAllowAlways: (approvalId: string) => Promise<void>;
   handleLoadPatchDiff: (patchId: string) => Promise<void>;
   handleCopyRuntimeText: (label: string, text: string) => Promise<void>;
   handleQuoteMessage: (text: string) => void;
+  handleRevertTaskChanges: (taskId: string) => Promise<void>;
+  handleContinueFromMessage: (message: any) => Promise<void>;
+  handleBranchFromMessage: (message: any) => Promise<void>;
+  handleDeleteMessage: (message: any) => Promise<void>;
   handleRefreshCommandJob: (commandId: string) => Promise<void>;
   handleStopCommandJob: (commandId: string) => Promise<void>;
   handleRefreshTask: () => Promise<void>;
@@ -214,11 +220,14 @@ export interface WorkspaceRouterProps {
   providerTestBusy: boolean;
   providerFeedback: SettingsProviderFeedback | undefined;
   handlePermissionModeChange: (mode: string) => void;
+  settingsPermissionRules: SettingsPermissionRule[];
+  permissionRuleBusyId: string | null;
+  handleClearPermissionRule: (capability: string) => Promise<void>;
   setIMSettings: (settings: SettingsIMConfig) => void;
   imSettings: SettingsIMConfig;
   setComputerUseSettings: (settings: SettingsComputerUseConfig) => void;
   computerUseSettings: SettingsComputerUseConfig;
-  handleRecheckComputerUse: () => void;
+  handleRecheckComputerUse: () => void | Promise<void>;
   workspaceFocusBusy: boolean;
   handleSaveWorkspaceFocus: ((focus: string) => Promise<void>) | undefined;
   workspaceMemoryBusy: boolean;
@@ -273,13 +282,16 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
           subtitle: provider.models?.[0] && provider.name !== provider.models[0] ? provider.name : undefined,
         }))}
         selectedModelId={props.activeProviderProfileId}
+        branchLabel={props.worktreeStatus?.branch ?? props.task?.routing?.activeWorktree?.branchName ?? null}
+        worktreeModeLabel={props.task?.routing?.activeWorktree ? "任务工作树" : "当前工作区"}
+        permissionLabel={approvalModeToSettingsMode(props.config?.policy.approvalMode)}
         workspaceBusy={props.workspaceBusy}
         sessionBusy={props.sessionBusy}
         onSelectModel={props.selectProviderProfile}
         onSessionTitleChange={props.setSessionTitle}
         onWorkspacePathChange={props.setWorkspacePath}
-        onOpenWorkspace={props.handleOpenWorkspace}
         onCreateSession={props.handleCreateSession}
+        onOpenSettings={() => props.onOpenSystemTab("settings")}
       />
     );
   }
@@ -333,6 +345,7 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
         }}
         onApprove={(approvalId: string) => props.handleApprovalSubmit(approvalId, "approved")}
         onApproveForSession={(approvalId: string) => props.handleApprovalSubmit(approvalId, "approved")}
+        onApproveAlways={props.handleApprovalAllowAlways}
         onReject={(approvalId: string) => props.handleApprovalSubmit(approvalId, "rejected")}
         onLoadPatch={props.handleLoadPatchDiff}
         onCopyPatchPath={(_patchId: string, path: string) => {
@@ -340,6 +353,10 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
         }}
         onCopyRuntimeText={props.handleCopyRuntimeText}
         onQuoteMessage={props.handleQuoteMessage}
+        onRevertTaskChanges={props.handleRevertTaskChanges}
+        onContinueFromMessage={props.handleContinueFromMessage}
+        onBranchFromMessage={props.handleBranchFromMessage}
+        onDeleteMessage={props.handleDeleteMessage}
         onRefreshCommandJob={props.handleRefreshCommandJob}
         onStopCommandJob={props.handleStopCommandJob}
         onRefreshTask={props.handleRefreshTask}
@@ -365,6 +382,7 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
                 : null
         }
         busyId={props.approvalBusyId ?? props.patchBusyId ?? props.commandJobBusyId ?? (props.traceBusy ? "trace" : null)}
+        patchBusyId={props.patchBusyId}
       />
     );
   }
@@ -462,6 +480,9 @@ export function WorkspaceRouter(props: WorkspaceRouterProps) {
       providerFeedback={props.providerFeedback}
       permissionMode={approvalModeToSettingsMode(props.config?.policy.approvalMode)}
       onPermissionModeChange={props.handlePermissionModeChange}
+      permissionRules={props.settingsPermissionRules}
+      permissionRuleBusyId={props.permissionRuleBusyId}
+      onClearPermissionRule={props.handleClearPermissionRule}
       agentBehavior={props.settingsAgentBehavior}
       onAgentBehaviorChange={props.handleAgentBehaviorChange}
       general={props.generalSettings}

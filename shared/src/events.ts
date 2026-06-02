@@ -38,6 +38,7 @@ export type AgentEventType =
   | "provider.request"
   | "provider.response"
   | "assistant.token"
+  | "assistant_progress"
   | "assistant.message.completed"
   | "content_start"
   | "content_delta"
@@ -63,11 +64,15 @@ export type AgentEventType =
   | "message.completed"
   | "message.failed"
   | "tool.started"
+  | "tool.progress"
+  | "tool.output"
   | "tool.completed"
   | "tool.failed"
+  | "tool.blocked"
   | "command.started"
   | "command.output"
   | "command.completed"
+  | "command.cancelled"
   | "command.failed"
   | "patch.proposed"
   | "approval.requested"
@@ -81,6 +86,7 @@ export interface AgentEventEnvelope<TPayload = unknown> {
   taskId: Identifier;
   type: AgentEventType;
   ts: number;
+  seq?: number;
   payload: TPayload;
   visibility?: EventVisibility;
 }
@@ -129,8 +135,14 @@ export interface TaskContextPreviewPayload {
       stablePrefixTokens?: number;
     };
     maxContextTokens?: number;
+    includedSections?: string[];
     droppedSections?: string[];
     trimmedSections?: string[];
+    promptLayers?: Array<{
+      name?: string;
+      tokenEstimate?: number;
+      [key: string]: unknown;
+    }>;
   };
   taskFocus?: {
     taskId?: string;
@@ -166,29 +178,107 @@ export interface ContentStartPayload {
   messageId?: Identifier;
   toolName?: string;
   toolUseId?: Identifier;
+  target?: string;
+  inputSummary?: string;
   parentToolUseId?: Identifier;
+  toolGroupId?: Identifier;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: Identifier;
+  toolOperationLabel?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
 }
 
 export interface ContentDeltaPayload {
   messageId?: Identifier;
   text?: string;
   toolInput?: string;
+  toolOutput?: string;
+  outputStream?: "stdout" | "stderr" | "activity" | string;
   toolUseId?: Identifier;
   toolName?: string;
+  target?: string;
+  inputSummary?: string;
   parentToolUseId?: Identifier;
+  toolGroupId?: Identifier;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: Identifier;
+  toolOperationLabel?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
   step?: number;
 }
 
 export interface ThinkingPayload {
   text: string;
   messageId?: Identifier;
+  source?: "reasoning_summary" | "status" | string;
+}
+
+export interface AssistantProgressPayload {
+  text?: string;
+  summary?: string;
+  message?: string;
+  title?: string;
+  phase?: string;
+  status?: string;
+  step?: number | string;
+  model?: string;
+  source?: string;
+  operation?: string;
+  stream?: string;
+  pressure?: string;
+  consumedSteps?: number;
+  remainingSteps?: number;
+  maxSteps?: number;
+  recommendedAction?: string;
+  toolName?: string;
+  toolUseId?: Identifier;
+  target?: string;
+  inputSummary?: string;
+  resultSummary?: string;
+  durationMs?: number;
+  toolGroupId?: Identifier;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: Identifier;
+  toolOperationLabel?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
+  reason?: string;
+  parentToolUseId?: Identifier;
+  isError?: boolean;
+  resultPreview?: Array<{ label: string; value: string }>;
 }
 
 export interface ToolUseCompletePayload {
   toolName: string;
   toolUseId: Identifier;
   input: unknown;
+  target?: string;
+  inputSummary?: string;
   parentToolUseId?: Identifier;
+  toolGroupId?: Identifier;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: Identifier;
+  toolOperationLabel?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
 }
 
 export interface ToolResultPayload {
@@ -197,6 +287,21 @@ export interface ToolResultPayload {
   content: unknown;
   isError: boolean;
   parentToolUseId?: Identifier;
+  target?: string;
+  inputSummary?: string;
+  resultSummary?: string;
+  resultPreview?: Array<{ label: string; value: string }>;
+  durationMs?: number;
+  toolGroupId?: Identifier;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: Identifier;
+  toolOperationLabel?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
 }
 
 export interface PermissionRequestPayload {
@@ -205,6 +310,30 @@ export interface PermissionRequestPayload {
   toolUseId?: Identifier;
   input: unknown;
   description?: string;
+  preview?: Array<{ label: string; value: string }>;
+  filesChanged?: number;
+  changedPaths?: string[];
+  diffText?: string;
+  resolved?: boolean;
+  decision?: "approved" | "rejected" | string;
+  decidedBy?: string;
+  decidedAt?: number;
+}
+
+export interface ComputerUsePermissionPayload {
+  approvalId: Identifier;
+  requestId?: Identifier;
+  app?: string;
+  action?: string;
+  permission?: string;
+  summary?: string;
+  details?: string;
+  status?: string;
+  resolved?: boolean;
+  decision?: "approved" | "rejected" | string;
+  decidedBy?: string;
+  decidedAt?: number;
+  request?: Record<string, unknown>;
 }
 
 export interface ChatMessageCompletePayload {
@@ -231,24 +360,107 @@ export interface ProviderTracePayload {
 
 export interface ToolLifecyclePayload {
   toolCallId: Identifier;
+  parentToolUseId?: Identifier;
+  toolGroupId?: Identifier;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: Identifier;
+  toolOperationLabel?: string;
   toolName: string;
   arguments?: Record<string, unknown>;
+  target?: string;
+  inputSummary?: string;
+  result?: unknown;
+  resultSummary?: string;
+  resultPreview?: Array<{ label: string; value: string }>;
+  resultPreviewStreamed?: boolean;
+  durationMs?: number;
+  reason?: string;
+  error?: unknown;
+  failureKind?: string;
+  recoveryHint?: string;
+  recoveryDecision?: unknown;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
+}
+
+export interface ToolOutputPayload {
+  toolCallId?: Identifier;
+  toolUseId?: Identifier;
+  parentToolUseId?: Identifier;
+  toolGroupId?: Identifier;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: Identifier;
+  toolOperationLabel?: string;
+  toolName?: string;
+  target?: string;
+  inputSummary?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
+  chunk?: string;
+  delta?: string;
+  toolOutput?: string;
+  message?: string;
+  summary?: string;
+  text?: string;
+  outputStream?: "stdout" | "stderr" | "activity" | "result_preview" | string;
+  stream?: "stdout" | "stderr" | "activity" | "result_preview" | string;
 }
 
 export interface CommandOutputPayload {
   commandId: Identifier;
+  toolUseId?: Identifier;
+  toolName?: string;
+  target?: string;
+  inputSummary?: string;
+  parentToolUseId?: Identifier;
+  toolGroupId?: Identifier;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: Identifier;
+  toolOperationLabel?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
   stream: "stdout" | "stderr";
   chunk: string;
 }
 
 export interface CommandLifecyclePayload {
   commandId: Identifier;
+  toolUseId?: Identifier;
+  toolName?: string;
+  target?: string;
+  inputSummary?: string;
+  parentToolUseId?: Identifier;
+  toolGroupId?: Identifier;
+  toolIndex?: number;
+  toolTotal?: number;
+  toolOperationId?: Identifier;
+  toolOperationLabel?: string;
+  toolCategory?: string;
+  toolPhaseId?: string;
+  toolPhaseLabel?: string;
+  toolSemanticParentId?: string;
+  toolSemanticParentLabel?: string;
   command?: string;
   cwd?: string;
   shell?: string;
-  status?: "running" | "completed" | "failed" | "timeout" | "killed";
+  status?: "running" | "completed" | "failed" | "timeout" | "killed" | "cancelled";
   exitCode?: number;
   durationMs?: number;
+  stdoutPath?: string;
+  stderrPath?: string;
+  background?: boolean;
   summary?: string;
   error?: unknown;
 }
@@ -257,6 +469,8 @@ export interface PatchProposedPayload {
   patchId: Identifier;
   summary: string;
   filesChanged: number;
+  changedPaths?: string[];
+  diffText?: string;
 }
 
 export interface ApprovalRequestedPayload {
@@ -264,12 +478,22 @@ export interface ApprovalRequestedPayload {
   taskId: Identifier;
   kind: ApprovalKind;
   request: Record<string, unknown>;
+  preview?: Array<{ label: string; value: string }>;
   patchId?: Identifier;
+  filesChanged?: number;
+  changedPaths?: string[];
+  diffText?: string;
 }
 
 export interface ApprovalResolvedPayload {
   approvalId: Identifier;
   taskId: Identifier;
+  kind?: ApprovalKind;
+  request?: Record<string, unknown>;
+  preview?: Array<{ label: string; value: string }>;
+  filesChanged?: number;
+  changedPaths?: string[];
+  diffText?: string;
   decision: "approved" | "rejected";
   decidedBy?: string;
   decidedAt?: number;

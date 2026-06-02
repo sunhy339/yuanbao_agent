@@ -125,6 +125,59 @@ def test_openai_compatible_request_payload(monkeypatch: pytest.MonkeyPatch) -> N
     }
 
 
+def test_openai_chat_serializes_image_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "LOCAL_AGENT_PROVIDER_MODEL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, b'{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(
+        messages=[
+            {
+                "role": "user",
+                "content": "inspect this",
+                "imageAttachments": [
+                    {"source": "base64", "mimeType": "image/png", "data": "abc123"},
+                ],
+            }
+        ]
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "inspect this"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+            ],
+        }
+    ]
+
+
 def test_openai_compatible_http_error_with_html_body_is_reported_before_json_decode() -> None:
     def fake_post(**_kwargs: Any) -> tuple[int, bytes]:
         return 502, "<html><title>网站请求超时</title></html>".encode("utf-8")
@@ -526,6 +579,68 @@ def test_openai_responses_api_format_posts_responses_payload(monkeypatch: pytest
     assert payload["input"] == [{"role": "user", "content": "hi"}]
 
 
+def test_openai_responses_serializes_image_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "LOCAL_AGENT_PROVIDER_MODEL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, json.dumps(
+            {
+                "id": "resp_1",
+                "model": "test-responses",
+                "status": "completed",
+                "output_text": "ok",
+                "output": [],
+            }
+        ).encode("utf-8")
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(
+        messages=[
+            {
+                "role": "user",
+                "content": "inspect this",
+                "imageAttachments": [
+                    {"source": "base64", "mimeType": "image/jpeg", "data": "jpgdata"},
+                ],
+            }
+        ]
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["input"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "inspect this"},
+                {"type": "input_image", "image_url": "data:image/jpeg;base64,jpgdata"},
+            ],
+        }
+    ]
+
+
 def test_openai_responses_tool_call_response_is_normalized() -> None:
     calls: list[dict[str, Any]] = []
 
@@ -540,6 +655,7 @@ def test_openai_responses_tool_call_response_is_normalized() -> None:
                     {
                         "type": "function_call",
                         "call_id": "call_1",
+                        "parentToolUseId": "call_parent",
                         "name": "workspace_read",
                         "arguments": "{\"path\":\"README.md\"}",
                     }
@@ -582,6 +698,7 @@ def test_openai_responses_tool_call_response_is_normalized() -> None:
             "type": "function",
             "name": "workspace.read",
             "arguments": {"path": "README.md"},
+            "parentToolUseId": "call_parent",
         }
     ]
 
@@ -689,6 +806,76 @@ def test_anthropic_messages_api_format_posts_messages_payload(monkeypatch: pytes
     assert payload["max_tokens"] == 777
     assert payload["system"] == "be brief"
     assert payload["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_anthropic_messages_serializes_image_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "LOCAL_AGENT_PROVIDER_MODEL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(**kwargs: Any) -> tuple[int, bytes]:
+        calls.append(kwargs)
+        return 200, json.dumps(
+            {
+                "id": "msg_1",
+                "model": "claude-test",
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "ok"}],
+            }
+        ).encode("utf-8")
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-ant",
+                "baseUrl": "https://api.anthropic.test",
+                "apiFormat": "anthropic-messages",
+                "model": "claude-test",
+                "maxTokens": 777,
+            }
+        },
+        http_post=fake_post,
+    )
+
+    adapter.chat(
+        messages=[
+            {
+                "role": "user",
+                "content": "inspect this",
+                "imageAttachments": [
+                    {"source": "base64", "mimeType": "image/webp", "data": "webpdata"},
+                ],
+            }
+        ]
+    )
+
+    payload = json.loads(calls[0]["body"].decode("utf-8"))
+    assert payload["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "inspect this"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/webp",
+                        "data": "webpdata",
+                    },
+                },
+            ],
+        }
+    ]
 
 
 def test_anthropic_messages_drops_orphan_tool_messages_from_request() -> None:
@@ -960,6 +1147,7 @@ def test_tool_calls_response_is_normalized() -> None:
                                 {
                                     "id": "call_1",
                                     "type": "function",
+                                    "parentToolUseId": "call_parent",
                                     "function": {
                                         "name": "search_files",
                                         "arguments": "{\"query\":\"needle\",\"max_results\":3}",
@@ -990,6 +1178,7 @@ def test_tool_calls_response_is_normalized() -> None:
                     "type": "function",
                     "name": "search_files",
                     "arguments": {"query": "needle", "max_results": 3},
+                    "parentToolUseId": "call_parent",
                 }
             ],
         },
@@ -1153,6 +1342,63 @@ def test_openai_responses_streams_when_enabled() -> None:
     assert events[-1]["response"]["message"]["content"] == "Hello"
 
 
+def test_openai_responses_stream_routes_reasoning_summary_to_thinking_delta() -> None:
+    def fail_post(**_kwargs: Any) -> tuple[int, bytes]:
+        raise AssertionError("non-streaming transport should not be used")
+
+    def fake_stream(**_kwargs: Any) -> tuple[int, Any]:
+        return 200, iter(
+            [
+                b'event: response.created\n',
+                b'data: {"type":"response.created","response":{"id":"resp_1","model":"test-responses","status":"in_progress","output":[]}}\n\n',
+                b'event: response.reasoning_summary_text.delta\n',
+                b'data: {"type":"response.reasoning_summary_text.delta","delta":"Checking "}\n\n',
+                b'event: response.reasoning_summary_text.delta\n',
+                b'data: {"type":"response.reasoning_summary_text.delta","delta":"files."}\n\n',
+                b'event: response.output_text.delta\n',
+                b'data: {"type":"response.output_text.delta","delta":"Done"}\n\n',
+                b'event: response.completed\n',
+                b'data: {"type":"response.completed","response":{"id":"resp_1","model":"test-responses","status":"completed","output_text":"Done","output":[]}}\n\n',
+            ]
+        )
+
+    adapter = ProviderAdapter(
+        config={
+            "provider": {
+                "mode": "openai-compatible",
+                "apiKey": "sk-test",
+                "baseUrl": "https://llm.example.test/v1",
+                "apiFormat": "openai-responses",
+                "model": "test-chat",
+            }
+        },
+        http_post=fail_post,
+        http_stream=fake_stream,
+    )
+    context = _context()
+    context["config"] = {
+        "provider": {
+            "mode": "openai-compatible",
+            "apiFormat": "openai-responses",
+            "streamingEnabled": True,
+            "apiKey": "sk-test",
+            "baseUrl": "https://llm.example.test/v1",
+            "model": "test-chat",
+        }
+    }
+
+    events = list(adapter.chat_stream(messages=[{"role": "user", "content": "hi"}], context=context))
+
+    assert [event for event in events if event["type"] == "thinking_delta"] == [
+        {"type": "thinking_delta", "delta": "Checking ", "source": "reasoning_summary"},
+        {"type": "thinking_delta", "delta": "files.", "source": "reasoning_summary"},
+    ]
+    assert [event for event in events if event["type"] == "content_delta"] == [
+        {"type": "content_delta", "delta": "Done"},
+    ]
+    assert events[-1]["response"]["message"]["content"] == "Done"
+
+
 def test_openai_responses_stream_merges_function_call_parts() -> None:
     stream_calls: list[dict[str, Any]] = []
 
@@ -1166,7 +1412,7 @@ def test_openai_responses_stream_merges_function_call_parts() -> None:
                 b'event: response.created\n',
                 b'data: {"type":"response.created","response":{"id":"resp_tool","model":"test-responses","status":"in_progress","output":[]}}\n\n',
                 b'event: response.output_item.added\n',
-                b'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"workspace_read","arguments":""}}\n\n',
+                b'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","parentToolUseId":"call_parent","name":"workspace_read","arguments":""}}\n\n',
                 b'event: response.function_call_arguments.delta\n',
                 b'data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\\"path\\":"}\n\n',
                 b'event: response.function_call_arguments.delta\n',
@@ -1221,6 +1467,35 @@ def test_openai_responses_stream_merges_function_call_parts() -> None:
     )
 
     assert len(stream_calls) == 1
+    assert [event for event in events if event["type"] == "tool_call_delta"] == [
+        {
+            "type": "tool_call_delta",
+            "index": 0,
+            "id": "call_1",
+            "tool_type": "function",
+            "name": "workspace.read",
+            "parentToolUseId": "call_parent",
+            "arguments_delta": "",
+        },
+        {
+            "type": "tool_call_delta",
+            "index": 0,
+            "id": "call_1",
+            "tool_type": "function",
+            "name": "workspace.read",
+            "parentToolUseId": "call_parent",
+            "arguments_delta": "{\"path\":",
+        },
+        {
+            "type": "tool_call_delta",
+            "index": 0,
+            "id": "call_1",
+            "tool_type": "function",
+            "name": "workspace.read",
+            "parentToolUseId": "call_parent",
+            "arguments_delta": "\"README.md\"}",
+        },
+    ]
     assert events[-1]["type"] == "final"
     assert events[-1]["response"]["message"]["tool_calls"] == [
         {
@@ -1228,6 +1503,7 @@ def test_openai_responses_stream_merges_function_call_parts() -> None:
             "type": "function",
             "name": "workspace.read",
             "arguments": {"path": "README.md"},
+            "parentToolUseId": "call_parent",
         }
     ]
 

@@ -11,7 +11,7 @@ from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools.registry import ToolRegistry
 
 
-def _make_orchestrator(tmp_path: Any) -> tuple[Orchestrator, SQLiteStore]:
+def _make_orchestrator(tmp_path: Any) -> tuple[Orchestrator, SQLiteStore, list[dict[str, Any]]]:
     event_bus = EventBus()
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     memory_store = MemoryStore(store)
@@ -26,11 +26,13 @@ def _make_orchestrator(tmp_path: Any) -> tuple[Orchestrator, SQLiteStore]:
         provider=ProviderAdapter(),
         memory_manager=memory_manager,
     )
-    return orchestrator, store
+    events: list[dict[str, Any]] = []
+    event_bus.subscribe(lambda event: events.append(event_bus.as_payload(event)))
+    return orchestrator, store, events
 
 
 def test_completed_task_extracts_verified_capability_and_convention_memories(tmp_path: Any) -> None:
-    orchestrator, store = _make_orchestrator(tmp_path)
+    orchestrator, store, events = _make_orchestrator(tmp_path)
     workspace = store.upsert_workspace(str(tmp_path / "workspace"))
     session = store.create_session(workspace["id"], "Memory extraction")
     task = store.create_task(
@@ -57,6 +59,12 @@ def test_completed_task_extracts_verified_capability_and_convention_memories(tmp
     assert "task_learning" in categories
     assert "verified_capability" in categories
     assert "project_convention" in categories
+    memory_events = [event for event in events if event["type"] == "memory_event"]
+    assert memory_events
+    event_categories = {event["payload"]["category"] for event in memory_events}
+    assert {"task_learning", "verified_capability", "project_convention"}.issubset(event_categories)
+    assert all(event["payload"]["memoryId"] for event in memory_events)
+    assert all(event["payload"]["summary"] for event in memory_events)
 
     verified = next(entry for entry in entries if entry.metadata.get("category") == "verified_capability")
     assert "Verified outcome: Implement backend verification flow" in verified.content
@@ -68,7 +76,7 @@ def test_completed_task_extracts_verified_capability_and_convention_memories(tmp
 
 
 def test_task_result_extracts_runtime_invariant_and_recovery_pattern_memories(tmp_path: Any) -> None:
-    orchestrator, store = _make_orchestrator(tmp_path)
+    orchestrator, store, events = _make_orchestrator(tmp_path)
     workspace = store.upsert_workspace(str(tmp_path / "workspace"))
     session = store.create_session(workspace["id"], "Invariant extraction")
 
@@ -108,10 +116,17 @@ def test_task_result_extracts_runtime_invariant_and_recovery_pattern_memories(tm
     assert "read-only" in invariant.content.lower()
     assert "retry" in recovery.content.lower()
     assert "revalidate" in recovery.content.lower()
+    event_categories = {
+        event["payload"]["category"]
+        for event in events
+        if event["type"] == "memory_event"
+    }
+    assert "runtime_invariant" in event_categories
+    assert "failure_recovery_pattern" in event_categories
 
 
 def test_task_result_does_not_double_prefix_structured_memory_labels(tmp_path: Any) -> None:
-    orchestrator, store = _make_orchestrator(tmp_path)
+    orchestrator, store, _events = _make_orchestrator(tmp_path)
     workspace = store.upsert_workspace(str(tmp_path / "workspace"))
     session = store.create_session(workspace["id"], "Prefix normalization")
     task = store.create_task(

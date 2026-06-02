@@ -21,6 +21,8 @@ class TestScratchpadWriteTool:
         assert result["status"] == "ok"
         assert result["key"] == "hypothesis"
         assert result["id"].startswith("sp")
+        assert [step["label"] for step in result["steps"]] == ["prepare", "scope", "store"]
+        assert result["steps"][0]["summary"] == "scratchpad write hypothesis"
 
     def test_write_upsert(self) -> None:
         self.tool({"key": "plan", "value": "v1", "sessionId": "s1"})
@@ -53,10 +55,13 @@ class TestScratchpadReadTool:
         result = self.read_tool({"key": "hypothesis", "sessionId": "s1"})
         assert result["status"] == "ok"
         assert result["value"] == "maybe a bug"
+        assert [step["label"] for step in result["steps"]] == ["prepare", "scope", "lookup"]
+        assert result["steps"][-1]["summary"].startswith("hypothesis")
 
     def test_read_not_found(self) -> None:
         result = self.read_tool({"key": "nonexistent", "sessionId": "s1"})
         assert result["status"] == "not_found"
+        assert result["steps"][-1]["summary"] == "not found"
 
     def test_read_empty_key_raises(self) -> None:
         import pytest

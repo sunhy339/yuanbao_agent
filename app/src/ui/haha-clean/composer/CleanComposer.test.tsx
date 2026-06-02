@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CleanComposer, type CleanComposerProps } from "./CleanComposer";
@@ -14,6 +14,7 @@ function renderComposer(overrides: Partial<CleanComposerProps> = {}) {
     onSubmitPrompt: vi.fn(),
     onPermissionModeChange: vi.fn(),
     onAttachmentsChange: vi.fn(),
+    onAttachmentError: vi.fn(),
   };
 
   render(
@@ -28,6 +29,7 @@ function renderComposer(overrides: Partial<CleanComposerProps> = {}) {
       permissionMode="ask"
       onPermissionModeChange={handlers.onPermissionModeChange}
       onAttachmentsChange={handlers.onAttachmentsChange}
+      onAttachmentError={handlers.onAttachmentError}
       contextLabel="上下文 25%"
       contextPreview={{
         projectFocus: "Keep the UI close to haha-cc.",
@@ -37,6 +39,18 @@ function renderComposer(overrides: Partial<CleanComposerProps> = {}) {
           maxContextTokens: 10000,
           messageTokens: 1200,
           toolSchemaTokens: 600,
+          stablePrefixTokens: 1800,
+          promptLayers: [
+            { name: "role", tokenEstimate: 120 },
+            { name: "runtime_safety", tokenEstimate: 240 },
+          ],
+          includedSections: [
+            "system_prompt",
+            "project_focus",
+            "referenced_file:app/src/App.tsx",
+            "recent_conversation",
+            "user_message",
+          ],
           trimmedSections: ["旧工具日志"],
         },
         taskFocus: {
@@ -93,13 +107,24 @@ describe("CleanComposer", () => {
 
     await user.click(screen.getByRole("button", { name: "上下文 25%", expanded: false }));
     const contextPanel = screen.getByLabelText("上下文详情");
-    expect(contextPanel).toHaveTextContent("预算");
-    expect(contextPanel).toHaveTextContent("2,500 / 10,000");
-    expect(contextPanel).toHaveTextContent("可用工具");
+    expect(contextPanel).toHaveTextContent("25%");
+    expect(contextPanel).toHaveTextContent("已使用");
+    expect(contextPanel).toHaveTextContent("2,500");
+    expect(contextPanel).toHaveTextContent("剩余");
+    expect(contextPanel).toHaveTextContent("7,500");
+    expect(contextPanel).toHaveTextContent("窗口");
+    expect(contextPanel).toHaveTextContent("10,000");
+    const tokenBars = within(contextPanel).getByLabelText("上下文 token 使用");
+    expect(tokenBars).toHaveTextContent("Input tokens");
+    expect(tokenBars).toHaveTextContent("Cache read");
+    expect(tokenBars).toHaveTextContent("Output tokens");
+    expect(within(contextPanel).getByLabelText("纳入上下文")).toHaveTextContent("引用文件");
+    expect(within(contextPanel).getByLabelText("系统提示层")).toHaveTextContent("runtime_safety");
     expect(contextPanel).toHaveTextContent("补齐 composer 面板");
     await user.click(within(contextPanel).getByRole("button", { name: /复制上下文/ }));
     expect(copyText).toHaveBeenCalledWith(expect.stringContaining("当前步骤: 补齐 composer 面板"));
     expect(copyText).toHaveBeenCalledWith(expect.stringContaining("项目焦点: Keep the UI close to haha-cc."));
+    expect(copyText).toHaveBeenCalledWith(expect.stringContaining("纳入上下文: 系统提示 1、项目上下文 1、引用文件 1"));
 
     await user.click(screen.getByRole("button", { name: "yuanbao_agent" }));
     const projectPanel = screen.getByLabelText("项目目录");
@@ -113,6 +138,8 @@ describe("CleanComposer", () => {
     expect(copyText).toHaveBeenCalledWith("D:/py/yuanbao_agent");
     await user.click(within(projectPanel).getByRole("button", { name: /复制改动文件/ }));
     expect(copyText).toHaveBeenCalledWith("app/src/App.tsx\napp/src/ui/clean.css");
+    expect(projectPanel).not.toHaveTextContent("后续会在这里补");
+    expect(screen.queryByRole("button", { name: /权限与上下文会随会话更新/ })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("上下文详情")).not.toBeInTheDocument();
   });
 
@@ -146,6 +173,57 @@ describe("CleanComposer", () => {
     expect(handlers.onAttachmentsChange).toHaveBeenCalledWith(["D:/notes/readme.txt"]);
   });
 
+  it("shows a disabled pending state while stop is in flight", () => {
+    const onStopPrompt = vi.fn();
+    renderComposer({ sending: true, stopPending: true, onStopPrompt });
+
+    const stopButton = screen.getByRole("button", { name: /停止中/ });
+    expect(stopButton).toBeDisabled();
+    stopButton.click();
+    expect(onStopPrompt).not.toHaveBeenCalled();
+  });
+
+  it("accepts dragged files as composer attachments", async () => {
+    const handlers = renderComposer({
+      attachments: ["D:/screenshots/ui.png"],
+    });
+
+    const form = screen.getByRole("form", { name: "消息输入" });
+    const dropped = new File(["hello"], "readme.md", { type: "text/markdown" }) as File & { path?: string };
+    dropped.path = "D:/notes/readme.md";
+    const dataTransfer = {
+      types: ["Files"],
+      files: [dropped],
+      dropEffect: "none",
+    } as unknown as DataTransfer;
+
+    fireEvent.dragEnter(form, { dataTransfer });
+    expect(screen.getByText("松开添加到附件")).toBeInTheDocument();
+
+    fireEvent.drop(form, { dataTransfer });
+    expect(screen.queryByText("松开添加到附件")).not.toBeInTheDocument();
+    expect(handlers.onAttachmentsChange).toHaveBeenCalledWith([
+      "D:/screenshots/ui.png",
+      "D:/notes/readme.md",
+    ]);
+  });
+
+  it("reports empty drops without changing attachments", () => {
+    const handlers = renderComposer();
+    const form = screen.getByRole("form", { name: "消息输入" });
+
+    fireEvent.drop(form, {
+      dataTransfer: {
+        types: ["Files"],
+        files: [],
+        dropEffect: "none",
+      },
+    });
+
+    expect(handlers.onAttachmentsChange).not.toHaveBeenCalled();
+    expect(handlers.onAttachmentError).toHaveBeenCalledWith("没有读取到可添加的文件。");
+  });
+
   it("lets the slash command panel be selected with the keyboard", async () => {
     const handlers = renderSlashComposer("/m");
     const user = userEvent.setup();
@@ -163,8 +241,10 @@ describe("CleanComposer", () => {
   });
 
   it("inserts project file references from the @ picker", async () => {
+    const onFileReferenceQueryChange = vi.fn();
     const handlers = renderComposer({
       promptValue: "请看 @",
+      onFileReferenceQueryChange,
       fileReferenceOptions: [
         { path: "src/app.tsx" },
         { path: "docs/readme.md" },
@@ -176,6 +256,7 @@ describe("CleanComposer", () => {
     (textbox as HTMLTextAreaElement).setSelectionRange("请看 @".length, "请看 @".length);
 
     const panel = screen.getByRole("listbox", { name: "文件引用" });
+    expect(onFileReferenceQueryChange).toHaveBeenCalledWith("");
     expect(within(panel).getByRole("option", { name: /app\.tsx/ })).toHaveAttribute("aria-selected", "true");
 
     await user.keyboard("{ArrowDown}{Enter}");

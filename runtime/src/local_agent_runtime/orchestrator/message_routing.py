@@ -26,6 +26,10 @@ _WRITE_WORKTREE_SCENARIOS = {
     "swarm_task",
 }
 
+_INLINE_FILE_REFERENCE_PATTERN = re.compile(r"(^|\s)@([^\s@]+)")
+_INLINE_FILE_REFERENCE_TRAILING = "),.;:!?，。；：！？）"
+_INLINE_FILE_REFERENCE_TERMINATORS = ("，", "。", "；", "！", "？")
+
 
 class MessageRoutingMixin:
     """Mixin providing message routing and background dispatch."""
@@ -536,6 +540,7 @@ class MessageRoutingMixin:
         goal = params["content"]
         client_message_id = params.get("clientMessageId")
         requested_skill_id = self._requested_skill_id(params)
+        message_metadata = self._message_reference_metadata(params)
 
         explicit_supplement = params.get("mode") == "supplement"
         explicit_task_id = params.get("taskId") or params.get("task_id")
@@ -548,7 +553,12 @@ class MessageRoutingMixin:
                 strict=explicit_supplement,
             )
             if active_task is not None:
-                return self._attach_supplemental_message(session_id=session["id"], task=active_task, content=goal)
+                return self._attach_supplemental_message(
+                    session_id=session["id"],
+                    task=active_task,
+                    content=goal,
+                    metadata=message_metadata,
+                )
 
         # --- Queued mode: create task but don't execute if another is running ---
         if params.get("mode") == "queued":
@@ -580,6 +590,7 @@ class MessageRoutingMixin:
                     client_message_id=client_message_id,
                     kind="normal",
                     status="completed",
+                    metadata=message_metadata,
                 )
                 worktree = self._maybe_bind_task_worktree(
                     session=session,
@@ -655,6 +666,7 @@ class MessageRoutingMixin:
                 client_message_id=client_message_id,
                 kind="normal",
                 status="completed",
+                metadata=message_metadata,
             )
             assistant_msg = self._store.create_message(
                 session_id=session["id"],
@@ -725,7 +737,13 @@ class MessageRoutingMixin:
             )
             return {"task": runtime_task, "userMessage": user_msg, "assistantMessage": assistant_msg, "acceptedMode": "new"}
 
-        context = self._context_builder.build(session_id=session["id"], goal=goal, skill_id=routing.skill_id, lightweight=False)
+        context = self._context_builder.build(
+            session_id=session["id"],
+            goal=goal,
+            skill_id=routing.skill_id,
+            lightweight=False,
+            current_message_metadata=message_metadata,
+        )
         if isinstance(context.get("skillFallback"), dict):
             routing_dict["skillFallback"] = context["skillFallback"]
         routing_dict["profile_snapshot"] = self._runtime_profile_snapshot(context)
@@ -758,6 +776,7 @@ class MessageRoutingMixin:
             client_message_id=client_message_id,
             kind="normal",
             status="completed",
+            metadata=message_metadata,
         )
         assistant_msg = self._store.create_message(
             session_id=session["id"],
@@ -837,12 +856,14 @@ class MessageRoutingMixin:
             event_type="task.routing.decided",
             payload={**routing_dict, "latency_ms": _route_latency_ms},
         )
-        self._publish(
-            session_id=session["id"],
-            task=runtime_task,
-            event_type="assistant.token",
-            payload={"delta": "Building context and preparing the first tool calls..."},
-        )
+        publish_progress = getattr(self, "_publish_assistant_progress", None)
+        if callable(publish_progress):
+            publish_progress(
+                session_id=session["id"],
+                task=runtime_task,
+                text="正在整理上下文",
+                phase="context_prepare",
+            )
 
         result = self._execute_message_task(
             session_id=session["id"],
@@ -902,6 +923,53 @@ class MessageRoutingMixin:
                 if stripped:
                     return stripped
         return None
+
+    @staticmethod
+    def _clean_message_string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        seen: set[str] = set()
+        cleaned: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            text = item.strip().replace("\\", "/")
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            cleaned.append(text)
+        return cleaned
+
+    @staticmethod
+    def _inline_file_references(content: Any) -> list[str]:
+        text = str(content or "")
+        references: list[str] = []
+        seen: set[str] = set()
+        for match in _INLINE_FILE_REFERENCE_PATTERN.finditer(text):
+            reference = (match.group(2) or "").strip().strip("\"'`")
+            for terminator in _INLINE_FILE_REFERENCE_TERMINATORS:
+                if terminator in reference:
+                    reference = reference.split(terminator, 1)[0]
+            reference = reference.rstrip(_INLINE_FILE_REFERENCE_TRAILING).replace("\\", "/").strip()
+            if not reference or reference in seen:
+                continue
+            seen.add(reference)
+            references.append(reference)
+        return references
+
+    def _message_reference_metadata(self, params: dict[str, Any]) -> dict[str, Any]:
+        attachments = self._clean_message_string_list(params.get("attachments"))
+        file_references = self._clean_message_string_list(params.get("fileReferences"))
+        for reference in self._inline_file_references(params.get("content")):
+            if reference not in file_references:
+                file_references.append(reference)
+
+        metadata: dict[str, Any] = {}
+        if attachments:
+            metadata["attachments"] = attachments
+        if file_references:
+            metadata["fileReferences"] = file_references
+        return metadata
 
     def _routing_with_requested_skill(self, routing: Any, requested_skill_id: str | None) -> Any:
         if requested_skill_id is None:

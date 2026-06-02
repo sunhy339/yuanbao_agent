@@ -26,7 +26,7 @@ export function statusTone(status?: string | null): CleanTone {
   if (["failed", "error", "rejected", "cancelled"].includes(normalized)) {
     return "danger";
   }
-  if (["skipped", "warning"].includes(normalized)) {
+  if (["blocked", "skipped", "warning", "reverted"].includes(normalized)) {
     return "warning";
   }
   return "neutral";
@@ -38,6 +38,7 @@ export function statusLabel(status?: string | null) {
     active: "进行中",
     applied: "已应用",
     approved: "已批准",
+    blocked: "已阻塞",
     cancelled: "已取消",
     completed: "已完成",
     failed: "失败",
@@ -47,6 +48,7 @@ export function statusLabel(status?: string | null) {
     queued: "排队中",
     recorded: "已记录",
     rejected: "已拒绝",
+    reverted: "已撤销",
     running: "运行中",
     skipped: "已跳过",
     started: "已开始",
@@ -210,7 +212,7 @@ export function toolActionTitle({
   fallback?: string;
 }) {
   const rawTitle = title?.trim() ?? "";
-  const titleAsToolName = /^(apply_patch|write_file|read_file|list_dir|list_directory|search_files|code_search|run_command|command|bash|shell_command)$/i.test(rawTitle)
+  const titleAsToolName = /^(apply_patch|write_file|read_file|list_dir|list_directory|search_files|code_search|git_status|git_diff|run_command|command|bash|shell_command)$/i.test(rawTitle)
     ? rawTitle.toLowerCase()
     : "";
   const normalized = toolName?.trim().toLowerCase() || titleAsToolName;
@@ -254,7 +256,7 @@ export function toolActionTitle({
     return target ? `运行 ${compactText(target, 72)}` : "运行命令";
   }
   if (target && label !== target) return `${label} ${compactText(target, 72)}`;
-  return title && !/^(apply_patch|write_file|read_file|list_dir|list_directory|search_files|code_search|run_command|command|request|approval|patch approval request)$/i.test(title.trim())
+  return title && !/^(apply_patch|write_file|read_file|list_dir|list_directory|search_files|code_search|git_status|git_diff|run_command|command|request|approval|patch approval request)$/i.test(title.trim())
     ? rawTitle
     : label || fallback;
 }

@@ -267,6 +267,36 @@ class TestCompletionHardGate:
         ).fetchall()
         assert approvals == []
 
+    def test_no_approval_mode_uses_store_config_without_context_config(self, tmp_path: Any) -> None:
+        rt = _make_runtime(tmp_path)
+        store = rt.store
+        store.update_config({"config": {"policy": {"approvalMode": "none"}}})
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="modify the implementation",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="I changed the implementation.",
+            context={"routing": {"scenario": "code_edit"}},
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "failed"
+        assert result["errorCode"] == "COMPLETION_EVIDENCE_INSUFFICIENT"
+        approvals = store._conn.execute(
+            "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",
+            (task["id"], "completion_review"),
+        ).fetchall()
+        assert approvals == []
+
     def test_write_task_with_runtime_evidence_without_verification_waits_for_review(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)
         store = rt.store
@@ -457,6 +487,60 @@ class TestCompletionHardGate:
         assert result["status"] == "waiting_approval"
         assert result["structuredResult"]["completionGate"]["status"] == "advisor_needs_review"
         assert result["structuredResult"]["completionEvidence"]["completionAdvisor"]["payload"]["is_complete"] is False
+
+    def test_no_approval_mode_records_completion_advisor_review_without_blocking(self, tmp_path: Any) -> None:
+        class IncompleteAdvisor:
+            def advise(self, kind: str, _input_context: dict[str, Any]) -> Any:
+                return SimpleNamespace(
+                    accepted=True,
+                    source="llm",
+                    rationale="More polish would help, but approvals are disabled.",
+                    fallback_reason=None,
+                    proposal_id=f"{kind}_incomplete",
+                    confidence=0.92,
+                    payload={
+                        "is_complete": False,
+                        "blocking_issues": ["Missing semantic evidence adapter support."],
+                    },
+                )
+
+        rt = _make_runtime(tmp_path, decision_advisor=IncompleteAdvisor())
+        store = rt.store
+        workspace = store.upsert_workspace(str(tmp_path / "project"))
+        session = store.create_session(workspace_id=workspace["id"], title="completion gate")
+        task = store.create_task(
+            session_id=session["id"],
+            task_type="edit",
+            goal="optimize snake game rendering",
+            plan=[],
+            routing={"scenario": "code_edit"},
+        )
+        task = store.update_task(
+            task_id=task["id"],
+            changed_files=[{"path": "snake_game/snake.py", "action": "modified"}],
+            verification=[{"name": "py_compile", "status": "passed", "summary": "compile passed"}],
+        )
+
+        result = rt.orchestrator._complete_task(
+            session_id=session["id"],
+            task=task,
+            summary="Snake rendering was optimized and verified.",
+            context={
+                "routing": {"scenario": "code_edit"},
+                "config": {"policy": {"approvalMode": "none"}},
+            },
+            skip_reflection=True,
+        )
+
+        assert result["status"] == "completed"
+        evidence = result["structuredResult"]["completionEvidence"]
+        assert evidence["completionAdvisor"]["payload"]["is_complete"] is False
+        assert result["structuredResult"].get("completionGate") is None
+        approvals = store._conn.execute(
+            "SELECT * FROM approvals WHERE task_id = ? AND kind = ?",
+            (task["id"], "completion_review"),
+        ).fetchall()
+        assert approvals == []
 
     def test_write_task_with_passed_verification_completes(self, tmp_path: Any) -> None:
         rt = _make_runtime(tmp_path)

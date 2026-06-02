@@ -60,4 +60,208 @@ describe("runtimeItemBuilder", () => {
     expect(items[0]?.toolName).toBe("apply_patch");
     expect(items[0]?.code).toContain("snake_game/game.py");
   });
+
+  it("surfaces approval changed paths and diff preview fields", () => {
+    const diff = [
+      "diff --git a/src/app.ts b/src/app.ts",
+      "--- a/src/app.ts",
+      "+++ b/src/app.ts",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+    ].join("\n");
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      patches: [],
+      traces: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      approvals: [
+        {
+          id: "approval-1",
+          title: "patch approval request",
+          status: "pending",
+          kind: "apply_patch",
+          parametersPreview: "apply_patch",
+          filesChanged: 2,
+          changedPaths: ["src/app.ts", "src/view.tsx"],
+          diff,
+          requestedAt: 1,
+        },
+      ],
+    });
+
+    expect(items[0]?.rawDetail).toBe(diff);
+    expect(items[0]?.diffLines?.some((line) => line.type === "add" && line.content === "new")).toBe(true);
+    expect(items[0]?.code).toContain("src/app.ts");
+    expect(items[0]?.meta).toContain("2 个文件");
+  });
+
+  it("surfaces write_file approval diffs the same way as patch approvals", () => {
+    const diff = [
+      "--- /dev/null",
+      "+++ b/src/new.ts",
+      "@@ -0,0 +1 @@",
+      "+export const value = 1;",
+    ].join("\n");
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      patches: [],
+      traces: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      approvals: [
+        {
+          id: "approval-1",
+          title: "write_file",
+          status: "pending",
+          kind: "write_file",
+          parametersPreview: "write_file",
+          filesChanged: 1,
+          changedPaths: ["src/new.ts"],
+          diff,
+          requestedAt: 1,
+        },
+      ],
+    });
+
+    expect(items[0]?.toolName).toBe("write_file");
+    expect(items[0]?.rawDetail).toBe(diff);
+    expect(items[0]?.diffLines?.some((line) => line.type === "add" && line.content === "export const value = 1;")).toBe(true);
+    expect(items[0]?.code).toContain("src/new.ts");
+  });
+
+  it("passes structured approval preview rows into runtime items", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      patches: [],
+      traces: [],
+      toolCalls: [],
+      backgroundJobs: [],
+      approvals: [
+        {
+          id: "approval-1",
+          title: "run_command",
+          status: "pending",
+          kind: "run_command",
+          command: "npm run typecheck",
+          parametersPreview: "npm run typecheck | cwd app",
+          previewRows: [
+            { label: "命令", value: "npm run typecheck" },
+            { label: "目录", value: "app" },
+          ],
+          requestedAt: 1,
+        },
+      ],
+    });
+
+    expect(items[0]?.previewRows).toEqual([
+      { label: "命令", value: "npm run typecheck" },
+      { label: "目录", value: "app" },
+    ]);
+  });
+
+  it("preserves backend tool batch order metadata on runtime items", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      traces: [],
+      backgroundJobs: [],
+      toolCalls: [
+        {
+          id: "call_1",
+          toolUseId: "tc_1",
+          toolGroupId: "tgrp_1",
+          toolIndex: 0,
+          toolTotal: 2,
+          toolCategory: "search",
+          toolPhaseId: "search",
+          toolPhaseLabel: "搜索",
+          toolSemanticParentId: "phase:search",
+          toolSemanticParentLabel: "搜索",
+          toolName: "search_files",
+          status: "completed",
+          input: "search needle",
+          resultPreview: [{ label: "命中", value: "2 项" }],
+        },
+      ],
+    });
+
+    expect(items[0]).toMatchObject({
+      toolUseId: "tc_1",
+      toolGroupId: "tgrp_1",
+      toolIndex: 0,
+      toolTotal: 2,
+      toolCategory: "search",
+      toolPhaseId: "search",
+      toolPhaseLabel: "搜索",
+      toolSemanticParentId: "phase:search",
+      toolSemanticParentLabel: "搜索",
+      previewRows: [{ label: "命中", value: "2 项" }],
+    });
+  });
+
+  it("preserves recovered command metadata on background job runtime items", () => {
+    const items = buildRuntimeItems({
+      session: null,
+      activeTask: null,
+      approvals: [],
+      patches: [],
+      traces: [],
+      toolCalls: [],
+      backgroundJobs: [
+        {
+          id: "cmd_1",
+          toolUseId: "call_command",
+          parentToolUseId: "call_parent",
+          toolGroupId: "tgrp_1",
+          toolIndex: 1,
+          toolTotal: 2,
+          toolOperationId: "run_command",
+          toolOperationLabel: "运行命令",
+          toolCategory: "verification",
+          toolPhaseId: "verification",
+          toolPhaseLabel: "验证",
+          toolSemanticParentId: "group:tgrp_1:phase:verification",
+          toolSemanticParentLabel: "验证",
+          target: "npm test",
+          inputSummary: "npm test",
+          command: "npm test",
+          status: "completed",
+          cwd: "app",
+          shell: "powershell",
+          stdout: "3 passed\n",
+          exitCode: 0,
+          finishedAt: 1000,
+        },
+      ],
+    });
+
+    expect(items[0]).toMatchObject({
+      kind: "command",
+      sourceId: "cmd_1",
+      toolUseId: "call_command",
+      parentToolUseId: "call_parent",
+      toolGroupId: "tgrp_1",
+      toolIndex: 1,
+      toolTotal: 2,
+      toolOperationId: "run_command",
+      toolOperationLabel: "运行命令",
+      toolCategory: "verification",
+      toolPhaseId: "verification",
+      toolPhaseLabel: "验证",
+      toolSemanticParentId: "group:tgrp_1:phase:verification",
+      toolSemanticParentLabel: "验证",
+      toolName: "run_command",
+      code: "npm test",
+    });
+    expect(items[0]?.summary).toContain("npm test");
+    expect(items[0]?.rawDetail).toContain("3 passed");
+    expect(items[0]?.meta).toEqual(expect.arrayContaining(["app", "powershell", "退出码 0"]));
+  });
 });

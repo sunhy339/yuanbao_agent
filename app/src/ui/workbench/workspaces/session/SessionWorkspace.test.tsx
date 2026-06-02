@@ -1009,6 +1009,36 @@ describe("SessionWorkspace", () => {
     expect(screen.getByText(/"command": "npm test"/)).toBeInTheDocument();
   });
 
+  it("prefers structured tool summaries for chat-compatible activity blocks", () => {
+    render(
+      <SessionWorkspace
+        session={session}
+        activeTask={null}
+        messages={[
+          {
+            id: "tool_activity:tc_search",
+            role: "assistant",
+            content: '{\n  "query": "needle"\n}',
+            toolName: "search_files",
+            status: "completed",
+            metadata: {
+              kind: "tool_activity",
+              toolUseId: "tc_search",
+              inputText: '{\n  "query": "needle"\n}',
+              resultSummary: "found 2 match(es) for needle: src/app.ts",
+              resultText: "过程\n正在搜索文件：search needle\n\n结果预览\n命中: 2 项\n样例: src/app.ts",
+              isError: false,
+            },
+            createdAt: 2,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(/查询：needle → found 2 match\(es\) for needle: src\/app\.ts/)).toBeInTheDocument();
+    expect(screen.queryByText(/正在搜索文件/)).not.toBeInTheDocument();
+  });
+
   it("renders chat-compatible status and permission blocks", async () => {
     const user = userEvent.setup();
     const onApprove = vi.fn();

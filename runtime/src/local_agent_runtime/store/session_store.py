@@ -379,6 +379,33 @@ class SessionStoreMixin:
         self._conn.commit()
         return self.require_session(session_id)
 
+    def _copy_message_to_session(self, message: dict[str, Any], *, session_id: str) -> dict[str, Any]:
+        now = self.now()
+        message_id = self.new_id("msg")
+        self._conn.execute(
+            """
+            INSERT INTO messages (id, session_id, task_id, role, content, created_at,
+                                  client_message_id, kind, status, created_seq, updated_at, metadata_json)
+            VALUES (?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
+            """,
+            (
+                message_id,
+                session_id,
+                message["role"],
+                message["content"],
+                message["createdAt"],
+                message.get("kind") or "normal",
+                message.get("status") or "completed",
+                message.get("createdSeq"),
+                now,
+                json.dumps(message.get("metadata") or {}, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+        row = self._conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+        if row is None:
+            raise ValueError("Copied message not found")
+        return self._serialize_message(dict(row))
+
     def require_session(self, session_id: str) -> dict[str, Any]:
         row = self._conn.execute(
             """
@@ -392,6 +419,19 @@ class SessionStoreMixin:
         if row is None:
             raise ValueError(f"Session not found: {session_id}")
         return self._serialize_session(dict(row))
+
+    def require_message(self, *, session_id: str, message_id: str) -> dict[str, Any]:
+        row = self._conn.execute(
+            """
+            SELECT *
+            FROM messages
+            WHERE id = ? AND session_id = ?
+            """,
+            (message_id, session_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Message not found: {message_id}")
+        return self._serialize_message(dict(row))
 
     def get_session(self, params: dict[str, Any]) -> dict[str, Any]:
         return {"session": self.require_session(params["sessionId"])}
@@ -418,24 +458,27 @@ class SessionStoreMixin:
         kind: str | None = None,
         status: str | None = None,
         created_seq: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if role not in {"user", "assistant", "system", "tool"}:
             raise ValueError(f"Unsupported message role: {role}")
         message_id = self.new_id("msg")
         now = self.now()
+        seq = created_seq if created_seq is not None else self.next_seq()
         self._conn.execute(
             """
             INSERT INTO messages (id, session_id, task_id, role, content, created_at,
-                                  client_message_id, kind, status, created_seq, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                  client_message_id, kind, status, created_seq, updated_at, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 message_id, session_id, task_id, role, content, now,
                 client_message_id,
                 kind or "normal",
                 status or "completed",
-                created_seq,
+                seq,
                 now,
+                json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True),
             ),
         )
         self._conn.execute(
@@ -488,7 +531,7 @@ class SessionStoreMixin:
             SELECT *
             FROM messages
             WHERE session_id = ?
-            ORDER BY created_at ASC, id ASC
+            ORDER BY COALESCE(created_seq, 0) ASC, created_at ASC, id ASC
             LIMIT ?
             """,
             (session_id, max(1, min(limit, 1000))),
@@ -496,16 +539,126 @@ class SessionStoreMixin:
         return {"messages": [self._serialize_message(dict(row)) for row in rows]}
 
     def list_messages_by_task(self, task_id: str) -> list[dict[str, Any]]:
-        """Return all messages for a task, ordered by created_at."""
+        """Return all messages for a task, ordered by stable creation sequence."""
         rows = self._conn.execute(
             """
             SELECT * FROM messages
             WHERE task_id = ?
-            ORDER BY created_at ASC, id ASC
+            ORDER BY COALESCE(created_seq, 0) ASC, created_at ASC, id ASC
             """,
             (task_id,),
         ).fetchall()
         return [self._serialize_message(dict(row)) for row in rows]
+
+    def branch_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = self._require_non_empty(params, "sessionId")
+        message_id = self._require_non_empty(params, "messageId")
+        source_session = self.require_session(session_id)
+        source_message = self.require_message(session_id=session_id, message_id=message_id)
+        title = self._optional_string(params, "title") or f"{source_session['title']} (branch)"
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM messages
+            WHERE session_id = ?
+              AND (
+                    (created_seq IS NOT NULL AND ? IS NOT NULL AND created_seq <= ?)
+                 OR ((created_seq IS NULL OR ? IS NULL) AND (created_at < ? OR (created_at = ? AND id <= ?)))
+              )
+            ORDER BY COALESCE(created_seq, 0) ASC, created_at ASC, id ASC
+            """,
+            (
+                session_id,
+                source_message.get("createdSeq"),
+                source_message.get("createdSeq"),
+                source_message.get("createdSeq"),
+                source_message["createdAt"],
+                source_message["createdAt"],
+                message_id,
+            ),
+        ).fetchall()
+        source_messages = [self._serialize_message(dict(row)) for row in rows]
+        branch_session = self.create_session(source_session["workspaceId"], title)
+        copied = [self._copy_message_to_session(message, session_id=branch_session["id"]) for message in source_messages]
+        self._conn.execute(
+            """
+            UPDATE sessions
+            SET summary = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                source_session.get("summary"),
+                self.now(),
+                branch_session["id"],
+            ),
+        )
+        self._conn.commit()
+        return {
+            "sourceSession": source_session,
+            "session": self.require_session(branch_session["id"]),
+            "sourceMessage": source_message,
+            "messages": self.list_messages({"sessionId": branch_session["id"], "limit": 1000})["messages"],
+            "copiedCount": len(copied),
+        }
+
+    def truncate_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = self._require_non_empty(params, "sessionId")
+        message_id = self._require_non_empty(params, "messageId")
+        self.require_session(session_id)
+        target_message = self.require_message(session_id=session_id, message_id=message_id)
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM messages
+            WHERE session_id = ?
+              AND (
+                    (created_seq IS NOT NULL AND ? IS NOT NULL AND created_seq > ?)
+                 OR ((created_seq IS NULL OR ? IS NULL) AND (created_at > ? OR (created_at = ? AND id > ?)))
+              )
+            ORDER BY COALESCE(created_seq, 0) ASC, created_at ASC, id ASC
+            """,
+            (
+                session_id,
+                target_message.get("createdSeq"),
+                target_message.get("createdSeq"),
+                target_message.get("createdSeq"),
+                target_message["createdAt"],
+                target_message["createdAt"],
+                message_id,
+            ),
+        ).fetchall()
+        deleted_messages = [self._serialize_message(dict(row)) for row in rows]
+        if deleted_messages:
+            placeholders = ", ".join("?" for _ in deleted_messages)
+            self._conn.execute(
+                f"DELETE FROM messages WHERE id IN ({placeholders})",
+                [message["id"] for message in deleted_messages],
+            )
+        now = self.now()
+        self._conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+        self._conn.commit()
+        return {
+            "session": self.require_session(session_id),
+            "targetMessage": target_message,
+            "deletedMessages": deleted_messages,
+            "messages": self.list_messages({"sessionId": session_id, "limit": 1000})["messages"],
+            "deletedCount": len(deleted_messages),
+        }
+
+    def delete_message(self, params: dict[str, Any]) -> dict[str, Any]:
+        session_id = self._require_non_empty(params, "sessionId")
+        message_id = self._require_non_empty(params, "messageId")
+        message = self.require_message(session_id=session_id, message_id=message_id)
+        self._conn.execute("DELETE FROM messages WHERE id = ? AND session_id = ?", (message_id, session_id))
+        now = self.now()
+        self._conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
+        self._conn.commit()
+        return {
+            "session": self.require_session(session_id),
+            "message": message,
+            "messages": self.list_messages({"sessionId": session_id, "limit": 1000})["messages"],
+            "deleted": True,
+        }
 
     # ── task_inbox ──────────────────────────────────────────────────────
 
@@ -516,16 +669,26 @@ class SessionStoreMixin:
         session_id: str,
         content: str,
         message_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         entry_id = self.new_id("ibx")
         now = self.now()
         seq = self.next_seq()
         self._conn.execute(
             """
-            INSERT INTO task_inbox (id, task_id, session_id, message_id, content, status, created_seq, created_at)
-            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+            INSERT INTO task_inbox (id, task_id, session_id, message_id, content, status, created_seq, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
             """,
-            (entry_id, task_id, session_id, message_id, content, seq, now),
+            (
+                entry_id,
+                task_id,
+                session_id,
+                message_id,
+                content,
+                seq,
+                json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True),
+                now,
+            ),
         )
         self._conn.commit()
         row = self._conn.execute("SELECT * FROM task_inbox WHERE id = ?", (entry_id,)).fetchone()

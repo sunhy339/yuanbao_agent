@@ -26,6 +26,8 @@ class TestMemoryRememberTool:
         assert result["status"] == "ok"
         assert result["id"].startswith("mem_")
         assert result["kind"] == "working"
+        assert [step["label"] for step in result["steps"]] == ["prepare", "scope", "store", "keywords"]
+        assert result["steps"][0]["summary"] == "remember working memory"
 
     def test_remember_with_kind(self) -> None:
         result = self.tool({"content": "Persistent fact", "kind": "long_term"})
@@ -80,6 +82,8 @@ class TestMemoryRecallTool:
         assert result["status"] == "ok"
         assert result["count"] >= 1
         assert any("dark mode" in m["content"] for m in result["memories"])
+        assert [step["label"] for step in result["steps"]] == ["prepare", "scope", "search"]
+        assert result["steps"][-1]["summary"].endswith("result(s)")
 
     def test_recall_respects_limit(self) -> None:
         for i in range(10):

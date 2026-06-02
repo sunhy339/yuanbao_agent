@@ -2,12 +2,92 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_APPROVAL_KIND_CAPABILITY: dict[str, str] = {
+    "apply_patch": "writeFile",
+    "write_file": "writeFile",
+    "delete_file": "writeFile",
+    "run_command": "runCommand",
+    "network_access": "webFetch",
+    "computer_use": "computerUse",
+    "subagent_dispatch": "subagents",
+    "worktree_merge": "gitWrite",
+}
+
+
+def _approval_payload_text(value: Any, max_chars: int = 160) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = " ".join(text.split())
+    return text if len(text) <= max_chars else text[: max_chars - 3].rstrip() + "..."
+
+
+def _approval_payload_preview_row(label: str, value: Any, *, max_chars: int = 160) -> dict[str, str] | None:
+    text = _approval_payload_text(value, max_chars=max_chars)
+    return {"label": label, "value": text} if text else None
+
+
+def _approval_payload_preview(kind: Any, request: dict[str, Any]) -> list[dict[str, str]]:
+    approval_kind = str(kind or "")
+    if approval_kind == "run_command":
+        rows = [
+            _approval_payload_preview_row("命令", request.get("command"), max_chars=220),
+            _approval_payload_preview_row("目录", request.get("cwd") or request.get("workspaceRoot")),
+            _approval_payload_preview_row("Shell", request.get("shell")),
+            _approval_payload_preview_row("原因", request.get("policyReason") or request.get("risk") or request.get("reason")),
+        ]
+    elif approval_kind == "computer_use":
+        rows = [
+            _approval_payload_preview_row("应用", request.get("app") or request.get("target") or request.get("application")),
+            _approval_payload_preview_row("动作", request.get("action")),
+            _approval_payload_preview_row("目标", request.get("selector") or request.get("target")),
+            _approval_payload_preview_row("权限", request.get("permission") or request.get("summary"), max_chars=220),
+        ]
+    elif approval_kind == "subagent_dispatch":
+        rows = [
+            _approval_payload_preview_row("子任务", request.get("prompt"), max_chars=240),
+            _approval_payload_preview_row("原因", request.get("reason") or request.get("risk")),
+        ]
+    else:
+        rows = [
+            _approval_payload_preview_row("摘要", request.get("summary") or request.get("description")),
+            _approval_payload_preview_row("目标", request.get("target") or request.get("path") or request.get("url")),
+            _approval_payload_preview_row("原因", request.get("reason") or request.get("risk")),
+        ]
+    return [row for row in rows if row is not None][:5]
+
 
 class ApprovalFlowMixin:
+    def _approval_resolved_payload(
+        self,
+        *,
+        approval: dict[str, Any],
+        task: dict[str, Any],
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = json.loads(approval.get("requestJson") or "{}")
+        except json.JSONDecodeError:
+            request = {}
+        payload = {
+            "approvalId": approval["id"],
+            "taskId": task["id"],
+            "kind": approval.get("kind"),
+            "request": request,
+            "preview": _approval_payload_preview(approval.get("kind"), request),
+            "decision": approval.get("decision"),
+            "decidedBy": approval.get("decidedBy"),
+            "decidedAt": approval.get("decidedAt"),
+        }
+        if extra:
+            payload.update(extra)
+        return payload
+
     def _ensure_task_running_after_approval(
         self,
         *,
@@ -68,13 +148,14 @@ class ApprovalFlowMixin:
                 session_id=task["sessionId"],
                 task=task,
                 event_type="approval.resolved",
-                payload={
-                    "approvalId": approval["id"],
-                    "taskId": task["id"],
-                    "decision": approval["decision"],
-                    "ignored": True,
-                    "taskStatus": task["status"],
-                },
+                payload=self._approval_resolved_payload(
+                    approval=approval,
+                    task=task,
+                    extra={
+                        "ignored": True,
+                        "taskStatus": task["status"],
+                    },
+                ),
             )
             return {"approval": approval}
         if task["status"] == "paused":
@@ -82,13 +163,14 @@ class ApprovalFlowMixin:
                 session_id=task["sessionId"],
                 task=task,
                 event_type="approval.resolved",
-                payload={
-                    "approvalId": approval["id"],
-                    "taskId": task["id"],
-                    "decision": approval["decision"],
-                    "deferred": True,
-                    "taskStatus": task["status"],
-                },
+                payload=self._approval_resolved_payload(
+                    approval=approval,
+                    task=task,
+                    extra={
+                        "deferred": True,
+                        "taskStatus": task["status"],
+                    },
+                ),
             )
             return {"approval": approval}
         if approval.get("kind") == "advisor_tool" and self._is_tool_recovery_approval(approval):
@@ -96,11 +178,7 @@ class ApprovalFlowMixin:
                 session_id=task["sessionId"],
                 task=task,
                 event_type="approval.resolved",
-                payload={
-                    "approvalId": approval["id"],
-                    "taskId": task["id"],
-                    "decision": approval["decision"],
-                },
+                payload=self._approval_resolved_payload(approval=approval, task=task),
             )
             if approval["decision"] == "approved":
                 task = self._resume_approved_advisor_tool(task=task, approval=approval)
@@ -114,11 +192,7 @@ class ApprovalFlowMixin:
             session_id=task["sessionId"],
             task=task,
             event_type="approval.resolved",
-            payload={
-                "approvalId": approval["id"],
-                "taskId": task["id"],
-                "decision": approval["decision"],
-            },
+            payload=self._approval_resolved_payload(approval=approval, task=task),
         )
         pending_state = self._load_pending_react_state(approval["taskId"])
         if pending_state is not None:
@@ -197,6 +271,77 @@ class ApprovalFlowMixin:
             )
         return {"approval": approval, "task": task}
 
+    def allow_approval_always(self, params: dict[str, Any]) -> dict[str, Any]:
+        approval_id = str(params.get("approvalId") or params.get("approval_id") or "").strip()
+        if not approval_id:
+            raise ValueError("approvalId is required")
+        scope = str(params.get("scope") or "capability").strip() or "capability"
+        if scope != "capability":
+            raise ValueError("Only capability-scoped allow rules are currently supported")
+
+        approval = self._store.get_approval({"approvalId": approval_id})["approval"]
+        capability = self._capability_for_approval(approval)
+        rule = {"mode": "allow", "scope": "*"}
+        config_result = self._store.update_config(
+            {
+                "permissions": {
+                    **self._merged_permissions_patch(capability=capability, rule=rule),
+                },
+            },
+        )
+        task = self._store.get_task({"taskId": approval["taskId"]})["task"]
+        self._publish(
+            session_id=task["sessionId"],
+            task=task,
+            event_type="permission.rule.created",
+            payload={
+                "approvalId": approval["id"],
+                "taskId": task["id"],
+                "approvalKind": approval.get("kind"),
+                "capability": capability,
+                "rule": rule,
+                "scope": scope,
+            },
+        )
+
+        result = self.submit_approval({"approvalId": approval_id, "decision": "approved"})
+        return {
+            **result,
+            "config": config_result["config"],
+            "capability": capability,
+            "rule": rule,
+            "scope": scope,
+        }
+
+    def _merged_permissions_patch(
+        self,
+        *,
+        capability: str,
+        rule: dict[str, str],
+    ) -> dict[str, Any]:
+        config = self._store.get_config({}).get("config", {})
+        permissions = config.get("permissions") if isinstance(config, dict) else {}
+        if not isinstance(permissions, dict):
+            permissions = {}
+        capabilities = permissions.get("capabilities")
+        if not isinstance(capabilities, dict):
+            capabilities = {}
+        return {
+            "preset": permissions.get("preset") or "balanced",
+            "capabilities": {
+                **deepcopy(capabilities),
+                capability: deepcopy(rule),
+            },
+        }
+
+    @staticmethod
+    def _capability_for_approval(approval: dict[str, Any]) -> str:
+        kind = str(approval.get("kind") or "").strip()
+        capability = _APPROVAL_KIND_CAPABILITY.get(kind)
+        if capability:
+            return capability
+        raise ValueError(f"Approval kind {kind!r} cannot be converted into an always-allow rule")
+
     @staticmethod
     def _is_tool_recovery_approval(approval: dict[str, Any]) -> bool:
         try:
@@ -215,13 +360,7 @@ class ApprovalFlowMixin:
             session_id=task["sessionId"],
             task=task,
             event_type="approval.resolved",
-            payload={
-                "approvalId": approval["id"],
-                "taskId": task["id"],
-                "decision": approval["decision"],
-                "decidedBy": approval.get("decidedBy"),
-                "decidedAt": approval.get("decidedAt"),
-            },
+            payload=self._approval_resolved_payload(approval=approval, task=task),
         )
         if approval.get("decision") != "approved":
             return {"approval": approval}
@@ -317,14 +456,13 @@ class ApprovalFlowMixin:
             session_id=task["sessionId"],
             task=task,
             event_type="approval.resolved",
-            payload={
-                "approvalId": approval["id"],
-                "taskId": task["id"],
-                "decision": approval["decision"],
-                "decidedBy": approval.get("decidedBy"),
-                "decidedAt": approval.get("decidedAt"),
-                "completionReviewConclusion": conclusion,
-            },
+            payload=self._approval_resolved_payload(
+                approval=approval,
+                task=task,
+                extra={
+                    "completionReviewConclusion": conclusion,
+                },
+            ),
         )
         summary = str(request.get("summary") or task.get("resultSummary") or task.get("summary") or "")
         if approval.get("decision") != "approved":

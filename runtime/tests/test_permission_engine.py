@@ -9,6 +9,7 @@ from local_agent_runtime.policy.permission_engine import (
     PermissionEngine,
     PermissionRequest,
 )
+from local_agent_runtime.store.sqlite_store import SQLiteStore
 
 
 # ---------------------------------------------------------------------------
@@ -63,12 +64,6 @@ class TestEvaluateBlocked:
             d = _engine(preset).evaluate(PermissionRequest(capability="browserAutomation"))
             assert d.decision == "deny", f"{preset} browserAutomation should be deny"
 
-    def test_computerUse_all_presets(self):
-        for preset in ("safe", "balanced", "autonomous"):
-            d = _engine(preset).evaluate(PermissionRequest(capability="computerUse"))
-            assert d.decision == "deny", f"{preset} computerUse should be deny"
-
-
 class TestEvaluateAsk:
     def test_runCommand_balanced(self):
         d = _engine().evaluate(PermissionRequest(capability="runCommand"))
@@ -89,6 +84,12 @@ class TestEvaluateAsk:
         assert d.decision == "approval_required"
         assert d.approval_kind == "subagent_dispatch"
 
+    def test_computerUse_all_presets(self):
+        for preset in ("safe", "balanced", "autonomous"):
+            d = _engine(preset).evaluate(PermissionRequest(capability="computerUse"))
+            assert d.decision == "approval_required", f"{preset} computerUse should ask"
+            assert d.approval_kind == "computer_use"
+
     def test_runCommand_autonomous_still_asks(self):
         d = _engine("autonomous").evaluate(PermissionRequest(capability="runCommand"))
         assert d.decision == "approval_required"
@@ -99,6 +100,33 @@ class TestEvaluateUnknown:
         d = _engine().evaluate(PermissionRequest(capability="nonexistent"))
         assert d.decision == "approval_required"
         assert "no rule" in d.reason.lower()
+
+    def test_none_approval_mode_allows_ask_capabilities(self):
+        engine = PermissionEngine(config={
+            "policy": {"approvalMode": "none"},
+            "permissions": {"preset": "autonomous"},
+        })
+
+        for capability in ("runCommand", "webFetch", "computerUse", "nonexistent"):
+            d = engine.evaluate(PermissionRequest(capability=capability, tool_name="run_command"))
+            assert d.decision == "allow"
+
+    def test_none_approval_mode_bypasses_untrusted_content_guard_for_writes(self):
+        engine = PermissionEngine(config={
+            "policy": {"approvalMode": "none"},
+            "permissions": {
+                "preset": "autonomous",
+                "capabilities": {"writeFile": {"mode": "allow", "scope": "*"}},
+            },
+        })
+
+        d = engine.evaluate(PermissionRequest(
+            capability="writeFile",
+            tool_name="write_file",
+            context={"untrustedContentSignals": [{"source": "web", "toolName": "web_fetch"}]},
+        ))
+
+        assert d.decision == "allow"
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +149,24 @@ class TestOverrides:
         # memoryWrite should still be allow from the balanced preset
         d = e.evaluate(PermissionRequest(capability="memoryWrite"))
         assert d.decision == "allow"
+
+    def test_refreshes_overrides_from_store(self, tmp_path):
+        store = SQLiteStore(str(tmp_path / "permissions.sqlite3"))
+        e = PermissionEngine(config=store.get_config({})["config"], store=store)
+
+        before = e.evaluate(PermissionRequest(capability="runCommand", tool_name="run_command"))
+        assert before.decision == "approval_required"
+
+        store.update_config({
+            "permissions": {
+                "capabilities": {
+                    "runCommand": {"mode": "allow", "scope": "*"},
+                },
+            },
+        })
+
+        after = e.evaluate(PermissionRequest(capability="runCommand", tool_name="run_command"))
+        assert after.decision == "allow"
 
 
 # ---------------------------------------------------------------------------

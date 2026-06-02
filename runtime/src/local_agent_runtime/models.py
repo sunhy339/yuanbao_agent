@@ -16,13 +16,14 @@ TaskStatus = Literal[
     "cancelled",
 ]
 CommandStatus = Literal["running", "completed", "failed", "timeout", "killed", "cancelled"]
-PatchStatus = Literal["proposed", "approved", "applied", "rejected", "failed"]
+PatchStatus = Literal["proposed", "approved", "applied", "reverted", "rejected", "failed"]
 ApprovalDecision = Literal["approved", "rejected"]
 ApprovalKind = Literal[
     "apply_patch",
     "run_command",
     "delete_file",
     "network_access",
+    "computer_use",
     "plan",
     "write_file",
     "worktree_merge",

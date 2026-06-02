@@ -245,3 +245,25 @@ class TestEventBusVisibility:
         })()
         payload = bus.as_payload(event)
         assert payload["visibility"] == "chat"
+
+    def test_publish_assigns_monotonic_timestamp_and_sequence(self):
+        from local_agent_runtime.event_bus import EventBus
+        bus = EventBus()
+        captured = []
+        bus.subscribe(lambda event: captured.append(bus.as_payload(event)))
+        first = type("E", (), {
+            "event_id": "e1", "session_id": "s1", "task_id": "t1",
+            "type": "content_start", "ts": 100, "seq": 0,
+            "payload": {}, "visibility": "chat",
+        })()
+        second = type("E", (), {
+            "event_id": "e2", "session_id": "s1", "task_id": "t1",
+            "type": "content_delta", "ts": 100, "seq": 0,
+            "payload": {}, "visibility": "chat",
+        })()
+
+        bus.publish(first)
+        bus.publish(second)
+
+        assert [event["seq"] for event in captured] == [1, 2]
+        assert [event["ts"] for event in captured] == [100, 101]

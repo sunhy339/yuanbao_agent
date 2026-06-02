@@ -7,6 +7,7 @@ import type {
 import { RuntimeClient } from "../lib/runtimeClient";
 import {
   appendAssistantPlaceholder,
+  appendSpecialEventMessage,
   appendUserMessage,
   failAssistantMessage,
   reconcileBackendMessage,
@@ -34,9 +35,47 @@ import type { HookDeps } from "./types";
 
 const runtimeClient = new RuntimeClient();
 const SUPPLEMENTABLE_TASK_STATUSES = new Set(["running", "planning", "verifying", "waiting_approval", "queued", "paused"]);
+const PROMPT_FILE_REFERENCE_PATTERN = /(^|\s)@([^\s@]+)/g;
+const PROMPT_FILE_REFERENCE_TRAILING = /[),.;:!?，。；：！？）]+$/u;
+const PROMPT_FILE_REFERENCE_TERMINATOR = /[，。；！？]/u;
 
 function canReceiveSupplement(status?: string | null) {
   return Boolean(status && SUPPLEMENTABLE_TASK_STATUSES.has(status));
+}
+
+function normalizePromptFileReference(value: string) {
+  return value
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .split(PROMPT_FILE_REFERENCE_TERMINATOR)[0]
+    .replace(PROMPT_FILE_REFERENCE_TRAILING, "")
+    .replace(/\\/g, "/")
+    .trim();
+}
+
+export function extractPromptFileReferences(content: string): string[] {
+  const references: string[] = [];
+  const seen = new Set<string>();
+  for (const match of content.matchAll(PROMPT_FILE_REFERENCE_PATTERN)) {
+    const reference = normalizePromptFileReference(match[2] ?? "");
+    if (!reference || seen.has(reference)) continue;
+    seen.add(reference);
+    references.push(reference);
+  }
+  return references;
+}
+
+export function buildPromptAttachmentsWithReferences(content: string, attachments: string[]) {
+  const fileReferences = extractPromptFileReferences(content);
+  const nextAttachments: string[] = [];
+  const seen = new Set<string>();
+  [...attachments, ...fileReferences].forEach((item) => {
+    const normalized = item.replace(/\\/g, "/").trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    nextAttachments.push(normalized);
+  });
+  return { attachments: nextAttachments, fileReferences };
 }
 
 export interface UseMessageActionsDeps extends HookDeps {
@@ -167,7 +206,8 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
           : await ensureSessionForSend();
       pendingSessionIdForCatch = activeSession.id;
       const messageContent = messageContentInput.trim() || "Please review the attached file.";
-      const messageAttachments = messageAttachmentsInput;
+      const messageReferences = buildPromptAttachmentsWithReferences(messageContent, messageAttachmentsInput);
+      const messageAttachments = messageReferences.attachments;
       const messageCreatedAt = Date.now();
       const clientMessageId = `client_${messageCreatedAt}`;
       const pendingUserMessageId = `user_${messageCreatedAt}`;
@@ -193,6 +233,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
                 content: messageContent,
                 now: messageCreatedAt,
                 clientMessageId,
+                metadata: messageAttachments.length ? { attachments: messageAttachments } : undefined,
               }),
               {
                 id: pendingAssistantMessageId,
@@ -207,6 +248,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
               content: messageContent,
               now: messageCreatedAt,
               clientMessageId,
+              metadata: messageAttachments.length ? { attachments: messageAttachments } : undefined,
             }),
       );
       setApprovalBusyId(null);
@@ -215,6 +257,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
         sessionId: activeSession.id,
         content: messageContent,
         attachments: messageAttachments,
+        fileReferences: messageReferences.fileReferences,
         mode: requestedMode,
         taskId: requestedMode === "supplement" ? task?.id ?? activeTaskId ?? undefined : undefined,
         newTask: requestedMode === "new" ? true : undefined,
@@ -305,10 +348,11 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
       return;
     }
 
+    const queuedReferences = buildPromptAttachmentsWithReferences(prompt.trim(), promptAttachments);
     const queued: QueuedPromptSubmission = {
       id: `queued_${Date.now()}`,
       content: prompt.trim() || "Please review the attached file.",
-      attachments: promptAttachments,
+      attachments: queuedReferences.attachments,
       mode,
       createdAt: Date.now(),
     };
@@ -371,6 +415,40 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
     ]);
   }
 
+  function addSlashCommandMessage(
+    command: string,
+    markdown: string,
+    options: {
+      args?: string;
+      eventId?: string;
+      status?: "completed" | "running" | "failed" | "warning";
+      summary?: string;
+      title?: string;
+    } = {},
+  ) {
+    const now = Date.now();
+    const normalizedCommand = command.startsWith("/") ? command : `/${command}`;
+    const safeEventId = options.eventId ??
+      `${normalizedCommand.replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "") || "command"}_${now}`;
+    setChatMessages((current) =>
+      appendSpecialEventMessage(current, {
+        kind: "slash_command",
+        sessionId: session?.id ?? "",
+        taskId: task?.id ?? "system",
+        content: markdown,
+        title: options.title ?? `${normalizedCommand} result`,
+        summary: options.summary,
+        status: options.status ?? "completed",
+        eventId: safeEventId,
+        metadata: {
+          command: normalizedCommand,
+          args: options.args ?? "",
+        },
+        now,
+      }),
+    );
+  }
+
   function handleStopPrompt() {
     clearPendingAssistantTokens();
     setChatMessages((current) => stopStreamingMessages(current, session?.id));
@@ -406,10 +484,19 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
           if (created.length === 0 && existing.length === 0) {
             lines.push("", "No memory files were created.");
           }
-          addSystemMessage(lines.join("\n"));
+          addSlashCommandMessage("/init", lines.join("\n"), {
+            args: cmd.args,
+            summary: created.length > 0
+              ? `Created ${created.length} workspace memory file${created.length === 1 ? "" : "s"}`
+              : "Workspace memory files already exist",
+          });
           addToast("success", "Initialized workspace memory files.");
         } catch (err: unknown) {
-          addSystemMessage(`Initialization failed: ${err instanceof Error ? err.message : String(err)}`);
+          addSlashCommandMessage("/init", `Initialization failed: ${err instanceof Error ? err.message : String(err)}`, {
+            args: cmd.args,
+            status: "failed",
+            summary: "Initialization failed",
+          });
         }
         break;
       }
@@ -418,7 +505,10 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
           (c) => `**${c.name}**${c.argsHint ? ` ${c.argsHint}` : ""} - ${c.description}`,
         );
         const helpText = `**可用命令：**\n\n${lines.join("\n")}`;
-        addSystemMessage(helpText);
+        addSlashCommandMessage("/help", helpText, {
+          args: cmd.args,
+          summary: `${SLASH_COMMANDS.length} commands available`,
+        });
         break;
       }
       case "clear":
@@ -427,26 +517,42 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
         break;
       case "compact": {
         if (!session) {
-          addSystemMessage("没有活跃会话，无法压缩上下文。");
+          addSlashCommandMessage("/compact", "没有活跃会话，无法压缩上下文。", {
+            args: cmd.args,
+            status: "warning",
+            summary: "No active session",
+          });
           break;
         }
         try {
           const result = await runtimeClient.compactSession({ sessionId: session.id });
           if (result.strategy === "none" || result.tokensBefore === 0) {
-            addSystemMessage("会话消息为空，无需压缩。");
+            addSlashCommandMessage("/compact", "会话消息为空，无需压缩。", {
+              args: cmd.args,
+              summary: "No messages to compact",
+            });
           } else {
             const saved = result.tokensBefore - result.tokensAfter;
-            addSystemMessage(
+            addSlashCommandMessage(
+              "/compact",
               `**上下文压缩完成**\n\n` +
               `- 策略：${result.strategy}\n` +
               `- 压缩前：${result.tokensBefore} tokens\n` +
               `- 压缩后：${result.tokensAfter} tokens\n` +
               `- 节省：${saved > 0 ? saved : 0} tokens` +
               (result.summary ? `\n\n**摘要：**\n${result.summary.slice(0, 500)}` : ""),
+              {
+                args: cmd.args,
+                summary: `Saved ${saved > 0 ? saved : 0} tokens`,
+              },
             );
           }
         } catch (err: unknown) {
-          addSystemMessage(`压缩失败：${err instanceof Error ? err.message : String(err)}`);
+          addSlashCommandMessage("/compact", `压缩失败：${err instanceof Error ? err.message : String(err)}`, {
+            args: cmd.args,
+            status: "failed",
+            summary: "Compaction failed",
+          });
         }
         break;
       }
@@ -461,17 +567,26 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
         if (task) {
           statusLines.push(`**任务：** ${task.id} - ${formatStatusLabel(task.status)}`);
         }
-        addSystemMessage(statusLines.join("\n"));
+        addSlashCommandMessage("/status", statusLines.join("\n"), {
+          args: cmd.args,
+          summary: hostStatusText,
+        });
         break;
       }
       case "model":
         if (cmd.args) {
           setProviderSettings((current: any) => ({ ...current, model: cmd.args }));
+          addSlashCommandMessage("/model", `**模型已切换：** ${cmd.args}`, {
+            args: cmd.args,
+            summary: cmd.args,
+          });
           addToast("success", `模型已切换为：${cmd.args}`);
         } else {
-          addSystemMessage(
-            `**当前模型：** ${providerSettings.model || providerSettings.name || "未配置模型"}`,
-          );
+          const modelName = providerSettings.model || providerSettings.name || "未配置模型";
+          addSlashCommandMessage("/model", `**当前模型：** ${modelName}`, {
+            args: cmd.args,
+            summary: modelName,
+          });
         }
         break;
       case "config": {
@@ -484,26 +599,75 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
           `**最大上下文：** ${providerSettings.maxContextTokens}`,
           `**超时：** ${providerSettings.timeout}s`,
         ];
-        addSystemMessage(configLines.join("\n"));
+        addSlashCommandMessage("/config", configLines.join("\n"), {
+          args: cmd.args,
+          summary: `${formatRuntimeModeLabel(providerSettings.mode)} · ${providerSettings.model || "(默认)"}`,
+        });
         break;
       }
       case "mcp": {
         if (cmd.args === "refresh") {
-          addSystemMessage("正在刷新 MCP 工具...");
-          handleRefreshMcpTools().then(() => {
-            addSystemMessage(formatMcpSummary(mcpServers));
+          const eventId = `mcp_refresh_${Date.now()}`;
+          addSlashCommandMessage("/mcp", "正在刷新 MCP 工具...", {
+            args: cmd.args,
+            eventId,
+            status: "running",
+            summary: "Refreshing MCP tools",
           });
+          handleRefreshMcpTools()
+            .then(() => {
+              addSlashCommandMessage("/mcp", "MCP 工具刷新请求已完成。", {
+                args: cmd.args,
+                eventId,
+                summary: "Refresh completed",
+              });
+            })
+            .catch((err: unknown) => {
+              addSlashCommandMessage("/mcp", `MCP 工具刷新失败：${err instanceof Error ? err.message : String(err)}`, {
+                args: cmd.args,
+                eventId,
+                status: "failed",
+                summary: "Refresh failed",
+              });
+            });
         } else {
-          addSystemMessage(formatMcpSummary(mcpServers));
+          const enabled = mcpServers.filter((server) => server.enabled).length;
+          addSlashCommandMessage("/mcp", formatMcpSummary(mcpServers), {
+            args: cmd.args,
+            summary: `${enabled}/${mcpServers.length} enabled`,
+          });
         }
         break;
       }
       case "skills": {
         if (cmd.args === "refresh") {
-          addSystemMessage("正在刷新技能...");
-          refreshSkills();
+          const eventId = `skills_refresh_${Date.now()}`;
+          addSlashCommandMessage("/skills", "正在刷新技能...", {
+            args: cmd.args,
+            eventId,
+            status: "running",
+            summary: "Refreshing skills",
+          });
+          try {
+            refreshSkills();
+            addSlashCommandMessage("/skills", "技能刷新请求已完成。", {
+              args: cmd.args,
+              eventId,
+              summary: "Refresh completed",
+            });
+          } catch (err: unknown) {
+            addSlashCommandMessage("/skills", `技能刷新失败：${err instanceof Error ? err.message : String(err)}`, {
+              args: cmd.args,
+              eventId,
+              status: "failed",
+              summary: "Refresh failed",
+            });
+          }
         } else {
-          addSystemMessage(formatSkillsSummary(skills));
+          addSlashCommandMessage("/skills", formatSkillsSummary(skills), {
+            args: cmd.args,
+            summary: `${skills.length} skill presets`,
+          });
         }
         break;
       }

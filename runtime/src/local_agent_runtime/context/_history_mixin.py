@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from .token_budget import BudgetSection
+
+
+_INLINE_FILE_REFERENCE_PATTERN = r"(^|\s)@([^\s@]+)"
+_INLINE_FILE_REFERENCE_TRAILING = "),.;:!?，。；：！？）"
+_INLINE_FILE_REFERENCE_TERMINATORS = ("，", "。", "；", "！", "？")
+_REFERENCE_FILE_MAX_BYTES = 16_000
+_REFERENCE_FILE_TOTAL_MAX_BYTES = 48_000
 
 
 class HistoryMixin:
@@ -19,9 +27,14 @@ class HistoryMixin:
         session: dict[str, Any],
         *,
         policy: dict[str, Any] | None = None,
+        current_message_metadata: dict[str, Any] | None = None,
     ) -> list[BudgetSection]:
         policy = policy if isinstance(policy, dict) else {}
-        sections: list[BudgetSection] = self._conversation_history_sections(session, policy=policy)
+        sections: list[BudgetSection] = self._conversation_history_sections(
+            session,
+            policy=policy,
+            current_message_metadata=current_message_metadata,
+        )
 
         tasks = self._recent_tasks(session["id"], limit=self._policy_int(policy, "recentTasks", 6))
         total_tasks = len(tasks)
@@ -65,6 +78,7 @@ class HistoryMixin:
         session: dict[str, Any],
         *,
         policy: dict[str, Any] | None = None,
+        current_message_metadata: dict[str, Any] | None = None,
     ) -> list[BudgetSection]:
         policy = policy if isinstance(policy, dict) else {}
         sections: list[BudgetSection] = []
@@ -95,6 +109,14 @@ class HistoryMixin:
                     truncatable=False,
                 )
             )
+        sections.extend(
+            self._referenced_file_sections(
+                session,
+                recent_messages,
+                policy=policy,
+                current_message_metadata=current_message_metadata,
+            )
+        )
         return sections
 
     def _recent_messages(self, session_id: str, *, limit: int) -> list[dict[str, Any]]:
@@ -162,7 +184,166 @@ class HistoryMixin:
                 lines.append(text)
             else:
                 lines.append(f"{role}: {text}")
+            references = self._message_file_references(message)
+            if references:
+                lines.append("Referenced files: " + ", ".join(references[:8]))
         return "\n".join(lines)
+
+    def _referenced_file_sections(
+        self,
+        session: dict[str, Any],
+        messages: list[dict[str, Any]],
+        *,
+        policy: dict[str, Any],
+        current_message_metadata: dict[str, Any] | None = None,
+    ) -> list[BudgetSection]:
+        workspace_root = session.get("workspaceRoot")
+        if not isinstance(workspace_root, str) or not workspace_root.strip():
+            return []
+        root = Path(workspace_root).resolve()
+        if not root.exists() or not root.is_dir():
+            return []
+
+        max_files = self._policy_int(policy, "referencedFiles", 6)
+        max_bytes = self._policy_int(policy, "referencedFileMaxBytes", _REFERENCE_FILE_MAX_BYTES)
+        max_total = self._policy_int(policy, "referencedFilesTotalMaxBytes", _REFERENCE_FILE_TOTAL_MAX_BYTES)
+
+        references: list[str] = []
+        for message in messages:
+            for reference in self._message_file_references(message):
+                if reference not in references:
+                    references.append(reference)
+        if current_message_metadata:
+            for reference in self._metadata_file_references(current_message_metadata):
+                if reference not in references:
+                    references.append(reference)
+
+        sections: list[BudgetSection] = []
+        total_bytes = 0
+        for reference in references[:max_files]:
+            if total_bytes >= max_total:
+                break
+            resolved = self._resolve_workspace_reference(root, reference)
+            if resolved is None:
+                continue
+            remaining = max_total - total_bytes
+            text = self._read_referenced_file(resolved, max_bytes=min(max_bytes, remaining))
+            if not text:
+                continue
+            total_bytes += len(text.encode("utf-8", errors="replace"))
+            try:
+                display_path = resolved.relative_to(root).as_posix()
+            except ValueError:
+                display_path = reference
+            sections.append(
+                BudgetSection(
+                    name=f"referenced_file:{display_path}",
+                    text="\n".join(
+                        [
+                            f"Referenced file content: {display_path}",
+                            "```text",
+                            text,
+                            "```",
+                        ]
+                    ),
+                    priority=940,
+                    minimum_tokens=48,
+                )
+            )
+        return sections
+
+    def _message_file_references(self, message: dict[str, Any]) -> list[str]:
+        references = self._metadata_file_references(self._message_metadata(message))
+        for reference in self._inline_file_references(message.get("content")):
+            if reference not in references:
+                references.append(reference)
+        return references
+
+    def _message_metadata(self, message: dict[str, Any]) -> dict[str, Any]:
+        metadata = message.get("metadata")
+        if isinstance(metadata, dict):
+            return metadata
+        raw = message.get("metadata_json")
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _metadata_file_references(self, metadata: dict[str, Any]) -> list[str]:
+        references: list[str] = []
+        for key in ("fileReferences", "attachments"):
+            value = metadata.get(key)
+            values = value if isinstance(value, list) else [value] if isinstance(value, str) else []
+            for item in values:
+                if not isinstance(item, str):
+                    continue
+                reference = self._clean_file_reference(item)
+                if reference and reference not in references:
+                    references.append(reference)
+        return references
+
+    def _inline_file_references(self, value: Any) -> list[str]:
+        import re
+
+        references: list[str] = []
+        seen: set[str] = set()
+        for match in re.finditer(_INLINE_FILE_REFERENCE_PATTERN, str(value or "")):
+            reference = self._clean_file_reference(match.group(2) or "")
+            if not reference or reference in seen:
+                continue
+            seen.add(reference)
+            references.append(reference)
+        return references
+
+    def _clean_file_reference(self, value: str) -> str:
+        reference = value.strip().strip("\"'`")
+        for terminator in _INLINE_FILE_REFERENCE_TERMINATORS:
+            if terminator in reference:
+                reference = reference.split(terminator, 1)[0]
+        return reference.rstrip(_INLINE_FILE_REFERENCE_TRAILING).replace("\\", "/").strip()
+
+    def _resolve_workspace_reference(self, root: Path, reference: str) -> Path | None:
+        if not reference or "\x00" in reference:
+            return None
+        candidate = Path(reference)
+        if candidate.is_absolute():
+            try:
+                resolved = candidate.resolve()
+            except (OSError, RuntimeError):
+                return None
+        else:
+            try:
+                resolved = (root / reference).resolve()
+            except (OSError, RuntimeError):
+                return None
+        try:
+            resolved.relative_to(root)
+        except ValueError:
+            return None
+        if not resolved.is_file():
+            return None
+        return resolved
+
+    def _read_referenced_file(self, path: Path, *, max_bytes: int) -> str:
+        if max_bytes <= 0:
+            return ""
+        try:
+            with path.open("rb") as handle:
+                data = handle.read(max_bytes + 1)
+        except OSError:
+            return ""
+        if b"\x00" in data[:4096]:
+            return ""
+        truncated = len(data) > max_bytes
+        text = data[:max_bytes].decode("utf-8", errors="replace").strip()
+        if not text:
+            return ""
+        if truncated:
+            text = f"{text.rstrip()}\n[truncated]"
+        return text
 
     def _task_summary(self, task: dict[str, Any], *, max_chars: int = 220) -> str:
         lines = [

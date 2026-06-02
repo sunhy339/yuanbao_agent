@@ -29,6 +29,54 @@ function normalizeHeadingText(value: string) {
   return value.replace(/^#+\s*/, "").replace(/\s*#+$/, "").trim();
 }
 
+function normalizeHeadingMarkerSpacing(line: string) {
+  const heading = line.match(/^(\s*)(#{1,6}(?:\s+#{1,6})*)\s+(.+)$/);
+  if (!heading) {
+    return line;
+  }
+  const level = Math.min(6, heading[2].replace(/[^#]/g, "").length);
+  return `${heading[1]}${"#".repeat(level)} ${heading[3]}`;
+}
+
+function normalizeMarkdownContent(content: string) {
+  const normalizedLines: string[] = [];
+  let inFence = false;
+
+  const lines = content
+    .replace(/\r\n/g, "\n")
+    .replace(/^(\s*#{1,6})(?=\S)/gm, "$1 ")
+    .split("\n");
+
+  for (const rawLine of lines) {
+    const fence = /^\s*```/.test(rawLine);
+    if (fence) {
+      normalizedLines.push(rawLine);
+      inFence = !inFence;
+      continue;
+    }
+
+    if (inFence) {
+      normalizedLines.push(rawLine);
+      continue;
+    }
+
+    const isIndentedBlockLine = /^\s+(?:[-*]|\d+\.)\s+/.test(rawLine);
+    const blockNormalizedLine = isIndentedBlockLine
+      ? rawLine
+      : rawLine
+      .replace(/([^\n])(\s+#{1,6})(?=\S)/g, "$1\n$2 ")
+      .replace(/^(\s*#{1,6}\s+.+?)(\s+[-*]\s+|\s+\d+\.\s+)/gm, "$1\n$2")
+      .replace(/([^\n])(\s+[-*]\s+)/g, "$1\n$2")
+      .replace(/([^\n])(\s+\d+\.\s+)/g, "$1\n$2");
+
+    blockNormalizedLine
+      .split("\n")
+      .forEach((line) => normalizedLines.push(normalizeHeadingMarkerSpacing(line)));
+  }
+
+  return normalizedLines.join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
 const keywords = new Set([
   "as",
   "async",
@@ -300,7 +348,7 @@ function renderListGroups(items: MarkdownListItem[], keyPrefix: string): JSX.Ele
 export const CleanMarkdown = memo(function CleanMarkdown({ content }: { content: string }) {
   const nodes: JSX.Element[] = [];
   const paragraph: string[] = [];
-  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const lines = normalizeMarkdownContent(content).split("\n");
   let index = 0;
 
   while (index < lines.length) {

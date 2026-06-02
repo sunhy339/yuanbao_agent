@@ -1,0 +1,700 @@
+:root {
+  --haha-bg: #faf9f7;
+  --haha-surface: #ffffff;
+  --haha-surface-muted: #f5f4f1;
+  --haha-line: #e7e1dc;
+  --haha-line-strong: #d9cdc3;
+  --haha-text: #1f2933;
+  --haha-muted: #7a838f;
+  --haha-soft: #9aa4b2;
+  --haha-accent: #a65f3f;
+  --haha-accent-strong: #8f4425;
+  --haha-success: #198754;
+  --haha-danger: #c2412d;
+  --haha-shadow: 0 14px 36px rgba(75, 54, 40, 0.11);
+  --haha-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.haha-composer {
+  position: fixed;
+  z-index: 260;
+  right: calc(var(--session-composer-side-reserve, clamp(620px, 42vw, 1040px)) + 18px);
+  bottom: 16px;
+  left: 24px;
+  display: grid;
+  gap: 9px;
+  pointer-events: none;
+}
+
+.haha-composer[data-layout="default"] {
+  right: 18px;
+}
+
+.haha-composer-card,
+.haha-project-row,
+.haha-queue {
+  pointer-events: auto;
+}
+
+.haha-composer-card {
+  position: relative;
+  overflow: visible;
+  border: 1px solid #dfe5ec;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: var(--haha-shadow);
+}
+
+.haha-composer::before {
+  content: "";
+  position: absolute;
+  right: calc(-1 * (var(--session-composer-side-reserve, clamp(620px, 42vw, 1040px)) + 18px));
+  bottom: calc(100% + 10px);
+  left: -24px;
+  height: 1px;
+  background: var(--haha-line);
+}
+
+.haha-composer[data-layout="default"]::before {
+  right: -18px;
+}
+
+.haha-composer-input {
+  display: block;
+}
+
+.haha-composer-input > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.haha-composer-input textarea {
+  width: 100%;
+  min-height: 88px;
+  max-height: 220px;
+  resize: none;
+  border: 0;
+  border-radius: 18px 18px 0 0;
+  padding: 20px 18px 12px;
+  background: transparent;
+  color: var(--haha-text);
+  font: 15px/1.5 var(--wb-font-ui);
+  outline: 0;
+}
+
+.haha-composer-input textarea::placeholder {
+  color: #8ea0b6;
+}
+
+.haha-composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 58px;
+  border-top: 1px solid #e4ebf2;
+  padding: 12px 14px;
+}
+
+.haha-composer-left,
+.haha-composer-right {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.haha-composer-right {
+  margin-left: auto;
+}
+
+.haha-icon-button,
+.haha-pill-button,
+.haha-context-button,
+.haha-model-button,
+.haha-run-button,
+.haha-stop-button,
+.haha-queue-button,
+.haha-project-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--haha-text);
+  font: 650 13px/1 var(--wb-font-ui);
+  cursor: pointer;
+}
+
+.haha-icon-button {
+  width: 34px;
+  height: 34px;
+  color: #20242a;
+}
+
+.haha-pill-button {
+  min-height: 34px;
+  color: #ff5d2e;
+}
+
+.haha-context-button,
+.haha-model-button {
+  min-height: 34px;
+  padding: 0 10px;
+  background: #f7f7f5;
+}
+
+.haha-model-button strong {
+  font-weight: 760;
+}
+
+.haha-run-button {
+  width: 38px;
+  height: 38px;
+  background: #b16a4b;
+  color: #fff;
+}
+
+.haha-run-button:disabled {
+  background: #decfc6;
+  cursor: not-allowed;
+}
+
+.haha-stop-button,
+.haha-queue-button {
+  min-height: 34px;
+  padding: 0 12px;
+  background: #fee2e2;
+  color: #8f1d1d;
+}
+
+.haha-queue-button {
+  background: #eee7df;
+  color: #78695d;
+}
+
+.haha-menu-root {
+  position: relative;
+  display: inline-flex;
+}
+
+.haha-plus-menu,
+.haha-popover-menu,
+.haha-slash-menu {
+  position: absolute;
+  z-index: 320;
+  overflow: hidden;
+  border: 1px solid var(--haha-line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.99);
+  box-shadow: 0 20px 45px rgba(60, 40, 30, 0.16);
+}
+
+.haha-plus-menu {
+  bottom: calc(100% + 9px);
+  left: 0;
+  width: 230px;
+  padding: 4px;
+}
+
+.haha-popover-menu {
+  right: 0;
+  bottom: calc(100% + 9px);
+  display: grid;
+  min-width: 190px;
+  padding: 5px;
+}
+
+.haha-slash-menu {
+  right: 14px;
+  bottom: 62px;
+  left: 14px;
+  display: grid;
+  padding: 5px;
+}
+
+.haha-plus-menu button,
+.haha-popover-menu button,
+.haha-slash-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--haha-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.haha-popover-menu button[data-selected="true"] {
+  background: #f2eee9;
+  color: var(--haha-accent-strong);
+}
+
+.haha-plus-menu button:hover,
+.haha-popover-menu button:hover,
+.haha-slash-menu button:hover {
+  background: #f6f3ef;
+}
+
+.haha-slash-menu strong {
+  width: 92px;
+  font-family: var(--haha-mono);
+}
+
+.haha-slash-menu span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--haha-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.haha-project-row {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+}
+
+.haha-project-chip {
+  min-height: 30px;
+  border: 1px solid #dbe3eb;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 8px 20px rgba(60, 40, 30, 0.07);
+}
+
+.haha-queue {
+  display: grid;
+  gap: 6px;
+  overflow: hidden;
+  border: 1px solid var(--haha-line);
+  border-radius: 12px;
+  padding: 7px;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.haha-queue-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(4, auto);
+  gap: 6px;
+  align-items: center;
+  min-height: 30px;
+}
+
+.haha-queue-item span {
+  overflow: hidden;
+  color: var(--haha-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.haha-queue-item button {
+  border: 0;
+  border-radius: 7px;
+  padding: 4px 7px;
+  background: #f5f1ed;
+}
+
+.haha-session {
+  --haha-pane-width: clamp(520px, 42vw, 760px);
+  display: grid;
+  height: 100%;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr) var(--haha-pane-width);
+  background: var(--haha-bg);
+}
+
+.haha-session[data-pane="closed"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.haha-session-main {
+  position: relative;
+  overflow: auto;
+  min-width: 0;
+  padding: 24px 28px calc(var(--wb-composer-live-height, 190px) + 36px);
+}
+
+.haha-transcript {
+  display: grid;
+  gap: 12px;
+  max-width: 920px;
+  margin: 0 auto;
+}
+
+.haha-message {
+  display: flex;
+  min-width: 0;
+}
+
+.haha-user {
+  justify-content: flex-end;
+}
+
+.haha-user p {
+  max-width: min(760px, 76%);
+  margin: 0;
+  border: 1px solid #e3ded8;
+  border-radius: 16px;
+  padding: 13px 16px;
+  background: #eeece8;
+  color: #2f2a25;
+  line-height: 1.55;
+}
+
+.haha-assistant {
+  justify-content: flex-start;
+}
+
+.haha-assistant-shell {
+  max-width: min(760px, 76%);
+  border: 1px solid var(--haha-line);
+  border-radius: 16px;
+  border-top-left-radius: 8px;
+  padding: 14px 17px;
+  background: var(--haha-surface);
+  color: var(--haha-text);
+  box-shadow: 0 5px 18px rgba(60, 40, 30, 0.06);
+}
+
+.haha-assistant[data-layout="document"] .haha-assistant-shell {
+  width: 100%;
+  max-width: 100%;
+}
+
+.haha-markdown {
+  color: inherit;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.haha-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.haha-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.haha-markdown p {
+  margin: 0 0 10px;
+  white-space: pre-wrap;
+}
+
+.haha-markdown h2,
+.haha-markdown h3,
+.haha-markdown h4 {
+  margin: 16px 0 8px;
+  color: #17202c;
+  line-height: 1.35;
+}
+
+.haha-markdown ul,
+.haha-markdown ol {
+  margin: 8px 0 12px;
+  padding-left: 24px;
+}
+
+.haha-markdown li {
+  margin: 4px 0;
+}
+
+.haha-markdown code {
+  border-radius: 5px;
+  padding: 2px 5px;
+  background: #f1eee9;
+  color: #8f4425;
+  font-family: var(--haha-mono);
+  font-size: 0.92em;
+}
+
+.haha-code-block,
+.haha-runtime-output {
+  overflow: hidden;
+  margin: 12px 0;
+  border: 1px solid var(--haha-line);
+  border-radius: 10px;
+  background: #f7f8fa;
+}
+
+.haha-code-block figcaption,
+.haha-runtime-output figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--haha-line);
+  padding: 7px 10px;
+  color: var(--haha-muted);
+  font: 700 11px/1 var(--haha-mono);
+}
+
+.haha-code-block button,
+.haha-runtime-output button {
+  border: 1px solid var(--haha-line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--haha-muted);
+}
+
+.haha-code-block pre,
+.haha-runtime-output pre {
+  max-height: 360px;
+  margin: 0;
+  overflow: auto;
+  padding: 11px 13px;
+  color: #1f2937;
+  font: 12.5px/1.55 var(--haha-mono);
+}
+
+.haha-thinking {
+  color: var(--haha-muted);
+  font-size: 12px;
+}
+
+.haha-thinking button,
+.haha-tool-block > button,
+.haha-runtime-head {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--haha-line);
+  border-radius: 10px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--haha-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.haha-thinking button {
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  border-color: transparent;
+  background: transparent;
+}
+
+.haha-thinking strong {
+  font-style: italic;
+}
+
+.haha-thinking span,
+.haha-tool-block span,
+.haha-runtime-head span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--haha-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.haha-thinking time {
+  color: var(--haha-soft);
+  font-family: var(--haha-mono);
+  font-weight: 700;
+}
+
+.haha-thinking pre,
+.haha-tool-block pre {
+  max-height: 280px;
+  margin: 6px 0 0 24px;
+  overflow: auto;
+  border: 1px solid var(--haha-line);
+  border-radius: 9px;
+  padding: 10px;
+  background: #fff;
+  font: 12px/1.55 var(--haha-mono);
+  white-space: pre-wrap;
+}
+
+.haha-tool-block,
+.haha-runtime-block,
+.haha-worklog {
+  max-width: 920px;
+}
+
+.haha-tool-block strong,
+.haha-runtime-head strong {
+  color: #252a31;
+  font-family: var(--haha-mono);
+  font-size: 12px;
+}
+
+.haha-tool-block em {
+  border: 1px solid var(--haha-line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--haha-success);
+  background: #fff;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 760;
+}
+
+.haha-tool-block[data-error="true"] em {
+  color: var(--haha-danger);
+}
+
+.haha-runtime-detail {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0 0 24px;
+}
+
+.haha-approval-actions,
+.haha-runtime-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.haha-approval-actions button,
+.haha-runtime-actions button {
+  min-height: 30px;
+  border: 1px solid var(--haha-line);
+  border-radius: 8px;
+  padding: 0 11px;
+  background: #fff;
+  color: var(--haha-accent-strong);
+  font-weight: 720;
+}
+
+.haha-approval-actions button:first-child {
+  background: #f1f7f2;
+  color: var(--haha-success);
+}
+
+.haha-file-list {
+  overflow: hidden;
+  border: 1px solid var(--haha-line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.haha-file-list button {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  border: 0;
+  border-bottom: 1px solid var(--haha-line);
+  padding: 10px 12px;
+  background: transparent;
+  text-align: left;
+}
+
+.haha-file-list button:last-child {
+  border-bottom: 0;
+}
+
+.haha-file-list code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.haha-file-list span {
+  color: var(--haha-success);
+  font-family: var(--haha-mono);
+}
+
+.haha-file-pane {
+  min-width: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--haha-line);
+  background: #fff;
+}
+
+.haha-file-pane > header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 46px;
+  border-bottom: 1px solid var(--haha-line);
+  padding: 0 14px;
+}
+
+.haha-file-pane > header strong {
+  margin-right: auto;
+}
+
+.haha-file-pane > header span {
+  border: 1px solid #dcefe4;
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--haha-success);
+  font-size: 11px;
+}
+
+.haha-file-pane > header button,
+.haha-pane-restore,
+.haha-bottom-button {
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--haha-line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--haha-muted);
+}
+
+.haha-file-pane .file-workspace-panel {
+  height: calc(100% - 46px);
+}
+
+.haha-pane-restore {
+  position: absolute;
+  top: 72px;
+  right: 16px;
+  z-index: 30;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.haha-bottom-button {
+  position: fixed;
+  z-index: 240;
+  left: calc((100vw - var(--session-composer-side-reserve, 0px)) / 2);
+  bottom: calc(var(--wb-composer-live-height, 190px) + 22px);
+  width: 38px;
+  height: 38px;
+  box-shadow: 0 10px 24px rgba(60, 40, 30, 0.12);
+}
+
+.haha-empty-note {
+  border: 1px dashed var(--haha-line);
+  border-radius: 12px;
+  padding: 20px;
+  color: var(--haha-muted);
+  text-align: center;
+}
+
+.haha-session-empty {
+  display: grid;
+  place-items: center;
+}
+
+@media (max-width: 1180px) {
+  .haha-composer {
+    right: 18px;
+    left: 18px;
+  }
+
+  .haha-session {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .haha-file-pane {
+    display: none;
+  }
+}

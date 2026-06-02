@@ -133,6 +133,19 @@ function draftFromServer(server: McpServerRecord): McpServerDraft {
   };
 }
 
+function validateMcpDraft(draft: McpServerDraft): string | null {
+  if (!draft.name.trim()) {
+    return "请输入服务器名称。";
+  }
+  if (draft.transport === "stdio" && !draft.command.trim()) {
+    return "请输入启动命令。";
+  }
+  if (draft.transport !== "stdio" && !draft.url.trim()) {
+    return "请输入服务器 URL。";
+  }
+  return null;
+}
+
 export function McpWorkspace({
   servers,
   loading = false,
@@ -154,13 +167,32 @@ export function McpWorkspace({
   const [formMode, setFormMode] = useState<"create" | "edit">("create");
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(servers[0]?.id ?? null);
+  const [serverQuery, setServerQuery] = useState("");
+  const [serverFilter, setServerFilter] = useState<"all" | "enabled" | "disabled">("all");
   const enabledCount = useMemo(() => servers.filter((server) => server.enabled).length, [servers]);
-  const stdioCount = useMemo(() => servers.filter((server) => server.transport === "stdio").length, [servers]);
+  const visibleServers = useMemo(() => {
+    const query = serverQuery.trim().toLowerCase();
+    return servers.filter((server) => {
+      if (serverFilter === "enabled" && !server.enabled) return false;
+      if (serverFilter === "disabled" && server.enabled) return false;
+      if (!query) return true;
+      return [
+        server.name,
+        server.transport,
+        server.command ?? "",
+        server.url ?? "",
+        ...(server.args ?? []),
+        ...Object.keys(server.env ?? {}),
+        ...Object.keys(server.headers ?? {}),
+      ].some((value) => value.toLowerCase().includes(query));
+    });
+  }, [serverFilter, serverQuery, servers]);
   const selectedServer = servers.find((server) => server.id === expandedId) ?? servers[0] ?? null;
+  const draftError = validateMcpDraft(draft);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!draft.name.trim()) {
+    if (draftError) {
       return;
     }
     try {
@@ -208,6 +240,12 @@ export function McpWorkspace({
     setDraft(initialDraft);
   }
 
+  function requestDeleteServer(server: McpServerRecord) {
+    if (window.confirm(`删除 MCP 服务器“${server.name}”？`)) {
+      void onDeleteServer(server.id);
+    }
+  }
+
   useEffect(() => {
     if (editingServerId && !servers.some((server) => server.id === editingServerId)) {
       resetForm();
@@ -216,30 +254,12 @@ export function McpWorkspace({
 
   return (
     <main className="mcp-workspace" aria-labelledby="mcp-title">
-      <section className="mcp-hero">
+      <section className="mcp-toolbar" aria-label="MCP 管理栏">
         <div>
-          <p className="mcp-kicker">能力中心</p>
-          <h1 id="mcp-title">MCP 控制台</h1>
-          <p>
-            管理本地运行时暴露的 Model Context Protocol 服务器。这里创建的服务器会由后端持久化，
-            并可将工具注册到智能体运行时。
-          </p>
-          <div className="mcp-hero-telemetry" aria-label="MCP 运行时遥测">
-            <span>
-              <strong>{enabledCount}</strong>
-              已启用通道
-            </span>
-            <span>
-              <strong>{formatTimestamp(lastRefresh?.refreshed)}</strong>
-              上次刷新
-            </span>
-            <span>
-              <strong>{selectedServer?.name ?? "无"}</strong>
-              当前检查端点
-            </span>
-          </div>
+          <h1 id="mcp-title">MCP</h1>
+          <p>{enabledCount}/{servers.length} 已启用 · 上次刷新 {formatTimestamp(lastRefresh?.refreshed)}</p>
         </div>
-        <div className="mcp-hero-actions">
+        <div className="mcp-toolbar-actions">
           <Button type="button" onClick={() => void onRefreshServers()} loading={loading} variant="secondary">
             {loading ? "刷新中..." : "刷新服务器"}
           </Button>
@@ -262,25 +282,6 @@ export function McpWorkspace({
           ) : null}
         </section>
       ) : null}
-
-      <section className="mcp-metrics" aria-label="MCP 概览">
-        <div>
-          <span>{servers.length}</span>
-          <small>服务器</small>
-        </div>
-        <div>
-          <span>{enabledCount}</span>
-          <small>已启用</small>
-        </div>
-        <div>
-          <span>{stdioCount}</span>
-          <small>stdio</small>
-        </div>
-        <div>
-          <span>{lastRefresh?.refreshed ?? 0}</span>
-          <small>已刷新工具</small>
-        </div>
-      </section>
 
       <section className="mcp-grid">
         <form className="mcp-panel mcp-create-panel" onSubmit={handleSubmit}>
@@ -423,7 +424,8 @@ export function McpWorkspace({
             <span>创建后启用</span>
           </label>
           <div className="mcp-form-actions">
-            <Button type="submit" className="mcp-primary-action" disabled={loading || !draft.name.trim()} loading={loading} variant="primary">
+            <p className="mcp-form-hint" data-tone={draftError ? "danger" : "neutral"}>{draftError ?? "配置完整后可创建服务器。"}</p>
+            <Button type="submit" className="mcp-primary-action" disabled={loading || Boolean(draftError)} loading={loading} variant="primary">
               {formMode === "edit" ? "保存服务器" : "创建服务器"}
             </Button>
           </div>
@@ -435,10 +437,39 @@ export function McpWorkspace({
               <p className="mcp-kicker">服务器</p>
               <h2>运行时注册表</h2>
             </div>
+            <small>{visibleServers.length}/{servers.length}</small>
+          </div>
+          <div className="mcp-list-tools" aria-label="服务器筛选">
+            <label>
+              <span>搜索</span>
+              <input
+                aria-label="搜索 MCP 服务器"
+                value={serverQuery}
+                placeholder="名称、命令、URL、env"
+                onChange={(event) => setServerQuery(event.currentTarget.value)}
+              />
+            </label>
+            <div className="mcp-filter-tabs" role="tablist" aria-label="MCP 状态筛选">
+              {[
+                { id: "all", label: "全部" },
+                { id: "enabled", label: "启用" },
+                { id: "disabled", label: "停用" },
+              ].map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={serverFilter === option.id}
+                  onClick={() => setServerFilter(option.id as typeof serverFilter)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="mcp-server-list">
-            {servers.length ? (
-              servers.map((server) => (
+            {visibleServers.length ? (
+              visibleServers.map((server) => (
                 <button
                   key={server.id}
                   type="button"
@@ -453,6 +484,11 @@ export function McpWorkspace({
                   <StatusBadge label={server.enabled ? "已启用" : "已停用"} tone={server.enabled ? "success" : "neutral"} compact />
                 </button>
               ))
+            ) : servers.length ? (
+              <div className="mcp-empty-state">
+                <strong>没有匹配的 MCP 服务器</strong>
+                <small>调整搜索词或状态筛选后再查看。</small>
+              </div>
             ) : (
               <div className="mcp-empty-state">
                 <strong>暂无 MCP 服务器</strong>
@@ -535,7 +571,7 @@ export function McpWorkspace({
                 <Button
                   type="button"
                   className="is-danger"
-                  onClick={() => void onDeleteServer(selectedServer.id)}
+                  onClick={() => requestDeleteServer(selectedServer)}
                   disabled={busyServerId === selectedServer.id}
                   loading={busyServerId === selectedServer.id}
                   size="sm"

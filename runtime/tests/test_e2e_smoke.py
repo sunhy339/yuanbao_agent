@@ -349,6 +349,13 @@ def _assert_trace_covers_e2e(runtime: SimpleNamespace, task_id: str) -> None:
     assert "approval.resolved" in trace_types
     assert "task.completed" in trace_types
     assert {"provider", "tool", "patch", "approval", "task"}.issubset(trace_sources)
+    started = next(event for event in trace if event["type"] == "tool.started")
+    assert started["payload"]["target"]
+    assert started["payload"]["inputSummary"]
+    completed = next(event for event in trace if event["type"] == "tool.completed")
+    assert completed["payload"]["target"]
+    assert completed["payload"]["inputSummary"]
+    assert completed["payload"]["resultSummary"]
 
 
 def _run_patch_approval_smoke(runtime: SimpleNamespace, workspace_root: Path) -> dict[str, Any]:
@@ -411,6 +418,9 @@ def test_approved_write_file_records_changed_files(tmp_path: Path) -> None:
         )
         assert task["status"] == "waiting_approval"
         approval_requested = next(event for event in runtime.events if event["type"] == "approval.requested")
+        assert approval_requested["payload"]["filesChanged"] == 1
+        assert approval_requested["payload"]["changedPaths"] == ["notes.txt"]
+        assert "+++ b/notes.txt" in approval_requested["payload"]["diffText"]
         _rpc(
             runtime,
             "approval.submit",

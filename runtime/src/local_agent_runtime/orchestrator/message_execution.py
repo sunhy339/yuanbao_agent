@@ -11,7 +11,7 @@ import re
 import time
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,7 @@ class MessageExecutionMixin:
             "approval.resolved",
             "command.started",
             "command.completed",
+            "command.cancelled",
             "command.failed",
             "patch.proposed",
         }:
@@ -126,6 +127,8 @@ class MessageExecutionMixin:
             return "Subtask command started"
         if event_type == "command.completed":
             return "Subtask command completed"
+        if event_type == "command.cancelled":
+            return "Subtask command cancelled"
         if event_type == "command.failed":
             return "Subtask command failed"
         if event_type == "patch.proposed":
@@ -279,6 +282,8 @@ class MessageExecutionMixin:
                 return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
             if react_result["status"] == "paused":
                 return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
+            if react_result["status"] == "cancelled":
+                return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
             if react_result["status"] == "provider_preflight_split":
                 return self._execute_provider_preflight_split(
                     session_id=session_id,
@@ -381,6 +386,8 @@ class MessageExecutionMixin:
             if react_result["status"] == "waiting_approval":
                 return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
             if react_result["status"] == "paused":
+                return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
+            if react_result["status"] == "cancelled":
                 return {"task": self._store.get_task({"taskId": task["id"]})["task"]}
             if react_result["status"] == "provider_preflight_split":
                 return self._execute_provider_preflight_split(
@@ -2180,6 +2187,7 @@ class MessageExecutionMixin:
         skill_id: str | None = None,
     ) -> None:
         background_store: SQLiteStore | None = None
+        background_cleanup: Callable[[], None] | None = None
         worker = self
         try:
             started_at = time.monotonic()
@@ -2187,7 +2195,7 @@ class MessageExecutionMixin:
                 "Background message execution started for task=%s session=%s routing=%s",
                 task["id"], session_id, routing,
             )
-            worker, background_store = self._background_worker_orchestrator()
+            worker, background_store, background_cleanup = self._background_worker_orchestrator()
             worker._publish(
                 session_id=session_id,
                 task=task,
@@ -2293,15 +2301,21 @@ class MessageExecutionMixin:
                 error_code="BACKGROUND_LOOP_FAILED",
             )
         finally:
+            if background_cleanup is not None:
+                try:
+                    background_cleanup()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Background worker cleanup failed: %s", exc, exc_info=True)
             if background_store is not None:
                 background_store.close()
 
-    def _background_worker_orchestrator(self) -> tuple["Orchestrator", SQLiteStore | None]:
+    def _background_worker_orchestrator(self) -> tuple["Orchestrator", SQLiteStore | None, Callable[[], None] | None]:
         database_path = str(getattr(self._store, "database_path", ":memory:"))
         if database_path == ":memory:":
-            return self, None
+            return self, None, None
 
         from .service import Orchestrator  # lazy to avoid circular import
+        from ..tools.computer_use import build_env_computer_use_executor
 
         store = SQLiteStore(database_path)
         config = store.get_config({})["config"]
@@ -2315,6 +2329,7 @@ class MessageExecutionMixin:
             retriever=MemoryRetriever(MemoryStore(store)),
         )
         bg_scratchpad = Scratchpad(store)
+        computer_use_executor = build_env_computer_use_executor()
         tool_registry = ToolRegistry(
             build_builtin_tools(
                 policy_guard=policy_guard,
@@ -2322,8 +2337,10 @@ class MessageExecutionMixin:
                 subagent_service=subagent_service,
                 memory_manager=bg_memory_manager,
                 scratchpad=bg_scratchpad,
+                computer_use_executor=computer_use_executor,
             )
         )
+        close_computer_use_executor = getattr(computer_use_executor, "close", None)
         return (
             Orchestrator(
                 store=store,
@@ -2334,4 +2351,5 @@ class MessageExecutionMixin:
                 _skip_orphan_cleanup=True,
             ),
             store,
+            close_computer_use_executor if callable(close_computer_use_executor) else None,
         )

@@ -368,3 +368,180 @@
 .yb-v2[data-theme="light"] .appearance-swatch-row button {
   background: rgba(248, 250, 252, 0.84);
 }
+
+/* Haha-clean appearance settings pass. */
+.yb-v2 .appearance-workspace {
+  gap: 10px;
+  min-height: 100%;
+  padding: 18px 22px 30px;
+  color: #202124;
+  background: #fbfaf7;
+}
+
+.yb-v2 .appearance-command-strip,
+.yb-v2 .appearance-control-panel,
+.yb-v2 .appearance-preview-panel {
+  border: 1px solid #e8dfd8;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: none;
+}
+
+.yb-v2 .appearance-command-strip {
+  grid-template-columns: minmax(280px, 1fr) minmax(360px, auto);
+  gap: 12px;
+  padding: 12px;
+}
+
+.yb-v2 .appearance-command-strip h1 {
+  margin-top: 2px;
+  font-size: 20px;
+  line-height: 1.18;
+}
+
+.yb-v2 .appearance-command-strip p:not(.yb-kicker) {
+  margin-top: 5px;
+  color: #6d635d;
+  font-size: 13px;
+  line-height: 1.48;
+}
+
+.yb-v2 .appearance-command-strip dl {
+  grid-template-columns: repeat(5, minmax(66px, 1fr));
+  gap: 6px;
+}
+
+.yb-v2 .appearance-command-strip dl div,
+.yb-v2 .appearance-choice,
+.yb-v2 .appearance-control-block,
+.yb-v2 .appearance-toggle,
+.yb-v2 .appearance-preview-window,
+.yb-v2 .appearance-slider-grid label,
+.yb-v2 .appearance-preview-body div {
+  border: 1px solid #e8dfd8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.yb-v2 .appearance-command-strip dl div {
+  min-height: 42px;
+  padding: 7px 8px;
+  background: #f8f6f2;
+}
+
+.yb-v2 .appearance-command-strip dt,
+.yb-v2 .appearance-preview-body span,
+.yb-v2 .appearance-preview-window footer span {
+  color: #9a8d84;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.yb-v2 .appearance-command-strip dd {
+  color: #202124;
+  font-size: 14px;
+}
+
+.yb-v2 .appearance-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.36fr);
+  gap: 10px;
+}
+
+.yb-v2 .appearance-control-panel,
+.yb-v2 .appearance-preview-panel {
+  padding: 12px;
+}
+
+.yb-v2 .appearance-control-panel > header {
+  margin-bottom: 10px;
+}
+
+.yb-v2 .appearance-control-panel h2,
+.yb-v2 .appearance-preview-panel h2 {
+  color: #202124;
+  font-size: 18px;
+}
+
+.yb-v2 .appearance-option-grid {
+  gap: 8px;
+}
+
+.yb-v2 .appearance-choice {
+  min-height: 94px;
+  padding: 10px;
+}
+
+.yb-v2 .appearance-choice[data-selected="true"] {
+  border-color: #d4c4ba;
+  background: #f4eee9;
+  box-shadow: inset 2px 0 0 #9b5b3c;
+}
+
+.yb-v2 .appearance-choice span,
+.yb-v2 .appearance-preview-note,
+.yb-v2 .appearance-toggle small {
+  color: #6d635d;
+}
+
+.yb-v2 .appearance-control-block {
+  margin-top: 8px;
+  padding: 10px;
+}
+
+.yb-v2 .appearance-control-block h3 {
+  color: #202124;
+  font-size: 15px;
+}
+
+.yb-v2 .appearance-segmented button,
+.yb-v2 .appearance-swatch-row button {
+  min-height: 30px;
+  border: 1px solid #e8dfd8;
+  border-radius: 7px;
+  color: #6d635d;
+  background: #ffffff;
+}
+
+.yb-v2 .appearance-segmented button[aria-pressed="true"],
+.yb-v2 .appearance-swatch-row button[aria-pressed="true"] {
+  color: #ffffff;
+  border-color: #9b5b3c;
+  background: #9b5b3c;
+}
+
+.yb-v2 .appearance-slider-grid {
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.yb-v2 .appearance-slider-grid label,
+.yb-v2 .appearance-toggle {
+  padding: 10px;
+  color: #51463f;
+}
+
+.yb-v2 .appearance-preview-window {
+  background: #f8f6f2;
+}
+
+.yb-v2 .appearance-preview-window[data-preview-theme="light"] {
+  background: #f8f6f2;
+}
+
+.yb-v2 .appearance-preview-body div {
+  background: #ffffff;
+}
+
+@media (max-width: 1180px) {
+  .yb-v2 .appearance-workspace {
+    padding: 14px;
+  }
+
+  .yb-v2 .appearance-command-strip,
+  .yb-v2 .appearance-grid,
+  .yb-v2 .appearance-option-grid,
+  .yb-v2 .appearance-control-block,
+  .yb-v2 .appearance-slider-grid {
+    grid-template-columns: 1fr;
+  }
+}

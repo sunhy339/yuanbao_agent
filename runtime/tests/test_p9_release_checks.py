@@ -132,13 +132,39 @@ class TestEventCompatAssistantToken:
             session_id="s1",
             task=task,
             event_type="tool.started",
-            payload={"toolCallId": "tc_1", "toolName": "run_command", "arguments": {"command": "npm test"}},
+            payload={
+                "toolCallId": "tc_1",
+                "parentToolUseId": "tc_parent",
+                "toolGroupId": "tgrp_1",
+                "toolIndex": 1,
+                "toolTotal": 3,
+                "toolCategory": "verification",
+                "toolPhaseId": "verification",
+                "toolPhaseLabel": "验证",
+                "toolSemanticParentId": "phase:verification",
+                "toolSemanticParentLabel": "验证",
+                "toolName": "run_command",
+                "arguments": {"command": "npm test"},
+            },
         )
         runtime.orchestrator._publish(
             session_id="s1",
             task=task,
             event_type="tool.completed",
-            payload={"toolCallId": "tc_1", "toolName": "run_command", "result": {"status": "completed"}},
+            payload={
+                "toolCallId": "tc_1",
+                "parentToolUseId": "tc_parent",
+                "toolGroupId": "tgrp_1",
+                "toolIndex": 1,
+                "toolTotal": 3,
+                "toolCategory": "verification",
+                "toolPhaseId": "verification",
+                "toolPhaseLabel": "验证",
+                "toolSemanticParentId": "phase:verification",
+                "toolSemanticParentLabel": "验证",
+                "toolName": "run_command",
+                "result": {"status": "completed"},
+            },
         )
 
         types = [e.type for e in collected]
@@ -147,9 +173,26 @@ class TestEventCompatAssistantToken:
         assert "tool_result" in types
         tool_use = next(e for e in collected if e.type == "tool_use_complete")
         assert tool_use.payload["toolUseId"] == "tc_1"
+        assert tool_use.payload["parentToolUseId"] == "tc_parent"
+        assert tool_use.payload["toolGroupId"] == "tgrp_1"
+        assert tool_use.payload["toolIndex"] == 1
+        assert tool_use.payload["toolTotal"] == 3
+        assert tool_use.payload["toolCategory"] == "verification"
+        assert tool_use.payload["toolPhaseId"] == "verification"
+        assert tool_use.payload["toolPhaseLabel"] == "验证"
+        assert tool_use.payload["toolSemanticParentId"] == "phase:verification"
+        assert tool_use.payload["toolSemanticParentLabel"] == tool_use.payload["toolPhaseLabel"]
         assert tool_use.payload["input"]["command"] == "npm test"
         tool_result = next(e for e in collected if e.type == "tool_result")
         assert tool_result.payload["toolUseId"] == "tc_1"
+        assert tool_result.payload["parentToolUseId"] == "tc_parent"
+        assert tool_result.payload["toolGroupId"] == "tgrp_1"
+        assert tool_result.payload["toolIndex"] == 1
+        assert tool_result.payload["toolTotal"] == 3
+        assert tool_result.payload["toolCategory"] == "verification"
+        assert tool_result.payload["toolPhaseLabel"] == "验证"
+        assert tool_result.payload["toolSemanticParentId"] == "phase:verification"
+        assert tool_result.payload["toolSemanticParentLabel"] == tool_result.payload["toolPhaseLabel"]
         assert tool_result.payload["isError"] is False
 
     def test_provider_request_emits_chat_thinking_status(self, tmp_path: Any) -> None:
@@ -192,6 +235,86 @@ class TestEventCompatAssistantToken:
         assert len(status_events) == 1
         assert status_events[0].payload["state"] == "idle"
         assert status_events[0].payload["_chatCompat"] is True
+
+    def test_approval_resolved_emits_resolved_permission_request(self, tmp_path: Any) -> None:
+        """Non-computer approvals resolve through chat-compat permission_request too."""
+        runtime = _make_runtime(tmp_path)
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+
+        workspace = runtime.store.upsert_workspace(str(tmp_path))
+        session = runtime.store.create_session(workspace_id=workspace["id"], title="session")
+        task = runtime.store.create_task(session_id=session["id"], task_type="chat", goal="g", plan=[])
+        approval = runtime.store.create_approval(
+            task_id=task["id"],
+            kind="write_file",
+            request={"path": "src/new.ts", "risk": "writes file"},
+        )
+
+        runtime.orchestrator._publish(
+            session_id=session["id"],
+            task=task,
+            event_type="approval.resolved",
+            payload={
+                "approvalId": approval["id"],
+                "taskId": task["id"],
+                "kind": "write_file",
+                "request": {"path": "src/new.ts", "risk": "writes file"},
+                "preview": [{"label": "文件", "value": "src/new.ts"}],
+                "filesChanged": 1,
+                "changedPaths": ["src/new.ts"],
+                "diffText": "--- /dev/null\n+++ b/src/new.ts\n",
+                "decision": "approved",
+                "decidedBy": "user",
+                "decidedAt": 123,
+            },
+        )
+
+        permission_events = [event for event in collected if event.type == "permission_request"]
+        assert len(permission_events) == 1
+        permission = permission_events[0].payload
+        assert permission["_chatCompat"] is True
+        assert permission["requestId"] == approval["id"]
+        assert permission["toolName"] == "write_file"
+        assert permission["input"]["path"] == "src/new.ts"
+        assert permission["preview"] == [{"label": "文件", "value": "src/new.ts"}]
+        assert permission["filesChanged"] == 1
+        assert permission["changedPaths"] == ["src/new.ts"]
+        assert permission["diffText"].startswith("--- /dev/null")
+        assert permission["resolved"] is True
+        assert permission["decision"] == "approved"
+        assert permission["decidedBy"] == "user"
+        assert permission["decidedAt"] == 123
+
+    def test_approval_resolved_uses_payload_details_when_store_request_missing(self, tmp_path: Any) -> None:
+        """Detailed resolved payloads can restore permission cards without a local approval record."""
+        runtime = _make_runtime(tmp_path)
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+
+        task = {"id": "t1", "role": "root", "activeAssistantMessageId": "msg_1"}
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="approval.resolved",
+            payload={
+                "approvalId": "approval_missing",
+                "taskId": "t1",
+                "kind": "write_file",
+                "request": {"path": "src/new.ts"},
+                "preview": [{"label": "文件", "value": "src/new.ts"}],
+                "decision": "approved",
+            },
+        )
+
+        permission_events = [event for event in collected if event.type == "permission_request"]
+        assert len(permission_events) == 1
+        permission = permission_events[0].payload
+        assert permission["requestId"] == "approval_missing"
+        assert permission["toolName"] == "write_file"
+        assert permission["input"] == {"path": "src/new.ts"}
+        assert permission["preview"] == [{"label": "文件", "value": "src/new.ts"}]
+        assert permission["resolved"] is True
 
     def test_chat_compat_events_are_not_trace_mirrored(self, tmp_path: Any) -> None:
         """Chat compatibility events are live UI protocol, not trace timeline noise."""

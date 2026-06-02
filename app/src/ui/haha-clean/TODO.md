@@ -4,37 +4,93 @@
 
 ## 已接入
 
+- 会话页按 haha-cc 的主流程重新核对了一轮：主聊天隐藏 synthetic active-task 文件摘要、启动期“理解任务目标/准备上下文”等低价值过程，以及已完成的上下文读取/搜索/Git inline 工具；失败、阻塞、审批、写入和验证命令仍保留。
+- 聊天框、输入框和右侧文件区关系继续收口：assistant Markdown 保留段落/列表间距，composer 去掉无效说明按钮和占位文案；文件区打开时宽屏让出 transcript/composer 空间，窄屏覆盖，不再制造底部横向滚动条。
+- 文件展示继续贴近 haha-cc：文件区默认关闭，打开后以源码/Markdown 阅读器为主，目录、搜索和本轮改动压成窄侧栏；语法高亮、Markdown 预览/源码切换、全局找文件、`path:line` 高亮和外部编辑器打开保持可用。
+- Diff 展示继续降噪：diff 卡片减小高度、圆角、padding 和行高，多文件 tabs、增删统计、新行号联动源码仍保留。
+- 工具 operation 链路已接通：后端会生成并继承 `toolOperationId/toolOperationLabel`，事件、chat metadata、runtime toolCalls 和 haha-clean worklog 都会保存；worklog 展开态优先按 operation 分段，同一次文件改动的回读、验证和 Git 复核会跟随父操作链显示；显式 `parentToolUseId` 也会继承同批/跨轮父操作，直接父级缺 operation 时会向祖先追溯，审批恢复或模型显式挂 parent 时不容易把同一条改动链拆散。
+- read/list/search/git 等探针工具已补执行开始 `tool.progress(activity)`，同步/后台命令也会把 operation metadata 贯穿 started/output/completed/cancelled；前端订阅层可直接消费 raw `tool.progress/tool.output` 并合并到同一工具活动块。
+- MCP/自定义/未知工具也已补通用执行开始 `tool.progress(activity)`：MCP 工具会归到独立 `mcp` 阶段并按 `query/url/path/target/id/key/action` 等稳定 hint 生成 `mcp:<server>:<tool>:<hint>` operation，自定义工具会按 `tool:<name>:<hint>` 生成 operation；没有 `query` 的 custom URL fetch、MCP path lookup 也能进入同一操作链，执行开始文案会优先显示 URL/path/id/key/action 等真实目标；MCP/custom 结果中的 `items/results/matches` 若带路径或 URL，后续同路径 `read_file` 或同 URL `browser` 会保守挂回该工具并继承 operation。
+- 同批工具执行中也会用已完成的前序结果二次补 parent：模型同一轮先调 MCP/custom 查询，再立刻 `read_file` 或 `browser` 打开结果列表里的任意匹配路径/URL 时，后续工具会动态挂回前序工具并继承 operation；如果父工具调用参数很空、只有结果中的 `items/results/matches/sources/references` 才带 path/URL，也会在结果落地后补出稳定 operation 供后续工具继承；通用过程流也继续扩展到 `messages/diagnostics/stages/tasks`，并会把 `ok/error/code/count/durationMs` 等字段整理成可读 `activity`。
+- `computer_use inspect` 已在审批后返回环境信息和结构化 steps；`screenshot` 会尝试本机截图并返回缩略预览；`click/type/key/scroll` 已接可插拔 executor，默认优先尝试 `pyautogui`，Windows 下有坐标 click/scroll 的 ctypes fallback，executor 可声明 `capabilities/can_execute`；selector click 会明确要求浏览器 DOM/无障碍 executor；若宿主注入 Playwright page-like 对象，selector click/type/key/scroll 可直接走 DOM 执行，不可用或参数不足时返回明确 blocked + recoveryHint。
+- Computer Use 审批事件已补结构化字段：`selector/x/y/text/direction/amount` 和 `previewRows` 会从后端透到 clean 专用权限卡；前端不再只显示 metadata 原文，而是展示应用、动作、目标、坐标、文本/滚动、权限/风险，并保留复制详情。
+- Computer Use selector 语义继续收紧：`click/type/scroll` 带 selector 但没有浏览器 DOM/无障碍 executor 时都会明确 blocked 到 `selector_executor_required`，并在错误/恢复提示里带 selector 以及已知 `url/pageId/browserContextId`；Playwright page-like executor 已覆盖 selector click/type/scroll/key。审批卡和结果预览都会展示 URL/Page 线索。
+- Computer Use 新增可选内置浏览器 session executor：安装 runtime extra `computer-use-browser`（或单独安装 `playwright`）并设置 `LOCAL_AGENT_COMPUTER_USE_PLAYWRIGHT=1` 后，runtime 会懒启动 Chromium context/page，并按 `browserContextId/pageId/url` 复用页面执行 selector click/type/scroll/key；browser 目标的 `inspect` 会返回标题、正文摘要和可交互元素提示，`screenshot` 可直接截浏览器页面；默认关闭且非硬依赖，shutdown/background worker 结束时会清理可选浏览器 session，不影响普通桌面/审批流程。设置页只读 probe 会显示 Playwright 是否安装和开关是否开启。
+- 设置页的电脑操作面板已从单行“未接入”状态改为能力矩阵：可显示权限审计、截图、桌面动作、浏览器 DOM 控制、剪贴板和系统快捷键的已接入/部分接入/需宿主权限状态；重新检查会优先调用 Tauri `computer_use_probe` 探测 `ImageGrab/pyautogui/Windows fallback`，并写入 `status/checkedAt/capabilities`，clean shell 也沿用低卡片样式。
+- 工具生命周期耗时已由后端统一补齐：`tool.completed`/`tool.failed`/`tool.blocked`、chat-compat `tool_result`、provider `tool_results` 和工具完成类 `assistant_progress` 都会带 `durationMs`，clean transcript 合并层会把它保存到工具消息 metadata，主聊天工具行和 worklog/runtime 行都可直接显示真实耗时，不必再按事件时间戳猜。
+- 工具开始块的摘要字段也已贯通：`tool.started` 派生的 `content_start(tool_use)` / `tool_use_complete` 会带 `target/inputSummary`，clean 工具消息在输入完成前也能用后端摘要显示目标和标题；前端订阅层现在也能直接消费 raw `tool.started` 作为兜底，保留 arguments/inputText 但继续显示运行中，避免缺少 chat-compat 派生时主线空白。
+- 工具输出增量旁路也会带 `target/inputSummary`：`content_delta(toolOutput)` 和 `command.output` 即使先于最终 `tool_result` 到达，也能把同一工具块的目标摘要保留下来。
+- 命令生命周期事件也保留摘要：普通 `run_command` 与后台命令的 `command.started/output/completed/failed/cancelled` 源事件、shared 类型、持久 trace、实时 command log cache、`command_log.get/list` 和订阅层都已接 `toolUseId/target/inputSummary` 及工具树元数据，刷新恢复或命令单独收尾时不会覆盖掉可读目标和 semantic parent。
+- 前台和后台命令生命周期已进入 clean 主线：`command.started` 会立即创建运行中的命令工具行，后续 stdout/stderr 和 `command.completed/failed/cancelled` 继续合并到同一块。
+- `run_command` 执行开始也会主动发 `tool.progress(activity)`，clean 工具块在 stdout/stderr 到达前就能显示“正在运行命令：目标命令”；真实 handler 还会返回 resolve/validate/scope/approval/log/execute/artifacts 结构化步骤，同步命令和后台命令的运行感更连续。
+- `web_fetch` 到 `browser` 的 parent 推断已规范化 URL：大小写、尾斜杠和 `#fragment` 差异不会再把同一次网页读取链拆成两个 worklog 分段。
+- `web_fetch/browser` 真实 handler 已返回结构化步骤：请求、响应、解码会进 `steps`，`browser read/raw` 还会补正文/HTML 提取步骤，截断时会补 truncate；执行管线会把这些阶段拆成同一工具活动块里的多条 `tool.progress(activity)`。
+- `notebook`、`memory.remember/recall`、`scratchpad.write/read` 也开始由真实 handler 返回结构化步骤：Notebook 会展示加载、解析、读取 cell、审批/执行阶段，Memory/Scratchpad 会展示准备、scope、存储/检索/关键词阶段；这些 steps 会复用同一条工具活动块流式展示。
+- `task` 子任务派发也会产生结构化步骤：prepare/dispatch/child_task 会进入同一工具活动块，子任务完成后既有结果预览，也能看到委派过程。
+- `read_file/list_dir/search_files/code_search/git_status/git_diff` 这些高频上下文探针也已由真实 handler 返回结构化步骤：文件读取会展示 resolve/read/decode，目录和搜索会展示 walk/search/backend，Git 会展示 repository/status/diff/files；worklog 展开态能看到更像 haha-cc 的连续执行过程。
+- `run_command/write_file/apply_patch` 这些高价值执行工具也已由真实 handler 返回结构化步骤：命令会展示 resolve/validate/scope/approval/log/execute/artifacts，写文件会展示 resolve/scope/diff/approval/mkdir/write，补丁会展示 parse/validate/approval/dry_run/apply；审批等待和恢复后都会把对应阶段流进同一工具活动块。
+- `apply_patch` 后续回读的 parent 推断会从原始 `patchText/diffText` 解析文件路径；即使结果里暂时没有 `changedPaths`，跨轮 `read_file` 也能挂回对应改动。
+- 后台 `command.cancel` 已做 pending-cancel 幂等：连续点击停止时只有第一次会报告新取消请求，后续请求保持当前命令状态，不再把已进入取消中的命令当作新的取消动作。
+- `command.cancelled` 已成为明确终态事件：后端取消命令不再伪装成 `command.failed(status=cancelled)`，shared 类型、trace/store、前端订阅和 clean/workbench 工具块都会保留 `cancelled` 状态并显示“已取消”。
+- 停止任务有明确 pending 态：点击停止后 clean composer/旧 haha composer 会禁用停止按钮并显示“停止中”，clean 浮动状态显示“正在停止任务...”，直到后端 `task.cancel`/刷新完成。
 - 全局 Shell、左侧会话导航、标签栏、底部输入框。
 - 新建会话空态、项目目录/模型/权限/上下文入口。
 - 会话流：用户消息、助手正文、思考块、工具块、命令、审批、文件改动、worklog 折叠、置底。
-- 普通消息操作栏：用户/助手消息支持复制、引用、更多；更多菜单已补“复制为 Markdown / 复制消息 ID / 从这里继续 / 从这里分支 / 删除消息”，其中分支、继续、删除先以明确禁用入口等待后端 transcript mutation/branch 接口。
+- 普通消息操作栏：用户/助手消息支持复制、引用、更多；更多菜单已补“复制为 Markdown / 复制消息 ID / 从这里继续 / 从这里分支 / 删除消息”。继续会按消息 id 截断当前 transcript，分支会复制到新会话，删除会移除单条 transcript 记录；这些动作只变更会话记录，不撤销已经发生的文件改动。
 - haha-cc 式低卡片消息流：过程说明、工具行、文件改动、上下文压缩/Goal/Memory/API retry 等事件均有前端渲染入口。
-- transcript adapter：已接入 `content_start` 的 text/tool 占位、`content_delta` 工具输入增量、`tool_use_complete`/`tool_result` 的 `parentToolUseId` 保存。
+- transcript adapter：已接入 `content_start` 的 text/tool 占位、`content_delta` 工具输入增量、`tool_use_complete`/`tool_result` 的 `parentToolUseId` 保存；后端 lifecycle/chat-compat 现在会透传 provider/恢复状态里的 parent id，并为 provider/最小循环里的同批工具序列补稳定 `toolCallId`、`toolGroupId/toolIndex/toolTotal`、语义 `toolCategory`、稳定 `toolPhaseId/toolPhaseLabel` 和 `toolSemanticParentId/toolSemanticParentLabel`；clean runtime/worklog 已用这些字段稳定同批工具排序，并优先按后端语义 parent/阶段汇总。
+- provider 流式工具输入继续补齐：OpenAI Responses API 的 `function_call_arguments.delta` 现在会转成 `tool_call_delta`，再派生为 clean 可消费的 `content_start`/`content_delta(toolInput)`；这些早期工具输入事件已带 `parentToolUseId/toolCategory/toolPhaseId/toolPhaseLabel/toolSemanticParentId/toolSemanticParentLabel`，工具参数到齐前也能先按后端语义阶段出现工具块。
+- 非流式 assistant 正文也会先派生 `content_start(text)`，再发送 `content_delta`；provider 在工具调用前返回的 `message + tool_calls` 会先进入 transcript，再进入后续 tool_use/tool_result，避免“先解释一句 -> 再查工具”的顺序被挤到最终总结里。
+- thinking 入口开始接真实后端事件：OpenAI Responses API 的 `reasoning_summary_text.delta` 会转成 `thinking` 事件，非流式 provider 明确返回的 `thought_summary/thoughtSummary` 也会桥成 `source=thought_summary` 的 thinking 摘要；前端按同一 task 累积为轻量思考行，不混入最终回答正文。
+- 消息结束事件已接通：后端 task lifecycle 的 `message.completed` 会桥接成 clean 的 `message_complete`，前端据此收束正文流并清理 thinking/streaming 占位。
+- API 重试开始有真实后端事件：provider stream/non-stream 恢复路径会发 `api_retry`，clean 主线能显示模型请求恢复/切换非流式/压缩后重试提示。
+- 上下文压缩开始有真实后端事件：provider preflight 主动压缩和 provider failure recovery 压缩重试都会发 `compact_summary`，clean 主线可显示压缩原因、消息数和 token 变化。
+- Memory 开始有真实后端事件：任务结果记忆、结构化记忆、用户偏好、supplement/scratchpad 记忆写入会发 `memory_event`，clean 主线显示轻量“记忆已更新”节点。
+- Goal 开始有真实后端事件：root task 的 started/completed/failed/cancelled 会发 `goal_event`，clean 主线显示轻量目标状态节点。
+- 系统通知开始有真实后端事件：provider preflight 实际切换模型/配置时会发 `system_notification`，clean 主线能显示本轮切换到的 profile/model。
 - 特殊事件适配：`api_retry`、`system_notification`、`compact_summary`、`goal_event`、`memory_event`、`ask_user_question`、`computer_use_permission_request`、`computer_use_permission` 可直接进入消息流。
 - 特殊事件适配继续补齐：`background_task`、`task_summary`、`plan_update` 已进入 shared 事件类型和订阅白名单；clean 会话会过滤“理解任务目标/准备上下文/普通运行状态”这类启动期噪音，只保留完成、失败、等待审批、可执行计划等有价值节点。
-- `ask_user_question` 和 `computer_use_permission` 已有专用轻量节点，不再混进普通系统消息；目前先展示问题/选项、权限详情、复制操作，以及等待后端的回答/授权按钮占位。
+- 后端 `task.updated` 会派生去重后的 `plan_update` chat-compat 事件，带当前步骤、计划、活跃步骤和步骤数；clean 前端可直接按真实任务更新渲染计划/阶段节点。
+- `assistant_progress` 已成为正式 chat-compat 事件：主路由会发“正在整理上下文”，provider turn 请求模型前会发“正在请求模型”的轻量过程行，工具首次进入新的 semantic parent 时会发“进入 X 阶段”，前端订阅后按 haha-clean 过程说明渲染，子任务不会灌入主聊天。
+- 预算压力也开始进入轻量过程说明：步骤预算 critical 时会提示“正在收束当前任务”，max steps 耗尽时会提示“正在整理当前进展”，并保留 `pressure/consumedSteps/maxSteps/recommendedAction` metadata。
+- 高价值工具开始执行时会派生轻量过程说明：`run_command/apply_patch/write_file/task/computer_use` 会显示“准备运行命令/应用改动/写入文件/启动子任务/桌面操作”，read/list/search/git 仍保持安静避免刷屏。
+- 工具结束也开始派生轻量过程说明：高价值工具成功时会显示“命令已完成/改动已应用/文件已写入”等摘要；后台命令返回 running 时会显示“命令已在后台运行”而不是误报完成；`tool.failed`/`tool.blocked` 即使是读取/搜索类低价值工具，也会显示一行失败/阻止原因，避免错误只藏在工具卡详情里。
+- `run_command` 输出开始进入工具活动块：同步命令的 `command.output` 会桥接为 `content_delta.toolOutput`，后台命令事件也会带 `toolUseId/toolName/parentToolUseId/toolGroupId/toolIndex/toolTotal/toolCategory`；前端把 stdout/stderr 增量累积到同一个工具块，后台 `command.completed/failed/cancelled` 也会把该工具块从 streaming 收尾成完成/失败/已取消摘要。read/list/search/git/web/notebook/memory 这类探针和 MCP 工具在 started 时会先桥一条 `outputStream=activity` 的轻量“正在读取/搜索/检查/调用...”过程；新增 `tool.progress`/`tool.output` chat-compat 桥，且订阅层也能直接消费 raw `tool.progress`/`tool.output` 作为兜底，`web_fetch`、`browser`、`notebook`、`memory.remember/recall`、`scratchpad.write/read`、`task` 以及已批准/免审批的 `apply_patch/write_file/computer_use` 已先在执行前主动发一条 `activity`，`web_fetch/browser/notebook/read_file/write_file/apply_patch/list_dir/list_directory/search_files/code_search/git_status/git_diff/task/computer_use/memory.remember/memory.recall/scratchpad.write/scratchpad.read` 成功/错误返回后还会主动发一条 `result_preview`；executor 也可继续在运行中直接发 `activity/result_preview` 工具输出；非命令工具结果里带 `steps/logs/events/progress/timeline` 时，执行管线会提前拆成多条 `tool.progress(activity)` 阶段增量，completed 桥会去重后再把 `resultPreview` 写入同一工具活动块，最终由 `tool_result` 收尾。
+- `ask_user_question` 和 `computer_use_permission` 已有专用轻量节点，不再混进普通系统消息；`ask_user_question` 现在可点选项或输入回答，ReAct `ask_user` 与预算收敛提问都会用 supplement + resume 让 paused task 继续；Computer Use 会把 `computer_use` 审批镜像为专用权限卡，结构化展示应用/动作/目标/坐标/文本/滚动/权限，允许/拒绝复用 `approval.submit`，resolved 后原卡片更新状态，并会用 resolved payload 里的 request/preview 回填缺失的动作、目标、URL/Page 等字段。
 - 工具摘要清洗：目录/文件/Git/搜索类输出不再直接展示原始 JSON，优先显示可读短摘要；主聊天里的工具消息也会把 `{status, exitCode, stdout}`、`items/files/matches` 等结果转成单行中文摘要。
-- runtime/worklog 摘要继续清洗：命令 JSON 会显示“已完成 · 退出码 0 · stdout 摘要”，文件读取会显示读取字符数，搜索结果会显示命中文件名和剩余数量。
+- 工具生命周期事件已补基础结构化字段：`tool.started`/`tool.completed`/`tool.failed`/`tool.blocked` 会带 `target`、`inputSummary`、`resultSummary`、`resultPreview`、`toolCategory`、`toolPhaseId/toolPhaseLabel` 和 `toolSemanticParentId/toolSemanticParentLabel`，前端优先用这些摘要、结构化预览和后端语义 parent/阶段，同时保留完整输入/输出展开详情；订阅层已能直接用 raw `tool.completed`/`tool.failed`/`tool.blocked` 收尾同一工具块，`blocked` 会作为独立 warning 状态显示，失败/阻塞结果会把 `status/error/failureKind/recoveryHint` 合入结构化预览，错误不必展开 JSON 也能看到恢复线索；`web_fetch/browser`、`notebook`、`memory.remember/recall` 和 `scratchpad.write/read` 有专用摘要与预览，未知/MCP/自定义工具也会用 `status/target/summary/items/results` 等常见字段生成通用预览兜底。
+- chat-compat `tool_result` 会继续透传 `target/inputSummary/resultSummary/resultPreview`，前端合并 tool_use/tool_result 时把这些摘要和预览存入 metadata，并优先显示后端结果摘要。
+- runtime/worklog 摘要继续清洗：命令 JSON 会显示“已完成 · 退出码 0 · stdout 摘要”，并在最终 `resultPreview` 里带命令、状态、目录、Shell 和输出短行；文件读取会显示读取字符数，目录/搜索会带样本路径，Git 状态/差异会显示分支、ahead/behind 和改动文件样本；`task`/`computer_use` 结果也会带状态、动作、目标、执行器、坐标/截图尺寸、阻塞类型和恢复提示等预览行；探针工具开始时的 `activity`、工具返回的结构化步骤流和完成时的 `resultPreview` 会合并进同一工具活动块，折叠态优先显示后端 `resultSummary`，展开后再看“过程/目录/命中/分支/样例”等轻量预览。
 - 工具详情折叠：主聊天工具消息展开后使用轻量“工具详情”面板，并支持复制完整输入/输出。
 - runtime 详情的复制标签按 Shell 输出/工具详情区分，文件行状态统一成中文修改/新增/删除。
 - 工具/审批标题清洗：常见 `read_file`、`apply_patch`、`write_file`、`run_command` 会显示为“读取/修改/写入/运行 + 目标”，减少内部工具名暴露。
 - 工具/审批标题继续补齐：审批 runtime 会保留原始工具类型；多文件 `apply_patch` 会显示“修改 N 个文件”，不再退回 `patch approval request` 或只拿第一条文件名。
 - patch/runtime 标题会继续从 raw diff 里提取真实文件路径，单文件显示“修改 path”，多文件显示“修改 N 个文件”，避免 `Update xxx` 或 diff 头变成可见文件项。
-- runtime `approval` 已拆成专用审批节点，允许一次/拒绝/始终允许占位、文件列表和详情折叠不再混在通用工具卡里；泛化的 `patch approval request` 文案会被过滤。
-- worklog 展开后使用紧凑工具行，低价值 read/list/git/search/status 记录不会再膨胀成大卡片，单行仍可展开复制详情，工具组也可复制一份简洁执行摘要。
-- worklog 折叠态继续减噪：默认只显示工具组摘要和可展开的紧凑行，复制摘要入口移到展开态。
-- worklog 继续贴近 haha-cc 信息流：折叠头按“读取上下文/Git 检查/命令/文件改动”等类别汇总，展开行显示类别 chip、动作标题、结果摘要和状态，低价值项进一步压低高度。
-- worklog 顶部补了轻量过程说明，在后端还没有稳定输出中间 assistant_progress 时，先解释这组工具是在读取上下文/运行命令/处理改动/等待审批，而不是让页面突然只出现工具列表。
-- worklog 已能读取 `parentToolUseId` 并渲染轻量父子缩进，先支持工具树的前端形态。
-- 低价值 read/list/git/search/状态探针会压进 worklog，失败、审批、写入、diff 保留在主线，减少“全屏都是工具调用”的噪声。
-- clean 会话会隐藏已被 runtime/worklog 承接的低价值 inline 工具消息，避免同一次 read/list/git/search 同时在主线出现两遍；失败、运行中、写入和审批仍保留在主线。
-- patch 文件行现在会优先打开本地匹配 diff，并只展示所选文件的差异；没有本地 diff 时再走后端 `onLoadPatch`；改动卡补了复制文件列表和“撤销本轮”的禁用占位入口。
+- runtime `approval` 已拆成专用审批节点，允许一次/拒绝/始终允许、文件列表和详情折叠不再混在通用工具卡里；泛化的 `patch approval request` 文案会被过滤。
+- `approval.requested`/`approval.resolved` 事件和持久 trace 已补齐 `kind/request/preview/changedPaths/filesChanged/diffText/decidedBy/decidedAt`；chat-compat `permission_request` 也会带结构化预览和文件改动字段，`approval.resolved` 会为非 Computer Use 审批镜像一条 resolved 版 `permission_request`，本地 approval store 查不到但 resolved payload 自带详情时也会镜像，clean 主线审批卡可直接显示预览行与改动文件，`approval.resolved` 乱序/恢复到达时还能回填缺失预览，缺 requested 但 detailed resolved 先到时也能直接生成已解决审批卡；状态恢复视图即使只拿到 resolved trace，也会用其中的 request/preview/file 字段还原审批卡，实时更新和刷新后恢复都不必只靠 approvalId 猜原始请求。
+- “始终允许”已写入 permissions capability 规则；设置页权限面板会列出显式规则，并可一键恢复默认，避免隐藏批准状态留在配置里。
+- worklog 展开后会按语义阶段分段，并使用紧凑工具行；低价值 read/list/git/search/status 记录不会再膨胀成大卡片，单行仍可展开复制详情，工具组也可复制一份简洁执行摘要。
+- worklog 折叠态继续减噪：默认只显示工具组摘要、操作类别 chips 和可展开的紧凑行，复制摘要入口移到展开态。
+- worklog 继续贴近 haha-cc 信息流：折叠头按“文件改动/验证/命令/Git 检查/搜索/读取上下文”等语义阶段稳定汇总；后端会给工具 lifecycle 标注 `toolCategory`，测试、typecheck、lint、build 这类命令会结构化归为“验证”，前端规则只做旧事件兜底；`rg/grep/find/Select-String/Get-Content/cat/head/tail/ls/tree/du/git status/git diff` 等只读上下文命令会归入“搜索/读取上下文/Git 检查”并默认收起；展开态会按语义阶段分段，并显示轻量 synthetic root 行，后端也会在新 semantic parent 首次出现时发“进入 X 阶段”过程说明；段内继续显示类别 chip、动作标题、结果摘要和状态，低价值项进一步压低高度。
+- worklog 顶部过程说明继续收口：折叠态不再单独占一行说明，展开后才展示“正在读取上下文/运行命令/处理改动/等待审批”等解释，避免主线被说明文字撑高。
+- worklog 已能读取 `parentToolUseId` 并渲染轻量父子缩进；后端已透传现有 parent id，工具 lifecycle/chat-compat 也会带同批次 `toolGroupId/toolIndex/toolTotal/toolCategory/toolPhaseId/toolPhaseLabel/toolSemanticParentId/toolSemanticParentLabel`，其中 `toolSemanticParentId` 已升级为批次 + 阶段粒度（如 `group:<id>:phase:<phase>`）；provider/最小循环里的同批工具序列会先规范/补齐缺失的 `toolCallId`，避免无 id 调用导致父子树和后续 provider `tool_results` 对不上；搜索/代码搜索/目录/Git 探针后紧跟的 `read_file` 会在缺少显式 parent 时保守挂到最近的上下文发现工具下面，最小循环里搜索后单独派生的 follow-up `read_file`、provider 跨轮搜索后单独发起的 `read_file` 也会挂到前序搜索结果；`apply_patch/write_file` 后紧跟或跨轮发起的同一改动文件回读、测试/typecheck/lint/build 等验证命令和 Git status/diff 复核也会保守挂到最近的文件改动工具下面；没有文件改动 parent 时，同批或跨轮 `git_diff` 会保守挂到最近的 `git_status` 下面；同批或跨轮 `browser` 读取同 URL 时会保守挂到最近的 `web_fetch` 下面；同批或跨轮 `notebook get_cell/execute_cell` 访问同一 notebook 时会保守挂到最近的 `notebook list_cells` 下面；同批或跨轮 `scratchpad.read` 读取同 key 时会保守挂到最近的 `scratchpad.write` 下面；同批或跨轮 browser 目标的 `computer_use click/type/key/scroll` 会按 URL 或 `browserContextId/pageId` 保守挂到最近的 `computer_use inspect/screenshot` 下面，显式 parent 不会被覆盖；clean worklog 会按后端 `toolIndex` 稳定排列同批兄弟工具，并优先按 `toolSemanticParentLabel` / `toolPhaseLabel` 拆成带 root 行的语义阶段，同时保留不同 semantic parent id 的数据边界；展开态跨阶段子工具会跟随父工具所在语义阶段显示，避免“文件改动”和它的回读/验证/Git 复核被拆散；clean 主线会把已完成的子工具 inline 重复项折叠进 worklog 树，失败/阻塞/运行中仍保留可见。
+- 低价值 read/list/git/search/状态探针和只读上下文 shell 命令会压进 worklog，失败、审批、写入、diff、验证命令保留在主线，减少“全屏都是工具调用”的噪声。
+- clean 会话会隐藏低价值 inline 工具消息，即使暂时没有 paired runtime 行也会收起已完成的 read/list/git/search 与只读上下文 shell 命令；失败、运行中、写入、审批和验证命令仍保留在主线。
+- patch 文件行现在会优先打开本地匹配 diff，并只展示所选文件的差异；没有本地 diff 时再走后端 `onLoadPatch`；改动卡补了复制文件列表和“撤销本轮”。撤销会走后端 `task.revertChanges`，用已保存的 patch diff 做反向应用，工作区已漂移时会拒绝。
+- patch diff 预览补成文件级审查面板：多文件 diff 有可横向扫描的文件 tabs，当前文件显示新增/删除统计、旧/新行号、截断提示，并可复制当前文件完整差异。
+- patch/approval 文件行已经能同步打开右侧文件面板；点文件时会保持本地 diff 选中，同时把源码文件切到右侧预览。
+- patch diff 新行号已能联动右侧源码：在差异预览里点击新行号会打开 `path:line` 并让右侧文件面板高亮该行。
+- patch 后端/状态层已贯通 `changedPaths`：`patch.proposed`、patch cache 和 diff_get 返回会带改动路径，diff 文本未加载时也能先显示文件列表并支持右侧文件联动。
+- approval 后端/状态层已贯通 `changedPaths`、`filesChanged` 和 `diffText`：`apply_patch`/`write_file` 审批请求、实时 `approval.requested`、持久 trace 刷新后都能带受影响文件和 diff，不再只靠 code/rawDetail 正则推断。
 - patch runtime 现在保留完整 diff 文本，文件列表会过滤 `Update xxx`、`diff --git`、`--- a/...` 这类伪文件行，减少“查看文件差异”对应错位。
 - 改动卡补了“审查改动”入口：先把审查提示和改动文件写入 composer，独立审查/提交接口后续再接。
 - 主聊天里的 runtime 改动卡已经接通 composer 引用桥，“审查改动”在真实会话流里也能写回输入框。
-- 文件区 clean 样式：右侧文件树、预览区、分隔条和搜索框已脱离旧 session CSS 的重卡片样式。
+- 文件区 clean 样式：右侧文件树、预览区和搜索框已脱离旧 session CSS 的重卡片样式；会话页文件区已改为默认关闭的右侧覆盖抽屉，不再用分隔条挤压主聊天或制造横向滚动。
+- 文件区搜索补了 workspace-wide 全局匹配：右侧筛选框输入 2 个以上字符会调用 `workspace.fileSearch`，结果可直接打开文件或展开目录，并加载父目录。
 - 代码阅览补了轻量语法高亮，常见关键词、字符串、注释、数字会先上色；Markdown 文件继续走预览渲染。
+- 代码阅览补了行号目标：外部打开 `path:line`、`path#Lline` 或 `path?line=line` 会读真实文件并高亮定位到对应行；Markdown 带行号时自动切到源码模式。
 - 文件区更多菜单补了“在编辑器中打开”的前端入口，当前先通过可注入回调等待宿主/后端接入。
+- 文件区“在编辑器中打开”已接到 Tauri `open_path` 命令，右侧源码预览可以继续交给宿主系统打开对应文件/路径。
 - Composer 补了项目目录/上下文轻量详情、权限模式说明和 Slash 参数提示。
 - Composer 输入卡片改成稳定的输入区、工具栏、项目/上下文三段布局，底部分隔线满铺，避免状态条漂到 textarea 区域。
 - Composer 项目目录弹层补了复制路径动作。
@@ -42,7 +98,9 @@
 - Composer 项目目录弹层补了复制当前改动文件列表动作。
 - Composer 项目目录弹层补了 git 分支、上游和 ahead/behind 同步状态，并修正本地 git status 文件对象的显示。
 - Composer 上下文弹层补了复制上下文摘要动作。
+- Composer 上下文弹层补了分类 breakdown：会显示系统提示、工具 schema、上下文消息、稳定前缀、纳入章节 chips 和系统提示层 token，能快速看清当前上下文装了什么。
 - Composer 图片附件改为缩略图显示，普通文件继续保持轻量 chip。
+- Composer 补了文件/图片拖拽覆盖层：拖到输入区会显示轻量 drop 状态，松开后合并附件并去重；Tauri 桌面拖入会优先使用真实路径，浏览器环境用文件名兜底。
 - Markdown 文件补了预览/源码切换，源码模式保留行号和轻量高亮。
 - Slash 命令补了键盘选择：上下键/Home/End 切换，Enter/Tab 选中，Escape 关闭。
 - Markdown 预览补了轻量文档大纲，方便快速跳到章节。
@@ -52,30 +110,33 @@
 - 聊天正文 Markdown 补了安全图片块渲染，截图/本地图片链接不会再裸露成普通文本。
 - 聊天正文 Markdown 补了 Mermaid 图表渲染：显式 `mermaid` 围栏和无语言但像图表的代码块会渲染为图表，并支持复制源码和放大预览。
 - 普通消息补了附件/图片画廊：从 metadata 的 `attachments/images/files/artifacts` 和正文里的本地/URL 图片路径提取附件，图片可放大预览，支持多图左右切换、缩略图跳转和 Esc 关闭，普通文件可一键复制路径。
-- Composer 补了 `@` 文件引用入口：加号菜单可插入 `@`，输入后能从当前已知文件候选里选择并插入引用。
+- Composer 补了 `@` 文件引用入口：加号菜单可插入 `@`，输入后会通过 `workspace.fileSearch` 搜索整个工作区文件，并合并当前改动文件候选，键盘可选择并插入引用；发送时会持久化为 message metadata/attachments，后端会把工作区内文本引用放入 ContextBuilder。
+- Slash 命令结果已从普通 assistant 文本拆成专用轻量节点：`/status`、`/config`、`/help`、`/model`、`/compact`、`/init`、`/mcp`、`/skills` 会显示命令名、参数、状态和可展开详情，并支持复制结果；刷新类命令会用同一个节点从运行中更新到完成/失败。
 - 权限菜单补了“完全访问权限”二次确认，避免误点直接切到危险权限模式。
 - 现有后端数据适配：messages、toolCalls、approvals、patches、backgroundJobs、traces、activeTask、contextPreview。
-- clean transcript schema：已覆盖 user_text、assistant_text、assistant_progress、thinking、tool_use、tool_result、tool_group、permission_request、computer_use_permission、ask_user_question、background_task、task_summary、plan_update、goal_event、memory_event、compact_summary、api_retry、error、change_set、command、status、system。`task_summary/plan_update/status` 已加低价值过滤，避免刚开任务就显示“工作摘要”。
-- 本地 haha 风格过程节点现在会在持久消息刷新时保留，`api_retry`、`compact_summary`、`goal_event`、`ask_user_question`、`computer_use_permission` 等不会因为后端 messages 刷新突然消失。
+- clean transcript schema：已覆盖 user_text、assistant_text、assistant_progress、thinking、tool_use、tool_result、tool_group、permission_request、computer_use_permission、ask_user_question、background_task、task_summary、plan_update、goal_event、memory_event、compact_summary、slash_command、api_retry、error、change_set、command、status、system。`task_summary/plan_update/status` 已加低价值过滤，避免刚开任务就显示“工作摘要”。
+- 本地 haha 风格过程节点现在会在持久消息刷新时保留，`api_retry`、`system`/`system_notification`、`compact_summary`、`goal_event`、`ask_user_question`、`computer_use_permission`、`slash_command` 等不会因为后端 messages 刷新突然消失。
 - 会话时序现在只把同一轮最后一条普通助手正文放到 runtime 后面，前面的过程说明会按真实时间插在工具调用之间，避免“全是一串工具，最后一大段总结”。
 - 思考/过程说明进一步轻量化：`assistant_thinking` 默认渲染为细线过程行，展开才看完整文本，避免模型思考像大卡片挤占主聊天。
 - MCP/Skills/Settings 页面补了一层更统一的 haha-clean 低卡片覆盖：顶部概览、操作条、列表行、启用态和按钮统一为浅色细线风格。
 
 ## 需要后端补字段
 
-- 真实 token 级 thinking/assistant delta 分段，而不是只在最终消息里得到大段总结；前端已能消费分段事件。
-- 稳定的工具 parent/child 树、每个工具的结构化 input/output summary；前端已保存 `parentToolUseId` 并支持 worklog 缩进展示，但仍需要后端稳定提供 parent id、阶段说明和结构化摘要。
-- 工具事件时间戳需要更稳定，否则前端只能尽量按 messages/runtime 的已有时间推断插入顺序。
-- 审批请求需要稳定提供受影响文件和 diff 字段；当前前端会尽量从 code/rawDetail 里推断文件列表。
-- 分支/撤销/真正绑定上下文的消息引用需要稳定 transcript target id；当前文本引用已能写入 composer。
-- 项目 worktree 切换、上下文快照分类明细。
-- 文件/图片引用需要持久化记录和后端读取接口；当前 `@` 候选先来自 `worktreeStatus.files`，还不是全项目文件搜索。
-- Computer Use 权限请求、ask_user_question、goal_event、memory_event、compact_summary、api_retry 这些事件前端已能渲染，但后端还需要稳定 emit、真实授权/回答提交接口和补交互字段。
+- 更完整的真实 token 级 thinking/assistant delta 分段，而不是只在最终消息里得到大段总结；OpenAI Responses reasoning summary 与非流式 provider `thought_summary/thoughtSummary` 已能进 `thinking` 事件，非流式工具调用前的 assistant message 已会先进入 transcript，上下文准备、provider 请求模型和步骤预算收束阶段已有 `assistant_progress`，其他 provider 的 token 级 thinking 和更细思考阶段仍待补。
+- 稳定生成工具 parent/child 树和更完整的每工具结构化摘要；常见工具生命周期和 provider `tool_results` 已带 `target/inputSummary/resultSummary/resultPreview/toolCategory/toolPhaseId/toolPhaseLabel/toolSemanticParentId/toolSemanticParentLabel`，能透传 `parentToolUseId`，并会为 provider/最小循环里的同批工具序列生成稳定 `toolCallId`、`toolGroupId/toolIndex/toolTotal`；同批/跨轮搜索/目录/Git 探针到 `read_file`、搜索后单独派生的 follow-up `read_file`、文件改动到同一文件回读/验证/Git 复核、Git status 到 diff、web_fetch 同 URL 到 browser、notebook 同路径 list_cells 到 get/execute、scratchpad 同 key 写后读、Computer Use browser observe 到 action 已有保守 parent 推断，`toolSemanticParentId` 已有批次 + 阶段粒度，clean runtime/worklog 已用这些字段稳定同批兄弟排序，并会把常见验证命令归到后端“验证”阶段，read/list/search/git/run/write/apply_patch/task/computer_use/web_fetch/browser/notebook/memory/scratchpad 已有更可读摘要、展开预览和完成时结果预览增量，失败/阻塞预览会带状态、错误、失败类型和恢复提示，未知/MCP/自定义工具已有通用 `status/target/summary/items/results` 预览兜底，MCP 工具 started 也会有“正在调用 MCP 工具”的 `activity` 增量，非命令工具结果里的 `steps/logs/events/progress/timeline` 会提前拆成多段 `tool.progress(activity)`，并在 completed 阶段去重后接 `resultPreview`，`tool.progress`/`tool.output` 已可作为执行中实时分段入口，`web_fetch/browser/notebook`、`memory.remember/recall`、`scratchpad.write/read`、`task` 和已批准/免审批的 `apply_patch/write_file/computer_use` 已先主动发执行前 activity，`web_fetch/browser/notebook/read_file/write_file/apply_patch/list_dir/list_directory/search_files/code_search/git_status/git_diff/task/computer_use/memory.remember/memory.recall/scratchpad.write/scratchpad.read` 已主动发执行后 `result_preview`，高价值工具 started/completed 以及失败/阻止已有轻量阶段说明，read/list/search/git/web/notebook/memory started 也有 `activity` 工具输出增量，首次进入 semantic parent 也会发轻量“进入 X 阶段”说明，OpenAI Chat/Responses 的工具输入增量、前台和后台 `run_command` stdout/stderr 增量、非命令工具 activity/resultPreview 已能进入 clean 事件流，semantic parent 也已在展开 worklog 中渲染为轻量 synthetic root；下一步仍需要后端真正生成更复杂的跨工具语义层级、让更多 executor 主动发 `tool.progress/tool.output` 和更多工具专用字段。
+- 实时事件时间戳已在 EventBus 层做单调化，同一毫秒内连续发布的 `content_start/content_delta/tool_result/command.*` 等事件会按发布顺序推进 `ts`，并继续保留 `seq` 给前端消费；持久化 messages 默认也会分配 `createdSeq`，刷新后更少依赖毫秒时间和 id 猜顺序。后续仍可把 trace 排序进一步统一到同一套序列。
+- 非文件类审批已按常见工具补基础结构化预览字段：`run_command` 显示命令/目录/Shell，Notebook `execute_cell` 会复用 `run_command` 审批并额外显示 Notebook/Cell，审批请求带源码 hash 防止批准后 cell 内容漂移；`network_access` 显示方法/URL，`computer_use` 显示应用/动作/目标/坐标/文本/滚动/权限，`subagent_dispatch` 显示子任务；`apply_patch`/`write_file` 审批的受影响文件和 diff 已通过后端/状态层贯通。后续仍可继续补更多工具类型的专用字段。
+- 分支/继续/删除消息已有基础 transcript mutation 和稳定消息 id；当前轮 patch 改动已有保守回滚能力。真正绑定上下文的消息引用、命令副作用撤销仍需独立后端能力。
+- 项目 worktree 切换；上下文快照已有轻量分类 breakdown，后续可继续接更完整持久快照。
+- `@` 文本文件引用和工作区内文本附件已能持久化并进入上下文；当前轮外部文本/图片附件也能按限制进入上下文/多模态输入；最近历史的工作区内图片附件会转成 OpenAI Chat / Responses / Anthropic 可用的多模态输入；历史外部附件和更完整附件结构仍需补齐。
+- Computer Use 已支持 `computer_use` 审批到专用事件/按钮提交的基础闭环，并能通过 capability 规则始终允许/恢复默认；专用权限卡已结构化展示审批目标和参数，执行/阻塞结果也有专用 `resultSummary/resultPreview`。可注入 executor 协议已覆盖桌面坐标和 Playwright page-like DOM selector 操作，selector click/type/scroll 缺 executor 时会明确带 URL/Page 线索 blocked；可选内置 Playwright browser session executor 已能按 context/page/url 复用并在退出时清理，也能为 browser inspect/screenshot 提供页面标题、正文、元素样本和截图；后续仍要补真正完整的宿主原生浏览器会话管理、系统无障碍 selector 服务和弹窗细节。非 provider/memory/task-lifecycle 层的 compact_summary/api_retry 仍需要更多来源稳定 emit；ask_user_question 已先用 supplement/resume 打通回答闭环，goal_event 已覆盖 root task 基础生命周期，后续补更多工具级问题来源和目标阶段变更。
+- `computer_use` 已注册为正式后端工具和 schema，模型可以发起 `inspect/screenshot/click/type/key/scroll` 权限请求；当前执行层支持 `inspect` 返回运行环境和结构化 steps，`screenshot` 会尝试本机截图，`click/type/key/scroll` 会通过可插拔 executor 或本机 fallback 尝试执行，executor 协议已支持能力声明和 Playwright page-like DOM 适配，selector 操作会清楚 blocked 到 `selector_executor_required` 或在注入 DOM executor 时直接执行；后续继续补完整无障碍 selector 和宿主浏览器会话 executor。
+- 电脑操作设置页已能展示当前宿主层能力探测结果：Tauri `computer_use_probe` 会只读检查 `PIL.ImageGrab`、`pyautogui`、`playwright.sync_api`、`LOCAL_AGENT_COMPUTER_USE_PLAYWRIGHT`、Windows fallback 和运行时状态；截图与权限审计标为已接入或需宿主权限，桌面动作和浏览器 DOM 控制会说明依赖 pyautogui/ctypes/Playwright session 或外部注入，系统组合键继续保持显式确认和后续宿主扩展。
 
 ## 暂时占位
 
 - 代码阅览完整语言服务级语法高亮、Markdown 源码/预览滚动同步和 diff/源码联动。
 - 附件持久化、Mermaid 更完整的拖拽缩放交互、代码块语言服务级语法高亮。
-- 全项目文件搜索、`@` 引用持久化、slash command 详情/结果面板。
-- Computer Use 权限弹窗。
+- 历史外部附件和完整附件结构；工作区内文本附件已由 ContextBuilder 读取，当前轮外部文本/图片附件已能按限制进入上下文/多模态输入，最近历史的工作区内图片也能作为多模态输入发送给 provider。
+- Computer Use 完整弹窗、完整无障碍 selector 和宿主原生浏览器会话控制；基础权限卡、inspect/screenshot、可插拔桌面控制 executor、Playwright page-like DOM executor 适配与可选 Playwright browser session executor 已接。
 - MCP/Skills/Settings 页面仍先复用旧业务组件，已加 clean shell/低卡片样式覆盖，后续可迁移到独立 clean 组件。

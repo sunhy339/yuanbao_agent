@@ -115,6 +115,25 @@ class _StaticAssetReferenceParser(HTMLParser):
 
 
 class TaskLifecycleMixin:
+    def _latest_task_snapshot(self, task: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(task.get("id") or "").strip()
+        if not task_id:
+            return task
+        try:
+            return self._store.get_task({"taskId": task_id})["task"]
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to refresh task snapshot for %s", task_id, exc_info=True)
+            return task
+
+    def _task_is_cancelled(self, task: dict[str, Any]) -> bool:
+        return str(self._latest_task_snapshot(task).get("status") or "").strip().lower() in {"cancelled", "canceled"}
+
+    def _cancelled_task_result(self, task: dict[str, Any], summary: str | None = None) -> dict[str, Any]:
+        latest = self._latest_task_snapshot(task)
+        if str(latest.get("status") or "").strip().lower() in {"cancelled", "canceled"}:
+            return {**latest, **({"resultSummary": summary} if summary else {})}
+        return latest
+
     def _complete_task(
         self,
         session_id: str,
@@ -127,6 +146,8 @@ class TaskLifecycleMixin:
         skip_drain: bool = False,
         force_complete_after_review: bool = False,
     ) -> dict[str, Any]:
+        if self._task_is_cancelled(task):
+            return self._cancelled_task_result(task, summary)
         validation = self._run_post_task_validation(
             session_id=session_id,
             task=task,
@@ -328,7 +349,7 @@ class TaskLifecycleMixin:
                 status="completed",
             )
         self._remember_task_result(session_id=session_id, task=runtime_task)
-        self._promote_scratchpad_to_memory(session_id)
+        self._promote_scratchpad_to_memory(session_id, runtime_task)
         self._consolidate_working_memories(session_id)
         self._clear_pending_react_state(task["id"])
         self._record_task_metrics(session_id=session_id, task=runtime_task, tool_results=tool_results, task_status="completed")
@@ -422,9 +443,15 @@ class TaskLifecycleMixin:
         if advisor_gate is not None:
             reviews_disabled = self._completion_reviews_disabled(context)
             if reviews_disabled and advisor_gate.get("action") == "review":
-                return self._completion_reviews_disabled_failure(
-                    advisor_gate.get("reason") or "Completion evidence requires review."
-                )
+                return {
+                    "action": "complete",
+                    "decision": "advisor_review_recorded",
+                    "gateStatus": "advisor_review_recorded",
+                    "reason": (
+                        advisor_gate.get("reason")
+                        or "Completion advisor requested review, but approvals are disabled."
+                    ),
+                }
             return advisor_gate
         if force_complete_after_review:
             return {"action": "complete", "reason": "Completion review was approved."}
@@ -782,6 +809,15 @@ class TaskLifecycleMixin:
 
     def _completion_reviews_disabled(self, context: dict[str, Any]) -> bool:
         config = context.get("config") if isinstance(context, dict) else {}
+        if not isinstance(config, dict) or not config.get("policy"):
+            try:
+                result = self._store.get_config({}) if hasattr(self._store, "get_config") else {}
+            except Exception:  # noqa: BLE001
+                logger.debug("Failed to load config for completion review policy", exc_info=True)
+                result = {}
+            store_config = result.get("config") if isinstance(result, dict) else None
+            if isinstance(store_config, dict):
+                config = store_config
         policy = config.get("policy") if isinstance(config, dict) else {}
         mode = str(policy.get("approvalMode") or "").strip().lower() if isinstance(policy, dict) else ""
         return mode in {"none", "never", "off"}
@@ -6776,6 +6812,8 @@ class TaskLifecycleMixin:
         skip_drain: bool = False,
         structured_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if self._task_is_cancelled(task):
+            return self._cancelled_task_result(task, summary)
         logger.warning("Task %s failed: error_code=%s summary=%s", task["id"], error_code, summary[:200])
         task_plan = task.get("plan") or []
         self._validate_task_transition(task["status"], "failed", task["id"], silent=True)
@@ -6822,7 +6860,7 @@ class TaskLifecycleMixin:
                 status="failed",
             )
         self._remember_task_result(session_id=session_id, task=runtime_task)
-        self._promote_scratchpad_to_memory(session_id)
+        self._promote_scratchpad_to_memory(session_id, runtime_task)
         self._clear_pending_react_state(task["id"])
         self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="failed")
         # --- Decision trace: failure ---

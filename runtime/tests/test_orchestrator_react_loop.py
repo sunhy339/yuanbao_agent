@@ -185,6 +185,62 @@ def test_react_loop_accepts_simple_final_answer(tmp_path: Any) -> None:
     assert not [event for event in runtime.events if event["type"] == "tool.started"]
 
 
+def test_react_loop_requires_workspace_evidence_before_final_answer(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {"final": "I can answer from memory."},
+            {
+                "tool_calls": [
+                    {"id": "call_search", "name": "search_files", "arguments": {"query": "README"}},
+                ],
+            },
+            {"final": "Grounded answer after search."},
+        ]
+    )
+    runtime = _make_runtime(
+        tmp_path,
+        provider,
+        {
+            "search_files": lambda _params: {
+                "matches": [{"path": "README.md", "preview": "project notes"}],
+                "total": 1,
+            },
+        },
+    )
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(
+            runtime,
+            "message.send",
+            {"sessionId": session["id"], "content": "输出当前项目路线图"},
+        ),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert task["resultSummary"] == "Grounded answer after search."
+    assert len(provider.calls) == 3
+    assert provider.calls[2]["context"]["tool_results"][0]["name"] == "search_files"
+    assert [
+        event["payload"]["toolName"]
+        for event in runtime.events
+        if event["type"] == "tool.started"
+    ] == ["search_files"]
+    assert [
+        event["payload"]["content"]
+        for event in runtime.events
+        if event["type"] == "message.completed"
+    ] == ["Grounded answer after search."]
+    progress_events = [
+        event
+        for event in runtime.events
+        if event["type"] == "assistant_progress"
+        and event["payload"].get("phase") == "workspace_evidence_required"
+    ]
+    assert progress_events
+
+
 def test_simple_query_uses_minimal_context_without_tools(tmp_path: Any) -> None:
     provider = ScriptedProvider([{"final": "你好！"}])
     runtime = _make_runtime(tmp_path, provider)

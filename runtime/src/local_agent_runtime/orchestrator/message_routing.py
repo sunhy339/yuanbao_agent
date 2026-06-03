@@ -36,6 +36,17 @@ _WORKSPACE_EVIDENCE_REQUIRED_SCENARIOS = {
     "supervised_task",
     "swarm_task",
 }
+_WORKSPACE_EVIDENCE_GOAL_RE = re.compile(
+    r"("
+    r"当前(?:项目|仓库|工程|代码|进度|任务|清单)|"
+    r"现状(?:清单|总结|梳理|分析)|"
+    r"项目(?:任务清单|进度|路线图|状态|现状)|"
+    r"任务清单|待办|TODO|todo|路线图|roadmap|progress|status list|"
+    r"基于(?:当前|仓库|项目|代码)|结合(?:当前|仓库|项目|代码)|"
+    r"查看(?:当前|项目|仓库)|整理(?:当前|项目|仓库)"
+    r")",
+    re.IGNORECASE,
+)
 
 _INLINE_FILE_REFERENCE_PATTERN = re.compile(r"(^|\s)@([^\s@]+)")
 _INLINE_FILE_REFERENCE_TRAILING = "),.;:!?，。；：！？）"
@@ -49,7 +60,7 @@ class MessageRoutingMixin:
         strategy = routing.strategy.value
         tool_continuation = self._routing_tool_continuation_from_decision(routing, strategy)
         profile = self._routing_profile_from_decision(routing)
-        workspace_evidence = self._routing_workspace_evidence_from_decision(routing)
+        workspace_evidence = self._routing_workspace_evidence_from_decision(routing, context=context)
         if workspace_evidence:
             profile = dict(profile or {})
             profile["workspaceEvidenceRequired"] = workspace_evidence
@@ -96,7 +107,11 @@ class MessageRoutingMixin:
         profile = metadata.get("profile")
         return dict(profile) if isinstance(profile, dict) else {}
 
-    def _routing_workspace_evidence_from_decision(self, routing: Any) -> dict[str, Any]:
+    def _routing_workspace_evidence_from_decision(
+        self,
+        routing: Any,
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         metadata = getattr(routing, "metadata", None)
         raw = metadata.get("workspaceEvidenceRequired") if isinstance(metadata, dict) else None
         if raw is None and isinstance(metadata, dict):
@@ -112,6 +127,11 @@ class MessageRoutingMixin:
         scenario = str(routing.scenario.value)
         if scenario in _WORKSPACE_EVIDENCE_REQUIRED_SCENARIOS:
             return self._default_workspace_evidence_contract(scenario, source="routing_rule")
+        goal = ""
+        if isinstance(context, dict):
+            goal = str(context.get("goal") or context.get("userGoal") or context.get("content") or "")
+        if self._goal_mentions_workspace_evidence(goal):
+            return self._default_workspace_evidence_contract(scenario, source="goal_semantic")
         return {}
 
     @staticmethod
@@ -150,6 +170,10 @@ class MessageRoutingMixin:
                 result[key] = value.strip()[:500]
         return result
 
+    @staticmethod
+    def _goal_mentions_workspace_evidence(goal: str) -> bool:
+        return bool(_WORKSPACE_EVIDENCE_GOAL_RE.search(str(goal or "")))
+
     def _routing_tool_continuation_from_decision(self, routing: Any, strategy: str) -> dict[str, Any]:
         metadata = getattr(routing, "metadata", None)
         raw = metadata.get("toolContinuation") if isinstance(metadata, dict) else None
@@ -183,6 +207,13 @@ class MessageRoutingMixin:
 
     @staticmethod
     def _should_use_minimal_context(routing: dict[str, Any]) -> bool:
+        profile = routing.get("profile")
+        if isinstance(profile, dict):
+            contract = profile.get("workspaceEvidenceRequired") or profile.get("workspace_evidence_required")
+            if contract is True:
+                return False
+            if isinstance(contract, dict) and contract.get("required") is True:
+                return False
         return (
             routing.get("scenario") == "simple_query"
             and routing.get("strategy") == "react_fast"
@@ -715,7 +746,7 @@ class MessageRoutingMixin:
             if active_task is not None:
                 routing = self._route_goal(goal)
                 routing = self._routing_with_requested_skill(routing, requested_skill_id)
-                routing_dict = self._routing_dict_from_decision(routing)
+                routing_dict = self._routing_dict_from_decision(routing, context={"goal": goal})
                 routing_dict = self._mark_worktree_binding_required(routing_dict)
                 routing_dict = self._apply_session_launch_to_routing(routing_dict, session)
                 routing_dict = self._attach_main_workflow_state(
@@ -774,7 +805,7 @@ class MessageRoutingMixin:
             self._tracer.end_span(routing_span.span_id, status="error")
             raise
         _route_latency_ms = int((_time.monotonic() - _route_t0) * 1000)
-        routing_dict = self._routing_dict_from_decision(routing)
+        routing_dict = self._routing_dict_from_decision(routing, context={"goal": goal})
         routing_dict = self._mark_worktree_binding_required(routing_dict)
         routing_dict = self._apply_session_launch_to_routing(routing_dict, session)
         routing_dict = self._attach_main_workflow_state(

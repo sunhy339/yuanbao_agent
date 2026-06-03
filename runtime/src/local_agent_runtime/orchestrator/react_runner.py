@@ -612,6 +612,37 @@ class ReactRunnerMixin:
             if parsed["status"] == "completed" and not assistant_text:
                 assistant_text = parsed["summary"]
 
+            if (
+                parsed["status"] == "completed"
+                and self._should_require_workspace_evidence_before_final(
+                    task=task,
+                    context=context,
+                    tool_results=tool_results,
+                )
+            ):
+                self._publish(
+                    session_id=session_id,
+                    task=task,
+                    event_type="assistant_progress",
+                    payload={
+                        "summary": "Need workspace evidence before final answer; continuing with read-only inspection.",
+                        "phase": "workspace_evidence_required",
+                        "reason": "missing_read_only_workspace_evidence",
+                        "requiredTools": self._workspace_evidence_required_tools(task=task, context=context),
+                    },
+                    visibility="panel",
+                )
+                if assistant_text:
+                    messages.append({
+                        "role": "assistant",
+                        "content": assistant_text,
+                    })
+                messages.append({
+                    "role": "user",
+                    "content": self._workspace_evidence_followup_prompt(task=task, context=context),
+                })
+                continue
+
             if turn_result.decision == TurnDecision.ASK_USER:
                 if not self._ask_user_question_is_required(
                     question=assistant_text,
@@ -1510,6 +1541,133 @@ class ReactRunnerMixin:
                 "stage": stage,
             },
             visibility="panel",
+        )
+
+    def _should_require_workspace_evidence_before_final(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        tool_results: list[dict[str, Any]],
+    ) -> bool:
+        contract = self._react_workspace_evidence_contract(task=task, context=context)
+        if contract.get("required") is not True:
+            return False
+        return not self._react_has_read_only_workspace_evidence(
+            tool_results=tool_results,
+            required_tools=self._workspace_evidence_required_tools_from_contract(contract),
+        )
+
+    def _react_workspace_evidence_contract(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        profile = context.get("_child_profile")
+        if not isinstance(profile, dict):
+            routing = task.get("routing")
+            if not isinstance(routing, dict):
+                routing = context.get("routing")
+            if isinstance(routing, dict):
+                profile = routing.get("profile")
+        if not isinstance(profile, dict):
+            return {"required": False}
+        raw = profile.get("workspaceEvidenceRequired")
+        if raw is None:
+            raw = profile.get("workspace_evidence_required")
+        if isinstance(raw, bool):
+            return {
+                "required": raw,
+                "requiredTools": ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"],
+            }
+        if not isinstance(raw, dict):
+            return {"required": False}
+        required = raw.get("required")
+        if required is None:
+            required = raw.get("enabled")
+        result = dict(raw)
+        result["required"] = required if isinstance(required, bool) else True
+        return result
+
+    @staticmethod
+    def _workspace_evidence_required_tools_from_contract(contract: dict[str, Any]) -> list[str]:
+        raw_tools = contract.get("requiredTools")
+        if raw_tools is None:
+            raw_tools = contract.get("required_tools")
+        if not isinstance(raw_tools, list):
+            return ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"]
+        tools = [
+            str(item).strip()
+            for item in raw_tools
+            if str(item or "").strip()
+        ]
+        return tools or ["read_file", "search_files", "code_search", "list_dir", "git_status", "git_diff"]
+
+    def _workspace_evidence_required_tools(
+        self,
+        *,
+        task: dict[str, Any],
+        context: dict[str, Any],
+    ) -> list[str]:
+        return self._workspace_evidence_required_tools_from_contract(
+            self._react_workspace_evidence_contract(task=task, context=context),
+        )
+
+    def _react_has_read_only_workspace_evidence(
+        self,
+        *,
+        tool_results: list[dict[str, Any]],
+        required_tools: list[str],
+    ) -> bool:
+        allowed_tools = set(required_tools) if required_tools else {
+            "read_file",
+            "search_files",
+            "code_search",
+            "list_dir",
+            "list_directory",
+            "git_status",
+            "git_diff",
+            "run_command",
+        }
+        read_only_tools = {
+            "read_file",
+            "search_files",
+            "code_search",
+            "list_dir",
+            "list_directory",
+            "git_status",
+            "git_diff",
+        }
+        for item in tool_results:
+            if not isinstance(item, dict):
+                continue
+            result = item.get("result")
+            if isinstance(result, dict) and str(result.get("status") or "").lower() in {"failed", "error", "timeout", "blocked"}:
+                continue
+            name = str(item.get("name") or "").strip()
+            if name in read_only_tools and name in allowed_tools:
+                return True
+            if name == "run_command" and ("run_command" in allowed_tools or not required_tools):
+                command = str(item.get("command") or "")
+                checker = getattr(self, "_completion_command_is_read_only_workspace_evidence", None)
+                if callable(checker) and checker(command):
+                    return True
+        return False
+
+    @staticmethod
+    def _workspace_evidence_followup_prompt(*, task: dict[str, Any], context: dict[str, Any]) -> str:
+        workspace_root = str(context.get("workspace_root") or context.get("workspaceRoot") or "").strip()
+        root_line = f"Workspace root: {workspace_root}\n" if workspace_root else ""
+        goal = str(task.get("goal") or context.get("goal") or "").strip()
+        return (
+            "[Workspace evidence required]\n"
+            f"{root_line}"
+            f"Goal: {goal}\n"
+            "Before giving the final answer, inspect the workspace with read-only tools. "
+            "Use search_files/code_search/list_dir/read_file/git_status/git_diff as appropriate, "
+            "then synthesize the answer from the observed files or command evidence. "
+            "Do not ask the user for low-risk output preferences."
         )
 
     def _pause_react_for_user_question(

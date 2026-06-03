@@ -246,7 +246,25 @@ describe("RuntimeClient desktop transport", () => {
     expect(unlisten).toHaveBeenCalled();
   });
 
-  it("subscribes to haha-cc compatible server messages", async () => {
+  it("subscribes to Yuanbao server messages", async () => {
+    const client = new RuntimeClient();
+    const listenMock = vi.mocked(listen);
+    const unlisten = vi.fn();
+    listenMock.mockResolvedValueOnce(unlisten);
+
+    const handler = vi.fn();
+    const unsubscribe = await client.subscribeYuanbaoMessages(handler);
+
+    expect(listenMock).toHaveBeenLastCalledWith("yuanbao://message", expect.any(Function));
+    const listener = listenMock.mock.calls.at(-1)?.[1] as (event: { payload: unknown }) => void;
+    listener({ payload: { type: "content_delta", text: "hello" } });
+    expect(handler).toHaveBeenCalledWith({ type: "content_delta", text: "hello" });
+
+    unsubscribe();
+    expect(unlisten).toHaveBeenCalled();
+  });
+
+  it("keeps legacy haha-cc compatible server message subscriptions as fallback", async () => {
     const client = new RuntimeClient();
     const listenMock = vi.mocked(listen);
     const unlisten = vi.fn();
@@ -264,11 +282,15 @@ describe("RuntimeClient desktop transport", () => {
     expect(unlisten).toHaveBeenCalled();
   });
 
-  it("wraps runtime ping for haha-cc connected and pong messages", async () => {
+  it("wraps runtime ping for Yuanbao connected and pong messages", async () => {
     const client = new RuntimeClient();
     const result = {
       ok: true,
       transport: "json-rpc-stdio",
+      yuanbaoMessages: [
+        { type: "connected", sessionId: "sess_1" },
+        { type: "pong" },
+      ],
       hahaCcMessages: [
         { type: "connected", sessionId: "sess_1" },
         { type: "pong" },
@@ -285,7 +307,26 @@ describe("RuntimeClient desktop transport", () => {
     });
   });
 
-  it("fetches haha-cc compatible messages after a sequence", async () => {
+  it("fetches Yuanbao messages after a sequence", async () => {
+    const client = new RuntimeClient();
+    const result = {
+      messages: [
+        { type: "content_delta", text: "hello" },
+        { type: "thinking", text: "plan" },
+      ],
+      lastSeq: 7,
+      truncated: false,
+    };
+
+    invokeMock.mockResolvedValueOnce(result);
+
+    await expect(client.yuanbaoEventsAfter({ sessionId: "sess_1", afterSeq: 3, limit: 100 })).resolves.toEqual(result);
+    expect(invokeMock).toHaveBeenLastCalledWith("yuanbao_events_after", {
+      payload: { sessionId: "sess_1", afterSeq: 3, limit: 100 },
+    });
+  });
+
+  it("keeps legacy haha-cc message polling as fallback", async () => {
     const client = new RuntimeClient();
     const result = {
       messages: [
@@ -299,12 +340,12 @@ describe("RuntimeClient desktop transport", () => {
     invokeMock.mockResolvedValueOnce(result);
 
     await expect(client.hahaCcEventsAfter({ sessionId: "sess_1", afterSeq: 3, limit: 100 })).resolves.toEqual(result);
-    expect(invokeMock).toHaveBeenLastCalledWith("haha_cc_events_after", {
+    expect(invokeMock).toHaveBeenLastCalledWith("yuanbao_events_after", {
       payload: { sessionId: "sess_1", afterSeq: 3, limit: 100 },
     });
   });
 
-  it("connects haha-cc messages with initial connected and keepalive pong", async () => {
+  it("connects Yuanbao messages with initial connected and keepalive pong", async () => {
     const client = new RuntimeClient();
     const listenMock = vi.mocked(listen);
     const unlisten = vi.fn();
@@ -314,6 +355,10 @@ describe("RuntimeClient desktop transport", () => {
       .mockResolvedValueOnce({
         ok: true,
         transport: "json-rpc-stdio",
+        yuanbaoMessages: [
+          { type: "connected", sessionId: "sess_1" },
+          { type: "pong" },
+        ],
         hahaCcMessages: [
           { type: "connected", sessionId: "sess_1" },
           { type: "pong" },
@@ -324,6 +369,10 @@ describe("RuntimeClient desktop transport", () => {
       .mockResolvedValueOnce({
         ok: true,
         transport: "json-rpc-stdio",
+        yuanbaoMessages: [
+          { type: "connected", sessionId: "sess_1" },
+          { type: "pong" },
+        ],
         hahaCcMessages: [
           { type: "connected", sessionId: "sess_1" },
           { type: "pong" },
@@ -332,13 +381,13 @@ describe("RuntimeClient desktop transport", () => {
         pong: { type: "pong" },
       });
 
-    const unsubscribe = await client.connectHahaCcMessages(handler, {
+    const unsubscribe = await client.connectYuanbaoMessages(handler, {
       sessionId: "sess_1",
       taskId: "task_1",
       keepAliveMs: 1000,
     });
 
-    expect(listenMock).toHaveBeenLastCalledWith("haha-cc://message", expect.any(Function));
+    expect(listenMock).toHaveBeenLastCalledWith("yuanbao://message", expect.any(Function));
     expect(handler).toHaveBeenCalledWith({ type: "connected", sessionId: "sess_1" });
     expect(handler).toHaveBeenCalledWith({ type: "pong" });
     expect(invokeMock).toHaveBeenLastCalledWith("runtime_ping", {

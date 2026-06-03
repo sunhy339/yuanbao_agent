@@ -431,8 +431,8 @@
 - [x] 兼容处理 `kind: "haha_cc_message"`。
 - [x] RPC 轮询优先使用 `events.yuanbaoAfter`。
 - [x] 兼容 fallback 到 `events.hahaCcAfter`。
-- [ ] UI 文案避免出现 haha/haha-cc，除非是在说明兼容协议来源。
-- [ ] 增加前端事件订阅测试。
+- [x] UI 文案避免出现 haha/haha-cc，除非是在说明兼容协议来源。
+- [x] 增加前端事件订阅测试。
 
 建议文件：
 
@@ -447,6 +447,13 @@
 
 - UI 对用户显示 Yuanbao。
 - 旧事件仍能渲染。
+
+进展：
+
+- 2026-06-03：前端能力记录页用户可见标题/文案切换为 Yuanbao；内部兼容 API、历史路径、CSS class 和 localStorage key 暂不做高风险重命名。
+- 2026-06-03：`RuntimeClient` 测试补充 `subscribeYuanbaoMessages`、`connectYuanbaoMessages`、`yuanbaoEventsAfter` 主路径，旧 `hahaCc*` 入口保留为兼容 fallback 测试。
+- 2026-06-03：`npm --prefix app test -- src/lib/runtimeClient.test.ts src/ui/haha-clean/pages/CleanNewSessionWorkspace.test.tsx src/ui/haha-clean/pages/CleanCapabilityNotes.test.tsx` 通过，32 passed。
+- 2026-06-03：`npm --prefix app run typecheck` 通过。
 
 ## Batch 13：最终回归
 

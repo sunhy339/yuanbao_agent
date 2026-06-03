@@ -1,6 +1,6 @@
 import { CLEAN_TRANSCRIPT_CAPABILITIES } from "../conversation/transcriptModel";
 
-export const HAHACC_CAPABILITY_NOTES = [
+export const YUANBAO_CAPABILITY_NOTES = [
   {
     status: "已接入",
     item: "聊天正文、用户消息、思考块、工具块、命令、审批、文件改动、worklog 折叠、置底按钮、Composer 基础控件。",
@@ -11,7 +11,7 @@ export const HAHACC_CAPABILITY_NOTES = [
   },
   {
     status: "需要后端补字段",
-    item: "haha-cc 风格的真实 token 级 thinking 流、工具 parent/child 调用树、每个工具的结构化输入/输出摘要、分支/撤销消息目标。",
+    item: "Yuanbao 风格的真实 token 级 thinking 流、工具 parent/child 调用树、每个工具的结构化输入/输出摘要、分支/撤销消息目标。",
   },
   {
     status: "需要后端补字段",
@@ -25,10 +25,10 @@ export const HAHACC_CAPABILITY_NOTES = [
 
 export function CleanCapabilityNotes() {
   return (
-    <section className="hc-capability-notes" aria-label="haha 能力接入记录">
-      <h2>haha 能力接入记录</h2>
+    <section className="hc-capability-notes" aria-label="Yuanbao 能力接入记录">
+      <h2>Yuanbao 能力接入记录</h2>
       <ul>
-        {HAHACC_CAPABILITY_NOTES.map((note) => (
+        {YUANBAO_CAPABILITY_NOTES.map((note) => (
           <li key={`${note.status}:${note.item}`}>
             <strong>{note.status}</strong>
             <span>{note.item}</span>

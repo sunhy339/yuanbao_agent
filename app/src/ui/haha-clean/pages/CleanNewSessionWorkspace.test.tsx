@@ -8,7 +8,7 @@ afterEach(() => {
 });
 
 describe("CleanNewSessionWorkspace", () => {
-  it("renders the haha-cc style empty state without legacy setup cards", () => {
+  it("renders the Yuanbao empty state without legacy setup cards", () => {
     render(
       <CleanNewSessionWorkspace
         workspacePath="D:\\py\\yuanbao_agent"

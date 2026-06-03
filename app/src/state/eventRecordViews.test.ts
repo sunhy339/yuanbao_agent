@@ -83,4 +83,27 @@ describe("eventRecordViews worktree routing", () => {
     expect(next?.routing?.activeWorktree?.id).toBe("wt_3");
     expect(next?.routing?.activeWorktree?.status).toBe("merged");
   });
+
+  it("keeps runtime-work waits in running state instead of approval state", () => {
+    const current: TaskRecord = {
+      id: "task_1",
+      sessionId: "sess_1",
+      type: "chat",
+      status: "running",
+      goal: "Fan out work",
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const next = applyEventToTask(current, taskEvent("task.runtime_work_waiting", {
+      status: "running",
+      detail: "Completion is waiting for runtime work to settle.",
+      completionGate: {
+        status: "waiting_runtime_work",
+      },
+    }));
+
+    expect(next?.status).toBe("running");
+    expect(next?.resultSummary).toBe("Completion is waiting for runtime work to settle.");
+  });
 });

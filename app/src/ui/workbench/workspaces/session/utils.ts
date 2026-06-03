@@ -406,6 +406,9 @@ export function isRawToolTitle(value?: string | null) {
 
 export function formatApprovalKindLabel(kind?: string | null, command?: string | null) {
   const haystack = `${kind ?? ""} ${command ?? ""}`.toLowerCase();
+  if (/\bplan\b|planning/.test(haystack)) {
+    return "计划审批";
+  }
   if (/(apply_patch|patch)/.test(haystack)) {
     return "文件修改审批";
   }

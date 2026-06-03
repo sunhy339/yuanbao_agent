@@ -20,6 +20,7 @@ export type AgentEventType =
   | "task.started"
   | "task.updated"
   | "task.waiting_approval"
+  | "task.runtime_work_waiting"
   | "task.completed"
   | "task.failed"
   | "task.cancelled"

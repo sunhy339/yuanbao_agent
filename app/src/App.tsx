@@ -980,7 +980,12 @@ export function App() {
           setActiveTaskForSession(result.task.id, result.task.sessionId);
           clearPendingAssistantTokens();
           const messageResult = await runtimeClient.listMessages({ sessionId, limit: 500 });
-          setChatMessages((current) => replaceSessionMessages(current, sessionId, messageResult.messages));
+          setChatMessages((current) =>
+            replaceSessionMessages(current, sessionId, messageResult.messages, {
+              taskIds: [taskId],
+              includeUserMessages: true,
+            }),
+          );
         }
       } catch {
         // Event delivery is still the primary path; this poll is a quiet safety net for missed terminal events.
@@ -1010,7 +1015,12 @@ export function App() {
       .listMessages({ sessionId, limit: 500 })
       .then((result) => {
         if (!cancelled) {
-          setChatMessages((current) => replaceSessionMessages(current, sessionId, result.messages));
+          setChatMessages((current) =>
+            replaceSessionMessages(current, sessionId, result.messages, {
+              taskIds: [task.id],
+              includeUserMessages: true,
+            }),
+          );
         }
       })
       .catch(() => {

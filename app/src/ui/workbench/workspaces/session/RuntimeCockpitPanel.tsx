@@ -50,6 +50,8 @@ function formatApprovalLabel(kind?: string) {
     return "审批";
   }
   switch (kind.toLowerCase()) {
+    case "plan":
+      return "计划审批";
     case "shell":
     case "run_command":
       return "命令审批";
@@ -58,6 +60,10 @@ function formatApprovalLabel(kind?: string) {
       return "写入审批";
     case "merge":
       return "合并审批";
+    case "completion_review":
+      return "完成确认";
+    case "advisor_tool":
+      return "证据执行审批";
     default:
       return kind.replace(/_/g, " ");
   }

@@ -556,7 +556,7 @@ class TaskLifecycleMixin:
     ) -> dict[str, Any]:
         wait_structured_result = {
             **structured_result,
-            "status": "waiting_approval",
+            "status": "waiting_runtime_work",
             "completionGate": {
                 "status": gate_status or "waiting_runtime_work",
                 "reason": reason,
@@ -564,11 +564,11 @@ class TaskLifecycleMixin:
                 "decision": decision or "unresolved_runtime_work",
             },
         }
-        if task.get("status") != "waiting_approval":
-            self._validate_task_transition(task["status"], "waiting_approval", task["id"], silent=True)
+        if task.get("status") != "running":
+            self._validate_task_transition(task["status"], "running", task["id"], silent=True)
             runtime_task = self._store.update_task(
                 task_id=task["id"],
-                status="waiting_approval",
+                status="running",
                 plan=task.get("plan") or [],
                 summary=summary,
                 result_summary=summary,
@@ -609,14 +609,14 @@ class TaskLifecycleMixin:
         self._publish(
             session_id=session_id,
             task=runtime_task,
-            event_type="task.waiting_approval",
+            event_type="task.runtime_work_waiting",
             payload={
-                "status": "waiting_approval",
+                "status": "running",
                 "detail": reason,
                 "completionGate": wait_structured_result["completionGate"],
             },
         )
-        self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="waiting_approval")
+        self._record_task_metrics(session_id=session_id, task=runtime_task, task_status="running")
         if not skip_drain:
             self._drain_session_queue(session_id)
         return runtime_task

@@ -426,6 +426,7 @@ function assertConversationOutputVisibility(observedRuntimeTypes: string[]) {
       "command.output",
       "command.completed",
       "task.waiting_approval",
+      "task.runtime_work_waiting",
     ]);
   if (hasRuntimeProcess) {
     const processBlocks = [

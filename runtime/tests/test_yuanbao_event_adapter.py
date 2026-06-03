@@ -410,6 +410,26 @@ def test_yuanbao_adapter_covers_all_core_server_message_types() -> None:
     assert all(message is not None for message in messages)
 
 
+def test_runtime_work_waiting_is_task_update_not_permission_request() -> None:
+    message = to_yuanbao_server_message(
+        _event(
+            "task.runtime_work_waiting",
+            {
+                "status": "running",
+                "detail": "Completion is waiting for runtime work to settle.",
+                "completionGate": {"status": "waiting_runtime_work"},
+            },
+        )
+    )
+
+    assert message == {
+        "type": "task_update",
+        "taskId": "task_1",
+        "status": "running",
+        "progress": "Completion is waiting for runtime work to settle.",
+    }
+
+
 def test_yuanbao_adapter_maps_collaboration_snapshot_to_stable_team_update() -> None:
     message = to_yuanbao_server_message(
         _event(

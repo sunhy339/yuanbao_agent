@@ -18,6 +18,11 @@ export interface ChatMessageView {
   metadata?: Record<string, unknown>;
 }
 
+interface ReplaceSessionMessagesOptions {
+  taskIds?: string[];
+  includeUserMessages?: boolean;
+}
+
 export function messageRecordToChatMessage(record: MessageRecord): ChatMessageView | null {
   if (record.role !== "user" && record.role !== "assistant") {
     return null;
@@ -43,10 +48,22 @@ export function replaceSessionMessages(
   current: ChatMessageView[],
   sessionId: string,
   records: MessageRecord[],
+  options: ReplaceSessionMessagesOptions = {},
 ): ChatMessageView[] {
+  const allowedTaskIds = options.taskIds?.length ? new Set(options.taskIds.filter(Boolean)) : null;
+  const includeUserMessages = options.includeUserMessages !== false;
   const persistedMessages = records
     .map(messageRecordToChatMessage)
-    .filter((message): message is ChatMessageView => message !== null);
+    .filter((message): message is ChatMessageView => message !== null)
+    .filter((message) => {
+      if (!allowedTaskIds) {
+        return true;
+      }
+      if (includeUserMessages && message.role === "user") {
+        return true;
+      }
+      return allowedTaskIds.has(message.taskId);
+    });
 
   // Single pass over current to split into other-session, live-streaming, and pending-local
   const otherSessionMessages: ChatMessageView[] = [];

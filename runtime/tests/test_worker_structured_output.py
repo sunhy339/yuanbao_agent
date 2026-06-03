@@ -1853,7 +1853,7 @@ class TestCompletionHardGate:
             skip_reflection=True,
         )
 
-        assert waiting["status"] == "waiting_approval"
+        assert waiting["status"] == "running"
         gate = waiting["structuredResult"]["completionGate"]
         assert gate["status"] == "waiting_runtime_work"
         assert child_approval["id"] in {
@@ -1875,9 +1875,9 @@ class TestCompletionHardGate:
             "decision": "approved",
         })
 
-        assert result["task"]["status"] == "waiting_approval"
+        assert result["task"]["status"] == "running"
         refreshed = store.get_task({"taskId": task["id"]})["task"]
-        assert refreshed["status"] == "waiting_approval"
+        assert refreshed["status"] == "running"
         refreshed_gate = refreshed["structuredResult"]["completionGate"]
         assert refreshed_gate["status"] == "waiting_runtime_work"
 

@@ -244,6 +244,9 @@ export function coerceTaskStatus(
   if (event.type === "task.waiting_approval") {
     return "waiting_approval";
   }
+  if (event.type === "task.runtime_work_waiting") {
+    return "running";
+  }
   if (event.type === "task.completed") {
     return "completed";
   }

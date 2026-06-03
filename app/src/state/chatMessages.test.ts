@@ -954,6 +954,42 @@ describe("chatMessages", () => {
     expect(visible[1].updatedAt).toBeGreaterThan(visible[0].createdAt);
   });
 
+  it("can limit terminal persisted-message refreshes to the active task", () => {
+    const persisted: MessageRecord[] = [
+      {
+        id: "user_root",
+        sessionId: "sess_1",
+        taskId: "task_root",
+        role: "user",
+        content: "start several agents",
+        createdAt: 10,
+      },
+      {
+        id: "assistant_root",
+        sessionId: "sess_1",
+        taskId: "task_root",
+        role: "assistant",
+        content: "Root task summary",
+        createdAt: 11,
+      },
+      {
+        id: "assistant_child",
+        sessionId: "sess_1",
+        taskId: "task_child",
+        role: "assistant",
+        content: "Child worker analysis should stay out of the main chat refresh",
+        createdAt: 12,
+      },
+    ];
+
+    const next = replaceSessionMessages([], "sess_1", persisted, {
+      taskIds: ["task_root"],
+      includeUserMessages: true,
+    });
+
+    expect(next.map((message) => message.id)).toEqual(["user_root", "assistant_root"]);
+  });
+
   it("keeps local pending messages during a persisted-message refresh race", () => {
     const persisted: MessageRecord[] = [
       {

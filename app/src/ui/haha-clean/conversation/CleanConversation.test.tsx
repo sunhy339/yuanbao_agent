@@ -50,6 +50,78 @@ describe("CleanConversation", () => {
     expect(worker).not.toHaveTextContent("Worker Worker");
   });
 
+  it("folds child agent result summaries into their task rows without exposing raw task ids", async () => {
+    const user = userEvent.setup();
+    render(
+      <CleanAgentTaskGroupBlock
+        message={{
+          id: "agents",
+          role: "assistant",
+          status: "completed",
+          content: "",
+          metadata: {
+            kind: "agent_task_group",
+            title: "Dispatched 3 agents",
+            summary: "3 completed",
+            agentTasks: [
+              {
+                id: "ctask_4f7a483ff9e9",
+                title: "Verify results",
+                status: "completed",
+                workerName: "Worker",
+                agentType: "worker",
+              },
+              {
+                id: "ctask_4ad725cbd806",
+                title: "Implement changes",
+                status: "completed",
+                workerName: "Worker",
+                agentType: "worker",
+              },
+              {
+                id: "ctask_rawonly123",
+                status: "completed",
+                workerName: "Reviewer",
+                agentType: "reviewer",
+              },
+            ],
+            agentResults: [
+              {
+                id: "result-verify",
+                taskId: "ctask_4f7a483ff9e9",
+                title: "ctask_4f7a483ff9e9",
+                summary: "Verification complete. Changed files: None.",
+              },
+              {
+                id: "result-implement",
+                taskId: "ctask_4ad725cbd806",
+                title: "Implement changes",
+                summary: "I inspected the current UI/repo state.",
+              },
+              {
+                id: "result-raw-only",
+                taskId: "ctask_rawonly123",
+                title: "ctask_rawonly123",
+                summary: "Raw-only task summary.",
+              },
+            ],
+          },
+        }}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Dispatched 3 agents/ }));
+    const verify = screen.getByText("Verify results").closest("article") as HTMLElement;
+    const implement = screen.getByText("Implement changes").closest("article") as HTMLElement;
+
+    expect(verify).toHaveTextContent("Verification complete");
+    expect(implement).toHaveTextContent("I inspected the current UI/repo state");
+    expect(screen.queryByText("ctask_4f7a483ff9e9")).not.toBeInTheDocument();
+    expect(screen.getByText("Reviewer task")).toBeInTheDocument();
+    expect(screen.queryByText("ctask_rawonly123")).not.toBeInTheDocument();
+    expect(document.querySelector(".hc-agent-results")).not.toBeInTheDocument();
+  });
+
   it("renders thinking as a lightweight progress row", () => {
     render(
       <CleanThinkingBlock

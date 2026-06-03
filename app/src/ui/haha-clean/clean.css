@@ -2426,29 +2426,6 @@
   color: var(--hc-red);
 }
 
-.hc-agent-results {
-  display: grid;
-  gap: 6px;
-}
-
-.hc-agent-results p {
-  display: grid;
-  gap: 2px;
-  margin: 0;
-  border-left: 2px solid var(--hc-line);
-  padding-left: 10px;
-}
-
-.hc-agent-results strong {
-  color: var(--hc-text);
-  font-size: 12px;
-}
-
-.hc-agent-results span {
-  color: var(--hc-muted);
-  font-size: 12px;
-}
-
 .hc-thinking-detail,
 .hc-thinking pre,
 .hc-permission-card pre,

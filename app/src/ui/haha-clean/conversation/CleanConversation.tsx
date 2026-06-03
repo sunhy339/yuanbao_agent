@@ -1396,6 +1396,29 @@ function displayAgentMeta(workerName?: string, agentType?: string, durationMs?: 
   ].filter(Boolean);
 }
 
+function mergeAgentResultSummariesByTask(results: Record<string, unknown>[]) {
+  const summaries = new Map<string, string>();
+  for (const result of results) {
+    const taskId = readString(result.taskId);
+    const summary = readString(result.summary);
+    if (!taskId || !summary) continue;
+    const current = summaries.get(taskId);
+    summaries.set(taskId, current && !current.includes(summary) ? `${current}\n${summary}` : (current || summary));
+  }
+  return summaries;
+}
+
+function looksLikeRawChildTaskId(value?: string) {
+  return /^(?:c?task|child|subtask)[_-][a-z0-9_-]{3,}$/i.test(value?.trim() ?? "");
+}
+
+function displayAgentTaskTitle(title: string, id: string, agentType: string, index: number) {
+  const candidate = title || id;
+  if (candidate && !looksLikeRawChildTaskId(candidate)) return candidate;
+  const role = readableAgentLabel(agentType);
+  return role ? `${role} task` : `Agent task ${index + 1}`;
+}
+
 export const CleanAgentTaskGroupBlock = memo(function CleanAgentTaskGroupBlock({
   message,
 }: {
@@ -1404,6 +1427,7 @@ export const CleanAgentTaskGroupBlock = memo(function CleanAgentTaskGroupBlock({
   const [expanded, setExpanded] = useState(agentTaskTone(message.status) === "running");
   const tasks = readMetadataRecordList(message, ["agentTasks"]);
   const results = readMetadataRecordList(message, ["agentResults"]);
+  const resultSummariesByTask = useMemo(() => mergeAgentResultSummariesByTask(results), [results]);
   const title = readMetadataString(message, ["title"]) || `派遣了 ${tasks.length} 个代理`;
   const summary = readMetadataString(message, ["summary"]) || message.content.trim();
 
@@ -1418,19 +1442,21 @@ export const CleanAgentTaskGroupBlock = memo(function CleanAgentTaskGroupBlock({
       </button>
       {expanded ? (
         <div className="hc-agent-task-list">
-          {tasks.map((task) => {
+          {tasks.map((task, index) => {
             const id = readString(task.id) || readString(task.title);
             const taskStatus = readString(task.status);
             const worker = readString(task.workerName);
             const agentType = readString(task.agentType);
-            const description = readString(task.attention) || readString(task.summary) || readString(task.errorMessage);
+            const resultSummary = id ? resultSummariesByTask.get(id) : "";
+            const description = readString(task.attention) || readString(task.summary) || readString(task.errorMessage) || resultSummary;
             const duration = readRecordNumber(task, ["durationMs"]);
             const meta = displayAgentMeta(worker, agentType, duration);
+            const title = displayAgentTaskTitle(readString(task.title), id, agentType, index);
             return (
               <article key={id} data-tone={agentTaskTone(taskStatus)}>
                 <Circle size={10} />
                 <div>
-                  <strong>{readString(task.title) || id}</strong>
+                  <strong>{title}</strong>
                   {meta.length ? <small>{meta.join(" · ")}</small> : null}
                   {description ? <p>{compactText(description, 180)}</p> : null}
                 </div>
@@ -1438,16 +1464,6 @@ export const CleanAgentTaskGroupBlock = memo(function CleanAgentTaskGroupBlock({
               </article>
             );
           })}
-          {results.length ? (
-            <div className="hc-agent-results">
-              {results.map((result) => (
-                <p key={readString(result.id) || readString(result.taskId)}>
-                  <strong>{readString(result.title) || readString(result.taskId)}</strong>
-                  <span>{compactText(readString(result.summary), 180)}</span>
-                </p>
-              ))}
-            </div>
-          ) : null}
         </div>
       ) : null}
     </section>

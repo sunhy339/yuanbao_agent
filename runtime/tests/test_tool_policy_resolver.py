@@ -168,6 +168,20 @@ def test_reviewer_role_is_read_only() -> None:
     assert set(decision.denied_tool_names) == {"write_file", "run_command"}
 
 
+def test_plan_mode_exposes_only_read_tools_and_exit_tool() -> None:
+    resolver = ToolPolicyResolver()
+    decision = resolver.resolve(
+        task={"id": "task_plan", "role": "root"},
+        context={"_plan_mode": True},
+        tool_results=[],
+        registered_tools=_tools("read_file", "search_files", "exit_plan_mode", "write_file", "run_command", "task"),
+    )
+
+    assert decision.phase == "plan_mode"
+    assert set(decision.allowed_tool_names) == {"read_file", "search_files", "exit_plan_mode"}
+    assert set(decision.denied_tool_names) == {"write_file", "run_command", "task"}
+
+
 def test_child_worker_uses_agent_type_metadata_and_allowlist() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
@@ -416,7 +430,18 @@ def test_permission_engine_allows_low_risk_read_and_verification_commands_when_s
         },
     })
 
-    for command in ("Get-ChildItem -Force", "git diff --stat", "python -m py_compile blog_service.py"):
+    for command in (
+        "Get-ChildItem -Force",
+        "Get-Content README.md",
+        "git diff --stat",
+        "git rev-parse --show-toplevel",
+        "where.exe python",
+        "npm.cmd run typecheck",
+        "npm run typecheck",
+        "pnpm run lint",
+        "python -m py_compile blog_service.py",
+        r'& "C:\Python314\python.exe" -m pytest -q',
+    ):
         decision = engine.evaluate(PermissionRequest(
             capability="runCommand",
             tool_name="run_command",
@@ -425,7 +450,65 @@ def test_permission_engine_allows_low_risk_read_and_verification_commands_when_s
         assert decision.decision == "allow"
 
 
-def test_skill_strict_whitelist_filters_provider_tools() -> None:
+def test_permission_engine_keeps_dangerous_or_chained_shell_approval_required() -> None:
+    from local_agent_runtime.policy.permission_engine import PermissionEngine, PermissionRequest
+
+    engine = PermissionEngine({
+        "permissions": {
+            "preset": "balanced",
+            "capabilities": {
+                "runCommand": {"mode": "ask", "scope": "*"},
+            },
+        },
+    })
+
+    for command in ("git status && Remove-Item build", "cat README.md > out.txt", "pytest | tee out.txt"):
+        decision = engine.evaluate(PermissionRequest(
+            capability="runCommand",
+            tool_name="run_command",
+            context={"command": command},
+        ))
+        assert decision.decision == "approval_required"
+
+
+def test_permission_engine_accept_edits_allows_write_but_not_dangerous_shell() -> None:
+    from local_agent_runtime.policy.permission_engine import PermissionEngine, PermissionRequest
+
+    engine = PermissionEngine({"policy": {"approvalMode": "accept_edits"}})
+
+    write_decision = engine.evaluate(PermissionRequest(
+        capability="writeFile",
+        tool_name="apply_patch",
+        context={"changedPaths": ["src/app.ts"]},
+    ))
+    shell_decision = engine.evaluate(PermissionRequest(
+        capability="runCommand",
+        tool_name="run_command",
+        context={"command": "python main.py"},
+    ))
+
+    assert write_decision.decision == "allow"
+    assert shell_decision.decision == "approval_required"
+
+
+def test_permission_engine_untrusted_content_overrides_accept_edits_write_allow() -> None:
+    from local_agent_runtime.policy.permission_engine import PermissionEngine, PermissionRequest
+
+    engine = PermissionEngine({"policy": {"approvalMode": "accept_edits"}})
+    decision = engine.evaluate(PermissionRequest(
+        capability="writeFile",
+        tool_name="write_file",
+        context={
+            "path": "src/app.ts",
+            "untrustedContentSignals": [{"source": "web", "toolName": "web_fetch"}],
+        },
+    ))
+
+    assert decision.decision == "approval_required"
+    assert decision.approval_kind == "apply_patch"
+
+
+def test_skill_strict_whitelist_filters_provider_tools_but_keeps_control_flow() -> None:
     resolver = ToolPolicyResolver()
     decision = resolver.resolve(
         task={"id": "task_skill", "role": "root"},
@@ -437,10 +520,13 @@ def test_skill_strict_whitelist_filters_provider_tools() -> None:
             },
         },
         tool_results=[],
-        registered_tools=[*_tools("read_file", "write_file"), _mcp_tool("docs", "lookup")],
+        registered_tools=[
+            *_tools("read_file", "write_file", "ask_user_question", "enter_plan_mode", "exit_plan_mode"),
+            _mcp_tool("docs", "lookup"),
+        ],
     )
 
-    assert decision.allowed_tool_names == ["read_file"]
+    assert set(decision.allowed_tool_names) == {"ask_user_question", "enter_plan_mode", "exit_plan_mode", "read_file"}
     assert set(decision.denied_tool_names) == {"write_file", "mcp__docs__lookup"}
     assert "skill=docs_only" in decision.reasons["write_file"]
     assert "strict_whitelist" in decision.reasons["mcp__docs__lookup"]

@@ -107,3 +107,27 @@ def test_git_status_and_diff_results_include_runtime_steps(tmp_path: Path) -> No
     assert diff["files"]
     assert _step_labels(diff) == ["resolve", "repository", "diff", "files"]
     assert diff["steps"][-1]["summary"] == "1 file(s)"
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git executable is not available")
+def test_git_diff_large_diff_registers_patch_artifact(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    tracked.write_text("after\n" + ("x" * 10_000) + "\n", encoding="utf-8")
+
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    diff_tool = build_git_diff_tool(_policy(), store)["handler"]
+
+    result = diff_tool({"workspaceRoot": str(tmp_path), "sessionId": "s1", "taskId": "t1"})
+
+    assert result["artifactId"].startswith("art")
+    artifacts = store.list_artifacts({"sessionId": "s1"})["artifacts"]
+    assert len(artifacts) == 1
+    assert artifacts[0]["kind"] == "patch"
+    assert artifacts[0]["content"]["diff"] == result["diff"]
+    assert artifacts[0]["metadata"]["source"] == "git_diff"

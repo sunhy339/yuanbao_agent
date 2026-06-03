@@ -2208,20 +2208,22 @@ class MessageExecutionMixin:
                 },
             )
             if context is None:
+                minimal_context = isinstance(routing, dict) and routing.get("contextMode") == "minimal"
                 worker._publish(
                     session_id=session_id,
                     task=task,
                     event_type="context.build.started",
                     payload={
                         "status": "running",
-                        "lightweight": False,
+                        "lightweight": minimal_context,
+                        "minimal": minimal_context,
                         "background": True,
                     },
                     visibility="trace",
                 )
                 context = worker._context_builder.build(
-                    session_id=session_id, goal=goal, skill_id=skill_id, lightweight=False,
-                    role=task.get("role"),
+                    session_id=session_id, goal=goal, skill_id=skill_id, lightweight=minimal_context,
+                    role=task.get("role"), minimal=minimal_context,
                 )
                 worker._publish(
                     session_id=session_id,
@@ -2229,7 +2231,8 @@ class MessageExecutionMixin:
                     event_type="context.build.completed",
                     payload={
                         "status": "completed",
-                        "lightweight": False,
+                        "lightweight": minimal_context,
+                        "minimal": minimal_context,
                         "background": True,
                         "latency_ms": int((time.monotonic() - started_at) * 1000),
                         "tokenEstimate": ((context.get("budgetStats") or {}).get("estimatedTokens")),
@@ -2257,12 +2260,14 @@ class MessageExecutionMixin:
                         "currentStep": task.get("currentStep"),
                         "context": worker._event_context_summary(context),
                     },
+                    visibility="panel",
                 )
                 worker._publish(
                     session_id=session_id,
                     task=task,
                     event_type="assistant.token",
                     payload={"delta": "Building context and preparing the first tool calls..."},
+                    visibility="panel",
                 )
             else:
                 context = worker._context_with_task_focus(context, task)
@@ -2279,6 +2284,7 @@ class MessageExecutionMixin:
                         "currentStep": task.get("currentStep"),
                         "context": worker._event_context_summary(context),
                     },
+                    visibility="panel",
                 )
             _provider_mode = (context.get("config") or {}).get("provider", {}).get("mode", "unknown")
             _will_stream = worker._should_stream_provider({**context, "messages": [], "tools": [], "step": 1})

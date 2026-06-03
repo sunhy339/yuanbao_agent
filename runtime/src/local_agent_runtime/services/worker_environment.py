@@ -17,6 +17,7 @@ DEFAULT_CHILD_TOOL_ALLOWLIST = (
     "code_search",
     "web_fetch",
     "browser",
+    "ask_user_question",
 )
 
 DEFAULT_CHILD_LOCAL_TOOL_ALLOWLIST = (

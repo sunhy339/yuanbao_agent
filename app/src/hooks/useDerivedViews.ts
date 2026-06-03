@@ -139,8 +139,11 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
 
   // Session context preview
   const sessionContextPreview = useMemo(
-    () =>
-      buildSessionContextPreview({
+    () => {
+      if (activeTab.kind === "new-session") {
+        return undefined;
+      }
+      return buildSessionContextPreview({
         events,
         traceEvents,
         workspace,
@@ -148,8 +151,9 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
         activeTaskId,
         activeTask: task,
         maxContextTokens: maxContextTokenBudget,
-      }),
-    [activeTaskId, events, maxContextTokenBudget, session, traceEvents, task, workspace],
+      });
+    },
+    [activeTab.kind, activeTaskId, events, maxContextTokenBudget, session, traceEvents, task, workspace],
   );
 
   // Settings providers
@@ -368,13 +372,17 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
   );
 
   // Labels
+  const isNewSessionTab = activeTab.kind === "new-session";
   const activeSessionWorkspaceRoot = activeTab.kind === "session" ? session?.workspaceRoot : undefined;
   const activeSessionWorkspaceName =
     activeTab.kind === "session"
       ? session?.workspaceName ?? workspaceNameFromPath(activeSessionWorkspaceRoot)
       : undefined;
+  const launchWorkspaceName = workspaceNameFromPath(workspacePath);
   const workspaceName =
-    activeSessionWorkspaceName ?? workspace?.name ?? workspaceNameFromPath(workspacePath) ?? "yuanbao_agent";
+    isNewSessionTab
+      ? launchWorkspaceName ?? workspace?.name ?? "yuanbao_agent"
+      : activeSessionWorkspaceName ?? workspace?.name ?? launchWorkspaceName ?? "yuanbao_agent";
 
   const providerLabel =
     providerSettings.mode === "mock"
@@ -413,11 +421,13 @@ export function useDerivedViews(deps: UseDerivedViewsDeps) {
     : `${formatCompactCount(contextStats?.estimatedTokens ?? contextStats?.estimatedInputTokens)} 上下文`;
 
   const cwdLabel =
-    activeSessionWorkspaceRoot ??
-    sessionContextPreview?.workspaceRoot ??
-    workspace?.rootPath ??
-    workspacePath ??
-    "";
+    isNewSessionTab
+      ? workspacePath ?? workspace?.rootPath ?? ""
+      : activeSessionWorkspaceRoot ??
+        sessionContextPreview?.workspaceRoot ??
+        workspace?.rootPath ??
+        workspacePath ??
+        "";
 
   const runtimeUnavailableReason =
     !loading && !runtimeReady

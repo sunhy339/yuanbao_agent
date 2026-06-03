@@ -11,6 +11,7 @@ import {
 import type { SystemWorkspaceKind, WorkbenchSession, WorkbenchTab } from "./types";
 import type { ComposerRuntimeChildTask } from "./ComposerDock";
 import type { QueuedPromptSubmission } from "../../state/eventRecordViews";
+import type { CleanSessionLaunchOptions } from "../haha-clean/composer/CleanComposer";
 
 interface AppShellProps {
   tabs: WorkbenchTab[];
@@ -28,7 +29,7 @@ interface AppShellProps {
   onCloseOtherTabs: (tabId: WorkbenchTab["id"]) => void;
   onRenameSession: (sessionId: string, newTitle: string) => void;
   onDeleteSession: (sessionId: string) => void;
-  onSubmitPrompt: () => void;
+  onSubmitPrompt: (options?: CleanSessionLaunchOptions) => void;
   onQueuePrompt?: (mode?: "queued" | "supplement") => void;
   onStopPrompt?: () => void;
   queuedPrompts?: QueuedPromptSubmission[];
@@ -179,10 +180,10 @@ export function AppShell({
         onQueuedPromptRemove={onQueuedPromptRemove}
         onQueuedPromptMove={onQueuedPromptMove}
         disabled={disabled}
-            sending={sending}
-            submitting={submitting}
-            stopPending={stopPending}
-            queuedPromptCount={queuedPromptCount}
+        sending={sending}
+        submitting={submitting}
+        stopPending={stopPending}
+        queuedPromptCount={queuedPromptCount}
         attachments={attachments}
         onAttachmentsChange={onAttachmentsChange}
         onAttachmentError={onAttachmentError}

@@ -1,5 +1,6 @@
 import type {
   McpServerRecord,
+  SessionLaunchOptions,
   SessionRecord,
   SkillPresetRecord,
   TaskRecord,
@@ -78,6 +79,24 @@ export function buildPromptAttachmentsWithReferences(content: string, attachment
   return { attachments: nextAttachments, fileReferences };
 }
 
+export async function resolveWorkspaceForSlashCommand({
+  launch,
+  workspace,
+  ensureWorkspace,
+  openWorkspaceAtPath,
+}: {
+  launch?: SessionLaunchOptions;
+  workspace: any;
+  ensureWorkspace: () => Promise<any>;
+  openWorkspaceAtPath?: (path: string) => Promise<any>;
+}) {
+  const launchWorkDir = launch?.workDir?.trim();
+  if (launchWorkDir && openWorkspaceAtPath) {
+    return openWorkspaceAtPath(launchWorkDir);
+  }
+  return workspace ?? ensureWorkspace();
+}
+
 export interface UseMessageActionsDeps extends HookDeps {
   // State
   prompt: string;
@@ -132,6 +151,7 @@ export interface UseMessageActionsDeps extends HookDeps {
   workspace: any;
   mcpServers: McpServerRecord[];
   skills: SkillPresetRecord[];
+  openWorkspaceAtPath?: (path: string) => Promise<any>;
 }
 
 export function useMessageActions(deps: UseMessageActionsDeps) {
@@ -161,17 +181,23 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
     visibleChatMessages,
     workspace,
     mcpServers, skills,
+    openWorkspaceAtPath,
   } = deps;
 
   function getErrorMessage(reason: unknown): string {
     return reason instanceof Error ? reason.message : String(reason);
   }
 
-  async function ensureSessionForSend(): Promise<SessionRecord> {
-    const nextWorkspace = await ensureWorkspace();
+  async function ensureSessionForSend(launch?: SessionLaunchOptions): Promise<SessionRecord> {
+    const nextWorkspace = launch?.workDir?.trim() && openWorkspaceAtPath
+      ? await openWorkspaceAtPath(launch.workDir.trim())
+      : await ensureWorkspace();
     const result = await runtimeClient.createSession({
       workspaceId: nextWorkspace.id,
       title: sessionTitle.trim() || DEFAULT_SESSION_TITLE,
+      workDir: launch?.workDir,
+      repository: launch?.repository,
+      permissionMode: launch?.permissionMode,
     });
     setSessions((current) => upsertRecord(current, result.session));
     setSession(result.session);
@@ -186,7 +212,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
   async function sendMessageContent(
     messageContentInput: string,
     messageAttachmentsInput: string[],
-    options: { clearComposer?: boolean; mode?: "new" | "supplement" | "queued" } = {},
+    options: { clearComposer?: boolean; mode?: "new" | "supplement" | "queued"; launch?: SessionLaunchOptions } = {},
   ) {
     if (!messageContentInput.trim() && messageAttachmentsInput.length === 0) {
       setError("Enter a task description before sending.");
@@ -202,8 +228,8 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
       await persistSearchConfig();
       const activeSession =
         activeTab.kind === "session"
-          ? activeSessionRecord ?? (await ensureSessionForSend())
-          : await ensureSessionForSend();
+          ? activeSessionRecord ?? (await ensureSessionForSend(options.launch))
+          : await ensureSessionForSend(options.launch);
       pendingSessionIdForCatch = activeSession.id;
       const messageContent = messageContentInput.trim() || "Please review the attached file.";
       const messageReferences = buildPromptAttachmentsWithReferences(messageContent, messageAttachmentsInput);
@@ -317,7 +343,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
   const composerHasStreamingMessage = visibleChatMessages.some((message) => message.streaming);
   const composerSending = messageBusy || composerCanStop || (composerHasStreamingMessage && composerCanStop);
 
-  async function handleSendMessage() {
+  async function handleSendMessage(launch?: SessionLaunchOptions) {
     if (!prompt.trim() && promptAttachments.length === 0) {
       setError("Enter a task description before sending.");
       return;
@@ -326,13 +352,14 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
     const slashResult = dispatchSlashCommand(prompt);
     if (slashResult) {
       setPrompt("");
-      handleSlashCommand(slashResult);
+      void handleSlashCommand(slashResult, launch);
       return;
     }
 
     await sendMessageContent(prompt, promptAttachments, {
       clearComposer: true,
       mode: canReceiveSupplement(task?.status) ? "supplement" : "new",
+      launch,
     });
   }
 
@@ -461,7 +488,7 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
     }
   }
 
-  async function handleSlashCommand(cmd: ReturnType<typeof dispatchSlashCommand>) {
+  async function handleSlashCommand(cmd: ReturnType<typeof dispatchSlashCommand>, launch?: SessionLaunchOptions) {
     if (!cmd) return;
 
     // Compute status text for /status command
@@ -469,8 +496,13 @@ export function useMessageActions(deps: UseMessageActionsDeps) {
 
     switch (cmd.kind) {
       case "init": {
-        const activeWorkspace = workspace ?? (await ensureWorkspace());
         try {
+          const activeWorkspace = await resolveWorkspaceForSlashCommand({
+            launch,
+            workspace,
+            ensureWorkspace,
+            openWorkspaceAtPath,
+          });
           const result = await runtimeClient.initWorkspaceMemory({ workspaceId: activeWorkspace.id });
           const created = result.createdFiles ?? [];
           const existing = result.existingFiles ?? [];

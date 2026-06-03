@@ -29,7 +29,7 @@ import type {
   WorktreeRecord,
   WorkspaceRef,
 } from "./domain";
-import type { HahaCcServerMessage } from "./events";
+import type { HahaCcServerMessage, YuanbaoServerMessage } from "./events";
 
 export interface JsonRpcRequest<TParams = unknown> {
   jsonrpc: "2.0";
@@ -99,6 +99,7 @@ export type RpcMethod =
   | "command_log.get"
   | "trace.list"
   | "events.after"
+  | "events.yuanbaoAfter"
   | "events.hahaCcAfter"
   | "provider_turn.list"
   | "context_snapshot.list"
@@ -512,7 +513,9 @@ export interface EventsAfterParams {
   limit?: number;
 }
 
-export interface HahaCcEventsAfterParams extends EventsAfterParams {}
+export interface YuanbaoEventsAfterParams extends EventsAfterParams {}
+
+export interface HahaCcEventsAfterParams extends YuanbaoEventsAfterParams {}
 
 export interface ProviderTurnListParams {
   taskId: Identifier;
@@ -543,9 +546,10 @@ export interface RuntimePingParams {
 export interface RuntimePingResult {
   ok: boolean;
   transport: string;
+  yuanbaoMessages: YuanbaoServerMessage[];
   hahaCcMessages: HahaCcServerMessage[];
-  connected?: Extract<HahaCcServerMessage, { type: "connected" }> | null;
-  pong?: Extract<HahaCcServerMessage, { type: "pong" }> | null;
+  connected?: Extract<YuanbaoServerMessage, { type: "connected" }> | null;
+  pong?: Extract<YuanbaoServerMessage, { type: "pong" }> | null;
 }
 
 export interface WorkspaceOpenResult {
@@ -809,11 +813,13 @@ export interface EventsAfterResult {
   truncated: boolean;
 }
 
-export interface HahaCcEventsAfterResult {
-  messages: HahaCcServerMessage[];
+export interface YuanbaoEventsAfterResult {
+  messages: YuanbaoServerMessage[];
   lastSeq: number;
   truncated: boolean;
 }
+
+export interface HahaCcEventsAfterResult extends YuanbaoEventsAfterResult {}
 
 export interface ProviderTurnRecord {
   id: Identifier;

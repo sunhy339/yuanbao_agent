@@ -7,8 +7,8 @@ import threading
 import time
 from typing import Any, Callable, TextIO
 
-from ..haha_cc_compat import to_haha_cc_server_message
 from ..models import RpcEnvelope, RuntimeEvent
+from ..yuanbao_event_adapter import to_yuanbao_server_message
 from ..services.collaboration_service import CollaborationService
 from ..services.replay_service import ReplayService
 from ..services.command_background import cancel_background_command, get_background_command_event_bridge, get_background_command_service
@@ -152,6 +152,7 @@ class JsonRpcServer:
             "mcp.server.delete": self._orchestrator.mcp_server_delete,
             "mcp.tools.refresh": self._orchestrator.mcp_tools_refresh,
             "events.after": self._events_after,
+            "events.yuanbaoAfter": self._yuanbao_events_after,
             "events.hahaCcAfter": self._haha_cc_events_after,
             "provider_turn.list": self._provider_turn_list,
             "context_snapshot.list": self._context_snapshot_list,
@@ -443,8 +444,8 @@ class JsonRpcServer:
         limit = int(params.get("limit", 500))
         return self._store.events_after(session_id, after_seq, limit=min(limit, 500))
 
-    def _haha_cc_events_after(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Fetch haha-cc flat ServerMessages after a trace sequence."""
+    def _yuanbao_events_after(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Fetch Yuanbao flat ServerMessages after a trace sequence."""
         result = self._events_after(params)
         events = result.get("events") if isinstance(result, dict) else []
         messages: list[dict[str, Any]] = []
@@ -456,14 +457,21 @@ class JsonRpcServer:
                 sequence = event.get("sequence")
                 if isinstance(sequence, (int, float)) and not isinstance(sequence, bool):
                     last_seq = max(last_seq, int(sequence))
-                haha_cc = event.get("hahaCc")
-                if isinstance(haha_cc, dict):
-                    messages.append(haha_cc)
+                yuanbao = event.get("yuanbao")
+                if not isinstance(yuanbao, dict):
+                    yuanbao = event.get("hahaCc")
+                if isinstance(yuanbao, dict):
+                    messages.append(yuanbao)
         return {
             "messages": messages,
             "lastSeq": last_seq,
             "truncated": bool(result.get("truncated")) if isinstance(result, dict) else False,
         }
+
+    def _haha_cc_events_after(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Fetch legacy haha-cc flat ServerMessages after a trace sequence."""
+
+        return self._yuanbao_events_after(params)
 
     def _provider_turn_list(self, params: dict[str, Any]) -> dict[str, Any]:
         """List provider turns for a task."""
@@ -484,7 +492,7 @@ class JsonRpcServer:
         return {"snapshot": snapshot}
 
     def _runtime_ping(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Return haha-cc compatible liveness messages for stdio adapters."""
+        """Return Yuanbao-compatible liveness messages for stdio adapters."""
         session_id = params.get("sessionId") or params.get("session_id") or "runtime"
         task_id = params.get("taskId") or params.get("task_id") or "runtime"
         if not isinstance(session_id, str) or not session_id.strip():
@@ -495,7 +503,7 @@ class JsonRpcServer:
         task_id = task_id.strip()
         now = int(time.time() * 1000)
         messages = [
-            to_haha_cc_server_message(
+            to_yuanbao_server_message(
                 RuntimeEvent(
                     event_id=f"evt_ping_connected_{now}",
                     session_id=session_id,
@@ -505,7 +513,7 @@ class JsonRpcServer:
                     payload={"sessionId": session_id},
                 )
             ),
-            to_haha_cc_server_message(
+            to_yuanbao_server_message(
                 RuntimeEvent(
                     event_id=f"evt_ping_pong_{now}",
                     session_id=session_id,
@@ -516,13 +524,14 @@ class JsonRpcServer:
                 )
             ),
         ]
-        haha_cc_messages = [message for message in messages if message is not None]
+        yuanbao_messages = [message for message in messages if message is not None]
         return {
             "ok": True,
             "transport": "json-rpc-stdio",
-            "hahaCcMessages": haha_cc_messages,
-            "connected": haha_cc_messages[0] if haha_cc_messages else None,
-            "pong": haha_cc_messages[1] if len(haha_cc_messages) > 1 else None,
+            "yuanbaoMessages": yuanbao_messages,
+            "hahaCcMessages": yuanbao_messages,
+            "connected": yuanbao_messages[0] if yuanbao_messages else None,
+            "pong": yuanbao_messages[1] if len(yuanbao_messages) > 1 else None,
         }
 
     def _runtime_status(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -874,13 +883,25 @@ class JsonRpcServer:
                 )
                 + "\n"
             )
-            haha_cc = payload.get("hahaCc")
-            if isinstance(haha_cc, dict):
+            yuanbao = payload.get("yuanbao")
+            if not isinstance(yuanbao, dict):
+                yuanbao = payload.get("hahaCc")
+            if isinstance(yuanbao, dict):
+                self._writer.write(
+                    json.dumps(
+                        {
+                            "kind": "yuanbao_message",
+                            "payload": yuanbao,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
                 self._writer.write(
                     json.dumps(
                         {
                             "kind": "haha_cc_message",
-                            "payload": haha_cc,
+                            "payload": yuanbao,
                         },
                         ensure_ascii=False,
                     )

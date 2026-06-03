@@ -1,12 +1,15 @@
 """Tests for P6.2 AgentRole validation and P6.7 EventVisibility inference + persistence."""
 
+import io
 import json
+import threading
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from local_agent_runtime.models import EventVisibility
+from local_agent_runtime.rpc.server import JsonRpcServer
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +118,16 @@ class TestEventVisibilityInference:
 
     def test_tool_call_failed_is_trace(self):
         assert self._invoke("tool.call.failed") == "trace"
+
+    def test_provider_events_are_trace(self):
+        assert self._invoke("provider.request") == "trace"
+        assert self._invoke("provider.stream.finish") == "trace"
+
+    def test_assistant_progress_root_is_panel(self):
+        assert self._invoke("assistant_progress", role="root") == "panel"
+
+    def test_assistant_progress_child_is_trace(self):
+        assert self._invoke("assistant_progress", role="worker") == "trace"
 
     # Collab events → panel
     def test_collab_started_is_panel(self):
@@ -245,6 +258,80 @@ class TestEventBusVisibility:
         })()
         payload = bus.as_payload(event)
         assert payload["visibility"] == "chat"
+
+    def test_payload_includes_haha_cc_compat_message_when_available(self):
+        from local_agent_runtime.event_bus import EventBus
+        bus = EventBus()
+        event = type("E", (), {
+            "event_id": "e3", "session_id": "s1", "task_id": "t1",
+            "type": "content_delta", "ts": 0, "seq": 0,
+            "payload": {"text": "hello"}, "visibility": "chat",
+        })()
+        payload = bus.as_payload(event)
+        assert payload["yuanbao"] == {"type": "content_delta", "text": "hello"}
+        assert payload["hahaCc"] == payload["yuanbao"]
+
+    def test_payload_includes_haha_cc_error_for_failed_message(self):
+        from local_agent_runtime.event_bus import EventBus
+        bus = EventBus()
+        event = type("E", (), {
+            "event_id": "e4", "session_id": "s1", "task_id": "t1",
+            "type": "message.failed", "ts": 0, "seq": 0,
+            "payload": {"content": "Provider failed", "errorCode": "MODEL_PROVIDER_ERROR"}, "visibility": "chat",
+        })()
+        payload = bus.as_payload(event)
+        assert payload["yuanbao"] == {
+            "type": "error",
+            "message": "Provider failed",
+            "code": "MODEL_PROVIDER_ERROR",
+        }
+        assert payload["hahaCc"] == payload["yuanbao"]
+
+    def test_rpc_writer_emits_haha_cc_message_line_when_available(self):
+        server = JsonRpcServer.__new__(JsonRpcServer)
+        writer = io.StringIO()
+        server._writer = writer  # noqa: SLF001
+        server._writer_lock = threading.Lock()  # noqa: SLF001
+
+        server._write_event_payload(  # noqa: SLF001
+            {
+                "eventId": "evt_1",
+                "sessionId": "sess_1",
+                "taskId": "task_1",
+                "type": "content_delta",
+                "ts": 1,
+                "payload": {"text": "hello"},
+                "visibility": "chat",
+                "yuanbao": {"type": "content_delta", "text": "hello"},
+                "hahaCc": {"type": "content_delta", "text": "hello"},
+            }
+        )
+
+        lines = [json.loads(line) for line in writer.getvalue().splitlines()]
+        assert lines == [
+            {
+                "kind": "event",
+                "payload": {
+                    "eventId": "evt_1",
+                    "sessionId": "sess_1",
+                    "taskId": "task_1",
+                    "type": "content_delta",
+                    "ts": 1,
+                    "payload": {"text": "hello"},
+                    "visibility": "chat",
+                    "yuanbao": {"type": "content_delta", "text": "hello"},
+                    "hahaCc": {"type": "content_delta", "text": "hello"},
+                },
+            },
+            {
+                "kind": "yuanbao_message",
+                "payload": {"type": "content_delta", "text": "hello"},
+            },
+            {
+                "kind": "haha_cc_message",
+                "payload": {"type": "content_delta", "text": "hello"},
+            },
+        ]
 
     def test_publish_assigns_monotonic_timestamp_and_sequence(self):
         from local_agent_runtime.event_bus import EventBus

@@ -90,6 +90,7 @@ export interface AgentEventEnvelope<TPayload = unknown> {
   seq?: number;
   payload: TPayload;
   visibility?: EventVisibility;
+  yuanbao?: YuanbaoServerMessage;
   hahaCc?: HahaCcServerMessage;
 }
 
@@ -137,21 +138,25 @@ export interface TokenUsage {
   [key: string]: unknown;
 }
 
-export interface HahaCcTokenUsage {
+export interface YuanbaoTokenUsage {
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens?: number;
   cache_creation_tokens?: number;
 }
 
-export interface HahaCcTeamMemberStatus {
+export type HahaCcTokenUsage = YuanbaoTokenUsage;
+
+export interface YuanbaoTeamMemberStatus {
   agentId: string;
   role: string;
   status: "running" | "idle" | "completed" | "error";
   currentTask?: string;
 }
 
-export type HahaCcServerMessage =
+export type HahaCcTeamMemberStatus = YuanbaoTeamMemberStatus;
+
+export type YuanbaoServerMessage =
   | { type: "connected"; sessionId: string }
   | { type: "content_start"; blockType: "text" | "tool_use"; toolName?: string; toolUseId?: string; parentToolUseId?: string }
   | { type: "content_delta"; text?: string; toolInput?: string }
@@ -159,18 +164,20 @@ export type HahaCcServerMessage =
   | { type: "tool_result"; toolUseId: string; content: unknown; isError: boolean; parentToolUseId?: string }
   | { type: "permission_request"; requestId: string; toolName: string; toolUseId?: string; input: unknown; description?: string }
   | { type: "computer_use_permission_request"; requestId: string; request: Record<string, unknown> }
-  | { type: "message_complete"; usage: HahaCcTokenUsage }
+  | { type: "message_complete"; usage: YuanbaoTokenUsage }
   | { type: "thinking"; text: string }
   | { type: "status"; state: string; verb?: string; elapsed?: number; tokens?: number }
   | { type: "api_retry"; attempt: number; maxRetries: number; retryDelayMs: number; errorStatus: number | null; errorType?: string; errorMessage?: string }
   | { type: "error"; message: string; code: string; retryable?: boolean; businessErrorCode?: string }
   | { type: "system_notification"; subtype: string; message?: string; data?: unknown }
   | { type: "pong" }
-  | { type: "team_update"; teamName: string; members: HahaCcTeamMemberStatus[] }
+  | { type: "team_update"; teamName: string; members: YuanbaoTeamMemberStatus[] }
   | { type: "team_created"; teamName: string }
   | { type: "team_deleted"; teamName: string }
   | { type: "task_update"; taskId: string; status: string; progress?: string }
   | { type: "session_title_updated"; sessionId: string; title: string };
+
+export type HahaCcServerMessage = YuanbaoServerMessage;
 
 export interface ContentStartPayload {
   blockType: "text" | "tool_use";

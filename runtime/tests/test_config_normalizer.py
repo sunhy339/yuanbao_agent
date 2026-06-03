@@ -90,6 +90,12 @@ class TestLegacyApprovalMode:
         assert result["preset"] == "autonomous"
         assert result["capabilities"]["writeFile"]["mode"] == "allow"
 
+    def test_accept_edits_allows_file_writes_but_keeps_shell_approval(self):
+        result = normalize_permissions({"policy": {"approvalMode": "accept_edits"}})
+        assert result["preset"] == "balanced"
+        assert result["capabilities"]["writeFile"]["mode"] == "allow"
+        assert result["capabilities"]["runCommand"]["mode"] == "ask"
+
 
 # ---------------------------------------------------------------------------
 # Autonomy profile overrides

@@ -7,17 +7,59 @@ and plan advancement logic.
 from __future__ import annotations
 
 import logging
+import json
+import re
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from ..context.token_budget import estimate_tokens
 from ..provider.failure_recovery import classify_provider_failure
+from ..policy.permission_engine import PermissionEngine, PermissionRequest
 from ..policy.tool_policy_resolver import ToolPolicyDecision, ToolPolicyResolver
 from ..react.types import TurnDecision
 from ..services.worker_budget import WorkerBudget, WorkerBudgetExceededError
 
 logger = logging.getLogger(__name__)
+
+_PARALLEL_READ_ONLY_TOOL_NAMES = frozenset({
+    "read_file",
+    "list_dir",
+    "list_directory",
+    "search_files",
+    "code_search",
+    "git_status",
+    "git_diff",
+})
+_PLAN_MODE_ALLOWED_TOOL_NAMES = frozenset({
+    "read_file",
+    "list_dir",
+    "list_directory",
+    "search_files",
+    "code_search",
+    "git_status",
+    "git_diff",
+    "web_fetch",
+    "browser",
+    "memory.recall",
+    "scratchpad.read",
+    "exit_plan_mode",
+})
+_READ_ONLY_RUN_COMMAND_RE = re.compile(
+    r"^\s*(?:"
+    r"git\s+(?:status|diff|log|show)\b|"
+    r"pwd\b|"
+    r"ls\b|"
+    r"dir\b|"
+    r"Get-ChildItem\b|"
+    r"gci\b|"
+    r"Get-Content\b|"
+    r"cat\b|"
+    r"type\b"
+    r")",
+    re.IGNORECASE,
+)
 
 
 class ReactRunnerMixin:
@@ -56,6 +98,7 @@ class ReactRunnerMixin:
         )
         self._active_trace_id = root_span.trace_id
         self._active_parent_span_id = root_span.span_id
+        root_span_finished_with_error = False
 
         try:
             return self._run_react_loop_inner(
@@ -64,12 +107,123 @@ class ReactRunnerMixin:
             )
         except Exception:
             self._tracer.end_span(root_span.span_id, status="error")
+            root_span_finished_with_error = True
             raise
         finally:
-            if root_span.status != "error":
+            if not root_span_finished_with_error:
                 self._tracer.end_span(root_span.span_id, status="ok")
             self._active_trace_id = None
             self._active_parent_span_id = None
+
+    def _parallel_tool_batch_size(self, context: dict[str, Any]) -> int:
+        config = context.get("config") if isinstance(context, dict) else {}
+        autonomy = config.get("autonomy") if isinstance(config, dict) else {}
+        tools_config = config.get("tools") if isinstance(config, dict) else {}
+        raw_value = None
+        if isinstance(tools_config, dict):
+            parallel_config = tools_config.get("parallelToolCalls") or tools_config.get("parallel_tool_calls")
+            if isinstance(parallel_config, dict):
+                raw_value = parallel_config.get("maxWorkers") or parallel_config.get("max_workers")
+        if raw_value is None and isinstance(autonomy, dict):
+            raw_value = autonomy.get("maxParallelTools") or autonomy.get("max_parallel_tools")
+        try:
+            return max(1, min(int(raw_value), 8)) if raw_value is not None else 4
+        except (TypeError, ValueError):
+            return 4
+
+    def _is_read_only_run_command(self, tool_spec: dict[str, Any], context: dict[str, Any]) -> bool:
+        arguments = tool_spec.get("arguments")
+        if not isinstance(arguments, dict):
+            return False
+        command = str(arguments.get("command") or "").strip()
+        if not command or any(marker in command for marker in ("&&", "||", ";", ">", "<", "|")):
+            return False
+        if not _READ_ONLY_RUN_COMMAND_RE.search(command):
+            return False
+        config = context.get("config") if isinstance(context, dict) else None
+        if isinstance(config, dict):
+            decision = PermissionEngine(config).evaluate(PermissionRequest(
+                capability="runCommand",
+                tool_name="run_command",
+                context={
+                    **context,
+                    "command": command,
+                    "cwd": arguments.get("cwd") or ".",
+                },
+            ))
+            return decision.decision == "allow"
+        return False
+
+    def _is_concurrency_safe_tool_spec(self, tool_spec: dict[str, Any], context: dict[str, Any]) -> bool:
+        tool_name = str(tool_spec.get("name") or "").strip()
+        if not tool_name:
+            return False
+        if tool_spec.get("parentToolUseId"):
+            return False
+        if tool_name in _PARALLEL_READ_ONLY_TOOL_NAMES:
+            return True
+        return False
+
+    def _execute_tool_batch_parallel(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        tool_specs: list[dict[str, Any]],
+        budget: WorkerBudget | None,
+        context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if len(tool_specs) <= 1:
+            return [
+                self._execute_tool(
+                    session_id=session_id,
+                    task=task,
+                    tool_spec=tool_specs[0],
+                    budget=budget,
+                    context=context,
+                )
+            ]
+        max_workers = min(len(tool_specs), self._parallel_tool_batch_size(context))
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="yuanbao-tool") as executor:
+            futures = [
+                executor.submit(
+                    self._execute_tool,
+                    session_id=session_id,
+                    task=task,
+                    tool_spec=tool_spec,
+                    budget=budget,
+                    context=context,
+                )
+                for tool_spec in tool_specs
+            ]
+            return [future.result() for future in futures]
+
+    def _blocked_plan_mode_tool_result(self, tool_spec: dict[str, Any]) -> dict[str, Any]:
+        tool_call_id = tool_spec.get("id") or self._store.new_id("tc")
+        result = {
+            "status": "blocked",
+            "error": "Plan mode allows only read-only tools and exit_plan_mode.",
+            "summary": "Tool blocked by plan mode.",
+        }
+        return {
+            "id": tool_call_id,
+            "name": tool_spec.get("name"),
+            "arguments": deepcopy(tool_spec.get("arguments", {})),
+            "target": str(tool_spec.get("name") or ""),
+            "inputSummary": "blocked by plan mode",
+            "toolCategory": "task",
+            "toolOperationId": f"tool:{tool_spec.get('name') or 'tool'}",
+            "toolOperationLabel": "Plan mode",
+            "resultSummary": result["summary"],
+            "result": result,
+            "modelVisibleResult": result,
+        }
+
+    @staticmethod
+    def _plan_mode_allows_tool(context: dict[str, Any], tool_spec: dict[str, Any]) -> bool:
+        if context.get("_plan_mode") is not True:
+            return True
+        return str(tool_spec.get("name") or "") in _PLAN_MODE_ALLOWED_TOOL_NAMES
 
     def _run_react_loop_inner(
         self,
@@ -506,35 +660,66 @@ class ReactRunnerMixin:
                     "tool_calls": tool_calls,
                 }
             )
-            for index, tool_call in enumerate(tool_calls):
+            def _finalize_executed_tool(
+                *,
+                index: int,
+                tool_call: dict[str, Any],
+                tool_spec: dict[str, Any],
+                tool_result: dict[str, Any],
+                cache_key: str | None,
+            ) -> dict[str, Any] | None:
+                nonlocal context, messages, patch_repair_attempts, task, _msg_count_at_last_check, _msg_token_total
                 task = self._store.get_task({"taskId": task["id"]})["task"]
                 if task["status"] == "cancelled":
                     return {"status": "cancelled", "summary": "Task was cancelled.", "tool_results": tool_results}
-                if tool_results:
-                    updated_tool_call = self._annotate_tool_call_with_completed_results(tool_call, tool_results)
-                    if updated_tool_call is not tool_call:
-                        self._sync_tool_metadata(updated_tool_call, tool_call)
-                tool_spec = self._provider_tool_call_to_spec(tool_call, context)
-                cache_key = self._read_file_cache_key(tool_spec)
-                cached_tool_result = read_file_cache.get(cache_key) if cache_key else None
-                if cached_tool_result is not None:
-                    tool_result = self._clone_cached_tool_result(tool_spec, cached_tool_result)
-                else:
-                    tool_result = self._execute_tool(
+                if cache_key and not self._tool_failed(tool_spec["name"], tool_result["result"]):
+                    read_file_cache[cache_key] = deepcopy(tool_result)
+                elif self._invalidates_read_file_cache(tool_spec["name"]):
+                    read_file_cache.clear()
+                self._ensure_tool_result_operation(tool_spec, tool_result)
+                if self._tool_result_waits_for_user(tool_spec, tool_result):
+                    return self._pause_react_for_user_question_tool(
                         session_id=session_id,
                         task=task,
-                        tool_spec=tool_spec,
-                        budget=budget,
+                        goal=goal,
                         context=context,
+                        messages=messages,
+                        tool_results=tool_results,
+                        steps=steps,
+                        react_started=True,
+                        patch_repair_attempts=patch_repair_attempts,
+                        tool_call=tool_call,
+                        tool_spec=tool_spec,
+                        tool_result=tool_result,
+                        remaining_tool_calls=tool_calls[index + 1 :],
                     )
-                    task = self._store.get_task({"taskId": task["id"]})["task"]
-                    if task["status"] == "cancelled":
-                        return {"status": "cancelled", "summary": "Task was cancelled.", "tool_results": tool_results}
-                    if cache_key and not self._tool_failed(tool_spec["name"], tool_result["result"]):
-                        read_file_cache[cache_key] = deepcopy(tool_result)
-                    elif self._invalidates_read_file_cache(tool_spec["name"]):
-                        read_file_cache.clear()
-                self._ensure_tool_result_operation(tool_spec, tool_result)
+                if self._tool_result_enters_plan_mode(tool_spec, tool_result):
+                    context = self._context_with_plan_mode(context, tool_result)
+                    tool_results.append(tool_result)
+                    messages.append(self._tool_result_message(tool_call, tool_result))
+                    self._publish_context_update(
+                        session_id=session_id,
+                        task=task,
+                        context=context,
+                        messages=messages,
+                    )
+                    return None
+                if self._tool_result_waits_for_plan_approval(tool_spec, tool_result):
+                    return self._pause_react_for_plan_approval_tool(
+                        session_id=session_id,
+                        task=task,
+                        goal=goal,
+                        context=context,
+                        messages=messages,
+                        tool_results=tool_results,
+                        steps=steps,
+                        react_started=True,
+                        patch_repair_attempts=patch_repair_attempts,
+                        tool_call=tool_call,
+                        tool_spec=tool_spec,
+                        tool_result=tool_result,
+                        remaining_tool_calls=tool_calls[index + 1 :],
+                    )
                 if task["status"] == "waiting_approval":
                     self._pending_react_tasks[task["id"]] = {
                         "session_id": session_id,
@@ -554,9 +739,7 @@ class ReactRunnerMixin:
 
                 tool_results.append(tool_result)
                 messages.append(self._tool_result_message(tool_call, tool_result))
-                # Compact messages if token budget is exceeded
                 if self._compactor is not None:
-                    # Incrementally update token count for new messages only
                     for m in messages[_msg_count_at_last_check:]:
                         _msg_token_total += estimate_tokens(m.get("content", ""))
                     _msg_count_at_last_check = len(messages)
@@ -573,27 +756,21 @@ class ReactRunnerMixin:
                         messages = compacted.kept_messages
                         _msg_token_total = compacted.tokens_after
                         _msg_count_at_last_check = len(messages)
-                        # Rolling session summary: persist compaction summary
                         if compacted.summary:
                             try:
                                 session_rec = self._store.require_session(session_id)
                                 existing = session_rec.get("summary") or ""
-                                # Prepend new summary, cap at 4000 chars
                                 updated = (compacted.summary + "\n" + existing)[:4000].strip()
                                 self._store.update_session_summary(session_id, updated)
                             except Exception:  # noqa: BLE001
                                 logger.debug("Failed to update session summary after compaction", exc_info=True)
                     context["messages"] = messages
-                # Refresh volatile context sections (git status, directory
-                # listing) after state-mutating tools so the model sees the
-                # current workspace state on subsequent turns.
                 if self._context_builder.should_refresh(tool_spec["name"]):
                     context = self._context_builder.refresh_context(
                         context,
                         tool_name=tool_spec["name"],
                         tool_result=tool_result.get("result"),
                     )
-                    # Keep the messages list in sync after refresh.
                     context["messages"] = messages
                 self._publish_context_update(
                     session_id=session_id,
@@ -610,9 +787,103 @@ class ReactRunnerMixin:
                             f"({patch_repair_attempts}/{max_attempts}): "
                             f"{self._tool_failure_summary(tool_spec, tool_result['result'])}"
                         )
-                    continue
+                    return None
                 if not self._tool_failed(tool_spec["name"], tool_result["result"]):
                     self._advance_after_tool(session_id=session_id, task=task, tool_spec=tool_spec)
+                return None
+
+            def _prepared_tool_call(index: int) -> tuple[dict[str, Any], dict[str, Any], str | None, dict[str, Any] | None]:
+                tool_call = tool_calls[index]
+                if tool_results:
+                    updated_tool_call = self._annotate_tool_call_with_completed_results(tool_call, tool_results)
+                    if updated_tool_call is not tool_call:
+                        self._sync_tool_metadata(updated_tool_call, tool_call)
+                tool_spec = self._provider_tool_call_to_spec(tool_call, context)
+                cache_key = self._read_file_cache_key(tool_spec)
+                cached_tool_result = read_file_cache.get(cache_key) if cache_key else None
+                return tool_call, tool_spec, cache_key, cached_tool_result
+
+            index = 0
+            while index < len(tool_calls):
+                task = self._store.get_task({"taskId": task["id"]})["task"]
+                if task["status"] == "cancelled":
+                    return {"status": "cancelled", "summary": "Task was cancelled.", "tool_results": tool_results}
+
+                tool_call, tool_spec, cache_key, cached_tool_result = _prepared_tool_call(index)
+                if not self._plan_mode_allows_tool(context, tool_spec):
+                    tool_result = self._blocked_plan_mode_tool_result(tool_spec)
+                    maybe_terminal = _finalize_executed_tool(
+                        index=index,
+                        tool_call=tool_call,
+                        tool_spec=tool_spec,
+                        tool_result=tool_result,
+                        cache_key=None,
+                    )
+                    if maybe_terminal is not None:
+                        return maybe_terminal
+                    index += 1
+                    continue
+                if cached_tool_result is not None:
+                    tool_result = self._clone_cached_tool_result(tool_spec, cached_tool_result)
+                    maybe_terminal = _finalize_executed_tool(
+                        index=index,
+                        tool_call=tool_call,
+                        tool_spec=tool_spec,
+                        tool_result=tool_result,
+                        cache_key=cache_key,
+                    )
+                    if maybe_terminal is not None:
+                        return maybe_terminal
+                    index += 1
+                    continue
+
+                if self._is_concurrency_safe_tool_spec(tool_spec, context) and budget is None:
+                    batch: list[tuple[int, dict[str, Any], dict[str, Any], str | None]] = [(index, tool_call, tool_spec, cache_key)]
+                    next_index = index + 1
+                    while next_index < len(tool_calls):
+                        next_tool_call, next_tool_spec, next_cache_key, next_cached_tool_result = _prepared_tool_call(next_index)
+                        if next_cached_tool_result is not None or not self._is_concurrency_safe_tool_spec(next_tool_spec, context):
+                            break
+                        batch.append((next_index, next_tool_call, next_tool_spec, next_cache_key))
+                        next_index += 1
+                    if len(batch) > 1:
+                        batch_results = self._execute_tool_batch_parallel(
+                            session_id=session_id,
+                            task=task,
+                            tool_specs=[item[2] for item in batch],
+                            budget=None,
+                            context=context,
+                        )
+                        for (batch_index, batch_tool_call, batch_tool_spec, batch_cache_key), batch_tool_result in zip(batch, batch_results):
+                            maybe_terminal = _finalize_executed_tool(
+                                index=batch_index,
+                                tool_call=batch_tool_call,
+                                tool_spec=batch_tool_spec,
+                                tool_result=batch_tool_result,
+                                cache_key=batch_cache_key,
+                            )
+                            if maybe_terminal is not None:
+                                return maybe_terminal
+                        index = next_index
+                        continue
+
+                tool_result = self._execute_tool(
+                    session_id=session_id,
+                    task=task,
+                    tool_spec=tool_spec,
+                    budget=budget,
+                    context=context,
+                )
+                maybe_terminal = _finalize_executed_tool(
+                    index=index,
+                    tool_call=tool_call,
+                    tool_spec=tool_spec,
+                    tool_result=tool_result,
+                    cache_key=cache_key,
+                )
+                if maybe_terminal is not None:
+                    return maybe_terminal
+                index += 1
 
             # After all tool calls in this step, check for cooperative pause
             task = self._store.get_task({"taskId": task["id"]})["task"]
@@ -1203,6 +1474,14 @@ class ReactRunnerMixin:
             payload={
                 "title": "需要你补充信息",
                 "question": question,
+                "questions": [
+                    {
+                        "id": "question_1",
+                        "header": "Question",
+                        "question": question,
+                        "options": normalized_options,
+                    }
+                ],
                 "summary": summary or question,
                 "status": "waiting",
                 "reason": reason or "needs_user_input",
@@ -1222,6 +1501,394 @@ class ReactRunnerMixin:
             },
         )
         return {"status": "paused", "question": question}
+
+    def _pause_react_for_user_question_tool(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+        messages: list[dict[str, Any]],
+        tool_results: list[dict[str, Any]],
+        steps: int,
+        react_started: bool,
+        patch_repair_attempts: int,
+        tool_call: dict[str, Any],
+        tool_spec: dict[str, Any],
+        tool_result: dict[str, Any],
+        remaining_tool_calls: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+        questions = self._normalize_user_questions_payload(result)
+        primary_question = questions[0]["question"] if questions else str(result.get("question") or "Please provide the missing information.")
+        options = questions[0].get("options") if questions else result.get("options")
+        pending_state = {
+            "session_id": session_id,
+            "goal": goal,
+            "context": {
+                **context,
+                "_pending_user_question": {
+                    "toolCallId": tool_call.get("id") or tool_result.get("id"),
+                    "toolName": tool_spec.get("name"),
+                    "questions": questions,
+                    "summary": result.get("summary") or primary_question,
+                    "reason": result.get("reason") or "needs_user_input",
+                    "resumePolicy": result.get("resumePolicy") or "requires_user_follow_up",
+                    **({"requestId": result.get("requestId")} if result.get("requestId") else {}),
+                },
+            },
+            "messages": messages,
+            "tool_results": tool_results,
+            "steps": steps,
+            "react_started": react_started,
+            "patch_repair_attempts": patch_repair_attempts,
+            "pending_tool_call": tool_call,
+            "pending_tool_spec": tool_spec,
+            "remaining_tool_calls": remaining_tool_calls,
+        }
+        self._pending_react_tasks[task["id"]] = pending_state
+        self._save_pending_react_state(task["id"], pending_state)
+        paused_task = self._store.update_task_status(task_id=task["id"], status="paused")
+        self._publish(
+            session_id=session_id,
+            task=paused_task,
+            event_type="ask_user_question",
+            payload={
+                "title": "Need user input",
+                "question": primary_question,
+                "questions": questions,
+                "summary": result.get("summary") or primary_question,
+                "status": "waiting",
+                "reason": result.get("reason") or "needs_user_input",
+                "resumePolicy": result.get("resumePolicy") or "requires_user_follow_up",
+                "options": self._normalize_user_question_options(options),
+                "source": "tool",
+                "toolCallId": tool_call.get("id") or tool_result.get("id"),
+                **({"requestId": result.get("requestId")} if result.get("requestId") else {}),
+            },
+        )
+        self._publish(
+            session_id=session_id,
+            task=paused_task,
+            event_type="task.paused",
+            payload={
+                "status": "paused",
+                "previousStatus": task.get("status"),
+                "reason": "ask_user_question",
+                "toolCallId": tool_call.get("id") or tool_result.get("id"),
+            },
+        )
+        return {"status": "paused", "question": primary_question}
+
+    @staticmethod
+    def _tool_result_waits_for_user(tool_spec: dict[str, Any], tool_result: dict[str, Any]) -> bool:
+        if tool_spec.get("name") != "ask_user_question":
+            return False
+        result = tool_result.get("result") if isinstance(tool_result, dict) else None
+        return isinstance(result, dict) and result.get("status") == "waiting_user"
+
+    def _inject_user_question_answer_from_inbox(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        pending = self._pending_user_question_state(state)
+        if pending is None:
+            return state
+        pending_tool_call = state.get("pending_tool_call")
+        pending_tool_spec = state.get("pending_tool_spec")
+        if not isinstance(pending_tool_call, dict) or not isinstance(pending_tool_spec, dict):
+            return state
+        supplements = self._store.get_pending_supplements(task["id"])
+        if not supplements:
+            return state
+
+        answers = self._question_answers_from_supplements(pending, supplements)
+        answer_text = "\n".join(str(entry.get("content") or "").strip() for entry in supplements if str(entry.get("content") or "").strip())
+        for entry in supplements:
+            self._store.mark_supplement_consumed(
+                entry["id"],
+                consumed_by_turn_id=f"ask_user_question:{pending_tool_call.get('id') or pending.get('toolCallId') or 'answer'}",
+            )
+        self._remember_supplement_candidates(
+            session_id=session_id,
+            task=task,
+            supplements=supplements,
+        )
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="task.supplement.consumed",
+            payload={
+                "count": len(supplements),
+                "entryIds": [entry["id"] for entry in supplements],
+                "reason": "ask_user_question_answer",
+                "toolCallId": pending_tool_call.get("id") or pending.get("toolCallId"),
+            },
+        )
+        result_payload = {
+            "status": "answered",
+            "summary": "User answered the clarification request.",
+            "answer": answer_text,
+            "answers": answers,
+            "questions": pending.get("questions") or [],
+            "requestId": pending.get("requestId"),
+        }
+        result_payload = {key: value for key, value in result_payload.items() if value not in (None, "", [])}
+        tool_result = {
+            "id": pending_tool_call.get("id") or pending.get("toolCallId") or self._store.new_id("tc"),
+            "name": "ask_user_question",
+            "arguments": {
+                **(pending_tool_spec.get("arguments") if isinstance(pending_tool_spec.get("arguments"), dict) else {}),
+                "taskId": task["id"],
+                "sessionId": session_id,
+            },
+            "target": "user",
+            "inputSummary": str(pending.get("summary") or "")[:500],
+            "toolCategory": "task",
+            "toolOperationId": "tool:ask_user_question",
+            "toolOperationLabel": "User input",
+            "resultSummary": "User answered the clarification request.",
+            "result": result_payload,
+            "modelVisibleResult": result_payload,
+        }
+        state = deepcopy(state)
+        state["tool_results"].append(tool_result)
+        state["messages"].append(self._tool_result_message(pending_tool_call, tool_result))
+        state["pending_tool_call"] = None
+        state["pending_tool_spec"] = None
+        context = dict(state.get("context") or {})
+        context.pop("_pending_user_question", None)
+        state["context"] = context
+        self._advance_after_tool(session_id=session_id, task=task, tool_spec=pending_tool_spec)
+        self._save_pending_react_state(task["id"], state)
+        return state
+
+    @staticmethod
+    def _pending_user_question_state(state: dict[str, Any]) -> dict[str, Any] | None:
+        context = state.get("context") if isinstance(state, dict) else None
+        pending = context.get("_pending_user_question") if isinstance(context, dict) else None
+        return pending if isinstance(pending, dict) else None
+
+    def _normalize_user_questions_payload(self, result: dict[str, Any]) -> list[dict[str, Any]]:
+        questions = result.get("questions")
+        if not isinstance(questions, list) or not questions:
+            questions = [
+                {
+                    "id": "question_1",
+                    "header": "Question",
+                    "question": result.get("question") or result.get("summary") or "Please provide the missing information.",
+                    "options": result.get("options") if isinstance(result.get("options"), list) else [],
+                }
+            ]
+        normalized: list[dict[str, Any]] = []
+        for index, item in enumerate(questions[:3]):
+            if not isinstance(item, dict):
+                item = {"question": str(item or "")}
+            qid = str(item.get("id") or f"question_{index + 1}").strip()[:64] or f"question_{index + 1}"
+            question = str(item.get("question") or item.get("prompt") or item.get("text") or "Please provide the missing information.").strip()[:1000]
+            header = str(item.get("header") or item.get("title") or qid.replace("_", " ").title()).strip()[:80]
+            normalized.append({
+                "id": qid,
+                "header": header,
+                "question": question,
+                "options": self._normalize_user_question_options(item.get("options")),
+            })
+        return normalized
+
+    @staticmethod
+    def _question_answers_from_supplements(
+        pending: dict[str, Any],
+        supplements: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        content = "\n".join(str(entry.get("content") or "").strip() for entry in supplements if str(entry.get("content") or "").strip())
+        questions = pending.get("questions") if isinstance(pending.get("questions"), list) else []
+        answers: dict[str, str] = {}
+        if questions:
+            if len(questions) == 1:
+                qid = str(questions[0].get("id") or "question_1")
+                answers[qid] = content
+            else:
+                for index, question in enumerate(questions):
+                    qid = str(question.get("id") or f"question_{index + 1}") if isinstance(question, dict) else f"question_{index + 1}"
+                    answers[qid] = content
+        return answers
+
+    @staticmethod
+    def _tool_result_enters_plan_mode(tool_spec: dict[str, Any], tool_result: dict[str, Any]) -> bool:
+        if tool_spec.get("name") != "enter_plan_mode":
+            return False
+        result = tool_result.get("result") if isinstance(tool_result, dict) else None
+        return isinstance(result, dict) and result.get("status") == "plan_mode_entered"
+
+    @staticmethod
+    def _tool_result_waits_for_plan_approval(tool_spec: dict[str, Any], tool_result: dict[str, Any]) -> bool:
+        if tool_spec.get("name") != "exit_plan_mode":
+            return False
+        result = tool_result.get("result") if isinstance(tool_result, dict) else None
+        return isinstance(result, dict) and result.get("status") == "approval_required"
+
+    @staticmethod
+    def _context_with_plan_mode(context: dict[str, Any], tool_result: dict[str, Any]) -> dict[str, Any]:
+        next_context = deepcopy(context)
+        result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+        next_context["_plan_mode"] = True
+        next_context["_plan_mode_reason"] = result.get("reason") or result.get("summary") or "plan mode"
+        return next_context
+
+    def _pause_react_for_plan_approval_tool(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        goal: str,
+        context: dict[str, Any],
+        messages: list[dict[str, Any]],
+        tool_results: list[dict[str, Any]],
+        steps: int,
+        react_started: bool,
+        patch_repair_attempts: int,
+        tool_call: dict[str, Any],
+        tool_spec: dict[str, Any],
+        tool_result: dict[str, Any],
+        remaining_tool_calls: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        result = tool_result.get("result") if isinstance(tool_result.get("result"), dict) else {}
+        approval = result.get("approval") if isinstance(result.get("approval"), dict) else {}
+        plan = result.get("plan") if isinstance(result.get("plan"), dict) else {}
+        approval_id = str(approval.get("id") or "").strip()
+        pending_state = {
+            "session_id": session_id,
+            "goal": goal,
+            "context": {
+                **context,
+                "_plan_mode": True,
+                "_pending_plan_approval": {
+                    "toolCallId": tool_call.get("id") or tool_result.get("id"),
+                    "approvalId": approval_id,
+                    "plan": plan,
+                    "summary": result.get("summary") or plan.get("summary") or "Plan approval required before execution.",
+                },
+            },
+            "messages": messages,
+            "tool_results": tool_results,
+            "steps": steps,
+            "react_started": react_started,
+            "patch_repair_attempts": patch_repair_attempts,
+            "pending_tool_call": tool_call,
+            "pending_tool_spec": tool_spec,
+            "remaining_tool_calls": remaining_tool_calls,
+        }
+        self._pending_react_tasks[task["id"]] = pending_state
+        self._save_pending_react_state(task["id"], pending_state)
+        already_waiting = task.get("status") == "waiting_approval"
+        if already_waiting:
+            waiting_task = task
+        else:
+            self._validate_task_transition(task["status"], "waiting_approval", task["id"])
+            waiting_task = self._store.update_task_status(task_id=task["id"], status="waiting_approval")
+        request = {}
+        if approval.get("requestJson"):
+            try:
+                request = json.loads(approval.get("requestJson") or "{}")
+            except json.JSONDecodeError:
+                request = {}
+        if not already_waiting:
+            self._publish(
+                session_id=session_id,
+                task=waiting_task,
+                event_type="approval.requested",
+                payload={
+                    "approvalId": approval_id,
+                    "taskId": task["id"],
+                    "kind": "plan",
+                    "request": request,
+                    "plan": plan,
+                    "toolCallId": tool_call.get("id") or tool_result.get("id"),
+                },
+            )
+            self._fire_hooks("on_approval_required", session_id, waiting_task, extra_context={"approvalId": approval_id, "kind": "plan"})
+            self._publish(
+                session_id=session_id,
+                task=waiting_task,
+                event_type="task.waiting_approval",
+                payload={"status": "waiting_approval", "detail": "Plan approval required before execution.", "kind": "plan"},
+            )
+        return {"status": "waiting_approval"}
+
+    @staticmethod
+    def _pending_plan_approval_state(state: dict[str, Any]) -> dict[str, Any] | None:
+        context = state.get("context") if isinstance(state, dict) else None
+        pending = context.get("_pending_plan_approval") if isinstance(context, dict) else None
+        return pending if isinstance(pending, dict) else None
+
+    def _inject_plan_approval_result(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        state: dict[str, Any],
+        approval: dict[str, Any],
+    ) -> dict[str, Any]:
+        pending = self._pending_plan_approval_state(state)
+        if pending is None:
+            return state
+        pending_tool_call = state.get("pending_tool_call")
+        pending_tool_spec = state.get("pending_tool_spec")
+        if not isinstance(pending_tool_call, dict) or not isinstance(pending_tool_spec, dict):
+            return state
+        try:
+            request = json.loads(approval.get("requestJson") or "{}")
+        except json.JSONDecodeError:
+            request = {}
+        plan = request.get("plan") if isinstance(request, dict) and isinstance(request.get("plan"), dict) else pending.get("plan") or {}
+        decision = str(approval.get("decision") or "")
+        result_payload = {
+            "status": "plan_approved" if decision == "approved" else "plan_rejected",
+            "summary": "Plan approved by the user." if decision == "approved" else "Plan rejected by the user.",
+            "approvalId": approval.get("id"),
+            "decision": decision,
+            "plan": plan,
+        }
+        comment = str(approval.get("comment") or "").strip()
+        if comment:
+            result_payload["comment"] = comment
+        tool_result = {
+            "id": pending_tool_call.get("id") or pending.get("toolCallId") or self._store.new_id("tc"),
+            "name": "exit_plan_mode",
+            "arguments": {
+                **(pending_tool_spec.get("arguments") if isinstance(pending_tool_spec.get("arguments"), dict) else {}),
+                "approvalId": approval.get("id"),
+                "taskId": task["id"],
+                "sessionId": session_id,
+            },
+            "target": "plan",
+            "inputSummary": str(pending.get("summary") or "")[:500],
+            "toolCategory": "task",
+            "toolOperationId": "tool:exit_plan_mode",
+            "toolOperationLabel": "Plan mode",
+            "resultSummary": result_payload["summary"],
+            "result": result_payload,
+            "modelVisibleResult": result_payload,
+        }
+        state = deepcopy(state)
+        state["tool_results"].append(tool_result)
+        state["messages"].append(self._tool_result_message(pending_tool_call, tool_result))
+        state["pending_tool_call"] = None
+        state["pending_tool_spec"] = None
+        context = dict(state.get("context") or {})
+        context.pop("_pending_plan_approval", None)
+        context.pop("_plan_mode", None)
+        context["_approved_plan"] = plan if decision == "approved" else {}
+        context["_plan_approval_decision"] = decision
+        state["context"] = context
+        if decision == "approved":
+            self._advance_after_tool(session_id=session_id, task=task, tool_spec=pending_tool_spec)
+        self._save_pending_react_state(task["id"], state)
+        return state
 
     @staticmethod
     def _normalize_user_question_options(options: Any) -> list[dict[str, str]]:
@@ -1244,6 +1911,8 @@ class ReactRunnerMixin:
                 "value": value[:120],
                 "description": description[:240],
             })
+            if isinstance(option, dict) and (option.get("recommended") or option.get("isRecommended")):
+                normalized[-1]["recommended"] = True
         return normalized
 
     @staticmethod

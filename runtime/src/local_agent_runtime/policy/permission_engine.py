@@ -1,6 +1,7 @@
 """PermissionEngine: unified policy evaluator for tool capabilities."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -40,33 +41,74 @@ _HIGH_RISK_CAPABILITIES = {"writeFile", "runCommand", "subagents"}
 _VERIFICATION_COMMAND_MARKERS = (
     "pytest",
     "unittest",
+    "python -m pytest",
+    "python -m unittest",
+    "python -m py_compile",
+    "python -m compileall",
+    "ruff check",
+    "mypy",
     "npm test",
     "npm run test",
+    "npm run typecheck",
+    "npm run lint",
+    "npm run build",
     "pnpm test",
+    "pnpm run test",
+    "pnpm typecheck",
+    "pnpm run typecheck",
+    "pnpm lint",
+    "pnpm run lint",
+    "pnpm build",
+    "pnpm run build",
     "yarn test",
+    "yarn typecheck",
+    "yarn lint",
+    "yarn build",
+    "vitest",
+    "jest",
+    "playwright test",
     "cargo test",
+    "cargo check",
+    "cargo build",
     "go test",
+    "dotnet test",
     "mvn test",
     "gradle test",
     " tsc",
     "tsc ",
-    "npm run build",
-    "pnpm build",
-    "yarn build",
-    "python -m py_compile",
-    "python -m compileall",
 )
 _READ_ONLY_COMMAND_PREFIXES = (
+    "git branch",
     "git status",
     "git diff",
     "git log",
     "git show",
+    "git rev-parse",
+    "git ls-files",
+    "git grep",
+    "get-content",
     "get-childitem",
+    "gci",
+    "gc ",
+    "cat ",
     "ls ",
     "dir ",
     "pwd",
+    "where ",
+    "where.exe ",
+    "which ",
+    "type ",
+    "get-location",
+    "resolve-path",
+    "test-path",
+    "select-string",
+    "rg ",
+    "grep ",
+    "fd ",
 )
 _COMMAND_CHAIN_OR_REDIRECT_MARKERS = ("&&", "||", ";", ">", "<", "|")
+_READ_ONLY_COMMAND_EXACT = {"pwd", "ls", "dir", "gci", "get-childitem"}
+_POWERSHELL_PREFIX_RE = re.compile(r"^\s*(?:&\s*)?(?:['\"](?P<quoted>[^'\"]+)['\"]|(?P<bare>\S+))(?P<args>.*)$")
 
 
 def collect_untrusted_content_signals(context: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -126,13 +168,45 @@ def _is_low_risk_command(request: PermissionRequest) -> bool:
     command = str(request.context.get("command") or "").strip()
     if not command:
         return False
-    command_lower = " ".join(command.casefold().split())
+    command_lower = _normalize_command_for_policy(command)
     padded = f" {command_lower} "
     if any(marker in command_lower for marker in _COMMAND_CHAIN_OR_REDIRECT_MARKERS):
         return False
+    if command_lower in _READ_ONLY_COMMAND_EXACT:
+        return True
     if any(command_lower == prefix.strip() or command_lower.startswith(prefix) for prefix in _READ_ONLY_COMMAND_PREFIXES):
         return True
-    return any(marker in padded for marker in _VERIFICATION_COMMAND_MARKERS)
+    return any(_command_contains_marker(padded, marker) for marker in _VERIFICATION_COMMAND_MARKERS)
+
+
+def _normalize_command_for_policy(command: str) -> str:
+    text = " ".join(command.strip().casefold().split())
+    match = _POWERSHELL_PREFIX_RE.match(text)
+    if not match:
+        return text
+    executable = (match.group("quoted") or match.group("bare") or "").strip()
+    args = (match.group("args") or "").strip()
+    executable_name = executable.replace("\\", "/").rsplit("/", 1)[-1]
+    if executable_name in {"python.exe", "python", "py.exe", "py"} and args.startswith("-m "):
+        return f"python {args}"
+    if executable_name in {"node.exe", "node"}:
+        return f"node {args}".strip()
+    for package_runner in ("npm", "pnpm", "yarn", "npx"):
+        if executable_name in {package_runner, f"{package_runner}.cmd", f"{package_runner}.exe"}:
+            return f"{package_runner} {args}".strip()
+    for verification_tool in ("tsc", "pytest", "vitest", "jest", "playwright", "ruff", "mypy"):
+        if executable_name in {verification_tool, f"{verification_tool}.cmd", f"{verification_tool}.exe"}:
+            return f"{verification_tool} {args}".strip()
+    if executable_name:
+        return f"{executable_name} {args}".strip()
+    return text
+
+
+def _command_contains_marker(padded_command: str, marker: str) -> bool:
+    marker_text = " ".join(marker.casefold().split())
+    if not marker_text:
+        return False
+    return f" {marker_text} " in padded_command or padded_command.strip().startswith(marker_text + " ")
 
 
 class PermissionEngine:

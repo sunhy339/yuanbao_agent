@@ -7,17 +7,24 @@ from typing import Any
 import pytest
 
 from local_agent_runtime.policy.guard import PolicyGuard
+from local_agent_runtime.policy.permission_engine import PermissionEngine
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools import build_builtin_tools
 
 
-def _make_run_command(tmp_path: Path, config_patch: dict[str, Any] | None = None) -> tuple[SQLiteStore, Any, dict[str, Any]]:
+def _make_run_command(
+    tmp_path: Path,
+    config_patch: dict[str, Any] | None = None,
+    *,
+    use_permission_engine: bool = False,
+) -> tuple[SQLiteStore, Any, dict[str, Any]]:
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     if config_patch:
         store.update_config({"config": config_patch})
     config = store.get_config({})["config"]
     policy_guard = PolicyGuard(approval_mode=config["policy"]["approvalMode"])
-    tools = build_builtin_tools(policy_guard=policy_guard, store=store)
+    permission_engine = PermissionEngine(config=config, store=store) if use_permission_engine else None
+    tools = build_builtin_tools(policy_guard=policy_guard, store=store, permission_engine=permission_engine)
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     workspace = store.upsert_workspace(str(workspace_root))
@@ -207,6 +214,48 @@ def test_run_command_default_allowlist_keeps_python_c_with_quoted_semicolons_ava
             }
         )
         assert result["status"] == "approval_required"
+    finally:
+        store.close()
+
+
+def test_run_command_permission_engine_allows_low_risk_verification_without_approval(tmp_path: Path) -> None:
+    store, run_command, ctx = _make_run_command(tmp_path, use_permission_engine=True)
+    try:
+        source = ctx["workspace_root"] / "ok.py"
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": "python -m py_compile ok.py",
+            }
+        )
+
+        assert result["status"] == "completed"
+        assert result["exitCode"] == 0
+        approvals = store._conn.execute(  # noqa: SLF001
+            "SELECT * FROM approvals WHERE task_id = ?",
+            (ctx["task_id"],),
+        ).fetchall()
+        assert approvals == []
+    finally:
+        store.close()
+
+
+def test_run_command_permission_engine_still_requires_approval_for_unknown_shell(tmp_path: Path) -> None:
+    store, run_command, ctx = _make_run_command(tmp_path, use_permission_engine=True)
+    try:
+        result = run_command(
+            {
+                "workspaceRoot": str(ctx["workspace_root"]),
+                "taskId": ctx["task_id"],
+                "command": "python main.py",
+            }
+        )
+
+        assert result["status"] == "approval_required"
+        assert result["command"] == "python main.py"
     finally:
         store.close()
 

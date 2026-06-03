@@ -39,7 +39,7 @@ export function CleanNewSessionWorkspace(props: CleanNewSessionWorkspaceProps) {
           <Code2 size={34} strokeWidth={2.1} />
         </div>
         <h1 id="hc-new-session-title">新建会话</h1>
-        <p>开始一个新的编码会话。Claude 已准备好帮你构建、调试和架构你的项目。</p>
+        <p>开始一个新的编码会话。yuanbao 已准备好帮你构建、调试和架构你的项目。</p>
       </section>
 
       {composer ? (

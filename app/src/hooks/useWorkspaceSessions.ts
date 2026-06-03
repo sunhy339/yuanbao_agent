@@ -83,11 +83,12 @@ export function useWorkspaceSessions(deps: UseWorkspaceSessionsDeps) {
     }
   }
 
-  async function ensureWorkspace(): Promise<WorkspaceRef> {
-    const requestedPath = workspacePath.trim();
+  async function ensureWorkspaceAtPath(path: string): Promise<WorkspaceRef> {
+    const requestedPath = path.trim();
     if (!requestedPath) {
       throw new Error("Enter a workspace path before connecting.");
     }
+    setWorkspacePath(requestedPath);
 
     if (workspace && normalizeWorkspacePathForCompare(workspace.rootPath) === normalizeWorkspacePathForCompare(requestedPath)) {
       return workspace;
@@ -108,6 +109,10 @@ export function useWorkspaceSessions(deps: UseWorkspaceSessionsDeps) {
         : current,
     );
     return result.workspace;
+  }
+
+  async function ensureWorkspace(): Promise<WorkspaceRef> {
+    return ensureWorkspaceAtPath(workspacePath);
   }
 
   function selectSession(nextSession: SessionRecord | null) {
@@ -337,6 +342,7 @@ export function useWorkspaceSessions(deps: UseWorkspaceSessionsDeps) {
     sessionActiveTaskMapRef,
     setActiveTaskForSession,
     ensureWorkspace,
+    ensureWorkspaceAtPath,
     selectSession,
     refreshSessionHistory,
     handleOpenWorkspace,

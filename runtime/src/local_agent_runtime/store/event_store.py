@@ -79,31 +79,32 @@ class EventStoreMixin:
     ) -> dict[str, Any]:
         trace_id = self.new_id("trace")
         timestamp = self.now() if created_at is None else int(created_at)
-        sequence_row = self._conn.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM trace_events").fetchone()
-        sequence = int(sequence_row[0])
         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-        self._conn.execute(
-            """
-            INSERT INTO trace_events (
-                id, task_id, session_id, type, source, related_id, payload_json, created_at, sequence, visibility
+        with self._conn._lock:
+            sequence_row = self._conn.execute("SELECT COALESCE(MAX(sequence), 0) + 1 FROM trace_events").fetchone()
+            sequence = int(sequence_row[0])
+            self._conn.execute(
+                """
+                INSERT INTO trace_events (
+                    id, task_id, session_id, type, source, related_id, payload_json, created_at, sequence, visibility
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trace_id,
+                    task_id,
+                    session_id,
+                    event_type,
+                    source,
+                    related_id,
+                    payload_json,
+                    timestamp,
+                    sequence,
+                    visibility,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                trace_id,
-                task_id,
-                session_id,
-                event_type,
-                source,
-                related_id,
-                payload_json,
-                timestamp,
-                sequence,
-                visibility,
-            ),
-        )
-        self._conn.commit()
-        row = self._conn.execute("SELECT * FROM trace_events WHERE id = ?", (trace_id,)).fetchone()
+            self._conn.commit()
+            row = self._conn.execute("SELECT * FROM trace_events WHERE id = ?", (trace_id,)).fetchone()
         if row is None:
             raise ValueError(f"Trace event not found: {trace_id}")
         return self._serialize_trace_event(dict(row))
@@ -126,6 +127,22 @@ class EventStoreMixin:
             if isinstance(bridge, dict) and bool(bridge.get("skipTraceMirror")):
                 return None
         event_visibility = getattr(event, "visibility", "chat")
+        if normalized_type.startswith("session."):
+            event_session_id = getattr(event, "session_id", None)
+            if not event_session_id and isinstance(payload, dict):
+                event_session_id = payload.get("sessionId") or payload.get("session_id")
+            if not event_session_id:
+                return None
+            return self._append_trace_event_row(
+                task_id=str(task_id or event_session_id),
+                session_id=str(event_session_id),
+                event_type=normalized_type,
+                source=self._trace_source(normalized_type),
+                related_id=self._trace_related_id(payload),
+                payload=payload,
+                created_at=getattr(event, "ts", None),
+                visibility=event_visibility,
+            )
         if normalized_type.startswith("collab."):
             if not str(task_id).startswith("ctask_"):
                 return None

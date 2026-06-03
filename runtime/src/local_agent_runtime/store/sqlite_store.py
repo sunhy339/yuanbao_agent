@@ -22,28 +22,56 @@ from .repositories.worktree_repository import WorktreeStoreMixin
 from .session_store import SessionStoreMixin
 from .task_store import TaskStoreMixin
 from ._schema import SchemaBootstrapMixin
+from ..models import RuntimeEvent
+from ..yuanbao_event_adapter import to_yuanbao_server_message
 
 
 class _LockedCursor:
-    def __init__(self, cursor: sqlite3.Cursor, lock: threading.RLock) -> None:
+    def __init__(
+        self,
+        cursor: sqlite3.Cursor,
+        lock: threading.RLock,
+        eager_rows: list[Any] | None = None,
+    ) -> None:
         self._cursor = cursor
         self._lock = lock
+        self._eager_rows = eager_rows
+        self._eager_index = 0
 
     def fetchone(self) -> Any:
+        if self._eager_rows is not None:
+            if self._eager_index >= len(self._eager_rows):
+                return None
+            row = self._eager_rows[self._eager_index]
+            self._eager_index += 1
+            return row
         with self._lock:
             return self._cursor.fetchone()
 
     def fetchall(self) -> list[Any]:
+        if self._eager_rows is not None:
+            rows = self._eager_rows[self._eager_index :]
+            self._eager_index = len(self._eager_rows)
+            return rows
         with self._lock:
             return self._cursor.fetchall()
 
     def fetchmany(self, size: int | None = None) -> list[Any]:
+        if self._eager_rows is not None:
+            if size is None:
+                size = len(self._eager_rows) - self._eager_index
+            end = min(len(self._eager_rows), self._eager_index + max(0, size))
+            rows = self._eager_rows[self._eager_index : end]
+            self._eager_index = end
+            return rows
         with self._lock:
             if size is None:
                 return self._cursor.fetchmany()
             return self._cursor.fetchmany(size)
 
     def __iter__(self) -> Any:
+        if self._eager_rows is not None:
+            return iter(self.fetchall())
         with self._lock:
             rows = list(self._cursor)
         return iter(rows)
@@ -65,9 +93,18 @@ class _LockedConnection:
     def row_factory(self, value: Any) -> None:
         self._conn.row_factory = value
 
+    @staticmethod
+    def _eager_fetch_query(sql: Any) -> bool:
+        if not isinstance(sql, str):
+            return False
+        statement = sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
+        return statement in {"SELECT", "WITH", "PRAGMA"}
+
     def execute(self, *args: Any, **kwargs: Any) -> _LockedCursor:
         with self._lock:
-            return _LockedCursor(self._conn.execute(*args, **kwargs), self._lock)
+            cursor = self._conn.execute(*args, **kwargs)
+            eager_rows = cursor.fetchall() if args and self._eager_fetch_query(args[0]) else None
+            return _LockedCursor(cursor, self._lock, eager_rows)
 
     def executemany(self, *args: Any, **kwargs: Any) -> _LockedCursor:
         with self._lock:
@@ -177,6 +214,20 @@ class SQLiteStore(
             session["workspaceName"] = row["workspace_name"]
         if row.get("workspace_root"):
             session["workspaceRoot"] = row["workspace_root"]
+        metadata_raw = row.get("metadata_json")
+        if metadata_raw:
+            try:
+                metadata = json.loads(metadata_raw)
+            except Exception:
+                metadata = {}
+            if isinstance(metadata, dict) and metadata:
+                session["metadata"] = metadata
+                launch = metadata.get("launch")
+                if isinstance(launch, dict):
+                    session["launch"] = launch
+                    repository = launch.get("repository")
+                    if isinstance(repository, dict):
+                        session["repository"] = repository
         return session
 
     def _serialize_message(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -428,18 +479,36 @@ class SQLiteStore(
         }
 
     def _serialize_trace_event(self, row: dict[str, Any]) -> dict[str, Any]:
-        return {
+        payload = json.loads(row["payload_json"])
+        record = {
             "id": row["id"],
             "taskId": row["task_id"],
             "sessionId": row["session_id"],
             "type": row["type"],
             "source": row["source"],
             "relatedId": row["related_id"],
-            "payload": json.loads(row["payload_json"]),
+            "payload": payload,
             "createdAt": row["created_at"],
             "sequence": row["sequence"],
             "visibility": row.get("visibility", "chat"),
         }
+        if isinstance(payload, dict):
+            yuanbao = to_yuanbao_server_message(
+                RuntimeEvent(
+                    event_id=str(row["id"]),
+                    session_id=str(row["session_id"]),
+                    task_id=str(row["task_id"]),
+                    type=str(row["type"]),
+                    ts=int(row["created_at"]),
+                    payload=payload,
+                    seq=int(row["sequence"]),
+                    visibility=row.get("visibility", "chat"),
+                )
+            )
+            if yuanbao is not None:
+                record["yuanbao"] = yuanbao
+                record["hahaCc"] = yuanbao
+        return record
 
     def _require_non_empty(self, params: dict[str, Any], key: str) -> str:
         value = params.get(key)

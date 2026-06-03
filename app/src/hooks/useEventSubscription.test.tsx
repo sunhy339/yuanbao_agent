@@ -9,6 +9,7 @@ const runtimeMocks = vi.hoisted(() => ({
 }));
 
 const commandLogSnapshots: Record<string, any>[] = [];
+const traceSnapshots: TraceEventRecord[][] = [];
 
 vi.mock("../lib/runtimeClient", () => ({
   RuntimeClient: vi.fn(function RuntimeClient() {
@@ -34,7 +35,7 @@ function Harness() {
   const [, setTask] = useState<TaskRecord | null>(null);
   const [, setActiveTaskId] = useState<string | null>(null);
   const [, setTaskHistory] = useState<TaskRecord[]>([]);
-  const [, setTraceEvents] = useState<TraceEventRecord[]>([]);
+  const [, setTraceEventsState] = useState<TraceEventRecord[]>([]);
   const [, setCommandLogCacheByIdState] = useState<Record<string, any>>({});
   const [, setTraceError] = useState<string | null>(null);
   const [, setPatchCacheById] = useState<Record<string, any>>({});
@@ -54,7 +55,13 @@ function Harness() {
     setActiveTaskId,
     setTaskHistory,
     setChatMessages,
-    setTraceEvents,
+    setTraceEvents: (value) => {
+      setTraceEventsState((current) => {
+        const next = typeof value === "function" ? value(current) : value;
+        traceSnapshots.push(next);
+        return next;
+      });
+    },
     setCommandLogCacheById: (value) => {
       setCommandLogCacheByIdState((current) => {
         const next = typeof value === "function" ? value(current) : value;
@@ -99,6 +106,7 @@ function Harness() {
 describe("useEventSubscription", () => {
   beforeEach(() => {
     commandLogSnapshots.length = 0;
+    traceSnapshots.length = 0;
     runtimeMocks.subscribeEvents.mockImplementation(
       async (handler: (event: AgentEventEnvelope) => void) => {
         runtimeMocks.handler = handler;
@@ -140,6 +148,30 @@ describe("useEventSubscription", () => {
     expect(row.getAttribute("data-semantic-label")).toBe("读取上下文");
   });
 
+  it("preserves haha-cc messages on the live trace cache", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_delta",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "content_delta",
+        ts: 10,
+        seq: 3,
+        visibility: "chat",
+        payload: { text: "hello" },
+        hahaCc: { type: "content_delta", text: "hello" },
+      });
+    });
+
+    await waitFor(() => expect(traceSnapshots.at(-1)?.[0]?.hahaCc).toEqual({
+      type: "content_delta",
+      text: "hello",
+    }));
+  });
+
   it("renders thinking events and preserves their source metadata", async () => {
     render(<Harness />);
     await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
@@ -154,14 +186,14 @@ describe("useEventSubscription", () => {
         visibility: "chat",
         payload: {
           text: "先确认相关文件。",
-          source: "thought_summary",
+          source: "non_stream_thought_summary",
         },
       });
     });
 
     const row = screen.getByText("先确认相关文件。");
     expect(row.getAttribute("data-kind")).toBe("assistant_thinking");
-    expect(row.getAttribute("data-source")).toBe("thought_summary");
+    expect(row.getAttribute("data-source")).toBe("non_stream_thought_summary");
   });
 
   it("renders system notifications as system transcript nodes", async () => {
@@ -297,6 +329,30 @@ describe("useEventSubscription", () => {
     expect(row.getAttribute("data-operation-id")).toBe("context:path:src/app.ts");
     expect(row.getAttribute("data-operation-label")).toBe("读取上下文");
     expect(row.getAttribute("data-input-text")).toContain("src/app.ts");
+  });
+
+  it("ignores trace-visible raw tool lifecycle events in chat", async () => {
+    render(<Harness />);
+    await waitFor(() => expect(runtimeMocks.subscribeEvents).toHaveBeenCalled());
+
+    act(() => {
+      runtimeMocks.handler?.({
+        eventId: "evt_tool_started_trace",
+        sessionId: "sess_1",
+        taskId: "task_1",
+        type: "tool.started",
+        ts: 10,
+        visibility: "trace",
+        payload: {
+          toolCallId: "call_read_trace",
+          toolName: "read_file",
+          arguments: { path: "src/app.ts" },
+          target: "src/app.ts",
+        },
+      });
+    });
+
+    expect(document.querySelector('[data-tool-use-id="call_read_trace"]')).toBeNull();
   });
 
   it("renders raw blocked tool lifecycle events as terminal tool rows", async () => {

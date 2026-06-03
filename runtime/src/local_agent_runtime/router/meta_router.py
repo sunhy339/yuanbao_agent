@@ -68,6 +68,10 @@ _WORK_DOMAIN_SIGNAL_RE = re.compile(
     r"\u6587\u6863|\u67b6\u6784",
     re.IGNORECASE,
 )
+_GREETING_ONLY_RE = re.compile(
+    r"^\s*(?:hi|hello|hey|你好|您好|嗨|哈喽|hello[!.]*|hi[!.]*)\s*[!.。！]?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _tokenize(text: str) -> list[str]:
@@ -103,6 +107,8 @@ class MetaRouter:
         Fallback: FREE_FORM → REACT_STANDARD.
         """
         rule_result = self._rule_based_route(goal, context)
+        if self._is_greeting_only_route(goal, rule_result):
+            return rule_result
         if self._has_explicit_multi_agent_signal(goal):
             return self._build_decision(
                 scenario=Scenario.SWARM_TASK,
@@ -181,6 +187,13 @@ class MetaRouter:
         best_conf = 0.0
         matched_keyword = ""
 
+        if _GREETING_ONLY_RE.match(goal):
+            return self._build_decision(
+                scenario=Scenario.SIMPLE_QUERY,
+                confidence=0.99,
+                reasoning="rule-match: greeting-only",
+            )
+
         for token in tokens:
             hit = lookup_keyword(token)
             if hit and hit[1] > best_conf:
@@ -216,6 +229,14 @@ class MetaRouter:
             scenario=best_scenario,
             confidence=best_conf,
             reasoning=f"rule-match: keyword='{matched_keyword}'",
+        )
+
+    @staticmethod
+    def _is_greeting_only_route(goal: str, rule_result: RoutingDecision) -> bool:
+        return (
+            rule_result.scenario == Scenario.SIMPLE_QUERY
+            and rule_result.confidence >= 0.95
+            and _GREETING_ONLY_RE.match(goal) is not None
         )
 
     def _planning_task_override(

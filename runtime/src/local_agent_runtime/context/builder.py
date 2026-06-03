@@ -55,6 +55,7 @@ COMMON_GOAL_TERMS = {
 DEFAULT_MAX_CONTEXT_TOKENS = 256000
 
 DEFAULT_TOOL_SCHEMAS = BUILTIN_TOOL_SCHEMAS
+CONTROL_FLOW_TOOL_NAMES = frozenset({"ask_user_question", "enter_plan_mode", "exit_plan_mode"})
 DEFAULT_CANONICAL_MEMORY_FILES = (
     "YUANBAO.md",
     "MEMORY.md",
@@ -92,6 +93,18 @@ DEFAULT_AGENT_SOUL_BASELINE = {
 
 class ContextBuilder(HistoryMixin):
     """Build a deterministic context bundle for the first tool loop."""
+
+    _STABLE_CONTEXT_MARKER = "Stable context prefix:"
+    _DYNAMIC_CONTEXT_MARKER = "Dynamic context tail:"
+    _CURRENT_REQUEST_MARKER = "Current user request:"
+    _STABLE_PREFIX_SECTION_NAMES = {
+        "workspace_summary",
+        "project_focus",
+        "canonical_memory",
+        "project_memory",
+        "stable_workspace_context",
+        "runtime_role",
+    }
 
     _DEFAULT_PROMPT_CACHE_POLICY = {
         "enabled": True,
@@ -138,6 +151,7 @@ class ContextBuilder(HistoryMixin):
         role: str | None = None,
         include_history: bool = True,
         include_scratchpad: bool = True,
+        minimal: bool = False,
         current_message_metadata: dict[str, Any] | None = None,
     ) -> dict[str, object]:
         session = self._store.require_session(session_id)
@@ -178,6 +192,8 @@ class ContextBuilder(HistoryMixin):
                 for t in tools:
                     if t.get("name", "").startswith(("memory.", "scratchpad.", "mcp__")):
                         whitelist.add(t["name"])
+                    if t.get("name") in CONTROL_FLOW_TOOL_NAMES:
+                        whitelist.add(t["name"])
                 filtered_tool_names = [t.get("name", "") for t in tools if t.get("name") in whitelist]
                 tools = [t for t in tools if t.get("name") in whitelist]
             else:
@@ -186,6 +202,8 @@ class ContextBuilder(HistoryMixin):
                 # Always include memory and scratchpad tools if present
                 for t in tools:
                     if t.get("name", "").startswith(("memory.", "scratchpad.")):
+                        whitelist.add(t["name"])
+                    if t.get("name") in CONTROL_FLOW_TOOL_NAMES:
                         whitelist.add(t["name"])
                 filtered_tool_names = [t.get("name", "") for t in tools if t.get("name") in whitelist]
                 tools = [t for t in tools if t.get("name") in whitelist]
@@ -200,7 +218,11 @@ class ContextBuilder(HistoryMixin):
                 logger.debug("Skill %s: injected parameter_constraints %s", skill_id, skill_preset.parameter_constraints)
 
         tools_id = id(tools)
-        if self._cached_tool_schemas_id == tools_id and self._cached_openai_tools is not None:
+        if minimal:
+            openai_tools = []
+            tool_schema_tokens = 0
+            tools = []
+        elif self._cached_tool_schemas_id == tools_id and self._cached_openai_tools is not None:
             openai_tools = self._cached_openai_tools
             tool_schema_tokens = self._cached_tool_schema_tokens or 0
         else:
@@ -219,8 +241,9 @@ class ContextBuilder(HistoryMixin):
             lightweight=lightweight,
             skill_preset=skill_preset,
             role=role,
-            include_history=include_history,
-            include_scratchpad=include_scratchpad,
+            include_history=include_history and not minimal,
+            include_scratchpad=include_scratchpad and not minimal,
+            minimal=minimal,
             current_message_metadata=current_message_metadata,
         )
         return {
@@ -261,6 +284,7 @@ class ContextBuilder(HistoryMixin):
                 "prompt_layers": budget_stats.get("promptLayers", []),
             },
             "lightweight": lightweight,
+            "minimal": minimal,
         }
 
     def _post_task_validation_config(self, config: dict[str, Any]) -> dict[str, Any]:
@@ -296,6 +320,7 @@ class ContextBuilder(HistoryMixin):
         role: str | None = None,
         include_history: bool = True,
         include_scratchpad: bool = True,
+        minimal: bool = False,
         current_message_metadata: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         max_context_tokens = self._max_context_tokens(config)
@@ -320,7 +345,7 @@ class ContextBuilder(HistoryMixin):
             ),
         ]
 
-        project_focus = self._project_focus_summary(workspace, max_chars=min(1200, max_context_tokens * 2))
+        project_focus = "" if minimal else self._project_focus_summary(workspace, max_chars=min(1200, max_context_tokens * 2))
         if project_focus:
             sections.append(
                 BudgetSection(
@@ -330,14 +355,15 @@ class ContextBuilder(HistoryMixin):
                     truncatable=False,
                 )
             )
-        canonical_memory = self._canonical_memory_section(workspace["rootPath"], cache_policy=cache_policy)
+        canonical_memory = None if minimal else self._canonical_memory_section(workspace["rootPath"], cache_policy=cache_policy)
         if canonical_memory:
             sections.append(canonical_memory)
-        project_memory = self._workspace_memory_section(workspace)
+        project_memory = None if minimal else self._workspace_memory_section(workspace)
         if project_memory:
             sections.append(project_memory)
-        sections.extend(self._key_file_sections(workspace["rootPath"], cache_policy=cache_policy))
-        stable_pack = self._stable_workspace_context_pack(
+        if not minimal:
+            sections.extend(self._key_file_sections(workspace["rootPath"], cache_policy=cache_policy))
+        stable_pack = None if minimal else self._stable_workspace_context_pack(
             workspace["rootPath"],
             cache_policy=cache_policy,
             reserved_tokens=tool_schema_tokens + estimate_tokens(goal) + 2000,
@@ -392,9 +418,8 @@ class ContextBuilder(HistoryMixin):
                 )
             )
 
-        # Scratchpad is volatile, so keep it after stable memory/history and
-        # before the current request. This keeps the final user message as the
-        # only per-turn tail and improves provider-side prefix caching.
+        # Scratchpad is volatile, so keep it in the dynamic tail before the
+        # current request.
         if include_scratchpad:
             scratchpad_section = self._scratchpad_section(session["id"])
             if scratchpad_section is not None:
@@ -414,16 +439,21 @@ class ContextBuilder(HistoryMixin):
         kept_sections = budget_result.sections
         system_section = next((section for section in kept_sections if section.name == "system_prompt"), sections[0])
         non_system_sections = [section for section in kept_sections if section.name != "system_prompt"]
-        user_context_sections = [section for section in non_system_sections if section.name != "user_message"]
-        user_context = "\n\n".join(section.text for section in user_context_sections)
+        context_sections = [section for section in non_system_sections if section.name != "user_message"]
+        stable_context_sections = [section for section in context_sections if self._is_stable_prefix_section(section)]
+        dynamic_context_sections = [section for section in context_sections if not self._is_stable_prefix_section(section)]
+        stable_context = self._context_layer_text(self._STABLE_CONTEXT_MARKER, stable_context_sections)
+        dynamic_context = self._context_layer_text(self._DYNAMIC_CONTEXT_MARKER, dynamic_context_sections)
         user_message_section = next((section for section in non_system_sections if section.name == "user_message"), None)
         current_request = user_message_section.text if user_message_section is not None else f"Current user request:\n{goal}"
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_section.text},
         ]
-        if user_context:
-            messages.append({"role": "user", "content": user_context})
+        if stable_context:
+            messages.append({"role": "user", "content": stable_context})
+        if dynamic_context:
+            messages.append({"role": "user", "content": dynamic_context})
         messages.append({"role": "user", "content": current_request})
 
         # Compaction: if messages exceed budget, compress via three-segment strategy
@@ -452,12 +482,16 @@ class ContextBuilder(HistoryMixin):
             "toolSchemaTokens": tool_schema_tokens,
             "messageTokens": message_tokens,
             "stablePrefixTokens": stable_prefix_tokens,
+            "stablePrefixSections": [section.name for section in stable_context_sections],
+            "dynamicTailSections": [section.name for section in dynamic_context_sections],
             "promptCache": {
                 "enabled": bool(cache_policy.get("enabled")),
                 "targetFillRatio": cache_policy.get("targetFillRatio"),
                 "targetContextTokens": cache_policy.get("targetContextTokens"),
                 "maxStableContextTokens": cache_policy.get("maxStableContextTokens"),
                 "stablePrefixTokens": stable_prefix_tokens,
+                "stablePrefixSections": [section.name for section in stable_context_sections],
+                "dynamicTailSections": [section.name for section in dynamic_context_sections],
             },
             "promptLayers": prompt_layers,
         }
@@ -866,10 +900,28 @@ class ContextBuilder(HistoryMixin):
 
         return sections
 
-    def _stable_prefix_tokens(self, messages: list[dict[str, str]]) -> int:
+    @classmethod
+    def _is_stable_prefix_section(cls, section: BudgetSection) -> bool:
+        return section.name in cls._STABLE_PREFIX_SECTION_NAMES or section.name.startswith("key_file:")
+
+    @staticmethod
+    def _context_layer_text(marker: str, sections: list[BudgetSection]) -> str:
+        text = "\n\n".join(section.text for section in sections if section.text)
+        return f"{marker}\n{text}" if text else ""
+
+    @classmethod
+    def _stable_prefix_tokens(cls, messages: list[dict[str, Any]]) -> int:
         if not messages:
             return 0
-        return sum(estimate_tokens(message.get("content", "")) for message in messages[:-1])
+        total = 0
+        for index, message in enumerate(messages):
+            content = str(message.get("content") or "")
+            if index > 0 and (
+                content.startswith(cls._DYNAMIC_CONTEXT_MARKER) or content.startswith(cls._CURRENT_REQUEST_MARKER)
+            ):
+                break
+            total += estimate_tokens(content)
+        return total
 
     def _stable_workspace_context_pack(
         self,

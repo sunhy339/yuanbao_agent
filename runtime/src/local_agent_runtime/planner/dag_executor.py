@@ -304,6 +304,16 @@ class DAGExecutor:
         description = subtask.description
         max_continuations = 2
         continuation_attempts = 0
+        child_tool_allowlist = self._child_tool_allowlist_for_subtask(
+            subtask=subtask,
+            skill_id=skill_id,
+        )
+        child_can_write = self._child_allowlist_can_write(child_tool_allowlist)
+        child_active_worktree = (
+            dict(active_worktree)
+            if isinstance(active_worktree, dict) and not child_can_write
+            else None
+        )
         try:
             for _attempt in range(max_continuations + 1):
                 dispatch_result = self._subagent.dispatch({
@@ -320,17 +330,14 @@ class DAGExecutor:
                     "taskId": parent_task_id,
                     **({"skillId": skill_id} if isinstance(skill_id, str) and skill_id.strip() else {}),
                     "agentType": normalize_subtask_agent_type(subtask.agent_type),
-                    "childToolAllowlist": self._child_tool_allowlist_for_subtask(
-                        subtask=subtask,
-                        skill_id=skill_id,
-                    ),
+                    "childToolAllowlist": child_tool_allowlist,
                     "profile": {
                         "ownedScope": list(subtask.owned_scope),
                         "expectedArtifacts": [dict(item) for item in subtask.expected_artifacts],
                         "verificationRequirements": [dict(item) for item in subtask.verification_requirements],
                     },
                     **({"mcpPolicy": dict(mcp_policy)} if isinstance(mcp_policy, dict) else {}),
-                    **({"activeWorktree": dict(active_worktree)} if isinstance(active_worktree, dict) else {}),
+                    **({"activeWorktree": child_active_worktree} if child_active_worktree is not None else {}),
                     **({"timeoutMs": child_timeout_ms} if child_timeout_ms is not None else {}),
                     **(
                         {
@@ -426,6 +433,10 @@ class DAGExecutor:
         if isinstance(skill_id, str) and skill_id.strip():
             allowlist.append("mcp__*")
         return list(dict.fromkeys(allowlist))
+
+    @staticmethod
+    def _child_allowlist_can_write(allowlist: list[str]) -> bool:
+        return bool(set(allowlist) & {"write_file", "apply_patch", "run_command"})
 
     def _group_by_level(
         self,

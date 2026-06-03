@@ -164,6 +164,130 @@ def test_queued_code_edit_persists_active_worktree_before_execution(tmp_path: An
     assert persisted_task["routing"]["activeWorktree"]["worktreePath"] == worktree["worktreePath"]
 
 
+def test_session_launch_repository_controls_task_worktree_base_ref(tmp_path: Any) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    runtime = _make_runtime(tmp_path, ScriptedProvider([{"final": "Done."}]), {})
+
+    workspace = _rpc(runtime, "workspace.open", {"path": str(workspace_root)})["result"]["workspace"]
+    session = _rpc(runtime, "session.create", {
+        "workspaceId": workspace["id"],
+        "title": "Launch",
+        "workDir": str(workspace_root),
+        "repository": {"branch": "feature/parity", "worktree": True},
+    })["result"]["session"]
+
+    assert session["launch"]["workDir"] == str(workspace_root)
+    assert session["repository"]["branch"] == "feature/parity"
+
+    result = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "fix code by editing files"})
+    task = result["result"]["task"]
+    worktree = runtime.store.get_worktree_by_task({"taskId": task["id"]})["worktree"]
+
+    assert worktree is not None
+    assert runtime.worktree_service.created[0]["baseRef"] == "feature/parity"
+    assert task["routing"]["repository"] == {"branch": "feature/parity", "worktree": True}
+    assert task["routing"]["activeWorktree"]["id"] == worktree["id"]
+
+
+def test_session_launch_repository_can_use_current_worktree(tmp_path: Any) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    runtime = _make_runtime(tmp_path, ScriptedProvider([{"final": "Done."}]), {})
+
+    workspace = _rpc(runtime, "workspace.open", {"path": str(workspace_root)})["result"]["workspace"]
+    session = _rpc(runtime, "session.create", {
+        "workspaceId": workspace["id"],
+        "title": "Current tree",
+        "workDir": str(workspace_root),
+        "repository": {"branch": "master", "worktree": False},
+    })["result"]["session"]
+
+    result = _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "fix code by editing files"})
+    task = result["result"]["task"]
+
+    assert runtime.worktree_service.created == []
+    assert task["routing"]["disableWorktreeBinding"] is True
+    assert task["routing"]["repository"] == {"branch": "master", "worktree": False}
+
+
+def test_context_preview_persists_into_session_metadata(tmp_path: Any) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    def echo(params: dict[str, Any]) -> dict[str, Any]:
+      return {"echo": params.get("text", "")}
+
+    runtime = _make_runtime(
+        tmp_path,
+        ScriptedProvider([
+            {
+                "message": "Inspecting workspace.",
+                "tool_calls": [
+                    {
+                        "id": "call_echo",
+                        "name": "echo",
+                        "arguments": {"text": "hello"},
+                    },
+                ],
+            },
+            {"final": "Done."},
+        ]),
+        {"echo": echo},
+    )
+
+    workspace = _rpc(runtime, "workspace.open", {"path": str(workspace_root)})["result"]["workspace"]
+    session = _rpc(runtime, "session.create", {"workspaceId": workspace["id"], "title": "Persisted context"})["result"]["session"]
+
+    _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "inspect the workspace"})
+
+    persisted = runtime.store.require_session(session["id"])
+    metadata = persisted.get("metadata") or {}
+    preview = metadata.get("contextPreview") if isinstance(metadata, dict) else None
+
+    assert isinstance(preview, dict)
+    assert preview["workspaceRoot"]
+    assert str(preview["workspaceRoot"]).startswith(str(workspace_root))
+    assert preview["toolCount"] >= 1
+    assert isinstance(preview.get("budgetStats"), dict)
+    assert preview["budgetStats"]["maxContextTokens"] is not None
+    assert preview["budgetStats"]["updatedAt"] is not None
+    assert preview["budgetStats"]["estimated"] is False
+    assert isinstance(preview.get("taskFocus"), dict)
+    assert preview["taskFocus"]["currentStep"] is not None
+
+
+def test_write_child_task_auto_binds_own_worktree_when_parent_does_not_pass_one(tmp_path: Any) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    runtime = _make_runtime(tmp_path, ScriptedProvider([{"final": "Child done."}]), {})
+
+    workspace = _rpc(runtime, "workspace.open", {"path": str(workspace_root)})["result"]["workspace"]
+    session = _rpc(runtime, "session.create", {"workspaceId": workspace["id"], "title": "Child worktree"})["result"]["session"]
+
+    result = runtime.server._orchestrator.run_child_task({
+        "sessionId": session["id"],
+        "prompt": "Edit README in an isolated child worktree.",
+        "agentType": "worker",
+        "parentRuntimeTaskId": "parent-task",
+        "childToolAllowlist": ["read_file", "apply_patch"],
+    })
+
+    task = result["task"]
+    worktree = runtime.store.get_worktree_by_task({"taskId": task["id"]})["worktree"]
+
+    assert worktree is not None
+    assert runtime.worktree_service.created[0]["taskId"] == task["id"]
+    assert task["routing"]["parentRuntimeTaskId"] == "parent-task"
+    assert task["routing"]["activeWorktree"]["id"] == worktree["id"]
+    assert task["routing"]["activeWorktree"]["worktreePath"] == worktree["worktreePath"]
+
+    persisted_task = runtime.store.get_task({"taskId": task["id"]})["task"]
+    assert persisted_task["routing"]["activeWorktree"]["id"] == worktree["id"]
+    bound_events = [event for event in runtime.events if event["type"] == "task.worktree.bound"]
+    assert bound_events
+
+
 def test_worktree_segment_sanitizer_does_not_escape_path_root(tmp_path: Any) -> None:
     runtime = _make_runtime(tmp_path, ScriptedProvider([]), {})
     workspace_root = tmp_path / "workspace"

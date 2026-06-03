@@ -8,6 +8,7 @@ import { WorkspaceTabs } from "../../workbench/WorkspaceTabs";
 import type { SystemWorkspaceKind, WorkbenchSession, WorkbenchTab } from "../../workbench/types";
 import type { SessionWorkspaceContextPreview } from "../../workbench/workspaces/session/types";
 import type { QueuedPromptSubmission } from "../../../state/eventRecordViews";
+import type { CleanSessionLaunchOptions } from "../../haha-clean/composer/CleanComposer";
 import { Button, StatusBadge } from "../components/ui";
 import "./app-shell-v2.css";
 
@@ -38,7 +39,7 @@ export interface AppShellV2Props {
   onCloseOtherTabs: (tabId: WorkbenchTab["id"]) => void;
   onRenameSession: (sessionId: string, newTitle: string) => void;
   onDeleteSession: (sessionId: string) => void;
-  onSubmitPrompt: () => void;
+  onSubmitPrompt: (options?: CleanSessionLaunchOptions) => void;
   onQueuePrompt?: (mode?: "queued" | "supplement") => void;
   onStopPrompt?: () => void;
   queuedPrompts?: QueuedPromptSubmission[];

@@ -22,7 +22,7 @@ describe("CleanNewSessionWorkspace", () => {
     );
 
     expect(screen.getByRole("heading", { name: "新建会话" })).toBeInTheDocument();
-    expect(screen.getByText("开始一个新的编码会话。Claude 已准备好帮你构建、调试和架构你的项目。")).toBeInTheDocument();
+    expect(screen.getByText("开始一个新的编码会话。yuanbao 已准备好帮你构建、调试和架构你的项目。")).toBeInTheDocument();
     expect(screen.queryByText("会话设置")).not.toBeInTheDocument();
     expect(screen.queryByText("项目目录")).not.toBeInTheDocument();
     expect(screen.queryByText("codex/frontend-parity")).not.toBeInTheDocument();

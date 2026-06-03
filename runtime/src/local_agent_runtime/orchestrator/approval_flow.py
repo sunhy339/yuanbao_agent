@@ -84,6 +84,9 @@ class ApprovalFlowMixin:
             "decidedBy": approval.get("decidedBy"),
             "decidedAt": approval.get("decidedAt"),
         }
+        comment = str(approval.get("comment") or "").strip()
+        if comment:
+            payload["comment"] = comment
         if extra:
             payload.update(extra)
         return payload
@@ -138,6 +141,9 @@ class ApprovalFlowMixin:
             approval_id=params["approvalId"],
             decision=params["decision"],
         )
+        comment = str(params.get("comment") or params.get("reason") or params.get("message") or "").strip()
+        if comment:
+            approval = {**approval, "comment": comment}
         task = self._store.get_task({"taskId": approval["taskId"]})["task"]
         if approval.get("kind") == "worktree_merge":
             return self._submit_worktree_merge_approval(approval=approval, task=task)
@@ -196,6 +202,26 @@ class ApprovalFlowMixin:
         )
         pending_state = self._load_pending_react_state(approval["taskId"])
         if pending_state is not None:
+            if approval.get("kind") == "plan" and self._pending_plan_approval_state(pending_state) is not None:
+                if task.get("status") != "running":
+                    self._validate_task_transition(task["status"], "running", task["id"])
+                    running_task = self._store.update_task_status(task_id=task["id"], status="running")
+                    self._publish(
+                        session_id=running_task["sessionId"],
+                        task=running_task,
+                        event_type="task.updated",
+                        payload={"status": "running", "detail": "Plan approval resolved"},
+                    )
+                else:
+                    running_task = task
+                answered_state = self._inject_plan_approval_result(
+                    session_id=running_task["sessionId"],
+                    task=running_task,
+                    state=pending_state,
+                    approval=approval,
+                )
+                resumed_task = self._resume_cooperative_react(task=running_task, state=answered_state)
+                return {"approval": approval, "task": resumed_task}
             child_task = self._blocked_child_collaboration_for_runtime_task(approval=approval, runtime_task=task)
             if child_task is not None and self._should_resume_child_approval_in_process(params, child_task):
                 try:

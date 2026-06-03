@@ -251,6 +251,8 @@ export function CleanAppShell({
     const byPath = new Map<string, {
       path: string;
       name: string;
+      branch?: string | null;
+      isGit?: boolean;
       updatedAt?: number;
       sessionCount: number;
     }>();
@@ -264,6 +266,8 @@ export function CleanAppShell({
         byPath.set(key, {
           path,
           name: session.workspaceName ?? basename(path),
+          branch: typeof session.repository?.branch === "string" ? session.repository.branch : null,
+          isGit: Boolean(session.repository),
           updatedAt: session.updatedAt,
           sessionCount: 1,
         });
@@ -273,6 +277,8 @@ export function CleanAppShell({
       if (updatedAt > (existing.updatedAt ?? 0)) {
         existing.updatedAt = session.updatedAt;
         existing.name = session.workspaceName ?? basename(path);
+        existing.branch = typeof session.repository?.branch === "string" ? session.repository.branch : existing.branch;
+        existing.isGit = existing.isGit || Boolean(session.repository);
       }
     });
     return Array.from(byPath.values())

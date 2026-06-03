@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from copy import deepcopy
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 from ..context.token_budget import estimate_tokens
+from ..execution.tool_pipeline import _frontend_visible_tool_result, _visible_command_output_chunk
+from ..yuanbao_event_adapter import normalize_yuanbao_usage
 from ..models import RuntimeEvent
 from ..services.command_background import cancel_background_commands
 
@@ -28,6 +31,51 @@ _CHAT_COMPAT_EVENT_TYPES = {
     "status",
     "plan_update",
 }
+
+_VISIBLE_TOOL_PAYLOAD_EVENT_TYPES = {
+    "tool.started",
+    "tool.completed",
+    "tool.failed",
+    "tool.blocked",
+}
+
+_RAW_TOOL_LIFECYCLE_EVENT_TYPES = {
+    "tool.started",
+    "tool.progress",
+    "tool.output",
+    "tool.completed",
+    "tool.failed",
+    "tool.blocked",
+    "command.started",
+    "command.output",
+    "command.completed",
+    "command.failed",
+    "command.cancelled",
+}
+
+_LARGE_VISIBLE_PAYLOAD_KEYS = {
+    "base64",
+    "body",
+    "content",
+    "data",
+    "diff",
+    "diffText",
+    "html",
+    "image",
+    "imageData",
+    "markdown",
+    "output",
+    "patch",
+    "patchText",
+    "replacement",
+    "stderr",
+    "stdout",
+    "text",
+}
+_VISIBLE_PAYLOAD_STRING_LIMIT = 1000
+_VISIBLE_PAYLOAD_PREVIEW_LIMIT = 240
+_VISIBLE_PAYLOAD_LIST_LIMIT = 20
+_VISIBLE_PAYLOAD_MAX_DEPTH = 4
 
 
 class PublishingMixin:
@@ -66,9 +114,15 @@ class PublishingMixin:
                 "estimatedInputTokens": estimated_input_tokens,
                 "messageTokens": message_tokens,
                 "toolSchemaTokens": budget_stats.get("toolSchemaTokens"),
+                "stablePrefixTokens": budget_stats.get("stablePrefixTokens"),
+                "promptCache": budget_stats.get("promptCache"),
                 "maxContextTokens": budget_stats.get("maxContextTokens"),
                 "droppedSections": budget_stats.get("droppedSections"),
                 "trimmedSections": budget_stats.get("trimmedSections"),
+                "includedSections": budget_stats.get("includedSections"),
+                "stablePrefixSections": budget_stats.get("stablePrefixSections"),
+                "dynamicTailSections": budget_stats.get("dynamicTailSections"),
+                "promptLayers": budget_stats.get("promptLayers"),
             }
         task_focus = context.get("task_focus")
         if isinstance(task_focus, dict):
@@ -80,6 +134,19 @@ class PublishingMixin:
             }
         return summary
 
+    def _persist_session_context_preview(self, *, session_id: str, context_summary: dict[str, Any]) -> None:
+        if not hasattr(self._store, "update_session_metadata"):
+            return
+        preview = deepcopy(context_summary)
+        budget_stats = preview.get("budgetStats")
+        if isinstance(budget_stats, dict):
+            budget_stats["updatedAt"] = int(time.time() * 1000)
+            budget_stats["estimated"] = False
+        try:
+            self._store.update_session_metadata(session_id, {"contextPreview": preview})
+        except Exception:
+            logger.debug("Failed to persist session context preview", exc_info=True)
+
     def _publish_context_update(
         self,
         *,
@@ -88,6 +155,8 @@ class PublishingMixin:
         context: dict[str, Any],
         messages: list[dict[str, Any]],
     ) -> None:
+        context_summary = self._event_context_summary(context, messages=messages)
+        self._persist_session_context_preview(session_id=session_id, context_summary=context_summary)
         self._publish(
             session_id=session_id,
             task=task,
@@ -95,8 +164,9 @@ class PublishingMixin:
             payload={
                 "status": task.get("status"),
                 "currentStep": task.get("currentStep"),
-                "context": self._event_context_summary(context, messages=messages),
+                "context": context_summary,
             },
+            visibility="panel",
         )
 
     def _publish_task_run_snapshot(self, *, session_id: str, task: dict[str, Any]) -> None:
@@ -142,6 +212,74 @@ class PublishingMixin:
         if len(text) <= limit:
             return text
         return f"{text[:limit - 1].rstrip()}…"
+
+    @classmethod
+    def _sanitize_visible_event_payload(
+        cls,
+        event_type: str,
+        payload: dict[str, Any],
+        visibility: str,
+    ) -> dict[str, Any]:
+        if event_type not in _VISIBLE_TOOL_PAYLOAD_EVENT_TYPES:
+            return payload
+        safe_payload = dict(payload)
+        for key in ("arguments", "result"):
+            if key == "result" and event_type in {"tool.completed", "tool.failed", "tool.blocked"}:
+                continue
+            value = safe_payload.get(key)
+            if isinstance(value, (dict, list, str)):
+                safe_payload[key] = cls._sanitize_visible_payload_value(key, value)
+        return safe_payload
+
+    @classmethod
+    def _sanitize_visible_payload_value(cls, key: str, value: Any, *, depth: int = 0) -> Any:
+        key_name = str(key)
+        if isinstance(value, str):
+            should_compact = key_name in _LARGE_VISIBLE_PAYLOAD_KEYS or len(value) > _VISIBLE_PAYLOAD_STRING_LIMIT
+            if not should_compact:
+                return value
+            return {
+                "omitted": True,
+                "chars": len(value),
+                "preview": value[:_VISIBLE_PAYLOAD_PREVIEW_LIMIT],
+            }
+        if isinstance(value, dict):
+            if depth >= _VISIBLE_PAYLOAD_MAX_DEPTH:
+                return {
+                    "omitted": True,
+                    "type": "object",
+                    "keys": len(value),
+                }
+            return {
+                str(child_key): cls._sanitize_visible_payload_value(str(child_key), child_value, depth=depth + 1)
+                for child_key, child_value in value.items()
+            }
+        if isinstance(value, list):
+            if depth >= _VISIBLE_PAYLOAD_MAX_DEPTH:
+                return {
+                    "omitted": True,
+                    "type": "array",
+                    "items": len(value),
+                }
+            items = [
+                cls._sanitize_visible_payload_value(key_name, item, depth=depth + 1)
+                for item in value[:_VISIBLE_PAYLOAD_LIST_LIMIT]
+            ]
+            if len(value) > _VISIBLE_PAYLOAD_LIST_LIMIT:
+                items.append(
+                    {
+                        "omitted": True,
+                        "items": len(value) - _VISIBLE_PAYLOAD_LIST_LIMIT,
+                    }
+                )
+            return items
+        return value
+
+    @staticmethod
+    def _raw_runtime_event_visibility(event_type: str, effective_visibility: str, explicit_visibility: str | None) -> str:
+        if explicit_visibility is None and event_type in _RAW_TOOL_LIFECYCLE_EVENT_TYPES:
+            return "trace"
+        return effective_visibility
 
     def _goal_event_payload_for_task_event(self, event_type: str, task: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
         mapping = {
@@ -212,6 +350,56 @@ class PublishingMixin:
             visibility=visibility,
         )
 
+    def _publish_chat_status(
+        self,
+        *,
+        session_id: str,
+        task: dict[str, Any],
+        state: str,
+        verb: Any = None,
+        payload: dict[str, Any] | None = None,
+        visibility: str = "chat",
+        force: bool = False,
+    ) -> None:
+        if task.get("role", "root") != "root":
+            return
+        normalized_state = str(state or "").strip()
+        if not normalized_state:
+            return
+        status_payload: dict[str, Any] = {"state": normalized_state}
+        if verb not in (None, ""):
+            status_payload["verb"] = str(verb)
+        if isinstance(payload, dict):
+            for key in ("step", "elapsed", "tokens", "phase", "reason", "strategy"):
+                if payload.get(key) is not None:
+                    status_payload[key] = payload.get(key)
+
+        fingerprint_cache = getattr(self, "_chat_status_fingerprints", None)
+        if not isinstance(fingerprint_cache, dict):
+            fingerprint_cache = {}
+            setattr(self, "_chat_status_fingerprints", fingerprint_cache)
+        cache_key = str(task.get("id") or "")
+        fingerprint = json.dumps(
+            {
+                key: status_payload.get(key)
+                for key in ("state", "verb", "step", "phase", "strategy")
+                if key in status_payload
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if not force and cache_key and fingerprint_cache.get(cache_key) == fingerprint:
+            return
+        if cache_key:
+            fingerprint_cache[cache_key] = fingerprint
+        self._publish_chat_compat_event(
+            session_id=session_id,
+            task=task,
+            event_type="status",
+            payload=status_payload,
+            visibility=visibility,
+        )
+
     def _mark_tool_output_delta_seen(self, task_id: str, tool_use_id: Any, stream: Any, text: Any) -> bool:
         if not tool_use_id or not isinstance(text, str) or not text:
             return False
@@ -238,14 +426,55 @@ class PublishingMixin:
         cache.add(key)
         return False
 
+    def _chat_text_start_seen(self, *, task: dict[str, Any], message_id: Any = None) -> bool:
+        cache = getattr(self, "_chat_text_start_message_ids", None)
+        if not isinstance(cache, set):
+            cache = set()
+            setattr(self, "_chat_text_start_message_ids", cache)
+        key = str(message_id or task.get("activeAssistantMessageId") or task.get("id") or "")
+        if not key:
+            return False
+        if key in cache:
+            return True
+        cache.add(key)
+        return False
+
+    def _chat_tool_start_seen(self, *, task: dict[str, Any], tool_use_id: Any) -> bool:
+        if not tool_use_id:
+            return False
+        cache = getattr(self, "_chat_tool_start_tool_use_ids", None)
+        if not isinstance(cache, set):
+            cache = set()
+            setattr(self, "_chat_tool_start_tool_use_ids", cache)
+        key = f"{task.get('id') or ''}:{tool_use_id}"
+        if key in cache:
+            return True
+        cache.add(key)
+        return False
+
+    def _remember_chat_content_start(self, *, task: dict[str, Any], payload: dict[str, Any]) -> None:
+        block_type = payload.get("blockType")
+        if block_type == "text":
+            self._chat_text_start_seen(task=task, message_id=payload.get("messageId"))
+        elif block_type == "tool_use":
+            self._chat_tool_start_seen(task=task, tool_use_id=payload.get("toolUseId"))
+
     @staticmethod
     def _chat_compat_usage_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
         usage = payload.get("usage")
         if isinstance(usage, dict):
-            return dict(usage)
+            raw_usage = dict(usage)
+            return {
+                **raw_usage,
+                **normalize_yuanbao_usage(raw_usage),
+            }
         raw = payload.get("raw")
         if isinstance(raw, dict) and isinstance(raw.get("usage"), dict):
-            return dict(raw["usage"])
+            raw_usage = dict(raw["usage"])
+            return {
+                **raw_usage,
+                **normalize_yuanbao_usage(raw_usage),
+            }
         return None
 
     @staticmethod
@@ -326,7 +555,7 @@ class PublishingMixin:
         phase: str,
         status: str = "running",
         payload: dict[str, Any] | None = None,
-        visibility: str = "chat",
+        visibility: str = "panel",
     ) -> None:
         if task.get("role", "root") != "root":
             return
@@ -754,6 +983,24 @@ class PublishingMixin:
 
         active_msg_id = task.get("activeAssistantMessageId")
 
+        if event_type == "task.started":
+            self._publish_chat_status(
+                session_id=session_id,
+                task=task,
+                state="thinking",
+                verb="task",
+                payload=payload,
+                visibility=effective_visibility,
+            )
+        elif event_type in {"task.completed", "task.failed", "task.cancelled"}:
+            self._publish_chat_status(
+                session_id=session_id,
+                task=task,
+                state="idle",
+                payload=payload,
+                visibility=effective_visibility,
+            )
+
         if event_type == "task.updated":
             plan_payload = self._plan_update_payload_from_task_update(task, payload)
             if plan_payload is not None:
@@ -780,13 +1027,7 @@ class PublishingMixin:
             delta = payload.get("delta")
             if not isinstance(delta, str) or not delta:
                 return
-            text_start_cache = getattr(self, "_chat_text_start_message_ids", None)
-            if not isinstance(text_start_cache, set):
-                text_start_cache = set()
-                setattr(self, "_chat_text_start_message_ids", text_start_cache)
-            text_start_key = str(active_msg_id or task.get("id") or "")
-            if text_start_key and text_start_key not in text_start_cache:
-                text_start_cache.add(text_start_key)
+            if not self._chat_text_start_seen(task=task, message_id=active_msg_id):
                 self._publish_chat_compat_event(
                     session_id=session_id,
                     task=task,
@@ -816,26 +1057,27 @@ class PublishingMixin:
             arguments = payload.get("arguments")
             parent_tool_use_id = payload.get("parentToolUseId")
             tool_batch_metadata = self._tool_batch_metadata_from_payload(payload)
-            self._publish_chat_compat_event(
-                session_id=session_id,
-                task=task,
-                event_type="content_start",
-                payload={
-                    "blockType": "tool_use",
-                    "toolName": tool_name,
-                    "toolUseId": tool_call_id,
-                    **({"target": payload.get("target")} if payload.get("target") else {}),
-                    **({"inputSummary": payload.get("inputSummary")} if payload.get("inputSummary") else {}),
-                    **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
-                    **({"toolCategory": payload.get("toolCategory")} if payload.get("toolCategory") else {}),
-                    **({"toolPhaseId": payload.get("toolPhaseId")} if payload.get("toolPhaseId") else {}),
-                    **({"toolPhaseLabel": payload.get("toolPhaseLabel")} if payload.get("toolPhaseLabel") else {}),
-                    **({"toolSemanticParentId": payload.get("toolSemanticParentId")} if payload.get("toolSemanticParentId") else {}),
-                    **({"toolSemanticParentLabel": payload.get("toolSemanticParentLabel")} if payload.get("toolSemanticParentLabel") else {}),
-                    **tool_batch_metadata,
-                },
-                visibility=effective_visibility,
-            )
+            if not self._chat_tool_start_seen(task=task, tool_use_id=tool_call_id):
+                self._publish_chat_compat_event(
+                    session_id=session_id,
+                    task=task,
+                    event_type="content_start",
+                    payload={
+                        "blockType": "tool_use",
+                        "toolName": tool_name,
+                        "toolUseId": tool_call_id,
+                        **({"target": payload.get("target")} if payload.get("target") else {}),
+                        **({"inputSummary": payload.get("inputSummary")} if payload.get("inputSummary") else {}),
+                        **({"parentToolUseId": parent_tool_use_id} if parent_tool_use_id else {}),
+                        **({"toolCategory": payload.get("toolCategory")} if payload.get("toolCategory") else {}),
+                        **({"toolPhaseId": payload.get("toolPhaseId")} if payload.get("toolPhaseId") else {}),
+                        **({"toolPhaseLabel": payload.get("toolPhaseLabel")} if payload.get("toolPhaseLabel") else {}),
+                        **({"toolSemanticParentId": payload.get("toolSemanticParentId")} if payload.get("toolSemanticParentId") else {}),
+                        **({"toolSemanticParentLabel": payload.get("toolSemanticParentLabel")} if payload.get("toolSemanticParentLabel") else {}),
+                        **tool_batch_metadata,
+                    },
+                    visibility=effective_visibility,
+                )
             if tool_call_id and tool_name:
                 self._publish_chat_compat_event(
                     session_id=session_id,
@@ -884,24 +1126,25 @@ class PublishingMixin:
                     },
                     visibility=effective_visibility,
                 )
-            self._publish_chat_compat_event(
+            self._publish_chat_status(
                 session_id=session_id,
                 task=task,
-                event_type="status",
-                payload={"state": "tool_executing", "verb": str(tool_name or "tool")},
+                state="tool_executing",
+                verb=str(tool_name or "tool"),
+                payload=payload,
                 visibility=effective_visibility,
             )
             self._maybe_publish_tool_phase_progress(
                 session_id=session_id,
                 task=task,
                 payload=payload,
-                visibility=effective_visibility,
+                visibility="panel",
             )
             self._publish_tool_started_progress(
                 session_id=session_id,
                 task=task,
                 payload=payload,
-                visibility=effective_visibility,
+                visibility="panel",
             )
             return
 
@@ -910,6 +1153,7 @@ class PublishingMixin:
             chunk = payload.get("chunk")
             if not tool_use_id or not isinstance(chunk, str) or not chunk:
                 return
+            visible_chunk = _visible_command_output_chunk(chunk)
             self._publish_chat_compat_event(
                 session_id=session_id,
                 task=task,
@@ -926,7 +1170,7 @@ class PublishingMixin:
                     "toolSemanticParentId": payload.get("toolSemanticParentId"),
                     "toolSemanticParentLabel": payload.get("toolSemanticParentLabel"),
                     **self._tool_batch_metadata_from_payload(payload),
-                    "toolOutput": chunk,
+                    "toolOutput": visible_chunk,
                     "outputStream": payload.get("stream") or "stdout",
                 },
                 visibility=effective_visibility,
@@ -1053,7 +1297,13 @@ class PublishingMixin:
                 payload={
                     "toolUseId": tool_call_id,
                     "toolName": payload.get("toolName"),
-                    "content": payload.get("result"),
+                    "content": _frontend_visible_tool_result(
+                        str(payload.get("toolName") or ""),
+                        payload.get("result"),
+                        str(payload.get("target") or ""),
+                        summary=str(payload.get("resultSummary") or ""),
+                        preview=payload.get("resultPreview") if isinstance(payload.get("resultPreview"), list) else None,
+                    ),
                     "isError": event_type != "tool.completed",
                     **({"target": payload.get("target")} if payload.get("target") else {}),
                     **({"inputSummary": payload.get("inputSummary")} if payload.get("inputSummary") else {}),
@@ -1075,7 +1325,7 @@ class PublishingMixin:
                 task=task,
                 event_type=event_type,
                 payload=payload,
-                visibility=effective_visibility,
+                visibility="panel",
             )
             return
 
@@ -1095,11 +1345,12 @@ class PublishingMixin:
                     ),
                     visibility=effective_visibility,
                 )
-                self._publish_chat_compat_event(
+                self._publish_chat_status(
                     session_id=session_id,
                     task=task,
-                    event_type="status",
-                    payload={"state": "permission_pending", "verb": "computer_use"},
+                    state="permission_pending",
+                    verb="computer_use",
+                    payload=payload,
                     visibility=effective_visibility,
                 )
                 return
@@ -1119,11 +1370,12 @@ class PublishingMixin:
                 },
                 visibility=effective_visibility,
             )
-            self._publish_chat_compat_event(
+            self._publish_chat_status(
                 session_id=session_id,
                 task=task,
-                event_type="status",
-                payload={"state": "permission_pending", "verb": str(tool_name)},
+                state="permission_pending",
+                verb=str(tool_name),
+                payload=payload,
                 visibility=effective_visibility,
             )
             return
@@ -1185,11 +1437,11 @@ class PublishingMixin:
                         },
                         visibility=effective_visibility,
                     )
-            self._publish_chat_compat_event(
+            self._publish_chat_status(
                 session_id=session_id,
                 task=task,
-                event_type="status",
-                payload={"state": "idle"},
+                state="idle",
+                payload=payload,
                 visibility=effective_visibility,
             )
             return
@@ -1206,21 +1458,21 @@ class PublishingMixin:
                 },
                 visibility=effective_visibility,
             )
-            self._publish_chat_compat_event(
+            self._publish_chat_status(
                 session_id=session_id,
                 task=task,
-                event_type="status",
-                payload={"state": "idle"},
+                state="idle",
+                payload=payload,
                 visibility=effective_visibility,
             )
             return
 
         if event_type == "message.failed":
-            self._publish_chat_compat_event(
+            self._publish_chat_status(
                 session_id=session_id,
                 task=task,
-                event_type="status",
-                payload={"state": "idle"},
+                state="idle",
+                payload=payload,
                 visibility=effective_visibility,
             )
 
@@ -1431,8 +1683,12 @@ class PublishingMixin:
         - "trace": fine-grained token/tool details for debugging
         """
         task_role = task.get("role", "root")
+        if event_type == "assistant_progress":
+            return "panel" if task_role == "root" else "trace"
         if event_type in _CHAT_COMPAT_EVENT_TYPES:
             return "chat" if task_role == "root" else "trace"
+        if event_type.startswith("provider."):
+            return "trace"
         # Root streaming deltas are user-facing chat output; child deltas stay in trace.
         if event_type in {"assistant.token", "message.delta"}:
             return "chat" if task_role == "root" else "trace"
@@ -1462,6 +1718,9 @@ class PublishingMixin:
             payload.setdefault("outOfScope", list(task.get("outOfScope") or []))
             payload.setdefault("currentStep", task.get("currentStep"))
         effective_visibility = visibility or self._infer_event_visibility(event_type, task)
+        payload = self._sanitize_visible_event_payload(event_type, payload, effective_visibility)
+        if event_type == "content_start" and effective_visibility == "chat":
+            self._remember_chat_content_start(task=task, payload=payload)
         self._publish_goal_event_for_task_event(
             session_id=session_id,
             task=task,
@@ -1495,6 +1754,7 @@ class PublishingMixin:
             payload=payload,
             effective_visibility=effective_visibility,
         )
+        raw_visibility = self._raw_runtime_event_visibility(event_type, effective_visibility, visibility)
         event = RuntimeEvent(
             event_id=self._store.new_id("evt"),
             session_id=session_id,
@@ -1502,7 +1762,7 @@ class PublishingMixin:
             type=event_type,
             ts=self._store.now(),
             payload=payload,
-            visibility=effective_visibility,
+            visibility=raw_visibility,
         )
         self._event_bus.publish(event)
 

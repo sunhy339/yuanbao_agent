@@ -4,8 +4,22 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CleanComposer, type CleanComposerProps } from "./CleanComposer";
 
+const runtimeMocks = vi.hoisted(() => ({
+  gitLocalStatus: vi.fn(),
+}));
+
+vi.mock("../../../lib/runtimeClient", () => ({
+  RuntimeClient: vi.fn(function RuntimeClient() {
+    return runtimeMocks;
+  }),
+}));
+
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  window.localStorage.clear();
+  runtimeMocks.gitLocalStatus.mockReset();
 });
 
 function renderComposer(overrides: Partial<CleanComposerProps> = {}) {
@@ -143,6 +157,31 @@ describe("CleanComposer", () => {
     expect(screen.queryByLabelText("上下文详情")).not.toBeInTheDocument();
   });
 
+  it("hides low-value default task steps from the context panel", async () => {
+    const user = userEvent.setup();
+    const copyText = vi.fn();
+    renderComposer({
+      onCopyText: copyText,
+      contextPreview: {
+        budgetStats: {
+          estimatedInputTokens: 0,
+          maxContextTokens: 256000,
+          messageTokens: 0,
+        },
+        taskFocus: {
+          currentStep: "理解任务目标",
+        },
+      } as any,
+    });
+
+    await user.click(screen.getByRole("button", { name: "上下文 0%", expanded: false }));
+    const contextPanel = screen.getByLabelText("上下文详情");
+    expect(contextPanel).not.toHaveTextContent("当前步骤：理解任务目标");
+
+    await user.click(within(contextPanel).getByRole("button", { name: /复制上下文/ }));
+    expect(copyText).not.toHaveBeenCalledWith(expect.stringContaining("理解任务目标"));
+  });
+
   it("shows permission descriptions and slash command argument hints", async () => {
     const handlers = renderComposer();
     const user = userEvent.setup();
@@ -261,5 +300,57 @@ describe("CleanComposer", () => {
 
     await user.keyboard("{ArrowDown}{Enter}");
     expect(handlers.onPromptChange).toHaveBeenCalledWith("请看 @docs/readme.md ");
+  });
+
+  it("passes launch repository choices when starting a new session", async () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    runtimeMocks.gitLocalStatus.mockResolvedValue({
+      cwd: "D:/py/test_pro",
+      repoRoot: "D:/py/test_pro",
+      repoName: "test_pro",
+      branch: "master",
+      defaultBranch: "master",
+      upstream: "origin/master",
+      ahead: 0,
+      behind: 0,
+      dirtyFiles: 0,
+      files: [],
+      branches: [
+        { name: "master", current: true, local: true },
+        { name: "feature/parity", current: false, local: true },
+        { name: "worktree-desktop/scratch", current: false, local: true },
+      ],
+      clean: true,
+      rawStatus: "",
+    });
+    const user = userEvent.setup();
+    const handlers = renderComposer({
+      variant: "new",
+      promptValue: "开始",
+      cwdLabel: "D:/py/test_pro",
+      useWorktree: false,
+      onUseWorktreeChange: vi.fn(),
+      worktreeStatus: { dirtyFiles: 0, files: [], branch: "master" } as any,
+    });
+
+    await screen.findByRole("button", { name: /master/ });
+    await user.click(screen.getByRole("button", { name: /master/ }));
+    const branchMenu = screen.getByLabelText("选择分支");
+    expect(within(branchMenu).queryByText("worktree-desktop/scratch")).not.toBeInTheDocument();
+    await user.click(await within(branchMenu).findByRole("menuitemradio", { name: /feature\/parity/ }));
+    expect(screen.getByRole("button", { name: /feature\/parity/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /当前工作树/ }));
+    await user.click(within(screen.getByLabelText("工作树模式")).getByRole("menuitemradio", { name: /独立工作树/ }));
+    expect(screen.getByRole("button", { name: /独立工作树/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(handlers.onSubmitPrompt).toHaveBeenCalledWith({
+      workDir: "D:/py/test_pro",
+      repository: {
+        worktree: true,
+        branch: "feature/parity",
+      },
+    });
   });
 });

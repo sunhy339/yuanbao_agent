@@ -9,5 +9,5 @@ class SessionService:
     def __init__(self, store: Any) -> None:
         self._store = store
 
-    def create_session(self, workspace_id: str, title: str) -> dict[str, Any]:
-        return self._store.create_session(workspace_id=workspace_id, title=title)
+    def create_session(self, workspace_id: str, title: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._store.create_session(workspace_id=workspace_id, title=title, metadata=metadata)

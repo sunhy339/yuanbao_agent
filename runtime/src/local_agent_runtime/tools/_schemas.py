@@ -230,6 +230,254 @@ BUILTIN_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "ask_user_question",
+        "description": (
+            "Ask the user for missing information and pause the current task until they answer. "
+            "Use this when a decision, requirement, credential, preference, or scope choice cannot be inferred safely."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "description": "One to three short questions for the user.",
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "Stable snake_case identifier for mapping the answer.",
+                                "minLength": 1,
+                                "maxLength": 64,
+                                "examples": ["target_scope"],
+                            },
+                            "header": {
+                                "type": "string",
+                                "description": "Short UI header for the question.",
+                                "minLength": 1,
+                                "maxLength": 80,
+                                "examples": ["Scope"],
+                            },
+                            "question": {
+                                "type": "string",
+                                "description": "The question shown to the user.",
+                                "minLength": 1,
+                                "maxLength": 1000,
+                            },
+                            "options": {
+                                "type": "array",
+                                "description": "Optional mutually exclusive choices. Mark one as recommended when helpful.",
+                                "maxItems": 5,
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "properties": {
+                                        "label": {"type": "string", "minLength": 1, "maxLength": 80},
+                                        "value": {"type": "string", "minLength": 1, "maxLength": 120},
+                                        "description": {"type": "string", "maxLength": 240},
+                                        "recommended": {"type": "boolean", "default": False},
+                                    },
+                                    "required": ["label"],
+                                },
+                            },
+                        },
+                        "required": ["id", "question"],
+                    },
+                },
+                "question": {
+                    "type": "string",
+                    "description": "Compatibility field for a single question; prefer questions[].",
+                    "minLength": 1,
+                    "maxLength": 1000,
+                },
+                "options": {
+                    "type": "array",
+                    "description": "Compatibility field for choices for the single question.",
+                    "maxItems": 5,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "label": {"type": "string", "minLength": 1, "maxLength": 80},
+                            "value": {"type": "string", "minLength": 1, "maxLength": 120},
+                            "description": {"type": "string", "maxLength": 240},
+                            "recommended": {"type": "boolean", "default": False},
+                        },
+                        "required": ["label"],
+                    },
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Brief summary shown in the pause card.",
+                    "maxLength": 1000,
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why the user answer is needed.",
+                    "maxLength": 240,
+                    "default": "needs_user_input",
+                },
+                "resumePolicy": {
+                    "type": "string",
+                    "description": "How the task should resume after the user answers.",
+                    "default": "requires_user_follow_up",
+                    "examples": ["requires_user_follow_up", "requires_user_budget_update"],
+                },
+            },
+        },
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "task",
+            "sandboxed": False,
+            "notes": [
+                "Does not modify files or execute code.",
+                "Pauses the current ReAct task until the user supplies an answer.",
+            ],
+        },
+        "hints": [
+            "Ask only when continuing would require guessing user intent.",
+            "Prefer one focused question; use up to three only when the choices are independent.",
+            "Include options for common paths and mark a recommended option when there is a clear default.",
+        ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 0,
+            "estimated_duration_ms": 1000,
+        },
+    },
+    {
+        "name": "enter_plan_mode",
+        "description": (
+            "Enter a read-only planning mode for the current task. Use this before making changes when the user asked "
+            "for a plan-first workflow or when the task needs exploration before execution."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Short reason why plan mode is needed.",
+                    "maxLength": 500,
+                },
+            },
+        },
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "task",
+            "sandboxed": False,
+            "notes": [
+                "Does not modify files or execute code.",
+                "Restricts subsequent model-visible tools to read-only tools plus exit_plan_mode.",
+            ],
+        },
+        "hints": [
+            "Use read-only tools while in plan mode.",
+            "Call exit_plan_mode with a clear plan when ready for user approval.",
+        ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 0,
+            "estimated_duration_ms": 1000,
+        },
+    },
+    {
+        "name": "exit_plan_mode",
+        "description": (
+            "Submit the proposed execution plan for user approval and pause the task until the user approves or rejects it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Short summary of the proposed plan.",
+                    "maxLength": 1200,
+                },
+                "plan": {
+                    "description": "Structured plan object or plan text.",
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "additionalProperties": True,
+                            "properties": {
+                                "summary": {"type": "string", "maxLength": 1200},
+                                "steps": {
+                                    "type": "array",
+                                    "items": {
+                                        "oneOf": [
+                                            {"type": "string", "maxLength": 500},
+                                            {
+                                                "type": "object",
+                                                "additionalProperties": True,
+                                                "properties": {
+                                                    "title": {"type": "string", "maxLength": 200},
+                                                    "description": {"type": "string", "maxLength": 500},
+                                                },
+                                            },
+                                        ],
+                                    },
+                                },
+                            },
+                        },
+                        {"type": "string", "maxLength": 4000},
+                    ],
+                },
+                "steps": {
+                    "type": "array",
+                    "description": "Compatibility field for plan steps when plan is not an object.",
+                    "items": {"type": "string", "maxLength": 500},
+                    "maxItems": 20,
+                },
+                "risks": {
+                    "type": "array",
+                    "description": "Optional known risks or assumptions.",
+                    "items": {"type": "string", "maxLength": 300},
+                    "maxItems": 10,
+                },
+                "goal": {
+                    "type": "string",
+                    "description": "Original or refined goal for the plan approval card.",
+                    "maxLength": 1000,
+                },
+                "taskId": {
+                    "type": "string",
+                    "description": "Runtime task id injected by the orchestrator; models usually omit this.",
+                },
+                "approvalId": {
+                    "type": "string",
+                    "description": "Approval id supplied when resuming after the user approved or rejected the plan.",
+                },
+            },
+        },
+        "safety": {
+            "level": "safe",
+            "requires_approval": False,
+            "category": "task",
+            "sandboxed": False,
+            "notes": [
+                "Does not execute the plan itself.",
+                "Creates a plan approval and pauses until the user decides.",
+            ],
+        },
+        "hints": [
+            "Make the plan specific enough for the user to approve.",
+            "After approval, continue with the original task using the approved plan as constraints.",
+        ],
+        "metadata": {
+            "rate_limit": None,
+            "cost_per_use": 0,
+            "estimated_duration_ms": 1000,
+        },
+    },
+    {
         "name": "task",
         "description": (
             "Create and execute a child collaboration task inline. The runtime records a child task, claims an "

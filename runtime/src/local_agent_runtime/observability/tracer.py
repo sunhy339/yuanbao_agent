@@ -55,22 +55,23 @@ class Tracer:
         now = self._store.now()
         attrs = attributes or {}
 
-        self._store._conn.execute(
-            """
-            INSERT INTO trace_spans
-                (trace_id, span_id, parent_span_id, operation, started_at, status, attributes)
-            VALUES (?, ?, ?, ?, ?, 'in_progress', ?)
-            """,
-            (
-                tid,
-                sid,
-                parent_span_id,
-                operation,
-                now,
-                json.dumps(attrs, ensure_ascii=False, sort_keys=True),
-            ),
-        )
-        self._store._conn.commit()
+        with self._store._conn._lock:
+            self._store._conn.execute(
+                """
+                INSERT INTO trace_spans
+                    (trace_id, span_id, parent_span_id, operation, started_at, status, attributes)
+                VALUES (?, ?, ?, ?, ?, 'in_progress', ?)
+                """,
+                (
+                    tid,
+                    sid,
+                    parent_span_id,
+                    operation,
+                    now,
+                    json.dumps(attrs, ensure_ascii=False, sort_keys=True),
+                ),
+            )
+            self._store._conn.commit()
 
         return Span(
             trace_id=tid,
@@ -89,31 +90,32 @@ class Tracer:
         attributes: dict[str, Any] | None = None,
     ) -> Span:
         now = self._store.now()
-        if attributes:
-            attrs_json = json.dumps(attributes, ensure_ascii=False, sort_keys=True)
-            self._store._conn.execute(
-                """
-                UPDATE trace_spans
-                SET finished_at = ?, status = ?, attributes = ?
-                WHERE span_id = ?
-                """,
-                (now, status, attrs_json, span_id),
-            )
-        else:
-            self._store._conn.execute(
-                """
-                UPDATE trace_spans
-                SET finished_at = ?, status = ?
-                WHERE span_id = ?
-                """,
-                (now, status, span_id),
-            )
-        self._store._conn.commit()
+        with self._store._conn._lock:
+            if attributes:
+                attrs_json = json.dumps(attributes, ensure_ascii=False, sort_keys=True)
+                self._store._conn.execute(
+                    """
+                    UPDATE trace_spans
+                    SET finished_at = ?, status = ?, attributes = ?
+                    WHERE span_id = ?
+                    """,
+                    (now, status, attrs_json, span_id),
+                )
+            else:
+                self._store._conn.execute(
+                    """
+                    UPDATE trace_spans
+                    SET finished_at = ?, status = ?
+                    WHERE span_id = ?
+                    """,
+                    (now, status, span_id),
+                )
+            self._store._conn.commit()
 
-        row = self._store._conn.execute(
-            "SELECT * FROM trace_spans WHERE span_id = ?",
-            (span_id,),
-        ).fetchone()
+            row = self._store._conn.execute(
+                "SELECT * FROM trace_spans WHERE span_id = ?",
+                (span_id,),
+            ).fetchone()
         if row is None:
             raise ValueError(f"Span not found: {span_id}")
         return _row_to_span(dict(row))

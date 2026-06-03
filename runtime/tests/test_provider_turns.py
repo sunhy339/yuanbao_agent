@@ -827,7 +827,7 @@ class TestProviderTurnRPC:
         assert "events" in resp["result"]
         assert "truncated" in resp["result"]
 
-    def test_rpc_runtime_ping_returns_haha_cc_messages(self, tmp_path: Any) -> None:
+    def test_rpc_runtime_ping_returns_yuanbao_and_haha_cc_messages(self, tmp_path: Any) -> None:
         provider = ScriptedProvider([{"final": "done"}])
         runtime = _make_runtime(tmp_path, provider)
         session = _open_session(runtime, tmp_path)
@@ -844,10 +844,11 @@ class TestProviderTurnRPC:
         assert result["pong"] == {
             "type": "pong",
         }
-        assert result["hahaCcMessages"] == [
+        assert result["yuanbaoMessages"] == [
             result["connected"],
             result["pong"],
         ]
+        assert result["hahaCcMessages"] == result["yuanbaoMessages"]
         assert "payload" not in result["connected"]
         assert "eventId" not in result["connected"]
 
@@ -1377,6 +1378,15 @@ class TestAdvisorGuidedProviderPreflight:
         assert compact_events[-1]["payload"]["messageCount"] == provider.main_calls[0]["context"]["_provider_preflight"]["messageCount"]
         assert "上下文" in compact_events[-1]["payload"]["summary"]
 
+        compact_statuses = [
+            event for event in runtime.events
+            if event["type"] == "status" and event["payload"].get("state") == "compacting"
+        ]
+        assert compact_statuses
+        assert compact_statuses[-1]["payload"]["verb"] == "provider_preflight"
+        assert compact_statuses[-1]["payload"]["strategy"] == "compact_context"
+        assert compact_statuses[-1]["yuanbao"]["tokens"] == provider.main_calls[0]["context"]["_provider_preflight"]["originalTokenEstimate"]
+
     def test_provider_preflight_switches_provider_profile_for_turn(self, tmp_path: Any) -> None:
         provider = PreflightSwitchProvider()
         runtime = _make_runtime(
@@ -1878,6 +1888,10 @@ class TestProviderTurnTransportAndUsage:
         assert len(starts) == 1
         assert starts[0]["payload"]["messageId"] == "msg_1"
         assert [event["payload"]["text"] for event in deltas] == ["Hello", " there"]
+        statuses = [event for event in runtime.events if event["type"] == "status"]
+        assert [event["payload"]["state"] for event in statuses[:2]] == ["thinking", "streaming"]
+        assert statuses[1]["payload"]["verb"] == "model"
+        assert statuses[1]["yuanbao"] == {"type": "status", "state": "streaming", "verb": "model"}
 
     def test_stream_thinking_delta_emits_thinking_event(self, tmp_path: Any) -> None:
         provider = ThinkingDeltaStreamProvider()

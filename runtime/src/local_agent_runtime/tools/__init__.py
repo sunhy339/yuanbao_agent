@@ -18,6 +18,8 @@ from .code_search import build_code_search_tool
 from .notebook import build_notebook_tool
 from .browser import build_browser_tool
 from .computer_use import build_computer_use_tool
+from .ask_user_question import build_ask_user_question_tool
+from .plan_mode import build_enter_plan_mode_tool, build_exit_plan_mode_tool
 from .memory import build_memory_remember_tool, build_memory_recall_tool
 from .scratchpad_tool import build_scratchpad_write_tool, build_scratchpad_read_tool
 
@@ -48,9 +50,12 @@ def build_builtin_tools(
         ("notebook", build_notebook_tool),
         ("browser", build_browser_tool),
         ("computer_use", build_computer_use_tool),
+        ("ask_user_question", build_ask_user_question_tool),
+        ("enter_plan_mode", build_enter_plan_mode_tool),
+        ("exit_plan_mode", build_exit_plan_mode_tool),
     ]
     tools: dict[str, Any] = {}
-    _engine_tools = {"run_command", "apply_patch", "write_file", "web_fetch", "task", "notebook", "computer_use"}
+    _engine_tools = {"run_command", "apply_patch", "write_file", "web_fetch", "task", "notebook", "computer_use", "exit_plan_mode"}
     for name, builder in builders:
         if name == "computer_use":
             tools[name] = builder(

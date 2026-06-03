@@ -190,6 +190,22 @@ class TestAuditReplay:
         assert all(e["step"] == "trace_event" for e in result["timeline"])
         assert all(e["replayable"] is True for e in result["timeline"])
 
+    def test_trace_timeline_includes_haha_cc_server_message(self, tmp_path: Path) -> None:
+        store, ctx = _store_with_context(tmp_path)
+        store.append_trace_event(
+            task_id=ctx["task"]["id"],
+            session_id=ctx["session"]["id"],
+            event_type="content_delta",
+            source="assistant",
+            payload={"text": "hello"},
+        )
+        service = ReplayService(store)
+
+        result = service.audit_replay({"taskId": ctx["task"]["id"]})
+        trace_entry = next(entry for entry in result["timeline"] if entry["step"] == "trace_event")
+        assert trace_entry["yuanbao"] == {"type": "content_delta", "text": "hello"}
+        assert trace_entry["hahaCc"] == trace_entry["yuanbao"]
+
     def test_timeline_sorted_by_timestamp(self, tmp_path: Path) -> None:
         store, ctx = _store_with_context(tmp_path)
         _seed_trace_events(store, ctx["task"], ctx["session"], count=3)

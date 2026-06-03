@@ -26,6 +26,7 @@ from local_agent_runtime.policy.decision_advisor import (
 from local_agent_runtime.policy.guard import PolicyGuard
 from local_agent_runtime.router import MetaRouter, RoutingDecision
 from local_agent_runtime.router.types import ExecutionStrategy, Scenario
+from local_agent_runtime.rpc.server import JsonRpcServer
 from local_agent_runtime.services import CollaborationService, SubagentService
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 from local_agent_runtime.tools import build_builtin_tools
@@ -56,6 +57,16 @@ class FakeAdvisorProvider:
         self.prompts.append(prompt)
         self.contexts.append(context)
         return {"message": self._response}
+
+
+class CapturingProvider:
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.calls: list[dict[str, Any]] = []
+
+    def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append({"prompt": prompt, "context": context})
+        return self.response
 
 
 def _make_store(tmp_path: Any) -> SQLiteStore:
@@ -205,6 +216,22 @@ class TestAdvisorRoutingFallback:
         assert result.metadata["rule_candidate"]["scenario"] == "debug"
         assert router.last_advice is not None
         assert router.last_advice.accepted is True
+
+    def test_greeting_only_rule_skips_advisor_to_keep_minimal_context(self) -> None:
+        advisor = DecisionAdvisor(
+            provider=FakeAdvisorProvider(
+                '{"proposal": {"scenario": "code_edit", "strategy": "react_standard"}, '
+                '"confidence": 0.99, "rationale": "bad overroute"}'
+            )
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+
+        result = router.route("\u4f60\u597d")
+
+        assert result.scenario == Scenario.SIMPLE_QUERY
+        assert result.strategy == ExecutionStrategy.REACT_FAST
+        assert "greeting-only" in result.reasoning
+        assert router.last_advice is None
 
     def test_high_confidence_rule_can_skip_advisor_by_config(self) -> None:
         """A config flag preserves the old low-cost high-confidence rule path."""
@@ -427,6 +454,54 @@ class TestOrchestratorProposalRecords:
             assert len(decision_events) >= 1
             assert decision_events[0]["payload"]["outcome"] == "accepted"
             assert decision_events[0]["payload"]["scenario"] == "code_edit"
+        finally:
+            store.close()
+
+    def test_greeting_send_with_advisor_still_uses_minimal_context(self, tmp_path: Any) -> None:
+        advisor_provider = FakeAdvisorProvider(
+            '{"proposal": {"scenario": "code_edit", "strategy": "react_standard"}, '
+            '"confidence": 0.99, "rationale": "bad overroute"}'
+        )
+        advisor = DecisionAdvisor(
+            provider=advisor_provider
+        )
+        router = MetaRouter(provider=None, decision_advisor=advisor)
+        provider = CapturingProvider({"final": "hello"})
+        orchestrator, store, _events = _make_orchestrator(
+            tmp_path, provider=provider, meta_router=router,
+        )
+        try:
+            workspace_root = tmp_path / "workspace"
+            workspace_root.mkdir(exist_ok=True)
+            (workspace_root / "large_notes.md").write_text(
+                "# Notes\n" + ("workspace detail\n" * 5000),
+                encoding="utf-8",
+            )
+            workspace = store.upsert_workspace(str(workspace_root))
+            session = store.create_session(workspace_id=workspace["id"], title="advisor greeting")
+            rpc_bus = EventBus()
+            server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=rpc_bus)
+            envelope = {
+                "jsonrpc": "2.0",
+                "id": "req_greeting",
+                "method": "message.send",
+                "params": {"sessionId": session["id"], "content": "\u4f60\u597d"},
+            }
+
+            response = server.handle_line(json.dumps(envelope))
+
+            assert "result" in response, response
+            task = response["result"]["task"]
+            assert task["routing"]["contextMode"] == "minimal"
+            assert provider.calls
+            context = provider.calls[0]["context"]
+            assert context["minimal"] is True
+            assert context["openai_tools"] == []
+            assert "large_notes.md" not in "\n".join(message["content"] for message in context["messages"])
+            turns = store.list_provider_turns(task["id"])
+            assert turns[0]["request_tool_count"] == 0
+            assert turns[0]["request_token_estimate"] < 1000
+            assert advisor_provider.contexts == []
         finally:
             store.close()
 

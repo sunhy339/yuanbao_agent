@@ -150,7 +150,8 @@ describe("CleanAppShell", () => {
     const worktreeMenu = screen.getByLabelText("工作树模式");
     expect(within(worktreeMenu).getByRole("menuitemradio", { name: /当前工作树/ })).toBeInTheDocument();
     await user.click(within(worktreeMenu).getByRole("menuitemradio", { name: /独立工作树/ }));
-    expect(onUseWorktreeChange).toHaveBeenCalledWith(true);
+    expect(screen.getByRole("button", { name: /独立工作树/ })).toBeInTheDocument();
+    expect(onUseWorktreeChange).not.toHaveBeenCalled();
   });
 
   it("inserts selected workspace text as a quoted file reference", () => {

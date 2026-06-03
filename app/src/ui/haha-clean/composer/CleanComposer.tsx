@@ -17,7 +17,7 @@ import {
   Square,
   X,
 } from "lucide-react";
-import type { GitLocalStatusResult } from "@shared";
+import type { GitLocalStatusResult, SessionLaunchOptions } from "@shared";
 import type { QueuedPromptSubmission } from "../../../state/eventRecordViews";
 import { RuntimeClient } from "../../../lib/runtimeClient";
 import { matchCommands } from "../../../state/slashCommands";
@@ -42,10 +42,12 @@ export interface CleanRecentWorkspaceOption {
   updatedAt?: number;
 }
 
+export type CleanSessionLaunchOptions = SessionLaunchOptions;
+
 export interface CleanComposerProps {
   promptValue: string;
   onPromptChange(value: string): void;
-  onSubmitPrompt(): void;
+  onSubmitPrompt(options?: CleanSessionLaunchOptions): void;
   onQueuePrompt?: (mode?: "queued" | "supplement") => void;
   onStopPrompt?: () => void;
   queuedPrompts?: QueuedPromptSubmission[];
@@ -255,6 +257,35 @@ function contextPromptLayers(contextPreview?: SessionWorkspaceContextPreview | n
     .slice(0, 5);
 }
 
+const QUIET_CONTEXT_STEPS = [
+  /理解任务目标/,
+  /分析任务目标/,
+  /整理上下文/,
+  /构建上下文/,
+  /准备上下文/,
+  /准备工具/,
+  /规划任务/,
+  /任务启动/,
+  /等待模型/,
+  /思考中/,
+  /正在思考/,
+  /正在输出回复/,
+  /模型正在思考/,
+  /任务运行中/,
+  /understand(?:ing)? (?:the )?task/i,
+  /analy[sz](?:e|ing) (?:the )?task/i,
+  /build(?:ing)? context/i,
+  /prepar(?:e|ing) context/i,
+  /plan(?:ning)? (?:the )?task/i,
+  /waiting for (?:the )?model/i,
+];
+
+function visibleContextStep(contextPreview?: SessionWorkspaceContextPreview | null) {
+  const currentStep = contextPreview?.taskFocus?.currentStep?.trim();
+  if (!currentStep) return null;
+  return QUIET_CONTEXT_STEPS.some((pattern) => pattern.test(currentStep)) ? null : currentStep;
+}
+
 function contextCompositionRows(contextPreview?: SessionWorkspaceContextPreview | null) {
   const stats = contextPreview?.budgetStats;
   const max = stats?.maxContextTokens;
@@ -361,6 +392,13 @@ function branchMetaLabel(branch: NonNullable<GitLocalStatusResult["branches"]>[n
   return "本地分支";
 }
 
+function isLaunchBranchOption(branch: NonNullable<GitLocalStatusResult["branches"]>[number]) {
+  if (branch.current) return true;
+  if (/^(agent|worktree-desktop)-/.test(branch.name)) return false;
+  if (/^(agent|worktree-desktop)\//.test(branch.name)) return false;
+  return true;
+}
+
 function worktreeModeFromStorage() {
   if (typeof window === "undefined") return false;
   return window.localStorage.getItem("haha-clean:use-worktree") === "true";
@@ -446,10 +484,12 @@ export function CleanComposer({
   const [branchOpen, setBranchOpen] = useState(false);
   const [worktreeOpen, setWorktreeOpen] = useState(false);
   const [branchFilter, setBranchFilter] = useState("");
+  const [selectedBranchName, setSelectedBranchName] = useState<string | null>(null);
   const [localGitStatus, setLocalGitStatus] = useState<GitLocalStatusResult | null>(null);
   const [gitLoading, setGitLoading] = useState(false);
   const [gitError, setGitError] = useState<string | null>(null);
   const [localUseWorktree, setLocalUseWorktree] = useState(worktreeModeFromStorage);
+  const [launchUseWorktree, setLaunchUseWorktree] = useState(controlledUseWorktree ?? worktreeModeFromStorage());
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissedFor, setSlashDismissedFor] = useState("");
   const [caretIndex, setCaretIndex] = useState(promptValue.length);
@@ -466,12 +506,13 @@ export function CleanComposer({
   const contextComposition = contextCompositionRows(contextPreview);
   const contextGroups = contextSectionGroups(contextPreview?.budgetStats?.includedSections);
   const contextLayers = contextPromptLayers(contextPreview);
+  const contextStep = visibleContextStep(contextPreview);
   const contextDashboard = contextTokenDashboard(contextPreview);
   const trimmedSections = contextPreview?.budgetStats?.trimmedSections ?? [];
   const droppedSections = contextPreview?.budgetStats?.droppedSections ?? [];
   const cwdName = basename(cwdLabel);
   const isNewSession = variant === "new";
-  const useWorktree = controlledUseWorktree ?? localUseWorktree;
+  const useWorktree = isNewSession ? launchUseWorktree : controlledUseWorktree ?? localUseWorktree;
   const recentWorkspaces = useMemo(
     () => recentWorkspaceOptionsForLaunch(cwdLabel, recentWorkspaceOptions),
     [cwdLabel, recentWorkspaceOptions],
@@ -479,7 +520,7 @@ export function CleanComposer({
   const dirtyFiles = (isNewSession ? localGitStatus?.dirtyFiles ?? worktreeStatus?.dirtyFiles : worktreeStatus?.dirtyFiles ?? localGitStatus?.dirtyFiles) ?? 0;
   const worktreeFiles = (isNewSession ? gitFilePaths(localGitStatus).length ? gitFilePaths(localGitStatus) : worktreeStatus?.files ?? [] : worktreeStatus?.files ?? gitFilePaths(localGitStatus));
   const worktreeFileCopyText = worktreeFiles.join("\n");
-  const branchLabel = (isNewSession ? localGitStatus?.branch ?? worktreeStatus?.branch : worktreeStatus?.branch || localGitStatus?.branch) || "未检测";
+  const branchLabel = (isNewSession ? selectedBranchName ?? localGitStatus?.branch ?? worktreeStatus?.branch : worktreeStatus?.branch || localGitStatus?.branch) || "未检测";
   const upstreamLabel = (isNewSession ? localGitStatus?.upstream ?? worktreeStatus?.upstream : worktreeStatus?.upstream || localGitStatus?.upstream) || "无上游";
   const aheadCount = (isNewSession ? localGitStatus?.ahead ?? worktreeStatus?.ahead : worktreeStatus?.ahead ?? localGitStatus?.ahead) ?? 0;
   const behindCount = (isNewSession ? localGitStatus?.behind ?? worktreeStatus?.behind : worktreeStatus?.behind ?? localGitStatus?.behind) ?? 0;
@@ -491,6 +532,7 @@ export function CleanComposer({
   const branchOptions = useMemo(() => {
     const query = branchFilter.trim().toLowerCase();
     return (localGitStatus?.branches ?? [])
+      .filter(isLaunchBranchOption)
       .filter((branch) => {
         if (!query) return true;
         return [
@@ -502,6 +544,7 @@ export function CleanComposer({
       .slice(0, 40);
   }, [branchFilter, localGitStatus?.branches]);
   const selectedBranch = localGitStatus?.branches?.find((branch) => branch.name === branchLabel) ?? null;
+  const selectedBranchOptionName = selectedBranchName ?? localGitStatus?.branch ?? null;
   const selectedBranchWarnsOnCurrentWorktree = Boolean(
     isNewSession &&
     selectedBranch &&
@@ -509,6 +552,20 @@ export function CleanComposer({
     !useWorktree &&
     ((localGitStatus?.dirtyFiles ?? 0) > 0 || selectedBranch.checkedOut),
   );
+  const launchOptions = useCallback((): CleanSessionLaunchOptions | undefined => {
+    if (!isNewSession || !cwdLabel.trim()) return undefined;
+    const repository: NonNullable<SessionLaunchOptions["repository"]> = { worktree: useWorktree };
+    if (selectedBranchName) {
+      repository.branch = selectedBranchName;
+    }
+    return {
+      workDir: cwdLabel.trim(),
+      repository,
+    };
+  }, [cwdLabel, isNewSession, selectedBranchName, useWorktree]);
+  const submitPrompt = useCallback(() => {
+    onSubmitPrompt(launchOptions());
+  }, [launchOptions, onSubmitPrompt]);
   const chooseWorkspaceFolder = useCallback(async () => {
     if (!onWorkspacePathChange) return;
     try {
@@ -521,6 +578,8 @@ export function CleanComposer({
       const selectedPath = Array.isArray(selected) ? selected[0] : selected;
       if (typeof selectedPath === "string" && selectedPath.trim()) {
         rememberWorkspacePath(selectedPath);
+        setLocalGitStatus(null);
+        setSelectedBranchName(null);
         onWorkspacePathChange(selectedPath);
         setWorkspaceOpen(false);
       }
@@ -531,6 +590,8 @@ export function CleanComposer({
   const selectRecentWorkspace = useCallback((path: string) => {
     if (!onWorkspacePathChange) return;
     rememberWorkspacePath(path);
+    setLocalGitStatus(null);
+    setSelectedBranchName(null);
     onWorkspacePathChange(path);
     setWorkspaceOpen(false);
   }, [onWorkspacePathChange]);
@@ -541,6 +602,7 @@ export function CleanComposer({
     try {
       const status = await composerRuntimeClient.gitLocalStatus({ cwd: cwdLabel });
       setLocalGitStatus(status);
+      setSelectedBranchName((current) => current ?? status.branch ?? status.defaultBranch ?? status.branches?.[0]?.name ?? null);
     } catch (reason) {
       setLocalGitStatus(null);
       setGitError(errorMessage(reason));
@@ -548,30 +610,22 @@ export function CleanComposer({
       setGitLoading(false);
     }
   }, [cwdLabel]);
-  const selectBranch = useCallback(async (branch: string) => {
-    if (!cwdLabel.trim() || !branch.trim()) return;
-    setGitLoading(true);
-    setGitError(null);
-    try {
-      await composerRuntimeClient.gitLocalCheckout({ cwd: cwdLabel, branch });
-      const status = await composerRuntimeClient.gitLocalStatus({ cwd: cwdLabel });
-      setLocalGitStatus(status);
-      setBranchOpen(false);
-      setBranchFilter("");
-    } catch (reason) {
-      const message = errorMessage(reason);
-      setGitError(message);
-      onAttachmentError?.(message);
-    } finally {
-      setGitLoading(false);
-    }
-  }, [cwdLabel, onAttachmentError]);
+  const selectBranch = useCallback((branch: string) => {
+    if (!branch.trim()) return;
+    setSelectedBranchName(branch);
+    setBranchOpen(false);
+    setBranchFilter("");
+  }, []);
   const selectWorktreeMode = useCallback((nextUseWorktree: boolean) => {
-    setLocalUseWorktree(nextUseWorktree);
+    if (isNewSession) {
+      setLaunchUseWorktree(nextUseWorktree);
+    } else {
+      setLocalUseWorktree(nextUseWorktree);
+      void onUseWorktreeChange?.(nextUseWorktree);
+    }
     rememberWorktreeMode(nextUseWorktree);
     setWorktreeOpen(false);
-    void onUseWorktreeChange?.(nextUseWorktree);
-  }, [onUseWorktreeChange]);
+  }, [isNewSession, onUseWorktreeChange]);
   const contextSummary = [
     "上下文",
     contextLabel || `当前占用 ${context}`,
@@ -582,7 +636,7 @@ export function CleanComposer({
     `Cache read: ${formatTokenCount(contextDashboard.cacheRead)}`,
     `Output tokens: ${formatTokenCount(contextDashboard.output)}`,
     ...contextRows.map((row) => `${row.label}: ${row.value}`),
-    contextPreview?.taskFocus?.currentStep ? `当前步骤: ${contextPreview.taskFocus.currentStep}` : "",
+    contextStep ? `当前步骤: ${contextStep}` : "",
     contextPreview?.projectFocus ? `项目焦点: ${contextPreview.projectFocus}` : "",
     contextGroups.length ? `纳入上下文: ${contextGroups.map((group) => `${group.label} ${group.count}`).join("、")}` : "",
     contextLayers.length ? `系统提示层: ${contextLayers.map((layer) => `${layer.name}${layer.tokens ? ` ${layer.tokens}` : ""}`).join("、")}` : "",
@@ -624,6 +678,7 @@ export function CleanComposer({
     setLocalGitStatus(null);
     setGitError(null);
     setBranchFilter("");
+    setSelectedBranchName(null);
     if (!cwdLabel.trim() || !isTauriBridgeAvailable()) return undefined;
     let cancelled = false;
     setGitLoading(true);
@@ -632,6 +687,7 @@ export function CleanComposer({
       .then((status) => {
         if (cancelled) return;
         setLocalGitStatus(status);
+        setSelectedBranchName(status.branch ?? status.defaultBranch ?? status.branches?.[0]?.name ?? null);
       })
       .catch((reason) => {
         if (cancelled) return;
@@ -966,7 +1022,7 @@ export function CleanComposer({
 
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && canSubmit) {
         event.preventDefault();
-        onSubmitPrompt();
+        submitPrompt();
       }
     },
     [
@@ -976,10 +1032,10 @@ export function CleanComposer({
       canSubmit,
       fileReferenceIndex,
       fileReferenceMatches,
-      onSubmitPrompt,
       promptValue,
       slashIndex,
       slashMatches,
+      submitPrompt,
     ],
   );
 
@@ -997,7 +1053,7 @@ export function CleanComposer({
       onDrop={handleDrop}
       onSubmit={(event) => {
         event.preventDefault();
-        if (canSubmit) onSubmitPrompt();
+        if (canSubmit) submitPrompt();
       }}
     >
       {queuedPrompts.length ? (
@@ -1246,7 +1302,7 @@ export function CleanComposer({
                       ))}
                     </div>
                   ) : null}
-                  {contextPreview?.taskFocus?.currentStep ? <p>当前步骤：{contextPreview.taskFocus.currentStep}</p> : null}
+                  {contextStep ? <p>当前步骤：{contextStep}</p> : null}
                   {contextPreview?.projectFocus ? <p>项目焦点：{contextPreview.projectFocus}</p> : null}
                   {trimmedSections.length || droppedSections.length ? (
                     <p>已压缩：{[...trimmedSections, ...droppedSections].slice(0, 4).join("、")}</p>
@@ -1411,8 +1467,8 @@ export function CleanComposer({
                             key={branch.name}
                             type="button"
                             role="menuitemradio"
-                            aria-checked={branch.current}
-                            data-active={branch.current ? "true" : undefined}
+                            aria-checked={branch.name === selectedBranchOptionName}
+                            data-active={branch.name === selectedBranchOptionName ? "true" : undefined}
                             onClick={() => selectBranch(branch.name)}
                           >
                             <GitBranch size={14} />
@@ -1420,7 +1476,7 @@ export function CleanComposer({
                               <strong>{branch.name}</strong>
                               <small>{branchMetaLabel(branch)}</small>
                             </span>
-                            {branch.current ? <Check size={14} /> : null}
+                            {branch.name === selectedBranchOptionName ? <Check size={14} /> : null}
                           </button>
                         ))}
                       </div>

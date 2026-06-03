@@ -35,6 +35,11 @@ _WORKTREE_BOUND_TOOLS = {
     "notebook",
 }
 _ACTIVE_WORKTREE_STATUSES = {"creating", "active", "paused", "ready_for_review"}
+_TOOL_VISIBLE_RESULT_MAX_CHARS = 8000
+_TOOL_VISIBLE_TEXT_HEAD_CHARS = 1200
+_TOOL_VISIBLE_TEXT_TAIL_CHARS = 800
+_TOOL_VISIBLE_COLLECTION_LIMIT = 12
+_TOOL_VISIBLE_SNIPPET_LIMIT = 600
 _VERIFY_COMMAND_RE = _re.compile(
     r"\b("
     r"npm\s+(?:run\s+)?(?:test|typecheck|lint|build)|"
@@ -55,6 +60,189 @@ def is_verification_command(command: Any) -> bool:
 def _compact_text(value: Any, limit: int = 180) -> str:
     text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
     return text if len(text) <= limit else text[: limit - 1] + "..."
+
+
+def _json_size(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str))
+    except (TypeError, ValueError):
+        return len(str(value))
+
+
+def _head_tail_text(value: Any, *, head: int = _TOOL_VISIBLE_TEXT_HEAD_CHARS, tail: int = _TOOL_VISIBLE_TEXT_TAIL_CHARS) -> dict[str, Any]:
+    text = str(value or "")
+    chars = len(text)
+    if chars <= head + tail:
+        return {"text": text, "chars": chars, "truncated": False}
+    omitted = chars - head - tail
+    return {
+        "head": text[:head],
+        "tail": text[-tail:] if tail > 0 else "",
+        "chars": chars,
+        "omittedChars": omitted,
+        "truncated": True,
+    }
+
+
+def _compact_snippet(value: Any, limit: int = _TOOL_VISIBLE_SNIPPET_LIMIT) -> Any:
+    if not isinstance(value, str):
+        return value
+    if len(value) <= limit:
+        return value
+    return {
+        "head": value[: max(0, limit // 2)],
+        "tail": value[-max(0, limit // 2) :],
+        "chars": len(value),
+        "omittedChars": max(0, len(value) - limit),
+        "truncated": True,
+    }
+
+
+def _compact_list_items(items: Any, *, limit: int = _TOOL_VISIBLE_COLLECTION_LIMIT) -> list[Any]:
+    if not isinstance(items, list):
+        return []
+    compacted: list[Any] = []
+    for item in items[:limit]:
+        if isinstance(item, dict):
+            compacted.append({
+                str(key): _compact_snippet(value)
+                for key, value in item.items()
+                if key not in {"content", "body", "html", "markdown", "data", "base64", "imageData"}
+            })
+        else:
+            compacted.append(_compact_snippet(item))
+    return compacted
+
+
+def _tool_result_full_ref(tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
+    refs: dict[str, Any] = {
+        "source": "trace",
+        "rawResultStored": True,
+        "rawResultSizeChars": _json_size(result),
+    }
+    command_log = result.get("commandLog") if isinstance(result.get("commandLog"), dict) else {}
+    if command_log.get("id"):
+        refs["commandLogId"] = command_log.get("id")
+    for key in ("stdoutPath", "stderrPath"):
+        value = command_log.get(key) or result.get(key)
+        if value:
+            refs[key] = value
+    if tool_name in {"git_diff", "apply_patch", "write_file"}:
+        if result.get("patchId") or result.get("patch_id"):
+            refs["patchId"] = result.get("patchId") or result.get("patch_id")
+        if result.get("artifactId") or result.get("artifactIds"):
+            refs["artifactId"] = result.get("artifactId")
+            refs["artifactIds"] = result.get("artifactIds")
+    return {key: value for key, value in refs.items() if value not in (None, "", [])}
+
+
+def _visible_tool_result(
+    tool_name: str,
+    result: Any,
+    target: str = "",
+    *,
+    summary: str = "",
+    preview: list[dict[str, str]] | None = None,
+    max_chars: int = _TOOL_VISIBLE_RESULT_MAX_CHARS,
+) -> Any:
+    """Return a model/frontend visible tool result.
+
+    Small results stay byte-for-byte compatible. Oversized results keep the
+    useful routing fields plus compact previews and full-result references.
+    """
+    if not isinstance(result, dict):
+        return result
+    if _json_size(result) <= max_chars:
+        return result
+
+    summary_text = summary or _tool_result_summary(tool_name, result, target)
+    preview_rows = preview if preview is not None else _tool_result_preview(tool_name, result, target)
+    compacted: dict[str, Any] = {
+        "status": result.get("status"),
+        "summary": summary_text,
+        "preview": preview_rows,
+        "target": target or result.get("path") or result.get("url") or result.get("command") or result.get("query"),
+        "truncated": True,
+        "fullResultRef": _tool_result_full_ref(tool_name, result),
+    }
+
+    if tool_name == "run_command":
+        command_log = result.get("commandLog") if isinstance(result.get("commandLog"), dict) else {}
+        compacted.update({
+            "exitCode": result.get("exitCode"),
+            "durationMs": result.get("durationMs"),
+            "cwd": result.get("cwd") or command_log.get("cwd"),
+            "shell": result.get("shell") or command_log.get("shell"),
+            "command": command_log.get("command") or result.get("command") or target,
+            "stdout": _head_tail_text(result.get("stdout") or ""),
+            "stderr": _head_tail_text(result.get("stderr") or ""),
+        })
+    elif tool_name == "read_file":
+        compacted.update({
+            "path": result.get("path") or target,
+            "bytesRead": result.get("bytesRead"),
+            "content": _head_tail_text(result.get("content") or ""),
+        })
+    elif tool_name in {"search_files", "code_search"}:
+        result_key = "matches" if tool_name == "search_files" else "results"
+        matches = result.get(result_key)
+        total = result.get("total") if tool_name == "search_files" else result.get("totalMatches")
+        compacted.update({
+            "query": result.get("query") or target,
+            "total": total if isinstance(total, int) else len(matches) if isinstance(matches, list) else 0,
+            result_key: _compact_list_items(matches),
+        })
+    elif tool_name in {"web_fetch", "browser"}:
+        compacted.update({
+            "url": result.get("url") or target,
+            "statusCode": result.get("statusCode"),
+            "contentType": result.get("contentType"),
+            "bytesRead": result.get("bytesRead"),
+            "title": result.get("title"),
+            "content": _head_tail_text(result.get("content") or result.get("body") or ""),
+        })
+    elif tool_name == "git_diff":
+        files = result.get("files")
+        compacted.update({
+            "staged": result.get("staged"),
+            "files": _compact_list_items(files),
+            "fileCount": len(files) if isinstance(files, list) else None,
+            "diffText": _head_tail_text(result.get("diffText") or result.get("diff") or ""),
+        })
+    elif tool_name in {"apply_patch", "write_file"}:
+        paths = result.get("changedPaths")
+        compacted.update({
+            "filesChanged": result.get("filesChanged"),
+            "changedPaths": paths[:_TOOL_VISIBLE_COLLECTION_LIMIT] if isinstance(paths, list) else paths,
+            "diffText": _head_tail_text(result.get("diffText") or ""),
+        })
+    else:
+        for key in ("error", "message", "summary", "path", "url", "id", "count", "total"):
+            if result.get(key) is not None:
+                compacted[key] = _compact_snippet(result.get(key))
+        for key in ("items", "entries", "results", "matches", "files"):
+            if isinstance(result.get(key), list):
+                compacted[key] = _compact_list_items(result.get(key))
+                break
+
+    return {key: value for key, value in compacted.items() if value not in (None, "", [])}
+
+
+def _model_visible_tool_result(tool_name: str, result: Any, target: str = "", *, summary: str = "", preview: list[dict[str, str]] | None = None) -> Any:
+    return _visible_tool_result(tool_name, result, target, summary=summary, preview=preview)
+
+
+def _frontend_visible_tool_result(tool_name: str, result: Any, target: str = "", *, summary: str = "", preview: list[dict[str, str]] | None = None) -> Any:
+    return _visible_tool_result(tool_name, result, target, summary=summary, preview=preview)
+
+
+def _visible_command_output_chunk(chunk: Any) -> str:
+    if not isinstance(chunk, str) or len(chunk) <= _TOOL_VISIBLE_RESULT_MAX_CHARS:
+        return chunk if isinstance(chunk, str) else ""
+    head = chunk[:_TOOL_VISIBLE_TEXT_HEAD_CHARS]
+    tail = chunk[-_TOOL_VISIBLE_TEXT_TAIL_CHARS:]
+    omitted = len(chunk) - _TOOL_VISIBLE_TEXT_HEAD_CHARS - _TOOL_VISIBLE_TEXT_TAIL_CHARS
+    return f"{head}\n...[truncated {omitted} chars; full output is stored in the command log]...\n{tail}"
 
 
 def _compact_operation_key(value: Any, limit: int = 80) -> str:
@@ -1659,6 +1847,13 @@ class ToolExecutionMixin:
             target = _tool_target(tool_spec["name"], tool_arguments, result if isinstance(result, dict) else None) or tool_target
             result_summary = _tool_result_summary(tool_spec["name"], result if isinstance(result, dict) else None, target)
             result_preview = _tool_result_preview(tool_spec["name"], result if isinstance(result, dict) else None, target)
+            model_visible_result = _model_visible_tool_result(
+                tool_spec["name"],
+                result,
+                target,
+                summary=result_summary,
+                preview=result_preview,
+            )
             operation_metadata = _tool_metadata_with_result_operation(
                 tool_spec,
                 result if isinstance(result, dict) else None,
@@ -1679,6 +1874,7 @@ class ToolExecutionMixin:
                 **tool_semantic_parent_metadata,
                 "durationMs": tool_duration_ms,
                 "result": result,
+                **({"modelVisibleResult": model_visible_result} if model_visible_result is not result else {}),
             }
 
         if tool_spec["name"] == "run_command":

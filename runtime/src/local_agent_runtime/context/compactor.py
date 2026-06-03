@@ -72,6 +72,7 @@ _SUMMARY_MAX_CHARS = 4000
 # Tier 3 (>= TIER2): full compact (primer/summary/recent)
 _TIER1_THRESHOLD = 50_000
 _TIER2_THRESHOLD = 220_000
+_STABLE_CONTEXT_MARKER = "Stable context prefix:"
 
 
 class ContextCompactor:
@@ -324,14 +325,14 @@ class ContextCompactor:
     ) -> tuple[list[dict], list[dict], list[dict]]:
         """Split into (primers, history, recents).
 
-        *Primers* are leading system messages.
+        *Primers* are leading system messages plus the stable context prefix.
         *Recents* are the last ``_recent_turns`` non-system messages.
         *History* is everything in between.
         """
         primers: list[dict] = []
         body_start = 0
         for i, msg in enumerate(messages):
-            if msg.get("role") == "system":
+            if self._is_primer_message(msg):
                 primers.append(msg)
                 body_start = i + 1
             else:
@@ -342,6 +343,13 @@ class ContextCompactor:
         history = body[:split_point]
         recents = body[split_point:]
         return primers, history, recents
+
+    @staticmethod
+    def _is_primer_message(message: dict[str, Any]) -> bool:
+        if message.get("role") == "system":
+            return True
+        content = message.get("content")
+        return message.get("role") == "user" and isinstance(content, str) and content.startswith(_STABLE_CONTEXT_MARKER)
 
     def _repair_recent_tool_call_pairs(
         self,

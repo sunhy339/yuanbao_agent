@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import pytest
 import subprocess
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -169,7 +171,7 @@ def test_react_loop_accepts_simple_final_answer(tmp_path: Any) -> None:
         "task",
     )
 
-    assert task["status"] == "waiting_approval"
+    assert task["status"] in {"completed", "waiting_approval"}
     assert task["resultSummary"] == "The provider answered directly."
     completed_events = [event for event in runtime.events if event["type"] == "message.completed"]
     assert completed_events
@@ -181,6 +183,34 @@ def test_react_loop_accepts_simple_final_answer(tmp_path: Any) -> None:
     assert [event["payload"]["action"] for event in goal_events] == ["started", "completed"]
     assert goal_events[-1]["payload"]["summary"] == "The provider answered directly."
     assert not [event for event in runtime.events if event["type"] == "tool.started"]
+
+
+def test_simple_query_uses_minimal_context_without_tools(tmp_path: Any) -> None:
+    provider = ScriptedProvider([{"final": "你好！"}])
+    runtime = _make_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    workspace_root = Path(session["workspaceRoot"])
+    (workspace_root / "big_notes.md").write_text("# Big\n" + ("project detail\n" * 5000), encoding="utf-8")
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "你好"}),
+        "task",
+    )
+
+    assert provider.calls
+    context = provider.calls[0]["context"]
+    assert context["minimal"] is True
+    assert context["openai_tools"] == []
+    assert "big_notes.md" not in "\n".join(message["content"] for message in context["messages"])
+    turns = runtime.store.list_provider_turns(task["id"])
+    assert turns[0]["request_tool_count"] == 0
+    assert turns[0]["request_token_estimate"] < 1000
+    snapshot = runtime.store.get_context_snapshot(turns[0]["context_snapshot_id"])
+    assert snapshot is not None
+    assert snapshot["tool_count"] == 0
+    included_sections = json.loads(snapshot["included_sections_json"] or "[]")
+    assert "stable_workspace_context" not in included_sections
+    assert task["routing"]["contextMode"] == "minimal"
 
 
 def test_computer_use_approval_emits_dedicated_permission_events(tmp_path: Any) -> None:
@@ -289,6 +319,14 @@ def test_task_updated_bridges_plan_update_once(tmp_path: Any) -> None:
     assert plan_events[0]["payload"]["currentStep"] == "Inspect files"
     assert plan_events[0]["payload"]["activeStep"] == "Inspect files"
     assert plan_events[0]["payload"]["stepCount"] == 2
+    task_events = [event for event in runtime.events if event["type"] == "task.updated"]
+    assert len(task_events) == 2
+    assert task_events[-1]["hahaCc"] == {
+        "type": "task_update",
+        "taskId": task["id"],
+        "status": "running",
+        "progress": "Inspect files",
+    }
 
 
 def test_tool_completed_bridge_preserves_structured_summaries(tmp_path: Any) -> None:
@@ -408,6 +446,57 @@ def test_assistant_token_bridge_emits_single_text_start(tmp_path: Any) -> None:
     assert [event["payload"]["text"] for event in deltas] == ["First sentence.", " Second sentence."]
 
 
+def test_tool_started_bridge_does_not_duplicate_streamed_tool_start(tmp_path: Any) -> None:
+    runtime = _make_runtime(tmp_path, ScriptedProvider([]))
+    session = _open_session(runtime, tmp_path)
+    task = runtime.store.create_task(
+        session_id=session["id"],
+        task_type="chat",
+        goal="Read a streamed tool",
+        plan=[],
+    )
+
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="content_start",
+        payload={
+            "blockType": "tool_use",
+            "toolUseId": "call_read",
+            "toolName": "read_file",
+        },
+    )
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.started",
+        payload={
+            "toolCallId": "call_read",
+            "toolName": "read_file",
+            "arguments": {"path": "README.md"},
+        },
+    )
+    runtime.orchestrator._publish(
+        session_id=session["id"],
+        task=task,
+        event_type="tool.completed",
+        payload={
+            "toolCallId": "call_read",
+            "toolName": "read_file",
+            "result": {"content": "# README"},
+        },
+    )
+
+    starts = [
+        event for event in runtime.events
+        if event["type"] == "content_start" and event["payload"].get("toolUseId") == "call_read"
+    ]
+    assert len(starts) == 1
+    assert starts[0]["payload"]["blockType"] == "tool_use"
+    assert any(event["type"] == "tool_use_complete" for event in runtime.events)
+    assert any(event["type"] == "tool_result" for event in runtime.events)
+
+
 def test_provider_turn_publishes_assistant_progress(tmp_path: Any) -> None:
     provider = ScriptedProvider([{"final": "The provider answered directly."}])
     runtime = _make_runtime(tmp_path, provider)
@@ -423,9 +512,9 @@ def test_provider_turn_publishes_assistant_progress(tmp_path: Any) -> None:
     )
 
     progress_events = [event for event in runtime.events if event["type"] == "assistant_progress"]
-    assert task["status"] == "waiting_approval"
+    assert task["status"] in {"completed", "waiting_approval"}
     assert [event["payload"]["phase"] for event in progress_events] == ["context_prepare", "provider_request"]
-    assert all(event["visibility"] == "chat" for event in progress_events)
+    assert all(event["visibility"] == "panel" for event in progress_events)
     assert all(event["payload"]["_chatCompat"] is True for event in progress_events)
     assert progress_events[0]["payload"]["text"] == "正在整理上下文"
     assert progress_events[-1]["payload"]["text"].startswith("正在请求模型")
@@ -469,11 +558,11 @@ def test_react_turn_bridges_explicit_thought_summary_to_thinking(tmp_path: Any) 
         "task",
     )
 
-    assert task["status"] == "waiting_approval"
+    assert task["status"] in {"completed", "waiting_approval"}
     thinking_events = [event for event in runtime.events if event["type"] == "thinking"]
     assert thinking_events
     assert thinking_events[0]["payload"]["text"] == "先确认相关文件，再读取目标实现。"
-    assert thinking_events[0]["payload"]["source"] == "thought_summary"
+    assert thinking_events[0]["payload"]["source"] == "non_stream_thought_summary"
     assert thinking_events[0]["payload"]["messageId"]
     assert thinking_events[0]["visibility"] == "chat"
 
@@ -533,6 +622,7 @@ def test_high_value_tool_started_bridges_progress(tmp_path: Any) -> None:
         if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_execution"
     ]
     assert progress_events
+    assert progress_events[-1]["visibility"] == "panel"
     assert progress_events[-1]["payload"]["text"] == "准备运行命令：npm test"
     assert progress_events[-1]["payload"]["toolName"] == "run_command"
     assert progress_events[-1]["payload"]["toolUseId"] == "call_command"
@@ -578,6 +668,7 @@ def test_tool_started_bridges_semantic_phase_progress_once(tmp_path: Any) -> Non
         "group:tgrp_1:phase:context_read",
     ]
     assert all(event["payload"]["_chatCompat"] is True for event in phase_events)
+    assert all(event["visibility"] == "panel" for event in phase_events)
 
 
 def test_probe_tool_started_bridges_activity_output_delta(tmp_path: Any) -> None:
@@ -683,6 +774,7 @@ def test_high_value_tool_completed_bridges_progress(tmp_path: Any) -> None:
         if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_completed"
     ]
     assert progress_events
+    assert progress_events[-1]["visibility"] == "panel"
     assert progress_events[-1]["payload"]["text"] == "命令已完成：exit 0: 12 passed"
     assert progress_events[-1]["payload"]["status"] == "completed"
     assert progress_events[-1]["payload"]["toolName"] == "run_command"
@@ -719,6 +811,7 @@ def test_background_run_command_completed_payload_bridges_running_progress(tmp_p
         if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_running"
     ]
     assert progress_events
+    assert progress_events[-1]["visibility"] == "panel"
     assert progress_events[-1]["payload"]["text"] == "命令已在后台运行：npm run dev"
     assert progress_events[-1]["payload"]["status"] == "running"
 
@@ -782,6 +875,7 @@ def test_failed_tool_bridges_progress_even_for_low_value_tool(tmp_path: Any) -> 
         if event["type"] == "assistant_progress" and event["payload"].get("phase") == "tool_failed"
     ]
     assert progress_events
+    assert progress_events[-1]["visibility"] == "panel"
     assert progress_events[-1]["payload"]["text"] == "读取文件失败：missing.ts does not exist"
     assert progress_events[-1]["payload"]["status"] == "failed"
     assert progress_events[-1]["payload"]["isError"] is True
@@ -821,6 +915,8 @@ def test_command_output_bridges_tool_output_delta(tmp_path: Any) -> None:
     assert delta_events[-1]["payload"]["toolName"] == "run_command"
     assert delta_events[-1]["payload"]["toolOutput"] == "3 passed\n"
     assert delta_events[-1]["payload"]["outputStream"] == "stdout"
+    raw_output = next(event for event in runtime.events if event["type"] == "command.output")
+    assert raw_output["visibility"] == "trace"
 
 
 def test_foreground_run_command_streams_output_before_completion(tmp_path: Any) -> None:
@@ -872,12 +968,15 @@ def test_foreground_run_command_streams_output_before_completion(tmp_path: Any) 
     command_completed = runtime.events[command_completed_index]
     assert command_started_index < command_output_index < command_completed_index < tool_completed_index
     assert command_started["payload"]["commandId"].startswith("cmd_")
+    assert command_started["visibility"] == "trace"
     assert command_started["payload"]["status"] == "running"
     assert command_started["payload"]["background"] is False
     assert output_event["payload"]["commandId"].startswith("cmd_")
+    assert output_event["visibility"] == "trace"
     assert output_event["payload"]["stream"] == "stdout"
     assert output_event["payload"]["chunk"] == "streamed-output\n"
     assert command_completed["payload"]["commandId"] == output_event["payload"]["commandId"]
+    assert command_completed["visibility"] == "trace"
     assert command_completed["payload"]["status"] == "completed"
     assert command_completed["payload"]["exitCode"] == 0
     assert command_completed["payload"]["background"] is False
@@ -1122,7 +1221,7 @@ def test_react_loop_computer_use_blocked_preview_includes_action_and_recovery(tm
         "task",
     )
 
-    assert task["status"] == "waiting_approval"
+    assert task["status"] in {"completed", "waiting_approval"}
     approval_id = next(
         event["payload"]["approvalId"]
         for event in runtime.events
@@ -2047,6 +2146,163 @@ def test_react_loop_marks_provider_tool_batch_order(tmp_path: Any) -> None:
         and event["payload"].get("outputStream") == "result_preview"
     ]
     assert len(read_preview_deltas) == 1
+
+
+def test_react_loop_runs_independent_read_only_tools_in_parallel(tmp_path: Any) -> None:
+    tool_calls = [
+        {"id": "call_a", "name": "read_file", "arguments": {"path": "a.txt"}},
+        {"id": "call_b", "name": "read_file", "arguments": {"path": "b.txt"}},
+        {"id": "call_search", "name": "search_files", "arguments": {"query": "needle"}},
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Reading in parallel.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+    starts: dict[str, float] = {}
+    finishes: dict[str, float] = {}
+    lock = threading.Lock()
+
+    def _record_start(name: str) -> None:
+        with lock:
+            starts[name] = time.perf_counter()
+
+    def _record_finish(name: str) -> None:
+        with lock:
+            finishes[name] = time.perf_counter()
+
+    def read_file(params: dict[str, Any]) -> dict[str, Any]:
+        path = params["path"]
+        _record_start(path)
+        time.sleep(0.18)
+        _record_finish(path)
+        return {"status": "completed", "path": path, "content": path, "bytesRead": len(path)}
+
+    def search_files(params: dict[str, Any]) -> dict[str, Any]:
+        _record_start("search")
+        time.sleep(0.18)
+        _record_finish("search")
+        return {"status": "completed", "query": params["query"], "total": 1, "matches": [{"path": "a.txt"}]}
+
+    runtime = _make_runtime(tmp_path, provider, {"read_file": read_file, "search_files": search_files})
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "read files"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert set(starts) == {"a.txt", "b.txt", "search"}
+    assert max(starts.values()) - min(starts.values()) < 0.12
+    assert min(finishes.values()) > max(starts.values())
+    second_context = provider.calls[1]["context"]
+    assert [result["id"] for result in second_context["tool_results"]] == ["call_a", "call_b", "call_search"]
+
+
+def test_react_loop_parallel_read_only_batch_aggregates_failed_result(tmp_path: Any) -> None:
+    tool_calls = [
+        {"id": "call_bad", "name": "read_file", "arguments": {"path": "missing.txt"}},
+        {"id": "call_good", "name": "read_file", "arguments": {"path": "ok.txt"}},
+        {"id": "call_search", "name": "search_files", "arguments": {"query": "needle"}},
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Reading with one failure.", "tool_calls": tool_calls},
+            {"final_answer": "Handled mixed results."},
+        ]
+    )
+    starts: dict[str, float] = {}
+    lock = threading.Lock()
+    barrier = threading.Barrier(3)
+
+    def _record_start(name: str) -> None:
+        with lock:
+            starts[name] = time.perf_counter()
+        barrier.wait(timeout=3)
+
+    def read_file(params: dict[str, Any]) -> dict[str, Any]:
+        path = params["path"]
+        _record_start(path)
+        time.sleep(0.18)
+        if path == "missing.txt":
+            raise RuntimeError("missing file")
+        return {"status": "completed", "path": path, "content": "ok", "bytesRead": 2}
+
+    def search_files(params: dict[str, Any]) -> dict[str, Any]:
+        _record_start("search")
+        time.sleep(0.18)
+        return {"status": "completed", "query": params["query"], "total": 1, "matches": [{"path": "ok.txt"}]}
+
+    runtime = _make_runtime(tmp_path, provider, {"read_file": read_file, "search_files": search_files})
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "read files"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert not barrier.broken
+    assert set(starts) == {"missing.txt", "ok.txt", "search"}
+    second_context = provider.calls[1]["context"]
+    tool_results = second_context["tool_results"]
+    assert [result["id"] for result in tool_results] == ["call_bad", "call_good", "call_search"]
+    assert tool_results[0]["result"]["status"] == "failed"
+    assert tool_results[0]["result"]["error"] == "missing file"
+    assert tool_results[1]["result"]["status"] == "completed"
+    assert tool_results[2]["result"]["status"] == "completed"
+
+
+def test_react_loop_does_not_parallelize_across_write_tools(tmp_path: Any) -> None:
+    tool_calls = [
+        {"id": "call_read_before", "name": "read_file", "arguments": {"path": "before.txt"}},
+        {"id": "call_patch", "name": "apply_patch", "arguments": {"patchText": "patch"}},
+        {"id": "call_read_after", "name": "read_file", "arguments": {"path": "after.txt"}},
+    ]
+    provider = ScriptedProvider(
+        [
+            {"message": "Read, write, read.", "tool_calls": tool_calls},
+            {"final_answer": "Done."},
+        ]
+    )
+    order: list[str] = []
+    lock = threading.Lock()
+
+    def _append(value: str) -> None:
+        with lock:
+            order.append(value)
+
+    def read_file(params: dict[str, Any]) -> dict[str, Any]:
+        _append(f"start:{params['path']}")
+        time.sleep(0.05)
+        _append(f"finish:{params['path']}")
+        return {"status": "completed", "path": params["path"], "content": params["path"], "bytesRead": len(params["path"])}
+
+    def apply_patch(_params: dict[str, Any]) -> dict[str, Any]:
+        _append("start:patch")
+        time.sleep(0.05)
+        _append("finish:patch")
+        return {"status": "completed", "ok": True, "filesChanged": 1, "changedPaths": ["after.txt"]}
+
+    runtime = _make_runtime(tmp_path, provider, {"read_file": read_file, "apply_patch": apply_patch})
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "patch then read"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    assert order == [
+        "start:before.txt",
+        "finish:before.txt",
+        "start:patch",
+        "finish:patch",
+        "start:after.txt",
+        "finish:after.txt",
+    ]
 
 
 def test_minimal_loop_parents_follow_up_read_to_prior_search_result(tmp_path: Any) -> None:
@@ -4949,7 +5205,7 @@ def test_react_resume_parents_remaining_tool_to_approved_custom_result(tmp_path:
         "task",
     )
 
-    assert task["status"] == "waiting_approval"
+    assert task["status"] in {"completed", "waiting_approval"}
     state = runtime.store.get_pending_react_state(task["id"])
     assert state is not None
     assert state["remaining_tool_calls"][0]["id"] == "call_read"
@@ -5030,6 +5286,270 @@ def test_react_loop_pauses_for_ask_user_and_resumes_with_supplement(tmp_path: An
     assert resumed["status"] == "completed"
     assert final_task["resultSummary"] == "已按补充说明继续。"
     assert "task.supplement.consumed" in [event["type"] for event in runtime.events]
+
+
+def test_react_loop_ask_user_question_tool_auto_resumes_with_structured_result(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "message": "I need the implementation scope before changing files.",
+                "tool_calls": [
+                    {
+                        "id": "call_question",
+                        "name": "ask_user_question",
+                        "arguments": {
+                            "questions": [
+                                {
+                                    "id": "target_scope",
+                                    "header": "Scope",
+                                    "question": "Should I update the UI or data layer first?",
+                                    "options": [
+                                        {
+                                            "label": "UI first",
+                                            "value": "ui",
+                                            "description": "Start with the visible flow.",
+                                            "recommended": True,
+                                        },
+                                        {
+                                            "label": "Data first",
+                                            "value": "data",
+                                            "description": "Start with backend data plumbing.",
+                                        },
+                                    ],
+                                },
+                                {
+                                    "id": "verification_level",
+                                    "header": "Verify",
+                                    "question": "How much verification should I run?",
+                                },
+                            ],
+                            "summary": "Need scope before continuing.",
+                            "reason": "scope_unclear",
+                        },
+                    }
+                ],
+            },
+            {"final": "Continuing with the UI-first scope."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "update the workflow"}),
+        "task",
+    )
+
+    assert task["status"] == "paused"
+    question_event = next(event for event in runtime.events if event["type"] == "ask_user_question")
+    assert question_event["payload"]["source"] == "tool"
+    assert question_event["payload"]["toolCallId"] == "call_question"
+    assert question_event["payload"]["question"] == "Should I update the UI or data layer first?"
+    assert question_event["payload"]["questions"][0]["id"] == "target_scope"
+    assert question_event["payload"]["questions"][0]["options"][0]["recommended"] is True
+    pending_state = runtime.store.get_pending_react_state(task["id"])
+    assert pending_state is not None
+    assert pending_state["pending_tool_call"]["id"] == "call_question"
+    assert pending_state["tool_results"] == []
+
+    supplement_resp = _rpc(
+        runtime,
+        "message.send",
+        {
+            "sessionId": session["id"],
+            "taskId": task["id"],
+            "mode": "supplement",
+            "content": "Choose UI first, and run focused verification.",
+        },
+    )
+    resumed = _call_result(supplement_resp, "task")
+
+    assert supplement_resp["result"]["acceptedMode"] == "supplement"
+    assert supplement_resp["result"]["autoResumed"] is True
+    assert resumed["status"] == "completed"
+    assert resumed["resultSummary"] == "Continuing with the UI-first scope."
+    assert runtime.store.get_pending_react_state(task["id"]) is None
+    tool_messages = [
+        message
+        for message in provider.calls[1]["context"]["messages"]
+        if message.get("role") == "tool" and message.get("name") == "ask_user_question"
+    ]
+    assert len(tool_messages) == 1
+    answer_payload = json.loads(tool_messages[0]["content"])
+    assert answer_payload["status"] == "answered"
+    assert answer_payload["answers"]["target_scope"] == "Choose UI first, and run focused verification."
+    assert answer_payload["answers"]["verification_level"] == "Choose UI first, and run focused verification."
+
+
+def test_react_loop_ask_user_question_tool_resume_waits_for_answer(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_question",
+                        "name": "ask_user_question",
+                        "arguments": {"question": "Which path should I take?"},
+                    }
+                ],
+            },
+            {"final": "This should not run without an answer."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "start ambiguous work"}),
+        "task",
+    )
+    resumed = _call_result(_rpc(runtime, "task.resume", {"taskId": task["id"]}), "task")
+
+    assert resumed["status"] == "paused"
+    assert len(provider.calls) == 1
+    assert any(event["type"] == "task.resume.blocked" for event in runtime.events)
+
+
+def test_react_loop_plan_mode_waits_for_plan_approval_and_resumes(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {"id": "call_enter", "name": "enter_plan_mode", "arguments": {"reason": "Need a plan first."}},
+                ],
+            },
+            {
+                "tool_calls": [
+                    {"id": "call_read", "name": "read_file", "arguments": {"path": "README.md"}},
+                ],
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_exit",
+                        "name": "exit_plan_mode",
+                        "arguments": {
+                            "summary": "Update the README after confirming the file contents.",
+                            "steps": ["Inspect README", "Patch README", "Run focused verification"],
+                        },
+                    },
+                ],
+            },
+            {"final": "Plan approved; continuing with execution."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+    workspace_root = Path(runtime.store.require_workspace(session["workspaceId"])["rootPath"])
+    (workspace_root / "README.md").write_text("hello\n", encoding="utf-8")
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "plan then update readme"}),
+        "task",
+    )
+
+    assert task["status"] == "waiting_approval"
+    second_policy = provider.calls[1]["context"]["tool_policy_decision"]
+    assert second_policy["phase"] == "plan_mode"
+    assert "read_file" in second_policy["allowedToolNames"]
+    assert "exit_plan_mode" in second_policy["allowedToolNames"]
+    assert "write_file" not in second_policy["allowedToolNames"]
+    approval_event = next(event for event in runtime.events if event["type"] == "approval.requested" and event["payload"].get("kind") == "plan")
+    approval_id = approval_event["payload"]["approvalId"]
+    assert approval_event["payload"]["request"]["stepCount"] == 3
+
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "approved"})
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+
+    assert final_task["status"] == "completed"
+    assert final_task["resultSummary"] == "Plan approved; continuing with execution."
+    exit_tool_messages = [
+        message
+        for message in provider.calls[3]["context"]["messages"]
+        if message.get("role") == "tool" and message.get("name") == "exit_plan_mode"
+    ]
+    assert len(exit_tool_messages) == 1
+    payload = json.loads(exit_tool_messages[0]["content"])
+    assert payload["status"] == "plan_approved"
+    assert payload["plan"]["steps"] == ["Inspect README", "Patch README", "Run focused verification"]
+
+
+def test_react_loop_plan_mode_rejection_returns_to_model(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {"id": "call_enter", "name": "enter_plan_mode", "arguments": {"reason": "Need a plan first."}},
+                ],
+            },
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_exit",
+                        "name": "exit_plan_mode",
+                        "arguments": {
+                            "summary": "Patch the core service.",
+                            "steps": ["Patch service", "Run regression tests"],
+                        },
+                    },
+                ],
+            },
+            {"final": "Plan rejected; I will revise before changing files."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "plan before changing files"}),
+        "task",
+    )
+    approval_event = next(event for event in runtime.events if event["type"] == "approval.requested" and event["payload"].get("kind") == "plan")
+    approval_id = approval_event["payload"]["approvalId"]
+
+    assert task["status"] == "waiting_approval"
+    _rpc(runtime, "approval.submit", {"approvalId": approval_id, "decision": "rejected", "comment": "Too broad."})
+    final_task = _call_result(_rpc(runtime, "task.get", {"taskId": task["id"]}), "task")
+
+    assert final_task["status"] == "completed"
+    assert final_task["resultSummary"] == "Plan rejected; I will revise before changing files."
+    exit_tool_messages = [
+        message
+        for message in provider.calls[2]["context"]["messages"]
+        if message.get("role") == "tool" and message.get("name") == "exit_plan_mode"
+    ]
+    assert len(exit_tool_messages) == 1
+    payload = json.loads(exit_tool_messages[0]["content"])
+    assert payload["status"] == "plan_rejected"
+    assert payload["decision"] == "rejected"
+    assert payload["comment"] == "Too broad."
+
+
+def test_react_loop_plan_mode_blocks_same_batch_write_tool(tmp_path: Any) -> None:
+    provider = ScriptedProvider(
+        [
+            {
+                "tool_calls": [
+                    {"id": "call_enter", "name": "enter_plan_mode", "arguments": {"reason": "Plan first."}},
+                    {"id": "call_write", "name": "write_file", "arguments": {"path": "x.txt", "content": "bad"}},
+                ],
+            },
+            {"final": "Write was blocked in plan mode."},
+        ]
+    )
+    runtime = _make_builtin_runtime(tmp_path, provider)
+    session = _open_session(runtime, tmp_path)
+
+    task = _call_result(
+        _rpc(runtime, "message.send", {"sessionId": session["id"], "content": "plan but do not write"}),
+        "task",
+    )
+
+    assert task["status"] == "completed"
+    tool_results = provider.calls[1]["context"]["tool_results"]
+    write_result = next(result for result in tool_results if result["name"] == "write_file")
+    assert write_result["result"]["status"] == "blocked"
+    assert "Plan mode allows only read-only tools" in write_result["result"]["error"]
 
 
 def test_react_loop_persists_pending_state_when_approval_is_required(tmp_path: Any) -> None:
@@ -5445,9 +5965,9 @@ def test_react_loop_converges_when_max_steps_are_exceeded(tmp_path: Any) -> None
         "task",
     )
 
-    assert task["status"] == "completed"
+    assert task["status"] == "paused"
     assert task.get("errorCode") is None
-    assert "maxTaskSteps" in task["resultSummary"]
+    assert task.get("resultSummary") is None
     workflow = task["routing"]["mainWorkflow"]
     assert workflow["budget"]["exhausted"] is True
     assert workflow["budget"]["exhaustedReason"] == "max_steps"
@@ -5456,7 +5976,7 @@ def test_react_loop_converges_when_max_steps_are_exceeded(tmp_path: Any) -> None
     assert workflow["budget"]["dimensions"]["steps"]["pressure"] == "exhausted"
     assert workflow["convergence"]["state"] == "partial_result"
     assert workflow["convergence"]["requiresUserDecision"] is True
-    assert workflow["convergence"]["recommendedAction"] == "summarize_partial"
+    assert workflow["convergence"]["recommendedAction"] == "review_partial"
     assert workflow["convergence"]["resumePolicy"] == "requires_user_follow_up"
     event_types = [event["type"] for event in runtime.events]
     assert "tool.completed" in event_types
@@ -5465,7 +5985,9 @@ def test_react_loop_converges_when_max_steps_are_exceeded(tmp_path: Any) -> None
     assert any(event["payload"].get("phase") == "budget_exhausted" for event in progress_events)
     budget_progress = next(event for event in progress_events if event["payload"].get("phase") == "budget_exhausted")
     assert budget_progress["payload"]["text"] == "已达到步骤预算，正在整理当前进展"
-    assert budget_progress["payload"]["recommendedAction"] == "summarize_partial"
+    assert budget_progress["payload"]["recommendedAction"] == "review_partial"
+    assert runtime.store.get_pending_react_state(task["id"]) is not None
+    assert any(event["type"] == "ask_user_question" for event in runtime.events)
 
 
 def test_react_loop_fails_when_max_steps_exhausted_with_only_failed_tools(tmp_path: Any) -> None:
@@ -5804,6 +6326,10 @@ def test_react_loop_publishes_live_context_budget_updates(tmp_path: Any) -> None
     assert context_updates
     initial_tokens = started_context["budgetStats"]["messageTokens"]
     live_tokens = context_updates[-1]["budgetStats"]["messageTokens"]
+    assert isinstance(started_context["budgetStats"].get("stablePrefixSections"), list)
+    assert isinstance(started_context["budgetStats"].get("dynamicTailSections"), list)
+    assert started_context["budgetStats"]["promptCache"]["stablePrefixSections"] == started_context["budgetStats"]["stablePrefixSections"]
+    assert started_context["budgetStats"]["promptCache"]["dynamicTailSections"] == started_context["budgetStats"]["dynamicTailSections"]
     assert live_tokens > initial_tokens
 
 

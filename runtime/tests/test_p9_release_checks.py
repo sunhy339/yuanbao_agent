@@ -19,10 +19,15 @@ from local_agent_runtime.tools.registry import ToolRegistry
 # ── helpers ────────────────────────────────────────────────────────────────
 
 
-def _make_runtime(tmp_path: Any) -> SimpleNamespace:
+def _make_runtime(
+    tmp_path: Any,
+    *,
+    tools: dict[str, Any] | None = None,
+    subagent_service: Any | None = None,
+) -> SimpleNamespace:
     event_bus = EventBus()
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
-    tool_registry = ToolRegistry()
+    tool_registry = ToolRegistry(tools or {})
 
     class DummyProvider:
         def generate(self, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
@@ -33,6 +38,8 @@ def _make_runtime(tmp_path: Any) -> SimpleNamespace:
         tool_registry=tool_registry, provider=DummyProvider(),
     )
     server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    if subagent_service is not None:
+        orchestrator._subagent_service = subagent_service  # noqa: SLF001
     return SimpleNamespace(server=server, store=store, orchestrator=orchestrator, event_bus=event_bus)
 
 
@@ -171,6 +178,13 @@ class TestEventCompatAssistantToken:
         assert "content_start" in types
         assert "tool_use_complete" in types
         assert "tool_result" in types
+        chat_types = [e.type for e in collected if e.visibility == "chat"]
+        assert chat_types.index("content_start") < chat_types.index("tool_use_complete")
+        assert chat_types.index("tool_use_complete") < chat_types.index("tool_result")
+        raw_started = next(e for e in collected if e.type == "tool.started")
+        raw_completed = next(e for e in collected if e.type == "tool.completed")
+        assert raw_started.visibility == "trace"
+        assert raw_completed.visibility == "trace"
         tool_use = next(e for e in collected if e.type == "tool_use_complete")
         assert tool_use.payload["toolUseId"] == "tc_1"
         assert tool_use.payload["parentToolUseId"] == "tc_parent"
@@ -195,6 +209,322 @@ class TestEventCompatAssistantToken:
         assert tool_result.payload["toolSemanticParentLabel"] == tool_result.payload["toolPhaseLabel"]
         assert tool_result.payload["isError"] is False
 
+    def test_tool_lifecycle_sanitizes_large_visible_arguments(self, tmp_path: Any) -> None:
+        """Large tool inputs stay out of chat-visible lifecycle payloads."""
+        runtime = _make_runtime(tmp_path)
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+
+        large_content = "# Snake docs\n" + ("body\n" * 400)
+        task = {"id": "t1", "role": "root", "activeAssistantMessageId": "msg_1"}
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="tool.started",
+            payload={
+                "toolCallId": "tc_1",
+                "toolName": "write_file",
+                "arguments": {
+                    "path": "README.md",
+                    "content": large_content,
+                    "mode": "overwrite",
+                },
+            },
+        )
+
+        tool_started = next(event for event in collected if event.type == "tool.started")
+        tool_use = next(event for event in collected if event.type == "tool_use_complete")
+        assert tool_started.payload["arguments"]["path"] == "README.md"
+        assert tool_started.payload["arguments"]["mode"] == "overwrite"
+        assert tool_started.payload["arguments"]["content"]["omitted"] is True
+        assert tool_started.payload["arguments"]["content"]["chars"] == len(large_content)
+        assert tool_use.payload["input"]["content"]["omitted"] is True
+        assert tool_use.payload["input"]["content"]["chars"] == len(large_content)
+        assert large_content not in json.dumps(tool_started.payload, ensure_ascii=False)
+        assert large_content not in json.dumps(tool_use.payload, ensure_ascii=False)
+
+    def test_core_tools_emit_standard_chat_tool_sequence(self, tmp_path: Any) -> None:
+        """Core tools emit content_start/tool_use_complete/content_delta/tool_result."""
+        tool_results = {
+            "run_command": {
+                "status": "completed",
+                "stdout": "ok\n",
+                "stderr": "",
+                "exitCode": 0,
+                "durationMs": 12,
+                "commandLog": {"id": "cmd_1", "command": "npm test", "cwd": "."},
+            },
+            "read_file": {"status": "completed", "path": "README.md", "content": "hello\n", "bytesRead": 6},
+            "search_files": {
+                "status": "completed",
+                "query": "hello",
+                "total": 1,
+                "matches": [{"path": "README.md", "line": 1, "text": "hello"}],
+            },
+            "apply_patch": {
+                "status": "completed",
+                "ok": True,
+                "filesChanged": 1,
+                "changedPaths": ["src/app.py"],
+                "summary": "Patched src/app.py",
+            },
+        }
+
+        def _tool(name: str):
+            def handler(args: dict[str, Any]) -> dict[str, Any]:
+                return dict(tool_results[name])
+
+            return handler
+
+        class FakeSubagentService:
+            def dispatch(self, args: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "status": "completed",
+                    "childTaskId": "child_1",
+                    "summary": "Reviewed the patch.",
+                    "result": {"summary": "Reviewed the patch."},
+                }
+
+        runtime = _make_runtime(
+            tmp_path,
+            tools={name: _tool(name) for name in tool_results},
+            subagent_service=FakeSubagentService(),
+        )
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+        task = runtime.store.create_task(session_id="s1", task_type="chat", goal="g", plan=[])
+        task["role"] = "root"
+        workspace_root = str(tmp_path)
+        cases = [
+            (
+                "run_command",
+                {
+                    "workspaceRoot": workspace_root,
+                    "command": "npm test",
+                    "cwd": ".",
+                    "shell": "powershell",
+                    "toolGroupId": "group_1",
+                    "toolIndex": 0,
+                    "toolTotal": 5,
+                },
+            ),
+            (
+                "read_file",
+                {
+                    "workspaceRoot": workspace_root,
+                    "path": "README.md",
+                    "toolGroupId": "group_1",
+                    "toolIndex": 1,
+                    "toolTotal": 5,
+                },
+            ),
+            (
+                "search_files",
+                {
+                    "workspaceRoot": workspace_root,
+                    "query": "hello",
+                    "mode": "content",
+                    "toolGroupId": "group_1",
+                    "toolIndex": 2,
+                    "toolTotal": 5,
+                },
+            ),
+            (
+                "apply_patch",
+                {
+                    "workspaceRoot": workspace_root,
+                    "patchText": "*** Begin Patch\n*** Update File: src/app.py\n@@\n-print('old')\n+print('new')\n*** End Patch",
+                    "toolGroupId": "group_1",
+                    "toolIndex": 3,
+                    "toolTotal": 5,
+                },
+            ),
+            (
+                "task",
+                {
+                    "prompt": "Review the patch",
+                    "title": "reviewer",
+                    "toolGroupId": "group_1",
+                    "toolIndex": 4,
+                    "toolTotal": 5,
+                },
+            ),
+        ]
+
+        for name, arguments in cases:
+            batch_metadata = {
+                key: arguments[key]
+                for key in ("toolGroupId", "toolIndex", "toolTotal")
+                if key in arguments
+            }
+            runtime.orchestrator._execute_tool(
+                session_id="s1",
+                task=task,
+                tool_spec={
+                    "id": f"call_{name}",
+                    "name": name,
+                    "arguments": arguments,
+                    "parentToolUseId": "call_parent" if name == "read_file" else None,
+                    **batch_metadata,
+                },
+            )
+
+        for name, _arguments in cases:
+            tool_use_id = f"call_{name}"
+            tool_events = [event for event in collected if event.payload.get("toolUseId") == tool_use_id]
+            tool_event_types = [event.type for event in tool_events if event.visibility == "chat"]
+            assert "content_start" in tool_event_types, name
+            assert "tool_use_complete" in tool_event_types, name
+            assert "tool_result" in tool_event_types, name
+            assert tool_event_types.index("content_start") < tool_event_types.index("tool_use_complete")
+            assert tool_event_types.index("tool_use_complete") < tool_event_types.index("tool_result")
+
+            tool_use = next(event for event in tool_events if event.type == "tool_use_complete")
+            tool_result = next(event for event in tool_events if event.type == "tool_result")
+            assert tool_use.payload["toolName"] == name
+            assert tool_use.payload["input"]
+            assert tool_result.payload["toolUseId"] == tool_use_id
+            assert "content" in tool_result.payload
+            assert tool_result.payload["isError"] is False
+            assert tool_result.payload["toolGroupId"] == "group_1"
+            assert isinstance(tool_result.payload["toolIndex"], int)
+            assert tool_result.payload["toolTotal"] == 5
+            assert tool_result.payload["toolCategory"]
+            assert tool_result.payload["toolPhaseId"]
+            assert tool_result.payload["toolPhaseLabel"]
+            assert tool_result.payload["toolSemanticParentId"]
+            assert tool_result.payload["toolSemanticParentLabel"] == tool_result.payload["toolPhaseLabel"]
+
+        read_tool_result = next(
+            event for event in collected
+            if event.type == "tool_result" and event.payload.get("toolUseId") == "call_read_file"
+        )
+        assert read_tool_result.payload["parentToolUseId"] == "call_parent"
+        assert any(
+            event.type == "content_delta"
+            and event.payload.get("toolUseId") == "call_run_command"
+            and event.payload.get("toolOutput") == "ok\n"
+            for event in collected
+        )
+        assert any(
+            event.type == "content_delta"
+            and event.payload.get("toolUseId") == "call_search_files"
+            and event.payload.get("outputStream") == "result_preview"
+            for event in collected
+        )
+
+    def test_large_tool_results_are_slimmed_for_model_and_frontend(self, tmp_path: Any) -> None:
+        """Large results keep raw execution data but expose compact model/chat content."""
+        large_content = "HEAD\n" + ("x" * 20_000) + "\nTAIL"
+
+        def read_large(_args: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "status": "completed",
+                "path": "big.log",
+                "content": large_content,
+                "bytesRead": len(large_content),
+            }
+
+        runtime = _make_runtime(tmp_path, tools={"read_file": read_large})
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+        task = runtime.store.create_task(session_id="s1", task_type="chat", goal="g", plan=[])
+        task["role"] = "root"
+
+        tool_result = runtime.orchestrator._execute_tool(
+            session_id="s1",
+            task=task,
+            tool_spec={
+                "id": "call_read",
+                "name": "read_file",
+                "arguments": {"workspaceRoot": str(tmp_path), "path": "big.log"},
+            },
+        )
+        tool_message = runtime.orchestrator._tool_result_message(  # noqa: SLF001
+            {"id": "call_read"},
+            tool_result,
+        )
+
+        assert tool_result["result"]["content"] == large_content
+        assert tool_result["modelVisibleResult"]["truncated"] is True
+        assert large_content not in tool_message["content"]
+        assert len(tool_message["content"]) < 5000
+
+        raw_completed = next(event for event in collected if event.type == "tool.completed")
+        chat_result = next(
+            event for event in collected
+            if event.type == "tool_result" and event.payload.get("toolUseId") == "call_read"
+        )
+        assert raw_completed.payload["result"]["content"] == large_content
+        assert chat_result.payload["content"]["truncated"] is True
+        assert chat_result.payload["content"]["content"]["head"].startswith("HEAD")
+        assert chat_result.payload["content"]["content"]["tail"].endswith("TAIL")
+        assert large_content not in json.dumps(chat_result.payload, ensure_ascii=False)
+
+    def test_large_command_output_is_slimmed_for_chat_delta(self, tmp_path: Any) -> None:
+        """Command stdout/stderr traces stay raw while chat deltas use compact head/tail."""
+        large_stdout = "start\n" + ("o" * 20_000) + "\nend"
+
+        def run_large(_args: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "status": "completed",
+                "stdout": large_stdout,
+                "stderr": "",
+                "exitCode": 0,
+                "durationMs": 10,
+                "shell": "powershell",
+                "cwd": ".",
+                "commandLog": {
+                    "id": "cmd_big",
+                    "command": "fake big output",
+                    "cwd": ".",
+                    "stdoutPath": str(tmp_path / "cmd_big_stdout.log"),
+                    "stderrPath": str(tmp_path / "cmd_big_stderr.log"),
+                },
+            }
+
+        runtime = _make_runtime(tmp_path, tools={"run_command": run_large})
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+        task = runtime.store.create_task(session_id="s1", task_type="chat", goal="g", plan=[])
+        task["role"] = "root"
+
+        tool_result = runtime.orchestrator._execute_tool(
+            session_id="s1",
+            task=task,
+            tool_spec={
+                "id": "call_cmd",
+                "name": "run_command",
+                "arguments": {
+                    "workspaceRoot": str(tmp_path),
+                    "command": "fake big output",
+                    "cwd": ".",
+                    "shell": "powershell",
+                },
+            },
+        )
+
+        raw_command_output = next(event for event in collected if event.type == "command.output")
+        chat_delta = next(
+            event for event in collected
+            if event.type == "content_delta"
+            and event.payload.get("toolUseId") == "call_cmd"
+            and event.payload.get("outputStream") == "stdout"
+        )
+        chat_result = next(
+            event for event in collected
+            if event.type == "tool_result" and event.payload.get("toolUseId") == "call_cmd"
+        )
+
+        assert tool_result["result"]["stdout"] == large_stdout
+        assert raw_command_output.payload["chunk"] == large_stdout
+        assert large_stdout not in chat_delta.payload["toolOutput"]
+        assert "full output is stored in the command log" in chat_delta.payload["toolOutput"]
+        assert chat_result.payload["content"]["truncated"] is True
+        assert chat_result.payload["content"]["stdout"]["head"].startswith("start")
+        assert chat_result.payload["content"]["stdout"]["tail"].endswith("end")
+        assert chat_result.payload["content"]["fullResultRef"]["commandLogId"] == "cmd_big"
+
     def test_provider_request_emits_chat_thinking_status(self, tmp_path: Any) -> None:
         """Provider requests emit a haha-cc style thinking status before output."""
         runtime = _make_runtime(tmp_path)
@@ -216,6 +546,101 @@ class TestEventCompatAssistantToken:
         assert status_events[0].payload["verb"] == "model"
         assert status_events[0].payload["step"] == 2
         assert status_events[0].payload["_chatCompat"] is True
+
+    def test_task_lifecycle_emits_ordered_status_updates(self, tmp_path: Any) -> None:
+        """Root task lifecycle events provide a stable Yuanbao-style status sequence."""
+        runtime = _make_runtime(tmp_path)
+        collected: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(collected.append)
+
+        task = {"id": "t1", "role": "root", "goal": "g", "activeAssistantMessageId": "msg_1"}
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="task.started",
+            payload={"status": "running", "step": 1},
+        )
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="tool.started",
+            payload={"toolCallId": "call_1", "toolName": "read_file", "arguments": {"path": "README.md"}},
+        )
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="approval.requested",
+            payload={"approvalId": "approval_1", "kind": "write_file", "request": {"path": "src/new.ts"}},
+        )
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="message.completed",
+            payload={"messageId": "msg_1", "content": "done"},
+        )
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=task,
+            event_type="task.completed",
+            payload={"status": "completed", "summary": "done"},
+        )
+
+        status_events = [event for event in collected if event.type == "status"]
+        assert [event.payload["state"] for event in status_events] == [
+            "thinking",
+            "tool_executing",
+            "permission_pending",
+            "idle",
+        ]
+        assert status_events[0].payload["verb"] == "task"
+        assert status_events[1].payload["verb"] == "read_file"
+        assert status_events[2].payload["verb"] == "write_file"
+        assert all(event.payload["_chatCompat"] is True for event in status_events)
+
+    def test_task_failed_and_cancelled_emit_idle_status(self, tmp_path: Any) -> None:
+        """Terminal failure and cancellation clear chat status while preserving error events."""
+        runtime = _make_runtime(tmp_path)
+        failed: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(failed.append)
+
+        failed_task = {"id": "t_failed", "role": "root", "goal": "g", "activeAssistantMessageId": "msg_1"}
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=failed_task,
+            event_type="message.failed",
+            payload={"messageId": "msg_1", "content": "failed", "errorCode": "TEST_ERROR"},
+        )
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=failed_task,
+            event_type="task.failed",
+            payload={"status": "failed", "summary": "failed", "errorCode": "TEST_ERROR"},
+        )
+
+        failed_statuses = [event for event in failed if event.type == "status" and event.payload["state"] == "idle"]
+        assert len(failed_statuses) == 1
+        assert any(
+            event.type in {"message.failed", "task.failed"}
+            and runtime.event_bus.as_payload(event).get("yuanbao", {}).get("type") == "error"
+            for event in failed
+        )
+
+        cancelled: list[RuntimeEvent] = []
+        runtime.event_bus.subscribe(cancelled.append)
+        cancelled_task = {"id": "t_cancelled", "role": "root", "goal": "g"}
+        runtime.orchestrator._publish(
+            session_id="s1",
+            task=cancelled_task,
+            event_type="task.cancelled",
+            payload={"status": "cancelled"},
+        )
+
+        cancelled_statuses = [
+            event for event in cancelled
+            if event.task_id == "t_cancelled" and event.type == "status"
+        ]
+        assert len(cancelled_statuses) == 1
+        assert cancelled_statuses[0].payload["state"] == "idle"
 
     def test_approval_resolved_emits_chat_idle_status(self, tmp_path: Any) -> None:
         """Approval resolution clears chat thinking state for pending permission blocks."""

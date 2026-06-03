@@ -128,6 +128,17 @@ class SupplementFlowMixin:
         result = {"task": runtime_task, "acceptedMode": "supplement"}
         if routing_result:
             result["supplementRouting"] = routing_result
+        if (
+            runtime_task.get("status") == "paused"
+            and self._pending_user_question_state(self._load_pending_react_state(runtime_task["id"]) or {}) is not None
+            and (takeover or {}).get("state") in (None, "supplement", "continue_requested")
+        ):
+            try:
+                resumed = self.resume_task({"taskId": runtime_task["id"]})["task"]
+                result["task"] = resumed
+                result["autoResumed"] = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to auto-resume task %s after user answer: %s", runtime_task.get("id"), exc)
         return result
 
     def _apply_user_takeover_transition(

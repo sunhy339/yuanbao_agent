@@ -1,3 +1,5 @@
+import type { HahaCcServerMessage, YuanbaoServerMessage } from "./events";
+
 export type Identifier = string;
 
 export type ApprovalMode = "strict" | "on_write_or_command" | "relaxed" | "none";
@@ -156,6 +158,55 @@ export interface WorktreeGitDiffRecord {
   error?: string;
 }
 
+export interface SessionContextPreviewMetadata {
+  workspaceId?: string;
+  workspaceName?: string;
+  workspaceRoot?: string;
+  projectFocus?: string | null;
+  projectMemory?: string | null;
+  searchQuery?: string;
+  searchMode?: string;
+  toolCount?: number;
+  budgetStats?: {
+    estimatedTokens?: number;
+    estimatedInputTokens?: number;
+    messageTokens?: number;
+    toolSchemaTokens?: number;
+    stablePrefixTokens?: number;
+    promptCache?: {
+      enabled?: boolean | null;
+      targetFillRatio?: number | null;
+      targetContextTokens?: number | null;
+      maxStableContextTokens?: number | null;
+      stablePrefixTokens?: number | null;
+    } | null;
+    maxContextTokens?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    updatedAt?: number;
+    estimated?: boolean;
+    includedSections?: string[];
+    stablePrefixSections?: string[];
+    dynamicTailSections?: string[];
+    droppedSections?: string[];
+    trimmedSections?: string[];
+    promptLayers?: Array<{
+      name?: string;
+      tokenEstimate?: number;
+      [key: string]: unknown;
+    }>;
+    [key: string]: unknown;
+  };
+  taskFocus?: {
+    taskId?: string;
+    currentStep?: string | null;
+    acceptanceCriteriaCount?: number;
+    outOfScopeCount?: number;
+  };
+  [key: string]: unknown;
+}
+
 export type RuntimeHookEvent =
   | "before_task_start"
   | "after_task_complete"
@@ -255,11 +306,24 @@ export interface SessionRecord {
   workspaceId: Identifier;
   workspaceName?: string;
   workspaceRoot?: string;
+  launch?: {
+    workDir?: string;
+    repository?: SessionLaunchRepositoryState;
+    permissionMode?: string;
+  };
+  repository?: SessionLaunchRepositoryState;
+  metadata?: Record<string, unknown>;
   title: string;
   status: SessionStatus;
   summary?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface SessionLaunchRepositoryState {
+  branch?: string | null;
+  worktree?: boolean;
+  [key: string]: unknown;
 }
 
 export interface MessageRecord {
@@ -451,6 +515,8 @@ export interface TraceEventRecord<TPayload = unknown> {
   createdAt: number;
   sequence: number;
   visibility?: EventVisibility;
+  yuanbao?: YuanbaoServerMessage;
+  hahaCc?: HahaCcServerMessage;
 }
 
 export type ErrorSource = "task" | "command" | "patch" | "provider" | "tool";

@@ -337,6 +337,46 @@ describe("SettingsWorkspace", () => {
     expect(onSaveProvider).toHaveBeenCalledWith("backup");
   });
 
+  it("uses settings manager shortcuts and edits provider modal values through callbacks", async () => {
+    const user = userEvent.setup();
+    const onOpenMcpManager = vi.fn();
+    const onOpenSkillsManager = vi.fn();
+    const onEditProvider = vi.fn().mockResolvedValue(undefined);
+    render(
+      <SettingsWorkspace
+        providers={providers}
+        activeProviderId="primary"
+        onOpenMcpManager={onOpenMcpManager}
+        onOpenSkillsManager={onOpenSkillsManager}
+        onEditProvider={onEditProvider}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "管理 MCP" }));
+    await user.click(screen.getByRole("button", { name: "管理技能" }));
+    await user.click(screen.getByRole("button", { name: "编辑" }));
+
+    const dialog = screen.getByRole("dialog");
+    await user.clear(dialog.querySelector("#provider-name") as HTMLInputElement);
+    await user.type(dialog.querySelector("#provider-name") as HTMLInputElement, "Primary Provider Updated");
+    await user.clear(dialog.querySelector("#provider-main-model") as HTMLInputElement);
+    await user.type(dialog.querySelector("#provider-main-model") as HTMLInputElement, "primary-chat-next");
+    await user.click(within(dialog).getByRole("button", { name: "保存" }));
+
+    expect(onOpenMcpManager).toHaveBeenCalledTimes(1);
+    expect(onOpenSkillsManager).toHaveBeenCalledTimes(1);
+    expect(onEditProvider).toHaveBeenCalledWith(
+      "primary",
+      expect.objectContaining({
+        name: "Primary Provider Updated",
+        endpoint: "https://primary.example.com",
+        mainModel: "primary-chat-next",
+        modelMapping: "main=primary-chat-next\nhaiku=primary-chat\nsonnet=primary-chat\nopus=primary-chat",
+      }),
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("filters provider list by search text and state", async () => {
     const user = userEvent.setup();
     render(

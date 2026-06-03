@@ -146,6 +146,10 @@ function validateMcpDraft(draft: McpServerDraft): string | null {
   return null;
 }
 
+function serverEndpoint(server: McpServerRecord) {
+  return server.command || server.url || "未配置";
+}
+
 export function McpWorkspace({
   servers,
   loading = false,
@@ -169,6 +173,7 @@ export function McpWorkspace({
   const [expandedId, setExpandedId] = useState<string | null>(servers[0]?.id ?? null);
   const [serverQuery, setServerQuery] = useState("");
   const [serverFilter, setServerFilter] = useState<"all" | "enabled" | "disabled">("all");
+
   const enabledCount = useMemo(() => servers.filter((server) => server.enabled).length, [servers]);
   const visibleServers = useMemo(() => {
     const query = serverQuery.trim().toLowerCase();
@@ -187,8 +192,12 @@ export function McpWorkspace({
       ].some((value) => value.toLowerCase().includes(query));
     });
   }, [serverFilter, serverQuery, servers]);
+
   const selectedServer = servers.find((server) => server.id === expandedId) ?? servers[0] ?? null;
   const draftError = validateMcpDraft(draft);
+  const formTitle = formMode === "edit" ? "编辑服务器" : "添加服务器";
+  const formHint = draftError
+    ?? (formMode === "edit" ? "保存后会更新当前服务器配置。" : "可手动配置，也可粘贴 MCP JSON 批量导入。");
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -254,12 +263,20 @@ export function McpWorkspace({
 
   return (
     <main className="mcp-workspace" aria-labelledby="mcp-title">
-      <section className="mcp-toolbar" aria-label="MCP 管理栏">
-        <div>
-          <h1 id="mcp-title">MCP</h1>
-          <p>{enabledCount}/{servers.length} 已启用 · 上次刷新 {formatTimestamp(lastRefresh?.refreshed)}</p>
+      <section className="mcp-command-strip" aria-label="MCP 管理栏">
+        <div className="mcp-command-main">
+          <p className="mcp-kicker">MCP</p>
+          <h1 id="mcp-title">MCP 服务器</h1>
+          <div className="mcp-meta-strip" aria-label="MCP 摘要">
+            <span>{enabledCount}/{servers.length} 已启用</span>
+            <span>上次刷新 {formatTimestamp(lastRefresh?.refreshed)}</span>
+            <span>{lastRefresh?.tools.length ?? 0} 个工具</span>
+          </div>
         </div>
-        <div className="mcp-toolbar-actions">
+        <div className="mcp-command-actions">
+          <Button type="button" onClick={resetForm} disabled={loading} variant="secondary">
+            新建服务器
+          </Button>
           <Button type="button" onClick={() => void onRefreshServers()} loading={loading} variant="secondary">
             {loading ? "刷新中..." : "刷新服务器"}
           </Button>
@@ -283,162 +300,16 @@ export function McpWorkspace({
         </section>
       ) : null}
 
-      <section className="mcp-grid">
-        <form className="mcp-panel mcp-create-panel" onSubmit={handleSubmit}>
-          <div className="mcp-panel-header">
-            <div>
-              <p className="mcp-kicker">{formMode === "edit" ? "编辑端点" : "新建端点"}</p>
-              <h2>{formMode === "edit" ? "编辑 MCP 服务器" : "添加 MCP 服务器"}</h2>
-            </div>
-            {formMode === "edit" ? (
-              <Button type="button" variant="ghost" size="sm" onClick={resetForm} disabled={loading}>
-                取消
-              </Button>
-            ) : null}
-          </div>
-          {formMode === "create" ? (
-            <div className="mcp-import-box">
-              <label>
-                <span>MCP JSON</span>
-                <textarea
-                  aria-label="MCP JSON"
-                  value={importText}
-                  onChange={(event) => {
-                    setImportText(event.currentTarget.value);
-                    setImportError(null);
-                  }}
-                  placeholder={'{ "mcpServers": { "firecrawl-mcp": { "command": "npx", "args": ["-y", "firecrawl-mcp"], "env": { "FIRECRAWL_API_KEY": "..." } } } }'}
-                  rows={4}
-                />
-              </label>
-              <div className="mcp-import-actions">
-                <Button type="button" variant="secondary" size="sm" disabled={!importText.trim() || loading} onClick={() => void handleImport()}>
-                  Import JSON
-                </Button>
-                {importError ? <span role="alert">{importError}</span> : null}
-              </div>
-            </div>
-          ) : null}
-          <label>
-            <span>名称</span>
-            <input
-              value={draft.name}
-              onChange={(event) => {
-                const { value } = event.currentTarget;
-                setDraft((current) => ({ ...current, name: value }));
-              }}
-              placeholder="filesystem"
-              required
-            />
-          </label>
-          <label>
-            <span>传输方式</span>
-            <select
-              value={draft.transport}
-              onChange={(event) => {
-                const value = event.currentTarget.value as McpServerTransport;
-                setDraft((current) => ({ ...current, transport: value }));
-              }}
-            >
-              <option value="stdio">stdio</option>
-              <option value="sse">sse</option>
-              <option value="http">http</option>
-            </select>
-          </label>
-          {draft.transport === "stdio" ? (
-            <>
-              <label>
-                <span>命令</span>
-                <input
-                  value={draft.command}
-                  onChange={(event) => {
-                    const { value } = event.currentTarget;
-                    setDraft((current) => ({ ...current, command: value }));
-                  }}
-                  placeholder="npx @modelcontextprotocol/server-filesystem"
-                />
-              </label>
-              <label>
-                <span>参数</span>
-                <textarea
-                  value={draft.args}
-                  onChange={(event) => {
-                    const { value } = event.currentTarget;
-                    setDraft((current) => ({ ...current, args: value }));
-                  }}
-                  placeholder="D:\\py\\yuanbao_agent"
-                  rows={3}
-                />
-              </label>
-            </>
-          ) : (
-            <label>
-              <span>URL</span>
-              <input
-                value={draft.url}
-                onChange={(event) => {
-                  const { value } = event.currentTarget;
-                  setDraft((current) => ({ ...current, url: value }));
-                }}
-                placeholder="http://127.0.0.1:8787/sse"
-              />
-            </label>
-          )}
-          {draft.transport !== "stdio" ? (
-            <label>
-              <span>Headers</span>
-              <textarea
-                aria-label="Headers"
-                value={draft.headers}
-                onChange={(event) => {
-                  const { value } = event.currentTarget;
-                  setDraft((current) => ({ ...current, headers: value }));
-                }}
-                placeholder="Authorization=Bearer ..."
-                rows={3}
-              />
-            </label>
-          ) : null}
-          <label>
-            <span>Env</span>
-            <textarea
-              aria-label="Env"
-              value={draft.env}
-              onChange={(event) => {
-                const { value } = event.currentTarget;
-                setDraft((current) => ({ ...current, env: value }));
-              }}
-              placeholder="FIRECRAWL_API_KEY=..."
-              rows={3}
-            />
-          </label>
-          <label className="mcp-toggle">
-            <input
-              type="checkbox"
-              checked={draft.enabled}
-              onChange={(event) => {
-                const { checked } = event.currentTarget;
-                setDraft((current) => ({ ...current, enabled: checked }));
-              }}
-            />
-            <span>创建后启用</span>
-          </label>
-          <div className="mcp-form-actions">
-            <p className="mcp-form-hint" data-tone={draftError ? "danger" : "neutral"}>{draftError ?? "配置完整后可创建服务器。"}</p>
-            <Button type="submit" className="mcp-primary-action" disabled={loading || Boolean(draftError)} loading={loading} variant="primary">
-              {formMode === "edit" ? "保存服务器" : "创建服务器"}
-            </Button>
-          </div>
-        </form>
-
-        <section className="mcp-panel">
-          <div className="mcp-panel-header">
+      <section className="mcp-layout">
+        <section className="mcp-pane mcp-list-pane" aria-label="MCP 服务器列表">
+          <div className="mcp-pane-header">
             <div>
               <p className="mcp-kicker">服务器</p>
               <h2>运行时注册表</h2>
             </div>
             <small>{visibleServers.length}/{servers.length}</small>
           </div>
+
           <div className="mcp-list-tools" aria-label="服务器筛选">
             <label>
               <span>搜索</span>
@@ -467,6 +338,7 @@ export function McpWorkspace({
               ))}
             </div>
           </div>
+
           <div className="mcp-server-list">
             {visibleServers.length ? (
               visibleServers.map((server) => (
@@ -474,14 +346,18 @@ export function McpWorkspace({
                   key={server.id}
                   type="button"
                   className={server.id === selectedServer?.id ? "mcp-server-card is-active" : "mcp-server-card"}
+                  aria-current={server.id === selectedServer?.id ? "true" : undefined}
                   onClick={() => setExpandedId(server.id)}
                 >
                   <span className="mcp-status-dot" data-enabled={server.enabled} aria-hidden="true" />
-                  <span>
+                  <span className="mcp-server-main">
                     <strong>{server.name}</strong>
-                    <small>{server.transport}</small>
+                    <small>{serverEndpoint(server)}</small>
                   </span>
-                  <StatusBadge label={server.enabled ? "已启用" : "已停用"} tone={server.enabled ? "success" : "neutral"} compact />
+                  <span className="mcp-server-meta">
+                    <small>{server.transport}</small>
+                    <StatusBadge label={server.enabled ? "已启用" : "已停用"} tone={server.enabled ? "success" : "neutral"} compact />
+                  </span>
                 </button>
               ))
             ) : servers.length ? (
@@ -498,47 +374,14 @@ export function McpWorkspace({
           </div>
         </section>
 
-        <section className="mcp-panel mcp-detail-panel">
-          <div className="mcp-panel-header">
+        <section className="mcp-pane mcp-inspector-pane" aria-label="MCP 检查器">
+          <div className="mcp-pane-header">
             <div>
               <p className="mcp-kicker">检查器</p>
               <h2>{selectedServer?.name ?? "未选择服务器"}</h2>
             </div>
-          </div>
-          {selectedServer ? (
-            <>
-              <div className="mcp-inspector-band" data-enabled={selectedServer.enabled}>
-                <span className="mcp-status-dot" data-enabled={selectedServer.enabled} aria-hidden="true" />
-                <strong>{selectedServer.enabled ? "端点在线" : "端点已暂停"}</strong>
-                <small>{selectedServer.transport} 传输</small>
-              </div>
-              <dl className="mcp-definition-list">
-                <div>
-                  <dt>ID</dt>
-                  <dd>{selectedServer.id}</dd>
-                </div>
-                <div>
-                  <dt>传输方式</dt>
-                  <dd>{selectedServer.transport}</dd>
-                </div>
-                <div>
-                  <dt>命令</dt>
-                  <dd>{selectedServer.command || selectedServer.url || "未配置"}</dd>
-                </div>
-                <div>
-                  <dt>参数</dt>
-                  <dd>{formatArgs(selectedServer.args)}</dd>
-                </div>
-                <div>
-                  <dt>Env</dt>
-                  <dd>{formatRecordKeys(selectedServer.env)}</dd>
-                </div>
-                <div>
-                  <dt>更新时间</dt>
-                  <dd>{formatTimestamp(selectedServer.updatedAt)}</dd>
-                </div>
-              </dl>
-              <div className="mcp-detail-actions">
+            {selectedServer ? (
+              <div className="mcp-selected-actions">
                 <Button
                   type="button"
                   onClick={() => startEditing(selectedServer)}
@@ -570,7 +413,6 @@ export function McpWorkspace({
                 </Button>
                 <Button
                   type="button"
-                  className="is-danger"
                   onClick={() => requestDeleteServer(selectedServer)}
                   disabled={busyServerId === selectedServer.id}
                   loading={busyServerId === selectedServer.id}
@@ -580,23 +422,210 @@ export function McpWorkspace({
                   删除
                 </Button>
               </div>
-              {lastRefresh?.tools.length ? (
-                <div className="mcp-tool-preview">
-                  <strong>上次刷新的工具</strong>
-                  <ul>
-                    {lastRefresh.tools.slice(0, 8).map((tool) => (
-                      <li key={tool}>{tool}</li>
-                    ))}
-                  </ul>
+            ) : null}
+          </div>
+
+          {selectedServer ? (
+            <div className="mcp-inspector-summary" data-enabled={selectedServer.enabled}>
+              <div className="mcp-inspector-status">
+                <span className="mcp-status-dot" data-enabled={selectedServer.enabled} aria-hidden="true" />
+                <strong>{selectedServer.enabled ? "端点在线" : "端点已暂停"}</strong>
+                <small>{selectedServer.transport} 传输</small>
+              </div>
+              <dl className="mcp-definition-list">
+                <div>
+                  <dt>ID</dt>
+                  <dd>{selectedServer.id}</dd>
                 </div>
-              ) : null}
-            </>
+                <div>
+                  <dt>入口</dt>
+                  <dd>{serverEndpoint(selectedServer)}</dd>
+                </div>
+                <div>
+                  <dt>参数</dt>
+                  <dd>{formatArgs(selectedServer.args)}</dd>
+                </div>
+                <div>
+                  <dt>Env</dt>
+                  <dd>{formatRecordKeys(selectedServer.env)}</dd>
+                </div>
+                <div>
+                  <dt>更新时间</dt>
+                  <dd>{formatTimestamp(selectedServer.updatedAt)}</dd>
+                </div>
+              </dl>
+            </div>
           ) : (
             <div className="mcp-empty-state">
               <strong>选择一个服务器</strong>
               <small>后端注册表已就绪；添加服务器后即可检查并刷新工具。</small>
             </div>
           )}
+
+          {lastRefresh?.tools.length ? (
+            <div className="mcp-tool-preview">
+              <strong>上次刷新的工具</strong>
+              <ul>
+                {lastRefresh.tools.slice(0, 8).map((tool) => (
+                  <li key={tool}>{tool}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <form className="mcp-editor-form" onSubmit={handleSubmit}>
+            <div className="mcp-editor-heading">
+              <div>
+                <p className="mcp-kicker">{formMode === "edit" ? "编辑端点" : "配置"}</p>
+                <h2>{formTitle}</h2>
+              </div>
+              {formMode === "edit" ? (
+                <Button type="button" variant="ghost" size="sm" onClick={resetForm} disabled={loading}>
+                  取消
+                </Button>
+              ) : null}
+            </div>
+
+            {formMode === "create" ? (
+              <div className="mcp-import-box">
+                <label>
+                  <span>MCP JSON</span>
+                  <textarea
+                    aria-label="MCP JSON"
+                    value={importText}
+                    onChange={(event) => {
+                      setImportText(event.currentTarget.value);
+                      setImportError(null);
+                    }}
+                    placeholder={'{ "mcpServers": { "firecrawl-mcp": { "command": "npx", "args": ["-y", "firecrawl-mcp"], "env": { "FIRECRAWL_API_KEY": "..." } } } }'}
+                    rows={3}
+                  />
+                </label>
+                <div className="mcp-import-actions">
+                  <Button type="button" variant="secondary" size="sm" disabled={!importText.trim() || loading} onClick={() => void handleImport()}>
+                    Import JSON
+                  </Button>
+                  {importError ? <span role="alert">{importError}</span> : null}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="mcp-form-grid">
+              <label>
+                <span>名称</span>
+                <input
+                  value={draft.name}
+                  onChange={(event) => {
+                    const { value } = event.currentTarget;
+                    setDraft((current) => ({ ...current, name: value }));
+                  }}
+                  placeholder="filesystem"
+                  required
+                />
+              </label>
+              <label>
+                <span>传输方式</span>
+                <select
+                  value={draft.transport}
+                  onChange={(event) => {
+                    const value = event.currentTarget.value as McpServerTransport;
+                    setDraft((current) => ({ ...current, transport: value }));
+                  }}
+                >
+                  <option value="stdio">stdio</option>
+                  <option value="sse">sse</option>
+                  <option value="http">http</option>
+                </select>
+              </label>
+            </div>
+
+            {draft.transport === "stdio" ? (
+              <>
+                <label>
+                  <span>命令</span>
+                  <input
+                    value={draft.command}
+                    onChange={(event) => {
+                      const { value } = event.currentTarget;
+                      setDraft((current) => ({ ...current, command: value }));
+                    }}
+                    placeholder="npx @modelcontextprotocol/server-filesystem"
+                  />
+                </label>
+                <label>
+                  <span>参数</span>
+                  <textarea
+                    value={draft.args}
+                    onChange={(event) => {
+                      const { value } = event.currentTarget;
+                      setDraft((current) => ({ ...current, args: value }));
+                    }}
+                    placeholder="D:\\py\\yuanbao_agent"
+                    rows={3}
+                  />
+                </label>
+              </>
+            ) : (
+              <label>
+                <span>URL</span>
+                <input
+                  value={draft.url}
+                  onChange={(event) => {
+                    const { value } = event.currentTarget;
+                    setDraft((current) => ({ ...current, url: value }));
+                  }}
+                  placeholder="http://127.0.0.1:8787/sse"
+                />
+              </label>
+            )}
+
+            {draft.transport !== "stdio" ? (
+              <label>
+                <span>Headers</span>
+                <textarea
+                  aria-label="Headers"
+                  value={draft.headers}
+                  onChange={(event) => {
+                    const { value } = event.currentTarget;
+                    setDraft((current) => ({ ...current, headers: value }));
+                  }}
+                  placeholder="Authorization=Bearer ..."
+                  rows={3}
+                />
+              </label>
+            ) : null}
+
+            <label>
+              <span>Env</span>
+              <textarea
+                aria-label="Env"
+                value={draft.env}
+                onChange={(event) => {
+                  const { value } = event.currentTarget;
+                  setDraft((current) => ({ ...current, env: value }));
+                }}
+                placeholder="FIRECRAWL_API_KEY=..."
+                rows={3}
+              />
+            </label>
+            <label className="mcp-toggle">
+              <input
+                type="checkbox"
+                checked={draft.enabled}
+                onChange={(event) => {
+                  const { checked } = event.currentTarget;
+                  setDraft((current) => ({ ...current, enabled: checked }));
+                }}
+              />
+              <span>{formMode === "edit" ? "启用此服务器" : "创建后启用"}</span>
+            </label>
+            <div className="mcp-form-actions">
+              <p className="mcp-form-hint" data-tone={draftError ? "danger" : "neutral"}>{formHint}</p>
+              <Button type="submit" className="mcp-primary-action" disabled={loading || Boolean(draftError)} loading={loading} variant="primary">
+                {formMode === "edit" ? "保存服务器" : "创建服务器"}
+              </Button>
+            </div>
+          </form>
         </section>
       </section>
     </main>

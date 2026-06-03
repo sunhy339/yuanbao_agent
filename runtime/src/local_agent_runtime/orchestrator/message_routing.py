@@ -102,6 +102,14 @@ class MessageRoutingMixin:
             return 1
         return min(budget, 20)
 
+    @staticmethod
+    def _should_use_minimal_context(routing: dict[str, Any]) -> bool:
+        return (
+            routing.get("scenario") == "simple_query"
+            and routing.get("strategy") == "react_fast"
+            and not routing.get("skill_id")
+        )
+
     def _attach_main_workflow_state(
         self,
         *,
@@ -415,13 +423,14 @@ class MessageRoutingMixin:
         branch_prefix = self._safe_worktree_segment(str(worktree_config.get("branchPrefix") or "agent"))
         branch_name = f"{branch_prefix}/{self._safe_worktree_segment(task_id)}"
         worktree_path = self._worktree_path_for_task(workspace_root, task_id, worktree_config)
+        base_ref = str(routing.get("baseRef") or worktree_config.get("baseRef") or "HEAD")
 
         try:
             result = worktree_service.create_for_task({
                 "workspaceId": session["workspaceId"],
                 "sessionId": session["id"],
                 "taskId": task_id,
-                "baseRef": str(worktree_config.get("baseRef") or "HEAD"),
+                "baseRef": base_ref,
                 "branchName": branch_name,
                 "worktreePath": str(worktree_path),
                 "cleanupPolicy": str(worktree_config.get("cleanupPolicy") or "ask_user"),
@@ -453,6 +462,8 @@ class MessageRoutingMixin:
         return None
 
     def _should_auto_bind_worktree(self, routing: dict[str, Any]) -> bool:
+        if routing.get("disableWorktreeBinding") is True:
+            return False
         worktree_config = self._worktree_config()
         if worktree_config.get("autoBindWriteTasks", True) is False:
             return False
@@ -465,6 +476,33 @@ class MessageRoutingMixin:
         if not self._should_auto_bind_worktree(routing):
             return routing
         return {**routing, "worktreeBindingRequired": True}
+
+    @staticmethod
+    def _session_launch_metadata(session: dict[str, Any]) -> dict[str, Any]:
+        launch = session.get("launch")
+        if isinstance(launch, dict):
+            return dict(launch)
+        metadata = session.get("metadata")
+        if isinstance(metadata, dict) and isinstance(metadata.get("launch"), dict):
+            return dict(metadata["launch"])
+        return {}
+
+    def _apply_session_launch_to_routing(self, routing: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
+        launch = self._session_launch_metadata(session)
+        repository = launch.get("repository")
+        if not isinstance(repository, dict):
+            return routing
+        updated = dict(routing)
+        updated["repository"] = dict(repository)
+        branch = repository.get("branch")
+        if isinstance(branch, str) and branch.strip():
+            updated["baseRef"] = branch.strip()
+        if repository.get("worktree") is False:
+            updated["worktreeBindingRequired"] = False
+            updated["disableWorktreeBinding"] = True
+        elif repository.get("worktree") is True and self._should_auto_bind_worktree(updated):
+            updated["worktreeBindingRequired"] = True
+        return updated
 
     def _worktree_config(self) -> dict[str, Any]:
         config = self._store.get_config({})["config"]
@@ -568,6 +606,7 @@ class MessageRoutingMixin:
                 routing = self._routing_with_requested_skill(routing, requested_skill_id)
                 routing_dict = self._routing_dict_from_decision(routing)
                 routing_dict = self._mark_worktree_binding_required(routing_dict)
+                routing_dict = self._apply_session_launch_to_routing(routing_dict, session)
                 routing_dict = self._attach_main_workflow_state(
                     routing=routing_dict,
                     session=session,
@@ -626,12 +665,16 @@ class MessageRoutingMixin:
         _route_latency_ms = int((_time.monotonic() - _route_t0) * 1000)
         routing_dict = self._routing_dict_from_decision(routing)
         routing_dict = self._mark_worktree_binding_required(routing_dict)
+        routing_dict = self._apply_session_launch_to_routing(routing_dict, session)
         routing_dict = self._attach_main_workflow_state(
             routing=routing_dict,
             session=session,
             goal=goal,
             params=params,
         )
+        minimal_context = self._should_use_minimal_context(routing_dict)
+        if minimal_context:
+            routing_dict["contextMode"] = "minimal"
         self._tracer.end_span(
             routing_span.span_id,
             status="ok",
@@ -741,7 +784,8 @@ class MessageRoutingMixin:
             session_id=session["id"],
             goal=goal,
             skill_id=routing.skill_id,
-            lightweight=False,
+            lightweight=minimal_context,
+            minimal=minimal_context,
             current_message_metadata=message_metadata,
         )
         if isinstance(context.get("skillFallback"), dict):

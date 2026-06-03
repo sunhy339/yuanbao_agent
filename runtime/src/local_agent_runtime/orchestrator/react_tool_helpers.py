@@ -10,7 +10,7 @@ from copy import deepcopy
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from ..execution.tool_pipeline import is_verification_command
+from ..execution.tool_pipeline import _model_visible_tool_result, is_verification_command
 
 
 _CONTEXT_DISCOVERY_TOOL_NAMES = frozenset(
@@ -1293,9 +1293,18 @@ class ReactToolHelpersMixin:
         return tool_name in {"apply_patch", "write_file", "run_command", "task"}
 
     def _tool_result_message(self, tool_call: dict[str, Any], tool_result: dict[str, Any]) -> dict[str, Any]:
+        visible_result = tool_result.get("modelVisibleResult")
+        if visible_result is None:
+            visible_result = _model_visible_tool_result(
+                str(tool_result.get("name") or ""),
+                tool_result.get("result"),
+                str(tool_result.get("target") or ""),
+                summary=str(tool_result.get("resultSummary") or ""),
+                preview=tool_result.get("resultPreview") if isinstance(tool_result.get("resultPreview"), list) else None,
+            )
         return {
             "role": "tool",
             "tool_call_id": tool_call.get("id") or tool_result["id"],
             "name": tool_result["name"],
-            "content": json.dumps(tool_result["result"], ensure_ascii=False),
+            "content": json.dumps(visible_result, ensure_ascii=False),
         }

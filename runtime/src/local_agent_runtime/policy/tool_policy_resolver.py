@@ -21,6 +21,7 @@ READ_ONLY_TOOL_NAMES = (
         "memory.recall",
         "scratchpad.read",
 )
+PLAN_MODE_TOOL_NAMES = (*READ_ONLY_TOOL_NAMES, "exit_plan_mode")
 LOCAL_READ_ONLY_TOOL_NAMES = (
     "list_dir",
     "search_files",
@@ -34,6 +35,7 @@ READ_ONLY_TOOLS = frozenset(
 )
 WRITE_TOOLS = frozenset({"write_file", "apply_patch", "run_command"})
 MEMORY_AND_SCRATCHPAD_TOOLS = frozenset({"memory.recall", "memory.remember", "scratchpad.read", "scratchpad.write"})
+CONTROL_FLOW_TOOL_NAMES = frozenset({"ask_user_question", "enter_plan_mode", "exit_plan_mode"})
 VERIFICATION_COMMAND_MARKERS = (
     "pytest",
     "unittest",
@@ -288,6 +290,8 @@ class ToolPolicyResolver:
     ) -> str:
         if task.get("status") == "waiting_approval":
             return "approval_waiting"
+        if context.get("_plan_mode") is True:
+            return "plan_mode"
         if self._last_task_result_ready(context, tool_results):
             return "synthesis"
         if self._last_ready_task_result(tool_results) and self._allow_tools_after_task_results(context):
@@ -357,6 +361,8 @@ class ToolPolicyResolver:
         reasons: dict[str, str] = {}
         if phase in {"synthesis", "approval_waiting"}:
             return set(), reasons
+        if phase == "plan_mode":
+            return set(PLAN_MODE_TOOL_NAMES), reasons
 
         child_allowlist = self._child_allowlist(context)
         if runtime_role in {"root", "worker"} and child_allowlist is None and context.get("_child_worker") is not True:
@@ -637,7 +643,7 @@ class ToolPolicyResolver:
         }
         if mode == "inherit_all":
             return True, ""
-        if tool_name in MEMORY_AND_SCRATCHPAD_TOOLS:
+        if tool_name in MEMORY_AND_SCRATCHPAD_TOOLS or tool_name in CONTROL_FLOW_TOOL_NAMES:
             return True, ""
         if mode == "inherit_mcp" and tool_name.startswith("mcp__"):
             return True, ""

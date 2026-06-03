@@ -36,6 +36,13 @@ def _message_text(context: dict[str, Any]) -> str:
     return "\n".join(str(message["content"]) for message in context["messages"])
 
 
+def _message_with_content_prefix(context: dict[str, Any], prefix: str) -> dict[str, Any]:
+    for message in context["messages"]:
+        if str(message.get("content") or "").startswith(prefix):
+            return message
+    raise AssertionError(f"missing message starting with {prefix!r}")
+
+
 def test_context_builder_injects_messages_tools_and_safety_prompt(store: SQLiteStore, tmp_path: Path) -> None:
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -70,6 +77,25 @@ def test_context_builder_injects_messages_tools_and_safety_prompt(store: SQLiteS
     assert context["budgetStats"]["estimatedTokens"] <= context["budgetStats"]["maxContextTokens"]
     assert "top-level entries:" not in text
     assert "Workspace root is accessible and non-empty." in text
+
+
+def test_context_builder_minimal_context_skips_workspace_pack_and_tools(store: SQLiteStore, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "README.md").write_text("# Demo\n" + ("large project notes\n" * 2000), encoding="utf-8")
+
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Minimal")
+    context = ContextBuilder(store).build(session_id=session["id"], goal="你好", minimal=True)
+
+    text = _message_text(context)
+    assert context["minimal"] is True
+    assert context["tools"] == []
+    assert context["openai_tools"] == []
+    assert context["budgetStats"]["toolSchemaTokens"] == 0
+    assert context["budgetStats"]["estimatedInputTokens"] < 1000
+    assert "stable_workspace_context" not in context["budgetStats"]["includedSections"]
+    assert "large project notes" not in text
 
 
 def test_context_builder_summarizes_recent_history(store: SQLiteStore, tmp_path: Path) -> None:
@@ -385,7 +411,7 @@ def test_context_builder_attaches_recent_workspace_images(
         lightweight=False,
     )
 
-    user_context_message = context["messages"][1]
+    user_context_message = _message_with_content_prefix(context, "Dynamic context tail:")
     current_request_message = context["messages"][-1]
     assert "Recent conversation:" in str(user_context_message["content"])
     assert user_context_message["imageAttachments"] == [
@@ -426,7 +452,7 @@ def test_context_builder_prefers_current_image_when_history_duplicates_path(
         current_message_metadata={"attachments": ["same.png"]},
     )
 
-    user_context_message = context["messages"][1]
+    user_context_message = _message_with_content_prefix(context, "Dynamic context tail:")
     current_request_message = context["messages"][-1]
     assert "imageAttachments" not in user_context_message
     assert current_request_message["imageAttachments"][0]["path"] == "same.png"
@@ -462,9 +488,12 @@ def test_context_builder_preserves_large_recent_conversation_for_cache_prefix(
     assert "historical turn 0" in text
     assert "historical turn 95" in text
     assert "line one keeps formatting 20" in text
-    assert context["budgetStats"]["promptCache"]["targetFillRatio"] == 0.92
-    assert context["budgetStats"]["promptCache"]["maxStableContextTokens"] == 80000
-    assert context["budgetStats"]["stablePrefixTokens"] > 2000
+    stats = context["budgetStats"]
+    assert stats["promptCache"]["targetFillRatio"] == 0.92
+    assert stats["promptCache"]["maxStableContextTokens"] == 80000
+    assert "recent_conversation" in stats["dynamicTailSections"]
+    assert stats["stablePrefixTokens"] > 0
+    assert stats["stablePrefixTokens"] < stats["messageTokens"]
 
 
 def test_context_builder_expands_cache_friendly_history_and_stable_prefix(
@@ -523,6 +552,48 @@ def test_context_builder_expands_cache_friendly_history_and_stable_prefix(
     assert context["budgetStats"]["promptCache"]["enabled"] is True
     assert context["budgetStats"]["stablePrefixTokens"] > 0
     assert context["budgetStats"]["estimatedTokens"] <= 12000
+
+
+def test_context_builder_splits_stable_prefix_from_dynamic_tail(
+    store: SQLiteStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "README.md").write_text("# Stable docs\n", encoding="utf-8")
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="Stable split")
+    store.create_message(session_id=session["id"], role="user", content="Previous volatile turn.")
+    monkeypatch.setattr(
+        ContextBuilder,
+        "_git_summary",
+        lambda self, workspace_root: "Git status summary:\n- modified runtime file.",
+    )
+
+    context = ContextBuilder(store, tool_schemas=[]).build(
+        session_id=session["id"],
+        goal="Continue implementation",
+        lightweight=False,
+    )
+
+    messages = context["messages"]
+    stable_message = _message_with_content_prefix(context, "Stable context prefix:")
+    dynamic_message = _message_with_content_prefix(context, "Dynamic context tail:")
+    assert [message["role"] for message in messages] == ["system", "user", "user", "user"]
+    assert "--- README.md ---" in str(stable_message["content"])
+    assert "Recent conversation:" not in str(stable_message["content"])
+    assert "Git status summary:" not in str(stable_message["content"])
+    assert "Recent conversation:" in str(dynamic_message["content"])
+    assert "Git status summary:" in str(dynamic_message["content"])
+    assert str(messages[-1]["content"]) == "Current user request:\nContinue implementation"
+
+    stats = context["budgetStats"]
+    assert "key_file:README.md" in stats["stablePrefixSections"]
+    assert "recent_conversation" in stats["dynamicTailSections"]
+    assert "git_status" in stats["dynamicTailSections"]
+    assert stats["stablePrefixTokens"] > 0
+    assert stats["stablePrefixTokens"] < stats["messageTokens"]
 
 
 def test_context_builder_prompt_cache_policy_can_be_disabled(

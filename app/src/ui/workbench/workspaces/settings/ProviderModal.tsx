@@ -179,7 +179,7 @@ export function ProviderModal({
             </label>
           </fieldset>
 
-          <label className="settings-field" htmlFor="provider-json">
+          <label className="settings-field settings-form-wide" htmlFor="provider-json">
             <span>设置 JSON / 环境变量</span>
             <textarea id="provider-json" value={draft.jsonConfig} onChange={(event) => updateDraft({ jsonConfig: event.currentTarget.value })} rows={8} placeholder={buildProviderJson(draft)} />
           </label>

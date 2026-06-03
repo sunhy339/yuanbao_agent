@@ -9,7 +9,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from ..haha_cc_compat import normalize_haha_cc_usage
+from ..yuanbao_event_adapter import normalize_yuanbao_usage
 
 class AgentStoreMixin:
     def upsert_agent_worker(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -306,7 +306,7 @@ class AgentStoreMixin:
     def _provider_cache_usage(self, usage: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(usage, dict):
             return {"cacheHit": False, "cachedTokens": 0}
-        normalized = normalize_haha_cc_usage(usage)
+        normalized = normalize_yuanbao_usage(usage)
         cached_tokens = self._int_from_value(normalized.get("cache_read_tokens"))
         cache_creation_tokens = self._int_from_value(normalized.get("cache_creation_tokens"))
         result = {

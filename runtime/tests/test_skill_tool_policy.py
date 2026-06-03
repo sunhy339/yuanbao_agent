@@ -208,6 +208,9 @@ _FAKE_BUILTIN_TOOLS = [
     {"name": "write_file", "description": "Write a file"},
     {"name": "run_command", "description": "Run a command"},
     {"name": "search_files", "description": "Search files"},
+    {"name": "ask_user_question", "description": "Ask the user for input"},
+    {"name": "enter_plan_mode", "description": "Enter plan mode"},
+    {"name": "exit_plan_mode", "description": "Submit a plan for approval"},
 ]
 
 _FAKE_MCP_TOOLS = [
@@ -269,6 +272,9 @@ class TestContextBuilderStrictWhitelist:
         assert "memory.recall" in tool_names
         assert "memory.remember" in tool_names
         assert "scratchpad.write" in tool_names
+        assert "ask_user_question" in tool_names
+        assert "enter_plan_mode" in tool_names
+        assert "exit_plan_mode" in tool_names
         # These should NOT be present
         assert "write_file" not in tool_names
         assert "run_command" not in tool_names

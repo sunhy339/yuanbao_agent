@@ -64,6 +64,22 @@ class TestSplitSegments:
         assert primers[0]["content"] == "sys1"
         assert primers[1]["content"] == "sys2"
 
+    def test_leading_stable_context_prefix_is_a_primer(self) -> None:
+        msgs = [
+            _msg("system", "sys"),
+            _msg("user", "Stable context prefix:\n--- README.md ---\nstable docs"),
+            _msg("user", "Dynamic context tail:\nRecent conversation:\nUser: hi"),
+            _msg("user", "Current user request:\ncontinue"),
+        ]
+
+        primers, history, recents = self.compactor._split_segments(msgs)
+
+        assert [message["content"] for message in primers] == [
+            "sys",
+            "Stable context prefix:\n--- README.md ---\nstable docs",
+        ]
+        assert "Dynamic context tail:" in recents[0]["content"]
+
     def test_recents_keeps_last_n_non_system(self) -> None:
         msgs = [_msg("system", "sys")] + [
             _msg("user", f"turn {i}") for i in range(10)
@@ -231,6 +247,21 @@ class TestCompact:
         result = self.compactor.compact("sess_3", msgs, max_tokens=200)
         sys_msgs = [m for m in result.kept_messages if m["role"] == "system" and "you are" in m["content"]]
         assert len(sys_msgs) == 1
+
+    def test_compaction_preserves_stable_context_prefix(self) -> None:
+        stable_prefix = "Stable context prefix:\n--- README.md ---\nKeep this prefix cacheable."
+        msgs = [
+            _msg("system", "sys"),
+            _msg("user", stable_prefix),
+            *[_msg("user", _long_content(200)) for _ in range(20)],
+            _msg("user", "Dynamic context tail:\nRecent conversation:\nUser: continue"),
+            _msg("user", "Current user request:\ncontinue"),
+        ]
+
+        result = self.compactor.compact("sess_stable", msgs, max_tokens=220)
+
+        assert result.kept_messages[0]["content"] == "sys"
+        assert result.kept_messages[1]["content"] == stable_prefix
 
     def test_compaction_preserves_recents(self) -> None:
         msgs = [

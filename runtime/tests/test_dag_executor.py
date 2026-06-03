@@ -440,7 +440,39 @@ class TestDAGExecutorExecute:
         assert call["mcpPolicy"] == {"mode": "allow", "allowedServers": ["kb"]}
         assert "mcp__*" in call["childToolAllowlist"]
 
-    def test_passes_parent_active_worktree_to_child_dispatch(self) -> None:
+    def test_passes_parent_active_worktree_to_read_only_child_dispatch(self) -> None:
+        subtasks = [
+            Subtask(
+                id="a",
+                title="Inspect docs",
+                description="Read README in worktree without changing files.",
+                dependencies=[],
+                agent_type="planner",
+            ),
+        ]
+        plan = _make_plan(subtasks)
+        mock = MockSubagentService()
+        executor = DAGExecutor(mock)
+
+        executor.execute(
+            plan,
+            session_id="my-session",
+            parent_task_id="my-task",
+            active_worktree={
+                "id": "wt_123",
+                "worktreePath": "D:/tmp/worktree",
+                "branchName": "agent/my-task",
+                "baseRef": "HEAD",
+                "status": "active",
+            },
+        )
+
+        call = mock.calls[0]
+        assert call["agentType"] == "planner"
+        assert call["activeWorktree"]["id"] == "wt_123"
+        assert call["activeWorktree"]["worktreePath"] == "D:/tmp/worktree"
+
+    def test_omits_parent_active_worktree_for_write_child_dispatch(self) -> None:
         subtasks = [
             Subtask(id="a", title="Update docs", description="Edit README in worktree.", dependencies=[]),
         ]
@@ -462,8 +494,8 @@ class TestDAGExecutorExecute:
         )
 
         call = mock.calls[0]
-        assert call["activeWorktree"]["id"] == "wt_123"
-        assert call["activeWorktree"]["worktreePath"] == "D:/tmp/worktree"
+        assert "apply_patch" in call["childToolAllowlist"]
+        assert "activeWorktree" not in call
 
 
 # ---------------------------------------------------------------------------

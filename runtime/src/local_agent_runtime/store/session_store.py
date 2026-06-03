@@ -366,15 +366,15 @@ class SessionStoreMixin:
             "existingFiles": existing_files,
         }
 
-    def create_session(self, workspace_id: str, title: str) -> dict[str, Any]:
+    def create_session(self, workspace_id: str, title: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         session_id = self.new_id("sess")
         now = self.now()
         self._conn.execute(
             """
-            INSERT INTO sessions (id, workspace_id, title, status, summary, created_at, updated_at)
-            VALUES (?, ?, ?, 'active', NULL, ?, ?)
+            INSERT INTO sessions (id, workspace_id, title, status, summary, created_at, updated_at, metadata_json)
+            VALUES (?, ?, ?, 'active', NULL, ?, ?, ?)
             """,
-            (session_id, workspace_id, title, now, now),
+            (session_id, workspace_id, title, now, now, json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True)),
         )
         self._conn.commit()
         return self.require_session(session_id)
@@ -758,6 +758,36 @@ class SessionStoreMixin:
         )
         self._conn.commit()
         return {"session": self.require_session(session_id)}
+
+    def update_session_metadata(self, session_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise ValueError("sessionId is required")
+        if not isinstance(patch, dict):
+            raise ValueError("metadata patch must be an object")
+        row = self._conn.execute(
+            "SELECT metadata_json FROM sessions WHERE id = ?",
+            (session_id.strip(),),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Session not found: {session_id}")
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata.update(patch)
+        now = self.now()
+        self._conn.execute(
+            """
+            UPDATE sessions
+            SET metadata_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (json.dumps(metadata, ensure_ascii=False, sort_keys=True), now, session_id.strip()),
+        )
+        self._conn.commit()
+        return {"session": self.require_session(session_id.strip())}
 
     def delete_session(self, params: dict[str, Any]) -> dict[str, Any]:
         session_id = self._require_non_empty(params, "sessionId")

@@ -218,9 +218,21 @@ class Orchestrator(
         return {"workspace": workspace}
 
     def create_session(self, params: dict[str, Any]) -> dict[str, Any]:
+        launch: dict[str, Any] = {}
+        work_dir = params.get("workDir") or params.get("work_dir")
+        if isinstance(work_dir, str) and work_dir.strip():
+            launch["workDir"] = work_dir.strip()
+        repository = params.get("repository")
+        if isinstance(repository, dict):
+            launch["repository"] = dict(repository)
+        permission_mode = params.get("permissionMode") or params.get("permission_mode")
+        if isinstance(permission_mode, str) and permission_mode.strip():
+            launch["permissionMode"] = permission_mode.strip()
+        metadata = {"launch": launch} if launch else None
         session = self._session_service.create_session(
             workspace_id=params["workspaceId"],
             title=params["title"],
+            metadata=metadata,
         )
         return {"session": session}
 

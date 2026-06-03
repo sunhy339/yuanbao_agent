@@ -659,6 +659,17 @@ class ProviderTurnMixin:
             event_type="provider.request",
             payload={**self._provider_trace_payload(provider_context), "stream": True},
         )
+        if hasattr(self, "_publish"):
+            self._publish(
+                session_id=session_id,
+                task=task,
+                event_type="status",
+                payload={
+                    "state": "streaming",
+                    "verb": "model",
+                    "step": provider_context.get("step"),
+                },
+            )
         logger.info(
             "Streaming provider response for task=%s step=%s",
             task["id"], provider_context.get("step"),
@@ -1583,6 +1594,20 @@ class ProviderTurnMixin:
             payload["tokensAfter"] = tokens_after
         if category is not None:
             payload["category"] = category
+        status_payload: dict[str, Any] = {
+            "state": "compacting",
+            "verb": phase,
+            "phase": phase,
+            "strategy": strategy,
+        }
+        if isinstance(tokens_before, int):
+            status_payload["tokens"] = tokens_before
+        self._publish(
+            session_id=session_id,
+            task=task,
+            event_type="status",
+            payload=status_payload,
+        )
         self._publish(
             session_id=session_id,
             task=task,

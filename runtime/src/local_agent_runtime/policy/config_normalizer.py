@@ -46,6 +46,8 @@ def normalize_permissions(raw_config: dict[str, Any]) -> dict[str, Any]:
         approval_mode = policy.get("approvalMode", "")
 
     legacy_preset_map = {
+        "accept_edits": "balanced",
+        "accept-edits": "balanced",
         "none": "autonomous",
         "never": "autonomous",
         "off": "autonomous",
@@ -55,6 +57,9 @@ def normalize_permissions(raw_config: dict[str, Any]) -> dict[str, Any]:
     }
     preset_name = legacy_preset_map.get(approval_mode, "balanced")
     overrides: dict[str, Any] = {}
+    if approval_mode in {"accept_edits", "accept-edits"}:
+        overrides["writeFile"] = {"mode": "allow", "scope": "*"}
+        overrides["runCommand"] = {"mode": "ask", "scope": "*"}
 
     # Merge autonomy profile overrides
     autonomy = raw_config.get("autonomy")

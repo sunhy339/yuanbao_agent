@@ -100,6 +100,10 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert created_event["visibility"] == "panel"
     assert created_event["payload"]["task"]["id"] == task["id"]
     assert created_event["payload"]["task"]["title"] == "Publish collaboration events"
+    assert created_event["hahaCc"] == {
+        "type": "team_created",
+        "teamName": session["id"],
+    }
 
     assert claimed_event["sessionId"] == session["id"]
     assert claimed_event["taskId"] == task["id"]
@@ -108,6 +112,18 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert claimed_event["payload"]["task"]["assignedWorkerId"] == worker["id"]
     assert claimed_event["payload"]["worker"]["id"] == worker["id"]
     assert claimed_event["payload"]["worker"]["currentTaskId"] == task["id"]
+    assert claimed_event["hahaCc"] == {
+        "type": "team_update",
+        "teamName": session["id"],
+        "members": [
+            {
+                "agentId": worker["id"],
+                "role": "worker",
+                "status": "running",
+                "currentTask": task["id"],
+            }
+        ],
+    }
 
     assert message_event["sessionId"] == session["id"]
     assert message_event["taskId"] == task["id"]
@@ -116,12 +132,35 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert message_event["payload"]["message"]["senderWorkerId"] == worker["id"]
     assert message_event["payload"]["message"]["taskId"] == task["id"]
     assert message_event["payload"]["message"]["payload"]["confidence"] == 0.95
+    assert message_event["hahaCc"] == {
+        "type": "team_update",
+        "teamName": task["id"],
+        "members": [
+            {
+                "agentId": worker["id"],
+                "role": "result",
+                "status": "running",
+                "currentTask": "Collaboration event emitted.",
+            }
+        ],
+    }
     assert completed_event["sessionId"] == session["id"]
     assert completed_event["taskId"] == task["id"]
     assert completed_event["visibility"] == "panel"
     assert completed_event["payload"]["task"]["id"] == completed["id"]
     assert completed_event["payload"]["task"]["status"] == "completed"
     assert completed_event["payload"]["worker"]["status"] == "idle"
+    assert completed_event["hahaCc"] == {
+        "type": "team_update",
+        "teamName": session["id"],
+        "members": [
+            {
+                "agentId": worker["id"],
+                "role": "worker",
+                "status": "idle",
+            }
+        ],
+    }
 
     trace_events = runtime_harness.call("trace.list", {"taskId": task["id"]})["result"]["traceEvents"]
     trace_types = [event["type"] for event in trace_events]
@@ -134,3 +173,46 @@ def test_collaboration_rpc_emits_task_claim_and_message_events(runtime_harness: 
     assert trace_events[0]["sessionId"] == session["id"]
     assert trace_events[0]["taskId"] == task["id"]
     assert {event["visibility"] for event in trace_events} == {"panel"}
+    assert [event["hahaCc"] for event in trace_events] == [
+        created_event["hahaCc"],
+        claimed_event["hahaCc"],
+        message_event["hahaCc"],
+        completed_event["hahaCc"],
+    ]
+
+
+def test_session_update_emits_haha_cc_title_event(runtime_harness: Any, tmp_path: Path) -> None:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = _result(runtime_harness.call("workspace.open", {"path": str(workspace_root)}), "workspace")
+    session = _result(
+        runtime_harness.call("session.create", {"workspaceId": workspace["id"], "title": "old title"}),
+        "session",
+    )
+
+    updated = _result(
+        runtime_harness.call(
+            "session.update",
+            {
+                "sessionId": session["id"],
+                "title": "new title",
+            },
+        ),
+        "session",
+    )
+
+    assert updated["title"] == "new title"
+    event = _event(runtime_harness, "session.updated")
+    assert event["sessionId"] == session["id"]
+    assert event["taskId"] == session["id"]
+    assert event["payload"]["title"] == "new title"
+    assert event["payload"]["changedFields"] == ["title"]
+    assert event["hahaCc"] == {
+        "type": "session_title_updated",
+        "sessionId": session["id"],
+        "title": "new title",
+    }
+
+    trace_events = runtime_harness.call("events.after", {"sessionId": session["id"], "afterSeq": 0})["result"]["events"]
+    session_trace = [item for item in trace_events if item["type"] == "session.updated"]
+    assert session_trace[-1]["hahaCc"] == event["hahaCc"]

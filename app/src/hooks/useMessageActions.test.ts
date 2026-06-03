@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { buildPromptAttachmentsWithReferences, extractPromptFileReferences } from "./useMessageActions";
+import { describe, expect, it, vi } from "vitest";
+import {
+  buildPromptAttachmentsWithReferences,
+  extractPromptFileReferences,
+  resolveWorkspaceForSlashCommand,
+} from "./useMessageActions";
 
 describe("prompt file references", () => {
   it("extracts unique @ file references from prompt text", () => {
@@ -18,5 +22,20 @@ describe("prompt file references", () => {
       attachments: ["manual.png", "app/src/ui/haha-clean/TODO.md"],
       fileReferences: ["app/src/ui/haha-clean/TODO.md"],
     });
+  });
+
+  it("resolves slash commands against the launch workspace path", async () => {
+    const ensureWorkspace = vi.fn(async () => ({ id: "ws_yuanbao", rootPath: "D:/py/yuanbao_agent" }));
+    const openWorkspaceAtPath = vi.fn(async (path: string) => ({ id: "ws_snake", rootPath: path }));
+
+    await expect(resolveWorkspaceForSlashCommand({
+      launch: { workDir: "D:/py/snake_game" },
+      workspace: { id: "ws_yuanbao", rootPath: "D:/py/yuanbao_agent" },
+      ensureWorkspace,
+      openWorkspaceAtPath,
+    })).resolves.toEqual({ id: "ws_snake", rootPath: "D:/py/snake_game" });
+
+    expect(openWorkspaceAtPath).toHaveBeenCalledWith("D:/py/snake_game");
+    expect(ensureWorkspace).not.toHaveBeenCalled();
   });
 });

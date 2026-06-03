@@ -166,6 +166,7 @@ class MemoryFlowMixin:
                 "summary": session.get("summary"),
                 "title": session.get("title"),
                 "status": session.get("status"),
+                "changedFields": ["summary"],
             },
         )
         if hasattr(self._store, "require_workspace") and hasattr(self._store, "update_workspace_summary"):

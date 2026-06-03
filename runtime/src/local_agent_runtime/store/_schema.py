@@ -38,7 +38,8 @@ class SchemaBootstrapMixin:
                 status TEXT NOT NULL,
                 summary TEXT,
                 created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                metadata_json TEXT DEFAULT '{}'
             );
 
             CREATE TABLE IF NOT EXISTS tasks (
@@ -728,6 +729,7 @@ class SchemaBootstrapMixin:
         self._conn.commit()
 
         self._ensure_workspace_columns()
+        self._ensure_session_columns()
         self._ensure_task_columns()
         self._ensure_message_columns()
         self._ensure_patch_columns()
@@ -749,6 +751,15 @@ class SchemaBootstrapMixin:
             self._conn.execute("ALTER TABLE workspaces ADD COLUMN focus TEXT")
         if "summary" not in columns:
             self._conn.execute("ALTER TABLE workspaces ADD COLUMN summary TEXT")
+        self._conn.commit()
+
+    def _ensure_session_columns(self) -> None:
+        columns = {
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        if "metadata_json" not in columns:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN metadata_json TEXT DEFAULT '{}'")
         self._conn.commit()
 
     def _ensure_task_columns(self) -> None:

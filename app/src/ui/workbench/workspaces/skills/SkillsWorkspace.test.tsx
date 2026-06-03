@@ -2,10 +2,16 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { SkillsWorkspace } from "./SkillsWorkspace";
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(),
+}));
 
 afterEach(() => {
   cleanup();
+  vi.clearAllMocks();
   vi.restoreAllMocks();
 });
 
@@ -64,6 +70,45 @@ describe("SkillsWorkspace", () => {
     expect(onOpenMcp).toHaveBeenCalledTimes(1);
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: /添加技能/ })).not.toBeInTheDocument();
+  });
+
+  it("imports skill packages, folders, and opens the skills directory through callbacks", async () => {
+    const user = userEvent.setup();
+    const onImportSkills = vi.fn().mockResolvedValue(undefined);
+    const onOpenSkillsFolder = vi.fn();
+    const openDialogMock = vi.mocked(openDialog);
+    openDialogMock
+      .mockResolvedValueOnce("D:\\skills\\reviewer.zip")
+      .mockResolvedValueOnce(["D:\\skills\\researcher"])
+      .mockResolvedValueOnce(null);
+
+    render(
+      <SkillsWorkspace
+        providerLabel="local"
+        mcpServers={[]}
+        skills={[]}
+        onImportSkills={onImportSkills}
+        onOpenSkillsFolder={onOpenSkillsFolder}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "导入 JSON/ZIP" }));
+    await user.click(screen.getByRole("button", { name: "导入文件夹" }));
+    await user.click(screen.getByRole("button", { name: "导入 JSON/ZIP" }));
+    await user.click(screen.getByRole("button", { name: "打开目录" }));
+
+    expect(openDialogMock).toHaveBeenNthCalledWith(1, {
+      multiple: false,
+      filters: [{ name: "Skill package", extensions: ["json", "zip"] }],
+    });
+    expect(openDialogMock).toHaveBeenNthCalledWith(2, {
+      directory: true,
+      multiple: false,
+    });
+    expect(onImportSkills).toHaveBeenCalledTimes(2);
+    expect(onImportSkills).toHaveBeenNthCalledWith(1, "D:\\skills\\reviewer.zip");
+    expect(onImportSkills).toHaveBeenNthCalledWith(2, "D:\\skills\\researcher");
+    expect(onOpenSkillsFolder).toHaveBeenCalledTimes(1);
   });
 
   it("filters installed skills by search text and type", async () => {

@@ -336,6 +336,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         createdAt: event.ts,
         sequence: event.seq ?? event.ts,
         visibility: event.visibility,
+        hahaCc: event.hahaCc,
       };
       const existingIndex = current.findIndex((item) => item.id === trace.id);
       if (existingIndex >= 0) {
@@ -609,7 +610,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         }
 
         if (event.type === "tool.started") {
-          if (!isChatVisibleEvent(event)) {
+          if (!isChatVisibleEvent(event) || isChatCompatPayload(event.payload)) {
             return;
           }
           const payload = event.payload as ToolLifecyclePayload;
@@ -643,7 +644,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
         }
 
         if (event.type === "tool.completed" || event.type === "tool.failed" || event.type === "tool.blocked") {
-          if (!isChatVisibleEvent(event)) {
+          if (!isChatVisibleEvent(event) || isChatCompatPayload(event.payload)) {
             return;
           }
           const payload = event.payload as ToolLifecyclePayload;

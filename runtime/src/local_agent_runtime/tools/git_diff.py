@@ -14,9 +14,51 @@ from ._shared import (
     to_relative_path,
 )
 
+_DIFF_ARTIFACT_MIN_CHARS = 8000
+
 
 def _step(label: str, status: str, summary: str) -> dict[str, str]:
     return {"label": label, "status": status, "summary": summary}
+
+
+def _maybe_create_diff_artifact(
+    store: Any,
+    params: dict[str, Any],
+    *,
+    diff_text: str,
+    files: list[dict[str, Any]],
+    staged: bool,
+    pathspec: str | None,
+) -> str:
+    if len(diff_text) <= _DIFF_ARTIFACT_MIN_CHARS or not hasattr(store, "create_artifact"):
+        return ""
+    session_id = str(params.get("sessionId") or "").strip()
+    task_id = str(params.get("taskId") or "").strip()
+    if not session_id or not task_id:
+        return ""
+    try:
+        artifact = store.create_artifact({
+            "sessionId": session_id,
+            "parentTaskId": task_id,
+            "producerTaskId": task_id,
+            "kind": "patch",
+            "title": "git diff",
+            "description": "Large git diff captured for traceable review.",
+            "content": {
+                "diff": diff_text,
+                "files": files,
+                "staged": staged,
+                "path": pathspec,
+            },
+            "metadata": {
+                "source": "git_diff",
+                "chars": len(diff_text),
+            },
+        }).get("artifact", {})
+    except Exception:  # noqa: BLE001
+        return ""
+    artifact_id = artifact.get("id") if isinstance(artifact, dict) else None
+    return str(artifact_id or "")
 
 
 def build_git_diff_tool(policy_guard: Any, store: Any, subagent_service: Any | None = None) -> dict[str, Any]:
@@ -50,6 +92,7 @@ def build_git_diff_tool(policy_guard: Any, store: Any, subagent_service: Any | N
             git_args.extend(["--", pathspec])
 
         diff_completed = run_git_command(cwd, git_args)
+        diff_text = diff_completed.stdout or ""
 
         name_status_args = ["diff"]
         if staged:
@@ -65,6 +108,15 @@ def build_git_diff_tool(policy_guard: Any, store: Any, subagent_service: Any | N
             if line.strip()
         ]
 
+        artifact_id = _maybe_create_diff_artifact(
+            store,
+            params,
+            diff_text=diff_text,
+            files=files,
+            staged=staged,
+            pathspec=pathspec,
+        )
+
         return {
             "workspaceRoot": str(workspace_root),
             "cwd": relative_cwd,
@@ -72,10 +124,11 @@ def build_git_diff_tool(policy_guard: Any, store: Any, subagent_service: Any | N
             "staged": staged,
             "path": pathspec,
             "files": files,
-            "diff": diff_completed.stdout or "",
+            "diff": diff_text,
+            **({"artifactId": artifact_id} if artifact_id else {}),
             "steps": [
                 *steps,
-                _step("diff", "completed", f"{len(diff_completed.stdout or '')} character(s)"),
+                _step("diff", "completed", f"{len(diff_text)} character(s)"),
                 _step("files", "completed", f"{len(files)} file(s)"),
             ],
         }

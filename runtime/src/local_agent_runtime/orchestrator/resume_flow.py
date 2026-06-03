@@ -47,6 +47,34 @@ class ResumeFlowMixin:
                 self._tracer.end_span(span.span_id, status="ok", attributes={"path": "react_cooperative"})
                 return {"task": resumed_task}
 
+            if self._pending_user_question_state(pending_state) is not None:
+                if not self._store.get_pending_supplements(task["id"]):
+                    paused_task = self._store.update_task_status(task_id=task["id"], status="paused")
+                    self._publish(
+                        session_id=paused_task["sessionId"],
+                        task=paused_task,
+                        event_type="task.resume.blocked",
+                        payload={"status": "paused", "reason": "waiting_for_user_answer"},
+                    )
+                    self._tracer.end_span(span.span_id, status="ok", attributes={"path": "react_user_answer_missing"})
+                    return {"task": paused_task}
+                running_task = self._store.update_task_status(task_id=task["id"], status="running")
+                self._publish(
+                    session_id=running_task["sessionId"],
+                    task=running_task,
+                    event_type="task.resumed",
+                    payload={"status": "running", "detail": "Resuming ReAct task after user answer."},
+                )
+                self._fire_hooks("on_task_resume", running_task["sessionId"], running_task, extra_context={"resumePath": "react_user_answer"})
+                answered_state = self._inject_user_question_answer_from_inbox(
+                    session_id=running_task["sessionId"],
+                    task=running_task,
+                    state=pending_state,
+                )
+                resumed_task = self._resume_cooperative_react(task=running_task, state=answered_state)
+                self._tracer.end_span(span.span_id, status="ok", attributes={"path": "react_user_answer"})
+                return {"task": resumed_task}
+
             approval = self._latest_approval_for_task(task["id"])
             if approval is not None and approval.get("decision") == "approved":
                 running_task = self._store.update_task_status(task_id=task["id"], status="running")

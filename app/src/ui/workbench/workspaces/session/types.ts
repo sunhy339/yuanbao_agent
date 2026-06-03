@@ -400,6 +400,8 @@ export interface SessionWorkspaceContextPreview {
     } | null;
     maxContextTokens?: number | null;
     includedSections?: string[];
+    stablePrefixSections?: string[];
+    dynamicTailSections?: string[];
     droppedSections?: string[];
     trimmedSections?: string[];
     promptLayers?: Array<{

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 
-from local_agent_runtime.haha_cc_compat import normalize_haha_cc_usage, to_haha_cc_server_message
+from local_agent_runtime.haha_cc_compat import (
+    normalize_haha_cc_usage,
+    normalize_yuanbao_usage,
+    to_haha_cc_server_message,
+    to_yuanbao_server_message,
+)
 from local_agent_runtime.models import RuntimeEvent
 from local_agent_runtime.store.sqlite_store import SQLiteStore
 
@@ -320,6 +325,13 @@ def test_normalize_usage_falls_back_total_tokens_to_input() -> None:
     }
 
 
+def test_yuanbao_alias_matches_haha_cc_compat_message() -> None:
+    event = _event("content_delta", {"text": "hello"})
+
+    assert to_yuanbao_server_message(event) == to_haha_cc_server_message(event)
+    assert normalize_yuanbao_usage({"total_tokens": 42}) == normalize_haha_cc_usage({"total_tokens": 42})
+
+
 def test_trace_list_and_events_after_include_haha_cc_message(tmp_path) -> None:
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     workspace_root = tmp_path / "workspace"
@@ -336,12 +348,15 @@ def test_trace_list_and_events_after_include_haha_cc_message(tmp_path) -> None:
         payload={"text": "hello", "toolOutput": "kept only on local payload"},
     )
 
-    assert trace["hahaCc"] == {"type": "content_delta", "text": "hello"}
+    assert trace["yuanbao"] == {"type": "content_delta", "text": "hello"}
+    assert trace["hahaCc"] == trace["yuanbao"]
     listed = store.list_trace_events({"taskId": task["id"]})["traceEvents"]
-    assert listed[0]["hahaCc"] == {"type": "content_delta", "text": "hello"}
+    assert listed[0]["yuanbao"] == {"type": "content_delta", "text": "hello"}
+    assert listed[0]["hahaCc"] == listed[0]["yuanbao"]
     assert listed[0]["payload"]["toolOutput"] == "kept only on local payload"
     after = store.events_after(session["id"], 0)["events"]
-    assert after[0]["hahaCc"] == {"type": "content_delta", "text": "hello"}
+    assert after[0]["yuanbao"] == {"type": "content_delta", "text": "hello"}
+    assert after[0]["hahaCc"] == after[0]["yuanbao"]
 
 
 def test_rpc_haha_cc_events_after_returns_flat_messages_and_last_sequence(tmp_path) -> None:
@@ -407,6 +422,18 @@ def test_rpc_haha_cc_events_after_returns_flat_messages_and_last_sequence(tmp_pa
         "truncated": False,
     }
 
+    yuanbao_response = server.handle_line(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "req_2",
+                "method": "events.yuanbaoAfter",
+                "params": {"sessionId": session["id"], "afterSeq": 0},
+            }
+        )
+    )
+    assert yuanbao_response["result"] == response["result"]
+
 
 def test_trace_list_includes_haha_cc_error_message(tmp_path) -> None:
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
@@ -424,8 +451,9 @@ def test_trace_list_includes_haha_cc_error_message(tmp_path) -> None:
         payload={"content": "Provider failed", "errorCode": "MODEL_PROVIDER_ERROR"},
     )
 
-    assert trace["hahaCc"] == {
+    assert trace["yuanbao"] == {
         "type": "error",
         "message": "Provider failed",
         "code": "MODEL_PROVIDER_ERROR",
     }
+    assert trace["hahaCc"] == trace["yuanbao"]

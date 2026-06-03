@@ -457,18 +457,27 @@
 
 ## Batch 13：最终回归
 
-- [ ] 运行 runtime 相关测试。
-- [ ] 运行 shared 类型检查。
-- [ ] 运行前端相关测试。
-- [ ] 做一次普通聊天事件回放。
-- [ ] 做一次工具调用事件回放。
-- [ ] 做一次审批事件回放。
-- [ ] 做一次 child agent/team 事件回放。
-- [ ] 更新整改文档状态。
-- [ ] 更新 remediation index。
+- [x] 运行 runtime 相关测试。
+- [x] 运行 shared 类型检查。
+- [x] 运行前端相关测试。
+- [x] 做一次普通聊天事件回放。
+- [x] 做一次工具调用事件回放。
+- [x] 做一次审批事件回放。
+- [x] 做一次 child agent/team 事件回放。
+- [x] 更新整改文档状态。
+- [x] 更新 remediation index。
 
 验收：
 
 - 新旧命名兼容。
 - Yuanbao 输出协议稳定。
 - 前端展示不依赖旧 haha 主命名。
+
+进展：
+
+- 2026-06-03：runtime 事件/工具/审批/PlanMode/AskUser/AgentTool/Team/Replay 回归通过：`python -m pytest runtime/tests/test_yuanbao_event_adapter.py runtime/tests/test_haha_cc_compat.py runtime/tests/test_collaboration_events.py runtime/tests/test_agent_tool_execution.py runtime/tests/test_task_tool_steps.py runtime/tests/test_tool_policy_resolver.py runtime/tests/test_orchestrator_react_loop.py runtime/tests/test_skill_tool_policy.py runtime/tests/test_replay.py -q -k "yuanbao or haha or team or collab or agent_tool or task_tool or plan_mode or ask_user_question_tool or pauses_for_ask_user or approval or supplement or paused or resume or tool_result or content_start or content_delta or message_complete or replay"`，93 passed，1 skipped，157 deselected。
+- 2026-06-03：`python -m compileall -q runtime/src/local_agent_runtime` 通过。
+- 2026-06-03：前端 Yuanbao 事件订阅/trace cache/能力文案回归通过：`npm --prefix app test -- src/lib/runtimeClient.test.ts src/hooks/useEventSubscription.test.tsx src/ui/haha-clean/pages/CleanCapabilityNotes.test.tsx`，45 passed。
+- 2026-06-03：`npm --prefix app run typecheck` 通过。
+- 2026-06-03：AgentTool/工具策略 acceptance 子集通过：`python -m pytest runtime/tests/test_acceptance_scenarios.py runtime/tests/test_llm_proposal_flows.py runtime/tests/test_planner_contract.py -q -k "tool or unsafe or allowedTools or agent_profile"`，18 passed，189 deselected。
+- 说明：Computer Use / desktop adapter 生态等价未纳入本轮收口，按当前要求后续单独推进。

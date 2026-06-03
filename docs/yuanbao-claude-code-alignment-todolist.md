@@ -581,11 +581,13 @@ Goal: keep frontend message lifecycle events aligned with haha-cc flat text outp
 - [x] Map direct `message.delta` events to flat `content_delta` for Yuanbao/haha historical replay and external adapters.
 - [x] Keep bridge-generated `assistant.token` payloads from producing a second flat `content_delta`.
 - [x] Suppress realtime flat output for `_chatCompat` `message.delta` events, because the realtime haha stream is already carried by bridge `content_delta`.
+- [x] Keep `message.created` as an envelope-only lifecycle event; flat text lifecycle starts at `content_start`.
 - [x] Add adapter/EventBus/RPC tests for direct `message.delta`, realtime duplicate suppression, and `events.yuanbaoAfter` historical recovery.
 
 Acceptance:
 - Realtime stdout keeps one flat text delta per token.
 - Stored lifecycle replay can still return haha-style `content_delta`.
+- `message.created` does not create a flat `content_start`; adapters should use explicit `content_start`.
 - Frontend `message.delta` consumption and external adapter flat output stay consistent.
 
 Progress:
@@ -596,6 +598,7 @@ Progress:
 - 2026-06-03: `python -m compileall -q runtime/src/local_agent_runtime` passed.
 - 2026-06-03: `message.completed` realtime flat frames are now suppressed when the event is `_chatCompat`, so bridge `message_complete` remains the only realtime finalize frame.
 - 2026-06-03: historical `events.yuanbaoAfter` still recovers `message.completed` as flat `message_complete`, covered together with `message.delta` recovery.
+- 2026-06-03: `message.created` is now covered by adapter/EventBus/RPC contract tests as envelope-only, so flat output remains `content_start` / `content_delta` / `message_complete`.
 
 ## Batch 18: Team snapshot and thinking delta coverage
 

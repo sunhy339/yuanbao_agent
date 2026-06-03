@@ -70,6 +70,24 @@ def test_yuanbao_adapter_maps_direct_message_delta_to_content_delta() -> None:
     }
 
 
+def test_yuanbao_adapter_keeps_message_created_out_of_flat_protocol() -> None:
+    assert (
+        to_yuanbao_server_message(
+            _event(
+                "message.created",
+                {
+                    "message": {
+                        "id": "msg_1",
+                        "role": "assistant",
+                        "content": "",
+                    }
+                },
+            )
+        )
+        is None
+    )
+
+
 def test_yuanbao_adapter_does_not_flatten_bridge_assistant_token() -> None:
     assert (
         to_yuanbao_server_message(
@@ -279,6 +297,7 @@ def test_yuanbao_output_frames_golden_sequence_for_typical_chat_turn() -> None:
     events = [
         _event("connected", {"sessionId": "sess_1"}),
         _event("status", {"state": "thinking", "verb": "plan", "phase": "local-only"}),
+        _event("message.created", {"message": {"id": "msg_1", "role": "assistant", "content": ""}}),
         _event("content_start", {"blockType": "text", "messageId": "msg_1"}),
         _event("content_delta", {"text": "Hi", "messageId": "msg_1"}),
         _event(
@@ -338,7 +357,7 @@ def test_yuanbao_output_frames_golden_sequence_for_typical_chat_turn() -> None:
         after_seq=0,
     ) == {
         "messages": flat_messages,
-        "lastSeq": 5,
+        "lastSeq": 6,
     }
     assert all("eventId" not in message for message in flat_messages)
     assert all("messageId" not in message for message in flat_messages)

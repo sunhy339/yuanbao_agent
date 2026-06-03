@@ -413,3 +413,7 @@ Covered streaming sources:
 - OpenAI-compatible chat deltas: `reasoning_content`, `reasoning_delta`, `thinking`, `thinking_delta`, and nested `reasoning.delta`.
 - OpenAI Responses deltas: `response.reasoning_summary_text.delta`, `response.reasoning_text.delta`, and compatible reasoning/thinking `.delta` event names.
 - Anthropic Messages thinking blocks and `thinking_delta`.
+
+### 11.3 Message lifecycle flat boundary
+
+`message.created` is a Yuanbao envelope lifecycle event only. It should not generate flat `content_start`, because haha-cc style consumers treat explicit `content_start`, `content_delta`, and `message_complete` as the flat assistant-output lifecycle.

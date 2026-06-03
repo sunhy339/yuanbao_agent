@@ -621,6 +621,69 @@ def test_events_after_uses_message_delta_as_historical_content_delta(tmp_path) -
     }
 
 
+def test_events_after_keeps_message_created_out_of_flat_history(tmp_path) -> None:
+    from local_agent_runtime.event_bus import EventBus
+    from local_agent_runtime.orchestrator.service import Orchestrator
+    from local_agent_runtime.rpc.server import JsonRpcServer
+    from local_agent_runtime.tools.registry import ToolRegistry
+
+    store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    workspace = store.upsert_workspace(str(workspace_root))
+    session = store.create_session(workspace_id=workspace["id"], title="created lifecycle")
+    task = store.create_task(session_id=session["id"], task_type="chat", goal="stream", plan=[])
+    store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="message.created",
+        source="assistant",
+        payload={"message": {"id": "msg_1", "role": "assistant", "content": ""}},
+    )
+    store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="content_start",
+        source="assistant",
+        payload={"blockType": "text", "messageId": "msg_1"},
+    )
+    store.append_trace_event(
+        task_id=task["id"],
+        session_id=session["id"],
+        event_type="content_delta",
+        source="assistant",
+        payload={"text": "hello", "messageId": "msg_1"},
+    )
+
+    event_bus = EventBus()
+    orchestrator = Orchestrator(
+        store=store,
+        event_bus=event_bus,
+        tool_registry=ToolRegistry({}),
+        provider=None,
+    )
+    server = JsonRpcServer(orchestrator=orchestrator, store=store, event_bus=event_bus)
+    response = server.handle_line(
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "req_1",
+                "method": "events.yuanbaoAfter",
+                "params": {"sessionId": session["id"], "afterSeq": 0},
+            }
+        )
+    )
+
+    assert response["result"] == {
+        "messages": [
+            {"type": "content_start", "blockType": "text"},
+            {"type": "content_delta", "text": "hello"},
+        ],
+        "lastSeq": 3,
+        "truncated": False,
+    }
+
+
 def test_trace_list_includes_haha_cc_error_message(tmp_path) -> None:
     store = SQLiteStore(str(tmp_path / "runtime.sqlite3"))
     workspace_root = tmp_path / "workspace"

@@ -161,6 +161,82 @@ describe("chatMessages", () => {
     expect(next.find((message) => message.id === "assistant_thinking:task_3")?.content).toBe("Reading files.");
   });
 
+  it("starts a new thinking segment after an intervening tool block", () => {
+    const withThinking = appendOrUpdateAssistantThinkingMessage(messages, {
+      sessionId: "sess_1",
+      taskId: "task_3",
+      state: "thinking",
+      text: "Plan first. ",
+      source: "provider_reasoning_delta",
+      now: 4,
+    });
+    const withTool = appendOrUpdateAssistantToolStartMessage(withThinking, {
+      toolUseId: "tool_1",
+      toolName: "search",
+      input: { query: "README" },
+      sessionId: "sess_1",
+      taskId: "task_3",
+      now: 5,
+    });
+    const next = appendOrUpdateAssistantThinkingMessage(withTool, {
+      sessionId: "sess_1",
+      taskId: "task_3",
+      state: "thinking",
+      text: "Then inspect the result.",
+      source: "provider_reasoning_delta",
+      now: 6,
+    });
+
+    const taskMessages = getVisibleChatMessages(next, "sess_1").filter((message) => message.taskId === "task_3");
+    expect(taskMessages.map((message) => message.id)).toEqual([
+      "assistant_thinking:task_3",
+      "tool_use:tool_1",
+      "assistant_thinking:task_3:1",
+    ]);
+    expect(taskMessages.map((message) => message.content)).toEqual([
+      "Plan first. ",
+      "",
+      "Then inspect the result.",
+    ]);
+    expect(taskMessages[1].metadata?.inputText).toContain('"query": "README"');
+  });
+
+  it("clears transient status thinking but keeps provider thinking as a completed transcript segment", () => {
+    const withStatus = appendOrUpdateAssistantThinkingMessage(messages, {
+      sessionId: "sess_1",
+      taskId: "task_3",
+      state: "thinking",
+      now: 4,
+    });
+    const withProviderThinking = appendOrUpdateAssistantThinkingMessage(withStatus, {
+      sessionId: "sess_1",
+      taskId: "task_3",
+      state: "thinking",
+      text: "Provider reasoning.",
+      source: "provider_reasoning_delta",
+      now: 5,
+    });
+    const next = removeAssistantThinkingMessage(withProviderThinking, {
+      sessionId: "sess_1",
+      taskId: "task_3",
+      now: 6,
+    });
+
+    const taskMessages = getVisibleChatMessages(next, "sess_1").filter((message) => message.taskId === "task_3");
+    expect(taskMessages).toHaveLength(1);
+    expect(taskMessages[0]).toMatchObject({
+      id: "assistant_thinking:task_3:1",
+      content: "Provider reasoning.",
+      streaming: false,
+      status: "completed",
+      metadata: {
+        kind: "assistant_thinking",
+        source: "provider_reasoning_delta",
+        transient: false,
+      },
+    });
+  });
+
   it("keeps permission request blocks when persisted messages refresh", () => {
     const withPermission = appendOrUpdatePermissionRequestMessage(messages, {
       requestId: "approval_1",

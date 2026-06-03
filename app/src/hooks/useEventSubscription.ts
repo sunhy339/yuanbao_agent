@@ -369,6 +369,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
           ? removeAssistantThinkingMessage(current, {
               sessionId: event.sessionId,
               taskId: event.taskId,
+              now: event.ts,
             })
           : current,
         {
@@ -903,6 +904,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               {
                 sessionId: event.sessionId,
                 taskId: event.taskId,
+                now: event.ts,
               },
             ),
           );
@@ -919,6 +921,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               removeAssistantThinkingMessage(current, {
                 sessionId: event.sessionId,
                 taskId: event.taskId,
+                now: event.ts,
               }),
             );
             return;
@@ -987,6 +990,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               removeAssistantThinkingMessage(current, {
                 sessionId: event.sessionId,
                 taskId: event.taskId,
+                now: event.ts,
               }),
               {
                 requestId: payload.requestId,
@@ -1149,6 +1153,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 {
                   sessionId: event.sessionId,
                   taskId: event.taskId,
+                  now: event.ts,
                 },
               ),
             );
@@ -1158,6 +1163,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
               removeAssistantThinkingMessage(completeAssistantMessage(current, event), {
                 sessionId: event.sessionId,
                 taskId: event.taskId,
+                now: event.ts,
               }),
             );
           }
@@ -1289,6 +1295,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 {
                   sessionId: event.sessionId,
                   taskId: event.taskId,
+                  now: event.ts,
                 },
               ),
             );
@@ -1306,6 +1313,7 @@ export function useEventSubscription(deps: UseEventSubscriptionDeps) {
                 {
                   sessionId: event.sessionId,
                   taskId: event.taskId,
+                  now: event.ts,
                 },
               ),
             );

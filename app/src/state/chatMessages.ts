@@ -1069,6 +1069,105 @@ function chatStatusLabel(state?: string, verb?: string | null): string {
   return action || "正在处理";
 }
 
+function isAssistantThinkingMessage(message: ChatMessageView): boolean {
+  return message.metadata?.kind === "assistant_thinking";
+}
+
+function isSameTaskMessage(message: ChatMessageView, sessionId: string, taskId: string): boolean {
+  return message.sessionId === sessionId && message.taskId === taskId;
+}
+
+function latestTaskMessageIndex(current: ChatMessageView[], sessionId: string, taskId: string): number {
+  for (let index = current.length - 1; index >= 0; index -= 1) {
+    if (isSameTaskMessage(current[index], sessionId, taskId)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function latestTaskThinkingIndex(current: ChatMessageView[], sessionId: string, taskId: string): number {
+  for (let index = current.length - 1; index >= 0; index -= 1) {
+    const message = current[index];
+    if (isSameTaskMessage(message, sessionId, taskId) && isAssistantThinkingMessage(message)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function assistantThinkingSegmentId(current: ChatMessageView[], taskId: string): string {
+  const baseId = `assistant_thinking:${taskId}`;
+  let segment = current.filter((message) => message.id === baseId || message.id.startsWith(`${baseId}:`)).length;
+  let candidate = segment === 0 ? baseId : `${baseId}:${segment}`;
+  while (current.some((message) => message.id === candidate)) {
+    segment += 1;
+    candidate = `${baseId}:${segment}`;
+  }
+  return candidate;
+}
+
+function isIncomingTransientThinking(
+  payload: { state?: string | null; text?: string | null; source?: string | null; transient?: boolean | null },
+  content: string,
+): boolean {
+  if (typeof payload.transient === "boolean") {
+    return payload.transient;
+  }
+  if (typeof payload.source === "string" && payload.source.trim()) {
+    return false;
+  }
+  const explicitText = Boolean(payload.text?.trim());
+  if (!explicitText) {
+    return true;
+  }
+  if (payload.state && payload.state !== "thinking") {
+    return true;
+  }
+  return content.trim() === chatStatusLabel(payload.state ?? undefined).trim();
+}
+
+function isTransientAssistantThinkingMessage(message: ChatMessageView): boolean {
+  if (!isAssistantThinkingMessage(message)) {
+    return false;
+  }
+  if (typeof message.metadata?.transient === "boolean") {
+    return message.metadata.transient;
+  }
+  if (typeof message.metadata?.source === "string" && message.metadata.source.trim()) {
+    return false;
+  }
+  const state = typeof message.metadata?.state === "string" ? message.metadata.state : undefined;
+  const verb = typeof message.metadata?.verb === "string" ? message.metadata.verb : undefined;
+  const content = message.content.trim();
+  if (!content) {
+    return true;
+  }
+  if (state && state !== "thinking") {
+    return true;
+  }
+  return content === chatStatusLabel(state, verb).trim();
+}
+
+function canUpdateThinkingSegment(
+  existing: ChatMessageView,
+  payload: { state?: string | null; transient?: boolean | null },
+  incomingTransient: boolean,
+): boolean {
+  if (!isAssistantThinkingMessage(existing)) {
+    return false;
+  }
+  if (isTransientAssistantThinkingMessage(existing) !== incomingTransient) {
+    return false;
+  }
+  if (incomingTransient) {
+    return true;
+  }
+  const existingState = typeof existing.metadata?.state === "string" ? existing.metadata.state : undefined;
+  const incomingState = payload.state ?? undefined;
+  return !existingState || !incomingState || existingState === incomingState;
+}
+
 export function appendOrUpdateAssistantThinkingMessage(
   current: ChatMessageView[],
   payload: {
@@ -1078,35 +1177,46 @@ export function appendOrUpdateAssistantThinkingMessage(
     verb?: string | null;
     text?: string | null;
     source?: string | null;
+    transient?: boolean | null;
     now: number;
   },
 ): ChatMessageView[] {
   const taskId = payload.taskId ?? "pending";
-  const messageId = `assistant_thinking:${taskId}`;
   const content = payload.text && payload.text.trim() ? payload.text : chatStatusLabel(payload.state ?? undefined, payload.verb);
-  const existingIndex = current.findIndex((message) => message.id === messageId);
+  const incomingTransient = isIncomingTransientThinking(payload, content);
+  const latestThinkingIndex = latestTaskThinkingIndex(current, payload.sessionId, taskId);
+  const latestTaskIndex = latestTaskMessageIndex(current, payload.sessionId, taskId);
+  const existingIndex =
+    latestThinkingIndex >= 0 &&
+    latestThinkingIndex === latestTaskIndex &&
+    canUpdateThinkingSegment(current[latestThinkingIndex], payload, incomingTransient)
+      ? latestThinkingIndex
+      : -1;
+  const existing = existingIndex >= 0 ? current[existingIndex] : undefined;
+  const messageId = existing?.id ?? assistantThinkingSegmentId(current, taskId);
   const nextMessage: ChatMessageView = {
     id: messageId,
     sessionId: payload.sessionId,
     taskId,
     role: "assistant",
     content,
-    createdAt: existingIndex >= 0 ? current[existingIndex].createdAt : payload.now,
+    createdAt: existing ? existing.createdAt : payload.now,
     updatedAt: payload.now,
     streaming: true,
     placeholder: false,
     status: "streaming",
     metadata: {
+      ...(existing?.metadata ?? {}),
       kind: "assistant_thinking",
       state: payload.state,
       verb: payload.verb,
-      source: payload.source ?? undefined,
+      source: payload.source ?? existing?.metadata?.source ?? undefined,
+      transient: incomingTransient,
     },
   };
 
-  if (existingIndex >= 0) {
+  if (existingIndex >= 0 && existing) {
     const next = [...current];
-    const existing = current[existingIndex];
     const incomingStatusContent = chatStatusLabel(payload.state ?? undefined, payload.verb);
     const existingStatusContent = chatStatusLabel(
       typeof existing.metadata?.state === "string" ? existing.metadata.state : payload.state ?? undefined,
@@ -1116,6 +1226,8 @@ export function appendOrUpdateAssistantThinkingMessage(
       Boolean(payload.text?.trim()) &&
       existing.metadata?.state === "thinking" &&
       payload.state === "thinking" &&
+      !incomingTransient &&
+      !isTransientAssistantThinkingMessage(existing) &&
       existing.content !== incomingStatusContent &&
       existing.content !== existingStatusContent;
     next[existingIndex] = {
@@ -1190,17 +1302,45 @@ export function removeAssistantThinkingMessage(
   payload: {
     sessionId: string;
     taskId?: string | null;
+    now?: number;
   },
 ): ChatMessageView[] {
-  return current.filter((message) => {
+  const next: ChatMessageView[] = [];
+  let changed = false;
+  for (const message of current) {
     if (message.metadata?.kind !== "assistant_thinking") {
-      return true;
+      next.push(message);
+      continue;
     }
     if (message.sessionId !== payload.sessionId) {
-      return true;
+      next.push(message);
+      continue;
     }
-    return Boolean(payload.taskId && message.taskId !== payload.taskId);
-  });
+    if (payload.taskId && message.taskId !== payload.taskId) {
+      next.push(message);
+      continue;
+    }
+    if (isTransientAssistantThinkingMessage(message)) {
+      changed = true;
+      continue;
+    }
+    if (message.streaming || message.status === "streaming") {
+      changed = true;
+      next.push({
+        ...message,
+        updatedAt: payload.now ?? message.updatedAt,
+        streaming: false,
+        status: "completed",
+        metadata: {
+          ...(message.metadata ?? {}),
+          transient: false,
+        },
+      });
+      continue;
+    }
+    next.push(message);
+  }
+  return changed ? next : current;
 }
 
 export function appendOrUpdatePermissionRequestMessage(

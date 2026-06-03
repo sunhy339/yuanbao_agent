@@ -27,6 +27,7 @@ export function appendAssistantToken(current: ChatMessageView[], event: AgentEve
       taskId: event.taskId,
       state: "thinking",
       text: progressText,
+      transient: true,
       now: event.ts,
     });
   }

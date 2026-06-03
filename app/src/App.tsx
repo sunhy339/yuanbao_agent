@@ -52,6 +52,7 @@ import { sortByUpdatedAtDesc, upsertRecord } from "./state/eventRecordViews";
 import {
   appendAssistantToken,
 } from "./state/chatTokenHelpers";
+import { replayTraceEventsToChatMessages } from "./state/chatTraceReplay";
 import { WorkspaceRouter } from "./ui/workbench/workspaces/WorkspaceRouter";
 import { approvalModeToSettingsMode } from "./state/providerPayloadParsing";
 import type { SessionWorkspaceWorktreeStatus } from "./ui/workbench/workspaces/session/SessionWorkspace";
@@ -479,6 +480,7 @@ export function App() {
     const loadedCommandLogs = results.flatMap((result) => result.commandLogs);
     if (loadedTraceEvents.length) {
       setTraceEvents((current) => mergeTraceEvents(current, loadedTraceEvents));
+      setChatMessages((current) => replayTraceEventsToChatMessages(current, loadedTraceEvents));
     }
     if (loadedCommandLogs.length) {
       setCommandLogCacheById((current) => ({

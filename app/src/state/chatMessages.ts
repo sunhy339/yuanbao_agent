@@ -1173,6 +1173,7 @@ export function appendOrUpdateAssistantThinkingMessage(
   payload: {
     sessionId: string;
     taskId?: string | null;
+    eventId?: string | null;
     state?: string | null;
     verb?: string | null;
     text?: string | null;
@@ -1184,16 +1185,29 @@ export function appendOrUpdateAssistantThinkingMessage(
   const taskId = payload.taskId ?? "pending";
   const content = payload.text && payload.text.trim() ? payload.text : chatStatusLabel(payload.state ?? undefined, payload.verb);
   const incomingTransient = isIncomingTransientThinking(payload, content);
+  const stableEventId = payload.eventId?.trim() ?? "";
+  const eventMessageId = stableEventId ? `assistant_thinking:${stableEventId}` : "";
+  const existingEventIndex = stableEventId
+    ? current.findIndex(
+        (message) =>
+          message.sessionId === payload.sessionId &&
+          message.taskId === taskId &&
+          message.metadata?.kind === "assistant_thinking" &&
+          (message.id === eventMessageId || message.metadata?.eventId === stableEventId),
+      )
+    : -1;
   const latestThinkingIndex = latestTaskThinkingIndex(current, payload.sessionId, taskId);
   const latestTaskIndex = latestTaskMessageIndex(current, payload.sessionId, taskId);
   const existingIndex =
-    latestThinkingIndex >= 0 &&
+    existingEventIndex >= 0
+      ? existingEventIndex
+      : latestThinkingIndex >= 0 &&
     latestThinkingIndex === latestTaskIndex &&
     canUpdateThinkingSegment(current[latestThinkingIndex], payload, incomingTransient)
       ? latestThinkingIndex
       : -1;
   const existing = existingIndex >= 0 ? current[existingIndex] : undefined;
-  const messageId = existing?.id ?? assistantThinkingSegmentId(current, taskId);
+  const messageId = existing?.id ?? (eventMessageId || assistantThinkingSegmentId(current, taskId));
   const nextMessage: ChatMessageView = {
     id: messageId,
     sessionId: payload.sessionId,
@@ -1210,6 +1224,7 @@ export function appendOrUpdateAssistantThinkingMessage(
       kind: "assistant_thinking",
       state: payload.state,
       verb: payload.verb,
+      eventId: stableEventId || (existing?.metadata?.eventId ?? undefined),
       source: payload.source ?? existing?.metadata?.source ?? undefined,
       transient: incomingTransient,
     },

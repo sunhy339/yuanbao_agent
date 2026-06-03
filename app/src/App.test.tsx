@@ -23,6 +23,8 @@ const runtimeMocks = vi.hoisted(() => ({
   listMcpServers: vi.fn(),
   listAgentProfiles: vi.fn(),
   listMessages: vi.fn(),
+  listTrace: vi.fn(),
+  commandLogList: vi.fn(),
   subscribeEvents: vi.fn(),
   canOpenLocalAppPaths: vi.fn(),
 }));
@@ -124,6 +126,8 @@ function setupRuntimeMocks() {
       messages: messagesBySession[sessionId] ?? [],
     }),
   );
+  runtimeMocks.listTrace.mockResolvedValue({ traceEvents: [] });
+  runtimeMocks.commandLogList.mockResolvedValue({ commandLogs: [] });
   runtimeMocks.subscribeEvents.mockResolvedValue(vi.fn());
   runtimeMocks.canOpenLocalAppPaths.mockReturnValue(false);
 }
@@ -131,6 +135,9 @@ function setupRuntimeMocks() {
 beforeEach(() => {
   for (const mock of Object.values(runtimeMocks)) {
     mock.mockReset();
+  }
+  if (!HTMLElement.prototype.scrollTo) {
+    HTMLElement.prototype.scrollTo = vi.fn();
   }
   setupRuntimeMocks();
 });
@@ -149,7 +156,7 @@ describe("App session message recovery", () => {
         limit: 500,
       });
     });
-    expect(screen.getByRole("tab", { name: "总览" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("main", { name: "新建会话" })).toBeInTheDocument();
   });
 
   it("shows readable local preview provider copy instead of raw mock labels", async () => {
@@ -166,11 +173,11 @@ describe("App session message recovery", () => {
     render(<App />);
     const sessionRail = await screen.findByLabelText("会话");
 
-    await user.click(await within(sessionRail).findByRole("button", { name: /Alpha Session/ }));
+    await user.click(await within(sessionRail).findByRole("button", { name: "打开会话 Alpha Session" }));
     expect(await screen.findByText("Alpha persisted request")).toBeInTheDocument();
     expect(screen.getByText("Alpha persisted answer")).toBeInTheDocument();
 
-    await user.click(within(sessionRail).getByRole("button", { name: /Beta Session/ }));
+    await user.click(within(sessionRail).getByRole("button", { name: "打开会话 Beta Session" }));
     expect(await screen.findByText("Beta persisted request")).toBeInTheDocument();
     expect(screen.getByText("Beta persisted answer")).toBeInTheDocument();
     expect(screen.queryByText("Alpha persisted request")).not.toBeInTheDocument();
@@ -188,14 +195,14 @@ describe("App session message recovery", () => {
     render(<App />);
     const sessionRail = await screen.findByLabelText("会话");
 
-    await user.click(await within(sessionRail).findByRole("button", { name: /Alpha Session/ }));
+    await user.click(await within(sessionRail).findByRole("button", { name: "打开会话 Alpha Session" }));
     expect(await screen.findByText("Alpha persisted request")).toBeInTheDocument();
 
-    await user.click(within(sessionRail).getByRole("button", { name: /Beta Session/ }));
+    await user.click(within(sessionRail).getByRole("button", { name: "打开会话 Beta Session" }));
     expect(await screen.findByText("Beta persisted request")).toBeInTheDocument();
     runtimeMocks.listMessages.mockClear();
 
-    await user.click(screen.getByRole("tab", { name: "Alpha Session" }));
+    await user.click(screen.getByRole("button", { name: /^Alpha Session$/ }));
     expect(await screen.findByText("Alpha persisted answer")).toBeInTheDocument();
     expect(screen.queryByText("Beta persisted request")).not.toBeInTheDocument();
     expect(runtimeMocks.listMessages).toHaveBeenCalledWith({
@@ -203,7 +210,7 @@ describe("App session message recovery", () => {
       limit: 500,
     });
 
-    await user.click(screen.getByRole("tab", { name: "Beta Session" }));
+    await user.click(screen.getByRole("button", { name: /^Beta Session$/ }));
     expect(await screen.findByText("Beta persisted answer")).toBeInTheDocument();
     expect(screen.queryByText("Alpha persisted request")).not.toBeInTheDocument();
     expect(runtimeMocks.listMessages).toHaveBeenCalledWith({
